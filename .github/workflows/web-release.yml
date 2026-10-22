@@ -1,0 +1,110 @@
+name: web-release
+
+# Compila só a versão de navegador do TraceDraw (WebAssembly) e publica como
+# release deste fork: tracedraw-web-<versão>.zip + SHA256SUMS.txt.
+# Uso manual: Actions > web-release > Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag ou commit para compilar (vazio: main)"
+        required: false
+        default: ""
+  # Para compilar toda segunda às 06:00 UTC, descomente:
+  # schedule:
+  #   - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: web-release
+  cancel-in-progress: false
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+
+      # Mesma versão do Rust que o projeto usa no build.yml.
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      - name: Versões
+        id: ver
+        shell: bash
+        run: |
+          base=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          sha=$(git rev-parse --short=7 HEAD)
+          echo "version=${base}-${sha}" >> "$GITHUB_OUTPUT"
+          # wasm-bindgen precisa ser igual ao do Cargo.lock
+          wb=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)
+          test -n "$wb"
+          echo "wb=${wb}" >> "$GITHUB_OUTPUT"
+
+      # O build.rs embute estas fontes no módulo (o navegador não tem fontes do sistema).
+      - name: Fontes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-liberation fonts-dejavu-core fonts-noto-core
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.ver.outputs.wb }}
+
+      - name: Compilar
+        run: cargo build --target wasm32-unknown-unknown --profile web -p tracedraw
+
+      - name: Montar a página
+        shell: bash
+        run: |
+          mkdir -p site dist
+          wasm-bindgen --target web --no-typescript --out-dir site target/wasm32-unknown-unknown/web/tracedraw.wasm
+          cp web/FONTS.md site/
+          size=$(wc -c < site/tracedraw_bg.wasm | tr -d ' ')
+          sed -e "s/data-wasm-size=\"0\"/data-wasm-size=\"$size\"/" \
+              -e "s/@VERSION@/${{ steps.ver.outputs.version }}/" \
+              web/index.html > site/index.html
+          grep -q "data-wasm-size=\"$size\"" site/index.html
+          if grep -q "@VERSION@" site/index.html; then exit 1; fi
+          cp assets/icon/tracedraw-256.png site/icon-256.png
+
+      # Ajuda (F1). Se falhar, a release sai sem ela.
+      - name: Ajuda
+        continue-on-error: true
+        run: python3 web/help_site.py docs/help apps/tracedraw/lang site/help
+
+      - name: Empacotar
+        shell: bash
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          test -s site/index.html
+          test -s site/tracedraw_bg.wasm
+          (cd site && zip -qr "../dist/tracedraw-web-${v}.zip" .)
+          (cd dist && sha256sum "tracedraw-web-${v}.zip" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Publicar a release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          tag="web-v${v}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --target "$(git rev-parse HEAD)" \
+              --title "TraceDraw web ${v}" \
+              --notes "Build web do TraceDraw ${v} (WebAssembly). Pasta estática: servir com qualquer servidor web." \
+              --latest
+          fi
