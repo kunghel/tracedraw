@@ -4448,3 +4448,43 @@ fn frame_times_on_a_heavy_page() {
         );
     });
 }
+
+/// A symmetry made from one object, edited: a click on the object shows
+/// its own box, not the box of its copies, and a rectangle drawn with the
+/// tool joins the symmetry (the two become its group).
+#[test]
+fn a_lone_symmetry_object_is_picked_alone_and_takes_new_drawings() {
+    let (ctx, mut app, a) = setup();
+    app.create_symmetry();
+    assert_eq!(app.symmetry_edit, Some(a));
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    app.select(Vec::new());
+    let at = app.view.to_screen(Point::new(30.0, 25.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.selection, vec![a]);
+    let b = app.selection_bounds().expect("bounds");
+    assert!(
+        (b.x0 - 10.0).abs() < 1.0 && (b.x1 - 60.0).abs() < 1.0,
+        "the object's own box: {b:?}"
+    );
+    // Where a mirror line runs over the object, a click picks the
+    // object rather than showing the line's turning handles.
+    let (_, c, ..) = app.edited_symmetry().expect("symmetry");
+    app.select(Vec::new());
+    let at = app.view.to_screen(Point::new(c.x - 1.0, 12.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.selection, vec![a], "centre at {c:?}");
+    assert!(!app.symmetry_turning);
+    // Drawn with the rectangle tool, below the object.
+    app.set_tool(Tool::Rectangle);
+    let from = app.view.to_screen(Point::new(10.0, 60.0));
+    let to = app.view.to_screen(Point::new(30.0, 80.0));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let g = app.symmetry_edit.expect("still editing");
+    assert_ne!(g, a, "the object and the drawing became a group");
+    let kids = match app.doc().find_shape(g).map(|s| &s.kind) {
+        Some(ShapeKind::Group { children }) => children.len(),
+        _ => 0,
+    };
+    assert_eq!(kids, 2);
+}

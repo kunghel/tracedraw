@@ -90,8 +90,9 @@ impl App {
     }
 
     /// Whether a press at `p` (page space) takes the mirror lines: on a
-    /// turning handle (to turn them), else on a line or the centre (to
-    /// move them). `None` when nothing of the symmetry is there.
+    /// turning handle (to turn them), else on the centre or on a line off
+    /// the objects (to move them). `None` when nothing of the symmetry is
+    /// there.
     fn symmetry_part_at(&self, p: Point) -> Option<bool> {
         let (_, center, angle, lines) = self.edited_symmetry()?;
         if !self.settings.symmetry_show_lines {
@@ -113,7 +114,9 @@ impl App {
             let v = p - center;
             (v.x * d.y - v.y * d.x).abs() <= tol
         });
-        on_line.then_some(false)
+        // The lines cross the whole window: where one runs over an
+        // object, the object is picked and dragged, not the line.
+        (on_line && self.hit_test(p).is_none()).then_some(false)
     }
 
     /// A Pick tool press while a symmetry is edited: a drag on a line or
@@ -178,6 +181,24 @@ impl App {
             let to = self.snap_point_excluding(start_center + (p - from), &[]);
             self.set_symmetry_of(id, to, start_angle, lines);
         }
+    }
+
+    /// `s` without its symmetry when it is the object whose symmetry is
+    /// edited: while editing, its copies are not picked, and its box is
+    /// its own, as in the reference program.
+    pub fn without_edited_symmetry(&self, s: &Shape) -> Option<Shape> {
+        if self.symmetry_edit != Some(s.id)
+            || !s
+                .effects
+                .iter()
+                .any(|e| matches!(e, Effect::Symmetry { .. }))
+        {
+            return None;
+        }
+        let mut own = s.clone();
+        own.effects
+            .retain(|e| !matches!(e, Effect::Symmetry { .. }));
+        Some(own)
     }
 
     /// The members of the symmetry being edited, in page space, when it

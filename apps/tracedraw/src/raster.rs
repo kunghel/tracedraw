@@ -357,7 +357,7 @@ impl Raster {
             let (tx, rx) = std::sync::mpsc::channel();
             let wake = ctx.clone();
             std::thread::spawn(move || {
-                let t = std::time::Instant::now();
+                let t = web_time::Instant::now();
                 let image = render_page(&doc, page, &opts).map(|pm| to_image(&pm, lut.as_deref()));
                 let _ = tx.send(image.map(|i| (i, t.elapsed().as_secs_f64())));
                 wake.request_repaint();
@@ -365,7 +365,7 @@ impl Raster {
             self.job = Some(Job { key, page_rect, rx });
             return self.shown_meanwhile(view, screen);
         }
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let pixmap = render_page(doc, page, &opts)?;
         let image = to_image(&pixmap, lut.as_deref());
         self.last_seconds = t.elapsed().as_secs_f64();
@@ -719,5 +719,43 @@ mod tests {
             .expect("texture");
         assert_eq!(at, rect);
         assert_eq!(raster.texture.as_ref().map(|t| t.size()), Some([400, 400]));
+    }
+
+    /// The browser has no clock behind std::time: asking it the time
+    /// panics, and the page froze on the first drawing it showed. Code
+    /// outside tests asks web_time instead (mcp_link is not in the web
+    /// build).
+    #[test]
+    fn the_web_build_never_asks_std_for_the_time() {
+        fn scan(dir: &std::path::Path, found: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).expect("src").flatten() {
+                let p = e.path();
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if p.is_dir() {
+                    scan(&p, found);
+                    continue;
+                }
+                if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "mcp_link.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).expect("source");
+                for (i, line) in text.lines().enumerate() {
+                    if line.trim_start().starts_with("#[cfg(test)]") {
+                        break;
+                    }
+                    if line.contains(concat!("std::time::", "Instant::now"))
+                        || line.contains(concat!("std::time::", "SystemTime::now"))
+                    {
+                        found.push(format!("{}:{}", p.display(), i + 1));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert!(found.is_empty(), "use web_time: {found:?}");
     }
 }

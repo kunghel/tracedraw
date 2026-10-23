@@ -158,23 +158,39 @@ pub fn format_number(v: f64, integral: bool, min: usize, max: Option<usize>) -> 
 
 impl<N: Numeric> Widget for NumField<'_, N> {
     fn ui(self, ui: &mut Ui) -> Response {
+        // Fill a sized slot; otherwise keep to the field's own width, so a
+        // field in a row of controls does not take the rest of the row.
+        let slot = ui
+            .layout()
+            .horizontal_justify()
+            .then(|| ui.available_width());
+        // The prefix, the box and the arrows stay on one line: in a column
+        // (or a justified slot) they would land under each other or the
+        // prefix would take the whole slot.
+        if slot.is_some() || ui.layout().main_dir().is_vertical() {
+            return ui.horizontal(|ui| self.row(ui, slot)).inner;
+        }
+        self.row(ui, slot)
+    }
+}
+
+impl<N: Numeric> NumField<'_, N> {
+    /// The prefix, the box and the arrows, laid out left to right; `slot`
+    /// is the width they share when the parent gave one.
+    fn row(self, ui: &mut Ui, mut slot: Option<f32>) -> Response {
         let id = ui.next_auto_id().with("num_field");
         let shown = self.text();
         // While typing, the text lives in memory until it is applied.
         let stored = ui.data(|d| d.get_temp::<String>(id));
         let mut buf = stored.clone().unwrap_or_else(|| shown.clone());
-        // Fill a sized slot; otherwise keep to the field's own width, so a
-        // field in a row of controls does not take the rest of the row.
-        // The spin arrows take their width at the right of the box.
-        let justified = ui.layout().horizontal_justify();
-        let width = if justified {
-            (ui.available_width() - SPIN_W).max(16.0)
-        } else {
-            (self.width - SPIN_W).max(16.0)
-        };
         if !self.prefix.is_empty() {
-            ui.label(&self.prefix);
+            let label = ui.label(&self.prefix);
+            if let Some(s) = &mut slot {
+                *s -= label.rect.width() + ui.spacing().item_spacing.x;
+            }
         }
+        // The spin arrows take their width at the right of the box.
+        let width = (slot.unwrap_or(self.width) - SPIN_W).max(16.0);
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.x = 0.0;
         let mut resp = ui.add(
@@ -691,7 +707,43 @@ mod tests {
         });
         out.textures_delta.clear();
         assert!(row_width < 100.0, "{row_width}");
-        assert!((slot_width - 120.0).abs() < 1.0, "{slot_width}");
+        // The box and its arrows fill the slot together.
+        assert!((slot_width + SPIN_W - 120.0).abs() < 1.0, "{slot_width}");
+    }
+
+    /// The symmetry bar's X and Y: fields with a prefix stacked in a
+    /// column keep the prefix, the box and the arrows on one line, inside
+    /// the slot they are given.
+    #[test]
+    fn prefixed_fields_in_a_column_stay_on_one_line() {
+        let ctx = egui::Context::default();
+        let (mut x, mut y) = (1.0f64, 2.0f64);
+        let mut rects = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.vertical(|ui| {
+                let left = ui.cursor().left();
+                for (label, v) in [("X:", &mut x), ("Y:", &mut y)] {
+                    let r = ui.add_sized([120.0, 20.0], NumField::new(v).prefix(label));
+                    rects.push((left, r.rect));
+                }
+            });
+        });
+        out.textures_delta.clear();
+        let (left, a) = rects[0];
+        let (_, b) = rects[1];
+        assert!(
+            a.left() > left + 8.0,
+            "the prefix sits before the box: {a:?}"
+        );
+        assert!(a.right() + SPIN_W <= left + 121.0, "inside the slot: {a:?}");
+        assert!(b.top() - a.top() < 30.0, "one line each: {a:?} {b:?}");
     }
 
     #[test]

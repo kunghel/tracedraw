@@ -138,7 +138,7 @@ pub struct MacroRun {
     pub input: Sender<Input>,
     pub stop: Arc<AtomicBool>,
     pub forms: Arc<Mutex<Forms>>,
-    pub started: std::time::Instant,
+    pub started: web_time::Instant,
     /// "Project.Module.Macro", for the status line and messages.
     pub name: String,
     handle: std::thread::JoinHandle<Finished>,
@@ -637,7 +637,7 @@ pub fn start(
         input: in_tx,
         stop,
         forms,
-        started: std::time::Instant::now(),
+        started: web_time::Instant::now(),
         name,
         handle,
     })

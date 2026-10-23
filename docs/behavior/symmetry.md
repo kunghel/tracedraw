@@ -50,8 +50,13 @@ recomputed from it.
   object being edited, not the selection.
 - Picking while editing: a click or a marquee takes the objects inside
   the symmetry group (its members), never the group and never a copy.
-- The mirror lines with the Pick tool: a drag on a line or on the centre
-  moves the lines (the centre follows the pointer, snapping as objects
+  A symmetry made of one object picks that object alone: a click on a
+  copy takes nothing, and its selection box is the object's own, not the
+  box of the copies
+  (`pick_drag_tests::a_lone_symmetry_object_is_picked_alone_and_takes_new_drawings`).
+- The mirror lines with the Pick tool: where a line runs over an object,
+  a click or a drag there takes the object; elsewhere a drag on a line or
+  on the centre moves the lines (the centre follows the pointer, snapping as objects
   do); a click on a line shows round handles at both ends of every line,
   90 pixels from the centre, and dragging one turns the lines about the
   centre (Ctrl: by the constrain angle); another click on a line hides

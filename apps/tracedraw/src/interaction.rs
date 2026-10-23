@@ -343,6 +343,9 @@ impl App {
     /// document fills open curves, unfilled ones too with "Treat all
     /// objects as filled"); otherwise near the outline.
     fn shape_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64) -> bool {
+        if let Some(own) = self.without_edited_symmetry(s) {
+            return self.shape_hit(&own, p, tol);
+        }
         if !self.visual_bounds(s).inflate(tol, tol).contains(p) {
             return false;
         }

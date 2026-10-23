@@ -1800,7 +1800,9 @@ impl DockerTab {
 /// drawing's engine, its revision and the page, and the selection.
 #[derive(Debug, Clone)]
 pub struct SelectedCache {
-    key: (u64, u64, tracedraw_core::PageId),
+    /// The drawing, its revision, the page and the symmetry edited (its
+    /// copies are left out of the bounds while it is).
+    key: (u64, u64, tracedraw_core::PageId, Option<ShapeId>),
     selection: Vec<ShapeId>,
     shapes: std::rc::Rc<Vec<Shape>>,
     /// Their visual bounds, once asked for.
@@ -3642,7 +3644,12 @@ impl App {
     /// thousand selected objects made a frame take a fifth of a second,
     /// #367).
     pub fn selected_rc(&self) -> std::rc::Rc<Vec<Shape>> {
-        let key = (self.engine.instance(), self.engine.revision(), self.page);
+        let key = (
+            self.engine.instance(),
+            self.engine.revision(),
+            self.page,
+            self.symmetry_edit,
+        );
         if let Ok(cache) = self.selected_cache.try_borrow() {
             if let Some(c) = cache.as_ref() {
                 if c.key == key && c.selection == self.selection {
@@ -3786,6 +3793,10 @@ impl App {
     pub fn visual_bounds(&self, s: &Shape) -> Rect {
         if !s.has_live_effects() {
             return s.bounds();
+        }
+        // The symmetry being edited: the object's own box, as picked.
+        if let Some(own) = self.without_edited_symmetry(s) {
+            return own.visual_bounds();
         }
         let revision = self.engine.revision();
         let Ok(mut cache) = self.visual_cache.try_borrow_mut() else {
