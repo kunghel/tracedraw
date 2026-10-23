@@ -112,8 +112,19 @@ impl App {
     /// Layout > Fit Page to Drawing: as [`Self::fit_page_to_selection`],
     /// for everything on the page.
     pub fn fit_page_to_drawing(&mut self) {
+        self.fit_page_to_drawing_with_margin(0.0);
+    }
+
+    /// The property bar's Autofit Page: [`Self::fit_page_to_drawing`]
+    /// with `margin` mm left free around the drawing on every side.
+    pub fn fit_page_to_drawing_with_margin(&mut self, margin: f64) {
+        let margin = if margin.is_finite() {
+            margin.max(0.0)
+        } else {
+            0.0
+        };
         if let Some(b) = self.drawing_bounds() {
-            self.fit_page_to(b, "Fit Page to Drawing");
+            self.fit_page_to(b.inflate(margin, margin), "Fit Page to Drawing");
         }
     }
 
@@ -412,9 +423,21 @@ impl App {
 
     /// Effects > Flatten Effects: bake the stack into ordinary objects.
     pub fn flatten_effects(&mut self) {
+        self.flatten_effects_with(false);
+    }
+
+    /// Break Contour, Blend or Extrude Group Apart (Ctrl+K, the docker's
+    /// Break apart): as Flatten Effects, the steps then grouped beside the
+    /// object.
+    pub fn break_effect_groups(&mut self) {
+        self.flatten_effects_with(true);
+    }
+
+    fn flatten_effects_with(&mut self, group_steps: bool) {
         let shapes = self.selected_shapes();
         let mut cmds = Vec::new();
         let mut new_sel = Vec::new();
+        let mut grouped = Vec::new();
         for s in shapes {
             // A vector object with bitmap effects becomes the bitmap of its
             // picture, in its place.
@@ -489,23 +512,57 @@ impl App {
             let layer = layer.id;
             let parts = tracedraw_core::live::break_apart(&s, || self.engine.new_shape_id());
             cmds.push(Command::DeleteShapes { shapes: vec![s.id] });
+            let mut steps = Vec::new();
             for p in parts {
-                new_sel.push(p.id);
+                if p.id == s.id {
+                    new_sel.push(p.id);
+                } else {
+                    steps.push(p.id);
+                }
                 cmds.push(Command::AddShape { layer, shape: p });
+            }
+            // The steps (contour rings, blend steps, extrusion faces) come
+            // out as one group beside the object, so they move together
+            // (#424).
+            match steps.len() {
+                0 => {}
+                n if n == 1 || !group_steps => new_sel.extend(steps),
+                _ => {
+                    cmds.push(Command::Group {
+                        shapes: steps.clone(),
+                    });
+                    grouped.push(steps[0]);
+                }
             }
         }
         if !cmds.is_empty() {
             if let Err(e) = self.engine.run_batch("Flatten Effects", &cmds) {
                 self.status = e.to_string();
             }
+            // Each group of steps, found by a step it holds.
+            for step in grouped {
+                let group = self
+                    .page_layers()
+                    .into_iter()
+                    .flat_map(|l| l.shapes.iter())
+                    .find(|g| match &g.kind {
+                        ShapeKind::Group { children } => children.iter().any(|c| c.id == step),
+                        _ => false,
+                    })
+                    .map(|g| g.id);
+                new_sel.extend(group);
+            }
             self.selection = new_sel;
         }
     }
 
     /// Object > Symmetry > Create New Symmetry (Alt+S): one vertical mirror
-    /// line at the right edge of the selection.
+    /// line at the right edge of the selection. Several selected objects
+    /// become one symmetry group (grouped first), so they are mirrored
+    /// together and each can still be picked inside it with Ctrl+click.
+    /// One undo step.
     pub fn create_symmetry(&mut self) {
-        let shapes = self.selected_shapes();
+        let mut shapes = self.selected_shapes();
         if shapes.is_empty() {
             return;
         }
@@ -513,6 +570,23 @@ impl App {
             return;
         };
         let center = Point::new(b.x1, b.center().y);
+        let mut first = true;
+        if shapes.len() > 1 {
+            let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
+            if let Err(e) = self
+                .engine
+                .run_with_label(&Command::Group { shapes: ids }, "Symmetry")
+            {
+                self.status = e.to_string();
+                return;
+            }
+            first = false;
+            let Some(g) = self.newest_group() else {
+                return;
+            };
+            self.selection = vec![g];
+            shapes = self.selected_shapes();
+        }
         for s in shapes {
             let mut effects = s.effects.clone();
             effects.retain(|e| !matches!(e, Effect::Symmetry { .. }));
@@ -521,13 +595,106 @@ impl App {
                 angle: 90.0,
                 lines: 1,
             });
-            self.run(Command::SetEffects {
+            let cmd = Command::SetEffects {
                 shape: s.id,
                 effects,
-            });
+            };
+            let r = if first {
+                first = false;
+                self.engine.run_with_label(&cmd, "Symmetry")
+            } else {
+                self.engine.amend(&cmd)
+            };
+            if let Err(e) = r {
+                self.status = e.to_string();
+            }
         }
         // Straight into editing it, as Edit Symmetry does.
         self.edit_symmetry();
+    }
+
+    /// The group added last on the page's layers (the one a Group
+    /// command just made).
+    fn newest_group(&self) -> Option<ShapeId> {
+        self.page_layers()
+            .into_iter()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+            .max_by_key(|s| s.id)
+            .map(|g| g.id)
+    }
+
+    /// Objects made while a symmetry is edited (drawn, pasted,
+    /// duplicated) join it: the symmetry group takes them in (an object
+    /// that was alone with the symmetry becomes a group of it and them,
+    /// the symmetry moving to the group). Folded into the step that made
+    /// the objects, so one Undo takes both back. The new objects stay
+    /// selected, inside the group.
+    pub fn join_symmetry(&mut self, ids: &[ShapeId]) {
+        let Some(g) = self.symmetry_editing() else {
+            return;
+        };
+        let ids: Vec<ShapeId> = ids
+            .iter()
+            .copied()
+            .filter(|id| self.doc().top_level_of(*id).is_some_and(|t| t != g))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let Some(group) = self.doc().find_shape(g).cloned() else {
+            return;
+        };
+        let symmetry: Vec<Effect> = group
+            .effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Symmetry { .. }))
+            .cloned()
+            .collect();
+        let mut members: Vec<ShapeId> = Vec::new();
+        let mut cmds: Vec<Command> = Vec::new();
+        match &group.kind {
+            ShapeKind::Group { children } => {
+                // The members come out of the group and into a new one
+                // with the newcomers; the group itself goes.
+                members.extend(children.iter().map(|c| c.id));
+                cmds.push(Command::Ungroup { group: g });
+            }
+            _ => {
+                // The lone object keeps its other effects; the symmetry
+                // moves to the group of it and the newcomers.
+                members.push(g);
+                let rest: Vec<Effect> = group
+                    .effects
+                    .iter()
+                    .filter(|e| !matches!(e, Effect::Symmetry { .. }))
+                    .cloned()
+                    .collect();
+                cmds.push(Command::SetEffects {
+                    shape: g,
+                    effects: rest,
+                });
+            }
+        }
+        members.extend(ids.iter().copied());
+        cmds.push(Command::Group { shapes: members });
+        for cmd in &cmds {
+            if let Err(e) = self.engine.amend(cmd) {
+                self.status = e.to_string();
+                return;
+            }
+        }
+        let Some(new) = self.newest_group() else {
+            return;
+        };
+        if let Err(e) = self.engine.amend(&Command::SetEffects {
+            shape: new,
+            effects: symmetry,
+        }) {
+            self.status = e.to_string();
+        }
+        self.symmetry_edit = Some(new);
+        self.selection = ids;
     }
 
     /// Object > Symmetry > Edit Symmetry (Alt+E): the symmetry editing
@@ -546,25 +713,43 @@ impl App {
     /// Object > Symmetry > Finish Editing Symmetry (Alt+Shift+E), and the
     /// symmetry bar's Finish.
     pub fn finish_symmetry_edit(&mut self) {
+        self.symmetry_turning = false;
+        self.symmetry_step = None;
+        *self.symmetry_doc.borrow_mut() = None;
         if self.symmetry_edit.take().is_some() {
             self.status.clear();
+            self.raster.borrow_mut().invalidate();
         }
     }
 
     /// The object whose symmetry is being edited, while it still has one;
-    /// the mode ends when it is gone or lost its symmetry.
+    /// the mode ends when it is gone or lost its symmetry. A group
+    /// remade by an Undo (see [`App::join_symmetry`]) hands the mode to
+    /// the page's symmetry object when there is one alone.
     pub fn symmetry_editing(&mut self) -> Option<ShapeId> {
         let id = self.symmetry_edit?;
-        let alive = self.doc().find_shape(id).is_some_and(|s| {
+        let has = |s: &tracedraw_core::Shape| {
             s.effects
                 .iter()
                 .any(|e| matches!(e, Effect::Symmetry { .. }))
-        });
-        if !alive {
-            self.symmetry_edit = None;
-            return None;
+        };
+        if self.doc().find_shape(id).is_some_and(has) {
+            return Some(id);
         }
-        Some(id)
+        let mut with: Vec<ShapeId> = self
+            .page_layers()
+            .into_iter()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| has(s))
+            .map(|s| s.id)
+            .collect();
+        if with.len() == 1 {
+            let only = with.remove(0);
+            self.symmetry_edit = Some(only);
+            return Some(only);
+        }
+        self.symmetry_edit = None;
+        None
     }
 
     /// Object > Symmetry > Break Symmetry Link (Alt+X): the copies become
@@ -586,41 +771,6 @@ impl App {
                 _ => None,
             })
         })
-    }
-
-    /// Update the symmetry parameters of every selected object that has one.
-    pub fn set_symmetry(&mut self, center: Point, angle: f64, lines: u8) {
-        for s in self.selected_shapes() {
-            if !s
-                .effects
-                .iter()
-                .any(|e| matches!(e, Effect::Symmetry { .. }))
-            {
-                continue;
-            }
-            let effects = s
-                .effects
-                .iter()
-                .map(|e| match e {
-                    Effect::Symmetry { .. } => Effect::Symmetry {
-                        center,
-                        angle,
-                        lines,
-                    },
-                    other => other.clone(),
-                })
-                .collect();
-            if self.engine.undo_label() == Some("Symmetry") {
-                let _ = self.engine.undo();
-            }
-            let _ = self.engine.run_with_label(
-                &Command::SetEffects {
-                    shape: s.id,
-                    effects,
-                },
-                "Symmetry",
-            );
-        }
     }
 
     /// Object > Symmetry > Remove Symmetry: the copies disappear.
@@ -777,6 +927,108 @@ impl App {
             return;
         }
         self.place_inside(contents, frame);
+        self.select(vec![frame]);
+    }
+
+    /// The clip frame bar's Select Contents: the frame's contents become
+    /// the selection (as Ctrl+click picks them), with their round
+    /// handles.
+    pub fn select_clip_contents(&mut self, clip: ShapeId) {
+        let ids: Vec<ShapeId> = match self.doc().find_shape(clip).map(|s| &s.kind) {
+            Some(ShapeKind::ClipFrame { contents, .. }) => contents.iter().map(|c| c.id).collect(),
+            _ => Vec::new(),
+        };
+        if !ids.is_empty() {
+            self.select(ids);
+        }
+    }
+
+    /// The clip frame bar's Fit Contents: the contents moved (and
+    /// scaled) to the frame's box as `mode` says; one undo step.
+    pub fn fit_clip_contents(&mut self, clip: ShapeId, mode: crate::ui::clip_bar::FitContents) {
+        let (frame_bounds, ids) = match self.doc().find_shape(clip) {
+            Some(s) => match &s.kind {
+                ShapeKind::ClipFrame { contents, .. } => (
+                    self.doc()
+                        .shape_on_page(clip)
+                        .map(|c| c.bounds())
+                        .unwrap_or_default(),
+                    contents.iter().map(|c| c.id).collect::<Vec<_>>(),
+                ),
+                _ => return,
+            },
+            None => return,
+        };
+        let Some(contents_bounds) = ids
+            .iter()
+            .filter_map(|id| self.doc().shape_on_page(*id).map(|s| s.bounds()))
+            .reduce(|a, b| a.union(b))
+        else {
+            return;
+        };
+        let t = fit_contents_transform(contents_bounds, frame_bounds, mode);
+        if t == Affine::IDENTITY {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch(
+            "Fit Contents",
+            &[Command::TransformShapes {
+                shapes: ids,
+                transform: t,
+            }],
+        ) {
+            self.status = e.to_string();
+        }
+    }
+
+    /// What the renderer draws in full while the rest fades: the object
+    /// in focus (focus mode), or the frame and the contents being edited
+    /// (Edit Contents).
+    pub fn render_focus(&self) -> Option<(Vec<ShapeId>, f32)> {
+        if let Some((frame, ids)) = &self.clip_frame_edit {
+            let mut all = vec![*frame];
+            all.extend(ids.iter().copied());
+            return Some((all, CLIP_EDIT_VISIBILITY));
+        }
+        self.focus_target()
+            .map(|id| (vec![id], self.focus_visibility()))
+    }
+
+    /// The clip frame under `p` (page) that is not part of the selection
+    /// being moved, for a drop into it.
+    pub fn frame_under_pointer(&self, p: Point) -> Option<ShapeId> {
+        let doc = self.doc();
+        let moved = |id: ShapeId| {
+            self.selection.contains(&id)
+                || doc
+                    .top_level_of(id)
+                    .is_some_and(|t| self.selection.contains(&t))
+        };
+        let hit = self.hit_test_where(p, moved)?;
+        let top = doc.top_level_of(hit)?;
+        matches!(
+            doc.find_shape(top).map(|s| &s.kind),
+            Some(ShapeKind::ClipFrame { .. })
+        )
+        .then_some(top)
+    }
+
+    /// The selection dropped on a clip frame with K held: the frame's
+    /// contents give way to it (they are deleted); one undo step.
+    pub fn replace_clip_contents(&mut self, contents: Vec<ShapeId>, frame: ShapeId) {
+        let old: Vec<ShapeId> = match self.doc().find_shape(frame).map(|s| &s.kind) {
+            Some(ShapeKind::ClipFrame { contents, .. }) => contents.iter().map(|c| c.id).collect(),
+            _ => return,
+        };
+        let mut cmds = Vec::new();
+        if !old.is_empty() {
+            cmds.push(Command::ExtractContents { clip: frame });
+            cmds.push(Command::DeleteShapes { shapes: old });
+        }
+        cmds.push(Command::PlaceInside { contents, frame });
+        if let Err(e) = self.engine.run_batch("Place Inside Frame", &cmds) {
+            self.status = format!("ClipFrame: {e}");
+        }
         self.select(vec![frame]);
     }
 
@@ -1457,7 +1709,79 @@ impl App {
             .collect()
     }
 
-    /// Text > Edit Text: start in-place editing of the selected text.
+    /// Text > Edit Text (Ctrl+Shift+T, the text bar's button, the object's
+    /// menu): the Edit Text dialog with the first selected text's
+    /// characters (#355). A double click edits the text in place instead.
+    pub fn open_edit_text_dialog(&mut self) {
+        if let Some(s) = self.text_shapes().first() {
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                return;
+            };
+            self.finish_text();
+            self.dialog = crate::ui::dialogs::Dialog::EditText {
+                shape: s.id,
+                text: tracedraw_core::spans_text(spans),
+            };
+        }
+    }
+
+    /// The text object `id` gets the characters `text`, as one undo step
+    /// ("Edit Text"): the characters before and after the part that
+    /// changed keep their own formatting, and the new part takes the
+    /// formatting of the character before it.
+    pub fn set_text_content(&mut self, id: ShapeId, text: &str) {
+        let Some(ShapeKind::Text {
+            spans,
+            origin,
+            frame,
+            align,
+            para,
+            on_path,
+        }) = self.doc().find_shape(id).map(|s| s.kind.clone())
+        else {
+            return;
+        };
+        let old: Vec<char> = tracedraw_core::spans_text(&spans).chars().collect();
+        let new: Vec<char> = text.chars().collect();
+        if old == new {
+            return;
+        }
+        let mut spans = spans;
+        // Each run of characters removed or added, in place: what stays
+        // keeps its formatting and an addition takes the formatting of
+        // the character before it.
+        let mut pos = 0;
+        for op in char_edits(&old, &new) {
+            match op {
+                CharEdit::Keep(n) => pos += n,
+                CharEdit::Remove(n) => tracedraw_core::spans_delete(&mut spans, pos, pos + n),
+                CharEdit::Add(s) => {
+                    tracedraw_core::spans_insert(&mut spans, pos, &s);
+                    pos += s.chars().count();
+                }
+            }
+        }
+        let kind = ShapeKind::Text {
+            spans,
+            origin,
+            frame,
+            align,
+            para,
+            on_path,
+        };
+        if let Err(e) = self
+            .engine
+            .run_with_label(&Command::SetShapeKind { shape: id, kind }, "Edit Text")
+        {
+            self.status = e.to_string();
+            return;
+        }
+        if self.is_linked_frame(id) {
+            self.reflow_chain(id);
+        }
+    }
+
+    /// A double click on a text: start in-place editing of the selected text.
     pub fn edit_selected_text(&mut self) {
         if let Some(s) = self.text_shapes().first() {
             let id = s.id;
@@ -3062,6 +3386,227 @@ mod tests {
     }
 }
 
+/// How much of the rest of the page shows while a clip frame's contents
+/// are edited (the frame and its contents are drawn in full).
+pub const CLIP_EDIT_VISIBILITY: f32 = 0.25;
+
+/// The page transform that takes `contents` (its box) to `frame` as the
+/// Fit Contents `mode` says: centred without scaling, scaled alike to fit
+/// inside or to cover, or stretched to the box. The identity for an
+/// empty box.
+pub fn fit_contents_transform(
+    contents: Rect,
+    frame: Rect,
+    mode: crate::ui::clip_bar::FitContents,
+) -> Affine {
+    use crate::ui::clip_bar::FitContents;
+    if contents.width() < 1e-9 || contents.height() < 1e-9 {
+        return Affine::IDENTITY;
+    }
+    let (sx, sy) = match mode {
+        FitContents::Center => (1.0, 1.0),
+        FitContents::FitProportionally => {
+            let s = (frame.width() / contents.width()).min(frame.height() / contents.height());
+            (s, s)
+        }
+        FitContents::FillProportionally => {
+            let s = (frame.width() / contents.width()).max(frame.height() / contents.height());
+            (s, s)
+        }
+        FitContents::Stretch => (
+            frame.width() / contents.width(),
+            frame.height() / contents.height(),
+        ),
+    };
+    let c = contents.center();
+    let f = frame.center();
+    Affine::translate(f.to_vec2())
+        * Affine::scale_non_uniform(sx, sy)
+        * Affine::translate(-c.to_vec2())
+}
+
+#[cfg(test)]
+mod clip_frame_tests {
+    use super::fit_contents_transform;
+    use crate::app::App;
+    use crate::ui::clip_bar::FitContents;
+    use tracedraw_core::geometry::{Rect, Shape as _};
+    use tracedraw_core::{ShapeId, ShapeKind};
+
+    fn rect(app: &mut App, r: Rect) -> ShapeId {
+        app.new_shape(ShapeKind::Rect {
+            rect: r,
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("a layer")
+    }
+
+    /// The four ways of fitting contents to a frame, and the bar's
+    /// commands on a clip frame: the contents picked, fitted as one undo
+    /// step.
+    #[test]
+    fn contents_fit_the_frame_four_ways() {
+        let frame = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let contents = Rect::new(200.0, 200.0, 240.0, 220.0);
+        let moved = |m: FitContents| -> Rect {
+            (fit_contents_transform(contents, frame, m) * contents.to_path(0.01)).bounding_box()
+        };
+        let near = |a: Rect, b: Rect| {
+            (a.x0 - b.x0).abs() < 1e-9
+                && (a.y0 - b.y0).abs() < 1e-9
+                && (a.x1 - b.x1).abs() < 1e-9
+                && (a.y1 - b.y1).abs() < 1e-9
+        };
+        assert!(near(
+            moved(FitContents::Center),
+            Rect::new(30.0, 15.0, 70.0, 35.0)
+        ));
+        // Fit: 40 x 20 scaled by 2.5 (the height's limit) to 100 x 50.
+        assert!(near(moved(FitContents::FitProportionally), frame));
+        // A taller box: fit by the height, fill by the width.
+        let tall = Rect::new(0.0, 0.0, 10.0, 20.0);
+        let fit = (fit_contents_transform(tall, frame, FitContents::FitProportionally)
+            * tall.to_path(0.01))
+        .bounding_box();
+        assert!(near(fit, Rect::new(37.5, 0.0, 62.5, 50.0)), "{fit:?}");
+        let fill = (fit_contents_transform(tall, frame, FitContents::FillProportionally)
+            * tall.to_path(0.01))
+        .bounding_box();
+        assert!(near(fill, Rect::new(0.0, -75.0, 100.0, 125.0)), "{fill:?}");
+        assert!(near(moved(FitContents::Stretch), frame));
+        assert_eq!(
+            fit_contents_transform(Rect::ZERO, frame, FitContents::Stretch),
+            tracedraw_core::geometry::Affine::IDENTITY
+        );
+
+        let mut app = App::headless();
+        let f = rect(&mut app, Rect::new(10.0, 10.0, 110.0, 60.0));
+        let a = rect(&mut app, Rect::new(200.0, 200.0, 220.0, 210.0));
+        let b = rect(&mut app, Rect::new(220.0, 200.0, 240.0, 220.0));
+        app.settings.clip_frame.auto_center = crate::settings::AutoCenter::Never;
+        app.place_inside(vec![a, b], f);
+        let clip = app.doc().top_level_of(a).expect("clip");
+        app.select_clip_contents(clip);
+        assert_eq!(app.selection, vec![a, b]);
+        assert!(app.selection_nested());
+        let depth = app.engine.history_labels().0.len();
+        app.fit_clip_contents(clip, FitContents::Stretch);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let bounds = [a, b]
+            .iter()
+            .map(|id| app.doc().shape_on_page(*id).expect("inside").bounds())
+            .reduce(|x, y| x.union(y))
+            .expect("bounds");
+        assert!(
+            near(bounds, Rect::new(10.0, 10.0, 110.0, 60.0)),
+            "{bounds:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod symmetry_tests {
+    use crate::app::App;
+    use tracedraw_core::geometry::Rect;
+    use tracedraw_core::live::Effect;
+    use tracedraw_core::{ShapeId, ShapeKind};
+
+    fn rect(app: &mut App, r: Rect) -> ShapeId {
+        app.new_shape(ShapeKind::Rect {
+            rect: r,
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("a layer")
+    }
+
+    fn has_symmetry(app: &App, id: ShapeId) -> bool {
+        app.doc().find_shape(id).is_some_and(|s| {
+            s.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Symmetry { .. }))
+        })
+    }
+
+    fn members(app: &App, g: ShapeId) -> Vec<ShapeId> {
+        match app.doc().find_shape(g).map(|s| &s.kind) {
+            Some(ShapeKind::Group { children }) => children.iter().map(|c| c.id).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Several objects become one symmetry group in one step, each still
+    /// to be picked inside it; an object drawn, pasted or duplicated
+    /// while the symmetry is edited joins the group, folded into the step
+    /// that made it; a lone object with a symmetry becomes a group when
+    /// another joins it.
+    #[test]
+    fn a_symmetry_takes_several_objects_and_those_made_while_editing() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(10.0, 10.0, 30.0, 30.0));
+        let b = rect(&mut app, Rect::new(40.0, 10.0, 60.0, 30.0));
+        app.select(vec![a, b]);
+        let depth = app.engine.history_labels().0.len();
+        app.create_symmetry();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "one step");
+        let g = app.symmetry_edit.expect("editing the symmetry");
+        assert!(has_symmetry(&app, g));
+        assert_eq!(members(&app, g), vec![a, b]);
+        assert!(!has_symmetry(&app, a) && !has_symmetry(&app, b));
+        // Picked inside: nested, so the handles are round.
+        app.select(vec![a]);
+        assert!(app.selection_nested());
+        // Drawn while editing: in the group, one step with the drawing.
+        let depth = app.engine.history_labels().0.len();
+        let c = rect(&mut app, Rect::new(10.0, 40.0, 30.0, 60.0));
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let g2 = app.symmetry_edit.expect("still editing");
+        assert_eq!(members(&app, g2), vec![a, b, c]);
+        assert!(has_symmetry(&app, g2));
+        assert_eq!(app.selection, vec![c]);
+        assert_eq!(
+            app.doc()
+                .all_layers()
+                .flat_map(|l| &l.shapes)
+                .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+                .count(),
+            1,
+            "one group on the page"
+        );
+        // Undo takes the drawing and its joining back together; the mode
+        // stays on the group as remade.
+        app.undo();
+        let g = app.symmetry_editing().expect("editing the symmetry");
+        assert_eq!(members(&app, g), vec![a, b]);
+        assert!(app.doc().find_shape(c).is_none());
+        // Duplicated while editing: the copy joins too.
+        app.select(vec![a]);
+        app.duplicate();
+        let g3 = app.symmetry_edit.expect("still editing");
+        assert_eq!(members(&app, g3).len(), 3);
+        app.finish_symmetry_edit();
+
+        // A lone object with a symmetry: another drawn while editing it
+        // makes the two a group holding the symmetry.
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(10.0, 10.0, 30.0, 30.0));
+        app.select(vec![a]);
+        app.create_symmetry();
+        assert_eq!(app.symmetry_edit, Some(a));
+        let b = rect(&mut app, Rect::new(10.0, 40.0, 30.0, 60.0));
+        let g = app.symmetry_edit.expect("editing");
+        assert_ne!(g, a);
+        assert_eq!(members(&app, g), vec![a, b]);
+        assert!(has_symmetry(&app, g) && !has_symmetry(&app, a));
+        // Not editing: a new object stays on its own.
+        app.finish_symmetry_edit();
+        let c = rect(&mut app, Rect::new(70.0, 10.0, 80.0, 20.0));
+        assert_eq!(members(&app, g), vec![a, b]);
+        assert!(app.doc().top_level_of(c) == Some(c));
+    }
+}
+
 #[cfg(test)]
 mod fit_page_tests {
     use crate::app::App;
@@ -3114,9 +3659,192 @@ mod fit_page_tests {
             (bb.x1 - 90.0).abs() < 1e-9 && (bb.y1 - 70.0).abs() < 1e-9,
             "{bb:?}"
         );
+        // Autofit Page with a margin: the page is larger by the margin on
+        // every side and the drawing sits that far in; a margin that is
+        // not a number counts as none.
+        app.undo();
+        app.fit_page_to_drawing_with_margin(5.0);
+        let size = app.page_size();
+        assert!(
+            (size.width - 100.0).abs() < 1e-9 && (size.height - 80.0).abs() < 1e-9,
+            "{size:?}"
+        );
+        let ba = bounds(&app, a);
+        assert!(
+            (ba.x0 - 5.0).abs() < 1e-9 && (ba.y0 - 5.0).abs() < 1e-9,
+            "{ba:?}"
+        );
+        app.undo();
+        app.fit_page_to_drawing_with_margin(f64::NAN);
+        assert!((app.page_size().width - 90.0).abs() < 1e-9);
         // Nothing selected: Fit Page to Selection does nothing.
         let before = app.engine.history_labels().0.len();
         app.fit_page_to_selection();
         assert_eq!(app.engine.history_labels().0.len(), before);
+    }
+}
+
+/// One step of turning one text into another (see [`char_edits`]).
+#[derive(Debug, Clone, PartialEq)]
+enum CharEdit {
+    Keep(usize),
+    Remove(usize),
+    Add(String),
+}
+
+/// The steps that turn `old` into `new`, keeping the longest common
+/// subsequence of characters (beyond 4 million comparisons, only the
+/// common start and end are kept).
+fn char_edits(old: &[char], new: &[char]) -> Vec<CharEdit> {
+    let head = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let tail = old[head..]
+        .iter()
+        .rev()
+        .zip(new[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (a, b) = (&old[head..old.len() - tail], &new[head..new.len() - tail]);
+    let mut out = Vec::new();
+    let mut push = |e: CharEdit| match (out.last_mut(), e) {
+        (Some(CharEdit::Keep(n)), CharEdit::Keep(m)) => *n += m,
+        (Some(CharEdit::Remove(n)), CharEdit::Remove(m)) => *n += m,
+        (Some(CharEdit::Add(s)), CharEdit::Add(t)) => s.push_str(&t),
+        (_, e) => out.push(e),
+    };
+    if head > 0 {
+        push(CharEdit::Keep(head));
+    }
+    if a.len().saturating_mul(b.len()) > 4_000_000 {
+        if !a.is_empty() {
+            push(CharEdit::Remove(a.len()));
+        }
+        if !b.is_empty() {
+            push(CharEdit::Add(b.iter().collect()));
+        }
+    } else {
+        // lcs[i][j]: the longest common subsequence of a[i..] and b[j..].
+        let w = b.len() + 1;
+        let mut lcs = vec![0u32; (a.len() + 1) * w];
+        for i in (0..a.len()).rev() {
+            for j in (0..b.len()).rev() {
+                lcs[i * w + j] = if a[i] == b[j] {
+                    lcs[(i + 1) * w + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() || j < b.len() {
+            if i < a.len() && j < b.len() && a[i] == b[j] {
+                push(CharEdit::Keep(1));
+                i += 1;
+                j += 1;
+            } else if j < b.len() && (i == a.len() || lcs[i * w + j + 1] >= lcs[(i + 1) * w + j]) {
+                push(CharEdit::Add(b[j].to_string()));
+                j += 1;
+            } else {
+                push(CharEdit::Remove(1));
+                i += 1;
+            }
+        }
+    }
+    if tail > 0 {
+        push(CharEdit::Keep(tail));
+    }
+    out
+}
+
+#[cfg(test)]
+mod text_dialog_tests {
+    use crate::app::App;
+    use crate::ui::dialogs::Dialog;
+    use tracedraw_core::{document::ShapeKind, geometry::Point, TextSpan};
+
+    #[test]
+    fn char_edits_keep_what_both_texts_share() {
+        use super::{char_edits, CharEdit};
+        let c = |s: &str| s.chars().collect::<Vec<_>>();
+        assert_eq!(
+            char_edits(&c("Hello world"), &c("Hello big world!")),
+            vec![
+                CharEdit::Keep(6),
+                CharEdit::Add("big ".into()),
+                CharEdit::Keep(5),
+                CharEdit::Add("!".into())
+            ]
+        );
+        assert_eq!(
+            char_edits(&c("abc"), &c("ac")),
+            vec![CharEdit::Keep(1), CharEdit::Remove(1), CharEdit::Keep(1)]
+        );
+        assert_eq!(char_edits(&c(""), &c("x")), vec![CharEdit::Add("x".into())]);
+        assert_eq!(char_edits(&c("x"), &c("")), vec![CharEdit::Remove(1)]);
+    }
+
+    /// Text > Edit Text opens the dialog with the text; OK keeps the
+    /// formatting of the characters that did not change (#355).
+    #[test]
+    fn the_edit_text_dialog_keeps_the_formatting_of_what_did_not_change() {
+        let mut app = App::headless();
+        let mut bold = TextSpan::new("Hello ", "Sans", 20.0);
+        bold.bold = true;
+        let plain = TextSpan::new("world", "Sans", 12.0);
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![bold, plain],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: tracedraw_core::document::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.open_edit_text_dialog();
+        let Dialog::EditText { shape, text } = &app.dialog else {
+            panic!("no dialog: {:?}", std::mem::discriminant(&app.dialog));
+        };
+        assert_eq!((*shape, text.as_str()), (id, "Hello world"));
+        let depth = app.engine.history_labels().0.len();
+        app.set_text_content(id, "Hello big world!");
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+        let ShapeKind::Text { spans, .. } = app.doc().find_shape(id).expect("text").kind.clone()
+        else {
+            panic!("text");
+        };
+        // "Hello " stays bold at 20 pt; "big " (typed after the bold
+        // space) takes its style; "world" stays plain, "!" follows it.
+        let styled: Vec<(String, bool, f64)> = spans
+            .iter()
+            .map(|s| (s.text.clone(), s.bold, s.size_pt))
+            .collect();
+        assert_eq!(
+            styled,
+            vec![
+                ("Hello big ".to_string(), true, 20.0),
+                ("world!".to_string(), false, 12.0)
+            ]
+        );
+        // The same text: nothing to do.
+        app.set_text_content(id, "Hello big world!");
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        // The dialog draws.
+        let ctx = crate::theme::ui_context();
+        app.open_edit_text_dialog();
+        app.show_welcome = false;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+            out.textures_delta.clear();
+        }
+        assert!(matches!(app.dialog, Dialog::EditText { .. }));
     }
 }

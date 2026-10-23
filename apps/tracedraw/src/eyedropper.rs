@@ -90,12 +90,15 @@ impl App {
         None
     }
 
-    /// The colour under `p`: a bitmap pixel (averaged over the sample box),
-    /// else the solid fill (first stop of a fountain), else the outline.
+    /// The colour under `p`, locked objects included: a bitmap pixel
+    /// (averaged over the sample box), else the solid fill (first stop of
+    /// a fountain), else the outline.
     /// With `outline` the outline colour is read first.
+    /// The object read is the innermost one under `p`: a group's child, a
+    /// clip frame's content (#403: a picture in a frame gave nothing).
     pub fn sample_color_at(&self, p: Point, outline: bool) -> Option<Color> {
-        let id = self.hit_test(p)?;
-        let (_, s) = self.doc().shape(id).ok()?;
+        let s = self.leaf_to_read(p)?;
+        let s = &s;
         if outline {
             if let Some(st) = &s.stroke {
                 return Some(st.color);
@@ -111,7 +114,8 @@ impl App {
         {
             let lp = s.transform.inverse() * p;
             if rect.contains(lp) && rect.width() > 0.0 && rect.height() > 0.0 {
-                if let Some(img) = crate::bitmap_fx::decode(png) {
+                // Pictures keep the bytes they came with: PNG, JPEG and others.
+                if let Some(img) = image::load_from_memory(png).ok().map(|i| i.to_rgba8()) {
                     let fx = (lp.x - rect.x0) / rect.width() * *width_px as f64;
                     let fy = (rect.y1 - lp.y) / rect.height() * *height_px as f64;
                     let n = self.eyedropper_sample.max(1) as i64;
@@ -172,9 +176,10 @@ impl App {
         true
     }
 
-    /// Read every attribute group from the object under `p`.
+    /// Read every attribute group from the object under `p` (locked
+    /// objects included).
     pub fn sample_attrs_at(&self, p: Point) -> Option<SampledAttrs> {
-        let id = self.hit_test(p)?;
+        let id = self.hit_test_to_read(p)?;
         let (_, s) = self.doc().shape(id).ok()?;
         let b = s.bounds();
         let text = match &s.kind {
@@ -367,6 +372,57 @@ mod tests {
         );
     }
 
+    /// Both eyedroppers read from a locked object (and from an object on
+    /// a locked layer); applying to a locked object stays blocked (#365).
+    #[test]
+    fn eyedroppers_read_from_locked_objects_but_never_write_to_them() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(Color::rgb8(10, 120, 200)),
+        });
+        app.run(Command::SetLocked {
+            shapes: vec![a, b],
+            locked: true,
+        });
+        app.select(Vec::new());
+        // The colour eyedropper.
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false);
+        assert_eq!(app.eyedropper_color, Some(Color::rgb8(10, 120, 200)));
+        // The document palette's eyedropper reads the same.
+        assert_eq!(
+            app.sample_color_at(Point::new(5.0, 5.0), false),
+            Some(Color::rgb8(10, 120, 200))
+        );
+        // The attributes eyedropper.
+        let attrs = app
+            .sample_attrs_at(Point::new(5.0, 5.0))
+            .expect("attributes");
+        assert_eq!(attrs.fill, Fill::Solid(Color::rgb8(10, 120, 200)));
+        // Applying to the locked object does nothing.
+        let before = app.doc().find_shape(b).expect("b").fill.clone();
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false);
+        assert_eq!(app.doc().find_shape(b).expect("b").fill, before);
+        // An object on a locked layer is read as well.
+        app.run(Command::SetLocked {
+            shapes: vec![a, b],
+            locked: false,
+        });
+        let layer = app.doc().pages[0].layers[0].id;
+        app.run(Command::SetLayerLocked {
+            layer,
+            locked: true,
+        });
+        assert_eq!(
+            app.sample_color_at(Point::new(5.0, 5.0), false),
+            Some(Color::rgb8(10, 120, 200))
+        );
+        // Selection still ignores locked objects.
+        assert_eq!(app.hit_test(Point::new(5.0, 5.0)), None);
+    }
+
     #[test]
     fn attributes_eyedropper_copies_ticked_groups_only() {
         let mut app = App::headless();
@@ -402,6 +458,88 @@ mod tests {
         app.eyedropper_click(Point::new(45.0, 5.0), true, true);
         let s = app.eyedropper_attrs.as_ref().expect("sample");
         assert!((s.height - 20.0).abs() < 1e-6);
+    }
+
+    /// Pictures give their pixels: placed alone, in a group, inside a clip
+    /// frame, and kept as JPEG bytes (#403: pictures gave no colour).
+    #[test]
+    fn pictures_give_their_pixels_wherever_they_are() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        // Left half red, right half blue.
+        let img = image::RgbaImage::from_fn(20, 20, |x, _| {
+            if x < 10 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        });
+        let id = app.place_image_at(img, None, None).expect("picture");
+        let b = app.doc().find_shape(id).unwrap().bounds();
+        let left = Point::new(b.x0 + b.width() * 0.25, b.center().y);
+        let right = Point::new(b.x0 + b.width() * 0.75, b.center().y);
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        assert_eq!(app.sample_color_at(left, false), Some(red));
+        assert_eq!(app.sample_color_at(right, false), Some(blue));
+        // In a group with a rectangle beside it.
+        let r = rect(&mut app, Rect::new(b.x1 + 10.0, b.y0, b.x1 + 20.0, b.y1));
+        app.select(vec![id, r]);
+        app.group_selection();
+        assert_eq!(app.sample_color_at(left, false), Some(red));
+        assert_eq!(app.sample_color_at(right, false), Some(blue));
+        app.undo();
+        // Inside a clip frame covering it.
+        let frame = rect(&mut app, b.inflate(2.0, 2.0));
+        app.run(Command::PlaceInside {
+            contents: vec![id],
+            frame,
+        });
+        assert!(
+            matches!(
+                app.doc().find_shape(frame).map(|s| &s.kind),
+                Some(ShapeKind::ClipFrame { .. })
+            ),
+            "placed inside"
+        );
+        assert_eq!(app.sample_color_at(left, false), Some(red));
+        assert_eq!(app.sample_color_at(right, false), Some(blue));
+        // The frame out again, and the rectangle that was to be it.
+        app.undo();
+        app.undo();
+        // A picture kept as JPEG bytes (as imported files carry them).
+        let mut jpeg = Vec::new();
+        let green = image::RgbImage::from_pixel(16, 16, image::Rgb([0, 200, 0]));
+        image::DynamicImage::ImageRgb8(green)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        if let Some(ShapeKind::Bitmap {
+            rect,
+            width_px,
+            height_px,
+            fx,
+            ..
+        }) = app.doc().find_shape(id).map(|s| s.kind.clone())
+        {
+            app.run(Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Bitmap {
+                    rect,
+                    width_px,
+                    height_px,
+                    png: jpeg.into(),
+                    fx,
+                },
+            });
+        }
+        let c = app
+            .sample_color_at(left, false)
+            .expect("a colour")
+            .to_rgb8();
+        assert!(c[0] < 20 && c[1] > 180 && c[2] < 20, "{c:?}");
     }
 
     #[test]

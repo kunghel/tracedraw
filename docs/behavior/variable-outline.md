@@ -1,7 +1,8 @@
 # Variable Outline tool
 
-The Variable Outline tool (Shape tool flyout) makes an outline thicker
-or thinner along its length with width nodes.
+The Variable Outline tool (its own button at the bottom of the toolbox,
+after the Fill flyout) makes an outline thicker or thinner along its
+length with width nodes.
 
 ## Using it
 
@@ -10,10 +11,15 @@ or thinner along its length with width nodes.
   selects the object under the pointer.
 - Drag across the outline: a width node is added where the drag starts
   (or the node under the pointer is picked) and the outline reaches to
-  the pointer on both sides. With Alt held at the start of the drag,
-  only the side the pointer is on changes.
+  the pointer on both sides. With Shift (or Alt) held at the start of
+  the drag, only the side the pointer is on changes (#374).
+- Picking several nodes: Shift+click picks the nodes from the picked one
+  to the one clicked; Ctrl+click adds a node or takes it out; a plain
+  click picks one alone. A drag that starts on a picked node changes
+  every picked node the same way, and the property bar's widths set
+  them all (`shift_and_ctrl_pick_nodes_and_shift_drags_one_side`).
 - Each drag is one undo step.
-- Delete (or Backspace) removes the picked node. An object with no
+- Delete (or Backspace) removes the picked nodes, one step. An object with no
   outline gets a hairline one when its first node is added.
 
 ## Property bar

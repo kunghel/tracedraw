@@ -6,6 +6,9 @@ bar: **select** (take a sample) and **apply** (paint with it). After a
 sample, the tool switches to apply; click the select button to sample again.
 <kbd>Esc</kbd> drops the sample and goes back to the [[tool.pick]] tool.
 
+The pointer is a pipette while the tool samples and a paint bucket while it
+applies. Pictures give their color even inside a group or a frame.
+
 ## Color Eyedropper {#color-eyedropper}
 
 1. Choose the [[tool.color_eyedropper]] tool.

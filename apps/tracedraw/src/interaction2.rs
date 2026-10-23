@@ -181,10 +181,14 @@ impl App {
             }
             Tool::MeshFill => self.mesh_tool_input(response, p),
             Tool::OutlinePen => {
-                self.set_tool(Tool::Pick);
-                self.show_dockers = true;
-                self.docker_tab = crate::app::DockerTab::Properties;
-                self.properties_open = Some(1);
+                // The tool opens the Outline Pen dialog and gives the
+                // canvas back to the tool before it.
+                let back = match self.previous_tool {
+                    Tool::OutlinePen | Tool::OutlineColor => Tool::Pick,
+                    t => t,
+                };
+                self.set_tool(back);
+                self.open_outline_pen();
             }
             Tool::OutlineColor => {
                 self.set_tool(Tool::Pick);

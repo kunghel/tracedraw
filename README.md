@@ -360,6 +360,10 @@ New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then
 > Issues with a sample file and a screenshot are the most helpful; there
 > are [templates](https://github.com/igtoth/tracedraw/issues/new/choose)
 > for bugs, `.cdr` files and feature requests.
+>
+> Issues are looked at every day, in the maintainer's spare time, so
+> expect some delay; each one is answered and worked on as soon as
+> possible.
 
 ## Help wanted
 
@@ -385,6 +389,11 @@ Anyone who wants to help is welcome, with or without writing code:
   "works" yet, or a gap in [`docs/blueprint-gaps.md`](docs/blueprint-gaps.md),
   and send a pull request.
 - **Package it** for the system you use (Flatpak, Homebrew, winget, AUR).
+
+**A contributors team is planned:** people who help regularly (fixes,
+sample files, tests against the reference program, translations) will
+be invited into a team, with a ranking that shows who helped most. If
+you would like to be part of it, say so in an issue.
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: clean-room rules, the
 sign-off line and how pull requests are checked.

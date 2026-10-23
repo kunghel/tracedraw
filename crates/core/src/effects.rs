@@ -222,12 +222,16 @@ pub fn subpaths(path: &BezPath) -> Vec<(BezPath, bool)> {
 /// of the nib: the points there do not move, so the rebuilt stretch
 /// joins the kept curve smoothly.
 const REACH_MARGIN: f64 = 0.25;
+/// A piece of a segment out of reach shorter than this share of the
+/// reach is rebuilt along with the piece in reach, so a stroke does not
+/// leave a node at every step.
+const LEFTOVER_SHARE: f64 = 1.5;
 
 /// The pieces of `seg` by whether they lie within `reach` of `at`: the
 /// stretch within reach (one piece, from the first place in reach to the
 /// last) and what lies before and after it, kept as it is.
 fn pieces_in_reach(seg: kurbo::PathSeg, at: Point, reach: f64) -> Vec<(kurbo::PathSeg, bool)> {
-    use kurbo::ParamCurve as _;
+    use kurbo::{ParamCurve as _, ParamCurveArclen as _};
     const SAMPLES: usize = 32;
     let inside = |t: f64| (seg.eval(t) - at).hypot() <= reach;
     let ts: Vec<f64> = (0..=SAMPLES).map(|k| k as f64 / SAMPLES as f64).collect();
@@ -237,8 +241,18 @@ fn pieces_in_reach(seg: kurbo::PathSeg, at: Point, reach: f64) -> Vec<(kurbo::Pa
         return vec![(seg, false)];
     };
     // One sample out on each side, so the piece holds the crossing.
-    let t0 = ts[a.saturating_sub(1)];
-    let t1 = ts[(b + 1).min(SAMPLES)];
+    let mut t0 = ts[a.saturating_sub(1)];
+    let mut t1 = ts[(b + 1).min(SAMPLES)];
+    // A leftover shorter than [`LEFTOVER_SHARE`] of the reach joins the
+    // touched piece: otherwise a stroke that advances step by step leaves
+    // a cut node, and a sliver of the old curve, at every step.
+    let min_leftover = reach * LEFTOVER_SHARE;
+    if t0 > 0.0 && seg.subsegment(0.0..t0).arclen(0.1) < min_leftover {
+        t0 = 0.0;
+    }
+    if t1 < 1.0 && seg.subsegment(t1..1.0).arclen(0.1) < min_leftover {
+        t1 = 1.0;
+    }
     let mut out = Vec::new();
     if t0 > 0.0 {
         out.push((seg.subsegment(0.0..t0), false));
@@ -346,33 +360,19 @@ fn brush_each(
 
 /// How far a brush's rebuilt curve may move when its many small curves
 /// are merged into few, mm.
-const MERGE_ACCURACY: f64 = 0.05;
+const MERGE_ACCURACY: f64 = 0.1;
 
 /// `path` (smooth curves through many close points) with its curves
 /// merged into as few as keep it within [`MERGE_ACCURACY`] (kurbo's curve
 /// fitter), so a brush stroke leaves a handful of nodes, not one every
 /// few millimetres. The path itself when the fit fails.
 fn fewer_curves(path: &BezPath) -> BezPath {
-    use kurbo::simplify::{simplify_bezpath, SimplifyOptLevel, SimplifyOptions};
-    let options = SimplifyOptions::default().opt_level(SimplifyOptLevel::Optimize);
-    let fitted = simplify_bezpath(path.elements().iter().copied(), MERGE_ACCURACY, &options);
-    let sane = !fitted.elements().is_empty()
-        && fitted.elements().iter().all(|e| match *e {
-            PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
-            PathEl::QuadTo(a, p) => a.is_finite() && p.is_finite(),
-            PathEl::CurveTo(a, b, p) => a.is_finite() && b.is_finite() && p.is_finite(),
-            PathEl::ClosePath => true,
-        });
-    if sane {
-        fitted
-    } else {
-        path.clone()
-    }
+    fit_within(path, MERGE_ACCURACY)
 }
 
 /// Push points within `radius` of `at` along `delta` (Smear tool).
 pub fn smear(path: &BezPath, at: Point, delta: Vec2, radius: f64) -> BezPath {
-    brush_each(path, at, radius, radius / 3.0, false, |pts, _| {
+    brush_each(path, at, radius, radius / 6.0, false, |pts, _| {
         pts.into_iter()
             .map(|p| {
                 let d = (p - at).hypot();
@@ -389,7 +389,7 @@ pub fn smear(path: &BezPath, at: Point, delta: Vec2, radius: f64) -> BezPath {
 
 /// Rotate points within `radius` of `at` by up to `angle` (Twirl tool).
 pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
-    brush_each(path, at, radius, radius / 3.0, false, |pts, _| {
+    brush_each(path, at, radius, radius / 6.0, false, |pts, _| {
         pts.into_iter()
             .map(|p| {
                 let v = p - at;
@@ -406,14 +406,94 @@ pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
 }
 
 /// Smooth tool: the stretch of the curve within the nib's reach is
-/// measured into points (a quarter of the nib apart), thinned to the
-/// points that matter within `tolerance` mm (Ramer-Douglas-Peucker, so
-/// jags smaller than that go) and fitted anew as a smooth curve through
-/// them. The rest of the curve is exactly as it was.
+/// measured into close points (half a millimetre apart), each eased
+/// towards the middle of its neighbours by the nib's weight (full at
+/// the centre, none at the edge; the ends stay put) a few times over,
+/// so jags and wobbles melt away a little with every step of the
+/// stroke; then the points that matter within `tolerance` mm are kept
+/// (Ramer-Douglas-Peucker at half of it), a smooth curve is fitted
+/// through them and merged into as few curves as stay within the
+/// tolerance (kurbo's fitter), so the stretch comes back with a handful
+/// of nodes rather than one every few millimetres. The rest of the
+/// curve is exactly as it was.
 pub fn smooth(path: &BezPath, at: Point, radius: f64, tolerance: f64) -> BezPath {
-    brush_each(path, at, radius, radius / 4.0, false, |pts, _| {
-        crate::geometry::simplify(&pts, tolerance.max(1e-3))
+    let tolerance = tolerance.max(1e-3);
+    brush_runs(path, at, radius, |run, closed| {
+        let mut pts = densify(run, SMOOTH_STEP);
+        let n = pts.len();
+        if n < 3 {
+            return run.clone();
+        }
+        let weight = |p: Point| (1.0 - (p - at).hypot() / radius).clamp(0.0, 1.0);
+        let w: Vec<f64> = pts.iter().map(|p| weight(*p)).collect();
+        // Each point goes towards the average of the stretch around it
+        // (a span of the nib's size, nearer points counting more), by
+        // the nib's weight at the point.
+        let span = ((radius * SMOOTH_SPAN) / SMOOTH_STEP).ceil().max(1.0) as usize;
+        let before = pts.clone();
+        for i in 0..n {
+            if w[i] <= 0.0 || (!closed && (i == 0 || i == n - 1)) {
+                continue;
+            }
+            let mut sum = Vec2::ZERO;
+            let mut total = 0.0;
+            for k in 0..=span {
+                let share = 1.0 - k as f64 / (span + 1) as f64;
+                let both = if k == 0 { 1 } else { 2 };
+                for side in 0..both {
+                    let j = if closed {
+                        if side == 0 {
+                            (i + k) % n
+                        } else {
+                            (i + n - k) % n
+                        }
+                    } else if side == 0 {
+                        (i + k).min(n - 1)
+                    } else {
+                        i.saturating_sub(k)
+                    };
+                    sum += before[j].to_vec2() * share;
+                    total += share;
+                }
+            }
+            let mean = (sum / total).to_point();
+            pts[i] = before[i] + (mean - before[i]) * (SMOOTH_EASE * w[i]);
+        }
+        // The points that matter within the tolerance, a smooth curve
+        // through them, and that curve in as few pieces as stay within
+        // the tolerance (the fitter merges curves, not lines).
+        let pts = crate::geometry::simplify(&pts, tolerance * 0.5);
+        fit_within(&crate::geometry::smooth_path(&pts, closed), tolerance)
     })
+}
+
+/// How close the points Smooth works on are, mm.
+const SMOOTH_STEP: f64 = 0.5;
+/// How far along the curve, as a share of the nib's radius, the stretch
+/// a point is eased towards reaches on each side.
+const SMOOTH_SPAN: f64 = 0.25;
+/// How far a point goes towards the average of the stretch around it
+/// each step (times the nib's weight).
+const SMOOTH_EASE: f64 = 0.75;
+
+/// `path` fitted with as few curves as keep within `accuracy` mm of it
+/// (kurbo's fitter); the path itself when the fit fails.
+fn fit_within(path: &BezPath, accuracy: f64) -> BezPath {
+    use kurbo::simplify::{simplify_bezpath, SimplifyOptLevel, SimplifyOptions};
+    let options = SimplifyOptions::default().opt_level(SimplifyOptLevel::Optimize);
+    let fitted = simplify_bezpath(path.elements().iter().copied(), accuracy, &options);
+    let sane = !fitted.elements().is_empty()
+        && fitted.elements().iter().all(|e| match *e {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+            PathEl::QuadTo(a, p) => a.is_finite() && p.is_finite(),
+            PathEl::CurveTo(a, b, p) => a.is_finite() && b.is_finite() && p.is_finite(),
+            PathEl::ClosePath => true,
+        });
+    if sane {
+        fitted
+    } else {
+        path.clone()
+    }
 }
 
 /// Pull (`amount` > 0) or push (< 0) the nodes and control points within
@@ -636,6 +716,56 @@ mod tests {
 
     /// Smooth fits the jagged stretch within the nib with a few curves,
     /// within its tolerance; the rest of the line and the corner stay.
+    /// A wobbly spiral drawn by hand (300 jittered points), smoothed by
+    /// a stroke of 150 steps along it: the stroke leaves a few nodes
+    /// per turn, not one every few millimetres, and the curve stays on
+    /// the spiral instead of wandering (the owner's report: the lines
+    /// came out broken and full of nodes).
+    #[test]
+    fn a_smooth_stroke_along_a_wobbly_spiral_leaves_few_nodes_on_it() {
+        let spiral = |k: usize| -> Point {
+            let t = k as f64 / 300.0;
+            let a = t * 4.0 * std::f64::consts::TAU;
+            let r = 10.0 + 60.0 * t;
+            Point::new(100.0 + r * a.cos(), 100.0 + r * a.sin())
+        };
+        let mut hand = BezPath::new();
+        for k in 0..=300 {
+            let p = spiral(k);
+            // Jitter of up to 0.4 mm, as a shaky hand gives.
+            let j = ((k * 7919) % 17) as f64 / 16.0 - 0.5;
+            let q = Point::new(p.x + 0.8 * j, p.y - 0.8 * j);
+            if k == 0 {
+                hand.move_to(q);
+            } else {
+                hand.line_to(q);
+            }
+        }
+        // A stroke along the spiral: a step every 7 mm or so, as a
+        // pointer moves.
+        let mut out = hand.clone();
+        for k in (0..=300).step_by(2) {
+            out = smooth(&out, spiral(k), 10.0, 0.33);
+        }
+        let nodes = node_points(&out);
+        assert!(nodes.len() < 60, "{} nodes", nodes.len());
+        // On the spiral: every node within a millimetre of it.
+        let off = |p: Point| -> f64 {
+            (0..=3000)
+                .map(|k| {
+                    let t = k as f64 / 3000.0;
+                    let a = t * 4.0 * std::f64::consts::TAU;
+                    let r = 10.0 + 60.0 * t;
+                    (Point::new(100.0 + r * a.cos(), 100.0 + r * a.sin()) - p).hypot()
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        let worst = nodes.iter().map(|p| off(*p)).fold(0.0, f64::max);
+        assert!(worst < 1.0, "a node {worst} mm off the spiral");
+        // The ends, out of the strokes' reach at the start, are as drawn.
+        assert_eq!(nodes[0], node_points(&hand)[0]);
+    }
+
     #[test]
     fn smooth_fits_jagged_lines_within_the_nib() {
         // A jagged line of 60 nodes along y = 0, then a right-angle turn.

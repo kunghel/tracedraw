@@ -90,7 +90,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
         });
         row(ui, &tr("docker.vector_mosaic_angle"), |ui| {
             ui.add(
-                egui::DragValue::new(&mut s.angle)
+                crate::ui::field::NumField::new(&mut s.angle)
                     .range(-90.0..=90.0)
                     .speed(0.5)
                     .max_decimals(1)
@@ -108,7 +108,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
             ui.checkbox(&mut s.limit_colors, tr("docker.vector_mosaic_limit_colors"));
             ui.add_enabled(
                 s.limit_colors,
-                egui::DragValue::new(&mut s.colors).range(2..=256),
+                crate::ui::field::NumField::new(&mut s.colors).range(2..=256),
             );
         });
         section(ui, Some(&tr("docker.vector_mosaic_tracking")));
@@ -123,7 +123,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
                 });
         });
         row(ui, &tr("docker.vector_mosaic_merge"), |ui| {
-            ui.add(egui::DragValue::new(&mut s.merge).range(1..=36));
+            ui.add(crate::ui::field::NumField::new(&mut s.merge).range(1..=36));
         });
         ui.checkbox(&mut s.weld, tr("docker.vector_mosaic_weld"));
     }

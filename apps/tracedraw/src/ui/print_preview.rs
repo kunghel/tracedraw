@@ -172,7 +172,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.checkbox(&mut st.fit_to_page, tr("dialog.fit_to_page"));
                     if !st.fit_to_page {
                         ui.add(
-                            egui::DragValue::new(&mut st.scale)
+                            crate::ui::field::NumField::new(&mut st.scale)
                                 .range(1.0..=1000.0)
                                 .suffix(" %"),
                         );
@@ -187,6 +187,14 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.checkbox(&mut st.color_bars, tr("print.color_bars"));
                 ui.checkbox(&mut st.densitometer, tr("print.densitometer"));
                 ui.checkbox(&mut st.page_info, tr("print.page_info_mark"));
+                if st.info_offset != (0.0, 0.0)
+                    && ui
+                        .small_button(tr("print.info_reset"))
+                        .on_hover_text(tr("print.info_drag_tip"))
+                        .clicked()
+                {
+                    st.info_offset = (0.0, 0.0);
+                }
                 ui.checkbox(&mut st.mirror, tr("dialog.mirror"));
                 ui.checkbox(&mut st.invert, tr("dialog.invert"));
                 ui.separator();
@@ -223,11 +231,29 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
             }
             let size = egui::vec2(w as f32, h as f32);
+            let info = pv.st.page_info;
+            let mut moved: Option<egui::Vec2> = None;
             egui::ScrollArea::both().show(ui, |ui| {
                 let avail = ui
                     .available_size()
                     .max(size + egui::vec2(2.0 * margin, 2.0 * margin));
-                let (r, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                let sense = if info {
+                    egui::Sense::drag()
+                } else {
+                    egui::Sense::hover()
+                };
+                let (r, resp) = ui.allocate_exact_size(avail, sense);
+                // With the page information on, a drag on the sheet moves
+                // it (#388).
+                if info {
+                    let resp = resp.on_hover_text(tr("print.info_drag_tip"));
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                    }
+                    if resp.dragged() {
+                        moved = Some(resp.drag_delta());
+                    }
+                }
                 let sheet_rect = egui::Rect::from_center_size(r.center(), size);
                 let p = ui.painter();
                 p.rect_filled(
@@ -244,6 +270,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     );
                 }
             });
+            if let Some(d) = moved {
+                // Screen points over the sheet are `zoom` per millimetre;
+                // the sheet's y runs up.
+                let k = zoom.max(1e-6);
+                pv.st.info_offset.0 += f64::from(d.x) / k;
+                pv.st.info_offset.1 -= f64::from(d.y) / k;
+            }
         });
 
     let (prev, next, esc) = ctx.input(|i| {

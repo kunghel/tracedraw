@@ -193,6 +193,14 @@ pub struct PrintState {
     pub registration_marks: bool,
     pub bleed: bool,
     pub mirror: bool,
+    /// Back side of double-sided sheets: columns right to left (#387).
+    pub back_side: bool,
+    /// Pages keep their size on a fixed sheet: never shrunk to make room
+    /// for the marks (#388).
+    pub keep_size: bool,
+    /// Where the page information sits, moved from its place (mm, x and
+    /// y) by a drag in Print Preview (#388).
+    pub info_offset: (f64, f64),
     pub invert: bool,
     pub color_bars: bool,
     pub densitometer: bool,
@@ -407,6 +415,9 @@ impl Default for PrintState {
             registration_marks: false,
             bleed: false,
             mirror: false,
+            back_side: false,
+            keep_size: false,
+            info_offset: (0.0, 0.0),
             invert: false,
             color_bars: false,
             densitometer: false,
@@ -547,12 +558,6 @@ pub struct EncodeState {
     pub to: crate::encode::Encoding,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AutocorrectState {
-    pub new_from: String,
-    pub new_to: String,
-}
-
 pub use crate::ui::font_manager::FontManagerState;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -611,6 +616,18 @@ pub enum Dialog {
     RenameObject {
         shape: tracedraw_core::ShapeId,
         name: String,
+    },
+    /// How a PDF's text is read in (#386).
+    PdfText(crate::ui::pdf_import_dialog::PdfTextState),
+    /// The Edit Fill dialog (F11, #361).
+    EditFill(Box<crate::ui::edit_fill::EditFillState>),
+    /// The Outline Pen dialog (F12, #357).
+    OutlinePen(Box<crate::ui::outline_pen::OutlinePenState>),
+    /// Text > Edit Text: the text of a text object in a box of its own
+    /// (#355).
+    EditText {
+        shape: tracedraw_core::ShapeId,
+        text: String,
     },
     DocumentProperties(Box<crate::ui::doc_properties::DocPropsState>),
     /// Save on a drawing opened from a `.cdr` version TraceDraw does not
@@ -671,7 +688,6 @@ pub enum Dialog {
     WritingTools(crate::ui::writing_tools::WritingToolsState),
     CustomHyphens(crate::ui::writing_tools::CustomHyphensState),
     Encode(EncodeState),
-    Autocorrect(AutocorrectState),
     BorderGrommet(crate::border_grommet::BorderGrommetState),
     ColorManagement(Box<crate::ui::color_management::ColorManagementState>),
     FontManager(FontManagerState),
@@ -714,7 +730,7 @@ fn convert_fields(app: &App, ui: &mut Ui, o: &mut crate::bitmap_modes::ConvertOp
                         }
                     });
                 ui.add(
-                    egui::DragValue::new(&mut o.dpi)
+                    crate::ui::field::NumField::new(&mut o.dpi)
                         .range(36.0..=2400.0)
                         .suffix(" dpi"),
                 );
@@ -840,7 +856,7 @@ fn inflate_fields(ui: &mut Ui, st: &mut InflateState) {
                 let mut p = px as f64;
                 if ui
                     .add(
-                        egui::DragValue::new(&mut p)
+                        crate::ui::field::NumField::new(&mut p)
                             .range(base as f64..=base as f64 * 10.0)
                             .speed(1.0),
                     )
@@ -857,7 +873,7 @@ fn inflate_fields(ui: &mut Ui, st: &mut InflateState) {
                 let mut pct = if row == 0 { st.pw } else { st.ph };
                 if ui
                     .add(
-                        egui::DragValue::new(&mut pct)
+                        crate::ui::field::NumField::new(&mut pct)
                             .range(100.0..=1000.0)
                             .speed(0.5)
                             .max_decimals(1),
@@ -960,7 +976,7 @@ fn unit_value(ui: &mut Ui, label: &str, mm: &mut f64, units: Units) -> bool {
         .horizontal(|ui| {
             ui.label(label);
             ui.add(
-                egui::DragValue::new(&mut v)
+                crate::ui::field::NumField::new(&mut v)
                     .speed(0.5)
                     .suffix(format!(" {}", units.short())),
             )
@@ -981,8 +997,17 @@ pub fn show(app: &mut App, ctx: &Context) {
         app.shortcut_editor.capture = None;
     }
     crate::ui::line_style::apply_units_request(app, ctx);
-    if crate::ui::line_style::take_request(ctx) && matches!(app.dialog, Dialog::None) {
+    let line_style = crate::ui::line_style::take_request(ctx);
+    if line_style && matches!(app.dialog, Dialog::OutlinePen(_)) {
+        // Edit Line Style from the Outline Pen dialog: back to it after.
+        let back = std::mem::replace(&mut app.dialog, Dialog::LineStyle(Default::default()));
+        app.dialog_return = Some(Box::new(back));
+    } else if line_style && matches!(app.dialog, Dialog::None) {
         app.dialog = Dialog::LineStyle(Default::default());
+    } else if matches!(app.dialog, Dialog::None) {
+        if let Some(back) = app.dialog_return.take() {
+            app.dialog = *back;
+        }
     }
     let mut dialog = std::mem::replace(&mut app.dialog, Dialog::None);
     app.dialog_help = crate::help::dialog_topic(&dialog, app.options_page);
@@ -1043,7 +1068,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             window(ctx, tr("dialog.go_to_page")).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(trf("dialog.go_to_page_range", &[("n", &n.to_string())]));
-                    ui.add(egui::DragValue::new(page).range(1..=n.max(1)));
+                    ui.add(crate::ui::field::NumField::new(page).range(1..=n.max(1)));
                 });
                 if ok_cancel(ui, &mut close) {
                     app.goto_page(page.saturating_sub(1));
@@ -1054,7 +1079,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             window(ctx, tr("dialog.insert_page")).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.number_of_pages"));
-                    ui.add(egui::DragValue::new(count).range(1..=999));
+                    ui.add(crate::ui::field::NumField::new(count).range(1..=999));
                 });
                 ui.horizontal(|ui| {
                     ui.radio_value(after, false, tr("dialog.before"));
@@ -1183,7 +1208,29 @@ pub fn show(app: &mut App, ctx: &Context) {
                 }
             });
         }
+        Dialog::EditText { shape, text } => {
+            let title = tr("menu.text.edit_text");
+            let title = title
+                .trim_end_matches("...")
+                .trim_end_matches('\u{2026}')
+                .trim()
+                .to_string();
+            window(ctx, title).show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .id(egui::Id::new("edit_text_dialog_box"))
+                        .desired_width(480.0)
+                        .desired_rows(10),
+                );
+                if ok_cancel(ui, &mut close) {
+                    app.set_text_content(*shape, text);
+                }
+            });
+        }
         Dialog::Options => crate::ui::options::options_dialog(app, ctx, &mut close),
+        Dialog::OutlinePen(st) => crate::ui::outline_pen::dialog(app, ctx, st, &mut close),
+        Dialog::EditFill(st) => crate::ui::edit_fill::dialog(app, ctx, st, &mut close),
+        Dialog::PdfText(st) => crate::ui::pdf_import_dialog::dialog(app, ctx, st, &mut close),
         Dialog::OldCdrVersion { version } => {
             let mut choose = false;
             window(ctx, tr("dialog.old_cdr_title")).show(ctx, |ui| {
@@ -1547,10 +1594,16 @@ pub fn show(app: &mut App, ctx: &Context) {
                             );
                         };
                         label(ui, "dialog.table_rows");
-                        ui.add_sized([120.0, 22.0], egui::DragValue::new(rows).range(1..=200));
+                        ui.add_sized(
+                            [120.0, 22.0],
+                            crate::ui::field::NumField::new(rows).range(1..=200),
+                        );
                         ui.end_row();
                         label(ui, "dialog.table_columns");
-                        ui.add_sized([120.0, 22.0], egui::DragValue::new(cols).range(1..=200));
+                        ui.add_sized(
+                            [120.0, 22.0],
+                            crate::ui::field::NumField::new(cols).range(1..=200),
+                        );
                         ui.end_row();
                         for (key, mm) in [
                             ("dialog.height", &mut *height),
@@ -1561,7 +1614,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             if ui
                                 .add_sized(
                                     [120.0, 22.0],
-                                    egui::DragValue::new(&mut v)
+                                    crate::ui::field::NumField::new(&mut v)
                                         .speed(0.1)
                                         .max_decimals(3)
                                         .range(units.from_mm(1.0)..=units.from_mm(5000.0))
@@ -1879,7 +1932,6 @@ pub fn show(app: &mut App, ctx: &Context) {
             crate::ui::writing_tools::custom_hyphens_dialog(app, ctx, st, &mut close)
         }
         Dialog::Encode(st) => encode_dialog(app, ctx, st, &mut close),
-        Dialog::Autocorrect(st) => autocorrect_dialog(app, ctx, st, &mut close),
         Dialog::BorderGrommet(st) => border_grommet_dialog(app, ctx, st, &mut close),
         Dialog::ColorManagement(st) => {
             crate::ui::color_management::dialog(app, ctx, st, &mut close)
@@ -1896,7 +1948,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                     .num_columns(2)
                     .show(ui, |ui| {
                         ui.label(tr("dialog.start_at"));
-                        ui.add(egui::DragValue::new(&mut pn.start_at).range(-999..=9999));
+                        ui.add(
+                            crate::ui::field::NumField::new(&mut pn.start_at).range(-999..=9999),
+                        );
                         ui.end_row();
                         ui.label(tr("dialog.prefix"));
                         ui.text_edit_singleline(&mut pn.prefix);
@@ -1937,7 +1991,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                         ui.end_row();
                         ui.label(tr("dialog.size"));
                         ui.add(
-                            egui::DragValue::new(&mut pn.size_pt)
+                            crate::ui::field::NumField::new(&mut pn.size_pt)
                                 .range(4.0..=200.0)
                                 .suffix(" pt"),
                         );
@@ -2180,7 +2234,9 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
             if ui
                 .add_sized(
                     [100.0, 22.0],
-                    egui::DragValue::new(&mut wv).speed(0.5).max_decimals(3),
+                    crate::ui::field::NumField::new(&mut wv)
+                        .speed(0.5)
+                        .max_decimals(3),
                 )
                 .changed()
             {
@@ -2205,7 +2261,9 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
             if ui
                 .add_sized(
                     [100.0, 22.0],
-                    egui::DragValue::new(&mut hv).speed(0.5).max_decimals(3),
+                    crate::ui::field::NumField::new(&mut hv)
+                        .speed(0.5)
+                        .max_decimals(3),
                 )
                 .changed()
             {
@@ -2334,7 +2392,9 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
         if ui
             .add_sized(
                 [100.0, 22.0],
-                egui::DragValue::new(&mut b).speed(0.1).max_decimals(2),
+                crate::ui::field::NumField::new(&mut b)
+                    .speed(0.1)
+                    .max_decimals(2),
             )
             .changed()
         {
@@ -2573,7 +2633,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.resolution"));
                         ui.add(
-                            egui::DragValue::new(&mut st.dpi)
+                            crate::ui::field::NumField::new(&mut st.dpi)
                                 .range(MIN_EXPORT_DPI..=2400.0)
                                 .suffix(" dpi"),
                         );
@@ -2603,7 +2663,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         ui.label(tr("dialog.pixels"));
                         let wc = ui
                             .add(
-                                egui::DragValue::new(&mut w)
+                                crate::ui::field::NumField::new(&mut w)
                                     .range(1..=200_000)
                                     .suffix(" px"),
                             )
@@ -2611,7 +2671,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         ui.label("x");
                         let hc = ui
                             .add(
-                                egui::DragValue::new(&mut h)
+                                crate::ui::field::NumField::new(&mut h)
                                     .range(1..=200_000)
                                     .suffix(" px"),
                             )
@@ -2637,7 +2697,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.bleed"));
                         ui.add(
-                            egui::DragValue::new(&mut st.bleed_mm)
+                            crate::ui::field::NumField::new(&mut st.bleed_mm)
                                 .range(0.0..=50.0)
                                 .speed(0.5)
                                 .suffix(" mm"),
@@ -2755,9 +2815,9 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                     if matches!(st.layout_kind, 1 | 3) {
                         ui.label(tr("print.grid"));
                         ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(&mut st.cols).range(1..=20));
+                            ui.add(crate::ui::field::NumField::new(&mut st.cols).range(1..=20));
                             ui.label("x");
-                            ui.add(egui::DragValue::new(&mut st.rows).range(1..=20));
+                            ui.add(crate::ui::field::NumField::new(&mut st.rows).range(1..=20));
                         });
                         ui.end_row();
                     }
@@ -2781,11 +2841,21 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                     if matches!(st.layout_kind, 1 | 3) {
                         ui.label(tr("print.gutter"));
                         ui.add(
-                            egui::DragValue::new(&mut st.gutter)
+                            crate::ui::field::NumField::new(&mut st.gutter)
                                 .range(0.0..=50.0)
                                 .speed(0.5)
                                 .suffix(" mm"),
                         );
+                        ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut st.back_side, tr("print.back_side"))
+                            .on_hover_text(tr("print.back_side_tip"));
+                        ui.end_row();
+                    }
+                    if st.sheet > 0 {
+                        ui.label("");
+                        ui.checkbox(&mut st.keep_size, tr("print.keep_size"))
+                            .on_hover_text(tr("print.keep_size_tip"));
                         ui.end_row();
                     }
                 });
@@ -3018,7 +3088,7 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) {
             print_group(ui, &tr("print.copies"), |ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr("print.number_of_copies"));
-                    ui.add(egui::DragValue::new(&mut st.copies).range(1..=999));
+                    ui.add(crate::ui::field::NumField::new(&mut st.copies).range(1..=999));
                 });
                 ui.add_enabled(
                     st.copies > 1,
@@ -3030,7 +3100,7 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 ui.checkbox(&mut st.as_bitmap, tr("print.as_bitmap"));
                 ui.add_enabled(
                     st.as_bitmap,
-                    egui::DragValue::new(&mut st.bitmap_dpi)
+                    crate::ui::field::NumField::new(&mut st.bitmap_dpi)
                         .range(36.0..=1200.0)
                         .suffix(" dpi"),
                 );
@@ -3082,7 +3152,7 @@ fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
             ui.radio_value(&mut mode, 2, tr("print.scale"));
             ui.add_enabled(
                 mode == 2,
-                egui::DragValue::new(&mut st.scale)
+                crate::ui::field::NumField::new(&mut st.scale)
                     .range(1.0..=1000.0)
                     .suffix(" %"),
             );
@@ -3106,7 +3176,7 @@ fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
         ui.checkbox(&mut st.bleed, tr("print.bleed_limit"));
         ui.add_enabled(
             st.bleed,
-            egui::DragValue::new(&mut st.bleed_limit)
+            crate::ui::field::NumField::new(&mut st.bleed_limit)
                 .range(0.0..=50.0)
                 .speed(0.5)
                 .suffix(" mm"),
@@ -3245,19 +3315,25 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(tr("merge.import_file")).clicked() {
                     crate::files::Dialog::new()
+                        .add_filter("CSV, Excel", &["csv", "txt", "xlsx"])
+                        .add_filter("Excel", &["xlsx"])
                         .add_filter("CSV", &["csv", "txt"])
                         .pick_into("print_merge_csv");
                 }
             });
         });
         if let Some(p) = crate::files::take_picked("print_merge_csv") {
-            if let Ok(text) = crate::files::read_to_string(&p) {
-                let (h, r) = crate::export::parse_csv(&text);
-                st.headers = h;
-                st.rows = r;
-                st.kinds.clear();
-                st.current = 0;
-                st.path = Some(p);
+            match crate::print_merge::read_data(&p) {
+                Ok((h, r)) => {
+                    st.kinds = crate::print_merge::guess_kinds(&h, &r);
+                    st.headers = h;
+                    st.rows = r;
+                    st.current = 0;
+                    st.path = Some(p);
+                    // The fields' types show at once, to set each one.
+                    st.configure = true;
+                }
+                Err(e) => app.status = e,
             }
         }
         ui.add_space(4.0);
@@ -3382,11 +3458,15 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                     } = &mut st.kinds[i]
                                     {
                                         ui.add(
-                                            egui::DragValue::new(start).prefix(tr("merge.start")),
+                                            crate::ui::field::NumField::new(start)
+                                                .prefix(tr("merge.start")),
                                         );
-                                        ui.add(egui::DragValue::new(step).prefix(tr("merge.step")));
                                         ui.add(
-                                            egui::DragValue::new(digits)
+                                            crate::ui::field::NumField::new(step)
+                                                .prefix(tr("merge.step")),
+                                        );
+                                        ui.add(
+                                            crate::ui::field::NumField::new(digits)
                                                 .range(1..=12)
                                                 .prefix(tr("merge.digits")),
                                         );
@@ -3635,7 +3715,7 @@ fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &mut b
                 ui.checkbox(&mut s.black_white, tr("dialog.black_and_white"));
                 if !s.black_white {
                     ui.label(tr("dialog.colors"));
-                    ui.add(egui::DragValue::new(&mut s.colors).range(2..=256));
+                    ui.add(crate::ui::field::NumField::new(&mut s.colors).range(2..=256));
                 }
             });
             ui.checkbox(&mut s.remove_background, tr("dialog.remove_background"));
@@ -3708,7 +3788,7 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.columns"));
                     changed |= ui
-                        .add(egui::DragValue::new(&mut p.columns).range(1..=8))
+                        .add(crate::ui::field::NumField::new(&mut p.columns).range(1..=8))
                         .changed();
                 });
                 changed |= unit_value(ui, &tr("dialog.gutter"), &mut p.gutter, u);
@@ -3740,7 +3820,10 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.lines_dropped"));
                         changed |= ui
-                            .add(egui::DragValue::new(&mut p.drop_cap_lines).range(2..=10))
+                            .add(
+                                crate::ui::field::NumField::new(&mut p.drop_cap_lines)
+                                    .range(2..=10),
+                            )
                             .changed();
                     });
                 }
@@ -3813,110 +3896,6 @@ fn encode_dialog(app: &mut App, ctx: &Context, st: &mut EncodeState, close: &mut
     }
 }
 
-fn autocorrect_dialog(app: &mut App, ctx: &Context, st: &mut AutocorrectState, close: &mut bool) {
-    let mut changed = false;
-    let mut apply = false;
-    let style = crate::autocorrect::QuoteStyle::for_language(&crate::i18n::language());
-    window(ctx, tr("dialog.autocorrect")).show(ctx, |ui| {
-        ui.set_min_width(380.0);
-        let p = &mut app.settings.autocorrect;
-        changed |= ui
-            .checkbox(&mut p.enabled, tr("autocorrect.enabled"))
-            .changed();
-        ui.separator();
-        changed |= ui
-            .checkbox(&mut p.capitalize_sentences, tr("autocorrect.capitalize"))
-            .changed();
-        changed |= ui
-            .checkbox(
-                &mut p.fix_two_initial_capitals,
-                tr("autocorrect.two_capitals"),
-            )
-            .changed();
-        changed |= ui
-            .checkbox(&mut p.typographic_quotes, tr("autocorrect.quotes"))
-            .changed();
-        let (o, c) = style.double();
-        let (so, sc) = style.single();
-        ui.label(
-            egui::RichText::new(trf(
-                "autocorrect.quotes_example",
-                &[("q", &format!("{o}abc{c}  {so}abc{sc}"))],
-            ))
-            .color(Tokens::text_dim()),
-        );
-        ui.separator();
-        ui.label(egui::RichText::new(tr("autocorrect.replacements")).strong());
-        let mut remove: Option<usize> = None;
-        egui::ScrollArea::vertical()
-            .max_height(180.0)
-            .show(ui, |ui| {
-                egui::Grid::new("qc_table")
-                    .num_columns(3)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.label(tr("autocorrect.replace_col"));
-                        ui.label(tr("autocorrect.with_col"));
-                        ui.label("");
-                        ui.end_row();
-                        for (i, (from, to)) in p.replacements.iter_mut().enumerate() {
-                            changed |= ui
-                                .add_sized([130.0, 20.0], egui::TextEdit::singleline(from))
-                                .changed();
-                            changed |= ui
-                                .add_sized([130.0, 20.0], egui::TextEdit::singleline(to))
-                                .changed();
-                            if ui.small_button(tr("autocorrect.remove")).clicked() {
-                                remove = Some(i);
-                            }
-                            ui.end_row();
-                        }
-                        ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut st.new_from));
-                        ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut st.new_to));
-                        let can_add = !st.new_from.trim().is_empty()
-                            && !st.new_from.contains(char::is_whitespace);
-                        if ui
-                            .add_enabled(can_add, egui::Button::new(tr("autocorrect.add")).small())
-                            .clicked()
-                        {
-                            p.replacements
-                                .push((st.new_from.trim().to_string(), st.new_to.clone()));
-                            st.new_from.clear();
-                            st.new_to.clear();
-                            changed = true;
-                        }
-                        ui.end_row();
-                    });
-            });
-        if let Some(i) = remove {
-            if i < p.replacements.len() {
-                p.replacements.remove(i);
-                changed = true;
-            }
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.button(tr("autocorrect.apply_selection")).clicked() {
-                apply = true;
-            }
-            if ui.button(tr("dialog.close")).clicked() {
-                *close = true;
-            }
-        });
-    });
-    if changed {
-        app.settings.save();
-    }
-    if apply {
-        if app.text_shapes().is_empty() {
-            app.status = tr("autocorrect.no_selection");
-        } else {
-            let n = crate::autocorrect::apply_to_selection(app);
-            app.status = trf("autocorrect.applied", &[("n", &n.to_string())]);
-        }
-    }
-}
-
 fn border_grommet_dialog(
     app: &mut App,
     ctx: &Context,
@@ -3937,7 +3916,7 @@ fn border_grommet_dialog(
         if ui
             .add_sized(
                 [90.0, 22.0],
-                egui::DragValue::new(&mut v)
+                crate::ui::field::NumField::new(&mut v)
                     .speed(0.1)
                     .max_decimals(3)
                     .suffix(format!(" {}", units.short())),
@@ -4037,7 +4016,10 @@ fn border_grommet_dialog(
                         ui.horizontal(|ui| {
                             ui.radio_value(&mut g.by_count, true, tr("border_grommet.number"));
                             ui.add_enabled_ui(g.by_count, |ui| {
-                                ui.add(egui::DragValue::new(&mut g.count_per_edge).range(2..=200));
+                                ui.add(
+                                    crate::ui::field::NumField::new(&mut g.count_per_edge)
+                                        .range(2..=200),
+                                );
                             });
                         });
                         ui.horizontal(|ui| {
@@ -4503,7 +4485,6 @@ mod tests {
             Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(2)),
             Dialog::CustomHyphens(Default::default()),
             Dialog::Encode(EncodeState::default()),
-            Dialog::Autocorrect(AutocorrectState::default()),
             Dialog::BorderGrommet(crate::border_grommet::BorderGrommetState::default()),
             Dialog::ColorManagement(Default::default()),
             Dialog::FontManager(FontManagerState::default()),

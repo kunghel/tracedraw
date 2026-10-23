@@ -83,6 +83,8 @@ pub enum Error {
     SelectionGroup(u8),
     #[error("object {0:?} is not a clip frame")]
     NotClipFrame(ShapeId),
+    #[error("a B-spline needs two finite control points or more")]
+    BadSpline,
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 }

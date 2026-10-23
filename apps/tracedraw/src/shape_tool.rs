@@ -127,6 +127,8 @@ impl App {
         let s = self.doc().find_shape(id)?;
         let parent = self.doc().parent_transform(id)?;
         match &s.kind {
+            // A B-spline shows its control points, not its nodes.
+            ShapeKind::Path { .. } if s.spline.is_some() => None,
             ShapeKind::Path { path, closed } => Some((path.clone(), *closed, parent * s.transform)),
             _ => None,
         }
@@ -298,6 +300,15 @@ impl App {
             .find_map(|s| crate::kind_nodes::node_at(&s, p, tol).map(|n| (s, n)))
     }
 
+    /// A selected B-spline whose control polygon lies under the pointer,
+    /// with its control points plus one at the pointer.
+    pub(crate) fn spline_polygon_at(&self, p: Point) -> Option<(ShapeId, Vec<Point>)> {
+        let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
+        self.shape_tool_shapes()
+            .into_iter()
+            .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s.id, pts)))
+    }
+
     /// Control handle under the pointer, for selected nodes only.
     pub(crate) fn ctrl_handle_at(&self, p: Point) -> Option<(ShapeId, usize, Which)> {
         // The nearest handle within the pick distance, on the page.
@@ -326,6 +337,21 @@ impl App {
 
     pub fn shape_tool_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         if response.double_clicked_by(PointerButton::Primary) {
+            // A B-spline: a double-click on a control point removes it,
+            // one on the control polygon adds one there.
+            if let Some((s, crate::kind_nodes::KindNode::Spline { index })) = self.kind_node_at(p) {
+                if let Some(points) = crate::kind_nodes::spline_without(&s, index) {
+                    self.run(Command::SetSpline {
+                        shape: s.id,
+                        points,
+                    });
+                }
+                return;
+            }
+            if let Some((id, points)) = self.spline_polygon_at(p) {
+                self.run(Command::SetSpline { shape: id, points });
+                return;
+            }
             if let Some(hit) = self.node_at(p) {
                 // Double-click a node deletes it.
                 if let Some((path, closed, _)) = self.path_of(hit.shape) {
@@ -412,6 +438,20 @@ impl App {
                 }
             }
             if let Some((s, node)) = self.kind_node_at(p) {
+                // A B-spline's control point is chosen as a node is: a
+                // click chooses it alone (unless it is chosen already, so
+                // the chosen ones drag together), Shift adds it.
+                if let crate::kind_nodes::KindNode::Spline { index } = node {
+                    let key = (s.id, index);
+                    if mods.shift {
+                        if !self.node_selection.contains(&key) {
+                            self.node_selection.push(key);
+                        }
+                    } else if !self.node_selection.contains(&key) {
+                        self.node_selection = vec![key];
+                    }
+                    self.segment_spot = None;
+                }
                 let single = crate::kind_nodes::single_corner(
                     self.rect_corner_selected,
                     &s,
@@ -645,9 +685,25 @@ impl App {
                     mut turn,
                 } => {
                     let q = self.snap_point_excluding(p, &[shape]);
-                    if let Some(kind) = crate::kind_nodes::drag(&start, node, q, single, &mut turn)
-                    {
-                        let cmd = Command::SetShapeKind { shape, kind };
+                    let cmd = match node {
+                        crate::kind_nodes::KindNode::Spline { index } => {
+                            let chosen: Vec<usize> = self
+                                .node_selection
+                                .iter()
+                                .filter(|(id, _)| *id == shape)
+                                .map(|(_, i)| *i)
+                                .collect();
+                            if chosen.contains(&index) {
+                                crate::kind_nodes::spline_moved_many(&start, &chosen, index, q)
+                            } else {
+                                crate::kind_nodes::spline_moved(&start, index, q)
+                            }
+                            .map(|points| Command::SetSpline { shape, points })
+                        }
+                        _ => crate::kind_nodes::drag(&start, node, q, single, &mut turn)
+                            .map(|kind| Command::SetShapeKind { shape, kind }),
+                    };
+                    if let Some(cmd) = cmd {
                         // One undo step for the whole drag.
                         let _ = if begun {
                             self.engine.amend(&cmd)
@@ -681,6 +737,11 @@ impl App {
                     crate::kind_nodes::KindNode::Corner { corner, .. } => Some((s.id, corner)),
                     _ => None,
                 };
+                // A B-spline's control point: chosen alone, Shift adds or
+                // removes it.
+                if let crate::kind_nodes::KindNode::Spline { index } = node {
+                    self.click_node((s.id, index), mods);
+                }
                 return;
             }
             if let Some(hit) = self.node_at(p) {
@@ -701,7 +762,10 @@ impl App {
             // A press on a control handle, or a near miss of a node or a
             // handle of the selected curves, keeps the selection: only a
             // click clearly on empty canvas deselects.
-            if self.ctrl_handle_at(p).is_some() || self.near_selected_nodes(p) {
+            if self.ctrl_handle_at(p).is_some()
+                || self.near_selected_nodes(p)
+                || self.spline_polygon_at(p).is_some()
+            {
                 return;
             }
             match self.hit_test(p) {
@@ -738,10 +802,34 @@ impl App {
                 }
             }
         }
+        // B-splines: their control points inside.
+        sel.extend(self.spline_points_where(|q| r.contains(q)));
         self.node_selection = sel;
         self.segment_spot = None;
         // Character nodes of selected texts too.
         self.choose_chars_in(|q| r.contains(q));
+    }
+
+    /// The control points of the selected B-splines (page space) for which
+    /// `inside` holds, as node selection keys.
+    pub(crate) fn spline_points_where(
+        &self,
+        inside: impl Fn(Point) -> bool,
+    ) -> Vec<(ShapeId, usize)> {
+        let mut out = Vec::new();
+        for s in self.shape_tool_shapes() {
+            if s.spline.is_none() {
+                continue;
+            }
+            for (node, q) in crate::kind_nodes::nodes(&s) {
+                if let crate::kind_nodes::KindNode::Spline { index } = node {
+                    if inside(q) {
+                        out.push((s.id, index));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Nearest segment of a selected curve within a few pixels.
@@ -851,6 +939,84 @@ impl App {
         }
     }
 
+    /// The align keys and commands (L, R, T, B, C, E) on the Shape tool's
+    /// selected nodes, two or more, as on objects (#364): to the leftmost,
+    /// rightmost, top or bottom node, or to the centre of their box.
+    /// Handles move with their node. One undo step; false when fewer than
+    /// two nodes are selected or the alignment has no node version.
+    pub fn align_nodes_to(&mut self, how: crate::ops::Align) -> bool {
+        use crate::ops::Align;
+        use tracedraw_core::geometry::{Point, Vec2};
+        if self.tool != crate::tools::Tool::Shape
+            || self.node_selection.len() < 2
+            || how == Align::CenterPage
+        {
+            return false;
+        }
+        // Each selected node on the page, with its curve's transform.
+        let mut picked: Vec<(ShapeId, usize, Point, tracedraw_core::geometry::Affine)> = Vec::new();
+        for (id, i) in self.node_selection.clone() {
+            let Some((path, _, t)) = self.path_of(id) else {
+                continue;
+            };
+            if let Some(n) = nodes::nodes(&path).into_iter().find(|n| n.index == i) {
+                picked.push((id, i, t * n.pos, t));
+            }
+        }
+        if picked.len() < 2 {
+            return false;
+        }
+        let xs = picked.iter().map(|p| p.2.x);
+        let ys = picked.iter().map(|p| p.2.y);
+        let (x0, x1) = (
+            xs.clone().fold(f64::MAX, f64::min),
+            xs.fold(f64::MIN, f64::max),
+        );
+        let (y0, y1) = (
+            ys.clone().fold(f64::MAX, f64::min),
+            ys.fold(f64::MIN, f64::max),
+        );
+        let target = |p: Point| match how {
+            Align::Left => Point::new(x0, p.y),
+            Align::Right => Point::new(x1, p.y),
+            Align::Top => Point::new(p.x, y1),
+            Align::Bottom => Point::new(p.x, y0),
+            Align::CenterV => Point::new((x0 + x1) / 2.0, p.y),
+            Align::CenterH => Point::new(p.x, (y0 + y1) / 2.0),
+            Align::CenterPage => p,
+        };
+        let mut paths: std::collections::BTreeMap<ShapeId, (BezPath, bool)> = Default::default();
+        for (id, i, at, t) in picked {
+            let to = target(at);
+            let inv = t.inverse();
+            let d: Vec2 = inv * to - inv * at;
+            if d.hypot() < 1e-12 {
+                continue;
+            }
+            let entry = match paths.entry(id) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    let Some((path, closed, _)) = self.path_of(id) else {
+                        continue;
+                    };
+                    e.insert((path, closed))
+                }
+            };
+            entry.0 = nodes::move_node(&entry.0, i, d);
+        }
+        let cmds: Vec<Command> = paths
+            .into_iter()
+            .map(|(id, (path, closed))| Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path { path, closed },
+            })
+            .collect();
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Align Nodes", &cmds);
+        }
+        true
+    }
+
     /// The segment chosen by a click on it, as (curve, element drawing
     /// it): the spot clicked is kept and its end node is the only node
     /// chosen.
@@ -899,6 +1065,37 @@ impl App {
     }
 
     pub fn delete_selected_nodes(&mut self) {
+        // B-splines lose their chosen control points (a spline left with
+        // fewer than two goes); curves their chosen nodes.
+        let mut cmds = Vec::new();
+        for s in self.shape_tool_shapes() {
+            if s.spline.is_none() {
+                continue;
+            }
+            let chosen: Vec<usize> = self
+                .node_selection
+                .iter()
+                .filter(|(id, _)| *id == s.id)
+                .map(|(_, i)| *i)
+                .collect();
+            if chosen.is_empty() {
+                continue;
+            }
+            cmds.push(match crate::kind_nodes::spline_without_many(&s, &chosen) {
+                Some(points) => Command::SetSpline {
+                    shape: s.id,
+                    points,
+                },
+                None => Command::DeleteShapes { shapes: vec![s.id] },
+            });
+        }
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.run_batch("Delete Nodes", &cmds) {
+                self.status = e.to_string();
+            }
+            self.selection
+                .retain(|id| self.engine.document().find_shape(*id).is_some());
+        }
         self.for_each_selected_node("Delete Nodes", nodes::delete_node);
         self.node_selection.clear();
     }

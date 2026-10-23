@@ -20,12 +20,35 @@ in) in a strip under the type. The Interactive Fill property bar and the
 Transparency tool's gradient list offer the Shaped type too; a shaped
 gradient has no handles on the canvas.
 
-Shortcut: F11 opens the fill editor; G is the Interactive Fill tool.
+Shortcut: F11 opens the Edit Fill dialog; G is the Interactive Fill tool.
+
+Edit Fill dialog (#361, `ui/edit_fill.rs`): the fill kinds as pictures
+across the top (none, uniform, gradient, pattern, texture, mesh), then
+the kind's settings. Uniform: the colour viewer and the colour picker.
+Gradient: on the left a 180 point preview of the fill drawn by the
+renderer on a checker, and the fill picker (the built-in gradients); on
+the right the type, the repeat (Default, Repeat and mirror, Repeat with
+a count), the band of colours with the nodes under it (click picks,
+drag moves between the neighbours, double click on the band adds a node
+in the colour and opacity there, on a node between the ends removes
+it), Reverse (each node at `1 - pos`, midpoints mirrored), the picked
+node's colour, transparency, position and midpoint, and Transform:
+rotation, centre (radial, conical, square), edge pad, bilinear and
+invert; a fill with free nodes from Interactive Fill gets "Back to angle
+and center". Pattern and texture: a preview and their editors. OK sends
+the fields that changed to every selected object with Overprint fill in
+one step (`App::apply_edit_fill`, `edit_fill_applies_what_was_changed`,
+`nodes_are_added_moved_and_reversed`); with nothing selected it changes
+the default fill.
 Dragging with Interactive Fill on an object (anywhere inside it, filled
-or not) sets a linear fill from the press point to the release point; a
-click gives the default fill; Ctrl constrains the angle to 15 degree
-steps; dragging a palette colour onto a stop recolours it; dragging a
-colour onto the fill line adds a stop.
+or not) puts the start node at the press point and the end node at the
+release point, keeping the kind and colours of a gradient the object
+already has (a linear black to white one otherwise); the skew handle
+goes square to the line, as far from the start as the end. A click on
+an object with a gradient picks it (its nodes show); on one without, it
+gives the default fill; Ctrl constrains the angle to 15 degree steps;
+dragging a palette colour onto a stop recolours it; dragging a colour
+onto the fill line adds a stop.
 
 Property bar (Interactive Fill): the fill type (None, Uniform, Gradient,
 Pattern, Texture, Mesh), then the type's fields: the colour for a
@@ -34,13 +57,49 @@ the start and end colours, the angle and the edge pad. With a selection
 the fields edit it; with nothing selected they set the default fill for
 the next object.
 
-Handles on the canvas (Interactive Fill, gradient-filled selection): a
-linear fill shows its axis as a dashed line between a start node and an
-end node (squares in the two colours) at `c -/+ h (cos a, sin a)` with
-`h = (w |cos a| + h |sin a|) / 2`; dragging either node turns the axis
-about the centre and sets the angle. Radial, conical and square fills
-show one node at `c + offset * (w, h) / 2`; dragging it sets the centre
-offset, clamped to the bounds.
+Handles on the canvas (Interactive Fill, gradient-filled selection):
+three nodes placed freely, as the reference program shows them. The
+start node and the end node are squares in the first and last colours,
+joined by a dashed line with an arrow at the end; the skew handle is a
+small round node joined to the start by a thin line. Radial fills draw
+the dashed ellipse their frame makes, square fills the parallelogram.
+
+- Start: moves the fill. A linear fill keeps its end where it was (the
+  line gets shorter or longer and turns); radial, conical and square
+  fills move whole, end and skew handle with the start.
+- End: sets the length and the angle; the skew handle turns with the
+  line and keeps its length.
+- Skew handle: sets the second axis on its own, so a radial fill
+  becomes an ellipse and a linear fill's bands slant.
+
+Colour nodes on the line (#330): every stop is a node on the line from
+the start to the end, at `start + pos (end - start)` (the first is the
+start node, the last the end node; the ones between are smaller
+squares in their colours). Between each pair of nodes a short bar
+across the line is the midpoint slider, at `pos_i + mid_i (pos_i+1 -
+pos_i)`.
+
+- Double-click on the line: adds a node there in the colour and
+  opacity the fill has at that point, and picks it. Not within 0.0001
+  of a node.
+- Double-click on a node between the ends: removes it.
+- Drag a node between the ends along the line: sets its position, kept
+  0.001 inside its neighbours.
+- Drag a midpoint slider: sets `mid` (0.01 to 0.99) of the blend.
+- Click a node (the start and the end too): picks it. The node bar
+  opens under it with the node's colour (the swatch opens the colour
+  picker) and its transparency (0 % opaque to 100 % clear); the
+  property bar shows the node's colour, transparency and position
+  (the position only for nodes between the ends). A palette colour
+  clicked while a node is picked goes to the node.
+- A palette colour dropped on a node recolours it; dropped on the line
+  it adds a node of that colour (one undo step).
+
+Until a node is moved the fill has no stored nodes and is placed by its
+angle and offset as below; the first move stores the three nodes
+(`Fountain::handles`, relative to the object's bounding box, so they
+follow when the object is moved or scaled) and later moves keep them.
+A drag on a node is one undo step.
 
 ## Formulas
 
@@ -54,6 +113,11 @@ Bounding box `b` of the object in page space, centre `c`.
   colour at 0 and 1 is the same (`t = 1 - |2t - 1|`).
 - Square: `t = max(|dx|, |dy|)` in the frame rotated by `a`, normalised
   by half the diagonal.
+- Free nodes (start `s`, end `e`, skew handle `k`): the frame maps
+  `(u, v)` to `s + u (e - s) + v (k - s)`; for a page point `p` take its
+  `(u, v)` in that frame, then Linear `t = u`, Radial `t = hypot(u, v)`,
+  Conical the mirrored angle of `(u, v)`, Square `t = max(|u|, |v|)`. A
+  frame with no area is ignored (the angle and offset place the fill).
 - Shaped: `t = d(p) / max d`, where `d` is the distance from `p` to the
   object's edge (0 outside) and `max d` the distance of the point
   deepest inside. The distances are exact Euclidean distances on a grid
@@ -68,6 +132,13 @@ Bounding box `b` of the object in page space, centre `c`.
      odd ones. No repeat: `n` is ignored.
   3. Edge pad `e`: `t = clamp((t - e) / (1 - 2e), 0, 1)` (per cycle).
   4. Invert colours: `s = 1 - t`.
+- Midpoint: between a stop with midpoint `m` and the next, at `k` of the
+  way (0..1) the blend is `k^g` with `m^g = 1/2` (`m = 0.5`: straight).
+  Shaders and exports get it as 16 straight pieces along the curve
+  (`Fountain::blended_stops`, `Fountain::MID_STEPS`).
+- Opacity: each stop has one (1 opaque); it blends from stop to stop
+  as the colour does. The renderer and SVG (`stop-opacity`) use it;
+  PDF, EPS, EMF and `.cdr` draw the colours opaque.
 - Colour at `s` is a linear interpolation in RGB between the two stops
   around it; stops are sorted by position; equal positions give a hard
   edge.
@@ -85,10 +156,35 @@ Bounding box `b` of the object in page space, centre `c`.
 - Given a PDF export of a 3-stop fill, then the shading uses a
   stitching function with one bound at 0.3.
 - Given a 40 x 20 mm rectangle with a 0 degree linear fill, then the
-  handles are at (0, 10) and (40, 10); dragging the end node to (20, 30)
-  makes the angle 90 degrees.
-- Given a radial fill, dragging the centre node to (30, 15) on that
-  rectangle sets the offset to (0.5, 0.5); beyond the edge it clamps to 1.
+  start and end nodes are at (0, 10) and (40, 10) and the skew handle is
+  square to the line; moving the start to (10, 10) leaves the end at
+  (40, 10) and keeps the skew handle's offset from the start
+  (`fill_tool::tests::linear_nodes_move_as_the_reference_moves_them`).
+- Given a radial fill, moving its centre node moves the whole fill
+  (`fill_tool::tests::the_centre_of_a_radial_fill_moves_it_whole`).
+- Given a radial fill on a square, a drag from (5, 5) to (15, 5) keeps
+  it radial and red to white, puts the start and end nodes at those
+  points and the skew handle at (5, 15)
+  (`fill_tool::tests::a_drag_puts_the_nodes_where_it_began_and_ended`).
+- Given a black to white linear fill on that rectangle, double-clicking
+  the line at (20, 10) adds a grey node at 0.5; dragging it to (30, 12)
+  puts it at 0.75; the first midpoint slider dragged to (10, 10) sets
+  its `mid` to 0.25 / 0.75; the node removed leaves two
+  (`fill_tool::tests::colour_nodes_are_added_moved_and_removed`).
+- Given the end node picked, a palette colour recolours only it; a
+  colour dropped on the line at (10, 10) adds a node of it at 0.25, one
+  undo step (`fill_tool::tests::a_picked_node_takes_colours_and_transparency`).
+- Given a midpoint of 0.25 on black to white, the colour at 0.25 is mid
+  grey and at 0.5 lighter; a stop at opacity 0 makes the fill clear
+  there, on screen and in SVG
+  (`midpoints_and_node_opacity_shape_the_blend`,
+  `node_opacity_shows_through_the_gradient`,
+  `node_opacity_goes_out_as_stop_opacity`).
+- Given free nodes, the renderer, SVG (`gradientTransform`) and PDF (a
+  unit shading drawn through the frame) place the fill as the nodes say
+  (`free_fill_nodes_place_the_gradient`,
+  `free_fill_nodes_go_out_as_a_gradient_transform`,
+  `free_fill_nodes_draw_a_unit_shading_through_their_frame`).
 - Given a 100 x 10 mm black to white linear fill with Sawtooth, 2 cycles,
   rendered at 1 px/mm, then pixel 48 is light and pixel 51 dark; with
   Mirror, 2 cycles (or Bilinear), the middle is white and both ends black;

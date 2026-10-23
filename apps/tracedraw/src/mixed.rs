@@ -30,6 +30,19 @@ fn leaves(s: &Shape, out: &mut Vec<Shape>) {
     }
 }
 
+/// [`leaves`] by reference, without copies.
+fn leaf_refs<'a>(s: &'a Shape, out: &mut Vec<&'a Shape>) {
+    match &s.kind {
+        ShapeKind::Group { children } if !children.is_empty() => {
+            for c in children {
+                leaf_refs(c, out);
+            }
+        }
+        ShapeKind::ClipFrame { frame, .. } => leaf_refs(frame, out),
+        _ => out.push(s),
+    }
+}
+
 thread_local! {
     /// The revision after the last uniform amount change, so the next one
     /// can replace it (see [`App::patch_transparency`]).
@@ -143,21 +156,29 @@ impl App {
     /// change: the selected objects, a group standing for what is in it.
     pub fn paint_targets(&self) -> Vec<Shape> {
         let mut out = Vec::new();
-        for s in self.selected_shapes() {
-            leaves(&s, &mut out);
+        for s in self.selected_rc().iter() {
+            leaves(s, &mut out);
         }
         out
     }
 
     /// How the outlines of the selection differ.
     pub fn selection_stroke_mix(&self) -> StrokeMix {
-        let shapes = self.paint_targets();
+        let selected = self.selected_rc();
+        let mut shapes = Vec::new();
+        for s in selected.iter() {
+            leaf_refs(s, &mut shapes);
+        }
         stroke_mixed(shapes.iter().map(|s| s.stroke.as_ref()))
     }
 
     /// How the fills of the selection differ.
     pub fn selection_fill_mix(&self) -> FillMix {
-        let shapes = self.paint_targets();
+        let selected = self.selected_rc();
+        let mut shapes = Vec::new();
+        for s in selected.iter() {
+            leaf_refs(s, &mut shapes);
+        }
         fill_mixed(shapes.iter().map(|s| &s.fill))
     }
 
@@ -405,7 +426,7 @@ impl App {
     /// (the radii in `Corners` order), scaling]`.
     pub fn selection_corner_mix(&self) -> Option<(Corners, [bool; 6])> {
         let all: Vec<Corners> = self
-            .selected_shapes()
+            .selected_rc()
             .iter()
             .filter_map(|s| s.page_corners())
             .collect();

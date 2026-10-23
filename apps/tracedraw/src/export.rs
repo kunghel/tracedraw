@@ -714,6 +714,9 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         } else {
             st.scale / 100.0
         },
+        back_side: st.back_side,
+        keep_size: st.keep_size,
+        info_offset: st.info_offset,
         marks: crate::imposition::Marks {
             crop: st.crop_marks,
             registration: st.registration_marks,

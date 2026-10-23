@@ -1159,6 +1159,17 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
         let text = if v >= 17 || nbytes != nc.saturating_mul(2) {
             match decode_mixed_width(text, &wide) {
                 Some(s) => s,
+                // Files saved by TraceDraw before 0.11.1 held the letters
+                // Windows-1252 lacks as UTF-8, with no letter marked
+                // (#368): such bytes, UTF-8 with exactly as many letters as
+                // records, are read so (before the UTF-16 guess: Cyrillic
+                // in UTF-8 is two bytes a letter too).
+                None if !wide.iter().any(|w| *w)
+                    && !text.is_ascii()
+                    && std::str::from_utf8(text).is_ok_and(|t| t.chars().count() == nc) =>
+                {
+                    String::from_utf8_lossy(text).into_owned()
+                }
                 None if nbytes == nc * 2 => decode_utf16le(text),
                 None => {
                     warn(format!(
@@ -1607,6 +1618,30 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
 /// colours of a version 19 file's preview match that). Without it, the
 /// mean of `startTransparency` and `endTransparency` (a graded
 /// transparency drawn uniform, assumed). `None` for an empty section.
+/// The mitre limit (degrees) in an object's version 16+ style string:
+/// `outline.miterLimit` (a file of version 27 holds "28.955024..." for an
+/// outline its program shows with a limit of 29 degrees, #384).
+pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Json::Obj(items) = parse_json(t)? else {
+        return None;
+    };
+    let Json::Obj(outline) = &items.iter().find(|(k, _)| k == "outline")?.1 else {
+        return None;
+    };
+    outline
+        .iter()
+        .find(|(k, _)| k == "miterLimit")
+        .and_then(|(_, v)| v.num())
+        .filter(|a| a.is_finite() && *a > 0.0)
+        .map(|a| {
+            a.clamp(
+                *tracedraw_core::Stroke::MITER_LIMIT_RANGE.start(),
+                *tracedraw_core::Stroke::MITER_LIMIT_RANGE.end(),
+            )
+        })
+}
+
 pub(crate) fn object_opacity(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let Json::Obj(items) = parse_json(t)? else {
@@ -1693,14 +1728,8 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
     let mut fountain = Fountain {
         kind,
         stops: vec![
-            Stop {
-                pos: 0.0,
-                color: Color::Gray { v: first },
-            },
-            Stop {
-                pos: 1.0,
-                color: Color::Gray { v: last },
-            },
+            Stop::new(0.0, Color::Gray { v: first }),
+            Stop::new(1.0, Color::Gray { v: last }),
         ],
         angle: num(&fill, "angle").unwrap_or(0.0).rem_euclid(360.0),
         offset: tracedraw_core::geometry::Point::new(pct("xCenterOffset"), pct("yCenterOffset")),
@@ -1840,6 +1869,24 @@ pub(crate) fn parse_style_string(s: &str) -> RunStyle {
 
 #[cfg(test)]
 mod tests {
+    /// The object style string of a version 27 file whose outline its
+    /// program shows with a mitre limit of 29 degrees (#384).
+    #[test]
+    fn the_mitre_limit_comes_from_the_outline_of_the_style_string() {
+        let st = r#"{"StackedBitmapEffects":{},"fill":{"type":"0"},"outline":{"angle":"0","joinType":"0","miterLimit":"28.95502400000000164936864166520535945892333984375","width":"2238"},"transparency":{}}"#;
+        let a = object_miter_limit(st).expect("a limit");
+        assert!((a - 28.955024).abs() < 1e-6, "{a}");
+        assert_eq!(object_miter_limit(r#"{"outline":{"width":"1"}}"#), None);
+        assert_eq!(
+            object_miter_limit(r#"{"outline":{"miterLimit":"x"}}"#),
+            None
+        );
+        assert_eq!(
+            object_miter_limit(r#"{"outline":{"miterLimit":"500"}}"#),
+            Some(179.0)
+        );
+    }
+
     use super::*;
 
     #[test]

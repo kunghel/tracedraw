@@ -96,6 +96,12 @@ Para alinhar nós:
 Os nós selecionados vão para uma linha horizontal ou vertical comum, ou para um
 único ponto quando os dois estão marcados.
 
+As teclas de alinhamento também agem sobre os nós selecionados, dois ou mais:
+<kbd>L</kbd> e <kbd>R</kbd> os alinham com o nó mais à esquerda ou mais à
+direita, <kbd>T</kbd> e <kbd>B</kbd> com o nó de cima ou de baixo, e
+<kbd>E</kbd> os põe no meio da altura deles. Os pontos de controle vão junto.
+(<kbd>C</kbd> continua tornando o nó cúspide aqui.)
+
 ![A caixa de diálogo Alinhar nós](../../img/lines-shapes-shape-tool-align-nodes.png)
 
 ## Retângulos, elipses, polígonos e outros objetos {#shapes}

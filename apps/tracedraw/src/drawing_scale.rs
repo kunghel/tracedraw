@@ -193,9 +193,8 @@ mod tests {
     fn zoom_100_follows_the_ruler_calibration() {
         let mut app = crate::app::App::headless();
         app.canvas_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        // 96 pixels per inch at the system's scaling are 120 interface
-        // points at 100 % where one point is 0.8 of such a pixel (96 on
-        // Linux, where a point is a pixel).
+        // 96 pixels per inch at the system's scaling are 96 interface
+        // points at 100 %, where a point is such a pixel.
         let base = crate::ui::BASE_ZOOM;
         app.set_zoom_percent(100.0);
         assert!((app.view.zoom - 96.0 / base / 25.4).abs() < 1e-4);

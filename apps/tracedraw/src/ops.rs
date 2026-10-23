@@ -85,6 +85,10 @@ impl App {
     /// Align to the last-selected object; with one object, to the page
     /// (the menu, the L, R, T, B, E, C and P keys and scripts).
     pub fn align(&mut self, how: Align) {
+        // With the Shape tool and nodes selected, the nodes align.
+        if self.align_nodes_to(how) {
+            return;
+        }
         self.align_with(how, crate::ops2::AlignTo::ActiveObject);
     }
 
@@ -351,6 +355,33 @@ impl App {
         self.selection = keep.into_iter().collect();
     }
 
+    /// The menu label of the group Break Apart breaks first when a
+    /// selected object carries a contour, a blend or an extrusion (Break
+    /// Contour Group Apart and the like), else `None`.
+    pub fn effect_group_to_break(&self) -> Option<&'static str> {
+        use tracedraw_core::live::Effect;
+        self.selection.iter().find_map(|id| {
+            let (_, s) = self.doc().shape(*id).ok()?;
+            s.effects.iter().find_map(|e| match e {
+                Effect::Contour { .. } => Some("menu.object.break_contour_apart"),
+                Effect::Blend { .. } => Some("menu.object.break_blend_apart"),
+                Effect::Extrude { .. } => Some("menu.object.break_extrude_apart"),
+                _ => None,
+            })
+        })
+    }
+
+    /// The label and shortcut state of Break Apart for the menus: the
+    /// drop shadow's, an effect group's, else plain Break Apart.
+    pub fn break_apart_label(&self) -> &'static str {
+        if self.can_break_shadow_apart() {
+            "menu.object.break_shadow_apart"
+        } else {
+            self.effect_group_to_break()
+                .unwrap_or("menu.object.break_apart")
+        }
+    }
+
     /// Break Apart: every subpath becomes an object; the pieces come out
     /// selected.
     pub fn break_apart(&mut self) {
@@ -358,6 +389,12 @@ impl App {
         // Apart).
         if self.can_break_shadow_apart() {
             self.break_shadow_apart();
+            return;
+        }
+        // A contour, blend or extrude group: its steps become objects of
+        // their own beside the object (Break Contour Group Apart, #424).
+        if self.effect_group_to_break().is_some() {
+            self.break_effect_groups();
             return;
         }
         let ids = self.selection.clone();
@@ -1342,6 +1379,7 @@ mod curves_and_target_tests {
             app.select_in_region(
                 crate::select_region::Region::Rect(Rect::new(0.0, 0.0, 70.0, 70.0)),
                 false,
+                false,
             );
             assert_eq!(app.selection, vec![bottom, top]);
             app.shaping_with(op, false, false);
@@ -1352,6 +1390,7 @@ mod curves_and_target_tests {
         let (bottom, top) = two_rects(&mut app);
         app.select_in_region(
             crate::select_region::Region::Rect(Rect::new(0.0, 0.0, 70.0, 70.0)),
+            false,
             false,
         );
         app.select(vec![bottom, top]);
@@ -1379,6 +1418,7 @@ mod curves_and_target_tests {
         app.select(Vec::new());
         app.select_in_region(
             crate::select_region::Region::Rect(Rect::new(90.0, 90.0, 120.0, 120.0)),
+            false,
             false,
         );
         app.join_settings.gap = 5.0;

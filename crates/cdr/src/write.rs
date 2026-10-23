@@ -2456,14 +2456,16 @@ fn object_style_json(
         _ => r#"{"type":"0"}"#.to_string(),
     };
     let outline_part = match stroke {
+        // The mitre limit in degrees, where the reader takes it (#384).
         Some(s) => format!(
-            r#"{{"width":"{}","color":"{}"}}"#,
+            r#"{{"width":"{}","color":"{}","miterLimit":"{}"}}"#,
             if s.width <= Stroke::HAIRLINE + 1e-9 {
                 0
             } else {
                 units(s.width)
             },
-            colour_spec(s.color)
+            colour_spec(s.color),
+            Stroke::miter_angle_from_ratio(s.miter_ratio())
         ),
         None => r#"{"type":"1","width":"0"}"#.to_string(),
     };
@@ -3842,18 +3844,37 @@ impl<'a> Writer<'a> {
                 index.extend(std::iter::repeat_n(k as u8, sp.text.chars().count()));
             }
             t.u32(index.len() as u32);
-            for k in &index {
-                t.u16(0).u8(k.saturating_mul(2)).zeros(5);
-            }
             // The letters are one byte each from version 16 (files saved
-            // for 16 hold them so, while their style strings are UTF-16);
+            // for 16 hold them so, while their style strings are UTF-16;
             // UTF-16 letters in a version 16 file are read as half the
-            // text by the program that opens it.
-            let bytes = if v.0 >= 16 {
-                cp1252(&text).unwrap_or_else(|| text.as_bytes().to_vec())
-            } else {
-                utf16(&text)
-            };
+            // text by the program that opens it), Windows-1252, except a
+            // letter Windows-1252 lacks (Cyrillic, Greek, most of Central
+            // European): bit 0 of its record's flags marks it as a UTF-16
+            // unit of two bytes, as from version 12 (#368). A letter beyond
+            // the 16-bit range goes out as "?".
+            let mut bytes = Vec::new();
+            for (c, k) in text.chars().zip(&index) {
+                let one = if v.0 >= 16 {
+                    cp1252(&c.to_string())
+                } else {
+                    None
+                };
+                let wide = one.is_none();
+                t.u16(u16::from(wide && v.0 >= 16))
+                    .u8(k.saturating_mul(2))
+                    .zeros(5);
+                match one {
+                    Some(b) => bytes.extend_from_slice(&b),
+                    None => {
+                        let unit = if (c as u32) <= 0xffff {
+                            c as u16
+                        } else {
+                            u16::from(b'?')
+                        };
+                        bytes.extend_from_slice(&unit.to_le_bytes());
+                    }
+                }
+            }
             t.u32(bytes.len() as u32).bytes(&bytes).u8(0);
         }
         t.done()

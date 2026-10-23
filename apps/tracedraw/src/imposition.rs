@@ -80,6 +80,16 @@ pub struct Options {
     pub bleed: f64,
     /// Scale of the pages on a fitted sheet (1 = 100 %).
     pub scale: f64,
+    /// The back of a double-sided sheet: the columns run right to left,
+    /// so each page lands behind its front on the other side; the pages
+    /// themselves are not mirrored (#387).
+    pub back_side: bool,
+    /// On a fixed sheet the pages keep their size (scaled down only when
+    /// they would not fit the sheet itself), the marks taking the room
+    /// there is (#388).
+    pub keep_size: bool,
+    /// Where the page information sits, moved from its place (mm).
+    pub info_offset: (f64, f64),
     pub marks: Marks,
     /// The drawing's name and the moment, for the page information.
     pub title: String,
@@ -94,6 +104,9 @@ impl Default for Options {
             gutter: 0.0,
             bleed: 0.0,
             scale: 1.0,
+            back_side: false,
+            keep_size: false,
+            info_offset: (0.0, 0.0),
             marks: Marks::default(),
             title: String::new(),
             when: String::new(),
@@ -196,8 +209,10 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             let grid_h = rows as f64 * step_y - gutter;
             let (size, scale) = match o.sheet {
                 Some(sheet) => {
-                    let avail_w = (sheet.width - 2.0 * margin).max(1.0);
-                    let avail_h = (sheet.height - 2.0 * margin).max(1.0);
+                    // Kept size: only the sheet itself bounds the pages.
+                    let m = if o.keep_size { 0.0 } else { margin };
+                    let avail_w = (sheet.width - 2.0 * m).max(1.0);
+                    let avail_h = (sheet.height - 2.0 * m).max(1.0);
                     let s = (avail_w / grid_w).min(avail_h / grid_h).min(1.0);
                     (sheet, s)
                 }
@@ -220,7 +235,8 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                 .iter()
                 .enumerate()
                 .map(|(n, page)| {
-                    let col = (n as u32 % cols) as f64;
+                    let col = n as u32 % cols;
+                    let col = if o.back_side { cols - 1 - col } else { col } as f64;
                     let row = (n as u32 / cols) as f64;
                     let ps = page.and_then(|i| sizes.get(i)).copied().unwrap_or(cell);
                     // The page centred in its cell (y up: row 0 at the top).
@@ -473,7 +489,10 @@ pub fn marks(
         out.push(mark_shape(
             ShapeKind::Text {
                 spans: vec![TextSpan::new(text, "DejaVu Sans", 6.0)],
-                origin: Point::new(content.x0, band_bottom - 1.0),
+                origin: Point::new(
+                    content.x0 + o.info_offset.0,
+                    band_bottom - 1.0 + o.info_offset.1,
+                ),
                 frame: None,
                 align: Default::default(),
                 para: Default::default(),
@@ -760,5 +779,90 @@ mod tests {
         // A sheet the PDF writer accepts.
         let pdf = tracedraw_io::pdf::document_to_pdf(&out);
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    /// The back of a double-sided sheet: the columns run right to left so
+    /// each card prints behind its front, and nothing is mirrored (#387).
+    #[test]
+    fn the_back_side_runs_the_columns_right_to_left() {
+        let card = Size::new(85.0, 55.0);
+        let sizes = vec![card; 3];
+        let o = Options {
+            layout: Layout::NUp { cols: 3, rows: 1 },
+            sheet: Some(Size::new(297.0, 210.0)),
+            gutter: 5.0,
+            ..Default::default()
+        };
+        let front = plan(&sizes, &o);
+        let back = plan(
+            &sizes,
+            &Options {
+                back_side: true,
+                ..o.clone()
+            },
+        );
+        let x_of = |p: &SheetPlan, page: usize| {
+            p.cells
+                .iter()
+                .find(|c| c.page == Some(page))
+                .map(|c| c.trim.center().x)
+                .expect("placed")
+        };
+        let w = front[0].size.width;
+        for page in 0..3 {
+            // Mirror places on the sheet: what is left on the front is
+            // right on the back.
+            assert!((x_of(&front[0], page) + x_of(&back[0], page) - w).abs() < 1e-9);
+        }
+        assert!(x_of(&back[0], 0) > x_of(&back[0], 2));
+        // The pages themselves are not mirrored.
+        assert!(back[0]
+            .cells
+            .iter()
+            .all(|c| c.transform.as_coeffs()[0] > 0.0));
+    }
+
+    /// Keep size: on a fixed sheet the pages are not shrunk for the marks'
+    /// room; the page information moves by its offset (#388).
+    #[test]
+    fn kept_size_does_not_shrink_pages_for_marks() {
+        let page = Size::new(200.0, 280.0);
+        let base = Options {
+            sheet: Some(Size::new(210.0, 297.0)),
+            marks: Marks {
+                crop: true,
+                page_info: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let shrunk = plan(&[page], &base);
+        let kept = plan(
+            &[page],
+            &Options {
+                keep_size: true,
+                ..base.clone()
+            },
+        );
+        let w = |p: &[SheetPlan]| p[0].cells[0].trim.width();
+        assert!(w(&shrunk) < 199.0, "{}", w(&shrunk));
+        assert!((w(&kept) - 200.0).abs() < 1e-9);
+        // The page information where the drag put it.
+        let origin = |o: &Options| {
+            let sheets = plan(&[page], o);
+            marks(&sheets[0], o, 0, 1, &["1".to_string()])
+                .into_iter()
+                .find_map(|s| match s.kind {
+                    ShapeKind::Text { origin, .. } => Some(origin),
+                    _ => None,
+                })
+                .expect("page info")
+        };
+        let a = origin(&base);
+        let b = origin(&Options {
+            info_offset: (15.0, 40.0),
+            ..base.clone()
+        });
+        assert!(((b.x - a.x) - 15.0).abs() < 1e-9 && ((b.y - a.y) - 40.0).abs() < 1e-9);
     }
 }

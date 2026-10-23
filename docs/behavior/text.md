@@ -13,7 +13,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Tracking (range kerning) | 0% of em |
 | Baseline shift | 0 pt |
 | Alignment | left; justify stretches spaces only, last line left |
-| Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken |
+| Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken. Options > Text > Paragraph Text > Hyphenation patterns picks a hyphenation dictionary instead (`hyph_*.dic`, found where the spelling dictionaries are, see `writing-tools.md`): its first line names the character set; `LEFTHYPHENMIN` and `RIGHTHYPHENMIN` set the minimums (else 2 and 3); `%` and `#` lines are comments; `NEXTLEVEL` starts a second level of patterns, a word breaking where either level allows; patterns with a replacement (`/`) are left out. With a dictionary a capital first letter no longer stops a break (nouns in some languages); other capitals still do. A dictionary that is gone at start-up leaves the built-in patterns and a status message (`hyphen::tests::pattern_files`, `spell::tests::real_hyphenation_files`, ignored, over English, Brazilian Portuguese and German files: hy-phen-ation, com-pu-ta-dor, Haus-tür, Schiff-fahrt) |
 | Columns | 1, gutter 5 mm |
 | Bullets | off; indent 5 mm, bullet "*" from the paragraph font |
 | Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column |
@@ -113,9 +113,34 @@ Text and Glyphs dockers and Options (default font):
   baseline and bottom lines, with "Family (Style)" under it.
 - In the browser, resting the pointer on a family to download for 0.4 s
   fetches it, and its row and preview then draw in it.
+- Live preview in the drawing (#370): while the property bar's or the
+  Text docker's list is open, the selected text (the selected
+  characters while editing, the selected table cells) shows the family
+  under the pointer, or the one the keys reached, as it would take it.
+  The property bar's size list does the same with the size under the
+  pointer. Moving off the list or closing it shows the text as it was;
+  the preview is no undo step and leaves the redo steps and the saved
+  state as they were (`Engine::begin_preview`, `withdraw_preview`;
+  `the_text_shows_the_font_a_list_points_at`). Options' default font
+  list does not preview.
 
 Names are drawn by the text engine into pictures of the screen's
 resolution, only for the rows in view, and kept until fonts are added.
+
+## Edit Text dialog
+
+Text > Edit Text (Ctrl+Shift+T), the text bar's Edit Text button and the
+object's menu open the Edit Text dialog on the first selected text
+(#355): its characters in a box of several lines (Enter makes a new
+paragraph there), OK and Cancel. OK gives the text the characters of the
+box as one undo step ("Edit Text"): the characters both texts share (the
+longest common sequence, by character; past 4 million comparisons the
+common start and end) keep their formatting, each added run takes the
+formatting of the character before it, and linked frames reflow
+(`App::open_edit_text_dialog`, `App::set_text_content`; check
+`ops2::text_dialog_tests::the_edit_text_dialog_keeps_the_formatting_of_what_did_not_change`,
+`ops2::text_dialog_tests::char_edits_keep_what_both_texts_share`).
+A double click on a text still edits it in place.
 
 ## Editing in place
 
@@ -138,6 +163,8 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Click / Shift+click / drag | place the caret / extend / select |
 | Double-click | select the word |
 | Esc | finish editing and return to the Pick tool; an empty text is removed |
+| Undo of typing | the typing of one editing session of one text is one step ("Edit Text"); a session folds keystrokes only into its own step, while it is the last one, so editing another text never touches it (#373, `text_editing::tests::editing_a_second_text_keeps_the_edit_of_the_first`) |
+| Typing while a field has the keyboard (the font search field, a docker's box) | goes to the field only; the text waits until the field lets the keyboard go (#342, `pick_drag_tests::typing_in_a_focused_field_leaves_the_edited_text_alone`) |
 
 The property bar's font, size and style buttons act on the selected
 characters while a selection exists, and show the style at the caret
@@ -233,6 +260,17 @@ any other object; the steps and sides follow the letters' outlines
   typing, linking and resizing (`textflow.rs`, links kept in the object
   data as `text.next` and `text.prev`). Unlink leaves each frame with the
   text it shows.
+- The flow tab (#371): a paragraph frame that is picked, or whose text
+  does not fit, has a tab under its bottom edge's middle (a down arrow
+  when the text does not fit, two links when the frame flows on, empty
+  otherwise). A click on the tab of a frame that flows into no other
+  (Pick tool) waits for the next click, with the target arrow pointer
+  and a hint on the status bar: on another paragraph frame, on this page
+  or on another one reached meanwhile, the text flows into it; on empty
+  space a new frame the size of the first one takes the text, its top
+  left corner at the click; a drag makes the new frame the dragged
+  rectangle. Esc or a right click cancels
+  (`the_flow_tab_links_to_a_new_frame_on_another_page`).
 - A copy of a frame (Duplicate, a right click during a move, Paste,
   stamping) is a frame of its own, in no chain: typing in it does not
   flow into the original's next frame. Frames of a chain copied together
@@ -337,6 +375,11 @@ Window > Panels > Glyphs. From the top:
 - The character range: Entire Font, Basic Latin, Latin-1 Supplement,
   Latin Extended, Greek, Cyrillic, Hebrew, Arabic, Punctuation, Numbers,
   Currency, Arrows, Mathematical Operators, Symbols.
+- A search field: a character or characters ("é", "aB") keeps those; a
+  code point with a U+ or 0x prefix, or bare hex digits with at least one
+  digit ("20AC", "004"), keeps the characters whose code starts with it.
+- An info line: the code point, the character and its range of the glyph
+  last under the pointer.
 - A grid of large cells with the glyphs the font draws in that range
   (from its character map), scrolled row by row. The tip names the
   character and its code point. A small arrow under a glyph means the
@@ -410,9 +453,13 @@ imported), each carried font whose family is not installed serves the
 text for the rest of the session and joins the font lists; an installed
 font of the same family wins, since an embedded copy may hold only the
 letters the drawing used. A font is used only when its licence allows
-use in documents (the OS/2 embedding bits: not "restricted", outlines
-allowed); others are skipped with a log line and their text falls back
-like any missing font. The Fonts docker marks carried families
+use in documents (the OS/2 embedding bits read as the specification
+has them: restricted only when the restricted bit is set without a more
+permissive one, since a font setting several takes the most permissive;
+bitmaps-only counts from table version 2; the reserved bits, which old
+fonts set, mean nothing; `tracedraw_text::usable_in_documents`); others
+are skipped with a log line and their text falls back like any missing
+font. The Fonts docker marks carried families
 "embedded" under "Fonts in document". Saving a drawing as `.tdraw` adds
 the carried fonts its text uses (text imported or pasted from another
 drawing), so the file keeps its letters on machines without them, and,

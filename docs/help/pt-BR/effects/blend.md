@@ -59,3 +59,5 @@ pontas da curva.
 
 **Limpar mistura** remove os passos e deixa os dois objetos. **Separar**
 transforma os passos em objetos próprios.
+Os passos saem agrupados ao lado do objeto. [[menu.object > menu.object.break_blend_apart]] (<kbd>Ctrl+K</kbd>, também no
+menu do botão direito) faz o mesmo.

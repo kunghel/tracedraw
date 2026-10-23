@@ -298,9 +298,9 @@ pub fn group_color(tool: Tool) -> Color32 {
         .position(|g| g.tools.contains(&tool))
         .unwrap_or(0);
     // One hue per toolbox group, dark enough for light panels.
-    const HUES: [u32; 17] = [
+    const HUES: [u32; 18] = [
         0x2F6FD0, 0x8A4FD0, 0xD24A43, 0x2A9D9D, 0x2E9E4F, 0xE07B1A, 0x1E88E5, 0x1E88E5, 0x1E88E5,
-        0x5A5A5A, 0x7A8288, 0x16A085, 0xC0398B, 0x5D6D9E, 0xB9770E, 0xE67E22, 0x34495E,
+        0x5A5A5A, 0x7A8288, 0x16A085, 0xC0398B, 0x5D6D9E, 0xB9770E, 0xE67E22, 0x8A4FD0, 0x34495E,
     ];
     let v = HUES.get(group).copied().unwrap_or(0x5A5A5A);
     let c = Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
@@ -1477,7 +1477,7 @@ mod tests {
             tool_color(Tool::Crop, plain)
         );
         assert_ne!(tool_color(Tool::Pick, plain), tool_color(Tool::Crop, plain));
-        assert_eq!(crate::tools::GROUPS.len(), 17);
+        assert_eq!(crate::tools::GROUPS.len(), 18);
         set_colored(false);
     }
 }

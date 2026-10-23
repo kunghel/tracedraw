@@ -82,7 +82,9 @@ parallel, or Small back when they have a vanishing point.
 - The controls show the selected extrusion and edit the selected
   extrusions live (a run of changes is one undo step). Apply (shown when
   a selected object has none) adds the extrusion; Clear Extrude removes
-  it; Break Apart turns the effects into objects.
+  it; Break Apart turns the effects into objects, the faces grouped
+  beside the object; Object > Break Extrude Group Apart (Ctrl+K, and
+  the right-click menu) does the same (see `contour.md`).
 - Effects > Extrude opens the panel. Five picture buttons at its top
   choose a page: Camera (a picture of the extrusion type, the type list,
   the vanishing point lock, Depth, X and Y, and Measure from: Page

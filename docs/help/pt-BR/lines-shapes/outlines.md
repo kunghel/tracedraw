@@ -6,9 +6,17 @@ cor, a largura, o estilo, os cantos, as pontas e as setas na seção
 
 ## Abrir as configurações de contorno {#open}
 
-- A ferramenta [[tool.outline_pen]] (<kbd>F12</kbd>) abre o painel
-  [[docker.properties]] na seção [[docker.outline]] e volta para a ferramenta
-  [[tool.pick]].
+- A ferramenta [[tool.outline_pen]] (<kbd>F12</kbd>) abre a caixa de diálogo
+  [[outline_pen.title]] com todas as configurações do contorno: cor, largura e
+  sua unidade, estilo, limite de esquadria, tracejados, cantos, terminações,
+  posição, pontas de seta, caligrafia, [[docker.behind_fill]],
+  [[docker.scale_with_object]], os nós de largura do contorno variável e
+  [[outline_pen.overprint]]. **OK** muda só o que você mudou, em todos os
+  objetos selecionados; sem nada selecionado, define o contorno dos objetos
+  novos.
+
+![A caixa de diálogo Caneta de contorno](../../img/lines-shapes-outlines-outline-pen.png)
+
 - Clique duas vezes na parte do contorno da barra de status.
 - Clique com o botão direito em uma cor da paleta para colorir o contorno da
   seleção.
@@ -61,8 +69,10 @@ grosso ou mais fino ao longo do comprimento com nós de largura.
 2. Escolha a ferramenta [[tool.variable_outline]].
 3. Arraste através do contorno: um nó de largura é acrescentado onde você
    começa, e o contorno chega até o ponteiro dos dois lados. Mantenha
-   <kbd>Alt</kbd> pressionado ao começar a arrastar para mudar só o lado onde
-   está o ponteiro.
+   <kbd>Shift</kbd> (ou <kbd>Alt</kbd>) pressionado ao começar a arrastar para
+   mudar só o lado onde está o ponteiro. <kbd>Shift</kbd>+clique escolhe uma
+   sequência de nós e <kbd>Ctrl</kbd>+clique acrescenta um; um arraste então
+   muda todos os nós escolhidos.
 4. Acrescente mais nós do mesmo jeito. Entre os nós, a largura muda suavemente.
 
 Para mudar um nó, clique nele e digite a **Largura esquerda** e a **Largura

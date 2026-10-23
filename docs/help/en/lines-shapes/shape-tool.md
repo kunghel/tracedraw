@@ -95,6 +95,12 @@ To line up nodes:
 The selected nodes move onto a common horizontal or vertical line, or onto
 one point when both are ticked.
 
+The align keys work on the selected nodes too, two or more: <kbd>L</kbd>
+and <kbd>R</kbd> line them up with the leftmost or rightmost node,
+<kbd>T</kbd> and <kbd>B</kbd> with the top or bottom node, and <kbd>E</kbd>
+puts them on the middle of their height. Their control handles move with
+them. (<kbd>C</kbd> keeps making a node cusp here.)
+
 ![The Node Align dialog box](../../img/lines-shapes-shape-tool-align-nodes.png)
 
 ## Rectangles, ellipses, polygons and other objects {#shapes}

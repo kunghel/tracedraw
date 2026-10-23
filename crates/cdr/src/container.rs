@@ -190,10 +190,17 @@ pub fn external_member(bytes: &[u8], container: &Container, name: &str) -> Optio
     ];
     for c in candidates {
         if let Ok(f) = archive.by_name(&c) {
+            // The member's own size, as the archive declares it, within
+            // the ceiling: a drawing of large bitmaps declares its
+            // `Bitmaps.dat` honestly (850 MB in a version 27 file of two
+            // pictures on a 1.5 m page, #323), a bomb claims less than it
+            // inflates to and stops there.
+            let declared = f.size();
+            let limit = member_limit(declared);
             let mut out = Vec::new();
-            if f.take(MAX_STREAM).read_to_end(&mut out).is_ok() {
-                if out.len() as u64 >= MAX_STREAM {
-                    log::warn!("{c} inflates past {MAX_STREAM} bytes; cut off there");
+            if f.take(limit).read_to_end(&mut out).is_ok() {
+                if cut_short(out.len() as u64, limit, declared) {
+                    log::warn!("{c} inflates past {limit} bytes; cut off there");
                 }
                 return Some(out);
             }
@@ -210,6 +217,23 @@ const MAX_EMBEDDED: u64 = 64 << 20;
 /// one compressed block may inflate to: a file that claims more is a
 /// decompression bomb or damaged, and is read only up to here.
 pub(crate) const MAX_STREAM: u64 = 512 << 20;
+
+/// The most an external data member may inflate to when the archive
+/// declares it that large (the bitmaps of a big drawing).
+pub(crate) const MAX_DATA_STREAM: u64 = 3 << 30;
+
+/// How far a data member declared `declared` bytes long may inflate:
+/// [`MAX_STREAM`] at least, its declared size up to [`MAX_DATA_STREAM`].
+pub(crate) fn member_limit(declared: u64) -> u64 {
+    declared.clamp(MAX_STREAM, MAX_DATA_STREAM)
+}
+
+/// Whether a member read to `len` bytes under `limit` was cut off: it
+/// filled the limit while claiming another size (a bomb inflating past
+/// what it declares, or a member larger than the ceiling).
+pub(crate) fn cut_short(len: u64, limit: u64, declared: u64) -> bool {
+    len >= limit && declared != limit
+}
 
 /// The CMYK colour profile a version 14+ ZIP file carries (a member
 /// under `color/profiles/cmyk/`, seen in version 17 to 21 files next to
@@ -475,6 +499,28 @@ fn attribute(tag: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A data member inflates to the size the archive declares for it,
+    /// within the ceiling (a big drawing's bitmaps, #323), and never
+    /// below the plain limit; it is cut short when it fills the limit
+    /// while claiming another size.
+    #[test]
+    fn data_members_inflate_to_their_declared_size_within_the_ceiling() {
+        assert_eq!(super::member_limit(1 << 20), super::MAX_STREAM);
+        assert_eq!(super::member_limit(851_688_712), 851_688_712);
+        assert_eq!(super::member_limit(5 << 30), super::MAX_DATA_STREAM);
+        // Read whole: not cut.
+        assert!(!super::cut_short(851_688_712, 851_688_712, 851_688_712));
+        assert!(!super::cut_short(100, super::MAX_STREAM, 100));
+        // A member claiming 100 bytes that fills the plain limit: a bomb.
+        assert!(super::cut_short(super::MAX_STREAM, super::MAX_STREAM, 100));
+        // Past the ceiling: cut there.
+        assert!(super::cut_short(
+            super::MAX_DATA_STREAM,
+            super::MAX_DATA_STREAM,
+            5 << 30
+        ));
+    }
+
     use super::*;
 
     #[test]

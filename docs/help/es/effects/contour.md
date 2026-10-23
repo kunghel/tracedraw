@@ -48,3 +48,5 @@ Los pasos exteriores se dibujan detrás del objeto, los interiores delante.
 
 **Borrar silueta** quita la silueta; **Separar** convierte los pasos en
 objetos.
+Los pasos salen agrupados junto al objeto. [[menu.object > menu.object.break_contour_apart]] (<kbd>Ctrl+K</kbd>, también en
+el menú del botón derecho) hace lo mismo.

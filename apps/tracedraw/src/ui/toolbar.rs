@@ -13,8 +13,11 @@ fn vsep(ui: &mut Ui) {
     ui.add(egui::Separator::default().vertical().spacing(6.0));
 }
 
-/// Standard toolbar buttons: 32 px square with a 20 px icon.
-const STD: f32 = 32.0;
+/// Standard toolbar buttons: 32 px square with a 20 px icon at the
+/// medium button size.
+fn std_btn() -> f32 {
+    Tokens::bar_button()
+}
 const STD_ICON: f32 = 20.0;
 
 fn std_frame(ui: &Ui, rect: egui::Rect, hovered: bool, pressed: bool) {
@@ -48,7 +51,7 @@ fn std_button(
     pressed: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        Vec2::splat(STD),
+        Vec2::splat(std_btn()),
         if enabled {
             egui::Sense::click()
         } else {
@@ -73,11 +76,12 @@ fn std_button(
 /// A standard toolbar button that opens a list: the icon with a small
 /// down arrow on its right, one button.
 fn std_list_button(ui: &mut Ui, action: icons::Action, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(STD + 11.0, STD), egui::Sense::click());
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(std_btn() + 11.0, std_btn()), egui::Sense::click());
     std_frame(ui, rect, resp.hovered(), resp.is_pointer_button_down_on());
     let resp = resp.on_hover_ui(|ui| rich_tip(ui, tip));
     let icon = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + STD / 2.0, rect.center().y),
+        egui::pos2(rect.left() + std_btn() / 2.0, rect.center().y),
         Vec2::splat(STD_ICON),
     );
     icons::draw_action(ui.painter(), icon, action, Tokens::icon());
@@ -109,7 +113,7 @@ fn tip(key: &str) -> String {
 /// The small arrow after a button that opens its list.
 fn std_arrow(ui: &mut Ui, id: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        Vec2::new(14.0, STD),
+        Vec2::new(14.0, std_btn()),
         if enabled {
             egui::Sense::click()
         } else {
@@ -139,7 +143,7 @@ fn std_arrow(ui: &mut Ui, id: &str, enabled: bool) -> egui::Response {
 
 /// A thin vertical separator between button groups.
 fn std_sep(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(9.0, STD), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(9.0, std_btn()), egui::Sense::hover());
     let x = rect.center().x.round() + 0.5;
     ui.painter().vline(
         x,
@@ -244,7 +248,7 @@ fn zoom_box(app: &mut App, ui: &mut Ui, id: &str, width: f32) {
 pub fn standard_toolbar(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 1.0;
-        ui.set_min_height(STD);
+        ui.set_min_height(std_btn());
         // Commands on the drawing are pale without one shown (the Welcome
         // Screen, even with drawings open behind it).
         let doc = app.drawing_shown();
@@ -497,7 +501,7 @@ pub fn standard_toolbar(app: &mut App, ui: &mut Ui) {
         } else {
             egui::Sense::hover()
         };
-        let (rect, snap_resp) = ui.allocate_exact_size(Vec2::new(width, STD), sense);
+        let (rect, snap_resp) = ui.allocate_exact_size(Vec2::new(width, std_btn()), sense);
         std_frame(ui, rect, doc && snap_resp.hovered(), false);
         ui.painter().text(
             egui::pos2(rect.left() + 6.0, rect.center().y),
@@ -561,7 +565,8 @@ pub fn standard_toolbar(app: &mut App, ui: &mut Ui) {
             .show(|ui| crate::ui::menus::options_items(app, ui));
         std_sep(ui);
         // Launch: the other tools that come with the editor.
-        let (rect, launch) = ui.allocate_exact_size(Vec2::new(108.0, STD), egui::Sense::click());
+        let (rect, launch) =
+            ui.allocate_exact_size(Vec2::new(108.0, std_btn()), egui::Sense::click());
         std_frame(ui, rect, launch.hovered(), false);
         icons::draw_action(
             ui.painter(),
@@ -620,7 +625,7 @@ fn ai_button(app: &mut App, ui: &mut Ui) {
         Tokens::text(),
     );
     let w = galley.size().x + 52.0;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, STD), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, std_btn()), egui::Sense::click());
     std_frame(ui, rect, resp.hovered(), false);
     let p = ui.painter();
     p.text(
@@ -821,7 +826,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
         let v = ui.visuals_mut();
         v.widgets.inactive.weak_bg_fill = crate::theme::Tokens::field();
         v.widgets.hovered.weak_bg_fill = crate::theme::Tokens::field();
-        let shapes = app.selected_shapes();
+        let shapes = app.selected_rc();
         match app.tool {
             Tool::Shape => shape_tool_bar(app, ui),
             Tool::Pick | Tool::FreeformPick
@@ -1412,7 +1417,7 @@ fn curve_tool_properties(app: &mut App, ui: &mut Ui) {
     if selected {
         sep(ui);
         crate::ui::propbar::outline_part(app, ui);
-        let open = app.selected_shapes().iter().any(|s| match &s.kind {
+        let open = app.selected_rc().iter().any(|s| match &s.kind {
             ShapeKind::Path { path, .. } => !path
                 .elements()
                 .iter()
@@ -1667,7 +1672,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
         }
     }
     vsep(ui);
-    let shapes = app.selected_shapes();
+    let shapes = app.selected_rc();
     let is_text = shapes
         .iter()
         .any(|s| matches!(s.kind, ShapeKind::Text { .. }));
@@ -1681,7 +1686,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
         app.dialog = crate::ui::dialogs::Dialog::TextDropCap;
     }
     vsep(ui);
-    let docker_open = app.show_dockers && app.docker_tab == crate::app::DockerTab::Text;
+    let docker_open = app.docker_shown(crate::app::DockerTab::Text);
     if pic_button(
         ui,
         Pic::TextProperties,
@@ -1702,7 +1707,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
     )
     .clicked()
     {
-        app.edit_selected_text();
+        app.open_edit_text_dialog();
     }
     if changed {
         app.apply_text_style();
@@ -1958,8 +1963,12 @@ pub(crate) fn text_size_list(app: &mut App, ui: &mut Ui) -> bool {
         (field, anchor)
     });
     let (field, anchor) = inner.inner;
-    let current = app.text_size_pt;
-    egui::Popup::new(popup_id, ctx.clone(), anchor, ui.layer_id())
+    let current = app.text_settings_shown().3;
+    // The size last under the pointer while the list is open: the text
+    // shows it (#370).
+    let hover_id = popup_id.with("hovered");
+    let mut hovered: Option<f64> = ctx.data(|d| d.get_temp(hover_id));
+    let shown = egui::Popup::new(popup_id, ctx.clone(), anchor, ui.layer_id())
         .open_memory(None)
         .width(anchor.width())
         .show(|ui| {
@@ -1968,15 +1977,33 @@ pub(crate) fn text_size_list(app: &mut App, ui: &mut Ui) -> bool {
                 .show(ui, |ui| {
                     for s in TEXT_SIZES {
                         let label = format!("{s} pt");
-                        if ui
-                            .selectable_label((current - s).abs() < 1e-6, label)
-                            .clicked()
-                        {
+                        let r = ui.selectable_label((current - s).abs() < 1e-6, label);
+                        if r.clicked() {
                             picked = Some(s);
+                        }
+                        if r.hovered() {
+                            hovered = Some(s);
                         }
                     }
                 });
         });
+    if shown.is_none() {
+        hovered = None;
+    }
+    ctx.data_mut(|d| match hovered {
+        Some(h) => {
+            d.insert_temp(hover_id, h);
+        }
+        None => d.remove::<f64>(hover_id),
+    });
+    let owner = format!("{popup_id:?}");
+    if picked.is_some() {
+        app.end_font_preview();
+    } else if let Some(h) = hovered {
+        app.preview_text(&owner, Some(crate::ui::font_list::LiveText::Size(h)));
+    } else if app.live_font.as_ref().is_some_and(|l| l.owner == owner) {
+        app.end_font_preview();
+    }
     if let Some(s) = picked {
         app.text_size_pt = s;
         egui::Popup::close_id(&ctx, popup_id);
@@ -2054,7 +2081,7 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
     use tracedraw_core::nodes::NodeType;
     // Rectangles, ellipses and polygons: the Shape tool edits them through
     // their own controls (corners, pie and arc, points), as with their tools.
-    let shapes = app.selected_shapes();
+    let shapes = app.selected_rc();
     // The kind of the object being edited first, so a rectangle still
     // being one reads apart from a curve.
     let kind_label = |ui: &mut Ui, key: &str| {
@@ -2347,6 +2374,18 @@ fn interactive_fill_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::do
     let shown_kind = (!mix.kind).then_some(kind);
     let mut touched: Vec<FillField> = Vec::new();
     let mut changed = false;
+    // The colour node picked on the canvas, for one object; an edit of it
+    // (colour, opacity, position) goes in after the bar.
+    let picked_node = (shapes.len() == 1)
+        .then(|| app.selected_fill_node().map(|(_, i)| i))
+        .flatten();
+    type NodeEdit = (
+        usize,
+        Option<tracedraw_core::Color>,
+        Option<f32>,
+        Option<f64>,
+    );
+    let mut node_edit: Option<NodeEdit> = None;
     for (i, key) in [
         "docker.fill_none",
         "docker.fill_uniform",
@@ -2450,14 +2489,58 @@ fn interactive_fill_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::do
                 }
             }
             vsep(ui);
-            if let Some(first) = f.stops.first_mut() {
-                if color_button(ui, &mut first.color, mix.has(FillField::StartColor)) {
-                    set(FillField::StartColor, &mut changed);
+            if let Some(i) = picked_node.filter(|i| *i < f.stops.len()) {
+                // The picked node: its colour, transparency and place on
+                // the line (the start and the end stay at the ends).
+                let n = f.stops.len();
+                let st = f.stops[i];
+                let mut c = st.color;
+                if crate::ui::color_picker::color_button(ui, &mut c) {
+                    node_edit = Some((i, Some(c), None, None));
                 }
-            }
-            if let Some(last) = f.stops.last_mut() {
-                if color_button(ui, &mut last.color, mix.has(FillField::EndColor)) {
-                    set(FillField::EndColor, &mut changed);
+                ui.label(
+                    egui::RichText::new(tr("toolbar.node_transparency"))
+                        .color(Tokens::text_dim())
+                        .size(11.0),
+                );
+                let mut tr_pct = ((1.0 - st.opacity) * 100.0).round() as f64;
+                if ui
+                    .add(
+                        crate::ui::field::NumField::new(&mut tr_pct)
+                            .speed(1.0)
+                            .range(0.0..=100.0)
+                            .suffix(" %"),
+                    )
+                    .changed()
+                {
+                    node_edit = Some((i, None, Some(1.0 - tr_pct as f32 / 100.0), None));
+                }
+                ui.label(
+                    egui::RichText::new(tr("toolbar.node_position"))
+                        .color(Tokens::text_dim())
+                        .size(11.0),
+                );
+                let mut pos = st.pos * 100.0;
+                let r = ui.add_enabled(
+                    i > 0 && i + 1 < n,
+                    crate::ui::field::NumField::new(&mut pos)
+                        .speed(1.0)
+                        .range(0.0..=100.0)
+                        .suffix(" %"),
+                );
+                if r.changed() {
+                    node_edit = Some((i, None, None, Some(pos / 100.0)));
+                }
+            } else {
+                if let Some(first) = f.stops.first_mut() {
+                    if color_button(ui, &mut first.color, mix.has(FillField::StartColor)) {
+                        set(FillField::StartColor, &mut changed);
+                    }
+                }
+                if let Some(last) = f.stops.last_mut() {
+                    if color_button(ui, &mut last.color, mix.has(FillField::EndColor)) {
+                        set(FillField::EndColor, &mut changed);
+                    }
                 }
             }
             ui.label(
@@ -2506,6 +2589,8 @@ fn interactive_fill_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::do
         } else {
             app.patch_selection_fill(&old, &fill, &touched);
         }
+    } else if let Some((i, c, o, p)) = node_edit {
+        app.set_fountain_node(i, c, o, p, false);
     }
     vsep(ui);
     ui.label(

@@ -466,7 +466,11 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.group_ungroup" => Pic::Ungroup,
         "menu.object.group_ungroup_all" => Pic::UngroupAll,
         "menu.object.combine" => Pic::Combine,
-        "menu.object.break_apart" | "menu.object.break_shadow_apart" => Pic::BreakApart,
+        "menu.object.break_apart"
+        | "menu.object.break_shadow_apart"
+        | "menu.object.break_contour_apart"
+        | "menu.object.break_blend_apart"
+        | "menu.object.break_extrude_apart" => Pic::BreakApart,
         "menu.object.weld" => Pic::Weld,
         "menu.object.trim" => Pic::Trim,
         "menu.object.intersect" => Pic::Intersect,
@@ -1762,7 +1766,7 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         ui,
         "menu.edit.repeat",
         "Ctrl+R",
-        app.last_repeatable.is_some(),
+        app.last_repeatable().is_some(),
     ) {
         app.repeat_last();
     }
@@ -1797,7 +1801,9 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         app.delete_selection();
     }
     sep(ui);
-    if item(ui, "menu.edit.duplicate", "Ctrl+D", has) {
+    // Guidelines selected (no objects) duplicate too.
+    let guides_picked = !app.selected_guides.is_empty();
+    if item(ui, "menu.edit.duplicate", "Ctrl+D", has || guides_picked) {
         app.duplicate();
     }
     if item(ui, "menu.edit.clone", "", app.can_clone()) {
@@ -2443,11 +2449,9 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.object.combine", "Ctrl+L", many) {
         app.combine();
     }
-    if app.can_break_shadow_apart() {
-        if item(ui, "menu.object.break_shadow_apart", "Ctrl+K", true) {
-            app.break_shadow_apart();
-        }
-    } else if item(ui, "menu.object.break_apart", "Ctrl+K", has) {
+    // Break Apart, or the drop shadow's or effect group's version of it.
+    let label = app.break_apart_label();
+    if item(ui, label, "Ctrl+K", has) {
         app.break_apart();
     }
     if item(ui, "menu.object.add_perspective", "", has) {
@@ -2521,19 +2525,17 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         ui,
         "menu.object.properties",
         "Alt+Enter",
-        app.show_dockers && app.docker_tab == DockerTab::Properties,
+        app.docker_shown(DockerTab::Properties),
     ) {
-        app.show_dockers = true;
-        app.docker_tab = DockerTab::Properties;
+        app.open_docker(DockerTab::Properties);
     }
     if check(
         ui,
         "menu.object.objects",
         "",
-        app.show_dockers && app.docker_tab == DockerTab::Objects,
+        app.docker_shown(DockerTab::Objects),
     ) {
-        app.show_dockers = true;
-        app.docker_tab = DockerTab::Objects;
+        app.open_docker(DockerTab::Objects);
     }
 }
 
@@ -2594,15 +2596,20 @@ fn effects_menu(app: &mut App, ui: &mut Ui) {
         ("menu.effects.vector_mosaic", "", DockerTab::VectorMosaic),
     ] {
         if check(ui, key, shortcut, effect_docker_open(app, tab)) {
-            app.show_dockers = true;
-            app.docker_tab = tab;
+            app.open_docker(tab);
         }
     }
 }
 
-/// An effect panel's tab is in the shown docker column.
+/// An effect panel's tab is in an open docker column, or floating.
 pub(crate) fn effect_docker_open(app: &App, tab: DockerTab) -> bool {
-    app.show_dockers && (app.docker_tab == tab || app.open_dockers.contains(&tab))
+    match app.docker_place(tab) {
+        Some(crate::app::DockerPlace::Right) => app.show_dockers,
+        Some(crate::app::DockerPlace::Left) => app.show_left_dockers,
+        Some(crate::app::DockerPlace::Floating) => true,
+        // Brought to the front and joining the default column.
+        None => app.show_dockers && app.docker_tab == tab,
+    }
 }
 
 fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
@@ -2796,7 +2803,7 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         }
     }
     if item(ui, "menu.text.edit_text", "Ctrl+Shift+T", is_text) {
-        app.edit_selected_text();
+        app.open_edit_text_dialog();
     }
     if item(ui, "menu.text.insert_placeholder_text", "", is_para) {
         app.insert_placeholder_text();
@@ -2889,7 +2896,9 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
                 Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(2));
         }
         if item(ui, "menu.text.autocorrect", "", true) {
-            app.dialog = Dialog::Autocorrect(Default::default());
+            app.dialog = Dialog::Options;
+            app.options_page = crate::ui::dialogs::OptionsPage::Text;
+            app.options_text_tab = crate::ui::options::AUTOCORRECT_TAB;
         }
     });
     sep(ui);
@@ -3114,6 +3123,68 @@ fn tools_menu(app: &mut App, ui: &mut Ui) {
         app.dialog = Dialog::TimeTracker(Default::default());
     }
 }
+/// Every bar with a check at each one shown (Window > Toolbars and the
+/// bars' menu): the menu bar (always there), the standard toolbar, the
+/// property bar, the toolbox, the colour palette, the AI prompt bar, the
+/// status bar, the Text, Zoom and Transform toolbars and the time
+/// tracker's bar.
+pub(crate) fn toolbars_list(app: &mut App, ui: &mut Ui) {
+    check(ui, "menu.window.toolbar_menu_bar", "", true);
+    if check(
+        ui,
+        "menu.window.toolbar_standard",
+        "",
+        app.show_standard_toolbar,
+    ) {
+        app.show_standard_toolbar = !app.show_standard_toolbar;
+    }
+    if check(
+        ui,
+        "menu.window.toolbar_property_bar",
+        "",
+        app.show_property_bar,
+    ) {
+        app.show_property_bar = !app.show_property_bar;
+    }
+    if check(ui, "menu.window.toolbar_toolbox", "", app.show_toolbox) {
+        app.show_toolbox = !app.show_toolbox;
+    }
+    let palette = app.settings.palette.show_palette;
+    if check(ui, "bars.palette", "", palette) {
+        app.settings.palette.show_palette = !palette;
+    }
+    // Shown while an AI service is set up (AI Drawing).
+    let ai_bar = app.settings.ai.show_bar;
+    if check(ui, "bars.ai_prompt", "", ai_bar) {
+        app.settings.ai.show_bar = !ai_bar;
+    }
+    if check(
+        ui,
+        "menu.window.toolbar_status_bar",
+        "",
+        app.show_status_bar,
+    ) {
+        app.show_status_bar = !app.show_status_bar;
+    }
+    if check(ui, "menu.window.toolbar_text", "", app.show_text_toolbar) {
+        app.show_text_toolbar = !app.show_text_toolbar;
+    }
+    if check(ui, "menu.window.toolbar_zoom", "", app.show_zoom_toolbar) {
+        app.show_zoom_toolbar = !app.show_zoom_toolbar;
+    }
+    if check(
+        ui,
+        "menu.window.toolbar_transform",
+        "",
+        app.show_transform_toolbar,
+    ) {
+        app.show_transform_toolbar = !app.show_transform_toolbar;
+    }
+    let tracker = app.settings.time_tracker.show_bar;
+    if check(ui, "menu.window.toolbar_time_tracker", "", tracker) {
+        app.settings.time_tracker.show_bar = !tracker;
+    }
+}
 
 fn window_menu(app: &mut App, ui: &mut Ui) {
     let doc = app.has_document() && !app.show_welcome;
@@ -3191,14 +3262,8 @@ fn window_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     sub(ui, "menu.window.dockers", |ui| {
         let row = |ui: &mut Ui, app: &mut App, tab: DockerTab| {
-            if check(
-                ui,
-                tab.key(),
-                tab.shortcut(),
-                app.show_dockers && app.docker_tab == tab,
-            ) {
-                app.show_dockers = true;
-                app.docker_tab = tab;
+            if check(ui, tab.key(), tab.shortcut(), app.docker_shown(tab)) {
+                app.open_docker(tab);
             }
         };
         for (i, group) in DockerTab::MENU_GROUPS.iter().enumerate() {
@@ -3223,61 +3288,7 @@ fn window_menu(app: &mut App, ui: &mut Ui) {
         app.effect_picker.open = !app.effect_picker.open;
     }
     sub(ui, "menu.window.toolbars", |ui| {
-        check(ui, "menu.window.toolbar_menu_bar", "", true);
-        if check(
-            ui,
-            "menu.window.toolbar_standard",
-            "",
-            app.show_standard_toolbar,
-        ) {
-            app.show_standard_toolbar = !app.show_standard_toolbar;
-        }
-        if check(
-            ui,
-            "menu.window.toolbar_property_bar",
-            "",
-            app.show_property_bar,
-        ) {
-            app.show_property_bar = !app.show_property_bar;
-        }
-        if check(ui, "menu.window.toolbar_toolbox", "", app.show_toolbox) {
-            app.show_toolbox = !app.show_toolbox;
-        }
-        let palette = app.settings.palette.show_palette;
-        if check(ui, "bars.palette", "", palette) {
-            app.settings.palette.show_palette = !palette;
-        }
-        // Shown while an AI service is set up (AI Drawing).
-        let ai_bar = app.settings.ai.show_bar;
-        if check(ui, "bars.ai_prompt", "", ai_bar) {
-            app.settings.ai.show_bar = !ai_bar;
-        }
-        if check(
-            ui,
-            "menu.window.toolbar_status_bar",
-            "",
-            app.show_status_bar,
-        ) {
-            app.show_status_bar = !app.show_status_bar;
-        }
-        if check(ui, "menu.window.toolbar_text", "", app.show_text_toolbar) {
-            app.show_text_toolbar = !app.show_text_toolbar;
-        }
-        if check(ui, "menu.window.toolbar_zoom", "", app.show_zoom_toolbar) {
-            app.show_zoom_toolbar = !app.show_zoom_toolbar;
-        }
-        if check(
-            ui,
-            "menu.window.toolbar_transform",
-            "",
-            app.show_transform_toolbar,
-        ) {
-            app.show_transform_toolbar = !app.show_transform_toolbar;
-        }
-        let tracker = app.settings.time_tracker.show_bar;
-        if check(ui, "menu.window.toolbar_time_tracker", "", tracker) {
-            app.settings.time_tracker.show_bar = !tracker;
-        }
+        toolbars_list(app, ui);
         sep(ui);
         let locked = app.settings.bars.locked;
         if check(ui, "bars.lock", "", locked) {
@@ -3369,13 +3380,12 @@ fn help_menu(app: &mut App, ui: &mut Ui) {
         app.show_welcome = true;
         app.welcome_tab = crate::app::WelcomeTab::Learn;
     }
-    let hints_open = app.show_dockers && app.docker_tab == DockerTab::Hints;
+    let hints_open = app.docker_shown(DockerTab::Hints);
     if check(ui, "menu.help.hints", "", hints_open) {
         if hints_open {
             app.close_docker(DockerTab::Hints);
         } else {
-            app.show_dockers = true;
-            app.docker_tab = DockerTab::Hints;
+            app.open_docker(DockerTab::Hints);
         }
     }
     if item(ui, "menu.help.quick_start_guide", "", true) {

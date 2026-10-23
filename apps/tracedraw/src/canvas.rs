@@ -118,6 +118,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     crate::comments::draw_comments(app, painter);
     crate::perspective_draw::draw_grid(app, painter, rect);
     draw_frame_links(app, painter);
+    draw_drop_frame(app, painter);
     draw_symmetry_lines(app, painter, rect);
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
@@ -481,7 +482,17 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
 
     // Objects, rasterized with tiny-skia into a texture; the live drag preview
     // is applied to the selection during the render.
-    let doc: &Document = app.doc();
+    // Editing a symmetry with Show full preview off: drawn without its
+    // copies (the canvas outlines them in red); a revision of its own so
+    // the picture is not taken for the full one.
+    let without_copies = app.symmetry_without_copies();
+    let doc: &Document = without_copies.as_deref().unwrap_or(app.doc());
+    let revision = app.engine.revision()
+        ^ if without_copies.is_some() {
+            1u64 << 62
+        } else {
+            0
+        };
     // Paragraph text being resized keeps its letters while the frame
     // follows the drag (the text flows anew on release).
     let preview_ids = preview.map(|t| {
@@ -500,12 +511,12 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         view,
         rect,
         preview_ids,
-        app.engine.revision(),
+        revision,
         app.wireframe,
         app.simulate_overprints,
         app.rasterize_complex_effects,
         app.proof_colors,
-        app.focus_target().map(|id| (id, app.focus_visibility())),
+        app.render_focus(),
         (app.view_mode == crate::app::ViewMode::Pixels).then(|| app.document_dpi()),
     ) {
         let (tex, at) = tex;
@@ -656,56 +667,143 @@ fn dash(painter: &Painter, a: Pos2, b: Pos2, color: Color32) {
 
 /// Mirror lines of selected objects with a Symmetry effect (dashed, with a
 /// centre handle), shown in symmetry mode.
-fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
-    let view = &app.view;
-    for s in app.selected_shapes() {
-        for e in &s.effects {
-            let tracedraw_core::live::Effect::Symmetry {
-                center,
-                angle,
-                lines,
-            } = e
-            else {
-                continue;
+/// The clip frame the selection is being moved over: its outline filled
+/// in the selection colour, and under the pointer what a drop does (as
+/// it is, or with W or K held).
+fn draw_drop_frame(app: &App, painter: &Painter) {
+    let Some(frame) = app.drop_frame else {
+        return;
+    };
+    let Some(s) = app.doc().find_shape(frame) else {
+        return;
+    };
+    let accent = Tokens::ACCENT;
+    for (pts, closed) in flatten(&s.page_path(), &app.view) {
+        if pts.len() < 2 {
+            continue;
+        }
+        if closed {
+            painter.add(egui::Shape::convex_polygon(
+                pts.clone(),
+                accent.gamma_multiply(0.25),
+                EStroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::line(pts, EStroke::new(1.5, accent)));
+    }
+    let Some(p) = app.pointer_page else {
+        return;
+    };
+    let at = app.view.to_screen(p) + egui::vec2(18.0, 24.0);
+    let (w, k) = app.drop_keys;
+    let lines = [
+        ("hint.drop_frame_place", !w && !k),
+        ("hint.drop_frame_add", w && !k),
+        ("hint.drop_frame_replace", k),
+    ];
+    let font = egui::FontId::proportional(12.0);
+    let galleys: Vec<_> = lines
+        .iter()
+        .map(|(key, on)| {
+            let col = if *on {
+                Tokens::text()
+            } else {
+                Tokens::text_dim()
             };
-            let n = (*lines).clamp(1, 12) as usize;
-            let far = 100_000.0 / view.zoom.max(0.01) as f64;
-            for k in 0..n {
-                let a = (angle + 180.0 * k as f64 / n as f64).to_radians();
-                let d = tracedraw_core::geometry::Vec2::new(a.cos(), a.sin());
-                let s0 = view.to_screen(*center - d * far);
-                let s1 = view.to_screen(*center + d * far);
-                if let Some((c0, c1)) = clip_segment(s0, s1, rect) {
-                    dash(painter, c0, c1, Color32::from_rgb(40, 110, 220));
-                }
-            }
-            let c = view.to_screen(*center);
-            painter.circle_stroke(c, 5.0, EStroke::new(1.5, Color32::from_rgb(40, 110, 220)));
-        }
-        // Symmetry editing: the original outlined in red (the copies are
-        // drawn as they are).
-        if app.symmetry_edit == Some(s.id) {
-            let red = EStroke::new(1.0, Color32::from_rgb(0xE0, 0x10, 0x10));
-            for (pts, closed) in flatten(&s.page_path(), view) {
-                if pts.len() < 2 {
-                    continue;
-                }
-                let mut pts = pts;
-                if closed {
-                    if let Some(first) = pts.first().copied() {
-                        pts.push(first);
-                    }
-                }
-                painter.add(egui::Shape::line(pts, red));
-            }
-        }
+            painter.layout_no_wrap(
+                format!("\u{2022} {}", crate::i18n::tr(key)),
+                font.clone(),
+                col,
+            )
+        })
+        .collect();
+    let width = galleys.iter().map(|g| g.size().x).fold(0.0f32, f32::max);
+    let height: f32 = galleys.iter().map(|g| g.size().y + 2.0).sum();
+    let bg = ERect::from_min_size(at, egui::vec2(width + 12.0, height + 8.0));
+    painter.rect(
+        bg,
+        2.0,
+        Tokens::panel(),
+        EStroke::new(1.0, Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    let mut y = bg.top() + 4.0;
+    for g in galleys {
+        let h = g.size().y;
+        painter.galley(egui::pos2(bg.left() + 6.0, y), g, Tokens::text());
+        y += h + 2.0;
     }
 }
 
-/// Connector anchors: small diamonds on the selected object with the
-/// Anchor Editing tool, and on both ends while a connector is dragged.
-/// Interactive Fill: the fountain axis (dashed, between two square
-/// nodes) or the centre node of a radial, conical or square fountain.
+fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
+    let view = &app.view;
+    let blue = Color32::from_rgb(40, 110, 220);
+    let red = Color32::from_rgb(0xE0, 0x10, 0x10);
+    // Editing a symmetry: its copies as red outlines while Show full
+    // preview is off (the renderer leaves them out then).
+    for c in app.symmetry_copies_outlined() {
+        for (pts, closed) in flatten(&c.page_path(), view) {
+            if pts.len() < 2 {
+                continue;
+            }
+            let mut pts = pts;
+            if closed {
+                if let Some(first) = pts.first().copied() {
+                    pts.push(first);
+                }
+            }
+            painter.add(egui::Shape::line(pts, EStroke::new(1.0, red)));
+        }
+    }
+    // The lines of the symmetry being edited, whatever is selected; else
+    // those of the selected objects.
+    let mut shown: Vec<(Point, f64, u8)> = Vec::new();
+    if let Some((_, center, angle, lines)) = app.edited_symmetry() {
+        if app.settings.symmetry_show_lines {
+            shown.push((center, angle, lines));
+        }
+    } else {
+        for s in app.selected_rc().iter() {
+            for e in &s.effects {
+                if let tracedraw_core::live::Effect::Symmetry {
+                    center,
+                    angle,
+                    lines,
+                } = e
+                {
+                    shown.push((*center, *angle, *lines));
+                }
+            }
+        }
+    }
+    for (center, angle, lines) in shown {
+        let n = lines.clamp(1, 12) as usize;
+        let far = 100_000.0 / view.zoom.max(0.01) as f64;
+        for k in 0..n {
+            let a = (angle + 180.0 * k as f64 / n as f64).to_radians();
+            let d = tracedraw_core::geometry::Vec2::new(a.cos(), a.sin());
+            let s0 = view.to_screen(center - d * far);
+            let s1 = view.to_screen(center + d * far);
+            if let Some((c0, c1)) = clip_segment(s0, s1, rect) {
+                dash(painter, c0, c1, blue);
+            }
+        }
+        let c = view.to_screen(center);
+        painter.circle_stroke(c, 5.0, EStroke::new(1.5, blue));
+    }
+    // The turning handles, after a click on a line.
+    for h in app.symmetry_handles() {
+        let q = view.to_screen(h);
+        painter.circle_filled(q, 4.5, Color32::WHITE);
+        painter.circle_stroke(q, 4.5, EStroke::new(1.5, blue));
+    }
+}
+
+/// Interactive Fill: the fill's nodes as the reference shows them (#330):
+/// the line from the start to the end (an arrow at the end), a thin line
+/// to the round skew handle, the start and end nodes as squares in the
+/// first and last colours, and for an elliptical or square fill its
+/// outline dashed (the frame's unit circle or square).
 fn draw_fountain_handles(app: &App, painter: &Painter) {
     if app.tool != Tool::InteractiveFill {
         return;
@@ -715,43 +813,88 @@ fn draw_fountain_handles(app: &App, painter: &Painter) {
     };
     let view = &app.view;
     let handles = crate::fill_tool::fountain_handles(&f, b);
-    if handles.len() == 2 {
-        let a = view.to_screen(handles[0].1);
-        let z = view.to_screen(handles[1].1);
-        // Dashed axis.
-        let d = z - a;
-        let len = d.length().max(1e-6);
-        let step = 6.0;
-        let mut t = 0.0;
-        while t < len {
-            let t1 = (t + step * 0.6).min(len);
-            painter.line_segment(
-                [a + d * (t / len), a + d * (t1 / len)],
-                EStroke::new(1.0, Tokens::SELECTION),
-            );
-            t += step;
+    let [(_, s), (_, e), (_, k)] = handles.as_slice() else {
+        return;
+    };
+    let (ss, se, sk) = (view.to_screen(*s), view.to_screen(*e), view.to_screen(*k));
+    let line = EStroke::new(1.0, Tokens::SELECTION);
+    // The outline of an elliptical or square fill, dashed.
+    if matches!(
+        f.kind,
+        tracedraw_core::FountainKind::Radial | tracedraw_core::FountainKind::Square
+    ) {
+        let (ev, kv) = (*e - *s, *k - *s);
+        let at = |u: f64, v: f64| view.to_screen(*s + ev * u + kv * v);
+        let pts: Vec<egui::Pos2> = if f.kind == tracedraw_core::FountainKind::Radial {
+            (0..=64)
+                .map(|i| {
+                    let a = i as f64 / 64.0 * std::f64::consts::TAU;
+                    at(a.cos(), a.sin())
+                })
+                .collect()
+        } else {
+            vec![
+                at(1.0, 1.0),
+                at(-1.0, 1.0),
+                at(-1.0, -1.0),
+                at(1.0, -1.0),
+                at(1.0, 1.0),
+            ]
+        };
+        dashed_polyline(painter, &pts, line, 4.0, 3.0);
+    }
+    // The axis, an arrow at the end.
+    painter.line_segment([ss, se], line);
+    let d = se - ss;
+    if d.length() > 12.0 {
+        let u = d.normalized();
+        let n = egui::vec2(-u.y, u.x);
+        let tip = se - u * 6.0;
+        painter.add(epaint::PathShape::convex_polygon(
+            vec![tip, tip - u * 8.0 + n * 4.0, tip - u * 8.0 - n * 4.0],
+            Tokens::SELECTION,
+            EStroke::NONE,
+        ));
+    }
+    // The skew handle on its thin line.
+    painter.line_segment(
+        [ss, sk],
+        EStroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
+    );
+    painter.circle_filled(sk, 4.5, Color32::WHITE);
+    painter.circle_stroke(sk, 4.5, line);
+    // The midpoint sliders: a short bar across the line between each
+    // pair of nodes.
+    let d = se - ss;
+    if d.length() > 24.0 {
+        let n = egui::vec2(-d.y, d.x).normalized() * 5.0;
+        for (_, t) in crate::fill_tool::midpoint_params(&f) {
+            let m = ss + d * t as f32;
+            painter.line_segment([m - n, m + n], EStroke::new(2.0, Tokens::SELECTION));
         }
     }
-    for (h, p) in handles {
-        let sp = view.to_screen(p);
-        let color = match h {
-            crate::fill_tool::FountainHandle::Start | crate::fill_tool::FountainHandle::Center => {
-                f.first_color()
-            }
-            crate::fill_tool::FountainHandle::End => f.last_color(),
+    // The colour nodes in their colours, the start and the end bigger;
+    // the picked one drawn with a thick outline.
+    let last = f.stops.len().saturating_sub(1);
+    for (i, st) in f.stops.iter().enumerate() {
+        let p = if i == 0 {
+            ss
+        } else if i == last {
+            se
+        } else {
+            ss + d * st.pos as f32
         };
-        let [r, g, bl] = color.to_rgb8();
-        painter.rect_filled(
-            ERect::from_center_size(sp, egui::vec2(9.0, 9.0)),
-            0.0,
-            Color32::from_rgb(r, g, bl),
-        );
-        painter.rect_stroke(
-            ERect::from_center_size(sp, egui::vec2(9.0, 9.0)),
-            0.0,
-            EStroke::new(1.0, Tokens::SELECTION),
-            egui::StrokeKind::Outside,
-        );
+        let size = if i == 0 || i == last { 9.0 } else { 7.0 };
+        let [r, g, bl] = st.color.to_rgb8();
+        let rect = ERect::from_center_size(p, egui::vec2(size, size));
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(r, g, bl));
+        let picked = app.fill_node == Some(i);
+        let stroke = if picked {
+            EStroke::new(2.0, Tokens::SELECTION)
+        } else {
+            line
+        };
+        painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
     }
 }
 
@@ -864,7 +1007,15 @@ fn draw_anchors(app: &App, painter: &Painter) {
 fn draw_frame_links(app: &App, painter: &Painter) {
     let view = &app.view;
     let stroke = EStroke::new(1.0, Tokens::SELECTION);
-    for id in &app.selection {
+    // Only linked paragraph text has a chain (asking for every selected
+    // object searched the drawing for each, #367).
+    let linked: Vec<tracedraw_core::ShapeId> = app
+        .selected_rc()
+        .iter()
+        .filter(|s| matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }) && !s.data.is_empty())
+        .map(|s| s.id)
+        .collect();
+    for id in &linked {
         for pair in app.chain_of(*id).windows(2) {
             let (Some(a), Some(b)) = (app.doc().find_shape(pair[0]), app.doc().find_shape(pair[1]))
             else {
@@ -935,7 +1086,7 @@ fn draw_table_cells(app: &App, painter: &Painter) {
 pub fn draw_transform_outline(app: &App, painter: &Painter, t: Affine) {
     let halo = EStroke::new(3.0, Color32::from_white_alpha(220));
     let line = EStroke::new(1.0, Tokens::DRAG_OUTLINE);
-    for s in app.selected_shapes() {
+    for s in app.selected_rc().iter() {
         // What the release will make: rounded corners keep their size.
         let path = s.page_path_after(t);
         for (mut pts, closed) in flatten(&path, &app.view) {
@@ -992,7 +1143,7 @@ fn draw_along_path(app: &App, painter: &Painter, start: Point, current: Point) {
 }
 
 fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
-    let shapes = app.selected_shapes();
+    let shapes = app.selected_rc();
     if shapes.is_empty() {
         return;
     }
@@ -1179,6 +1330,13 @@ pub(crate) fn text_frame_color(f: &crate::text_frames::ShownFrame) -> Color32 {
     }
 }
 
+/// The flow tab of a frame whose bottom edge runs from `a` to `b` on
+/// screen: hanging under its middle.
+pub fn flow_tab_rect(a: Pos2, b: Pos2) -> ERect {
+    let mid = a + (b - a) * 0.5;
+    ERect::from_min_size(mid + egui::vec2(-6.0, 1.0), egui::vec2(12.0, 9.0))
+}
+
 /// Paragraph text frames: dashed lines in the colour `text_frame_color`
 /// gives.
 fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
@@ -1195,27 +1353,40 @@ fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
             4.0,
             3.0,
         ));
-        if f.overflow {
-            // The bottom edge's middle, then a tab hanging from it.
-            let mid = pts[0] + (pts[1] - pts[0]) * 0.5;
-            let tab = ERect::from_min_size(mid + egui::vec2(-6.0, 1.0), egui::vec2(12.0, 9.0));
+        // The flow tab under the bottom edge's middle: a down arrow when
+        // the text does not fit, two links when it flows on, empty on a
+        // picked frame; a click on it says where the text flows on.
+        if f.overflow || f.chosen {
+            let tab = flow_tab_rect(pts[0], pts[1]);
+            let ink = if f.overflow { red } else { color };
             painter.rect(
                 tab,
                 0.0,
                 Color32::WHITE,
-                EStroke::new(1.0, red),
+                EStroke::new(1.0, ink),
                 epaint::StrokeKind::Inside,
             );
             let c = tab.center();
-            painter.add(epaint::PathShape::convex_polygon(
-                vec![
-                    c + egui::vec2(-3.0, -2.0),
-                    c + egui::vec2(3.0, -2.0),
-                    c + egui::vec2(0.0, 2.5),
-                ],
-                red,
-                EStroke::NONE,
-            ));
+            if f.overflow {
+                painter.add(epaint::PathShape::convex_polygon(
+                    vec![
+                        c + egui::vec2(-3.0, -2.0),
+                        c + egui::vec2(3.0, -2.0),
+                        c + egui::vec2(0.0, 2.5),
+                    ],
+                    red,
+                    EStroke::NONE,
+                ));
+            } else if f.linked {
+                for dx in [-2.0, 2.0] {
+                    painter.rect_stroke(
+                        ERect::from_center_size(c + egui::vec2(dx, 0.0), egui::vec2(4.0, 3.0)),
+                        1.0,
+                        EStroke::new(1.0, ink),
+                        epaint::StrokeKind::Inside,
+                    );
+                }
+            }
         }
     }
 }
@@ -1593,6 +1764,39 @@ fn draw_nodes(app: &App, painter: &Painter) {
                 continue;
             }
         }
+        // A B-spline: its outline, the control polygon dashed and the
+        // control points as nodes; the curve's own nodes do not show.
+        if s.spline.is_some() {
+            for (pts, _) in flatten(&s.page_path(), view) {
+                painter.add(egui::Shape::line(pts, EStroke::new(1.0, main)));
+            }
+            let own = crate::kind_nodes::nodes(&s);
+            let poly: Vec<Pos2> = own.iter().map(|(_, p)| view.to_screen(*p)).collect();
+            let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
+            let lines = if closed {
+                poly.len()
+            } else {
+                poly.len().saturating_sub(1)
+            };
+            for i in 0..lines {
+                painter.extend(egui::Shape::dashed_line(
+                    &[poly[i], poly[(i + 1) % poly.len()]],
+                    EStroke::new(1.0, secondary),
+                    4.0,
+                    3.0,
+                ));
+            }
+            for (index, p) in poly.into_iter().enumerate() {
+                // Chosen control points are filled, as chosen nodes are.
+                let fill = if app.node_selection.contains(&(s.id, index)) {
+                    Some(main)
+                } else {
+                    prefs.unselected_filled.then_some(Color32::WHITE)
+                };
+                node_marker(painter, p, size, prefs.cusp, fill, main);
+            }
+            continue;
+        }
         let ShapeKind::Path { path, .. } = &s.kind else {
             // Rectangles, ellipses and polygons show their own nodes.
             let own = crate::kind_nodes::nodes(&s);
@@ -1874,14 +2078,14 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
     let Ok(page) = app.doc().page(app.page) else {
         return;
     };
+    let moving = app.guide_drag_moves();
     for (i, g) in page.guides.iter().enumerate() {
+        let moved = moving.iter().find(|(k, _)| *k == i).map(|(_, g)| g);
         let g = match &app.drag {
-            Drag::MoveGuide { index, guide, .. } | Drag::RotateGuide { index, guide, .. }
-                if *index == i =>
-            {
-                guide
-            }
-            _ => g,
+            Drag::RotateGuide { index, guide, .. } if *index == i => guide,
+            // A copy leaves the guideline in place and shows the copy.
+            _ if app.drag_copy => g,
+            _ => moved.unwrap_or(g),
         };
         let color = if app.selected_guides.contains(&i) {
             GUIDE_SELECTED
@@ -1889,6 +2093,19 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
             to_color32(app.guide_color(g))
         };
         draw_guide_line(app, painter, rect, g.line, color, g.style.pattern());
+    }
+    // The copies a right click during the drag will leave.
+    if app.drag_copy {
+        for (_, g) in &moving {
+            draw_guide_line(
+                app,
+                painter,
+                rect,
+                g.line,
+                GUIDE_SELECTED,
+                g.style.pattern(),
+            );
+        }
     }
     if let Drag::NewGuide { horizontal, pos } = &app.drag {
         use tracedraw_core::document::GuideLine;
@@ -2299,8 +2516,8 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
     ) {
         return;
     }
-    for s in app.selected_shapes() {
-        let nodes = crate::interaction2::effect_nodes(&s);
+    for s in app.selected_rc().iter() {
+        let nodes = crate::interaction2::effect_nodes(s);
         if nodes.is_empty() {
             continue;
         }

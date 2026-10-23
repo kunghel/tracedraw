@@ -13,9 +13,11 @@ global options; see [Global options](../customize/global-options.md#file-formats
 
 ## Notes on some formats {#formats}
 
-- **PDF and AI**: a protected file asks for its password in the
-  [[pdf_password.title]] dialog box. Text keeps its fonts when they are
-  installed.
+- **PDF and AI**: the [[pdf_import.title]] dialog box asks how to read the
+  text: as editable text, which keeps its fonts when they are installed, or as
+  curves, drawn from the fonts the file embeds so the text looks exactly as
+  it does in the file. Options > File Formats keeps the choice. A protected
+  file asks for its password in the [[pdf_password.title]] dialog box.
 - **EPS and PostScript**: each printed page becomes a page.
 - **PSD**: each layer becomes a bitmap with its opacity, visibility and mask.
 - **DXF**: drawing units are taken from the file.

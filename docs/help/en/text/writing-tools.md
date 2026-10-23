@@ -25,9 +25,30 @@ selected texts ([[writing.scope_selection]]).
    [[writing.add]] to add the word to your own word list.
 4. [[writing.undo]] takes back the last replacement.
 
-[[writing.options]] has [[writing.ignore_digits]] and
-[[writing.ignore_capitals]]. TraceDraw uses the dictionaries installed on your
-system; without one, only a built-in word list is used.
+[[writing.options]] has [[writing.ignore_digits]],
+[[writing.ignore_capitals]] and [[options.add_to_autocorrect]].
+
+### Dictionaries {#dictionaries}
+
+TraceDraw checks spelling with Hunspell dictionaries: for each language a
+`.dic` file and an `.aff` file with the same name, such as `pt_BR.dic` and
+`pt_BR.aff`. Free dictionaries for most languages can be downloaded from the
+projects that make them; other programs often install them too.
+
+1. Open [[menu.tools > menu.tools.options]] > [[options.text]] >
+   [[options.spelling]].
+2. Click [[options.open_folder]] and copy the `.dic` and `.aff` files into that
+   folder (folders inside it work too), or name a folder that already has
+   dictionaries in [[options.more_dictionaries]].
+3. Click [[options.refresh_dictionaries]]. The [[options.dictionaries]] list
+   shows each one; clear a box to stop using it.
+
+A word is right when any dictionary in use knows it. Dictionaries installed on
+your system are used as well. Without any, only a built-in word list is used.
+
+Hyphenation dictionaries (`hyph_` files such as `hyph_pt_BR.dic`) go in the
+same folders. Choose one under [[options.text]] > [[options.paragraph_text]] >
+[[options.hyphenation_patterns]] to hyphenate text in that language.
 
 ### Grammar {#grammar}
 
@@ -50,20 +71,32 @@ thesaurus file you have.
 
 ## Autocorrect {#autocorrect}
 
-[[menu.text > menu.text.writing_tools > menu.text.autocorrect]] sets what is
-corrected while you type:
+[[menu.text > menu.text.writing_tools > menu.text.autocorrect]] opens the
+[[dialog.autocorrect]] tab of [[menu.tools > menu.tools.options]] >
+[[options.text]], which sets what is corrected while you type:
 
-- [[autocorrect.enabled]];
 - [[autocorrect.capitalize]];
 - [[autocorrect.two_capitals]] ("THe" becomes "The");
-- [[autocorrect.quotes]], in the style of your interface language;
-- the [[autocorrect.replacements]]: `(c)` becomes ©, `(r)` ®, `(tm)` ™, `1/2`
-  ½ and so on. [[autocorrect.add]] and [[autocorrect.remove]] change the rows.
+- [[autocorrect.days]] ("monday" becomes "Monday");
+- [[autocorrect.hyperlinks]]: typing `www.example.com` or an address starting
+  with `http://` or `https://` gives the text object that hyperlink, unless it
+  has one;
+- [[autocorrect.language]] the language whose quotation marks are used (the
+  interface language unless you pick another);
+- [[autocorrect.quotes]], and [[autocorrect.straight_after_numbers]];
+- [[autocorrect.single_quotes]] and [[autocorrect.double_quotes]]: the
+  [[autocorrect.open]] and [[autocorrect.close]] marks, if you want others than
+  the language's;
+- the [[autocorrect.replacements]], used when [[autocorrect.replace_while_typing]]
+  is on: `(c)` becomes ©, `(r)` ®, `(tm)` ™, `1/2` ½ and so on. Type in
+  [[autocorrect.replace_col]] and [[autocorrect.with_col]], then click
+  [[autocorrect.add]]; click a row to [[autocorrect.delete]] it, or change its
+  text and click [[autocorrect.replace]].
 
 [[autocorrect.apply_selection]] applies the rules to the selected text. Text
 you paste or import is never changed.
 
-![The Autocorrect dialog box](../../img/text-writing-tools-autocorrect.png)
+![The Autocorrect tab](../../img/text-writing-tools-autocorrect.png)
 
 ## Custom hyphens {#custom-hyphens}
 

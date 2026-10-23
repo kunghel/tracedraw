@@ -310,14 +310,12 @@ pub fn apply(app: &mut App) {
 /// Open the docker on `tab`; with `toggle` (the shortcuts), close the
 /// docker column instead when it already shows that page.
 pub fn open(app: &mut App, tab: TransformTab, toggle: bool) {
-    let shown = app.show_dockers
-        && app.docker_tab == crate::app::DockerTab::Transformations
-        && app.transform.tab == tab;
+    let shown =
+        app.docker_shown(crate::app::DockerTab::Transformations) && app.transform.tab == tab;
     if shown && toggle {
-        app.show_dockers = false;
+        app.toggle_docker(crate::app::DockerTab::Transformations);
     } else {
-        app.show_dockers = true;
-        app.docker_tab = crate::app::DockerTab::Transformations;
+        app.open_docker(crate::app::DockerTab::Transformations);
         app.transform.tab = tab;
     }
 }

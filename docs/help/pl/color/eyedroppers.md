@@ -7,6 +7,9 @@ próbki narzędzie przełącza się na stosowanie; kliknij przycisk pobierania, 
 pobrać próbkę ponownie. <kbd>Esc</kbd> porzuca próbkę i wraca do narzędzia
 [[tool.pick]].
 
+Wskaźnik jest pipetą, gdy narzędzie pobiera próbkę, i wiadrem z farbą, gdy ją
+nakłada. Obrazy podają swój kolor także w grupie lub ramce.
+
 ## Kroplomierz koloru {#color-eyedropper}
 
 1. Wybierz narzędzie [[tool.color_eyedropper]].

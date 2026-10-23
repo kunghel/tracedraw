@@ -25,11 +25,37 @@ recomputed from it.
   context menu): one vertical line (90 degrees) through the right edge of
   the selection's bounds, at its vertical centre, so the copy appears next
   to the original instead of over it; then straight into editing it.
+  Several selected objects are grouped first and the symmetry goes on the
+  group (one "Symmetry" undo step), so they mirror together; Ctrl+click
+  picks one of them inside the group (round handles) to move or colour
+  it alone, the copies following.
+- While a symmetry is edited, an object drawn, pasted or duplicated
+  joins it: the group takes it in (an object that was alone with the
+  symmetry becomes a group of it and the newcomer, the symmetry moving
+  to the group), folded into the step that made the object, so one Undo
+  takes both back; the newcomer stays selected inside
+  (`App::join_symmetry`,
+  `ops2::symmetry_tests::a_symmetry_takes_several_objects_and_those_made_while_editing`).
 - Edit (Object > Symmetry > Edit Symmetry, Alt+E): the symmetry editing
-  mode. The original is outlined in red and a bar floats at the top left
-  of the drawing window: Finish, the number of mirror lines (1 to 12),
-  the centre (X, Y in the drawing's units) and the angle (0 to 360
-  degrees). Changes collapse into one undo step labelled "Symmetry".
+  mode (`symmetry_edit.rs`). A bar floats at the top left of the drawing
+  window: Finish; the mirror lines icon and their number (1 to 12); the
+  centre (X, Y in the drawing's units); the angle of rotation icon and
+  the angle (0 to 360 degrees), every number field with spin arrows and
+  the mouse wheel; Show full preview (off at first: the copies are drawn
+  as red outlines and the renderer leaves them out; on: drawn in full)
+  and Show symmetry lines (on). Both toggles are kept in the
+  preferences. A run of changes is one undo step "Edit Symmetry".
+- While editing, the bar and the lines stay whatever is selected (a
+  member picked inside, a new object, a double click): they follow the
+  object being edited, not the selection.
+- Picking while editing: a click or a marquee takes the objects inside
+  the symmetry group (its members), never the group and never a copy.
+- The mirror lines with the Pick tool: a drag on a line or on the centre
+  moves the lines (the centre follows the pointer, snapping as objects
+  do); a click on a line shows round handles at both ends of every line,
+  90 pixels from the centre, and dragging one turns the lines about the
+  centre (Ctrl: by the constrain angle); another click on a line hides
+  them (`pick_drag_tests::symmetry_editing_picks_members_and_drags_lines`).
 - Finish Editing Symmetry (Alt+Shift+E) and the bar's Finish end the
   mode; it also ends when the object is deleted or loses its symmetry.
 - Remove Symmetry (Alt+Shift+S) drops the effect; the copies disappear.
@@ -38,7 +64,8 @@ recomputed from it.
 ## Display
 
 Mirror lines are drawn as dashed selection-colour lines across the whole
-canvas while an object with the effect is selected.
+canvas while an object with the effect is selected, and while its
+symmetry is edited (unless Show symmetry lines is off).
 
 ## Checks
 

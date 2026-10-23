@@ -1,4 +1,4 @@
-//! The toolbox: 17 groups, one button per group, each group a flyout of
+//! The toolbox: 18 groups, one button per group, each group a flyout of
 //! related tools. Shortcuts can be changed in Options > Shortcuts.
 
 use egui::Key;
@@ -109,7 +109,6 @@ pub const GROUPS: &[ToolGroup] = &[
             Tool::AttractRepel,
             Tool::Smudge,
             Tool::Roughen,
-            Tool::VariableOutline,
         ],
         hidden: false,
     },
@@ -206,6 +205,11 @@ pub const GROUPS: &[ToolGroup] = &[
     },
     ToolGroup {
         tools: &[Tool::InteractiveFill, Tool::AreaFill, Tool::MeshFill],
+        hidden: false,
+    },
+    // The Variable Outline tool has a button of its own at the bottom.
+    ToolGroup {
+        tools: &[Tool::VariableOutline],
         hidden: false,
     },
     ToolGroup {

@@ -6,6 +6,9 @@ adımda çalışır: **seç** (örnek al) ve **uygula** (onunla boya). Bir örne
 sonra araç uygulamaya geçer; yeniden örnek almak için seçme düğmesine
 tıklayın. <kbd>Esc</kbd> örneği bırakır ve [[tool.pick]] aracına geri döner.
 
+İşaretçi, araç örnek alırken damlalık, uygularken boya kovasıdır. Resimler bir
+grubun ya da çerçevenin içinde de renklerini verir.
+
 ## Renk Damlalığı {#color-eyedropper}
 
 1. [[tool.color_eyedropper]] aracını seçin.

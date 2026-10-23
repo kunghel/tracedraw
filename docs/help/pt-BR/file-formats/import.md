@@ -13,9 +13,12 @@ globais; veja [Opções globais](../customize/global-options.md#file-formats).
 
 ## Observações sobre alguns formatos {#formats}
 
-- **PDF e AI**: um arquivo protegido pede a senha na caixa de diálogo
-  [[pdf_password.title]]. O texto mantém as fontes quando elas estão
-  instaladas.
+- **PDF e AI**: a caixa de diálogo [[pdf_import.title]] pergunta como ler o
+  texto: como texto editável, que mantém as fontes quando elas estão
+  instaladas, ou como curvas, desenhadas a partir das fontes que o arquivo
+  embute, para o texto ficar exatamente como no arquivo. Opções > Formatos de
+  arquivo guarda a escolha. Um arquivo protegido pede a senha na caixa de
+  diálogo [[pdf_password.title]].
 - **EPS e PostScript**: cada página impressa vira uma página.
 - **PSD**: cada camada vira um bitmap com opacidade, visibilidade e máscara.
 - **DXF**: as unidades de desenho vêm do arquivo.

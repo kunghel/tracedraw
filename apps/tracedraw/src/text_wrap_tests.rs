@@ -124,6 +124,7 @@ fn alignment_and_spacing_apply_to_the_paragraphs_being_edited() {
         caret: 8,
         anchor: 8,
         goal_x: None,
+        step: None,
     });
     app.apply_text_align(TextAlign::Center);
     app.edit_paragraph_style(id, |p| p.space_before = 3.0);
@@ -148,6 +149,7 @@ fn alignment_and_spacing_apply_to_the_paragraphs_being_edited() {
         caret: 2,
         anchor: 9,
         goal_x: None,
+        step: None,
     });
     app.apply_text_align(TextAlign::Right);
     let st = styles(&app, id);

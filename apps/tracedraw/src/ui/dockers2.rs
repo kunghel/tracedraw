@@ -77,7 +77,7 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
     let sr = &mut app.step_repeat;
     ui.horizontal(|ui| {
         ui.label(tr("docker.copies"));
-        ui.add(egui::DragValue::new(&mut sr.copies).range(1..=999));
+        ui.add(crate::ui::field::NumField::new(&mut sr.copies).range(1..=999));
     });
     ui.strong(tr("docker.horizontal_settings"));
     ui.horizontal(|ui| {
@@ -87,7 +87,7 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
     let mut dx = u.world_from_mm(sr.dx);
     if ui
         .add(
-            egui::DragValue::new(&mut dx)
+            crate::ui::field::NumField::new(&mut dx)
                 .speed(0.5)
                 .suffix(format!(" {}", u.short())),
         )
@@ -103,7 +103,7 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
     let mut dy = u.world_from_mm(sr.dy);
     if ui
         .add(
-            egui::DragValue::new(&mut dy)
+            crate::ui::field::NumField::new(&mut dy)
                 .speed(0.5)
                 .suffix(format!(" {}", u.short())),
         )
@@ -1056,7 +1056,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
         changed |= ui
             .add_enabled(
                 opt.spacing.is_none(),
-                egui::DragValue::new(&mut steps).range(1..=999),
+                crate::ui::field::NumField::new(&mut steps).range(1..=999),
             )
             .changed();
     });
@@ -1067,7 +1067,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 opt.spacing.is_some(),
-                egui::DragValue::new(&mut v)
+                crate::ui::field::NumField::new(&mut v)
                     .speed(0.1)
                     .max_decimals(3)
                     .suffix(format!(" {}", units.short())),
@@ -1084,7 +1084,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
         ui.label(tr("docker.rotation"));
         changed |= ui
             .add(
-                egui::DragValue::new(&mut rot)
+                crate::ui::field::NumField::new(&mut rot)
                     .range(-3600.0..=3600.0)
                     .speed(1.0)
                     .max_decimals(1)
@@ -1240,7 +1240,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
                 app.clear_blend();
             }
             if ui.button(tr("docker.break_apart")).clicked() {
-                app.flatten_effects();
+                app.break_effect_groups();
             }
         });
     } else {
@@ -1601,7 +1601,11 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         ui.add(crate::ui::Rail(
             egui::Slider::new(tol, 0..=100).show_value(false),
         ));
-        ui.add(egui::DragValue::new(tol).range(0..=100).suffix(" %"));
+        ui.add(
+            crate::ui::field::NumField::new(tol)
+                .range(0..=100)
+                .suffix(" %"),
+        );
     });
     ui.horizontal(|ui| {
         ui.label(tr("docker.mask_colors"));

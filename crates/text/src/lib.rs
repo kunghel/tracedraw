@@ -369,12 +369,28 @@ pub fn usable_in_documents(data: &[u8]) -> bool {
     let faces: Vec<ttf_parser::Face> = (0..n)
         .filter_map(|i| ttf_parser::Face::parse(data, i).ok())
         .collect();
-    !faces.is_empty()
-        && faces.len() == n as usize
-        && faces.iter().all(|f| {
-            f.permissions() != Some(ttf_parser::Permissions::Restricted)
-                && f.is_outline_embedding_allowed()
-        })
+    !faces.is_empty() && faces.len() == n as usize && faces.iter().all(embedding_allowed)
+}
+
+/// The OS/2 embedding bits (`fsType`) read as the specification has them:
+/// restricted only when the restricted bit (0x0002) is set and no more
+/// permissive one (preview and print 0x0004, editable 0x0008) is, so a
+/// font that sets several takes the most permissive; the bitmap-only bit
+/// (0x0200) counts from table version 2, where it was introduced; the
+/// reserved bits are ignored (old fonts set bit 0, which means nothing).
+/// A font without the table may be used (#313).
+fn embedding_allowed(face: &ttf_parser::Face) -> bool {
+    let Some(os2) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2")) else {
+        return true;
+    };
+    let u16_at = |i: usize| match os2.get(i..i + 2) {
+        Some(&[hi, lo]) => u16::from_be_bytes([hi, lo]),
+        _ => 0,
+    };
+    let (version, fs_type) = (u16_at(0), u16_at(8));
+    let restricted = fs_type & 0x0002 != 0 && fs_type & 0x000c == 0;
+    let bitmap_only = version >= 2 && fs_type & 0x0200 != 0;
+    !restricted && !bitmap_only
 }
 
 /// Choose the instance of a variable font: weight 700 for bold text and
@@ -4487,6 +4503,15 @@ mod tests {
         // Restricted, or bitmaps only: not used.
         assert!(!usable_in_documents(&with_fs_type(SELAWIK, 2)));
         assert!(!usable_in_documents(&with_fs_type(SELAWIK, 0x0208)));
+        assert!(
+            !usable_in_documents(&with_fs_type(SELAWIK, 3)),
+            "restricted with a reserved bit"
+        );
+        // A reserved bit alone (old fonts set bit 0): not a restriction
+        // (#313). Several bits: the most permissive wins.
+        assert!(usable_in_documents(&with_fs_type(SELAWIK, 1)));
+        assert!(usable_in_documents(&with_fs_type(SELAWIK, 0x000a)));
+        assert!(usable_in_documents(&with_fs_type(SELAWIK, 0x0006)));
         // Not a font, or a cut one.
         assert!(!usable_in_documents(b"not a font at all"));
         assert!(!usable_in_documents(&SELAWIK[..40]));

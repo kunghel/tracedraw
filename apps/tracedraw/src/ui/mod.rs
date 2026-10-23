@@ -17,6 +17,7 @@ pub mod brand;
 pub mod brush_bars;
 pub mod callout_bar;
 pub mod chrome;
+pub mod clip_bar;
 pub mod color_docker;
 pub mod color_management;
 pub mod color_picker;
@@ -37,6 +38,7 @@ pub mod docker_form;
 pub mod dockers;
 pub mod dockers2;
 pub mod drawing_bars;
+pub mod edit_fill;
 pub mod effect_bars;
 pub mod effect_dialog;
 pub mod effect_picker;
@@ -65,8 +67,10 @@ pub mod menus;
 pub mod objects_docker;
 pub mod options;
 pub mod options_global;
+pub mod outline_pen;
 pub mod overflow;
 pub mod palette;
+pub mod pdf_import_dialog;
 pub mod pdf_password;
 pub mod picture_mosaic_docker;
 pub mod preflight_dialog;
@@ -122,10 +126,16 @@ pub(crate) fn apply_ui_scale(ctx: &egui::Context, size: f32) {
 }
 
 /// Use the theme the preferences name, when it is not the one in use.
+/// egui's own theme preference stays pinned, with the chosen theme's
+/// visuals in both of its style slots, so the system's dark mode (the
+/// browser's, in the browser build) never picks another style.
 pub(crate) fn apply_theme(ctx: &egui::Context, id: &str) {
     let wanted = crate::theme::Theme::from_id(id);
-    if wanted != crate::theme::theme() {
+    let pinned = ctx.options(|o| o.theme_preference) == egui::ThemePreference::Light;
+    if wanted != crate::theme::theme() || !pinned {
         crate::theme::set_theme(wanted);
+        ctx.set_theme(egui::ThemePreference::Light);
+        ctx.set_visuals_of(egui::Theme::Dark, crate::theme::visuals());
         ctx.set_visuals(crate::theme::visuals());
     }
 }
@@ -142,23 +152,14 @@ pub(crate) fn apply_shadows(ctx: &egui::Context, on: bool) {
 #[cfg(test)]
 pub(crate) const UI_SIZES: [f32; 8] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 
-/// The zoom of the interface at 100 % on Windows: its 13 px text comes
-/// out as large as the system's own (Segoe UI 9 pt, 12 px at 100 %
-/// scaling and in proportion at every other), so 100 % is the size of
-/// other programs. At 0.8 the text was 10.4 px on a monitor at 100 %,
-/// reported too small (#229).
-#[cfg(target_os = "windows")]
-pub(crate) const BASE_ZOOM: f32 = 12.0 / 13.0;
-
-/// The zoom of the interface at 100 % elsewhere (macOS, the browser):
-/// its measures (13 px text, 20 px icons, 24 px rows) at 0.8 of the
-/// system's scaling.
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-pub(crate) const BASE_ZOOM: f32 = 0.8;
-
-/// On Linux 100 % is one interface point per pixel at the system's
-/// scaling: at 0.8 the text was reported too small there (#1).
-#[cfg(target_os = "linux")]
+/// The zoom of the interface at 100 %, on every system: one interface
+/// point per pixel at the system's scaling, so the measures (13 px text,
+/// 20 px icons, 24 px rows) come out as drawn. It was 0.8 on macOS and in
+/// the browser and 12 / 13 on Windows, to make the whole interface as
+/// compact as the reference drawing program; what made that program
+/// compact was its small button size, which the bars have now (Default
+/// Button Size, Small at first), so the text and the menus stay at the
+/// system's size (#1, #229).
 pub(crate) const BASE_ZOOM: f32 = 1.0;
 
 /// The interface size `size` relative to the system's scaling (1 is
@@ -229,6 +230,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     crate::app::set_pixel_dpi(app.document_dpi());
     crate::app::set_drawing_scale(app.doc().metadata.rulers.world_per_page());
     apply_ui_scale(&ctx, crate::settings::effective_ui_size(&app.settings));
+    crate::theme::set_button_sizes(app.settings.button_size, app.settings.toolbox_button_size);
     apply_theme(&ctx, &crate::settings::effective_theme(&app.settings));
     apply_shadows(&ctx, app.settings.ui_shadows);
     crate::ui::icons::set_colored(app.settings.colored_icons);
@@ -470,37 +472,54 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         };
         if let Some(panel) = panel {
             panel
-                .exact_size(Tokens::TOOLBOX_WIDTH)
+                .exact_size(toolbox::column_width(app))
                 .resizable(false)
                 .frame(frame)
                 .show(ui, |ui| toolbox::toolbox(app, ui, dock));
         }
     }
 
-    // Right-to-left languages mirror the workspace: dockers sit on the left.
+    // The docker columns: the default one at the right (right-to-left
+    // languages mirror the workspace: it sits on the left), the other at
+    // the other side, each a tab strip and, when open, the docker in
+    // front. The other column exists only while it holds a docker.
+    app.reconcile_dockers();
     let rtl = crate::i18n::is_rtl();
-    let docker_tabs = if rtl {
-        Panel::left("docker_tabs")
-    } else {
-        Panel::right("docker_tabs")
-    };
-    docker_tabs
-        .exact_size(27.0)
-        .resizable(false)
-        .show_separator_line(false)
-        .frame(Frame::new().fill(crate::theme::Tokens::tab_strip()))
-        .show(ui, |ui| dockers::tab_strip(app, ui));
-    if app.show_dockers {
-        let dockers_panel = if rtl {
-            Panel::left("dockers")
+    use crate::app::DockerPlace;
+    for place in [DockerPlace::Right, DockerPlace::Left] {
+        if place == DockerPlace::Left && app.left_dockers.is_empty() {
+            continue;
+        }
+        let at_left = (place == DockerPlace::Left) != rtl;
+        let id = if place == DockerPlace::Left {
+            ("docker_tabs_left", "dockers_left")
         } else {
-            Panel::right("dockers")
+            ("docker_tabs", "dockers")
         };
-        dockers_panel
-            .default_size(340.0)
-            .resizable(true)
-            .frame(Frame::new().fill(crate::theme::Tokens::field()))
-            .show(ui, |ui| dockers::dockers(app, ui));
+        let docker_tabs = if at_left {
+            Panel::left(id.0)
+        } else {
+            Panel::right(id.0)
+        };
+        docker_tabs
+            .exact_size(dockers::STRIP_W)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(crate::theme::Tokens::tab_strip()))
+            .show(ui, |ui| dockers::tab_strip(app, ui, place));
+        let (_, _, shown) = app.docker_column(place);
+        if shown {
+            let dockers_panel = if at_left {
+                Panel::left(id.1)
+            } else {
+                Panel::right(id.1)
+            };
+            dockers_panel
+                .default_size(340.0)
+                .resizable(true)
+                .frame(Frame::new().fill(crate::theme::Tokens::field()))
+                .show(ui, |ui| dockers::dockers(app, ui, place));
+        }
     }
 
     if app.show_toolbox && bars_layout.dock(Bar::Toolbox).horizontal() {
@@ -511,7 +530,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             Panel::bottom("toolbox")
         };
         panel
-            .exact_size(Tokens::TOOLBOX_WIDTH)
+            .exact_size(Tokens::tool_button() + 6.0)
             .resizable(false)
             .frame(
                 Frame::new()
@@ -554,9 +573,12 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     }
     palette::popups(app, &ctx);
 
-    // Floating bars over the window, and a bar being moved.
+    // Floating bars over the window, and a bar being moved; the floating
+    // dockers and a docker being moved likewise.
     bars::floating_bars(app, &ctx);
     bars::drag_overlay(app, &ctx, 24.0);
+    dockers::floating_dockers(app, &ctx);
+    dockers::drag_overlay(app, &ctx, 24.0);
 
     // Document tabs above the rulers.
     // The tabs' blue line is the strip's lower edge: no separator and no
@@ -594,6 +616,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
 
     if app.has_document() && !app.show_welcome {
         symmetry_bar::show(app, &ctx);
+        clip_bar::show(app, &ctx);
         focus_bar::show(app, &ctx);
         effect_picker::show(app, &ctx);
         crate::perspective_draw::show_bar(app, &ctx);
@@ -727,6 +750,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     app.draw_right_drag(&painter);
     context::context_menu(app, ui, &response);
     crate::drop_menu::drop_menu_ui(app, ui);
+    crate::fill_tool::node_bar(app, ui);
 
     // Scrollbars, document navigator, page tabs, Navigator button.
     window_bars::window_bars(app, ui, full, canvas_rect, ruler);
@@ -882,20 +906,9 @@ mod tests {
         assert!(UI_SIZES
             .iter()
             .all(|s| (interface_size(*s) - s).abs() < 1e-6));
-        // 100 % on Windows: the 13 px text as large as the system's
-        // 12 px. On Linux one point per pixel at the system's scaling;
-        // elsewhere 0.8 of it.
-        let base = if cfg!(target_os = "linux") {
-            1.0
-        } else if cfg!(target_os = "windows") {
-            12.0 / 13.0
-        } else {
-            0.8
-        };
-        // On Windows the text at 100 % is the system's 12 px.
-        if cfg!(target_os = "windows") {
-            assert!((13.0 * ui_zoom(1.0) - 12.0).abs() < 1e-4);
-        }
+        // 100 %: one interface point per pixel at the system's scaling,
+        // on every system.
+        let base = 1.0;
         assert_eq!(BASE_ZOOM, base);
         assert!((ui_zoom(0.0) - base).abs() < 1e-6);
         assert!((ui_zoom(1.0) - base).abs() < 1e-6);
@@ -1198,6 +1211,114 @@ mod tests {
         egui::Popup::close_all(&ctx);
         key(&ctx, &mut app, Key::Escape, Modifiers::NONE);
         assert!(app.selection.is_empty());
+    }
+
+    /// The browser reports its dark mode as the system theme: the
+    /// interface keeps the chosen theme (Light at first) all the same.
+    #[test]
+    fn the_system_dark_mode_does_not_change_the_theme() {
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        app.show_welcome = false;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                system_theme: Some(egui::Theme::Dark),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+            out.textures_delta.clear();
+        }
+        assert_eq!(ctx.theme(), egui::Theme::Light);
+        assert!(!ctx.global_style().visuals.dark_mode);
+        assert_eq!(crate::theme::theme(), crate::theme::Theme::Light);
+        assert_eq!(
+            ctx.global_style().visuals.panel_fill,
+            crate::theme::visuals().panel_fill
+        );
+    }
+
+    /// With Interactive Fill and a colour node picked, the node bar opens
+    /// under the node.
+    #[test]
+    fn the_node_bar_opens_under_a_picked_fill_node() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::linear(
+            tracedraw_core::Color::BLACK,
+            tracedraw_core::Color::WHITE,
+            0.0,
+        ));
+        app.tool = crate::tools::Tool::InteractiveFill;
+        frame(&ctx, &mut app);
+        let bar = egui::Id::new("fill_node_bar");
+        assert!(ctx.memory(|m| m.area_rect(bar)).is_none());
+        app.fill_node = Some(0);
+        frame(&ctx, &mut app);
+        frame(&ctx, &mut app);
+        let r = ctx.memory(|m| m.area_rect(bar)).expect("node bar");
+        let (_, f, b) = app.selected_fountain().expect("fountain");
+        let start = crate::fill_tool::fountain_handles(&f, b)[0].1;
+        let at = app.view.to_screen(start);
+        assert!(
+            r.top() > at.y && (r.left() - at.x).abs() < 20.0,
+            "{r:?} {at:?}"
+        );
+    }
+
+    /// The window draws with the toolbox at every button size and with
+    /// captions, docked on a side, along the top and floating; the
+    /// measured captions widen the toolbox column.
+    #[test]
+    fn the_toolbox_draws_at_every_size_and_with_captions() {
+        use crate::settings::{ButtonSize, Captions};
+        use crate::ui::bars::{Bar, Dock};
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        app.show_welcome = false;
+        let plain = {
+            frame(&ctx, &mut app);
+            crate::ui::toolbox::column_width(&app)
+        };
+        for size in ButtonSize::ALL {
+            app.settings.button_size = size;
+            for own in [None, Some(ButtonSize::Small)] {
+                app.settings.toolbox_button_size = own;
+                for captions in Captions::ALL {
+                    app.settings.toolbox_captions = captions;
+                    for dock in [Dock::Left, Dock::Top, Dock::Floating] {
+                        crate::ui::bars::move_bar(&mut app, Bar::Toolbox, dock, None);
+                        frame(&ctx, &mut app);
+                        frame(&ctx, &mut app);
+                    }
+                }
+            }
+        }
+        app.settings.button_size = ButtonSize::Medium;
+        app.settings.toolbox_button_size = None;
+        app.settings.toolbox_captions = Captions::CaptionRight;
+        crate::ui::bars::move_bar(&mut app, Bar::Toolbox, Dock::Left, None);
+        frame(&ctx, &mut app);
+        frame(&ctx, &mut app);
+        assert!(app.toolbox_caption_w > 30.0, "{}", app.toolbox_caption_w);
+        assert!(crate::ui::toolbox::column_width(&app) > plain + 30.0);
+        // Back to the default size the plain width was measured at.
+        app.settings.button_size = ButtonSize::default();
+        crate::ui::toolbox::reset_toolbox(&mut app);
+        frame(&ctx, &mut app);
+        assert_eq!(crate::ui::toolbox::column_width(&app), plain);
     }
 
     /// The whole window draws with every docker tab, every tool and every

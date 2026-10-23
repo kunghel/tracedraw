@@ -66,7 +66,7 @@ pub fn object_info(app: &App) -> String {
     if app.text_edit.is_some() {
         return tr("status.editing_text");
     }
-    let shapes = app.selected_shapes();
+    let shapes = app.selected_rc();
     // An object inside a group is on its group's layer.
     let layer_of = |id| {
         let doc = app.doc();
@@ -113,6 +113,19 @@ pub fn object_info(app: &App) -> String {
             )
         }
         many => {
+            // The layer of each object on a layer, from one pass (a search
+            // of the drawing for each made Select All slow, #367).
+            let mut on_layer: std::collections::HashMap<tracedraw_core::ShapeId, &str> =
+                std::collections::HashMap::new();
+            for l in app.doc().all_layers() {
+                for s in &l.shapes {
+                    on_layer.entry(s.id).or_insert(l.name.as_str());
+                }
+            }
+            let layer_of = |id| match on_layer.get(&id) {
+                Some(name) => name.to_string(),
+                None => layer_of(id),
+            };
             let first = layer_of(many[0].id);
             let same = many.iter().all(|s| layer_of(s.id) == first);
             let n = many.len().to_string();
@@ -409,7 +422,7 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
     }
 
     // Fill and outline of the selection, or of new objects.
-    let shapes = app.selected_shapes();
+    let shapes = app.selected_rc();
     // A clip frame shows its frame's, a group its first member's.
     let (fill, stroke) = match app.paint_targets().first() {
         Some(s) => (s.fill.clone(), s.stroke.clone()),

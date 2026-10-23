@@ -91,6 +91,17 @@ same function (`export::print_sheets`).
   needs: for eight pages 8 and 1, 2 and 7, 6 and 3, 4 and 5 (left and
   right). Its two pages meet at the spine with no gap and no bleed between
   them.
+- Back side (n-up and step and repeat, #387): the columns run right to
+  left, so a page's place on the sheet mirrors its place on the front
+  about the sheet's middle and it prints behind its front on a
+  double-sided sheet; the pages are not mirrored (unlike Mirror)
+  (`imposition::tests::the_back_side_runs_the_columns_right_to_left`).
+- Keep page size (a fixed sheet, #388): the pages are scaled down only
+  when they would not fit the sheet itself, not to make room for the
+  marks, which take the room there is. The page information can be moved:
+  with it on, a drag on the sheet in Print Preview moves it (an offset in
+  mm, "Page information back in place" resets it)
+  (`imposition::tests::kept_size_does_not_shrink_pages_for_marks`).
 - Every page is clipped to its trim box plus the bleed, so nothing spills
   onto its neighbours or the margin. Hidden and non-printing layers are
   left out; master layers print with every page they show on; a page

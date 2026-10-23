@@ -45,3 +45,5 @@ ausgewählten Kontur und ändern sie sofort.
 
 **Kontur entfernen** entfernt die Kontur; **Kombination aufheben** wandelt die
 Schritte in Objekte um.
+Die Schritte werden neben dem Objekt gruppiert. [[menu.object > menu.object.break_contour_apart]] (<kbd>Strg+K</kbd>, auch
+im Kontextmenü) bewirkt dasselbe.

@@ -37,6 +37,11 @@ the selection's bounds (effects included), or of everything on the page,
 and the page's objects move so that box sits on the page from its
 bottom-left corner. One undo step (`App::fit_page_to_selection`,
 `fit_page_to_drawing`); a box under 0.1 mm does nothing and the status
-bar says so. Checked by
+bar says so. The property bar's button opens a popup instead of fitting
+at once: a Margin distance field (in the ruler unit; kept in the
+preferences, `settings.fit_page_margin`, 0 at first) and an Autofit
+Page button, which fits the page to the drawing with that margin left
+free on every side (`App::fit_page_to_drawing_with_margin`; a margin
+that is not a number counts as none). Checked by
 `ops2::fit_page_tests::the_page_fits_the_selection_or_the_drawing` and
 `ui::propbar::tests::the_page_bar_draws_with_its_fit_page_button`.

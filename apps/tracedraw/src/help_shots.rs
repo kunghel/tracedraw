@@ -396,7 +396,6 @@ fn shots() -> Vec<(String, Shot, bool)> {
         ("menu.text.text_statistics", false),
         ("menu.text.spell_check", false),
         ("menu.text.custom_hyphens", false),
-        ("menu.text.autocorrect", false),
         ("menu.tools.border_and_grommet", false),
         ("menu.tools.color_management", false),
         ("menu.tools.font_manager", false),
@@ -415,6 +414,27 @@ fn shots() -> Vec<(String, Shot, bool)> {
                 name: "Rectangle".into(),
             },
             None => Dialog::None,
+        }),
+        false,
+    ));
+    v.push((
+        name("color/fills#edit-fill"),
+        Shot::Dialog(|app| {
+            app.apply_fill(tracedraw_core::Fill::linear(
+                tracedraw_core::Color::rgb8(220, 30, 90),
+                tracedraw_core::Color::rgb8(40, 90, 200),
+                0.0,
+            ));
+            app.open_edit_fill();
+            std::mem::replace(&mut app.dialog, Dialog::None)
+        }),
+        false,
+    ));
+    v.push((
+        name("lines-shapes/outlines#outline-pen"),
+        Shot::Dialog(|app| {
+            app.open_outline_pen();
+            std::mem::replace(&mut app.dialog, Dialog::None)
         }),
         false,
     ));
@@ -497,6 +517,17 @@ fn shots() -> Vec<(String, Shot, bool)> {
     v.push((
         name("get-started/browser-version"),
         Shot::Dialog(|_| Dialog::WebNotice),
+        false,
+    ));
+    // Text > Writing Tools > Autocorrect: the Autocorrect tab of
+    // Options > Text.
+    v.push((
+        name("text/writing-tools#autocorrect"),
+        Shot::Dialog(|app| {
+            app.options_page = crate::ui::dialogs::OptionsPage::Text;
+            app.options_text_tab = crate::ui::options::AUTOCORRECT_TAB;
+            Dialog::Options
+        }),
         false,
     ));
     v.push((
@@ -598,7 +629,7 @@ fn help_shots() {
                     );
                     ui.painter()
                         .rect_filled(rect, 0.0, crate::theme::Tokens::field());
-                    crate::ui::dockers::dockers(app, &mut ui);
+                    crate::ui::dockers::dockers(app, &mut ui, crate::app::DockerPlace::Right);
                 } else {
                     crate::ui::dialogs::show(app, ctx);
                 }

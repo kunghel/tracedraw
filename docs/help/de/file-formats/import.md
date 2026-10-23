@@ -15,9 +15,12 @@ Einstellung auf der Seite [[options.file_formats]] der globalen Optionen; siehe
 
 ## Hinweise zu einigen Formaten {#formats}
 
-- **PDF und AI**: Eine geschützte Datei fragt im Dialogfeld
-  [[pdf_password.title]] nach ihrem Kennwort. Text behält seine Schriften,
-  wenn sie installiert sind.
+- **PDF und AI**: Das Dialogfeld [[pdf_import.title]] fragt, wie der Text
+  gelesen wird: als bearbeitbarer Text, der seine Schriften behält, wenn sie
+  installiert sind, oder als Kurven aus den Schriften, die die Datei
+  einbettet, sodass der Text genau so aussieht wie in der Datei. Optionen >
+  Dateiformate behält die Wahl. Eine geschützte Datei fragt im Dialogfeld
+  [[pdf_password.title]] nach ihrem Kennwort.
 - **EPS und PostScript**: Jede gedruckte Seite wird zu einer Seite.
 - **PSD**: Jede Ebene wird zu einer Bitmap mit Deckkraft, Sichtbarkeit und
   Maske.

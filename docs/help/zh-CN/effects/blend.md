@@ -41,3 +41,4 @@
 ## 删除或拆分调和 {#clear}
 
 **清除调和** 删除各步骤并保留两个对象。**拆分** 将各步骤变为独立的对象。
+这些步骤会编组放在对象旁边。[[menu.object > menu.object.break_blend_apart]]（<kbd>Ctrl+K</kbd>，右键菜单中也有）效果相同。

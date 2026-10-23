@@ -10,8 +10,11 @@ QR. Cada registro dos seus dados vira uma cópia da página, preenchida.
    menor e maior em um objeto de texto, como `<Name>`.
 2. Escolha [[menu.file > menu.file.print_merge > menu.file.print_merge_create]].
 3. Acrescente os dados:
-   - **Importar arquivo** lê um arquivo CSV cuja primeira linha nomeia os
-     campos;
+   - **Importar arquivo** lê um arquivo CSV ou uma pasta do Excel (`.xlsx`,
+     a primeira planilha) cuja primeira linha nomeia os campos. Campos com
+     nome de foto ou imagem, ou cujas células são arquivos de imagem,
+     começam como imagens, campos com QR no nome como códigos QR; os tipos
+     aparecem logo para serem mudados;
    - ou **Adicionar coluna** para acrescentar campos à mão, depois acrescente
      registros com **+**.
 4. Clique em **Concluir**.
@@ -27,7 +30,14 @@ preenchida. As cópias recebem o nome da página e o número do registro.
 - **Número**: um contador que você não digita: um início, um passo e um número
   de dígitos (início 7, passo 3, dígitos 3 dá 007, 010, 013).
 - **Imagem**: a célula tem o caminho de uma imagem. Um texto que contém apenas
-  `<Field>` vira a imagem, do maior tamanho que caiba na caixa dele.
+  `<Field>` vira a imagem, do maior tamanho que caiba na caixa dele. Ponha esse
+  texto dentro de uma moldura com [[menu.object.clip_frame_place_inside]] (uma moldura de
+  foto) e a imagem preenche a moldura, cortada por ela. Um retângulo, elipse ou
+  curva com o nome `<Field>` (no painel Objetos) recebe a imagem dentro dele do
+  mesmo jeito.
+
+Os campos funcionam também em grupos e molduras, então um cartão pode estar
+agrupado.
 - **Código QR**: um texto que contém apenas `<Field>` vira um código QR do
   texto da célula.
 

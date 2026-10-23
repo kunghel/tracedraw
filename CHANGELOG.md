@@ -6,6 +6,131 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Toolbox: a right click on a tool button or on its empty part opens the bars' menu (Customize, button size, the bars), as on the other bars; it used to open the flyout or nothing.
+
+- Symmetry editing as in the reference program: a click or a marquee picks one of the objects inside (not the whole symmetry, not a copy), and the bar and the lines stay while you work inside it. The mirror lines can be dragged to move them, and a click on a line shows handles that turn them. The bar has icons, spin fields, Show full preview (copies as red outlines when off) and Show symmetry lines.
+- Number fields everywhere (bars, dockers, dialogs, options) have spin arrows and step with the mouse wheel; Ctrl takes a tenth of a step and Shift ten steps.
+
+- Toolbars: the Default Button Size starts at Medium on a new installation; a size already chosen is kept.
+
+- Shape tool on a B-spline: control points can be chosen by a click, Shift+click or a marquee, as nodes are; Delete removes only the chosen points (it deleted the whole curve), and dragging a chosen point moves all the chosen ones.
+
+- Segment Delete: curves inside a group (an imported ornament, for example) are now cut by a click and by a drag, as in the reference program; nothing happened before. A drag also takes level and upright lines, which it used to skip (#427).
+
+## 0.12.0 (2026-10-23)
+
+- Break Apart on a contour, blend or extrusion: Ctrl+K and the right-click menu now offer Break Contour (Blend, Extrude) Group Apart, as in the reference program, instead of a greyed-out Break Apart. The object stays and the steps come out as a group beside it, also from the dockers' Break apart buttons (#424).
+
+- Colour Eyedropper: after a colour is sampled the pointer turns into the paint bucket, as in the reference program, and pictures give their colour again when they are grouped, inside a clip frame or kept as JPEG (#403).
+
+- Hyphenation in any language: put a hyphenation dictionary (a `hyph_*.dic` pattern file) where the spelling dictionaries go and choose it under Options > Text > Paragraph Text > Hyphenation patterns (#255).
+
+- Spell checking in any language: put Hunspell dictionaries (the `.dic` and `.aff` files many programs use) in the folder Options > Text > Spelling opens, or point it at a folder that has them. Words are checked with their prefixes, suffixes and compounds, suggestions use the dictionary's own replacement table, and each dictionary can be switched off (#255).
+
+- Options > Text: Display, Paragraph Text, Fonts, Spelling and Autocorrect tabs, as in the reference program. Autocorrect can now capitalize the names of days, turn typed web addresses into hyperlinks, use the quotation marks of another language or ones you choose, keep straight quotes after numbers, and switch the replacement table off; Text > Writing Tools > Autocorrect opens that tab. Fonts sets how many recently used fonts the font lists show (up to 20), and Spelling keeps the spell checker options and can add its corrections to Autocorrect (#369).
+
+- Segment Delete: after one stretch of a curve was deleted, clicking the stretch past the next crossing could delete the whole curve, because the first cut ended a hair off the outline it crossed. Crossings now lie exactly on both outlines (#354).
+
+- Glyphs panel: a search field finds characters by themselves or by Unicode code point (`U+20AC`, `0x20ac`, `20AC`), and a line above the grid shows the code point, character and range of the glyph under the pointer (#375).
+
+- Print and Print Preview: Keep page size stops pages from shrinking on a fixed sheet to make room for the marks, and a drag on the sheet in Print Preview moves the page information; Keep page size is remembered for the next print (#388).
+
+- Print and Print Preview: a Back side option for n-up and step-and-repeat layouts runs the pages right to left on the sheet, so the back of double-sided ID cards prints right behind the front, without mirroring the text (#387).
+
+- PDF and AI files: opening or importing one asks how to read its text, as in the reference program. Text keeps it editable; Curves draws each letter from the fonts the file embeds, so the text looks exactly as in the file even when those fonts are not installed. Options > File Formats keeps the choice (#386).
+
+- Print Merge: imports Excel workbooks (`.xlsx`) as well as CSV, guesses the picture, QR and text fields and shows their types after the import. Fields are now filled inside groups and frames, so grouped ID cards merge; a photo placeholder inside a frame fills the frame, and a shape named `<Field>` takes the picture inside it. Page copies with frames used to share ids with the template, so a merge could change the template instead of the copy (#377, #378).
+
+- Edit Fill (F11): a dialog as in the reference program, with the fill types across the top and, for gradients, a preview, the fill picker, type and repeat, a band of colours whose nodes can be picked, dragged, added and removed, the node's colour, transparency, position and midpoint, Reverse, rotation, centre and edge pad, and Overprint fill. OK changes only what was changed. F11 opened the Properties panel before (#361).
+
+- Outline Pen (F12): a dialog with every outline setting laid out in groups as in the reference program: General (colour, width with its unit, style, mitre limit, dashes, corners, line caps, position), Arrowheads, Calligraphy with a picture of the nib, Behind fill, Scale with object, Variable Outline (width nodes, sides and total) and Overprint outline. OK changes only what was changed; with nothing selected it sets the outline of new objects. F12 opened the Properties panel before (#357).
+
+- Bitmap effects on vector objects (3D Rotate and the others) are drawn at the drawing's rendering resolution from Layout > Page Setup instead of a fixed 300 dpi, up to 16 million pixels instead of 4, and are made again when the resolution changes; set it higher for sharper results on screen, in PDF and in exported images (#382).
+
+- Paragraph text: frames have a flow tab under their bottom edge, as in the reference program. A click on it, then a click on another frame links them, even on another page; a click or drag on an empty spot makes a new frame there that the text flows into. Linking used to need both frames selected, so frames on different pages could not be linked (#371).
+
+- Place Inside Frame, Order > In Front Of and Behind: while they wait for the click on the target object, the pointer is a thick arrow pointing at it, as in the reference program; it stayed the ordinary pointer (#379).
+
+- Variable Outline tool: Shift and Ctrl now work as in the reference program. A drag started with Shift changes only the side the pointer is on (Alt still does too); Shift+click picks a run of width nodes and Ctrl+click adds one or takes it out; a drag or the property bar then changes all the picked nodes, and Delete removes them (#374).
+
+- Guidelines: several selected guidelines move together when one of them is dragged, and a right click during the drag leaves copies. Edit > Duplicate (Ctrl+D) copies the selected guidelines, and the Guidelines docker gets Duplicate and Clear (every guideline of the type shown) buttons (#376).
+
+- Text: the font list and the size list show the selected text in the family or size under the pointer while they are open, as the reference program does; the text goes back as it was when the pointer leaves or the list closes, and the preview leaves the undo history alone (#370).
+
+- Pick tool: scaling with a corner handle follows the pointer smoothly. The size followed the faster of the two sides, so a line of text grew at the pace of its short side and jumped with small moves; it now goes by where the pointer falls along the box's diagonal. The handles also no longer jump a few pixels when the drag starts (#383).
+
+- Pen tool: the pointer is a pen nib with a dot at its tip, and the node goes exactly under the dot; the close, continue, add, delete and edit signs show beside it (#362).
+
+- Pen and Bezier: a finished curve keeps its anchors in the history, as in the reference program. After it is closed or deselected, Ctrl+Z opens it first and then takes the anchors back one by one; it used to take the whole curve away at once (#360).
+
+- Shape tool: with two or more nodes selected, the align keys (L, R, T, B, E) and the Object > Align commands align the nodes, as in the reference program; handles move with their nodes and it is one undo step (#364).
+
+- Pick tool: a marquee (or the Freehand Pick lasso) dragged with Shift turns over the objects it takes, as in the reference program: those already selected are deselected and the others added. It only added before (#401).
+
+- Interactive Fill: colour nodes on the gradient's line, as in the reference program. A double click on the line adds a node in the colour the fill has there, a double click on a node removes it, and nodes drag along the line. The bar between two nodes moves where their colours meet half way. A click on a node opens a small bar under it with its colour (with the colour picker) and its transparency; the property bar shows the node's colour, transparency and position, and a palette colour goes to the picked node. Node transparency shows on screen and in SVG (#330, #285).
+
+- Interactive Fill: gradient nodes are placed freely, as in the reference program. Dragging on an object puts the start and end nodes where the drag began and ended; the start, the end and a new skew handle move on their own (the start moves the fill, the end sets length and angle, the skew handle makes a radial fill elliptic or slants a linear one). The fill keeps its nodes when the object moves or scales, and SVG and PDF exports draw it the same way (#330, #285).
+
+- Select All on a drawing with thousands of objects no longer slows the window down: the selection is gathered once per change instead of searched for object by object several times a frame (a frame with 3000 objects selected went from about 200 ms to about 7 ms, #367).
+
+- Text > Edit Text (Ctrl+Shift+T) opens the Edit Text dialog with the whole text in a box; OK applies it as one step and the characters left as they were keep their formatting. It only started editing in place, with no window (#355).
+
+- Font Manager: the samples were drawn in black on the dark themes, nearly unreadable; they now take the theme's text colour (#380). Showing the details pane made the window grow a little on every frame, off the screen; the pane now takes its room from the list (#381).
+
+- Eyedroppers (the tools and the document palette's): they read nothing from a locked object or one on a locked layer; they now read colours and attributes from them too, while applying to a locked object stays blocked (#365).
+
+- Pen and Bezier: closing a curve with a click on its first node keeps the last segment as the preview showed it (it turned straight, #359); dragging from the first node to close puts its handle where the pointer goes (it was the mirror, #358); and a curve of two nodes closes, for a leaf or a lens of two nodes (#356).
+
+- Repeat (Ctrl+R): after an undo it repeated the action just undone; it now repeats the last action still in effect (#366). After a copy made with a right click during a drag it moved the selection; it now makes another copy as far again (#363).
+
+- `.cdr` (version 16 and later): outlines keep their mitre limit; it was read as 5 degrees whatever the file said, so sharp corners were cut where they should not be, and it was not saved (#384).
+
+- `.cdr` (version 16 and later): text with letters outside Windows-1252 (Cyrillic, Greek, most Central European letters) was saved as unmarked UTF-8 and came back as garbage, in TraceDraw and in other programs; such letters are now saved as marked two-byte units, and files saved the old way read back right (#368).
+
+- Text: editing a second text put the first one back to its text before its last edit; each text's typing is now an undo step of its own and editing another text never changes it (#373).
+
+- Browser build: the interface followed the browser's dark mode and switched to a dark style of its own on reload; the theme is now the one chosen in the options alone.
+
+- Interface size: 100 % is now one interface point per pixel at the system's scaling on every system (it was 0.8 on macOS and in the browser and 12 / 13 on Windows), and the bars' Default Button Size starts at Small, so the bars stay compact while text and menus take the system's size. A chosen interface size or button size is kept.
+
+- Toolbox: the Variable Outline tool has a button of its own at the bottom of the toolbox, after the Fill flyout; it was inside the Shape tool's flyout, where it was hard to find (#339).
+
+- Page bar: the Autofit Page button opens a popup with a Margin field (kept between sessions) and the Autofit Page button, so the page can be fitted to the drawing with room left around it; it fitted the page with no margin at once (#340).
+
+- Text: typing in the property bar's font search field (or any other field with the keyboard) while a text is being edited put the characters into the text too; they now go to the field alone (#342).
+
+## 0.11.0 (2026-10-22)
+
+- Panels: any panel can be dragged by its tab or its title bar to the left side of the window, to the right side or anywhere over the drawing as a floating window (resizable; the tab's and the title's right-click menu offer the three places too), so panels can sit on both sides at once; every panel still starts at the right. Where each panel is survives a restart.
+
+- Bars: the right-click menu of any bar lists every toolbar with a check (as Window > Toolbars does) and has Customize: Default Button Size (small, medium, large), Toolbox Toolbar (Reset to Default, its own button size, Image Only, Caption Only or Caption to Right) and Workspace import and export; it listed only five bars and had no sizes or captions.
+
+- B-spline: a curve drawn with the B-spline tool keeps its control points. The Shape tool shows them with the dashed control polygon instead of the curve's nodes: drag one to reshape the spline, double-click the polygon to add one, double-click a point to remove it. Convert To Curves (or any other edit of the outline) makes it an ordinary curve. The control points were dropped as soon as the curve was finished.
+
+- Smooth tool: a stroke eases the wobbles out of the curve under the nib and leaves a handful of nodes behind it; it left a node every few millimetres and broke the curve into short pieces as the pointer advanced. Smear and Twirl measure the curve finer under the nib and leave smoother curves too.
+
+- Clip frames: while objects are moved over a clip frame it lights up and a note under the pointer says what the release does; W held adds the objects to the frame, K held replaces its contents. Edit Contents fades the rest of the page while the frame and its contents are edited.
+
+- Clip frames: with a clip frame selected a bar at the top left of the drawing window offers Edit, Select Contents, Extract Contents, the contents lock and Fit Contents (centre, fit or fill proportionally, stretch); while the contents are edited it shows Finish.
+
+- 3-point curve: a curve drawn from an end node of the selected curve continues it, and one ending on its other end node closes it, as the other curve tools do; it always made a curve of its own.
+
+- Fonts embedded in a `.cdr` whose OS/2 table sets only a reserved embedding bit (old Devanagari fonts set bit 0) were refused as "restricted" and their text fell back to another font; the embedding bits are now read as the specification has them, so those fonts serve their text (#313).
+
+- Number fields (property bar, panels, dialogs): spin arrows at the right of every field, and the mouse wheel over a field steps its value (Shift ten times as much, Ctrl a tenth); values could only be typed.
+
+- Symmetry: several selected objects become one symmetry group (each still to be picked inside it with Ctrl+click), and objects drawn, pasted or duplicated while the symmetry is edited join it; before, each object got a symmetry of its own and nothing could be added.
+
+- Panels: the plus button under the tabs lists the panels in the groups of Window > Panels, with a box ticked at each open one; unticking closes it.
+
+- Panels: the pointer over a panel tab shows a close cross at the top of the tab, and a click on it closes the panel.
+
+## 0.10.2 (2026-10-22)
+
+- Opening `.cdr`: the bitmaps of a big drawing (a `Bitmaps.dat` member inflating past 512 MB, two large pictures on a 1.5 m page) were cut off at the limit, so the pictures after the cut were missing with "objects could not be read"; the member now inflates to the size the archive declares, up to 3 GB (#323).
+
+- Browser build: Ctrl+R is Edit > Repeat, as on the desktop, instead of reloading the page (the browser's reload button still does).
+
 - Pen and Bezier tools: a click after a node whose handle was pulled gives the curved segment the dashed preview showed, leaving along that handle and arriving straight at the new node; the segment came out straight, the handle thrown away (#314).
 
 - Vertical text: Text > Vertical Text and two property bar buttons set text in columns read top to bottom, right to left, as CJK typesetting does, with ideographs, kana and hangul upright and Latin letters turned; carets, selections, clicks and the arrow keys follow the columns. Offered with a Japanese or Chinese interface language, and for any text in those scripts (#257).

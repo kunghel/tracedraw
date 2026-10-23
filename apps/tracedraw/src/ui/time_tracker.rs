@@ -399,7 +399,7 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
             ui.label(tr("tracker.idle_before"));
             let mut minutes = app.settings.time_tracker.idle_minutes;
             if ui
-                .add(egui::DragValue::new(&mut minutes).range(1..=120))
+                .add(crate::ui::field::NumField::new(&mut minutes).range(1..=120))
                 .changed()
             {
                 app.settings.time_tracker.idle_minutes = minutes;

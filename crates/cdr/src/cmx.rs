@@ -1039,10 +1039,10 @@ impl Ctx {
             let (Some(i), Some(p)) = (s.u16(), s.u16()) else {
                 break;
             };
-            stops.push(Stop {
-                pos: (f64::from(p) / 100.0).clamp(0.0, 1.0),
-                color: self.color(i).unwrap_or(Color::BLACK),
-            });
+            stops.push(Stop::new(
+                (f64::from(p) / 100.0).clamp(0.0, 1.0),
+                self.color(i).unwrap_or(Color::BLACK),
+            ));
         }
         stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
         let only = stops.first().copied()?;

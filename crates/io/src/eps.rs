@@ -361,14 +361,11 @@ impl Writer<'_> {
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
                     if s.is_empty() {
-                        s.push(tracedraw_core::Stop {
-                            pos: 0.0,
-                            color: Color::BLACK,
-                        });
+                        s.push(tracedraw_core::Stop::new(0.0, Color::BLACK));
                     }
                     if s.len() == 1 {
                         let c = s[0].color;
-                        s.push(tracedraw_core::Stop { pos: 1.0, color: c });
+                        s.push(tracedraw_core::Stop::new(1.0, c));
                     }
                     s
                 };

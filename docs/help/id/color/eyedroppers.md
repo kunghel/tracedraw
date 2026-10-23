@@ -7,6 +7,9 @@ Setelah mengambil sampel, alat beralih ke terapkan; klik tombol pilih untuk
 mengambil sampel lagi. <kbd>Esc</kbd> membuang sampel dan kembali ke alat
 [[tool.pick]].
 
+Penunjuk berupa pipet saat alat mengambil sampel dan ember cat saat
+menerapkan. Gambar memberikan warnanya meski di dalam grup atau bingkai.
+
 ## Pipet Warna {#color-eyedropper}
 
 1. Pilih alat [[tool.color_eyedropper]].

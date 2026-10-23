@@ -117,9 +117,9 @@ impl Bar {
     }
 
     /// The size of the bar floating (points), title strip included.
-    pub fn floating_size(self) -> Vec2 {
+    pub fn floating_size(self, app: &App) -> Vec2 {
         match self {
-            Bar::Toolbox => vec2(crate::ui::toolbox::floating_width() + 8.0, 400.0),
+            Bar::Toolbox => vec2(crate::ui::toolbox::floating_width(app) + 8.0, 400.0),
             Bar::Palette => vec2(460.0, crate::ui::palette::ROW_H + TITLE_H + 4.0),
             Bar::Standard => vec2(940.0, 36.0 + TITLE_H + 4.0),
             Bar::Property => vec2(1100.0, 53.0 + TITLE_H + 4.0),
@@ -324,7 +324,7 @@ pub fn grip_zone(app: &mut App, ui: &mut Ui, bar: Bar, r: Rect, salt: u8) {
     };
     if resp.drag_started() && !app.settings.bars.locked {
         // The floating bar comes up with its title under the pointer.
-        let size = bar.floating_size();
+        let size = bar.floating_size(app);
         app.bar_drag = Some(BarDrag {
             bar,
             grab: vec2(12.0f32.min(size.x / 2.0), (TITLE_H / 2.0).min(size.y / 2.0)),
@@ -345,7 +345,7 @@ pub fn background(app: &mut App, ui: &mut Ui, bar: Bar) {
 /// The bar's context menu on `resp`. Each place that opens it (a grip, the
 /// bar's background, a floating title) keeps its own popup, so one menu
 /// never shows twice in a frame.
-fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
+pub fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
     egui::Popup::context_menu(resp)
         .id(resp.id.with("bar_menu"))
         .style(crate::ui::menus::menu_popup_style)
@@ -353,7 +353,7 @@ fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
 }
 
 fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
-    use crate::ui::menus::{check, radio_if, sep};
+    use crate::ui::menus::{check, item, radio, radio_if, sep, sub};
     ui.set_min_width(200.0);
     let current = app.settings.bars.dock(bar);
     let free = !app.settings.bars.locked;
@@ -363,18 +363,61 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
         }
     }
     sep(ui);
-    for b in Bar::ALL {
-        let on = b.visible(app);
-        if check(ui, b.key(), "", on) {
-            b.set_visible(app, !on);
+    // Every bar, as Window > Toolbars lists them.
+    crate::ui::menus::toolbars_list(app, ui);
+    sep(ui);
+    sub(ui, "bars.customize", |ui| {
+        sub(ui, "bars.default_button_size", |ui| {
+            for size in crate::settings::ButtonSize::ALL {
+                if radio(ui, size.key(), "", app.settings.button_size == size) {
+                    app.settings.button_size = size;
+                }
+            }
+        });
+        sub(ui, "bars.toolbox_toolbar", |ui| {
+            if item(ui, "bars.toolbox_reset", "", true) {
+                crate::ui::toolbox::reset_toolbox(app);
+            }
+            sep(ui);
+            sub(ui, "bars.button_size", |ui| {
+                let own = app.settings.toolbox_button_size;
+                if radio(ui, "bars.size_default", "", own.is_none()) {
+                    app.settings.toolbox_button_size = None;
+                }
+                for size in crate::settings::ButtonSize::ALL {
+                    if radio(ui, size.key(), "", own == Some(size)) {
+                        app.settings.toolbox_button_size = Some(size);
+                    }
+                }
+            });
+            sep(ui);
+            for c in crate::settings::Captions::ALL {
+                if radio(ui, c.key(), "", app.settings.toolbox_captions == c) {
+                    app.settings.toolbox_captions = c;
+                }
+            }
+        });
+        sub(ui, "menu.window.workspace", |ui| {
+            if item(ui, "menu.window.workspace_export", "", true) {
+                app.export_workspace_dialog(crate::workspace_file::WorkspaceParts::ALL);
+            }
+            if item(ui, "menu.window.workspace_import", "", true) {
+                app.import_workspace_dialog(crate::workspace_file::WorkspaceParts::ALL, true);
+            }
+        });
+        sep(ui);
+        // The Command Bars options: every bar, its lock, the toolbox.
+        if item(ui, "bars.customize_options", "", true) {
+            app.options_page = crate::ui::options::OptionsPage::CommandBars;
+            app.dialog = crate::ui::dialogs::Dialog::Options;
         }
-    }
+    });
     sep(ui);
     let locked = app.settings.bars.locked;
     if check(ui, "bars.lock", "", locked) {
         app.settings.bars.locked = !locked;
     }
-    if crate::ui::menus::item(ui, "bars.reset", "", true) {
+    if item(ui, "bars.reset", "", true) {
         reset(app);
     }
 }
@@ -437,7 +480,7 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context, menu_h: f32) {
 /// The band (or, floating, the window) a dragged bar would take at `dock`.
 fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p: Pos2) -> Rect {
     let thick = match drag.bar {
-        Bar::Toolbox => Tokens::TOOLBOX_WIDTH,
+        Bar::Toolbox => crate::ui::toolbox::column_width(app),
         Bar::Palette => crate::ui::palette::ROW_H,
         Bar::Standard => 36.0,
         Bar::Property => 53.0,
@@ -475,7 +518,7 @@ fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p:
             pos2(screen.left(), bottom - thick),
             pos2(screen.right(), bottom),
         ),
-        Dock::Floating => Rect::from_min_size(p - drag.grab, drag.bar.floating_size()),
+        Dock::Floating => Rect::from_min_size(p - drag.grab, drag.bar.floating_size(app)),
     }
 }
 
@@ -486,7 +529,7 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
             continue;
         }
         let screen = ctx.content_rect();
-        let size = bar.floating_size();
+        let size = bar.floating_size(app);
         let mut pos = app.settings.bars.pos(bar);
         // Keep the title on the screen.
         pos.x = pos
@@ -699,7 +742,7 @@ mod tests {
         };
         let z = drop_zone(&app, drag, Dock::Floating, s, 24.0, pos2(500.0, 500.0));
         assert_eq!(z.min, pos2(488.0, 491.0));
-        assert_eq!(z.size(), Bar::Palette.floating_size());
+        assert_eq!(z.size(), Bar::Palette.floating_size(&app));
     }
 
     #[test]

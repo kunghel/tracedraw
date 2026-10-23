@@ -46,6 +46,8 @@ pub struct PrintPrefs {
     pub bleed_limit: f64,
     pub page_numbers: bool,
     pub ps_level: u8,
+    /// Pages keep their size on a fixed sheet when marks need room (#388).
+    pub keep_size: bool,
 }
 
 impl Default for PrintPrefs {
@@ -75,6 +77,7 @@ impl Default for PrintPrefs {
             bleed_limit: st.bleed_limit,
             page_numbers: st.page_numbers,
             ps_level: st.ps_level,
+            keep_size: st.keep_size,
         }
     }
 }
@@ -112,6 +115,7 @@ impl PrintPrefs {
             },
             page_numbers: self.page_numbers,
             ps_level: self.ps_level.clamp(2, 3),
+            keep_size: self.keep_size,
             gutter: if self.gutter.is_finite() {
                 self.gutter.clamp(0.0, 100.0)
             } else {
@@ -144,6 +148,7 @@ impl PrintPrefs {
         self.bleed_limit = st.bleed_limit;
         self.page_numbers = st.page_numbers;
         self.ps_level = st.ps_level;
+        self.keep_size = st.keep_size;
     }
 }
 
@@ -185,6 +190,11 @@ pub struct FormatPrefs {
     /// File > Export goes straight to the file with the last choices
     /// ("Do not show filter dialog").
     pub skip_export_dialog: bool,
+    /// PDF and AI files: text read in as curves from the fonts the file
+    /// embeds (else as editable text, #386).
+    pub pdf_text_as_curves: bool,
+    /// Ask how to read a PDF's text each time one is opened or imported.
+    pub pdf_ask_text: bool,
 }
 
 impl Default for FormatPrefs {
@@ -202,6 +212,8 @@ impl Default for FormatPrefs {
             import_place: ImportPlace::AsInFile,
             cdr_version: tracedraw_cdr::write::NEWEST_VERSION,
             skip_export_dialog: false,
+            pdf_text_as_curves: false,
+            pdf_ask_text: true,
         }
     }
 }

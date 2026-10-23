@@ -28,6 +28,9 @@ const CARD_EXTRA: f32 = 40.0;
 /// Width of the libraries and filters, and of the details pane.
 const LEFT_W: f32 = 290.0;
 const DETAILS_W: f32 = 270.0;
+/// Room for the separator before the details pane (its line and the
+/// spacing on both sides).
+const DETAILS_GAP: f32 = 20.0;
 /// Pictures kept before the oldest go.
 const MAX_PICTURES: usize = 600;
 /// The green of installed fonts' bar.
@@ -430,7 +433,9 @@ fn draw_sample(
     let sk = tracedraw_render::to_sk_path(path)?;
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
     let mut paint = tiny_skia::Paint::default();
-    paint.set_color_rgba8(0x10, 0x10, 0x10, 0xff);
+    // A white mask, tinted with the theme's text colour where it is
+    // painted (#380).
+    paint.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
     paint.anti_alias = true;
     let baseline = (ascent * scale + pad) as f32;
     let t = tiny_skia::Transform::from_row(
@@ -565,8 +570,15 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &m
                     },
                 );
                 ui.separator();
+                // The details pane takes its room from the list, never from
+                // outside the window: with the separator counted short the
+                // window grew a little on every frame (#381).
                 let right_w = (ui.available_width()
-                    - if prefs.details { DETAILS_W + 10.0 } else { 0.0 })
+                    - if prefs.details {
+                        DETAILS_W + DETAILS_GAP
+                    } else {
+                        0.0
+                    })
                 .max(200.0);
                 ui.allocate_ui_with_layout(
                     Vec2::new(right_w, body.y),
@@ -595,11 +607,12 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &m
                 );
                 if prefs.details {
                     ui.separator();
+                    let details_w = ui.available_width().clamp(0.0, DETAILS_W);
                     ui.allocate_ui_with_layout(
-                        Vec2::new(DETAILS_W, body.y),
+                        Vec2::new(details_w, body.y),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            ui.set_width(DETAILS_W);
+                            ui.set_width(details_w);
                             let focus = st
                                 .focus
                                 .as_ref()
@@ -1779,7 +1792,8 @@ fn font_list(
                                             egui::pos2(0.0, 0.0),
                                             egui::pos2(1.0, 1.0),
                                         ),
-                                        Color32::from_white_alpha(120),
+                                        // The family's name, faded.
+                                        Tokens::text().gamma_multiply(120.0 / 255.0),
                                     );
                                 }
                                 None => {
@@ -1801,6 +1815,17 @@ fn font_list(
                 }
             });
     });
+}
+
+/// The colour a face's sample is painted in: the theme's text colour
+/// (light on the dark themes, #380), the highlight's text colour on a
+/// chosen card in the high contrast theme.
+fn sample_ink(picked: bool) -> Color32 {
+    if picked && crate::theme::theme() == crate::theme::Theme::HighContrast {
+        crate::theme::on_highlight()
+    } else {
+        Tokens::text()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1858,7 +1883,7 @@ fn card(
             pic.texture.id(),
             Rect::from_min_size(egui::pos2(card.left() + 46.0, top), shown),
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(uv_w, 1.0)),
-            Color32::WHITE,
+            sample_ink(picked),
         );
     }
     // How it is built, then the installed bar.
@@ -2275,5 +2300,97 @@ mod tests {
             out.textures_delta.clear();
         }
         assert!(!close);
+    }
+
+    #[test]
+    fn probe_381() {
+        let mut app = App::headless();
+        app.font_catalog.installed = Some(vec![face("Alpha", "Regular", 400, false)]);
+        app.font_catalog.generation = Some(tracedraw_text::fonts().generation());
+        let mut st = FontManagerState::default();
+        st.selected.insert("Alpha-Regular".into());
+        st.focus = Some("Alpha-Regular".into());
+        let ctx = crate::theme::ui_context();
+        let mut close = false;
+        let mut width = |app: &mut App, st: &mut FontManagerState| {
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out =
+                    ctx.run_ui(input, |ui| dialog(app, &ui.ctx().clone(), st, &mut close));
+                out.textures_delta.clear();
+            }
+            ctx.memory(|m| m.area_rect(egui::Id::new("font_manager_window")))
+                .map(|r| r.width())
+        };
+        app.settings.font_manager.details = false;
+        let a = width(&mut app, &mut st);
+        app.settings.font_manager.details = true;
+        let b = width(&mut app, &mut st);
+        eprintln!("PROBE without {a:?} with {b:?}");
+    }
+
+    /// Turning the details pane on takes its room from the list: the
+    /// window keeps its width (#381).
+    #[test]
+    fn the_details_pane_does_not_widen_the_window() {
+        let mut app = App::headless();
+        app.font_catalog.installed = Some(vec![face("Alpha", "Regular", 400, false)]);
+        app.font_catalog.generation = Some(tracedraw_text::fonts().generation());
+        let mut st = FontManagerState::default();
+        st.selected.insert("Alpha-Regular".into());
+        st.focus = Some("Alpha-Regular".into());
+        let ctx = crate::theme::ui_context();
+        let mut close = false;
+        let mut width = |app: &mut App, st: &mut FontManagerState| {
+            for _ in 0..6 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out =
+                    ctx.run_ui(input, |ui| dialog(app, &ui.ctx().clone(), st, &mut close));
+                out.textures_delta.clear();
+            }
+            ctx.memory(|m| m.area_rect(egui::Id::new("font_manager_window")))
+                .map(|r| r.width())
+                .expect("the window")
+        };
+        app.settings.font_manager.details = false;
+        let without = width(&mut app, &mut st);
+        app.settings.font_manager.details = true;
+        let with = width(&mut app, &mut st);
+        assert!((with - without).abs() < 0.5, "{without} then {with}");
+        // And it stays so.
+        assert!((width(&mut app, &mut st) - without).abs() < 0.5);
+    }
+
+    /// The samples are drawn in the theme's text colour: light on the
+    /// dark themes, dark on the light ones (#380).
+    #[test]
+    fn samples_take_the_theme_text_colour() {
+        // The theme's text colour, whatever the theme (not switched here:
+        // the theme is shared by the tests running alongside).
+        assert_eq!(sample_ink(false), Tokens::text());
+        // The mask itself is white, so the tint is the colour seen.
+        let path = {
+            let mut p = kurbo::BezPath::new();
+            p.move_to((0.0, 0.0));
+            p.line_to((0.5, 0.0));
+            p.line_to((0.5, 0.7));
+            p.close_path();
+            p
+        };
+        let (img, _) = draw_sample(&path, 0.6, 0.8, 0.2, 40.0).expect("a picture");
+        let max = img.pixels.iter().map(|c| c.r()).max().unwrap_or(0);
+        assert_eq!(max, 255);
     }
 }

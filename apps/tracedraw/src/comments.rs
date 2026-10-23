@@ -213,8 +213,7 @@ impl App {
             return true;
         }
         if response.clicked_by(egui::PointerButton::Primary)
-            && self.show_dockers
-            && self.docker_tab == crate::app::DockerTab::Comments
+            && self.docker_shown(crate::app::DockerTab::Comments)
         {
             if let Some(id) = self.comment_at(pos) {
                 self.comments.selected = Some(id);

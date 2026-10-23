@@ -97,7 +97,7 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
                 app.clear_blend();
             }
             if ui.button(tr("docker.break_apart")).clicked() {
-                app.flatten_effects();
+                app.break_effect_groups();
             }
         }
         _ => dim(ui, tr("toolbar.drag_between_objects")),

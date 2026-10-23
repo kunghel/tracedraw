@@ -92,8 +92,21 @@ Viz [Přichytávání](../pages-layout/snapping.md).
 
 ![Stránka Text v možnostech TraceDraw](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: o kolik <kbd>Ctrl+8</kbd> a
-  <kbd>Ctrl+2</kbd> zvětší a zmenší vybraný text (1 bod).
-- [[options.default_font]] a [[options.default_size]] nového textu.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] a
-  [[menu.text.show_text_frames]].
+Stránka má pět karet.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (o kolik
+  <kbd>Ctrl+8</kbd> a <kbd>Ctrl+2</kbd> zvětší a zmenší vybraný text, 1 bod),
+  [[options.default_font]] a [[options.default_size]] nového textu a
+  [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] a [[options.hyphenation_patterns]]
+  (vestavěné, nebo slovník dělení slov pro váš jazyk).
+- [[docker.fonts]]: [[options.show_recent_fonts]] nahoře v seznamech písem,
+  [[options.recent_font_count]] (5, nejvýše 20) a
+  [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  a [[options.add_to_autocorrect]], aby se slovo opravené v kontrole pravopisu
+  příště opravilo při psaní; a [[options.dictionaries]], které používá, viz
+  [Slovníky](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: co se opravuje při psaní; viz
+  [Automatické opravy](../text/writing-tools.md#autocorrect).

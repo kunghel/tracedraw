@@ -97,9 +97,22 @@ Voir [Magnétisme](../pages-layout/snapping.md).
 
 ![La page Texte des options de TraceDraw](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]] : de combien <kbd>Ctrl+8</kbd> et
-  <kbd>Ctrl+2</kbd> agrandissent et réduisent le texte sélectionné
-  (1 point).
-- [[options.default_font]] et [[options.default_size]] du nouveau texte.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] et
-  [[menu.text.show_text_frames]].
+La page a cinq onglets.
+
+- [[options.display]] : [[options.keyboard_text_increment]] (de combien
+  <kbd>Ctrl+8</kbd> et <kbd>Ctrl+2</kbd> agrandissent et réduisent le texte
+  sélectionné, 1 point), la [[options.default_font]] et la
+  [[options.default_size]] du nouveau texte, et [[menu.text.show_non_printing]].
+- [[options.paragraph_text]] : [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] et les [[options.hyphenation_patterns]]
+  (intégrés, ou un dictionnaire de césure de votre langue).
+- [[docker.fonts]] : [[options.show_recent_fonts]] en haut des listes de
+  polices, le [[options.recent_font_count]] (5, jusqu'à 20) et la
+  [[options.font_sample_size]].
+- [[options.spelling]] : [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  et [[options.add_to_autocorrect]], pour qu'un mot corrigé dans le correcteur
+  soit corrigé à la frappe la fois suivante ; et les
+  [[options.dictionaries]] qu'il utilise, voir
+  [Dictionnaires](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]] : ce qui est corrigé à la frappe ; voir
+  [Correction automatique](../text/writing-tools.md#autocorrect).

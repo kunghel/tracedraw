@@ -6,6 +6,73 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// How large the buttons of the bars are (the bars' menu > Customize).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ButtonSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl ButtonSize {
+    pub const ALL: [ButtonSize; 3] = [ButtonSize::Small, ButtonSize::Medium, ButtonSize::Large];
+
+    /// The buttons' size as a share of the medium size (32 px).
+    pub fn scale(self) -> f32 {
+        match self {
+            ButtonSize::Small => 0.75,
+            ButtonSize::Medium => 1.0,
+            ButtonSize::Large => 1.25,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ButtonSize::Small => "bars.size_small",
+            ButtonSize::Medium => "bars.size_medium",
+            ButtonSize::Large => "bars.size_large",
+        }
+    }
+}
+
+/// What the toolbox's buttons show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Captions {
+    #[default]
+    ImageOnly,
+    CaptionOnly,
+    CaptionRight,
+}
+
+impl Captions {
+    pub const ALL: [Captions; 3] = [
+        Captions::ImageOnly,
+        Captions::CaptionOnly,
+        Captions::CaptionRight,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Captions::ImageOnly => "bars.image_only",
+            Captions::CaptionOnly => "bars.caption_only",
+            Captions::CaptionRight => "bars.caption_right",
+        }
+    }
+
+    /// The icon shows.
+    pub fn image(self) -> bool {
+        self != Captions::CaptionOnly
+    }
+
+    /// The tool's name shows.
+    pub fn caption(self) -> bool {
+        self != Captions::ImageOnly
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -54,9 +121,12 @@ pub struct Settings {
     /// (Document Options > Save as Default).
     #[serde(default)]
     pub document_defaults: DocumentDefaults,
-    /// Text > Writing Tools > Autocorrect options.
+    /// Options > Text > Autocorrect.
     #[serde(default)]
     pub autocorrect: crate::autocorrect::AutocorrectPrefs,
+    /// Options > Text > Spelling.
+    #[serde(default)]
+    pub spelling: SpellingPrefs,
     /// Thesaurus file picked by the user (Text > Writing Tools > Thesaurus).
     #[serde(default)]
     pub thesaurus_file: Option<PathBuf>,
@@ -77,6 +147,20 @@ pub struct Settings {
     /// each flyout's first tool).
     #[serde(default)]
     pub toolbox_hidden: Vec<String>,
+    /// The bars' menu > Customize > Default Button Size: how large the
+    /// buttons of every bar are (Medium at first; a choice saved stays).
+    #[serde(default)]
+    pub button_size: ButtonSize,
+    /// The property bar's Autofit Page: the margin (mm) left around the
+    /// drawing when the page is fitted to it.
+    #[serde(default)]
+    pub fit_page_margin: f64,
+    /// The toolbox's own button size, when it does not follow the default.
+    #[serde(default)]
+    pub toolbox_button_size: Option<ButtonSize>,
+    /// What the toolbox's buttons show: the icon, the tool's name, or both.
+    #[serde(default)]
+    pub toolbox_captions: Captions,
     /// Customization > Appearance > Interface size, relative to the
     /// scaling the system gives the monitor (1.0 = 100 %, the size of
     /// other programs, a zoom of `ui::BASE_ZOOM`); 0 is 100 % too.
@@ -138,6 +222,13 @@ pub struct Settings {
     /// multiples of this angle (degrees).
     #[serde(default = "default_constrain_angle")]
     pub constrain_angle: f64,
+    /// The symmetry bar's Show symmetry lines (on at first).
+    #[serde(default = "default_true")]
+    pub symmetry_show_lines: bool,
+    /// The symmetry bar's Show full preview: copies drawn in full while a
+    /// symmetry is edited (off at first: outlines in red).
+    #[serde(default)]
+    pub symmetry_full_preview: bool,
     /// Options > Edit: decimal places of distances in the property bar
     /// and the status bar.
     #[serde(default = "default_precision")]
@@ -233,6 +324,12 @@ pub struct Settings {
     /// The font lists' fonts used last, newest first.
     #[serde(default)]
     pub recent_fonts: Vec<String>,
+    /// Options > Text > Fonts: the fonts used last shown at the top of
+    /// the font lists, and how many (1 to 20).
+    #[serde(default = "default_true")]
+    pub show_recent_fonts: bool,
+    #[serde(default = "default_recent_font_count")]
+    pub recent_font_count: usize,
     /// The Properties docker's sections closed ("outline", "fill" ...).
     #[serde(default)]
     pub properties_closed: Vec<String>,
@@ -337,12 +434,29 @@ fn default_path_tick() -> f64 {
     1.0
 }
 
-/// The docker tab column as it was left: the dockers in it, in order, and
-/// the one in front (by their name keys, "docker.hints" ...).
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// The dockers as they were left: the default column's dockers, in
+/// order, and the one in front (by their name keys, "docker.hints" ...);
+/// the other column's, its front and whether it was open; and the
+/// floating ones with their windows.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DockerSetup {
     pub open: Vec<String>,
     pub front: String,
+    pub left: Vec<String>,
+    pub left_front: String,
+    pub left_shown: bool,
+    pub floating: Vec<FloatingSetup>,
+}
+
+/// A floating docker as it was left: its name key, the window's top left
+/// corner and its size (screen points).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct FloatingSetup {
+    pub tab: String,
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
 }
 
 /// Which bars are shown (Window > Toolbars, the bars' menu). The palette
@@ -1102,6 +1216,44 @@ impl Default for ColorPrefs {
     }
 }
 
+/// Options > Text > Spelling: what the spell checker skips, whether its
+/// replacements go to the Autocorrect table, and which dictionaries it
+/// uses.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpellingPrefs {
+    /// Skip words with digits ("B2B").
+    pub ignore_digits: bool,
+    /// Skip words in capitals ("NASA").
+    pub ignore_capitals: bool,
+    /// A word the spell checker replaces is added to the Autocorrect
+    /// replacements, so typing it wrong again corrects it.
+    pub add_to_autocorrect: bool,
+    /// A folder of Hunspell dictionaries besides TraceDraw's own.
+    pub dictionary_folder: Option<PathBuf>,
+    /// The dictionaries switched off, by name (`pt_BR`).
+    pub disabled_dictionaries: Vec<String>,
+    /// Options > Text > Paragraph Text: the hyphenation pattern file used
+    /// (`hyph_pt_BR`, found where the dictionaries are), empty for the
+    /// built-in patterns.
+    pub hyphenation_patterns: String,
+}
+
+impl SpellingPrefs {
+    /// The dictionaries these options name, for the spell checker.
+    pub fn config(&self) -> crate::spell::SpellConfig {
+        crate::spell::SpellConfig {
+            folder: self.dictionary_folder.clone(),
+            disabled: self.disabled_dictionaries.clone(),
+        }
+    }
+}
+
+/// The fonts used last that the font lists show, by default.
+pub fn default_recent_font_count() -> usize {
+    5
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -1135,6 +1287,8 @@ impl Default for Settings {
             node_tracking: false,
             preview_page_border: true,
             constrain_angle: default_constrain_angle(),
+            symmetry_show_lines: true,
+            symmetry_full_preview: false,
             precision: default_precision(),
             nodes: NodePrefs::default(),
             clip_frame: ClipFramePrefs::default(),
@@ -1156,12 +1310,17 @@ impl Default for Settings {
             view: ViewPrefs::default(),
             panels: PanelPrefs::default(),
             autocorrect: crate::autocorrect::AutocorrectPrefs::default(),
+            spelling: SpellingPrefs::default(),
             thesaurus_file: None,
             show_new_document_dialog: true,
             new_document: crate::new_document::NewDocSettings::default(),
             desktop_rgb: default_desktop(),
             status_info: crate::ui::status::StatusInfo::default(),
             toolbox_hidden: Vec::new(),
+            button_size: ButtonSize::Medium,
+            fit_page_margin: 0.0,
+            toolbox_button_size: None,
+            toolbox_captions: Captions::ImageOnly,
             ui_size: 0.0,
             show_splash: true,
             center_dialogs: true,
@@ -1178,6 +1337,8 @@ impl Default for Settings {
             shown_bars: None,
             dockers: None,
             recent_fonts: Vec::new(),
+            show_recent_fonts: true,
+            recent_font_count: default_recent_font_count(),
             properties_closed: Vec::new(),
             text_sections_closed: Vec::new(),
             text_docker_from: 0,
@@ -1274,6 +1435,7 @@ impl Settings {
     /// 1. objects are treated as filled (a click inside an unfilled one
     ///    selects it), which older versions saved switched off.
     pub fn upgrade(mut self) -> Settings {
+        self.autocorrect.upgrade();
         if self.upgrades < 1 {
             self.treat_all_filled = true;
         }

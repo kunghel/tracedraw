@@ -74,7 +74,10 @@ browser's context menu does not open on the canvas.
 The editor's shortcuts reach the editor instead of the browser: while
 the canvas has the focus, Ctrl (or Cmd) with a letter and the function
 keys F1 to F12 are not passed to the browser, except Ctrl+C, Ctrl+X and
-Ctrl+V (clipboard), Ctrl+R (reload) and Ctrl+Shift+I (developer tools).
+Ctrl+V (clipboard) and Ctrl+Shift+I (developer tools). Ctrl+R is Repeat,
+as on the desktop, and F5 the Freehand tool, so neither reloads the
+page: use the browser's reload button
+(`web_page::tests::the_browser_keeps_only_the_clipboard_and_developer_keys`).
 Ctrl+N, Ctrl+T and Ctrl+W stay with the browser because no page can take
 them; use the File menu for New and Close.
 

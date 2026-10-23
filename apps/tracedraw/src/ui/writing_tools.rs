@@ -31,9 +31,6 @@ pub struct SpellTab {
     pub skipped: Vec<String>,
     /// Replacements made, newest last, for Undo.
     pub done: usize,
-    /// Ignore words with digits, and words in capitals.
-    pub ignore_digits: bool,
-    pub ignore_capitals: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -103,6 +100,7 @@ fn scope_ids(app: &App, scope: CheckScope) -> Vec<ShapeId> {
 
 /// The unknown words of the text objects `ids`, in order, each place once.
 pub fn unknown_words(app: &App, ids: &[ShapeId], tab: &SpellTab) -> Vec<(ShapeId, String)> {
+    let prefs = &app.settings.spelling;
     let mut out = Vec::new();
     for id in ids {
         let Some(s) = app.doc().find_shape(*id) else {
@@ -114,8 +112,8 @@ pub fn unknown_words(app: &App, ids: &[ShapeId], tab: &SpellTab) -> Vec<(ShapeId
         let text: String = spans.iter().map(|x| x.text.as_str()).collect();
         for w in crate::spell::unknown_words(&text) {
             if tab.skipped.contains(&w)
-                || (tab.ignore_digits && w.chars().any(|c| c.is_ascii_digit()))
-                || (tab.ignore_capitals && w.chars().all(|c| !c.is_lowercase()))
+                || (prefs.ignore_digits && w.chars().any(|c| c.is_ascii_digit()))
+                || (prefs.ignore_capitals && w.chars().all(|c| !c.is_lowercase()))
             {
                 continue;
             }
@@ -123,6 +121,22 @@ pub fn unknown_words(app: &App, ids: &[ShapeId], tab: &SpellTab) -> Vec<(ShapeId
         }
     }
     out
+}
+
+/// A spelling correction as an Autocorrect replacement (Options > Text >
+/// Spelling > Add corrections to Autocorrect): `word` to `with`, the
+/// row for `word` replaced if there is one; nothing for an empty or
+/// unchanged word, or one with spaces.
+pub fn add_correction(prefs: &mut crate::autocorrect::AutocorrectPrefs, word: &str, with: &str) {
+    if word.is_empty() || word == with || word.contains(char::is_whitespace) {
+        return;
+    }
+    match prefs.replacements.iter_mut().find(|(f, _)| f == word) {
+        Some(row) => row.1 = with.to_string(),
+        None => prefs
+            .replacements
+            .push((word.to_string(), with.to_string())),
+    }
 }
 
 /// A right-hand column button, 140 wide.
@@ -280,8 +294,19 @@ fn spell_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState) {
                     ui.end_row();
                     skip_all |= side_button(ui, "writing.skip_all", current.is_some());
                     ui.menu_button(tr("writing.options"), |ui| {
-                        ui.checkbox(&mut t.ignore_digits, tr("writing.ignore_digits"));
-                        ui.checkbox(&mut t.ignore_capitals, tr("writing.ignore_capitals"));
+                        let p = &mut app.settings.spelling;
+                        let mut changed = ui
+                            .checkbox(&mut p.ignore_digits, tr("writing.ignore_digits"))
+                            .changed();
+                        changed |= ui
+                            .checkbox(&mut p.ignore_capitals, tr("writing.ignore_capitals"))
+                            .changed();
+                        changed |= ui
+                            .checkbox(&mut p.add_to_autocorrect, tr("options.add_to_autocorrect"))
+                            .changed();
+                        if changed {
+                            app.settings.save();
+                        }
                     });
                     ui.end_row();
                     add |= side_button(ui, "writing.add", current.is_some());
@@ -350,6 +375,10 @@ fn spell_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState) {
             } else {
                 crate::spell::replace_word(app, id, &word, &t.replacement);
                 t.done += 1;
+            }
+            if app.settings.spelling.add_to_autocorrect {
+                add_correction(&mut app.settings.autocorrect, &word, &t.replacement);
+                app.settings.save();
             }
             refresh(app, t, st.scope);
         } else if skip_once {
@@ -1099,12 +1128,37 @@ mod tests {
         let id = text(&mut app, "zqxw ZQXW zq2w", None);
         let mut tab = SpellTab::default();
         let all = unknown_words(&app, &[id], &tab);
-        tab.ignore_capitals = true;
-        tab.ignore_digits = true;
+        app.settings.spelling.ignore_capitals = true;
+        app.settings.spelling.ignore_digits = true;
         let fewer = unknown_words(&app, &[id], &tab);
         assert!(all.len() > fewer.len(), "{all:?} {fewer:?}");
         tab.skipped = fewer.iter().map(|(_, w)| w.clone()).collect();
         assert!(unknown_words(&app, &[id], &tab).is_empty());
+    }
+
+    /// Options > Text > Spelling > Add corrections to Autocorrect: a
+    /// replacement becomes a row, an existing row is replaced, and
+    /// nothing comes of an unchanged word or one with spaces.
+    #[test]
+    fn corrections_go_to_the_autocorrect_table() {
+        let mut p = crate::autocorrect::AutocorrectPrefs::default();
+        let n = p.replacements.len();
+        add_correction(&mut p, "teh", "the");
+        assert_eq!(p.replacements.len(), n + 1);
+        assert_eq!(p.replacements.last(), Some(&("teh".into(), "the".into())));
+        add_correction(&mut p, "teh", "tech");
+        assert_eq!(p.replacements.len(), n + 1);
+        assert_eq!(p.replacements.last(), Some(&("teh".into(), "tech".into())));
+        add_correction(&mut p, "same", "same");
+        add_correction(&mut p, "two words", "x");
+        add_correction(&mut p, "", "x");
+        assert_eq!(p.replacements.len(), n + 1);
+        // Typing the word wrong again corrects it.
+        let style = crate::autocorrect::QuoteStyle::Curly;
+        assert_eq!(
+            crate::autocorrect::on_typed("I saw teh ", &p, style).as_deref(),
+            Some("I saw tech ")
+        );
     }
 
     #[test]

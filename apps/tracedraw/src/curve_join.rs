@@ -199,7 +199,7 @@ fn joined(curve: &BezPath, line: &BezPath, tol: f64) -> Option<BezPath> {
 impl App {
     /// The selected curve a new line may join: one open curve lying on a
     /// layer.
-    fn join_candidate(&self) -> Option<tracedraw_core::Shape> {
+    pub(crate) fn join_candidate(&self) -> Option<tracedraw_core::Shape> {
         let [id] = self.selection.as_slice() else {
             return None;
         };
@@ -228,6 +228,15 @@ impl App {
     /// Add a newly drawn open line (page space): it continues the selected
     /// curve when one of its ends is on one of the curve's end nodes,
     /// otherwise it becomes a curve of its own. The result is selected.
+    /// A line drawn now would continue the selected curve (see
+    /// [`Self::add_drawn_line`]).
+    pub(crate) fn would_join(&self, line: &BezPath) -> bool {
+        self.join_candidate().is_some_and(|curve| {
+            joined(&curve.page_path(), line, self.join_tolerance()).is_some()
+                && curve.transform.determinant().abs() > 1e-12
+        })
+    }
+
     pub fn add_drawn_line(&mut self, line: BezPath) -> Option<ShapeId> {
         if let Some(curve) = self.join_candidate() {
             if let Some(path) = joined(&curve.page_path(), &line, self.join_tolerance()) {

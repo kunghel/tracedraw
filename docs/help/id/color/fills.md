@@ -53,6 +53,19 @@ Gradien memadukan dua warna atau lebih. Pengaturannya, di bagian isian panel
 Sebuah jalur di bawah jenis menampilkan seluruh urutan warna seperti yang akan
 digambar.
 
+## Kotak dialog Edit Isian {#edit-fill}
+
+<kbd>F11</kbd> membuka kotak dialog [[edit_fill.title]] pada isian pilihan.
+Untuk gradien, kotak ini menampilkan pratinjau, [[edit_fill.fill_picker]],
+jenis, pengulangan, dan pita warna: klik node untuk memilihnya, seret untuk
+memindahkannya, klik ganda untuk menambah atau menghapus node. Di bawah pita:
+warna, transparansi, posisi, dan [[edit_fill.midpoint]] node, serta
+[[edit_fill.reverse]]. [[edit_fill.transform]] berisi rotasi, pusat, dan
+bantalan tepi. **OK** menerapkan yang Anda ubah, dengan
+[[edit_fill.overprint]].
+
+![Kotak dialog Edit Isian](../../img/color-fills-edit-fill.png)
+
 ## Alat Isian Interaktif {#interactive-fill}
 
 Alat [[tool.interactive_fill]] (<kbd>G</kbd>) menyunting isian langsung pada

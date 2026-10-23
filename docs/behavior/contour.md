@@ -51,7 +51,14 @@ Ctrl+F9 opens the Contour panel.
 - The controls show the selected object's contour and edit the selected
   contours live (a run of changes is one undo step). Apply (shown when
   a selected object has no contour) adds the contour; Clear Contour
-  removes it; Break Apart turns the steps into objects.
+  removes it; Break Apart turns the steps into objects, grouped beside
+  the object when there are several (`App::break_effect_groups`).
+- Object > Break Contour Group Apart (Ctrl+K, and the right-click
+  menu), which takes the place of Break Apart while a selected object
+  has a contour, does the same (#424;
+  `contour_tool::tests::break_apart_breaks_a_contour_group`). A blend
+  gives Break Blend Group Apart and an extrusion Break Extrude Group
+  Apart; a drop shadow's Break Drop Shadow Apart comes first.
 - The values are kept in the preferences (`tools.contour`).
 
 ## Checks

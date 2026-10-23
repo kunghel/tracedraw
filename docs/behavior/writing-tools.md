@@ -14,14 +14,48 @@ Selection).
 
 ## Spell Checker
 
-System Hunspell word lists (see `text.md`). Left: Replace with, the
+Dictionaries (`spell.rs`, `hunspell.rs`): Hunspell dictionaries, a
+`.dic` word file with the `.aff` affix file of the same name, found in
+TraceDraw's `dictionaries` folder under the configuration folder and in
+the folder named under Options > Text > Spelling > Also read
+dictionaries from (each with the folders inside it, three deep, so a
+dictionary package unpacked there or another program's dictionary folder
+works), then in the system's folders (`/usr/share/hunspell`,
+`/usr/share/myspell`, `/Library/Spelling` ...); a name found twice is
+used once, the user's folders first. `hyph_*` and `th_*` files
+(hyphenation patterns, thesauri) are left out; a `.dic` with no `.aff`
+is a plain word list. The Spelling tab lists them by name, each with a
+check box (on; the names switched off are kept in the preferences),
+Open Folder (creates and opens TraceDraw's folder) and Read Again
+(reads the folders and the dictionaries again). A word is right when any
+dictionary in use, a system word list (`/usr/share/dict/*`), the
+built-in core words or the user's own words know it; a hyphenated word
+when each part is. The affix file is read for `SET` (UTF-8, ISO 8859,
+Windows code pages, KOI8-R), `FLAG` (characters, `long`, `num`), `AF`
+aliases, `PFX` and `SFX` rules (strip, add, condition, cross product,
+continuation classes: two suffixes, a suffix and a prefix),
+`NEEDAFFIX`, `FORBIDDENWORD`, `ONLYINCOMPOUND`, `KEEPCASE`, compounds
+(`COMPOUNDFLAG`, `COMPOUNDBEGIN`, `COMPOUNDMIDDLE`, `COMPOUNDLAST`,
+`COMPOUNDPERMITFLAG`, `COMPOUNDMIN`, `COMPOUNDWORDMAX`), `IGNORE`, `TRY`
+and `REP`. Case: a word typed with a capital (or in capitals) is also
+looked up in small letters, but not one kept in its case. A typographic
+apostrophe counts as a straight one. Suggestions: the dictionaries'
+replacement tables, then single edits with their `TRY` letters, then a
+split into two words, then edits found in the word lists; eight at most.
+Checks: `hunspell::tests` (and `real_dictionaries`, ignored, over
+dictionaries in `HUNSPELL_TEST_DIR`: English, Brazilian Portuguese and
+German words, affixed and compound), and
+`spell::tests::dictionaries_in_a_folder_are_found_and_used`.
+
+Left: Replace with, the
 Replacements list (suggestions; a click puts one in Replace with, a
 double click replaces with it) and the status ("Ready: Begin spell
 checking", the word not found, then "Spell check completed"). Right:
 Start (Replace once a word is shown), Auto Replace (every place the word
 is), Skip Once, Undo (the last replacement), Skip All (for this check),
-Options (ignore words with numbers, ignore words in capitals), Add (to
-the user word list) and Check.
+Options (ignore words with numbers, ignore words in capitals, add
+corrections to Autocorrect; the same as Options > Text > Spelling), Add
+(to the user word list) and Check.
 
 ## Grammar
 
@@ -80,18 +114,44 @@ their text is hyphenated (they win over the patterns, capitals or not).
 
 ## Autocorrect
 
-Applied while typing (`App::update_text`), per the Autocorrect dialog:
+Tools > Options > Text > Autocorrect (Text > Writing Tools > Autocorrect
+opens that tab). Applied while typing (`App::update_text`), once a word
+is finished with a space or punctuation:
 
-- capitalise the first letter of sentences (default on),
+- capitalize first letter of sentences (default on),
 - correct two initial capitals ("THe" to "The", default on),
+- capitalize names of days (English day names, "monday" to "Monday",
+  "monday's" too; default off),
+- automatically create hyperlinks when typing web addresses (default
+  off): a word starting `http://`, `https://` or `www.` with a dot in its
+  host, finished with a space, gives the text object that link
+  (`www.` gets `http://`), unless it has a link already; one undo step of
+  its own,
+- language: whose quotation marks are used (default the interface
+  language); choosing another resets the marks to that language's,
 - typographic quotes (default on): `"` and `'` become opening or closing
-  quotes depending on the character before them,
-- replacement table: `(c)` ©, `(r)` ®, `(tm)` ™, `1/2` ½, `1/4` ¼,
-  `3/4` ¾; the user can add rows. The quote style follows the UI
-  language.
+  quotes depending on the character before them; use straight quotation
+  marks after numbers (default off) leaves a quote right after a digit
+  straight (6' 2"),
+- single and double quotes: the opening and closing marks, each one of
+  ' ‘ ’ ‚ ‹ › " “ ” „ « » 「 」 『 』; the language's until one is chosen,
+- replacement table, applied while Replace text while typing is on
+  (default on): `(c)` ©, `(r)` ®, `(tm)` ™, `1/2` ½, `1/4` ¼, `3/4` ¾.
+  Replace and With fields; Add (a new word, no spaces), Delete (the row
+  clicked), Replace (gives the row of the word in Replace the text in
+  With). A click on a row fills the fields.
+- Apply to Selection runs every rule over the selected text objects.
+
+Settings written by older versions with autocorrect switched off as a
+whole load with every rule off.
 
 Autocorrect never changes text that was pasted or imported, only typed
 characters.
+
+Checks: `autocorrect::tests::days_quotes_and_links_follow_the_options`,
+`autocorrect::tests::older_settings_with_autocorrect_off_turn_every_rule_off`,
+`ui::writing_tools::tests::corrections_go_to_the_autocorrect_table`,
+`ui::options::tests::every_text_tab_draws`.
 
 ## Encode
 

@@ -93,8 +93,22 @@
 
 ![Страница «Текст» параметров TraceDraw](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: насколько <kbd>Ctrl+8</kbd> и
-  <kbd>Ctrl+2</kbd> увеличивают и уменьшают выделенный текст (1 пункт).
-- [[options.default_font]] и [[options.default_size]] нового текста.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] и
-  [[menu.text.show_text_frames]].
+На странице пять вкладок.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (на сколько
+  <kbd>Ctrl+8</kbd> и <kbd>Ctrl+2</kbd> увеличивают и уменьшают выделенный
+  текст, 1 пункт), [[options.default_font]] и [[options.default_size]] нового
+  текста, а также [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] и [[options.hyphenation_patterns]]
+  (встроенные или словарь переносов для вашего языка).
+- [[docker.fonts]]: [[options.show_recent_fonts]] вверху списков шрифтов,
+  [[options.recent_font_count]] (5, до 20) и
+  [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  и [[options.add_to_autocorrect]], чтобы слово, исправленное при проверке
+  орфографии, в следующий раз исправлялось при вводе; а также
+  [[options.dictionaries]], которые она использует, см.
+  [Словари](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: что исправляется при вводе; см.
+  [Автозамена](../text/writing-tools.md#autocorrect).

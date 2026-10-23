@@ -44,3 +44,5 @@ Os passos externos são desenhados atrás do objeto, os internos na frente dele.
 
 **Limpar contorno** remove o contorno concêntrico; **Separar** transforma os
 passos em objetos.
+Os passos saem agrupados ao lado do objeto. [[menu.object > menu.object.break_contour_apart]] (<kbd>Ctrl+K</kbd>, também no
+menu do botão direito) faz o mesmo.

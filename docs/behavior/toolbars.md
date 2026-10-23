@@ -30,7 +30,49 @@ collapse and close in grey at the right) over a white page. The tab
 column to its right is 27 px wide: `#EAEAEA` under the title bar and
 below the tabs, a `#B2B2B2` line along the panel, grey `#D8D8D8` tabs
 with an icon and the name running downwards, the open panel's tab
-`#B2B2B2`; the plus button under the tabs adds a panel.
+`#B2B2B2`; the plus button under the tabs lists every panel in the
+groups of Window > Panels with a box ticked at each one in the column
+(ticking opens the panel in front, unticking closes it). The pointer
+over a tab shows a close cross in a slot at the tab's top; a click on
+it closes that panel (as the title bar's close and the tab's menu do),
+a click lower on the tab brings the panel to the front
+(`ui::dockers::tests::a_docker_tab_closes_with_the_cross_at_its_top`).
+
+### Panels anywhere
+
+- Panels live in one of three places (`App::docker_place`): the default
+  column at the right of the window (`open_dockers`, `docker_tab` in
+  front, `show_dockers`; at the left in a right-to-left language), the
+  column at the other side (`left_dockers`, `left_tab`,
+  `show_left_dockers`; it exists only while it holds a panel) and
+  floating windows (`floating_dockers`, one panel each). Every panel
+  starts in the default column.
+- Dragging a tab, or the title bar of a panel (a column's or a floating
+  one's), moves the panel: a light blue band shows where it goes, within
+  56 px of a side the column there (the strip and a 340 px panel),
+  elsewhere a window the size a panel floats at (340 by 480) with its
+  top left corner where the grab point puts it. Releasing puts the panel
+  there, in front of the column it joins (the column it leaves shows the
+  tab next to it, or closes when none is left); a release outside the
+  window counts at the last place the pointer was seen. The tab's menu
+  and the title's menu (right click) have Dock at Right, Dock at Left,
+  Floating and Close panel.
+- A floating panel is a window with a grey border and a shadow: the
+  panel's title bar (its name and close; no collapse) over its page,
+  resizable at its edges; where it is and how large are kept.
+- A panel brought to the front from a menu, a shortcut or a tool while it
+  lies in the other column or floats is put in front where it is, and
+  the default column stays as it was; a panel open nowhere joins the
+  default column (`App::open_docker`, `App::reconcile_dockers`). Window >
+  Panels and the Help > Hints check show a panel as on when it is in
+  front of an open column or floating (`App::docker_shown`); the plus
+  button of a column opens a ticked panel in front of that column.
+- The places are kept in the preferences (`dockers`: `open`, `front`,
+  `left`, `left_front`, `left_shown`, `floating` with each window's
+  corner and size); older preferences with the column alone read as
+  before.
+- Checks: `app::tests::dockers_move_between_the_columns_and_float`,
+  `ui::dockers::tests::a_docker_dragged_to_a_side_docks_there_and_the_window_draws_them_all`.
 
 ## Standard toolbar
 
@@ -73,7 +115,11 @@ selects the value, Enter or leaving the field applies it, Esc puts it
 back. A comma or a point marks decimals; sums work (`10+5`, `2*3,5`,
 brackets); a distance typed with another unit is converted (`1 in` in a
 millimetre field is 25.4 mm). Values outside a field's range are brought
-into it (`ui::field::tests`).
+into it (`ui::field::tests`). Every number field has a pair of spin
+arrows at its right (11 px): a click on one steps the value by a unit
+(or the step the field was given), as does the mouse wheel over the
+field; Shift steps ten times as much, Ctrl a tenth; a whole-number field
+stays whole and the range holds (`ui::field::tests::arrows_and_the_wheel_step_the_value`).
 
 - Pick tool, nothing selected (page bar): page size list; page width and
   height; fit page to drawing (Layout's command, pale on an empty page);
@@ -163,9 +209,27 @@ and the status bar move (`ui/bars.rs`).
   its flyouts opening below or above it.
 - Right-clicking a grip, an empty part of a toolbar or of the status bar,
   or a floating bar's title opens the bar's menu: the places the bar can
-  take (a dot at the current one), the five bars with a check at each
-  one shown, Lock Toolbars and Reset Bar Positions. Window > Toolbars
-  has the colour palette, Lock Toolbars and Reset Bar Positions too.
+  take (a dot at the current one); every bar with a check at each one
+  shown, as Window > Toolbars lists them (`menus::toolbars_list`: the
+  menu bar, always on; the standard toolbar, the property bar, the
+  toolbox, the colour palette, the AI prompt bar, the status bar, the
+  Text, Zoom and Transform toolbars, the time tracker); Customize; Lock
+  Toolbars and Reset Bar Positions. Window > Toolbars has the same list,
+  Lock Toolbars and Reset Bar Positions.
+- Customize holds: Default Button Size (Small, Medium, Large, Medium at
+  first: the buttons of every bar are 24, 32 or 40 px square, the
+  property bar's 21, 28 or 35; `settings.button_size`, `theme::set_button_sizes`); Toolbox
+  Toolbar (Reset to Default: every flyout shown as at first, each button
+  on its first tool, the default size and icons only; Button Size:
+  Default, which follows the default button size, or its own Small,
+  Medium or Large, `settings.toolbox_button_size`; Image Only, Caption
+  Only or Caption to Right, `settings.toolbox_captions`: with captions
+  every toolbox button is as wide as the widest tool name of the flyouts
+  shown, plus 6 px each side, so the column keeps one width whichever
+  tools the buttons show, and the name is drawn at 12 px to the right of
+  the icon or in its place); Workspace (Export Workspace, Import
+  Workspace, the same as Window > Workspace); and Customize..., which
+  opens Options > Customization > Command Bars.
 - Lock Toolbars hides the grips, stops every drag and greys the places in
   the menu. Reset Bar Positions puts every bar at its first place and
   shows it; the lock stays as it was.
@@ -184,6 +248,7 @@ and the status bar move (`ui/bars.rs`).
 - `ui::propbar::tests::outline_widths_read_in_the_ruler_unit`
 - `ui::propbar::tests::corner_edits_change_the_selection_in_one_step_or_the_defaults`
 - `ui::mod::tests::window_draws_with_every_docker_tool_and_selection`
+- `ui::toolbox::tests::buttons_follow_the_sizes_and_the_captions`
   draws every tool's bar.
 - `ui::overflow::tests::forward_brings_the_first_hidden_item_to_the_start`
 - `ui::overflow::tests::back_returns_between_items_and_to_the_start`

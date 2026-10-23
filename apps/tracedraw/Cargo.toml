@@ -27,6 +27,7 @@ kurbo.workspace = true
 tiny-skia.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+encoding_rs.workspace = true
 boa_engine = "0.20"
 sha2 = "0.10"
 base64 = "0.22"

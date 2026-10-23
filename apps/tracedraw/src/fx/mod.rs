@@ -356,10 +356,43 @@ pub fn render_stack(
     Some((img, rect))
 }
 
-/// Resolution of the pictures bitmap effects make of vector objects.
+/// Resolution of the pictures bitmap effects make of vector objects when
+/// the drawing sets none.
 pub const VECTOR_FX_DPI: f64 = 300.0;
 /// The most pixels such a picture has (the resolution drops to stay under).
-const VECTOR_FX_MAX_PIXELS: f64 = 4_000_000.0;
+const VECTOR_FX_MAX_PIXELS: f64 = 16_000_000.0;
+
+/// The resolution bitmap effects draw vector objects at: the drawing's
+/// rendering resolution (Layout > Page Setup, 72 to 1200 dpi), else
+/// [`VECTOR_FX_DPI`] (#382).
+pub fn vector_fx_dpi(meta: &tracedraw_core::document::Metadata) -> f64 {
+    if meta.resolution_dpi.is_finite() && meta.resolution_dpi > 0.0 {
+        meta.resolution_dpi.clamp(72.0, 1200.0)
+    } else {
+        VECTOR_FX_DPI
+    }
+}
+
+/// The resolution on the page of the picture `fx` holds for `shape`.
+fn fx_picture_dpi(shape: &tracedraw_core::Shape, fx: &tracedraw_core::document::RasterFx) -> f64 {
+    let (sx, _) = tracedraw_core::document::transform_scale(shape.transform);
+    let mm = fx.rect.width() * sx;
+    if mm > 1e-9 {
+        f64::from(fx.width_px) * 25.4 / mm
+    } else {
+        0.0
+    }
+}
+
+/// A picture made at `have` dpi with `pixels` pixels is to be made again
+/// at `want` dpi: off by more than 5 % and not held down by the pixel
+/// limit.
+fn needs_new_resolution(have: f64, want: f64, pixels: f64) -> bool {
+    if !(have > 0.0 && want > 0.0) || (have - want).abs() <= 0.05 * want {
+        return false;
+    }
+    pixels * (want / have).powi(2) <= VECTOR_FX_MAX_PIXELS
+}
 
 /// A vector object drawn alone, without its bitmap effects, as a picture
 /// for them: in its own space scaled as its transform scales it (so the
@@ -427,6 +460,7 @@ pub fn vector_raster_fx(
     symbols: &[tracedraw_core::Symbol],
     effects: Vec<BitmapEffect>,
     auto_inflate: bool,
+    dpi: f64,
 ) -> Option<Box<tracedraw_core::document::RasterFx>> {
     use tracedraw_core::document::RasterFx;
     let mut target = shape.clone();
@@ -439,7 +473,7 @@ pub fn vector_raster_fx(
         source: 0,
     }));
     let source = target.raster_source();
-    let (png, w, h, rect) = vector_base(shape, symbols, VECTOR_FX_DPI)?;
+    let (png, w, h, rect) = vector_base(shape, symbols, dpi)?;
     let stack = BitmapFxStack {
         rect,
         width_px: w,
@@ -490,6 +524,7 @@ impl crate::app::App {
                     &self.doc().symbols,
                     effects,
                     self.doc().metadata.auto_inflate_bitmaps(),
+                    vector_fx_dpi(&self.doc().metadata),
                 )?)
             };
             return Some(tracedraw_core::Command::SetRasterFx { shape: id, fx });
@@ -620,7 +655,7 @@ impl crate::app::App {
                 return Some(v.clone());
             }
         }
-        let v = vector_base(s, &self.doc().symbols, VECTOR_FX_DPI)?;
+        let v = vector_base(s, &self.doc().symbols, vector_fx_dpi(&self.doc().metadata))?;
         *self.vector_fx_base.borrow_mut() = Some((key, v.clone()));
         Some(v)
     }
@@ -629,25 +664,32 @@ impl crate::app::App {
     /// were made from an earlier state of it (moved nodes, a new colour,
     /// a scale), as part of the step that changed it.
     pub fn sync_raster_fx(&mut self) {
-        fn walk(s: &tracedraw_core::Shape, out: &mut Vec<tracedraw_core::Shape>) {
+        fn walk(s: &tracedraw_core::Shape, dpi: f64, out: &mut Vec<tracedraw_core::Shape>) {
             if let Some(fx) = &s.raster_fx {
-                if fx.source != s.raster_source() {
+                // Made from an earlier state, or at another resolution than
+                // the drawing's (it changed in Document Properties).
+                let pixels = f64::from(fx.width_px) * f64::from(fx.height_px);
+                if fx.source != s.raster_source()
+                    || (!fx.png.is_empty()
+                        && needs_new_resolution(fx_picture_dpi(s, fx), dpi, pixels))
+                {
                     out.push(s.clone());
                 }
             }
             if let tracedraw_core::document::ShapeKind::Group { children } = &s.kind {
                 for c in children {
-                    walk(c, out);
+                    walk(c, dpi, out);
                 }
             }
         }
         if !self.has_document() {
             return;
         }
+        let dpi = vector_fx_dpi(&self.doc().metadata);
         let mut stale = Vec::new();
         for layer in self.doc().all_layers() {
             for s in &layer.shapes {
-                walk(s, &mut stale);
+                walk(s, dpi, &mut stale);
             }
         }
         for s in stale {
@@ -657,6 +699,7 @@ impl crate::app::App {
                 &self.doc().symbols,
                 fx.effects.clone(),
                 self.doc().metadata.auto_inflate_bitmaps(),
+                dpi,
             );
             let cmd = tracedraw_core::Command::SetRasterFx {
                 shape: s.id,
@@ -1213,5 +1256,44 @@ mod tests {
         // Exports draw the picture too.
         let svg = tracedraw_io::svg::page_to_svg(app.doc(), 0);
         assert!(svg.contains("<image"));
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    /// Effects on vector objects are drawn at the drawing's rendering
+    /// resolution, and made again when it changes (#382).
+    #[test]
+    fn vector_effects_follow_the_rendering_resolution() {
+        use tracedraw_core::geometry::Rect;
+        let mut app = crate::app::App::headless();
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::BLACK));
+        app.add_bitmap_effect(super::new_effect("rotate_3d"));
+        let dpi_of = |app: &crate::app::App| {
+            let s = app.doc().find_shape(id).cloned().expect("shape");
+            let fx = s.raster_fx.clone().expect("fx");
+            super::fx_picture_dpi(&s, &fx)
+        };
+        assert!((dpi_of(&app) - 300.0).abs() < 15.0, "{}", dpi_of(&app));
+        let mut md = app.doc().metadata.clone();
+        md.resolution_dpi = 600.0;
+        app.run(tracedraw_core::Command::SetMetadata { metadata: md });
+        app.sync_raster_fx();
+        assert!((dpi_of(&app) - 600.0).abs() < 30.0, "{}", dpi_of(&app));
+        // Nothing more to make at that resolution.
+        let rev = app.engine.revision();
+        app.sync_raster_fx();
+        assert_eq!(app.engine.revision(), rev);
+        assert!(super::needs_new_resolution(300.0, 600.0, 1e6));
+        assert!(!super::needs_new_resolution(300.0, 1200.0, 2e6));
+        assert!(!super::needs_new_resolution(590.0, 600.0, 1e6));
     }
 }

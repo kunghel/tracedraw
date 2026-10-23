@@ -43,14 +43,33 @@ the active layer.
   Latin-1. Advances use Widths, W/DW for CID fonts, and Helvetica metrics
   for the standard 14. Render modes 3 and 7 (invisible) are skipped.
   Type 3 glyph procedures are not run.
+- Text as curves (#386, `ImportOptions::text_as_curves`): each string
+  (`Tj`, each part of `TJ`) becomes one filled curve of its glyphs'
+  outlines, read from the embedded font program: `FontFile2` (TrueType)
+  and `FontFile3` of subtype `OpenType` as sfnt fonts, `Type1C` and
+  `CIDFontType0C` as bare CFF. A code reaches its glyph through the
+  `CIDToGIDMap` (or the identity) for two-byte TrueType fonts, the CFF
+  charset for CID-keyed CFF, the font's `cmap` ((3,0) at 0xF000 + code,
+  then (1,0), then Unicode from the encoding) for simple TrueType fonts,
+  and the CFF built-in encoding (else the glyph's standard name) for
+  simple CFF fonts (`pdf_glyphs.rs`). Each glyph sits at
+  `Trm * translate(advance) * scale(Tfs * Th, Tfs)` with the font's units
+  per em (CFF: its FontMatrix); the fill colour and opacity are the
+  text's, clipping as for text. Text whose font is not embedded (or a
+  Type 3 font) stays text, and the app turns it into curves with the
+  installed font that stands in (`remaining_text_to_curves`).
+- The app asks how to read the text when a PDF or AI file is opened or
+  imported (the Import PDF dialog: Text or Curves, Do not ask again);
+  Options > File Formats keeps the choice (`pdf_text_as_curves`,
+  `pdf_ask_text`).
 
 ## Not read
 
 Soft masks on groups (`SMask` in ExtGState), blend modes, transfer
 functions, optional content visibility, JPX and CCITT images (grey box
 and skipped respectively), PostScript calculator functions (linear
-approximation), embedded font programs (text uses the installed font of
-the same name, so widths can differ).
+approximation); as text, embedded font programs (text uses the installed
+font of the same name, so widths can differ; as curves they are read).
 
 ## Protected files
 

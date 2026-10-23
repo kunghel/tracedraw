@@ -1,8 +1,11 @@
 //! The Variable Outline tool: width nodes along an object's outline.
 //! A drag across the outline of the selected object adds a node there (or
 //! takes the node under the pointer) and sets how far the outline reaches
-//! to the pointer; with Alt only the side the pointer is on changes. The
-//! property bar edits the selected node's reach and removes nodes.
+//! to the pointer; with Shift (or Alt) only the side the pointer is on
+//! changes. Ctrl+click adds a node to the picked ones (or takes it out),
+//! Shift+click picks the nodes from the picked one to the clicked one; a
+//! drag then changes every picked node. The property bar edits the picked
+//! nodes' reach and removes nodes.
 
 use crate::app::App;
 use egui::{Color32, Modifiers, Painter, PointerButton, Response, Stroke as EStroke};
@@ -17,7 +20,10 @@ const GRAB_PX: f64 = 7.0;
 /// under way.
 #[derive(Default, Clone, Debug)]
 pub struct VariableOutlineState {
+    /// The node picked last (the property bar shows its reach).
     pub node: Option<usize>,
+    /// Other nodes picked with it (Ctrl+click, Shift+click).
+    pub more: Vec<usize>,
     drag: Option<NodeDrag>,
 }
 
@@ -25,7 +31,8 @@ pub struct VariableOutlineState {
 struct NodeDrag {
     shape: ShapeId,
     index: usize,
-    /// Alt held at the start: only the side the pointer is on changes.
+    /// Shift or Alt held at the start: only the side the pointer is on
+    /// changes.
     one_side: bool,
     /// The first change of the drag has been recorded (later ones amend
     /// it, so the drag is one undo step).
@@ -88,10 +95,18 @@ impl App {
     }
 
     pub fn variable_outline_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
-        if response.drag_started_by(PointerButton::Primary)
-            || response.clicked_by(PointerButton::Primary)
-        {
+        let clicked = response.clicked_by(PointerButton::Primary);
+        let started = response.drag_started_by(PointerButton::Primary);
+        let ctrl = mods.ctrl || mods.command;
+        if clicked && (mods.shift || ctrl) && self.variable_outline_pick(p, mods.shift) {
+            // Picked (Shift: a run of nodes, Ctrl: one more or one less).
+        } else if started {
+            // Shift or Alt: one side; Ctrl: the node joins the picked ones.
+            self.variable_outline_press_with(p, mods.shift || mods.alt, ctrl);
+        } else if clicked {
+            // A plain click picks the node alone.
             self.variable_outline_press(p, mods.alt);
+            self.vo.more.clear();
         }
         if response.dragged_by(PointerButton::Primary) {
             self.variable_outline_drag(p);
@@ -105,6 +120,69 @@ impl App {
     /// there with the reach the outline has; elsewhere, the object under
     /// the pointer is selected.
     pub fn variable_outline_press(&mut self, p: Point, one_side: bool) {
+        self.variable_outline_press_with(p, one_side, false);
+    }
+
+    /// The width node under `p` on the target, if any.
+    fn width_node_at(&self, p: Point) -> Option<usize> {
+        let grab = GRAB_PX / self.view.zoom.max(1e-6) as f64;
+        let id = self.variable_outline_target()?;
+        let (path, stroke, _) = self.variable_outline_geometry(id)?;
+        stroke.widths.iter().enumerate().find_map(|(i, n)| {
+            tracedraw_core::shaping::point_on_path(&path, n.at)
+                .filter(|(q, _)| (*q - p).hypot() <= grab)
+                .map(|_| i)
+        })
+    }
+
+    /// Every picked node, the last picked first.
+    pub fn picked_width_nodes(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = self.vo.node.into_iter().collect();
+        for i in &self.vo.more {
+            if !out.contains(i) {
+                out.push(*i);
+            }
+        }
+        out
+    }
+
+    /// A click with Shift or Ctrl on a node: Shift picks the nodes from
+    /// the one picked to this one, Ctrl adds this one to the picked ones
+    /// or takes it out. False when no node is under `p`.
+    pub fn variable_outline_pick(&mut self, p: Point, range: bool) -> bool {
+        let Some(i) = self.width_node_at(p) else {
+            return false;
+        };
+        self.vo.drag = None;
+        match (range, self.vo.node) {
+            (true, Some(from)) => {
+                let (a, b) = (from.min(i), from.max(i));
+                self.vo.more = (a..=b).filter(|k| *k != i).collect();
+                self.vo.node = Some(i);
+            }
+            (false, Some(_)) if self.picked_width_nodes().contains(&i) => {
+                let rest: Vec<usize> = self
+                    .picked_width_nodes()
+                    .into_iter()
+                    .filter(|k| *k != i)
+                    .collect();
+                self.vo.node = rest.first().copied();
+                self.vo.more = rest.into_iter().skip(1).collect();
+            }
+            _ => {
+                let all = self.picked_width_nodes();
+                self.vo.more = all;
+                self.vo.node = Some(i);
+            }
+        }
+        true
+    }
+
+    /// A press (see [`Self::variable_outline_press`]); with `extend` the
+    /// node pressed joins the picked ones, else a node that is not picked
+    /// becomes the only one (a picked one keeps the others, so a drag
+    /// changes them all).
+    pub fn variable_outline_press_with(&mut self, p: Point, one_side: bool, extend: bool) {
         let grab = GRAB_PX / self.view.zoom.max(1e-6) as f64;
         if let Some(id) = self.variable_outline_target() {
             if let Some((path, stroke, scale)) = self.variable_outline_geometry(id) {
@@ -115,6 +193,12 @@ impl App {
                         .map(|_| i)
                 });
                 if let Some(i) = hit {
+                    let picked = self.picked_width_nodes();
+                    if extend || picked.contains(&i) {
+                        self.vo.more = picked.into_iter().filter(|k| *k != i).collect();
+                    } else {
+                        self.vo.more.clear();
+                    }
                     self.vo.node = Some(i);
                     self.vo.drag = Some(NodeDrag {
                         shape: id,
@@ -137,6 +221,13 @@ impl App {
                         let last = nodes.len() - 1;
                         let (nodes, index) = sorted(nodes, last);
                         self.set_width_nodes(id, nodes, false);
+                        // The nodes after the new one move up one place.
+                        let shifted: Vec<usize> = self
+                            .picked_width_nodes()
+                            .into_iter()
+                            .map(|k| if k >= index { k + 1 } else { k })
+                            .collect();
+                        self.vo.more = if extend { shifted } else { Vec::new() };
                         self.vo.node = Some(index);
                         self.vo.drag = Some(NodeDrag {
                             shape: id,
@@ -150,6 +241,7 @@ impl App {
             }
         }
         self.vo.node = None;
+        self.vo.more.clear();
         self.vo.drag = None;
         match self.hit_test(p) {
             Some(id) => self.select(vec![id]),
@@ -157,7 +249,8 @@ impl App {
         }
     }
 
-    /// A drag: the picked node reaches to the pointer (one side or both).
+    /// A drag: the node pressed reaches to the pointer (one side or both),
+    /// and the other picked nodes take the same reach on that side.
     pub fn variable_outline_drag(&mut self, p: Point) {
         let Some(drag) = self.vo.drag.clone() else {
             return;
@@ -175,16 +268,22 @@ impl App {
         let across = (p.x - q.x) * n[0] + (p.y - q.y) * n[1];
         let reach = across.abs() / scale;
         let mut nodes = stroke.widths.clone();
-        if let Some(m) = nodes.get_mut(drag.index) {
-            if drag.one_side {
-                if across >= 0.0 {
-                    m.left = reach;
+        let mut targets = self.picked_width_nodes();
+        if !targets.contains(&drag.index) {
+            targets.push(drag.index);
+        }
+        for i in targets {
+            if let Some(m) = nodes.get_mut(i) {
+                if drag.one_side {
+                    if across >= 0.0 {
+                        m.left = reach;
+                    } else {
+                        m.right = reach;
+                    }
                 } else {
+                    m.left = reach;
                     m.right = reach;
                 }
-            } else {
-                m.left = reach;
-                m.right = reach;
             }
         }
         self.set_width_nodes(drag.shape, nodes, drag.recorded);
@@ -200,37 +299,50 @@ impl App {
         stroke.widths.get(self.vo.node?).copied()
     }
 
-    /// Set the picked node's reach (property bar).
+    /// Set the picked nodes' reach (property bar).
     pub fn set_variable_outline_node(&mut self, left: f64, right: f64) {
-        let (Some(id), Some(i)) = (self.variable_outline_target(), self.vo.node) else {
+        let Some(id) = self.variable_outline_target() else {
             return;
         };
         let Some((_, stroke, _)) = self.variable_outline_geometry(id) else {
             return;
         };
         let mut nodes = stroke.widths.clone();
-        if let Some(n) = nodes.get_mut(i) {
-            n.left = left.max(0.0);
-            n.right = right.max(0.0);
+        let mut changed = false;
+        for i in self.picked_width_nodes() {
+            if let Some(n) = nodes.get_mut(i) {
+                n.left = left.max(0.0);
+                n.right = right.max(0.0);
+                changed = true;
+            }
+        }
+        if changed {
             self.set_width_nodes(id, nodes, false);
         }
     }
 
-    /// Remove the picked node (Delete or the property bar).
+    /// Remove the picked nodes (Delete or the property bar), one step.
     pub fn delete_variable_outline_node(&mut self) -> bool {
-        let (Some(id), Some(i)) = (self.variable_outline_target(), self.vo.node) else {
+        let Some(id) = self.variable_outline_target() else {
             return false;
         };
         let Some((_, stroke, _)) = self.variable_outline_geometry(id) else {
             return false;
         };
-        if i >= stroke.widths.len() {
+        let picked = self.picked_width_nodes();
+        let nodes: Vec<WidthNode> = stroke
+            .widths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !picked.contains(i))
+            .map(|(_, n)| *n)
+            .collect();
+        if nodes.len() == stroke.widths.len() {
             return false;
         }
-        let mut nodes = stroke.widths.clone();
-        nodes.remove(i);
         self.set_width_nodes(id, nodes, false);
         self.vo.node = None;
+        self.vo.more.clear();
         true
     }
 
@@ -257,6 +369,7 @@ impl App {
             self.run(cmd);
         }
         self.vo.node = None;
+        self.vo.more.clear();
     }
 }
 
@@ -297,7 +410,7 @@ pub fn draw_width_nodes(app: &App, painter: &Painter) {
         for e in [a, b] {
             painter.circle_filled(e, 2.5, blue);
         }
-        let picked = app.vo.node == Some(i);
+        let picked = app.vo.node == Some(i) || app.vo.more.contains(&i);
         painter.circle_filled(c, 4.0, if picked { blue } else { Color32::WHITE });
         painter.circle_stroke(c, 4.0, EStroke::new(1.2, blue));
     }
@@ -397,6 +510,61 @@ mod tests {
         // Away from the outline: the object under the pointer, or nothing.
         app.variable_outline_press(Point::new(60.0, 150.0), false);
         assert!(app.selection.is_empty());
+    }
+
+    /// Shift+click picks a run of nodes, Ctrl+click one more or one less;
+    /// a drag changes every picked node, both sides, or one side when it
+    /// starts with Shift (#374).
+    #[test]
+    fn shift_and_ctrl_pick_nodes_and_shift_drags_one_side() {
+        let (mut app, id) = line_app();
+        for x in [20.0, 60.0, 100.0] {
+            app.variable_outline_press(Point::new(x, 50.0), false);
+            app.vo.drag = None;
+        }
+        assert_eq!(widths(&app, id).len(), 3);
+        // The first picked, then Shift+click on the last: all three.
+        assert!(app.variable_outline_pick(Point::new(20.0, 50.0), false));
+        app.vo.more.clear();
+        app.vo.node = Some(0);
+        assert!(app.variable_outline_pick(Point::new(100.0, 50.0), true));
+        let mut all = app.picked_width_nodes();
+        all.sort();
+        assert_eq!(all, vec![0, 1, 2]);
+        // A drag on the middle one: all three reach 3 mm both ways.
+        app.variable_outline_press_with(Point::new(60.0, 50.0), false, false);
+        app.variable_outline_drag(Point::new(60.0, 53.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!(
+            w.iter()
+                .all(|n| (n.left - 3.0).abs() < 1e-6 && (n.right - 3.0).abs() < 1e-6),
+            "{w:?}"
+        );
+        // Ctrl+click takes the middle one out.
+        assert!(app.variable_outline_pick(Point::new(60.0, 50.0), false));
+        let mut left = app.picked_width_nodes();
+        left.sort();
+        assert_eq!(left, vec![0, 2]);
+        // A drag that starts with Shift: one side only, on the picked ones.
+        app.variable_outline_press_with(Point::new(20.0, 50.0), true, false);
+        app.variable_outline_drag(Point::new(20.0, 45.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!(
+            (w[0].right - 5.0).abs() < 1e-6 && (w[0].left - 3.0).abs() < 1e-6,
+            "{w:?}"
+        );
+        assert!(
+            (w[2].right - 5.0).abs() < 1e-6 && (w[2].left - 3.0).abs() < 1e-6,
+            "{w:?}"
+        );
+        assert!((w[1].right - 3.0).abs() < 1e-6, "{w:?}");
+        // Delete removes the picked ones in one step.
+        assert!(app.delete_variable_outline_node());
+        assert_eq!(widths(&app, id).len(), 1);
+        app.undo();
+        assert_eq!(widths(&app, id).len(), 3);
     }
 }
 

@@ -8,6 +8,10 @@ passe en mode appliquer ; cliquez sur le bouton de sélection pour prélever
 de nouveau. <kbd>Esc</kbd> abandonne l'échantillon et revient à l'outil
 [[tool.pick]].
 
+Le pointeur est une pipette quand l'outil échantillonne et un pot de peinture
+quand il applique. Les images donnent leur couleur même dans un groupe ou un
+cadre.
+
 ## Pipette de couleur {#color-eyedropper}
 
 1. Choisissez l'outil [[tool.color_eyedropper]].

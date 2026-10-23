@@ -622,7 +622,7 @@ fn general_page(app: &mut App, ui: &mut Ui) {
             row_label(ui, &tr("options.undo_regular"));
             ui.add_sized(
                 [70.0, 22.0],
-                egui::DragValue::new(&mut app.settings.undo_levels).range(1..=99_999),
+                crate::ui::field::NumField::new(&mut app.settings.undo_levels).range(1..=99_999),
             );
             ui.end_row();
         });
@@ -680,7 +680,7 @@ fn display_page(app: &mut App, ui: &mut Ui) {
         if ui
             .add_sized(
                 [80.0, 22.0],
-                egui::DragValue::new(&mut ppi)
+                crate::ui::field::NumField::new(&mut ppi)
                     .range(48.0..=400.0)
                     .speed(0.1)
                     .max_decimals(1),
@@ -766,7 +766,7 @@ fn edit_page(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.add_sized(
                 [80.0, 22.0],
-                egui::DragValue::new(&mut app.settings.constrain_angle)
+                crate::ui::field::NumField::new(&mut app.settings.constrain_angle)
                     .range(0.1..=90.0)
                     .max_decimals(1)
                     .speed(0.5),
@@ -778,7 +778,7 @@ fn edit_page(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.add_sized(
                 [80.0, 22.0],
-                egui::DragValue::new(&mut app.settings.precision).range(0..=10),
+                crate::ui::field::NumField::new(&mut app.settings.precision).range(0..=10),
             );
             ui.label(tr("options.decimal_places"));
         });
@@ -873,7 +873,7 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(tr("options.node_pick_distance"));
         ui.add(
-            egui::DragValue::new(&mut n.pick_distance)
+            crate::ui::field::NumField::new(&mut n.pick_distance)
                 .range(2.0..=20.0)
                 .speed(0.2)
                 .max_decimals(0)
@@ -930,7 +930,7 @@ fn snapping_page(app: &mut App, ui: &mut Ui) {
         ui.label(tr("options.snapping_radius"));
         ui.add_sized(
             [70.0, 22.0],
-            egui::DragValue::new(&mut app.settings.snap.threshold_px).range(1.0..=100.0),
+            crate::ui::field::NumField::new(&mut app.settings.snap.threshold_px).range(1.0..=100.0),
         );
         ui.label(tr("options.pixels"));
     });
@@ -985,7 +985,7 @@ fn length_field(ui: &mut Ui, units: Units, mm: &mut f64, max_mm: f64) {
     let mut v = units.world_from_mm(*mm);
     let resp = ui.add_sized(
         [80.0, 22.0],
-        egui::DragValue::new(&mut v)
+        crate::ui::field::NumField::new(&mut v)
             .range(0.0..=units.world_from_mm(max_mm))
             .max_decimals(3)
             .speed(0.1),
@@ -1130,7 +1130,7 @@ fn dynamic_guides_page(app: &mut App, ui: &mut Ui) {
                 let mut v: f64 = ui.data_mut(|m| *m.get_temp_mut_or(id, 22.5));
                 ui.add_sized(
                     [70.0, 22.0],
-                    egui::DragValue::new(&mut v)
+                    crate::ui::field::NumField::new(&mut v)
                         .range(0.0..=179.9)
                         .max_decimals(1),
                 );
@@ -1216,7 +1216,10 @@ fn save_page(app: &mut App, ui: &mut Ui) {
     ui.indent("ab", |ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut b.auto, tr("options.backup_every"));
-            ui.add_enabled(b.auto, egui::DragValue::new(&mut b.minutes).range(1..=999));
+            ui.add_enabled(
+                b.auto,
+                crate::ui::field::NumField::new(&mut b.minutes).range(1..=999),
+            );
             ui.label(tr("options.minutes"));
         });
         ui.add_enabled_ui(b.auto, |ui| {
@@ -1231,13 +1234,48 @@ fn save_page(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// The tabs of Options > Text, in order.
+pub const TEXT_TABS: [&str; 5] = [
+    "options.display",
+    "options.paragraph_text",
+    "docker.fonts",
+    "options.spelling",
+    "dialog.autocorrect",
+];
+
+/// Options > Text > Autocorrect's tab.
+pub const AUTOCORRECT_TAB: usize = 4;
+
+/// Options > Text: Display, Paragraph Text, Fonts, Spelling and
+/// Autocorrect tabs.
 fn text_page(app: &mut App, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        for (i, key) in TEXT_TABS.iter().enumerate() {
+            if ui
+                .selectable_label(app.options_text_tab == i, tr(key))
+                .clicked()
+            {
+                app.options_text_tab = i;
+            }
+        }
+    });
+    ui.separator();
+    match app.options_text_tab {
+        0 => text_display_tab(app, ui),
+        1 => paragraph_text_tab(app, ui),
+        2 => fonts_tab(app, ui),
+        3 => spelling_tab(app, ui),
+        _ => autocorrect_tab(app, ui),
+    }
+}
+
+fn text_display_tab(app: &mut App, ui: &mut Ui) {
     grid("text_display").show(ui, |ui| {
         row_label(ui, &tr("options.keyboard_text_increment"));
         ui.horizontal(|ui| {
             ui.add_sized(
                 [70.0, 22.0],
-                egui::DragValue::new(&mut app.settings.text_increment_pt)
+                crate::ui::field::NumField::new(&mut app.settings.text_increment_pt)
                     .range(0.1..=100.0)
                     .max_decimals(1),
             );
@@ -1249,23 +1287,408 @@ fn text_page(app: &mut App, ui: &mut Ui) {
         ui.end_row();
         row_label(ui, &tr("options.default_size"));
         ui.add(
-            egui::DragValue::new(&mut app.text_size_pt)
+            crate::ui::field::NumField::new(&mut app.text_size_pt)
                 .range(1.0..=999.0)
                 .suffix(" pt"),
         );
         ui.end_row();
     });
-    ui.checkbox(&mut app.text_hyphenation, tr("menu.text.use_hyphenation"));
     ui.checkbox(
         &mut app.show_non_printing,
         tr("menu.text.show_non_printing"),
     );
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new(tr("menu.text.paragraph_text_frame")).strong());
+}
+
+fn paragraph_text_tab(app: &mut App, ui: &mut Ui) {
     ui.checkbox(
         &mut app.settings.show_text_frames,
         tr("menu.text.show_text_frames"),
     );
+    ui.checkbox(&mut app.text_hyphenation, tr("menu.text.use_hyphenation"));
+    // The pattern files, read when the tab shows a new folder.
+    type Found = (
+        Option<std::path::PathBuf>,
+        Vec<crate::spell::DictionaryFile>,
+    );
+    let cache = ui.id().with("hyphenation_found");
+    let sp = &mut app.settings.spelling;
+    let key = sp.dictionary_folder.clone();
+    let mut found: Option<Found> = ui.data(|d| d.get_temp(cache));
+    if found.as_ref().is_none_or(|(k, _)| *k != key) {
+        found = Some((key.clone(), crate::spell::find_hyphenation(key.as_deref())));
+    }
+    let list = found.as_ref().map(|f| f.1.clone()).unwrap_or_default();
+    let shown = |name: &str| {
+        if name.is_empty() {
+            tr("options.hyphenation_builtin")
+        } else {
+            name.strip_prefix("hyph_").unwrap_or(name).to_string()
+        }
+    };
+    grid("hyphenation_patterns").show(ui, |ui| {
+        row_label(ui, &tr("options.hyphenation_patterns"));
+        egui::ComboBox::from_id_salt("hyphenation_patterns_combo")
+            .width(220.0)
+            .selected_text(shown(&sp.hyphenation_patterns))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut sp.hyphenation_patterns, String::new(), shown(""));
+                for d in &list {
+                    ui.selectable_value(
+                        &mut sp.hyphenation_patterns,
+                        d.name.clone(),
+                        shown(&d.name),
+                    )
+                    .on_hover_text(d.dic.display().to_string());
+                }
+            });
+        ui.end_row();
+    });
+    ui.label(egui::RichText::new(tr("options.hyphenation_note")).color(Tokens::text_dim()));
+    if let Some(f) = found {
+        ui.data_mut(|d| d.insert_temp(cache, f));
+    }
+}
+
+fn fonts_tab(app: &mut App, ui: &mut Ui) {
+    ui.checkbox(
+        &mut app.settings.show_recent_fonts,
+        tr("options.show_recent_fonts"),
+    );
+    ui.add_enabled_ui(app.settings.show_recent_fonts, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(tr("options.recent_font_count"));
+            ui.add(
+                crate::ui::field::NumField::new(&mut app.settings.recent_font_count)
+                    .range(1..=crate::ui::font_list::RECENT_MAX),
+            );
+        });
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("options.font_sample_size"));
+        ui.add(
+            crate::ui::field::NumField::new(&mut app.settings.font_sample_px)
+                .range(crate::ui::font_list::SAMPLE_SIZES)
+                .max_decimals(0)
+                .suffix(" pt"),
+        );
+    });
+}
+
+fn spelling_tab(app: &mut App, ui: &mut Ui) {
+    let p = &mut app.settings.spelling;
+    ui.checkbox(&mut p.ignore_digits, tr("writing.ignore_digits"));
+    ui.checkbox(&mut p.ignore_capitals, tr("writing.ignore_capitals"));
+    ui.checkbox(&mut p.add_to_autocorrect, tr("options.add_to_autocorrect"));
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tr("options.spelling_note")).color(Tokens::text_dim()));
+    chrome::section(ui, &tr("options.dictionaries"));
+    // The folders are read when the tab shows a new folder or on Refresh,
+    // not every frame.
+    type Found = (
+        Option<std::path::PathBuf>,
+        Vec<crate::spell::DictionaryFile>,
+    );
+    let cache = ui.id().with("dictionaries_found");
+    let key = p.dictionary_folder.clone();
+    let mut found: Option<Found> = ui.data(|d| d.get_temp(cache));
+    if found.as_ref().is_none_or(|(k, _)| *k != key) {
+        found = Some((key.clone(), crate::spell::find_dictionaries(key.as_deref())));
+    }
+    let list = found.as_ref().map(|f| f.1.clone()).unwrap_or_default();
+    egui::Frame::new()
+        .fill(Tokens::field())
+        .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
+        .inner_margin(egui::Margin::same(4))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("dictionaries_list")
+                .max_height(120.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if list.is_empty() {
+                        ui.label(
+                            egui::RichText::new(tr("options.no_dictionaries"))
+                                .color(Tokens::text_dim()),
+                        );
+                    }
+                    for d in &list {
+                        let mut on = !p.disabled_dictionaries.contains(&d.name);
+                        let label = if d.aff.is_some() {
+                            d.name.clone()
+                        } else {
+                            format!("{}  ({})", d.name, tr("options.word_list"))
+                        };
+                        if ui
+                            .checkbox(&mut on, label)
+                            .on_hover_text(d.dic.display().to_string())
+                            .changed()
+                        {
+                            p.disabled_dictionaries.retain(|n| *n != d.name);
+                            if !on {
+                                p.disabled_dictionaries.push(d.name.clone());
+                            }
+                        }
+                    }
+                });
+        });
+    let own = crate::spell::own_folder();
+    grid("dictionary_folders").show(ui, |ui| {
+        row_label(ui, &tr("options.dictionaries_folder"));
+        ui.horizontal(|ui| {
+            let mut text = own
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            ui.add_enabled(
+                false,
+                egui::TextEdit::singleline(&mut text).desired_width(320.0),
+            );
+            if ui
+                .add_enabled(
+                    own.is_some() && !crate::files::WEB,
+                    egui::Button::new(tr("options.open_folder")),
+                )
+                .clicked()
+            {
+                if let Some(dir) = &own {
+                    let _ = std::fs::create_dir_all(dir);
+                    if let Err(e) = crate::export::open_with_system(dir) {
+                        app.status = e;
+                    }
+                }
+            }
+        });
+        ui.end_row();
+        let p = &mut app.settings.spelling;
+        row_label(ui, &tr("options.more_dictionaries"));
+        ui.horizontal(|ui| {
+            path_field(ui, &mut p.dictionary_folder, String::new());
+            if ui
+                .add_enabled(
+                    p.dictionary_folder.is_some(),
+                    egui::Button::new(tr("options.clear_folder")),
+                )
+                .clicked()
+            {
+                p.dictionary_folder = None;
+            }
+        });
+        ui.end_row();
+    });
+    if ui.button(tr("options.refresh_dictionaries")).clicked() {
+        found = None;
+        crate::spell::reload();
+        let hyph = ui.id().with("hyphenation_found");
+        ui.data_mut(|d| d.remove::<Found>(hyph));
+    }
+    ui.data_mut(|d| match found {
+        Some(f) => {
+            d.insert_temp(cache, f);
+        }
+        None => {
+            d.remove::<Found>(cache);
+        }
+    });
+}
+
+/// A quotation mark list (one of [`crate::autocorrect::QUOTE_CHOICES`]).
+fn quote_combo(ui: &mut Ui, id: &str, value: &mut char) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .width(48.0)
+        .selected_text(value.to_string())
+        .show_ui(ui, |ui| {
+            for q in crate::autocorrect::QUOTE_CHOICES {
+                changed |= ui.selectable_value(value, q, q.to_string()).changed();
+            }
+        });
+    changed
+}
+
+fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
+    let style = app.settings.autocorrect.style();
+    let p = &mut app.settings.autocorrect;
+    ui.checkbox(&mut p.capitalize_sentences, tr("autocorrect.capitalize"));
+    ui.checkbox(
+        &mut p.fix_two_initial_capitals,
+        tr("autocorrect.two_capitals"),
+    );
+    ui.checkbox(&mut p.capitalize_days, tr("autocorrect.days"));
+    ui.checkbox(&mut p.auto_hyperlinks, tr("autocorrect.hyperlinks"));
+    ui.separator();
+    grid("autocorrect_language").show(ui, |ui| {
+        row_label(ui, &tr("autocorrect.language"));
+        let shown = crate::i18n::LANGUAGES
+            .iter()
+            .find(|(code, _)| *code == p.quote_language)
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_else(|| tr("autocorrect.interface_language"));
+        let before = p.quote_language.clone();
+        egui::ComboBox::from_id_salt("autocorrect_quote_language")
+            .width(220.0)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut p.quote_language,
+                    String::new(),
+                    tr("autocorrect.interface_language"),
+                );
+                for (code, name) in crate::i18n::LANGUAGES {
+                    ui.selectable_value(&mut p.quote_language, code.to_string(), name);
+                }
+            });
+        // Another language brings its own quotation marks.
+        if p.quote_language != before {
+            p.single_quotes = None;
+            p.double_quotes = None;
+        }
+        ui.end_row();
+    });
+    ui.checkbox(&mut p.typographic_quotes, tr("autocorrect.quotes"));
+    ui.checkbox(
+        &mut p.straight_after_numbers,
+        tr("autocorrect.straight_after_numbers"),
+    );
+    let style = if p.quote_language.is_empty() {
+        style
+    } else {
+        p.style()
+    };
+    ui.add_enabled_ui(p.typographic_quotes, |ui| {
+        grid("autocorrect_quotes").show(ui, |ui| {
+            for (label, single) in [
+                ("autocorrect.single_quotes", true),
+                ("autocorrect.double_quotes", false),
+            ] {
+                row_label(ui, &tr(label));
+                let (mut o, mut c) = if single {
+                    p.single(style)
+                } else {
+                    p.double(style)
+                };
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    ui.label(tr("autocorrect.open"));
+                    changed |= quote_combo(ui, &format!("{label}_open"), &mut o);
+                    ui.add_space(12.0);
+                    ui.label(tr("autocorrect.close"));
+                    changed |= quote_combo(ui, &format!("{label}_close"), &mut c);
+                });
+                if changed {
+                    if single {
+                        p.single_quotes = Some([o, c]);
+                    } else {
+                        p.double_quotes = Some([o, c]);
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
+    ui.separator();
+    ui.label(egui::RichText::new(tr("autocorrect.replacements")).strong());
+    ui.checkbox(
+        &mut p.replace_while_typing,
+        tr("autocorrect.replace_while_typing"),
+    );
+    let from_id = ui.id().with("autocorrect_from");
+    let to_id = ui.id().with("autocorrect_to");
+    let row_id = ui.id().with("autocorrect_row");
+    let mut from: String = ui.data(|d| d.get_temp(from_id)).unwrap_or_default();
+    let mut to: String = ui.data(|d| d.get_temp(to_id)).unwrap_or_default();
+    let mut picked: Option<usize> = ui.data(|d| d.get_temp(row_id)).flatten();
+    if picked.is_some_and(|i| i >= p.replacements.len()) {
+        picked = None;
+    }
+    let key = from.trim().to_string();
+    let existing = p.replacements.iter().position(|(f, _)| *f == key);
+    let usable = !key.is_empty() && !key.contains(char::is_whitespace);
+    ui.horizontal(|ui| {
+        ui.label(tr("autocorrect.replace_col"));
+        ui.add(egui::TextEdit::singleline(&mut from).desired_width(130.0));
+        ui.add_space(10.0);
+        ui.label(tr("autocorrect.with_col"));
+        ui.add(egui::TextEdit::singleline(&mut to).desired_width(130.0));
+    });
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                usable && existing.is_none(),
+                egui::Button::new(tr("autocorrect.add")),
+            )
+            .clicked()
+        {
+            p.replacements.push((key.clone(), to.clone()));
+            from.clear();
+            to.clear();
+        }
+        if ui
+            .add_enabled(
+                picked.is_some(),
+                egui::Button::new(tr("autocorrect.delete")),
+            )
+            .clicked()
+        {
+            if let Some(i) = picked.take() {
+                p.replacements.remove(i);
+            }
+            from.clear();
+            to.clear();
+        }
+        if ui
+            .add_enabled(
+                usable && existing.is_some(),
+                egui::Button::new(tr("autocorrect.replace")),
+            )
+            .clicked()
+        {
+            if let Some(i) = existing {
+                p.replacements[i].1 = to.clone();
+            }
+        }
+    });
+    egui::Frame::new()
+        .fill(Tokens::field())
+        .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
+        .inner_margin(egui::Margin::same(4))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("autocorrect_table")
+                .max_height(150.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    egui::Grid::new("autocorrect_rows")
+                        .num_columns(2)
+                        .min_col_width(160.0)
+                        .show(ui, |ui| {
+                            for (i, (f, t)) in p.replacements.iter().enumerate() {
+                                let on = picked == Some(i);
+                                let a = ui.selectable_label(on, f.as_str());
+                                let b = ui.selectable_label(on, t.as_str());
+                                if a.clicked() || b.clicked() {
+                                    picked = Some(i);
+                                    from = f.clone();
+                                    to = t.clone();
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+        });
+    ui.data_mut(|d| {
+        d.insert_temp(from_id, from);
+        d.insert_temp(to_id, to);
+        d.insert_temp(row_id, picked);
+    });
+    ui.add_space(4.0);
+    if ui.button(tr("autocorrect.apply_selection")).clicked() {
+        if app.text_shapes().is_empty() {
+            app.status = tr("autocorrect.no_selection");
+        } else {
+            let n = crate::autocorrect::apply_to_selection(app);
+            app.status = trf("autocorrect.applied", &[("n", &n.to_string())]);
+        }
+    }
 }
 
 // ----- Customization -----------------------------------------------------
@@ -1311,7 +1734,7 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
                 })
                 .inner;
             let field = ui.add(
-                egui::DragValue::new(&mut pct)
+                crate::ui::field::NumField::new(&mut pct)
                     .range(UI_SIZE_RANGE)
                     .speed(1.0)
                     .max_decimals(0)
@@ -2022,7 +2445,7 @@ fn rectangle_page(app: &mut App, ui: &mut Ui) {
                         if ui
                             .add_sized(
                                 [80.0, 22.0],
-                                egui::DragValue::new(&mut v)
+                                crate::ui::field::NumField::new(&mut v)
                                     .range(0.0..=10_000.0)
                                     .speed(0.1)
                                     .suffix(format!(" {}", u.short())),
@@ -2083,14 +2506,14 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
         grid("arc").show(ui, |ui| {
             row_label(ui, &tr("options.starting_angle"));
             ui.add(
-                egui::DragValue::new(&mut a.start_deg)
+                crate::ui::field::NumField::new(&mut a.start_deg)
                     .range(-360.0..=360.0)
                     .suffix("°"),
             );
             ui.end_row();
             row_label(ui, &tr("options.ending_angle"));
             ui.add(
-                egui::DragValue::new(&mut a.end_deg)
+                crate::ui::field::NumField::new(&mut a.end_deg)
                     .range(-360.0..=360.0)
                     .suffix("°"),
             );
@@ -2102,13 +2525,17 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
 fn polygon_page(app: &mut App, ui: &mut Ui) {
     grid("polygon").show(ui, |ui| {
         row_label(ui, &tr("options.number_of_points"));
-        ui.add(egui::DragValue::new(&mut app.polygon_points).range(3..=500));
+        ui.add(crate::ui::field::NumField::new(&mut app.polygon_points).range(3..=500));
         ui.end_row();
         row_label(ui, &tr("options.sharpness"));
         // Stored as a fraction, shown in percent like the property bar.
         let mut pct = (app.star_sharpness * 100.0).round();
         if ui
-            .add(egui::DragValue::new(&mut pct).range(1.0..=99.0).suffix("%"))
+            .add(
+                crate::ui::field::NumField::new(&mut pct)
+                    .range(1.0..=99.0)
+                    .suffix("%"),
+            )
             .changed()
         {
             app.star_sharpness = (pct / 100.0).clamp(0.01, 0.99);
@@ -2120,7 +2547,7 @@ fn polygon_page(app: &mut App, ui: &mut Ui) {
 fn spiral_page(app: &mut App, ui: &mut Ui) {
     grid("spiral").show(ui, |ui| {
         row_label(ui, &tr("options.revolutions"));
-        ui.add(egui::DragValue::new(&mut app.spiral_revolutions).range(1..=100));
+        ui.add(crate::ui::field::NumField::new(&mut app.spiral_revolutions).range(1..=100));
         ui.end_row();
     });
     ui.radio_value(
@@ -2138,10 +2565,10 @@ fn spiral_page(app: &mut App, ui: &mut Ui) {
 fn graph_paper_page(app: &mut App, ui: &mut Ui) {
     grid("graph").show(ui, |ui| {
         row_label(ui, &tr("options.rows"));
-        ui.add(egui::DragValue::new(&mut app.graph_rows).range(1..=99));
+        ui.add(crate::ui::field::NumField::new(&mut app.graph_rows).range(1..=99));
         ui.end_row();
         row_label(ui, &tr("options.columns"));
-        ui.add(egui::DragValue::new(&mut app.graph_cols).range(1..=99));
+        ui.add(crate::ui::field::NumField::new(&mut app.graph_cols).range(1..=99));
         ui.end_row();
     });
 }
@@ -2149,10 +2576,10 @@ fn graph_paper_page(app: &mut App, ui: &mut Ui) {
 fn table_page(app: &mut App, ui: &mut Ui) {
     grid("table").show(ui, |ui| {
         row_label(ui, &tr("options.rows"));
-        ui.add(egui::DragValue::new(&mut app.table_rows).range(1..=99));
+        ui.add(crate::ui::field::NumField::new(&mut app.table_rows).range(1..=99));
         ui.end_row();
         row_label(ui, &tr("options.columns"));
-        ui.add(egui::DragValue::new(&mut app.table_cols).range(1..=99));
+        ui.add(crate::ui::field::NumField::new(&mut app.table_cols).range(1..=99));
         ui.end_row();
         row_label(ui, &tr("options.table_tab_key"));
         ui.vertical(|ui| {
@@ -2194,7 +2621,7 @@ fn curves_page(app: &mut App, ui: &mut Ui) {
             5.0
         };
         ui.add(
-            egui::DragValue::new(&mut px)
+            crate::ui::field::NumField::new(&mut px)
                 .range(1.0..=50.0)
                 .speed(0.2)
                 .suffix(" px"),
@@ -2229,7 +2656,7 @@ fn eraser_page(app: &mut App, ui: &mut Ui) {
         let mut v = u.from_mm(app.eraser_width);
         if ui
             .add(
-                egui::DragValue::new(&mut v)
+                crate::ui::field::NumField::new(&mut v)
                     .speed(0.1)
                     .suffix(format!(" {}", u.short())),
             )
@@ -2377,7 +2804,7 @@ fn document_general_page(app: &mut App, ui: &mut Ui) {
             if ui
                 .add_sized(
                     [80.0, 22.0],
-                    egui::DragValue::new(&mut dpi).range(36.0..=2400.0),
+                    crate::ui::field::NumField::new(&mut dpi).range(36.0..=2400.0),
                 )
                 .changed()
             {
@@ -2409,12 +2836,12 @@ fn document_general_page(app: &mut App, ui: &mut Ui) {
         );
         ui.horizontal(|ui| {
             let a = ui.add(
-                egui::DragValue::new(&mut dx)
+                crate::ui::field::NumField::new(&mut dx)
                     .speed(0.1)
                     .suffix(format!(" {}", u.short())),
             );
             let b = ui.add(
-                egui::DragValue::new(&mut dy)
+                crate::ui::field::NumField::new(&mut dy)
                     .speed(0.1)
                     .suffix(format!(" {}", u.short())),
             );
@@ -2537,7 +2964,7 @@ fn bleed_page(app: &mut App, ui: &mut Ui) {
         if ui
             .add_sized(
                 [100.0, 22.0],
-                egui::DragValue::new(&mut b)
+                crate::ui::field::NumField::new(&mut b)
                     .speed(0.1)
                     .max_decimals(3)
                     .suffix(format!(" {}", app.units.short())),
@@ -2703,6 +3130,54 @@ mod tests {
         snap.restore(&mut app);
         assert_eq!(app.settings.undo_levels, 150);
         assert!(!app.doc().metadata.fill_open_curves);
+    }
+
+    #[test]
+    fn every_text_tab_draws() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.options_page = OptionsPage::Text;
+        let before = app.settings.autocorrect.clone();
+        for tab in 0..TEXT_TABS.len() {
+            app.options_text_tab = tab;
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    let mut close = false;
+                    options_dialog(&mut app, ui.ctx(), &mut close);
+                    assert!(!close, "tab {tab} closed the dialog");
+                });
+                out.textures_delta.clear();
+            }
+        }
+        assert_eq!(
+            app.settings.autocorrect, before,
+            "drawing changed a setting"
+        );
+        assert_eq!(app.settings.recent_font_count, 5);
+    }
+
+    /// Text > Writing Tools > Autocorrect opens the Autocorrect tab.
+    #[test]
+    fn the_autocorrect_command_opens_its_tab() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut ran = false;
+        let input = egui::RawInput::default();
+        let mut out = ctx.run_ui(input, |ui| {
+            ran = crate::ui::menus::run_command(&mut app, ui.ctx(), "menu.text.autocorrect");
+        });
+        out.textures_delta.clear();
+        assert!(ran);
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
+        assert_eq!(app.options_page, OptionsPage::Text);
+        assert_eq!(app.options_text_tab, AUTOCORRECT_TAB);
     }
 
     #[test]

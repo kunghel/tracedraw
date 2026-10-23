@@ -1,9 +1,36 @@
 # Outline Pen and Outline Colour
 
-The Outline Pen tool (F12) opens the Properties
-panel on the Outline section and returns to the Pick tool; Outline
-Colour (Shift+F12) opens the Colour panel. The model is
-`tracedraw_core::Stroke`.
+The Outline Pen tool (F12) opens the Outline Pen dialog and gives the
+canvas back to the tool before it; Outline Colour (Shift+F12) opens the
+Colour panel. The model is `tracedraw_core::Stroke`.
+
+## Outline Pen dialog
+
+(#357, `ui/outline_pen.rs`) On the first selected object's outline,
+values that differ across the selection shown empty, or on the default
+outline when nothing is selected. Groups:
+
+- General: Color (the colour picker), Width (a list with None, hairline
+  and 0.25 to 24 pt, a box for any width, the outline unit), Style (the
+  dash patterns drawn, then custom ones; "..." opens Edit Line Style and
+  comes back), Mitre limit (with mitred corners), Dashes (as they come,
+  or aligned to corners and ends), Corners, Line caps and Position as
+  picture buttons.
+- Arrowheads: start and end.
+- Calligraphy: Stretch (10 to 100 %), Angle (-90 to 90 degrees), Default
+  (100 %, 0), and a picture of the nib; dragging on it sets angle and
+  stretch. Behind fill, Scale with object.
+- Variable Outline: the width nodes as dots along a bar; a click on the
+  bar adds a node with the width there, on a dot picks it; its position,
+  Side 1 and Side 2 widths and their Total (a new total keeps their
+  ratio); Delete Node.
+- Overprint outline, "?", OK, Cancel.
+
+OK sends only the fields that were changed (also those set to the value
+shown) to every selected object, with Overprint in the same undo step
+(`App::apply_outline_pen`, `the_outline_pen_applies_what_was_changed`);
+with nothing selected it changes the default outline (asking which
+kinds when Options say so).
 
 ## Fields and defaults
 

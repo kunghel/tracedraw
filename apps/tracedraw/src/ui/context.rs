@@ -149,7 +149,7 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     let many = shapes.len() > 1;
     if is_text {
         if ci(ui, close, "menu.text.edit_text", "Ctrl+Shift+T", true) {
-            app.edit_selected_text();
+            app.open_edit_text_dialog();
         }
         if ci(ui, close, "menu.text.convert", "Ctrl+F8", true) {
             app.toggle_text_kind();
@@ -252,13 +252,10 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     ) {
         app.convert_to_curves();
     }
-    if ci(
-        ui,
-        close,
-        "menu.object.break_apart",
-        "Ctrl+K",
-        is_curve || is_group,
-    ) {
+    // Break Apart, or the drop shadow's or effect group's version of it.
+    let label = app.break_apart_label();
+    let can = is_curve || is_group || label != "menu.object.break_apart";
+    if ci(ui, close, label, "Ctrl+K", can) {
         app.break_apart();
     }
     if ci(ui, close, "menu.object.combine", "Ctrl+L", many) {
@@ -278,11 +275,7 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
         app.delete_selection();
     }
     if ci(ui, close, "menu.object.add_to_shelf", "", true) && app.shelf_add_selection() {
-        app.show_dockers = true;
-        app.docker_tab = DockerTab::Shelf;
-        if !app.open_dockers.contains(&DockerTab::Shelf) {
-            app.open_dockers.push(DockerTab::Shelf);
-        }
+        app.open_docker(DockerTab::Shelf);
     }
     sep(ui);
     sub(ui, "menu.object.order", |ui| {

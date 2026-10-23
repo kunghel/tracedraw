@@ -55,6 +55,11 @@ impl App {
     /// Drop `color` (`None`: No Color) at `at` (screen); false when
     /// nothing took it.
     pub fn drop_color(&mut self, color: Option<Color>, at: Pos2) -> bool {
+        if let Some(c) = color {
+            if self.drop_on_fill_line(c, self.view.to_page(at)) {
+                return true;
+            }
+        }
         match self.color_target(at) {
             ColorTarget::DocumentPalette => match color {
                 Some(c) => {

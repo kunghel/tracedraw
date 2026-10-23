@@ -34,7 +34,7 @@ double-click on a ruler, the page border or its shadow).
 | Alignment Guides | On or off; guides for the selection as one or each object; edges, centres, the page, equal spacing, equal sizes; margins with offset and inset; colour and line style; Reset (see `live-guides.md`) |
 | Dynamic Guides | On or off; angles (check boxes every 15 degrees, others added by value); distance and angle tip; tick marks, their spacing, snap to ticks; colour and line style; Reset (see `live-guides.md`) |
 | Save | Back up original file before saving (on): `backup_of_<name>` next to the file or in a chosen folder; Auto-backup every 20 minutes (on): each open drawing with unsaved changes as `AutoBackup_of_<name>.tdraw` in `TraceDraw` under the temporary folder or a chosen folder; a session that ended without closing offers them at the next start (see `recovery.md`) |
-| Text | Keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text); default font and size; hyphenation; non-printing characters |
+| Text | Five tabs (`options_text_tab`). Display: keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text), default font and size, non-printing characters. Paragraph Text: show text frames, hyphenation, hyphenation patterns (Built-in (English) or a `hyph_*.dic` file found in the dictionary folders, shown without `hyph_`; see `text.md`). Fonts: show recently used fonts at the top of the font lists (on) and how many (5, 1 to 20; the lists keep the last 20), font sample size. Spelling: ignore words with numbers, ignore words in capitals (both off, also under Options in the Spell Checker), add corrections to Autocorrect (off: a word replaced in the Spell Checker becomes a replacement row, its row replaced if it has one). Dictionaries: the Hunspell dictionaries found, each with a check box, TraceDraw's dictionaries folder with Open Folder, Also read dictionaries from (a folder, Browse and Clear) and Read Again (see `writing-tools.md`). Autocorrect: see `writing-tools.md`; Text > Writing Tools > Autocorrect opens this tab |
 
 ## Customization
 
@@ -149,13 +149,13 @@ it), applied when the slider is let go.
   follows the monitor: moving the window to a monitor the system scales
   differently rescales it. 200 % is twice that size.
 - The interface's own measures are 13 px text, 20 px icons and 24 px
-  rows. On Windows 100 % is a zoom of 12 / 13 over the system's scaling,
-  so the text comes out as large as the system's own (Segoe UI 9 pt,
-  12 px at 100 % scaling, 15 px at 125 %); at 0.8 it was 10.4 px at
-  100 %, too small (#229).
-- On Linux 100 % is a zoom of 1 over the system's scaling: one interface
-  point per pixel at the system's scaling (#1). Elsewhere (macOS, the
-  browser) it is 0.8. The sizes offered and their order are the same.
+  rows. 100 % is a zoom of 1 over the system's scaling on every system:
+  one interface point per pixel at the system's scaling (`BASE_ZOOM`).
+  It was 0.8 on macOS and in the browser and 12 / 13 on Windows, to make
+  the whole interface as compact as the reference drawing program; what
+  made that program compact was its small button size, which the bars
+  offer (Default Button Size: Small; Medium at first, see `toolbars.md`), so
+  the text and the menus stay at the system's size (#1, #229).
 - The size is a zoom factor over the monitor's own scaling, so text stays
   sharp. Values out of 50 % to 400 % count as 100 %.
 - The interface size never changes how large drawings are: zoom 100 %
@@ -173,8 +173,8 @@ ruler at that resolution: hold a real ruler against the screen and
 change the value until the marks match. Zoom 100% then shows a drawing
 at its real size (the zoom box percentages follow; the Pixels view shows
 one pixel at the system's scaling per document pixel). Interface points
-per inch are that resolution over the interface's zoom (104 at 100 %
-on Windows, 96 on Linux, 120 elsewhere), so the interface size never changes real sizes. Reset puts
+per inch are that resolution over the interface's zoom (96 at 100 %),
+so the interface size never changes real sizes. Reset puts
 96 back.
 
 ## Document Options
@@ -208,7 +208,12 @@ menus, dialogs, lists, rulers, tabs and icons take the theme's colours;
 the page, the drawing, the accent blue and the desktop colour (its own
 setting) do not. The button with a moon (light themes) or a sun (dark
 themes) at the right end of the status bar switches to Dark or to
-Light. The choice is kept in the preferences and applies at once.
+Light. The choice is kept in the preferences and applies at once. The
+system's dark mode (the browser's `prefers-color-scheme` in the browser
+build) does not change the theme: egui's own theme preference is pinned
+and both of its style slots hold the chosen theme's visuals
+(`App::setup_context`, `ui::apply_theme` each frame;
+`ui::tests::the_system_dark_mode_does_not_change_the_theme`).
 
 ## Coloured tool icons
 

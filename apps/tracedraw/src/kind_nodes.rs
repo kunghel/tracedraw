@@ -5,6 +5,9 @@
 //! ellipse's node opens a pie when the pointer is inside the ellipse and
 //! an arc outside it; a polygon's nodes move with all their mirrored
 //! counterparts (vertices together, the points between them together).
+//! A B-spline shows its control points instead of its nodes: dragging
+//! one reshapes the spline, a double-click on the control polygon adds
+//! one there and a double-click on a control point removes it.
 
 use tracedraw_core::{
     document::{axis_scale, EllipseArc, Shape, ShapeKind},
@@ -23,12 +26,21 @@ pub enum KindNode {
     EllipseEnd,
     /// A polygon's vertex (`outer`) or the point between two vertices.
     Polygon { outer: bool, index: usize },
+    /// A B-spline's control point (its index in [`Shape::spline`]).
+    Spline { index: usize },
 }
 
 /// The nodes of `s` in page space; empty for other kinds of objects.
 pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
     let t = s.transform;
     let mut out = Vec::new();
+    if let Some(pts) = &s.spline {
+        return pts
+            .iter()
+            .enumerate()
+            .map(|(index, p)| (KindNode::Spline { index }, t * *p))
+            .collect();
+    }
     match &s.kind {
         ShapeKind::Rect { .. } => {
             let Some((rect, c)) = s.kind.rect_corners() else {
@@ -357,6 +369,9 @@ pub fn drag(
 
 /// The undo step's name for dragging a node of `s`.
 pub fn label(s: &Shape) -> &'static str {
+    if s.spline.is_some() {
+        return "Edit B-Spline";
+    }
     match s.kind {
         ShapeKind::Rect { .. } => "Corner Radius",
         ShapeKind::Ellipse { .. } => "Pie / Arc",
@@ -382,6 +397,104 @@ pub fn single_corner(
 #[cfg(test)]
 fn page_radius(s: &Shape, corner: usize) -> f64 {
     s.page_corners().map(|c| c.radii[corner]).unwrap_or(0.0)
+}
+
+/// The control points of the B-spline `start` with the point `index`
+/// moved to `p` (page space): what [`Command::SetSpline`] takes for a
+/// dragged control point.
+pub fn spline_moved(start: &Shape, index: usize, p: Point) -> Option<Vec<Point>> {
+    let mut pts = start.spline.clone()?;
+    let lp = start.transform.inverse() * p;
+    if !lp.is_finite() {
+        return None;
+    }
+    *pts.get_mut(index)? = lp;
+    Some(pts)
+}
+
+/// The control points of the B-spline `s` with one more at `p` (page
+/// space), when `p` lies within `tol` of its control polygon (the
+/// dashed lines between the control points; the closing line of a closed
+/// spline too): the new point goes between the two the line joins, at
+/// the foot of `p` on it.
+pub fn spline_with_point(s: &Shape, p: Point, tol: f64) -> Option<Vec<Point>> {
+    let pts = s.spline.as_ref()?;
+    let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
+    let n = pts.len();
+    let lines = if closed { n } else { n.saturating_sub(1) };
+    let mut best: Option<(usize, Point, f64)> = None;
+    for i in 0..lines {
+        let a = s.transform * pts[i];
+        let b = s.transform * pts[(i + 1) % n];
+        let ab = b - a;
+        let len2 = ab.hypot2();
+        let t = if len2 < 1e-12 {
+            0.5
+        } else {
+            ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+        };
+        let foot = a + ab * t;
+        let d = (foot - p).hypot();
+        if d <= tol && best.is_none_or(|b| d < b.2) {
+            best = Some((i, foot, d));
+        }
+    }
+    let (i, foot, _) = best?;
+    let lp = s.transform.inverse() * foot;
+    if !lp.is_finite() {
+        return None;
+    }
+    let mut out = pts.clone();
+    out.insert(i + 1, lp);
+    Some(out)
+}
+
+/// The control points of the B-spline `start` with the points `indices`
+/// moved together, so that the point `grab` lands on `p` (page space):
+/// several chosen control points dragged as one.
+pub fn spline_moved_many(
+    start: &Shape,
+    indices: &[usize],
+    grab: usize,
+    p: Point,
+) -> Option<Vec<Point>> {
+    let mut pts = start.spline.clone()?;
+    let lp = start.transform.inverse() * p;
+    if !lp.is_finite() {
+        return None;
+    }
+    let d = lp - *pts.get(grab)?;
+    for &i in indices {
+        if let Some(q) = pts.get_mut(i) {
+            *q += d;
+        }
+    }
+    Some(pts)
+}
+
+/// The control points of the B-spline `s` without the points `indices`;
+/// `None` when fewer than two would remain.
+pub fn spline_without_many(s: &Shape, indices: &[usize]) -> Option<Vec<Point>> {
+    let pts = s.spline.as_ref()?;
+    let out: Vec<Point> = pts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !indices.contains(i))
+        .map(|(_, p)| *p)
+        .collect();
+    (out.len() >= 2).then_some(out)
+}
+
+/// The control points of the B-spline `s` without the point `index`;
+/// `None` when two would not remain.
+pub fn spline_without(s: &Shape, index: usize) -> Option<Vec<Point>> {
+    let pts = s.spline.as_ref()?;
+    if pts.len() <= 2 || index >= pts.len() {
+        return None;
+    }
+    let mut out = pts.clone();
+    out.remove(index);
+    Some(out)
 }
 
 #[cfg(test)]

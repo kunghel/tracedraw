@@ -3,6 +3,16 @@
 //! docs/behavior/web.md.
 
 /// Text made safe to put into the page as HTML.
+/// Whether a key pressed with Ctrl (or Cmd) on the canvas is left to the
+/// browser: copy, cut and paste (egui needs their events) and the
+/// developer tools (Ctrl+Shift+I). Everything else the editor binds,
+/// Ctrl+R (Repeat) among them, is kept from the browser, which would
+/// reload the page.
+pub fn browser_keeps_key(key: &str, shift: bool) -> bool {
+    let k = key.to_ascii_lowercase();
+    matches!(k.as_str(), "c" | "v" | "x") || (shift && k == "i")
+}
+
 pub fn escape_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -25,6 +35,17 @@ mod tests {
     const PAGE: &str = include_str!("../../../web/index.html");
     const BUILD_SCRIPT: &str = include_str!("../../../scripts/web/build.sh");
     const CI: &str = include_str!("../../../.github/workflows/build.yml");
+
+    /// Ctrl+R is Repeat in the editor, not the browser's reload; the
+    /// clipboard keys and the developer tools stay with the browser.
+    #[test]
+    fn the_browser_keeps_only_the_clipboard_and_developer_keys() {
+        assert!(browser_keeps_key("c", false) && browser_keeps_key("V", false));
+        assert!(browser_keeps_key("x", true) && browser_keeps_key("I", true));
+        for k in ["r", "R", "s", "p", "d", "g", "i", "e", "f"] {
+            assert!(!browser_keeps_key(k, false), "{k}");
+        }
+    }
 
     #[test]
     fn text_is_escaped() {

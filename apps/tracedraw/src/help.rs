@@ -60,7 +60,8 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::PageSize { .. } => "pages-layout/pages#page-size",
         Dialog::Options => options_topic(options),
         Dialog::PageNumberSettings => "pages-layout/pages#page-numbers",
-        Dialog::LineStyle(_) => "lines-shapes/outlines#outline-pen",
+        Dialog::LineStyle(_) | Dialog::OutlinePen(_) => "lines-shapes/outlines#outline-pen",
+        Dialog::EditFill(_) => "color/fills#edit-fill",
         Dialog::TableCount(_) => "objects/tables",
         Dialog::OldCdrVersion { .. } => "get-started/open-and-save#save-as",
         Dialog::RenameLayer { .. } | Dialog::RenameObject { .. } => {
@@ -86,6 +87,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::InflateBitmap(_) => "bitmaps/resample-and-straighten#inflate",
         Dialog::Trace(_) => "bitmaps/tracing",
         Dialog::Effect(_) => "effects/bitmap-effects",
+        Dialog::EditText { .. } => "text/adding-text#edit",
         Dialog::TextTabs => "text/paragraphs#tabs",
         Dialog::TextColumns => "text/paragraphs#columns",
         Dialog::TextBullets => "text/paragraphs#bullets",
@@ -95,7 +97,6 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::WritingTools(_) => "text/writing-tools",
         Dialog::CustomHyphens(_) => "text/writing-tools#custom-hyphens",
         Dialog::Encode(_) => "text/writing-tools#encode",
-        Dialog::Autocorrect(_) => "text/writing-tools#autocorrect",
         Dialog::BorderGrommet(_) => "printing/border-and-grommet",
         Dialog::ColorManagement(_) => "color/color-management",
         Dialog::FontManager(_) => "text/fonts#font-manager",
@@ -110,6 +111,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::Preflight(_) => "printing/preflight",
         Dialog::PublishPdf(_) => "file-formats/publish-pdf",
         Dialog::PdfPassword(_) => "file-formats/publish-pdf#password",
+        Dialog::PdfText(_) => "file-formats/import#formats",
         Dialog::ChangeDefaults(_) => "templates-styles/object-styles#document-defaults",
         Dialog::SaveAs(_) => "get-started/open-and-save#save-as",
     }

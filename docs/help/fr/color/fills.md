@@ -59,6 +59,20 @@ surface du panneau [[docker.properties]] :
 Une bande sous le type montre toute la suite de couleurs telle qu'elle sera
 dessinée.
 
+## La boîte de dialogue Modifier le remplissage {#edit-fill}
+
+<kbd>F11</kbd> ouvre la boîte de dialogue [[edit_fill.title]] sur la surface
+de la sélection. Pour un dégradé, elle montre un aperçu, le
+[[edit_fill.fill_picker]], le type, la répétition et la bande de couleurs :
+cliquez sur un nœud pour le choisir, faites-le glisser pour le déplacer,
+double-cliquez pour en ajouter ou en retirer un. Sous la bande : la couleur,
+la transparence, la position et le [[edit_fill.midpoint]] du nœud, et
+[[edit_fill.reverse]]. [[edit_fill.transform]] contient la rotation, le centre
+et la marge du bord. **OK** applique ce que vous avez changé, avec
+[[edit_fill.overprint]].
+
+![La boîte de dialogue Modifier le remplissage](../../img/color-fills-edit-fill.png)
+
 ## L'outil Surface interactive {#interactive-fill}
 
 L'outil [[tool.interactive_fill]] (<kbd>G</kbd>) modifie les surfaces

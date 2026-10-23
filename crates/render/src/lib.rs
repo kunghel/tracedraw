@@ -83,9 +83,9 @@ pub struct RenderOptions {
     /// gradients) may be worked out on a coarser grid. Exports keep every
     /// pixel.
     pub draft: bool,
-    /// Focus mode: this object drawn as it is and everything else faded
-    /// to the given visibility (0 to 1).
-    pub focus: Option<(tracedraw_core::ShapeId, f32)>,
+    /// Focus mode: these objects drawn as they are and everything else
+    /// faded to the given visibility (0 to 1).
+    pub focus: Option<(Vec<tracedraw_core::ShapeId>, f32)>,
 }
 
 impl Default for RenderOptions {
@@ -228,24 +228,26 @@ pub fn render_page(doc: &Document, page: PageId, opts: &RenderOptions) -> Option
             r.draw_shape(shape, extra);
         }
     }
-    // Focus mode: everything fades, then the object in focus is drawn
-    // again over it as it is.
-    if let Some((id, visibility)) = opts.focus {
-        if let (Some(shape), Some(parent)) = (doc.find_shape(id), doc.parent_transform(id)) {
-            let v = visibility.clamp(0.0, 1.0);
-            for px in r.pixmap.pixels_mut() {
-                let c = |x: u8| (x as f32 * v).round() as u8;
-                if let Some(faded) = tiny_skia::PremultipliedColorU8::from_rgba(
-                    c(px.red()),
-                    c(px.green()),
-                    c(px.blue()),
-                    c(px.alpha()),
-                ) {
-                    *px = faded;
-                }
+    // Focus mode: everything fades, then the objects in focus are drawn
+    // again over it as they are.
+    if let Some((ids, visibility)) = &opts.focus {
+        let v = visibility.clamp(0.0, 1.0);
+        for px in r.pixmap.pixels_mut() {
+            let c = |x: u8| (x as f32 * v).round() as u8;
+            if let Some(faded) = tiny_skia::PremultipliedColorU8::from_rgba(
+                c(px.red()),
+                c(px.green()),
+                c(px.blue()),
+                c(px.alpha()),
+            ) {
+                *px = faded;
             }
-            let extra = r.child_transform(shape, parent);
-            r.draw_shape(shape, extra);
+        }
+        for id in ids {
+            if let (Some(shape), Some(parent)) = (doc.find_shape(*id), doc.parent_transform(*id)) {
+                let extra = r.child_transform(shape, parent);
+                r.draw_shape(shape, extra);
+            }
         }
     }
     Some(pixmap)
@@ -1104,8 +1106,55 @@ impl Renderer<'_> {
                 let stops: Vec<GradientStop> = f
                     .resolved_stops()
                     .iter()
-                    .map(|s| GradientStop::new(s.pos as f32, sk_color(s.color)))
+                    .map(|s| GradientStop::new(s.pos as f32, sk_color_alpha(s.color, s.opacity)))
                     .collect();
+                // Nodes placed freely with the Interactive Fill tool: the
+                // fill's own frame (start, end, skew handle) places it.
+                if let Some(frame) = f.frame(b) {
+                    let m = (self.screen * frame).as_coeffs();
+                    let t = Transform::from_row(
+                        m[0] as f32,
+                        m[1] as f32,
+                        m[2] as f32,
+                        m[3] as f32,
+                        m[4] as f32,
+                        m[5] as f32,
+                    );
+                    let origin = tiny_skia::Point::from_xy(0.0, 0.0);
+                    let shader = match f.kind {
+                        tracedraw_core::FountainKind::Linear => LinearGradient::new(
+                            origin,
+                            tiny_skia::Point::from_xy(1.0, 0.0),
+                            stops,
+                            SpreadMode::Pad,
+                            t,
+                        ),
+                        tracedraw_core::FountainKind::Radial => {
+                            RadialGradient::new(origin, 0.0, origin, 1.0, stops, SpreadMode::Pad, t)
+                        }
+                        _ => None,
+                    };
+                    if let Some(sh) = shader {
+                        paint.shader = sh;
+                        self.pixmap
+                            .fill_path(sk, &paint, rule, Transform::identity(), None);
+                    } else if matches!(
+                        f.kind,
+                        tracedraw_core::FountainKind::Conical
+                            | tracedraw_core::FountainKind::Square
+                    ) {
+                        let f2 = f.clone();
+                        let base = f.blended_stops();
+                        let key = format!("{f:?}");
+                        self.fill_procedural(page_path, sk, rule, &key, move |u, v| {
+                            let p = Point::new(b.x0 + u * b.width(), b.y0 + v * b.height());
+                            let t = f2.param_at(b, p).unwrap_or(0.0);
+                            let s = tracedraw_core::style::sample_stop(&base, f2.stop_param(t));
+                            (s.color, s.opacity)
+                        });
+                    }
+                    return;
+                }
                 match f.kind {
                     tracedraw_core::FountainKind::Shaped => {
                         self.fill_shaped(f, sk, sk, rule);
@@ -1152,7 +1201,7 @@ impl Renderer<'_> {
                     tracedraw_core::FountainKind::Conical
                     | tracedraw_core::FountainKind::Square => {
                         let f2 = f.clone();
-                        let base = f.sorted_stops();
+                        let base = f.blended_stops();
                         let key = format!("{f:?}");
                         self.fill_procedural(page_path, sk, rule, &key, move |u, v| {
                             let dx = u - 0.5 - f2.offset.x / 2.0;
@@ -1170,7 +1219,8 @@ impl Renderer<'_> {
                                 }
                                 _ => (dx.abs().max(dy.abs()) * 2.0).min(1.0),
                             };
-                            tracedraw_core::style::sample_stops(&base, f2.stop_param(t))
+                            let s = tracedraw_core::style::sample_stop(&base, f2.stop_param(t));
+                            (s.color, s.opacity)
                         });
                     }
                 }
@@ -1194,7 +1244,10 @@ impl Renderer<'_> {
                             .round()
                             .clamp(0.0, 255.0) as u8
                     };
-                    Color::rgb8(l(ca[0], cb[0]), l(ca[1], cb[1]), l(ca[2], cb[2]))
+                    (
+                        Color::rgb8(l(ca[0], cb[0]), l(ca[1], cb[1]), l(ca[2], cb[2])),
+                        1.0,
+                    )
                 });
             }
         }
@@ -1389,14 +1442,15 @@ impl Renderer<'_> {
                 let inside: Vec<bool> = m.pixels().iter().map(|p| p.alpha() >= 128).collect();
                 let dist = edge_distance(&inside, gw as usize, gh as usize);
                 let deepest = dist.iter().cloned().fold(0.0f64, f64::max).max(1e-9);
-                let base = f.sorted_stops();
+                let base = f.blended_stops();
                 let Some(mut pm) = Pixmap::new(gw, gh) else {
                     return;
                 };
                 for (px, d) in pm.pixels_mut().iter_mut().zip(&dist) {
-                    let c = tracedraw_core::style::sample_stops(&base, f.stop_param(d / deepest));
-                    let [r, g, bb] = c.to_rgb8();
-                    *px = tiny_skia::ColorU8::from_rgba(r, g, bb, 255).premultiply();
+                    let s = tracedraw_core::style::sample_stop(&base, f.stop_param(d / deepest));
+                    let [r, g, bb] = s.color.to_rgb8();
+                    let a = (s.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    *px = tiny_skia::ColorU8::from_rgba(r, g, bb, a).premultiply();
                 }
                 procedural_cache_put(key, pm.clone());
                 pm
@@ -1424,7 +1478,7 @@ impl Renderer<'_> {
         sk: &SkPath,
         rule: FillRule,
         key: &str,
-        f: impl Fn(f64, f64) -> Color + Sync,
+        f: impl Fn(f64, f64) -> (Color, f32) + Sync,
     ) {
         use tracedraw_core::geometry::Shape as _;
         let b = bbox(page_path);
@@ -1469,8 +1523,10 @@ impl Renderer<'_> {
                     for (x, px) in out.iter_mut().enumerate() {
                         let u = (x0 + (x as f64 + 0.5) * st - sb.x0) / bw;
                         let v = 1.0 - (y0 + (y as f64 + 0.5) * st - sb.y0) / bh;
-                        let [r, g, bb] = f(u, v).to_rgb8();
-                        *px = tiny_skia::ColorU8::from_rgba(r, g, bb, 255).premultiply();
+                        let (c, o) = f(u, v);
+                        let [r, g, bb] = c.to_rgb8();
+                        let a = (o.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        *px = tiny_skia::ColorU8::from_rgba(r, g, bb, a).premultiply();
                     }
                 };
                 for_rows(pm.pixels_mut(), w as usize, &row);
@@ -2077,6 +2133,12 @@ pub fn sk_color(c: Color) -> SkColor {
     SkColor::from_rgba8(r, g, b, 255)
 }
 
+/// [`sk_color`] at an opacity (0 clear, 1 opaque).
+pub fn sk_color_alpha(c: Color, opacity: f32) -> SkColor {
+    let [r, g, b] = c.to_rgb8();
+    SkColor::from_rgba8(r, g, b, (opacity.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
 pub fn to_sk_path(path: &BezPath) -> Option<SkPath> {
     let mut pb = PathBuilder::new();
     for el in path.elements() {
@@ -2368,22 +2430,10 @@ mod tests {
         frame.fill = Fill::Fountain(Fountain {
             kind: FountainKind::Linear,
             stops: vec![
-                Stop {
-                    pos: 0.0,
-                    color: Color::WHITE,
-                },
-                Stop {
-                    pos: 0.499,
-                    color: Color::WHITE,
-                },
-                Stop {
-                    pos: 0.501,
-                    color: Color::BLACK,
-                },
-                Stop {
-                    pos: 1.0,
-                    color: Color::BLACK,
-                },
+                Stop::new(0.0, Color::WHITE),
+                Stop::new(0.499, Color::WHITE),
+                Stop::new(0.501, Color::BLACK),
+                Stop::new(1.0, Color::BLACK),
             ],
             ..Fountain::two(FountainKind::Linear, Color::WHITE, Color::BLACK, 0.0)
         });
@@ -2952,23 +3002,81 @@ mod tests {
         );
     }
 
+    /// A fill whose nodes were placed freely runs from its start to its
+    /// end node, held at the end colours beyond them; an elliptical one
+    /// is centred on its start (#330).
+    #[test]
+    fn node_opacity_shows_through_the_gradient() {
+        let b = Rect::new(0.0, 0.0, 100.0, 10.0);
+        let mut f = Fountain::two(FountainKind::Linear, Color::BLACK, Color::BLACK, 0.0);
+        f.stops[1].opacity = 0.0;
+        for kind in [FountainKind::Linear, FountainKind::Square] {
+            f.kind = kind;
+            let pm = render_fill_image(&Fill::Fountain(f.clone()), b, 25.4).unwrap();
+            let a = |x: u32| pm.pixel(x, 5).map(|p| p.alpha()).unwrap_or(0);
+            if kind == FountainKind::Linear {
+                assert!(a(2) > 240, "opaque start: {}", a(2));
+                assert!(a(97) < 15, "clear end: {}", a(97));
+            } else {
+                // Square: opaque at the centre, clear at the corners.
+                assert!(a(50) > a(1), "{} {}", a(50), a(1));
+            }
+        }
+    }
+
+    #[test]
+    fn free_fill_nodes_place_the_gradient() {
+        use tracedraw_core::style::FountainHandles;
+        let b = Rect::new(0.0, 0.0, 100.0, 10.0);
+        let rel = |x: f64, y: f64| Fountain::page_to_rel(b, Point::new(x, y));
+        let mut f = Fountain::two(FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        f.set_handles(
+            b,
+            FountainHandles {
+                start: rel(20.0, 5.0),
+                end: rel(60.0, 5.0),
+                skew: rel(20.0, 10.0),
+            },
+        );
+        let pm = render_fill_image(&Fill::Fountain(f.clone()), b, 25.4).unwrap();
+        let (r, _, _) = px(&pm, 10, 5);
+        assert!(r < 10, "before the start: {r}");
+        let (r, _, _) = px(&pm, 40, 5);
+        assert!((110..150).contains(&r), "half way: {r}");
+        let (r, _, _) = px(&pm, 80, 5);
+        assert!(r > 245, "beyond the end: {r}");
+        // Elliptical, centred at x = 70.
+        f.kind = FountainKind::Radial;
+        f.set_handles(
+            b,
+            FountainHandles {
+                start: rel(70.0, 5.0),
+                end: rel(90.0, 5.0),
+                skew: rel(70.0, 25.0),
+            },
+        );
+        let pm = render_fill_image(&Fill::Fountain(f.clone()), b, 25.4).unwrap();
+        let (r, _, _) = px(&pm, 70, 5);
+        assert!(r < 20, "the centre: {r}");
+        let (r, _, _) = px(&pm, 20, 5);
+        assert!(r > 245, "far out: {r}");
+        // Square, procedural: centre dark, beyond the half axis light.
+        f.kind = FountainKind::Square;
+        let pm = render_fill_image(&Fill::Fountain(f), b, 25.4).unwrap();
+        let (r, _, _) = px(&pm, 70, 5);
+        assert!(r < 30, "square centre: {r}");
+        let (r, _, _) = px(&pm, 5, 5);
+        assert!(r > 240, "square outside: {r}");
+    }
+
     #[test]
     fn linear_fountain_three_stops_passes_through_middle_colour() {
         let fill = Fill::Fountain(Fountain {
             kind: FountainKind::Linear,
             stops: vec![
-                Stop {
-                    pos: 0.0,
-                    color: Color::rgb8(0, 0, 0),
-                },
-                Stop {
-                    pos: 0.5,
-                    color: Color::rgb8(255, 0, 0),
-                },
-                Stop {
-                    pos: 1.0,
-                    color: Color::rgb8(255, 255, 255),
-                },
+                Stop::new(0.0, Color::rgb8(0, 0, 0)),
+                Stop::new(0.5, Color::rgb8(255, 0, 0)),
+                Stop::new(1.0, Color::rgb8(255, 255, 255)),
             ],
             angle: 0.0,
             offset: Point::ZERO,

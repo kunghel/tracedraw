@@ -12,6 +12,9 @@ use tracedraw_core::{Command, Shape, ShapeId, ShapeKind};
 /// A paragraph text frame as shown on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShownFrame {
+    pub id: tracedraw_core::ShapeId,
+    /// The frame flows into another (its tab shows a link).
+    pub linked: bool,
     /// Page-space corners, the frame's lower left first.
     pub corners: [Point; 4],
     /// The text is selected or being edited.
@@ -187,14 +190,16 @@ impl App {
             .flat_map(|l| &l.shapes)
             .filter(|s| s.visible)
         {
+            // Only text frames: asking every object whether it is selected
+            // cost a search of the selection each (#367).
+            let Some(mut c) = s.text_frame_corners() else {
+                continue;
+            };
             let selected = self.selection.contains(&s.id);
             let chosen = selected || editing == Some(s.id);
             if !(self.settings.show_text_frames || chosen) {
                 continue;
             }
-            let Some(mut c) = s.text_frame_corners() else {
-                continue;
-            };
             if let Some(t) = preview.filter(|t| selected && self.resizes_text_frame(s.id, *t)) {
                 if let Some(kind) = resized_kind(s, t) {
                     let mut moved = s.clone();
@@ -205,6 +210,8 @@ impl App {
                 c = c.map(|p| t * p);
             }
             out.push(ShownFrame {
+                id: s.id,
+                linked: self.next_frame(s.id).is_some(),
                 corners: c,
                 chosen,
                 editing: editing == Some(s.id),

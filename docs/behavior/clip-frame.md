@@ -25,18 +25,51 @@ frame is edited node by node, and the clip frame stays one
 ## Commands
 
 - Place Inside Frame: with contents selected, click the frame; the
-  contents keep their position.
+  contents keep their position. A frame that is a clip frame already
+  takes them in over the contents it holds (`Command::PlaceInside`).
+  Until the click the pointer is a thick black arrow pointing right on
+  a white halo, its tip the hot spot; Order > In Front Of and Behind
+  show it too while they wait for their object (#379,
+  `ui::cursors::tests::tools_get_their_cursors`).
 - Extract Contents: the contents become ordinary objects again; the frame
   stays (an empty frame shows a hatched preview).
-- Edit Contents: enters the clip frame; only the contents are editable,
-  the rest of the page is dimmed and the frame is drawn as an outline.
-  Finish Editing Contents leaves it. While editing, the property bar
-  shows Finish.
+- Edit Contents: takes the contents out of the frame to edit them; the
+  rest of the page fades to a quarter of its strength while the frame
+  and the contents are drawn in full (`App::render_focus`, the
+  renderer's focus option with several objects, `CLIP_EDIT_VISIBILITY`).
+  Finish Editing Contents (the bar's Finish) puts them back.
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame
   moves alone and the contents stay where they are
   (`compensate_unlocked_clip_frames` undoes the transform on them).
+
+## The clip frame bar
+
+With one clip frame selected (Pick tool) a bar floats at the top left
+of the drawing window (`ui/clip_bar.rs`): Edit (Edit Contents), Select
+Contents (the contents become the selection, with their round handles),
+Extract Contents, Lock Contents (pressed while the contents follow the
+frame; see Lock Contents to Frame) and Fit Contents, a list of Center
+Contents (the contents' centre on the frame's centre), Fit Contents
+Proportionally (scaled alike to fit inside the frame, centred), Fill
+Frame Proportionally (scaled alike to cover it) and Stretch Contents to
+Fill (scaled to the frame's box), each one "Fit Contents" undo step
+(`App::fit_clip_contents`, `ops2::fit_contents_transform`). While the
+contents are edited the bar shows Finish, as the symmetry bar does
+(`ops2::clip_frame_tests::contents_fit_the_frame_four_ways`).
+
+## Dropping onto a frame
+
+While the selection is moved over a clip frame that is not part of it,
+the frame shows filled in the selection colour and a note under the
+pointer says what the release does: drop here, outside the frame
+(nothing held); hold W to add the objects to the frame (Place Inside
+Frame, the objects where they were dropped); hold K to replace the
+frame's contents with them (the old contents are deleted; one "Place
+Inside Frame" undo step, `App::replace_clip_contents`). W and K pick
+no tool during the move (`App::frame_under_pointer`, `drop_frame`,
+`drop_keys`; `pick_drag_tests::dropping_on_a_clip_frame_with_w_or_k_puts_the_objects_in`).
 
 ## Picking
 

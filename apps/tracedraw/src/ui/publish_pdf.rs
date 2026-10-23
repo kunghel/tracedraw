@@ -891,7 +891,7 @@ fn objects(ui: &mut Ui, st: &mut PublishState) {
     ui.add_enabled_ui(flattens, |ui| {
         row(ui, &tr("publish.flatten_resolution"), |ui| {
             ui.add(
-                egui::DragValue::new(&mut st.prefs.flatten_dpi)
+                crate::ui::field::NumField::new(&mut st.prefs.flatten_dpi)
                     .range(72.0..=1200.0)
                     .speed(5.0)
                     .suffix(" dpi"),
@@ -920,7 +920,7 @@ fn text_and_fonts(ui: &mut Ui, p: &mut PublishPrefs) {
                     ui.add_enabled_ui(p.subset_fonts, |ui| {
                         ui.label(tr("publish.subset_below"));
                         ui.add(
-                            egui::DragValue::new(&mut p.subset_below_pct)
+                            crate::ui::field::NumField::new(&mut p.subset_below_pct)
                                 .range(0.0..=100.0)
                                 .speed(1.0)
                                 .suffix(" %"),
@@ -937,7 +937,7 @@ fn text_and_fonts(ui: &mut Ui, p: &mut PublishPrefs) {
 fn prepress(ui: &mut Ui, st: &mut PublishState) {
     row(ui, &tr("dialog.bleed"), |ui| {
         ui.add(
-            egui::DragValue::new(&mut st.bleed_mm)
+            crate::ui::field::NumField::new(&mut st.bleed_mm)
                 .range(0.0..=50.0)
                 .speed(0.5)
                 .suffix(" mm"),

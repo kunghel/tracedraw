@@ -14,8 +14,9 @@ o mesmo, mas seleciona com um laço à mão livre.
 - **Arraste** em volta de objetos, começando em um lugar vazio: os objetos
   totalmente dentro da moldura tracejada são selecionados. Mantenha
   <kbd>Alt</kbd> pressionado ao terminar o arraste para selecionar todos os
-  objetos que a moldura toca. Mantenha <kbd>Shift</kbd> para acrescentar à
-  seleção, <kbd>Ctrl</kbd> para manter a moldura quadrada.
+  objetos que a moldura toca. Mantenha <kbd>Shift</kbd> para inverter os
+  objetos que a moldura pega: os selecionados saem da seleção e os outros
+  entram. Mantenha <kbd>Ctrl</kbd> para manter a moldura quadrada.
 - <kbd>Ctrl</kbd>+clique seleciona um objeto dentro de um grupo, um nível mais
   para dentro a cada clique. As alças ficam redondas, e as alterações valem só
   para ele.

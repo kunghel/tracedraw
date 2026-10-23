@@ -63,6 +63,11 @@ embaixo de um caractere indica que a fonte tem alternativas para ele (como
 floreios ou versaletes); clique nela para vê-las. Os glifos usados por último
 ficam no alto do painel.
 
+Digite no campo de pesquisa acima da grade para encontrar caracteres: digite os
+próprios caracteres (como `é`) ou um código Unicode como `U+20AC`, `0x20ac` ou
+`20AC`. A linha acima da grade mostra o código, o caractere e o intervalo do
+caractere sob o ponteiro.
+
 ## O Gerenciador de fontes {#font-manager}
 
 [[menu.tools > menu.tools.font_manager]] abre o Gerenciador de fontes, uma

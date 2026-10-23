@@ -96,8 +96,22 @@ Vea [Ajuste](../pages-layout/snapping.md).
 
 ![La página Texto de las opciones de TraceDraw](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: cuánto agrandan y reducen
-  <kbd>Ctrl+8</kbd> y <kbd>Ctrl+2</kbd> el texto seleccionado (1 punto).
-- [[options.default_font]] y [[options.default_size]] del texto nuevo.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] y
-  [[menu.text.show_text_frames]].
+La página tiene cinco pestañas.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (cuánto agrandan y
+  reducen <kbd>Ctrl+8</kbd> y <kbd>Ctrl+2</kbd> el texto seleccionado, 1 punto),
+  la [[options.default_font]] y el [[options.default_size]] del texto nuevo, y
+  [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] y los [[options.hyphenation_patterns]]
+  (integrados, o un diccionario de división de su idioma).
+- [[docker.fonts]]: [[options.show_recent_fonts]] arriba de las listas de
+  fuentes, el [[options.recent_font_count]] (5, hasta 20) y el
+  [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  y [[options.add_to_autocorrect]], para que una palabra corregida en el
+  corrector se corrija al escribir la próxima vez; y los
+  [[options.dictionaries]] que usa, consulte
+  [Diccionarios](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: lo que se corrige al escribir; consulte
+  [Autocorrección](../text/writing-tools.md#autocorrect).

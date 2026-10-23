@@ -7,10 +7,10 @@
 | Ctrl+click | the object inside a group or a clip frame, one level further in at each click (the first level inside the topmost group, then the group or object inside that, down to the innermost object; a clip frame's contents count only inside the frame, where they show); its handles are round, and moving, scaling, colouring or deleting it changes that object only (a group left empty goes); Ctrl+Shift+click adds one more; a group and an object inside it are never selected together |
 | Alt+click | the object beneath the selected one under the pointer, round to the top again after the bottom one (dig); with nothing there selected, the topmost; Ctrl+Alt digs through the objects inside groups and clip frames (a clip frame comes after its contents); Shift+Alt adds it |
 | Click on a selected object (any of a selection), or on the centre mark | toggle the rotate/skew handles: curved arrows at the corners, straight double arrows at the sides, the centre of rotation in the middle |
-| Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts); Shift keeps the selection and adds; Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
+| Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts); Shift keeps the selection and turns over the objects the frame takes (selected ones are deselected, the others added; the Freehand Pick lasso too, #401); Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
 | Drag the centre mark (the "x") | moves the selection, also where the mark lies on nothing (an outline-only ring) |
 | Drag object | move with the pointer (snapped); Ctrl keeps the move horizontal or vertical, whichever is longer; Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached); let go over the document palette to add the objects' colours to it instead of moving them |
-| Corner handle | scale proportionally from the opposite corner; Shift from the centre; Ctrl in whole steps of 100 % (crossing the other side gives the mirror image at the same size); Alt scales freely |
+| Corner handle | scale proportionally from the opposite corner, by where the pointer falls along the box's diagonal: `s = (|sx| w² + |sy| h²) / (w² + h²)` with `sx`, `sy` the two sides' own ratios (each keeps its sign, for mirroring), so the corner follows the pointer and a wide, low box such as a line of text does not grow at the short side's pace (#383); the handle follows the pointer from the frame the drag starts, not in a jump of the few pixels before a press becomes a drag; Shift from the centre; Ctrl in whole steps of 100 % (crossing the other side gives the mirror image at the same size); Alt scales freely |
 | Side handle | stretch one axis from the opposite side (across it: mirrored); Shift from the centre; Ctrl in steps of 100 % |
 | Snapping while scaling | with snapping on, the dragged corner or side handle snaps to other objects' points and edges, guidelines, the grid and the page (never to the selection's own points), and the snap mark shows where |
 | Rotate handle (rotate mode, corners) | rotate about the centre of rotation; Ctrl in steps of the constrain angle (15 degrees) |
@@ -67,6 +67,19 @@ heads, their centres 9 points out from the box: a curved double arrow
 around each corner, bulging outwards, and a straight double arrow along
 each side. The centre of rotation is a ring 8 points in radius with a
 dot in the middle.
+
+## Large selections
+
+With many objects selected (Select All on a drawing of thousands of
+objects) the window keeps its frame rate: the selected objects are
+gathered in one pass over the layers and kept, shared, while the
+drawing, the page and the selection stay as they are
+(`App::selected_rc`); the bars, the status bar and the canvas read that
+one list, and the checks that ran once per selected object over the
+whole drawing (its layer, whether it lies in a group, linked text
+frames) take one pass too. With 3000 rectangles selected a frame went
+from about 200 ms to about 7 ms (#367; check
+`app::tests::the_selected_objects_are_gathered_once_and_kept_while_nothing_changes`).
 
 ## Selection groups
 

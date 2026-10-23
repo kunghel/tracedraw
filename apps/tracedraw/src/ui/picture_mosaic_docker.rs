@@ -88,7 +88,9 @@ fn pixels(ui: &mut Ui, label: &str, v: &mut u32, editable: bool, max: u32) -> bo
         ui.label(label);
         ui.add_enabled(
             editable,
-            egui::DragValue::new(v).range(1..=max).suffix(" px"),
+            crate::ui::field::NumField::new(v)
+                .range(1..=max)
+                .suffix(" px"),
         )
         .changed()
     })
@@ -123,11 +125,11 @@ pub fn picture_mosaic(app: &mut App, ui: &mut Ui) {
     };
     section(ui, Some(&tr("docker.form_grid")));
     row(ui, &tr("docker.picture_mosaic_columns"), |ui| {
-        ui.add(egui::DragValue::new(&mut s.columns).range(2..=300));
+        ui.add(crate::ui::field::NumField::new(&mut s.columns).range(2..=300));
     });
     row(ui, &tr("docker.picture_mosaic_rows"), |ui| {
         let mut r = rows;
-        ui.add_enabled(false, egui::DragValue::new(&mut r));
+        ui.add_enabled(false, crate::ui::field::NumField::new(&mut r));
     });
     row(ui, &tr("docker.picture_mosaic_blending"), |ui| {
         ui.add(crate::ui::Rail(
@@ -141,7 +143,7 @@ pub fn picture_mosaic(app: &mut App, ui: &mut Ui) {
         ui.checkbox(&mut s.duplicates, tr("docker.picture_mosaic_duplicates"));
         ui.add_enabled(
             s.duplicates,
-            egui::DragValue::new(&mut s.spacing).range(0..=20),
+            crate::ui::field::NumField::new(&mut s.spacing).range(0..=20),
         )
         .on_hover_text(tr("docker.picture_mosaic_spacing_tip"));
     });
@@ -189,7 +191,7 @@ pub fn picture_mosaic(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 custom,
-                egui::DragValue::new(&mut shown).range(10.0..=2400.0),
+                crate::ui::field::NumField::new(&mut shown).range(10.0..=2400.0),
             )
             .changed()
         {

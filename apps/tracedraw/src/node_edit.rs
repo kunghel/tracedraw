@@ -147,6 +147,8 @@ impl App {
         let s = self.doc().find_shape(id)?;
         let parent = self.doc().parent_transform(id)?;
         match &s.kind {
+            // A B-spline's control points are edited, not its nodes.
+            ShapeKind::Path { .. } if s.spline.is_some() => None,
             ShapeKind::Path { path, closed } => Some((path.clone(), *closed, parent * s.transform)),
             _ => None,
         }
@@ -494,6 +496,7 @@ impl App {
                 }
             }
         }
+        sel.extend(self.spline_points_where(|q| in_polygon(poly, q)));
         self.node_selection = sel;
         self.choose_chars_in(|q| in_polygon(poly, q));
     }

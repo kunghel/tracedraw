@@ -17,17 +17,22 @@ cópia apareça ao lado dele, e o TraceDraw entra direto na edição da simetria
 ## Editar uma simetria {#edit}
 
 [[menu.object.symmetry_edit]] (<kbd>Alt+E</kbd>) edita a simetria do objeto
-selecionado. O original ganha um contorno vermelho, e uma barra no canto
-superior esquerdo da janela de desenho define:
+selecionado. Uma barra no canto superior esquerdo da janela de desenho define:
 
 - o número de linhas de espelho, de 1 a 12, distribuídas por igual em volta do
   centro. Com mais linhas você obtém um caleidoscópio: com *n* linhas há
   2*n* - 1 cópias;
 - o centro (X e Y);
-- o ângulo da primeira linha (0 a 360 graus).
+- o ângulo da primeira linha (0 a 360 graus);
+- Mostrar visualização completa (cópias desenhadas por inteiro, ou como
+  contornos vermelhos quando desligado) e Mostrar linhas de simetria.
 
-Edite o original normalmente, com qualquer ferramenta; as cópias acompanham.
-Enquanto um objeto com simetria está selecionado, as linhas de espelho
+Edite os originais normalmente, com qualquer ferramenta; as cópias acompanham.
+Um clique ou um marquee seleciona um dos originais dentro da simetria, e os
+objetos que você desenha, cola ou duplica entram nela. Arraste uma linha de
+espelho com a ferramenta Seleção para mover as linhas; clique em uma linha para
+mostrar alças redondas nas pontas e arraste uma para girar as linhas. Enquanto
+um objeto com simetria está selecionado ou em edição, as linhas de espelho
 aparecem tracejadas.
 
 Clique em Concluir na barra, ou escolha [[menu.object.symmetry_finish]]

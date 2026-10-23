@@ -189,6 +189,13 @@ pub enum Command {
         shape: ShapeId,
         name: Option<String>,
     },
+    /// A B-spline's control points (local space; two at least): the
+    /// curve's outline becomes their spline, open or closed as the curve
+    /// is, and the Shape tool edits them (see [`Shape::spline`]).
+    SetSpline {
+        shape: ShapeId,
+        points: Vec<crate::geometry::Point>,
+    },
     /// A QR code object's settings (its children are set with
     /// [`Command::SetShapeKind`] in the same step).
     SetQrCode {
@@ -412,6 +419,7 @@ impl Command {
             Command::PatchFill { .. } => "Fill",
             Command::SetShapeKind { .. } => "Edit Object",
             Command::SetShapeName { .. } => "Rename Object",
+            Command::SetSpline { .. } => "Edit B-Spline",
             Command::SetQrCode { .. } => "QR Code",
             Command::Reorder { .. } => "Order",
             Command::Group { .. } => "Group",
@@ -734,7 +742,22 @@ impl Command {
                 if !s.node_types.is_empty() && node_count(&s.kind) != node_count(kind) {
                     s.node_types.clear();
                 }
+                // A B-spline given any other outline is an ordinary curve.
+                s.spline = None;
                 s.kind = kind.clone();
+            }
+            Command::SetSpline { shape, points } => {
+                if points.len() < 2 || points.iter().any(|p| !p.is_finite()) {
+                    return Err(Error::BadSpline);
+                }
+                let s = any_mut(doc, *shape)?;
+                let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
+                s.kind = ShapeKind::Path {
+                    path: crate::geometry::bspline_path(points, closed),
+                    closed,
+                };
+                s.node_types.clear();
+                s.spline = Some(points.clone());
             }
             Command::SetNodeTypes { shape, types } => {
                 any_mut(doc, *shape)?.node_types = types.clone()
@@ -1031,6 +1054,14 @@ impl Command {
                 }
                 let (flid, fi) = doc.locate(*frame)?;
                 let mut frame_shape = doc.layer_mut(flid)?.shapes.remove(fi);
+                // A clip frame already: the objects join its contents,
+                // over the ones it holds.
+                if let ShapeKind::ClipFrame { contents, .. } = &mut frame_shape.kind {
+                    contents.extend(inner);
+                    let target = &mut doc.layer_mut(flid)?.shapes;
+                    target.insert(fi.min(target.len()), frame_shape);
+                    return Ok(());
+                }
                 // The clip frame keeps the object's id; the frame inside
                 // it gets one of its own, so it can be found, painted and
                 // reshaped (Extract Contents gives it the id back).
@@ -1201,12 +1232,24 @@ fn remove_shapes(shapes: &mut Vec<Shape>, ids: &[ShapeId]) {
     });
 }
 
+/// A copy of `s` with new ids all through it: in groups, and in clip
+/// frames' frames and contents (a page copy whose clip frames kept their
+/// ids had two objects of one id, and a change to the copy went to the
+/// original, #377).
 fn reid_shape(s: &Shape, doc: &mut Document) -> Shape {
     let mut c = s.clone();
     c.id = doc.ids_mut().shape();
-    if let ShapeKind::Group { children } = &mut c.kind {
-        let copies: Vec<Shape> = children.iter().map(|ch| reid_shape(ch, doc)).collect();
-        *children = copies;
+    match &mut c.kind {
+        ShapeKind::Group { children } => {
+            let copies: Vec<Shape> = children.iter().map(|ch| reid_shape(ch, doc)).collect();
+            *children = copies;
+        }
+        ShapeKind::ClipFrame { frame, contents } => {
+            **frame = reid_shape(frame, doc);
+            let copies: Vec<Shape> = contents.iter().map(|ch| reid_shape(ch, doc)).collect();
+            *contents = copies;
+        }
+        _ => {}
     }
     c
 }
@@ -1308,6 +1351,86 @@ mod tests {
             })
             .unwrap();
         assert!(engine.document().comments.is_empty());
+    }
+
+    #[test]
+    fn a_spline_follows_its_control_points_until_the_outline_is_changed_otherwise() {
+        use crate::geometry::Point;
+        let mut doc = Document::default();
+        let page = doc.pages[0].id;
+        let layer = doc.page(page).expect("page").layers[0].id;
+        let id = doc.ids_mut().shape();
+        let shape = Shape::new(
+            id,
+            ShapeKind::Path {
+                path: BezPath::new(),
+                closed: false,
+            },
+        );
+        let mut eng = crate::Engine::new(doc);
+        eng.run(&Command::AddShape { layer, shape }).expect("added");
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 20.0),
+            Point::new(30.0, 20.0),
+            Point::new(40.0, 0.0),
+        ];
+        eng.run(&Command::SetSpline {
+            shape: id,
+            points: pts.clone(),
+        })
+        .expect("spline");
+        let s = eng.document().find_shape(id).expect("shape");
+        assert_eq!(s.spline.as_deref(), Some(pts.as_slice()));
+        assert_eq!(
+            s.kind,
+            ShapeKind::Path {
+                path: crate::geometry::bspline_path(&pts, false),
+                closed: false,
+            }
+        );
+        // The native format keeps the control points.
+        let json = serde_json::to_string(eng.document()).expect("json");
+        let back: Document = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(back.find_shape(id).expect("shape").spline, s.spline);
+        // Fewer than two points, or a point that is not finite: refused.
+        assert!(eng
+            .run(&Command::SetSpline {
+                shape: id,
+                points: vec![Point::new(0.0, 0.0)],
+            })
+            .is_err());
+        assert!(eng
+            .run(&Command::SetSpline {
+                shape: id,
+                points: vec![Point::new(0.0, 0.0), Point::new(f64::NAN, 0.0)],
+            })
+            .is_err());
+        // Any other outline makes it an ordinary curve.
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((40.0, 0.0));
+        eng.run(&Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Path {
+                path: line,
+                closed: false,
+            },
+        })
+        .expect("kind");
+        assert_eq!(eng.document().find_shape(id).expect("shape").spline, None);
+        eng.undo().expect("undo");
+        assert!(eng
+            .document()
+            .find_shape(id)
+            .expect("shape")
+            .spline
+            .is_some());
+        // So does Convert To Curves, keeping the outline.
+        let s = eng.document().find_shape(id).expect("shape").clone();
+        assert!(s.converts_to_curves());
+        let mut next = || ShapeId(0);
+        assert_eq!(s.curves_kind(&[], &mut next), Some(s.kind.clone()));
     }
 
     #[test]
@@ -1755,6 +1878,34 @@ mod tests {
         assert_eq!(copy.layers[0].shapes.len(), 1);
         assert_ne!(copy.layers[0].shapes[0].id, ia);
         assert_ne!(copy.layers[0].id, layer);
+        // A clip frame's frame and contents get new ids too (#377).
+        let f = rect(&mut doc, 10.0);
+        let c = rect(&mut doc, 12.0);
+        let (fid, cid) = (f.id, c.id);
+        let clip_id = doc.ids_mut().shape();
+        let clip = Shape::new(
+            clip_id,
+            ShapeKind::ClipFrame {
+                frame: Box::new(f),
+                contents: vec![c],
+            },
+        );
+        Command::AddShape { layer, shape: clip }
+            .apply(&mut doc)
+            .unwrap();
+        Command::duplicate_page(page).apply(&mut doc).unwrap();
+        let copy = &doc.pages[1];
+        let copied = copy.layers[0]
+            .shapes
+            .iter()
+            .find(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }))
+            .expect("the clip frame copied");
+        let ShapeKind::ClipFrame { frame, contents } = &copied.kind else {
+            unreachable!()
+        };
+        assert_ne!(copied.id, clip_id);
+        assert_ne!(frame.id, fid);
+        assert_ne!(contents[0].id, cid);
     }
 
     #[test]

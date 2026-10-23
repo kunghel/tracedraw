@@ -8,6 +8,10 @@ Werkzeug zu Anwenden; klicken Sie auf die Schaltfläche Auswählen, um erneut
 eine Probe zu nehmen. <kbd>Esc</kbd> verwirft die Probe und kehrt zum Werkzeug
 [[tool.pick]] zurück.
 
+Der Zeiger ist eine Pipette, während das Werkzeug eine Probe nimmt, und ein
+Farbeimer, während es anwendet. Bilder geben ihre Farbe auch in einer Gruppe
+oder einem Rahmen.
+
 ## Farbpipette {#color-eyedropper}
 
 1. Wählen Sie das Werkzeug [[tool.color_eyedropper]].

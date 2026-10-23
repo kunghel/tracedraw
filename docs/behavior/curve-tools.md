@@ -44,15 +44,26 @@ meets the start) `Path` objects with the toolbox defaults.
   the last press that changed it (a node placed, a handle pulled, a
   click on a node), one at a time until the curve is gone, and then the
   document's own history; Ctrl+Shift+Z puts the steps back one by one.
-  The finished curve is one step of the document's history
-  (`pick_drag_tests::ctrl_z_takes_back_pen_nodes_one_by_one`).
+  A finished curve of its own keeps those steps in the document's
+  history, closed or not, selected or not (#360): Ctrl+Z opens a closed
+  curve first, then takes the anchors back one at a time until the
+  curve is gone; redo builds it again the same way (each step "Curve
+  Node"; the first one creates the curve with the fill and outline the
+  finished curve takes). A curve that continues a selected curve, a
+  B-spline and a curve drawn while a symmetry is edited stay one step
+  (`pick_drag_tests::ctrl_z_takes_back_pen_nodes_one_by_one`,
+  `pick_drag_tests::a_finished_pen_curve_undoes_anchor_by_anchor`).
   A press on the first node (within the join distance, 5 screen pixels
-  by default, once the curve has three nodes; with the Pen and Auto
-  add/delete on, within the larger of the join and pick distances, so
-  the first node is never deleted instead) closes the curve: a click
-  closes it with a straight segment from the last node; a drag from the
-  first node pulls the closing segment's handle at the first node (the
-  mirror of the pointer, as a pulled handle), and the first node's own
+  by default, once the curve has two nodes with the Bezier and Pen
+  tools, three with the others: two curved nodes close into a leaf or a
+  lens, #356; with the Pen and Auto add/delete on, within the larger of
+  the join and pick distances, so the first node is never deleted
+  instead) closes the curve (`CurveInProgress::closes_at_first`): a
+  click closes it with the segment the preview showed, leaving the last
+  node along its handle (straight when it has none) and arriving at the
+  first node with no handle (#359); a drag from the first node pulls the
+  closing segment's handle at the first node, which follows the pointer
+  (drag left, the handle lies left, #358), and the first node's own
   outgoing handle stays as it was, with or without C held.
 - With no curve being drawn and one curve selected, the Pen and Bezier
   tools edit it: a click on a segment (within the pick distance) adds a
@@ -75,7 +86,10 @@ meets the start) `Path` objects with the toolbox defaults.
   plus over a segment where a click adds a node; a minus over a node a
   click deletes (Pen, Auto add/delete); a hollow node over a node of the
   selected curve otherwise, or over the last node of the curve being
-  drawn (edit the node, or make it a cusp).
+  drawn (edit the node, or make it a cusp). The Pen tool shows a pen
+  nib instead of the cross hair (#362): black on a white halo, leaning
+  up and to the right, with a dot at its tip; the tip is the hot spot,
+  where the node goes. The same signs show below the nib.
 - While drawing (code: `pen_look.rs`), the segments placed so far are a
   hairline in the colour of the outline new objects get (black without
   one), as the curve will look; nodes placed before are small hollow
@@ -115,9 +129,15 @@ meets the start) `Path` objects with the toolbox defaults.
 - Double-click, Enter or Esc finishes (Esc with one point drops it);
   clicking the first point (once there are three) closes it into the periodic spline,
   smooth all round. The result is a curve object (its nodes are the
-  Bezier segments, one a knot span); the control points are not kept.
-- Checked by `geometry::tests::bsplines_start_and_end_on_their_ends_and_stay_inside`
-  and `pick_drag_tests::bspline_clicks_place_control_points_of_a_smooth_curve`.
+  Bezier segments, one a knot span) that keeps its control points
+  (`Shape::spline`): the Shape tool shows and moves them, with the
+  dashed control polygon, instead of the nodes (see
+  [shape-tool.md](shape-tool.md), "B-splines"). A B-spline that goes on
+  from the end node of the selected curve joins that curve and keeps no
+  control points.
+- Checked by `geometry::tests::bsplines_start_and_end_on_their_ends_and_stay_inside`,
+  `pick_drag_tests::bspline_clicks_place_control_points_of_a_smooth_curve`
+  and `pick_drag_tests::a_bspline_keeps_its_control_points_for_the_shape_tool`.
 
 ## Polyline and 2-point line
 
@@ -162,6 +182,10 @@ finish a curve.
 - Drag the chord, then click the point the curve passes through; the
   curve is the quadratic through the three points (the click at t = 0.5),
   written as a cubic.
+- A chord starting on an end node of the selected open curve (within
+  the join distance) continues it, and the curve ending on its other
+  end node closes it, as the other curve tools do (`curve_join.rs`;
+  `pick_drag_tests::a_three_point_curve_continues_and_closes_the_selected_curve`).
 
 ## Shape recognition (Shift+S)
 

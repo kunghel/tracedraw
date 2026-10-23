@@ -8,6 +8,10 @@ naar toepassen; klik op de selectieknop om opnieuw een monster te nemen.
 <kbd>Esc</kbd> laat het monster los en gaat terug naar het gereedschap
 [[tool.pick]].
 
+De aanwijzer is een pipet terwijl het gereedschap een monster neemt en een
+verfemmer terwijl het toepast. Afbeeldingen geven hun kleur ook in een groep of
+een kader.
+
 ## Kleurenpipet {#color-eyedropper}
 
 1. Kies het gereedschap [[tool.color_eyedropper]].

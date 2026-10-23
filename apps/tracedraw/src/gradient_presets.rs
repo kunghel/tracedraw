@@ -202,10 +202,7 @@ pub fn stops(i: usize) -> Option<Vec<Stop>> {
     let (_, list) = PRESETS.get(i)?;
     Some(
         list.iter()
-            .map(|(pos, c)| Stop {
-                pos: *pos,
-                color: Color::rgb8((c >> 16) as u8, (c >> 8) as u8, *c as u8),
-            })
+            .map(|(pos, c)| Stop::new(*pos, Color::rgb8((c >> 16) as u8, (c >> 8) as u8, *c as u8)))
             .collect(),
     )
 }

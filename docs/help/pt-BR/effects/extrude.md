@@ -43,3 +43,5 @@ propriedades tem as configurações principais e um menu 3D com o resto.
 
 **Limpar extrusão** remove a extrusão; **Separar** transforma as faces em
 objetos.
+Os passos saem agrupados ao lado do objeto. [[menu.object > menu.object.break_extrude_apart]] (<kbd>Ctrl+K</kbd>, também no
+menu do botão direito) faz o mesmo.

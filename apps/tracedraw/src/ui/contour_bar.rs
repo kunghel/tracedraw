@@ -163,7 +163,7 @@ pub fn contour_actions(app: &mut App, ui: &mut Ui) {
             .add_enabled(has, egui::Button::new(tr("docker.break_apart")))
             .clicked()
         {
-            app.flatten_effects();
+            app.break_effect_groups();
         }
     });
 }

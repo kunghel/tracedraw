@@ -7,8 +7,15 @@ section of the [[docker.properties]] panel.
 ## Opening the outline settings {#open}
 
 - The [[tool.outline_pen]] tool (<kbd>F12</kbd>) opens the
-  [[docker.properties]] panel at the [[docker.outline]] section, then goes back
-  to the [[tool.pick]] tool.
+  [[outline_pen.title]] dialog box with every outline setting: color, width
+  and its unit, style, miter limit, dashes, corners, line caps, position,
+  arrowheads, calligraphy, [[docker.behind_fill]], [[docker.scale_with_object]],
+  the variable outline's width nodes and [[outline_pen.overprint]]. **OK**
+  changes only what you changed, on every selected object; with nothing
+  selected it sets the outline of new objects.
+
+![The Outline Pen dialog box](../../img/lines-shapes-outlines-outline-pen.png)
+
 - Double-click the outline part of the status bar.
 - Right-click a color of the palette to color the outline of the selection.
 
@@ -57,8 +64,10 @@ thicker or thinner along its length with width nodes.
    ellipse. An object with no outline gets a thin one.
 2. Choose the [[tool.variable_outline]] tool.
 3. Drag across the outline: a width node is added where you start, and the
-   outline reaches to the pointer on both sides. Hold <kbd>Alt</kbd> as you
-   start dragging to change only the side the pointer is on.
+   outline reaches to the pointer on both sides. Hold <kbd>Shift</kbd> (or
+   <kbd>Alt</kbd>) as you start dragging to change only the side the pointer
+   is on. <kbd>Shift</kbd>+click picks a run of nodes and
+   <kbd>Ctrl</kbd>+click adds one; a drag then changes all the picked nodes.
 4. Add more nodes the same way. Between nodes the width changes smoothly.
 
 To change a node, click it and type the **Left width** and **Right width** on

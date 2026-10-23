@@ -24,6 +24,10 @@ pub struct TextEdit {
     pub anchor: usize,
     /// Horizontal position remembered across Up/Down moves (layout space).
     pub goal_x: Option<f64>,
+    /// How deep the undo list was right after this editing session's own
+    /// step: typing on folds into that step only while it is still the
+    /// last one (never into a step of another text, #373).
+    pub step: Option<usize>,
 }
 
 impl TextEdit {
@@ -33,6 +37,7 @@ impl TextEdit {
             caret: len,
             anchor: len,
             goal_x: None,
+            step: None,
         }
     }
 
@@ -200,16 +205,24 @@ impl App {
             para,
             on_path,
         };
-        if merge && self.engine.undo_label() == Some(label) {
-            let _ = self.engine.undo();
+        let cmd = Command::SetShapeKind {
+            shape: te.shape,
+            kind,
+        };
+        // Typing goes on in the step this session made, while that step
+        // is still the last one; otherwise (the first keystroke, another
+        // text edited since, any other change) it is a step of its own.
+        let depth = self.engine.history_labels().0.len();
+        let own_step = te.step == Some(depth) && self.engine.undo_label() == Some(label);
+        let _ = if merge && own_step {
+            self.engine.amend(&cmd)
+        } else {
+            self.engine.run_with_label(&cmd, label)
+        };
+        let depth = self.engine.history_labels().0.len();
+        if let Some(t) = self.text_edit.as_mut() {
+            t.step = Some(depth);
         }
-        let _ = self.engine.run_with_label(
-            &Command::SetShapeKind {
-                shape: te.shape,
-                kind,
-            },
-            label,
-        );
         if self.is_linked_frame(te.shape) {
             self.reflow_chain(te.shape);
         }
@@ -366,9 +379,13 @@ impl App {
         spans_delete(&mut spans, a, b);
         spans_insert(&mut spans, a, s);
         let mut caret = a + s.chars().count();
+        let mut web_link = None;
         if self.settings.autocorrect.enabled {
             let typed: String = spans_text(&spans).chars().take(caret).collect();
-            let style = crate::autocorrect::QuoteStyle::for_language(&crate::i18n::language());
+            if self.settings.autocorrect.auto_hyperlinks {
+                web_link = crate::autocorrect::typed_web_address(&typed);
+            }
+            let style = self.settings.autocorrect.style();
             if let Some(fixed) =
                 crate::autocorrect::on_typed(&typed, &self.settings.autocorrect, style)
             {
@@ -388,6 +405,19 @@ impl App {
         self.set_caret(caret, false);
         if let Some(te) = self.text_edit.as_mut() {
             te.goal_x = None;
+        }
+        // A web address just typed links the text, unless it has a link.
+        if let Some(link) = web_link {
+            let unlinked = self
+                .doc()
+                .find_shape(te.shape)
+                .is_some_and(|s| s.link.is_none());
+            if unlinked {
+                self.run(Command::SetLink {
+                    shapes: vec![te.shape],
+                    link: Some(link),
+                });
+            }
         }
     }
 
@@ -906,6 +936,43 @@ mod tests {
         assert!((app.text_size_pt - 36.0).abs() < 1e-9);
     }
 
+    /// Options > Text > Autocorrect > Automatically create hyperlinks: a
+    /// web address typed and finished with a space links the text,
+    /// keeping a link it already has; off, nothing is linked.
+    #[test]
+    fn a_typed_web_address_links_the_text() {
+        let mut app = App::headless();
+        app.start_text(Point::new(10.0, 10.0), None);
+        for c in "see www.tracedraw.org ".chars() {
+            app.text_insert(&c.to_string());
+        }
+        let id = app.text_edit.as_ref().map(|t| t.shape).expect("editing");
+        assert_eq!(app.doc().find_shape(id).and_then(|s| s.link.clone()), None);
+        app.settings.autocorrect.auto_hyperlinks = true;
+        for c in "or www.tracedraw.org ".chars() {
+            app.text_insert(&c.to_string());
+        }
+        assert_eq!(
+            app.doc()
+                .find_shape(id)
+                .and_then(|s| s.link.clone())
+                .as_deref(),
+            Some("http://www.tracedraw.org")
+        );
+        assert!(app.edit_text().ends_with("www.tracedraw.org "));
+        for c in "https://example.com ".chars() {
+            app.text_insert(&c.to_string());
+        }
+        assert_eq!(
+            app.doc()
+                .find_shape(id)
+                .and_then(|s| s.link.clone())
+                .as_deref(),
+            Some("http://www.tracedraw.org"),
+            "a link the text has stays"
+        );
+    }
+
     #[test]
     fn typing_moves_the_caret_and_edits_at_it() {
         let mut app = App::headless();
@@ -940,6 +1007,52 @@ mod tests {
         // One undo step undoes the whole typing session.
         app.finish_text();
         assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+    }
+
+    /// Editing a second text keeps the edit of the first: each text's
+    /// typing is a step of its own (#373).
+    #[test]
+    fn editing_a_second_text_keeps_the_edit_of_the_first() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(Point::new(10.0, 10.0), None);
+        app.text_insert("First");
+        let first = app.text_edit.as_ref().map(|t| t.shape).expect("first");
+        app.finish_text();
+        app.start_text(Point::new(10.0, 60.0), None);
+        app.text_insert("Second");
+        let second = app.text_edit.as_ref().map(|t| t.shape).expect("second");
+        app.finish_text();
+        let text_of = |app: &App, id| match app.doc().find_shape(id).map(|s| s.kind.clone()) {
+            Some(ShapeKind::Text { spans, .. }) => spans_text(&spans),
+            other => panic!("{other:?}"),
+        };
+        // Edit the first, finish, then edit the second.
+        app.begin_text_edit(first);
+        app.text_insert(" edited");
+        app.text_insert("!");
+        app.finish_text();
+        assert_eq!(text_of(&app, first), "First edited!");
+        app.begin_text_edit(second);
+        app.text_insert(" edited");
+        assert_eq!(text_of(&app, first), "First edited!");
+        assert_eq!(text_of(&app, second), "Second edited");
+        // Straight from one text to the other, without finishing first.
+        app.text_insert("?");
+        app.begin_text_edit(first);
+        app.text_insert("#");
+        assert_eq!(text_of(&app, second), "Second edited?");
+        assert_eq!(text_of(&app, first), "First edited!#");
+        app.finish_text();
+        // Undo takes back one text's typing at a time.
+        app.undo();
+        assert_eq!(text_of(&app, first), "First edited!");
+        assert_eq!(text_of(&app, second), "Second edited?");
+        app.undo();
+        assert_eq!(text_of(&app, second), "Second");
+        assert_eq!(text_of(&app, first), "First edited!");
+        app.undo();
+        assert_eq!(text_of(&app, first), "First");
     }
 
     #[test]

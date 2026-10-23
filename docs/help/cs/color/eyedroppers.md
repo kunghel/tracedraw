@@ -7,6 +7,9 @@ vzorku se nástroj přepne na použití; dalším vzorkem začnete kliknutím na
 tlačítko výběru. <kbd>Esc</kbd> vzorek zahodí a vrátí se k nástroji
 [[tool.pick]].
 
+Ukazatel je kapátko, když nástroj odebírá vzorek, a kbelík s barvou, když ho
+používá. Obrázky dávají svou barvu i ve skupině nebo v rámečku.
+
 ## Kapátko barev {#color-eyedropper}
 
 1. Zvolte nástroj [[tool.color_eyedropper]].

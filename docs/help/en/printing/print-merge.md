@@ -10,7 +10,11 @@ your data becomes a copy of the page, filled in.
    in a text object, such as `<Name>`.
 2. Choose [[menu.file > menu.file.print_merge > menu.file.print_merge_create]].
 3. Add the data:
-   - **Import file** reads a CSV file whose first line names the fields;
+   - **Import file** reads a CSV file or an Excel workbook (`.xlsx`, its
+     first sheet) whose first line names the fields. Fields named like a
+     photo or a picture, or whose cells are picture files, start as
+     pictures, fields named QR as QR codes; the types show at once to be
+     changed;
    - or **Add column** to add fields by hand, then add records with **+**.
 4. Click **Finish**.
 
@@ -25,7 +29,12 @@ filled in. The copies are named after the page and the record number.
 - **Number**: a counter you do not type: a start, a step and a number of digits
   (start 7, step 3, digits 3 gives 007, 010, 013).
 - **Picture**: the cell holds the path of a picture. A text holding only
-  `<Field>` becomes the picture, as large as fits its box.
+  `<Field>` becomes the picture, as large as fits its box. Put that text
+  inside a frame with [[menu.object.clip_frame_place_inside]] (a photo frame) and the
+  picture fills the frame, cut by it. A rectangle, ellipse or curve named
+  `<Field>` (in the Objects panel) takes the picture inside it the same way.
+
+Fields work in groups and frames too, so a card can be grouped.
 - **QR code**: a text holding only `<Field>` becomes a QR code of the cell's
   text.
 

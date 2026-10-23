@@ -34,7 +34,11 @@ printer and print. In the browser version, the PDF is downloaded.
 - **Bleed limit**: how far beyond the page objects print (4 mm at first).
 - The imposition: several pages on one sheet, or a booklet, whose pages are
   paired for folding, with the sheet size and the gap between pages. A sketch
-  shows the result.
+  shows the result. For the back of double-sided cards, tick **Back side**:
+  the pages run right to left on the sheet, so each one prints behind its
+  front, and the text is not mirrored. **Keep page size** stops the pages
+  from shrinking on a fixed sheet to make room for the marks. In Print
+  Preview, drag on the sheet to move the page information.
 
 ## Prepress {#prepress}
 

@@ -13,7 +13,15 @@ the current one) and the navigation (first, previous, next, last, Go to
 Record); Save Data Source, Finish and Cancel.
 
 - Import File reads a CSV whose first line names the fields (comma or
-  semicolon, whichever the first line has more of). Save Data Source
+  semicolon, whichever the first line has more of), or an Excel workbook
+  (`.xlsx`): its first sheet, shared, inline and formula strings, numbers
+  as plain text (whole numbers without a decimal point), TRUE and FALSE,
+  empty rows and trailing empty cells left out (`tracedraw_io::xlsx`,
+  #377). The field types are guessed: a name holding photo, picture,
+  image, foto, imagem, img or logo, or cells that all name picture files,
+  gives Picture; a name holding QR gives QR code; the rest Text. Configure
+  Columns opens after an import to check them
+  (`field_types_are_guessed_from_the_data`). Save Data Source
   writes the records back as CSV, counters written out.
 - Add Column asks for a name and a type and adds the field to every
   record (and a first record when there is none).
@@ -35,6 +43,14 @@ Record); Save Data Source, Finish and Cancel.
     code of the cell's text, square, as large as the box allows.
   An empty cell, or a picture that does not load, removes the field's
   object from that record's page.
+- Fields are found in groups and in clip frames too. A picture
+  placeholder inside a clip frame becomes the picture covering the
+  frame's box (as small as covers it, centred, cut by the frame); a
+  rectangle, ellipse or curve named `<Field>` of a picture field (on the
+  page, not in a group) takes the picture inside it, covering it, as a
+  clip frame (#378, `fields_in_groups_and_frames_are_filled`). The page
+  copies get new ids all through, clip frames included, so filling a
+  copy never changes the template.
 - The placeholder buttons insert `<Field>` into the text being edited.
 
 ## Merge

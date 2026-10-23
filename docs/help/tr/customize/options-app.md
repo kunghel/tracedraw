@@ -94,9 +94,21 @@ Bkz. [Yakalama](../pages-layout/snapping.md).
 
 ![TraceDraw seçeneklerinin Metin sayfası](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: <kbd>Ctrl+8</kbd> ve
-  <kbd>Ctrl+2</kbd> tuşlarının seçili metni ne kadar büyütüp küçülttüğü (1
-  punto).
-- Yeni metnin [[options.default_font]] ve [[options.default_size]] değeri.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] ve
-  [[menu.text.show_text_frames]].
+Sayfada beş sekme vardır.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (<kbd>Ctrl+8</kbd>
+  ve <kbd>Ctrl+2</kbd> seçili metni ne kadar büyütüp küçültür, 1 punto), yeni
+  metnin [[options.default_font]] ve [[options.default_size]] değerleri ve
+  [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] ve [[options.hyphenation_patterns]]
+  (yerleşik ya da dilinize ait bir heceleme sözlüğü).
+- [[docker.fonts]]: yazı tipi listelerinin başında
+  [[options.show_recent_fonts]], [[options.recent_font_count]] (5, en çok 20)
+  ve [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  ve [[options.add_to_autocorrect]]; yazım denetiminde düzelttiğiniz bir sözcük
+  bir dahaki sefere yazarken düzeltilir; ve kullandığı
+  [[options.dictionaries]], bkz. [Sözlükler](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: yazarken neyin düzeltildiği; bkz.
+  [Otomatik Düzelt](../text/writing-tools.md#autocorrect).

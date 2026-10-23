@@ -76,6 +76,15 @@ impl From<String> for ImportError {
 }
 
 /// Parse a PDF (or an AI file with embedded PDF) into pages of shapes.
+/// How a PDF is read in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ImportOptions {
+    /// Text drawn as curves from the fonts the file embeds, so it looks as
+    /// it does in the file (text whose font is not embedded stays text,
+    /// for the caller to turn into curves with the fonts it has, #386).
+    pub text_as_curves: bool,
+}
+
 pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<ImportedPdf, String> {
     parse_with_password(bytes, ids, "").map_err(|e| e.to_string())
 }
@@ -85,6 +94,16 @@ pub fn parse_with_password(
     bytes: &[u8],
     ids: &mut IdSource,
     password: &str,
+) -> Result<ImportedPdf, ImportError> {
+    parse_with_options(bytes, ids, password, ImportOptions::default())
+}
+
+/// [`parse_with_password`] with the import options.
+pub fn parse_with_options(
+    bytes: &[u8],
+    ids: &mut IdSource,
+    password: &str,
+    options: ImportOptions,
 ) -> Result<ImportedPdf, ImportError> {
     let start = pdf_start(bytes).ok_or_else(|| "not a PDF file".to_string())?;
     let doc = load(&bytes[start..], password)?;
@@ -111,6 +130,7 @@ pub fn parse_with_password(
             shapes: Vec::new(),
             fonts: HashMap::new(),
             ops: 0,
+            curves: options.text_as_curves,
         };
         let page = imp.import_page(*page_id, index);
         out.warnings.extend(imp.warnings);
@@ -430,6 +450,9 @@ struct FontInfo {
     widths: HashMap<u32, f64>,
     default_width: f64,
     type3_matrix: Option<Affine>,
+    /// The embedded font program's outlines, read when text is imported
+    /// as curves.
+    glyphs: Option<crate::pdf_glyphs::GlyphSource>,
 }
 
 impl FontInfo {
@@ -486,6 +509,8 @@ struct Importer<'a> {
     shapes: Vec<Shape>,
     fonts: HashMap<(u32, u16), std::rc::Rc<FontInfo>>,
     ops: usize,
+    /// Text as curves from the embedded fonts.
+    curves: bool,
 }
 
 /// A run of text being assembled while inside BT ... ET.
@@ -1793,7 +1818,7 @@ impl<'a> Importer<'a> {
                 .first()
                 .map(|s| s.color)
                 .unwrap_or(Color::Gray { v: 0.5 });
-            vec![Stop { pos: 0.0, color: c }, Stop { pos: 1.0, color: c }]
+            vec![Stop::new(0.0, c), Stop::new(1.0, c)]
         };
         let coords = self
             .get(sh, b"Coords")
@@ -1837,7 +1862,7 @@ impl<'a> Importer<'a> {
                     .map(|p| self.eval_function(p, t, 0).first().copied().unwrap_or(0.0))
                     .collect();
                 if let Some(c) = color_from_components(&comps, cs) {
-                    stops.push(Stop { pos: t, color: c });
+                    stops.push(Stop::new(t, c));
                 }
             }
             return dedup_stops(stops);
@@ -1864,7 +1889,7 @@ impl<'a> Importer<'a> {
                     color_from_components(&c0, cs),
                     color_from_components(&c1, cs),
                 ) {
-                    return vec![Stop { pos: 0.0, color: a }, Stop { pos: 1.0, color: b }];
+                    return vec![Stop::new(0.0, a), Stop::new(1.0, b)];
                 }
             }
         }
@@ -1901,10 +1926,7 @@ impl<'a> Importer<'a> {
                     let comps = self.eval_function(f, t, 1);
                     if let Some(c) = color_from_components(&comps, cs) {
                         let pos = ((lo + (hi - lo) * t) - d0) / span;
-                        stops.push(Stop {
-                            pos: pos.clamp(0.0, 1.0),
-                            color: c,
-                        });
+                        stops.push(Stop::new(pos.clamp(0.0, 1.0), c));
                     }
                 }
             }
@@ -1916,7 +1938,7 @@ impl<'a> Importer<'a> {
             let t = i as f64 / 8.0;
             let comps = self.eval_function(&obj, t, 0);
             if let Some(c) = color_from_components(&comps, cs) {
-                stops.push(Stop { pos: t, color: c });
+                stops.push(Stop::new(t, c));
             }
         }
         dedup_stops(stops)
@@ -2206,6 +2228,11 @@ impl<'a> Importer<'a> {
                 default_width *= s;
             }
         }
+        let glyphs = if self.curves && type3_matrix.is_none() {
+            self.glyph_source(&desc_font, descriptor.as_ref(), two_byte, one_byte)
+        } else {
+            None
+        };
         FontInfo {
             family,
             bold,
@@ -2216,7 +2243,52 @@ impl<'a> Importer<'a> {
             widths,
             default_width,
             type3_matrix,
+            glyphs,
         }
+    }
+
+    /// The outlines of the font program `descriptor` embeds, with the
+    /// descendant font's `CIDToGIDMap` for a two-byte font.
+    fn glyph_source(
+        &self,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        two_byte: bool,
+        encoding: Option<[Option<char>; 256]>,
+    ) -> Option<crate::pdf_glyphs::GlyphSource> {
+        let desc = descriptor?;
+        let stream_bytes = |o: &Object| match o {
+            Object::Stream(s) => s.decompressed_content().ok().or(Some(s.content.clone())),
+            _ => None,
+        };
+        let (data, cff) = if let Some(d) = self.get(desc, b"FontFile2").and_then(stream_bytes) {
+            (d, false)
+        } else if let Some(Object::Stream(s)) = self.get(desc, b"FontFile3") {
+            let sub = s
+                .dict
+                .get(b"Subtype")
+                .ok()
+                .and_then(|o| o.as_name().ok())
+                .unwrap_or(b"")
+                .to_vec();
+            let d = s.decompressed_content().ok().or(Some(s.content.clone()))?;
+            (d, sub != b"OpenType")
+        } else {
+            return None;
+        };
+        let cid_to_gid = if two_byte {
+            match self.get(desc_font, b"CIDToGIDMap") {
+                Some(o @ Object::Stream(_)) => stream_bytes(o).map(|b| {
+                    b.chunks_exact(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect::<Vec<u16>>()
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        crate::pdf_glyphs::GlyphSource::new(data, cff, two_byte, cid_to_gid, encoding)
     }
 
     fn simple_encoding(
@@ -2287,6 +2359,44 @@ impl<'a> Importer<'a> {
         }
         let items = font.decode(bytes);
         let invisible = gs.render_mode == 3 || gs.render_mode == 7;
+        // Text as curves: each glyph's outline from the embedded font, in
+        // place, as one filled object per string.
+        if let Some(glyphs) = font.glyphs.as_ref().filter(|_| self.curves) {
+            if let Some(r) = run.take() {
+                self.flush_run(r);
+            }
+            let trm = gs.ctm * *text_matrix * Affine::translate((0.0, gs.rise));
+            let mut path = BezPath::new();
+            let mut advance = 0.0;
+            for (code, _, is_space) in &items {
+                if !invisible {
+                    if let Some(g) = glyphs.outline(*code) {
+                        let at = trm
+                            * Affine::translate((advance, 0.0))
+                            * Affine::scale_non_uniform(gs.font_size * gs.hscale, gs.font_size);
+                        for el in (at * g).elements() {
+                            path.push(*el);
+                        }
+                    }
+                }
+                let w0 = font.width(*code) / 1000.0;
+                let mut tx = (w0 * gs.font_size + gs.char_spacing) * gs.hscale;
+                if *is_space {
+                    tx += gs.word_spacing * gs.hscale;
+                }
+                advance += tx;
+            }
+            *text_matrix *= Affine::translate((advance, 0.0));
+            if !path.elements().is_empty() {
+                let mut shape = self.new_shape(ShapeKind::Path { path, closed: true });
+                shape.fill = Fill::Solid(gs.fill.unwrap_or(Color::BLACK));
+                shape.stroke = None;
+                shape.opacity = gs.fill_alpha;
+                let clip = gs.clip.clone();
+                self.push(shape, &clip);
+            }
+            return;
+        }
         // Device matrix of the glyph origin: ctm * Tm * [1 0 0 1 0 rise].
         let trm = gs.ctm * *text_matrix * Affine::translate((0.0, gs.rise));
         let scale = Self::scale_of(trm);

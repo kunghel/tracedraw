@@ -489,9 +489,49 @@ impl Tokens {
     /// The outline that shows where a dragged selection would go.
     pub const DRAG_OUTLINE: Color32 = Color32::from_rgb(0x1E, 0x64, 0xFF);
 
-    pub const TOOLBOX_WIDTH: f32 = 38.0;
-    pub const TOOL_BUTTON: f32 = 32.0;
     pub const RULER: f32 = 18.0;
+
+    /// The side of a toolbox button: 32 px at the medium size, scaled by
+    /// the toolbox's button size (the bars' menu > Customize).
+    pub fn tool_button() -> f32 {
+        (32.0 * button_scale(&TOOLBOX_SCALE)).round()
+    }
+
+    /// The side of a standard toolbar button: 32 px at the medium size,
+    /// scaled by the default button size.
+    pub fn bar_button() -> f32 {
+        (32.0 * button_scale(&BAR_SCALE)).round()
+    }
+
+    /// The side of a property bar button: 28 px at the medium size,
+    /// scaled by the default button size.
+    pub fn prop_button() -> f32 {
+        (28.0 * button_scale(&BAR_SCALE)).round()
+    }
+}
+
+/// The default button size's scale and the toolbox's, as f32 bits.
+static BAR_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TOOLBOX_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn button_scale(cell: &std::sync::atomic::AtomicU32) -> f32 {
+    let bits = cell.load(Ordering::Relaxed);
+    if bits == 0 {
+        1.0
+    } else {
+        f32::from_bits(bits)
+    }
+}
+
+/// Size the bars' buttons from now on: `bars` for every bar, `toolbox`
+/// for the toolbox (the bars' menu > Customize > Default Button Size and
+/// Toolbox Toolbar > Button Size).
+pub fn set_button_sizes(
+    bars: crate::settings::ButtonSize,
+    toolbox: Option<crate::settings::ButtonSize>,
+) {
+    BAR_SCALE.store(bars.scale().to_bits(), Ordering::Relaxed);
+    TOOLBOX_SCALE.store(toolbox.unwrap_or(bars).scale().to_bits(), Ordering::Relaxed);
 }
 
 pub fn visuals() -> Visuals {

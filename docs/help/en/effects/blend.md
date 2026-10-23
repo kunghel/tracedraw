@@ -56,4 +56,6 @@ ends of the curve.
 ## Removing or splitting a blend {#clear}
 
 **Clear blend** removes the steps and leaves both objects. **Break apart**
-turns the steps into objects of their own.
+turns the steps into objects of their own, grouped.
+[[menu.object > menu.object.break_blend_apart]] (<kbd>Ctrl+K</kbd>, also on the
+right-click menu) does the same.

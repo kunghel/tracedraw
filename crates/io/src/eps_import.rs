@@ -3615,7 +3615,7 @@ impl<'a> Interp<'a> {
                 let t = i as f64 / 8.0;
                 let comps = self.eval_function(&func, t, 0);
                 if let Some(c) = color_from(&comps, ncomp) {
-                    stops.push(Stop { pos: t, color: c });
+                    stops.push(Stop::new(t, c));
                 }
             }
         }
@@ -3625,7 +3625,7 @@ impl<'a> Interp<'a> {
                 .first()
                 .map(|s| s.color)
                 .unwrap_or(Color::Gray { v: 0.5 });
-            stops = vec![Stop { pos: 0.0, color: c }, Stop { pos: 1.0, color: c }];
+            stops = vec![Stop::new(0.0, c), Stop::new(1.0, c)];
         }
         let (kind, angle) = match (stype, coords.len()) {
             (2, 4) => {

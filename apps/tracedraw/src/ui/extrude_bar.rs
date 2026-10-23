@@ -295,7 +295,7 @@ pub fn extrude_actions(app: &mut App, ui: &mut Ui) {
             .add_enabled(extruded, egui::Button::new(tr("docker.break_apart")))
             .clicked()
         {
-            app.flatten_effects();
+            app.break_effect_groups();
         }
     });
 }

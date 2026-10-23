@@ -100,3 +100,8 @@ For step `k` of `n` (`t = (k) / (n + 1)` with acceleration `t' = t ^ (1 + 2*acc)
   shrinks to a point at its centre, so the steps read as letters
   (`blends_of_several_parts_morph_part_by_part`,
   `the_blend_tool_blends_two_texts_and_a_text_with_a_shape`).
+
+Break Apart (the docker's, or Object > Break Blend Group Apart, Ctrl+K
+and the right-click menu, which take the place of Break Apart while a
+selected object holds a blend) turns the steps into objects, grouped
+when there are several (see `contour.md`, #424).

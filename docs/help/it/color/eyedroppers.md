@@ -7,6 +7,9 @@ nella barra delle proprietà: **seleziona** (preleva un campione) e **applica**
 sul pulsante di selezione per campionare di nuovo. <kbd>Esc</kbd> scarta il
 campione e torna allo strumento [[tool.pick]].
 
+Il puntatore è una pipetta mentre lo strumento campiona e un secchiello mentre
+applica. Le immagini danno il loro colore anche dentro un gruppo o una cornice.
+
 ## Contagocce colore {#color-eyedropper}
 
 1. Scegli lo strumento [[tool.color_eyedropper]].

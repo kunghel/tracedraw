@@ -65,10 +65,23 @@
   Each cutter reaches 0.001 mm past its ends, so a piece left by an
   earlier cut, which ends on the outline it crossed, still cuts it
   (`segment_delete::tests::a_cutter_ending_a_hair_short_of_the_outline_still_cuts`).
+  Each crossing found against a flattened outline is then moved onto the
+  true crossing of the two curves (Newton steps), so the end a cut leaves
+  lies on the outline it crossed and the next cut finds that crossing
+  again: a curve whose tail comes back across an earlier segment loses
+  the start, then the tail, and keeps the loop between
+  (`segment_delete::tests::a_tail_crossing_a_cut_curve_loses_only_itself`, #354).
 - Click (within 5 screen pixels; the nearest outline, the topmost of
   equals): its virtual segment under the pointer is removed. Drag: every
   virtual segment lying wholly inside the rectangle (nine points along
   it) is removed, on all objects at once.
+- Objects inside ordinary groups are cut as objects on their own (their
+  transforms composed with the groups'), for both the click and the
+  drag, and cut the others; a group left empty goes. Linked groups
+  (text, pictures, clip frames) are not cut (#427,
+  `segment_delete::tests::curves_inside_a_group_are_cut`). A drag takes
+  every object whose box meets the rectangle, a level or upright line
+  (a box of no height or width) included.
 - Curves, rectangles, ellipses and polygons can lose segments; they
   become curves. A closed subpath that loses a stretch opens (what is
   left of it runs on over its start as one piece); an object with

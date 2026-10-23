@@ -7,6 +7,9 @@ com ela). Depois de uma amostra, a ferramenta passa para aplicar; clique no
 botão de selecionar para amostrar de novo. <kbd>Esc</kbd> descarta a amostra e
 volta para a ferramenta [[tool.pick]].
 
+O ponteiro é uma pipeta enquanto a ferramenta amostra e um balde de tinta
+enquanto aplica. Imagens dão a cor mesmo dentro de um grupo ou de uma moldura.
+
 ## Conta-gotas de cor {#color-eyedropper}
 
 1. Escolha a ferramenta [[tool.color_eyedropper]].

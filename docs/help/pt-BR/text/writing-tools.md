@@ -26,9 +26,31 @@ da página ([[writing.scope_document]]) ou só os textos selecionados
    ou [[writing.add]] para acrescentá-la à sua lista de palavras.
 4. [[writing.undo]] desfaz a última substituição.
 
-[[writing.options]] tem [[writing.ignore_digits]] e
-[[writing.ignore_capitals]]. O TraceDraw usa os dicionários instalados no seu
-sistema; sem nenhum, só uma lista de palavras incluída é usada.
+[[writing.options]] tem [[writing.ignore_digits]],
+[[writing.ignore_capitals]] e [[options.add_to_autocorrect]].
+
+### Dicionários {#dictionaries}
+
+O TraceDraw verifica a ortografia com dicionários Hunspell: para cada idioma,
+um arquivo `.dic` e um arquivo `.aff` com o mesmo nome, como `pt_BR.dic` e
+`pt_BR.aff`. Dicionários gratuitos para a maioria dos idiomas podem ser baixados
+dos projetos que os fazem; outros programas costumam instalá-los também.
+
+1. Abra [[menu.tools > menu.tools.options]] > [[options.text]] >
+   [[options.spelling]].
+2. Clique em [[options.open_folder]] e copie os arquivos `.dic` e `.aff` para
+   essa pasta (pastas dentro dela também servem), ou indique uma pasta que já
+   tenha dicionários em [[options.more_dictionaries]].
+3. Clique em [[options.refresh_dictionaries]]. A lista [[options.dictionaries]]
+   mostra cada um; desmarque a caixa para deixar de usá-lo.
+
+Uma palavra está certa quando algum dicionário em uso a conhece. Os dicionários
+instalados no sistema também são usados. Sem nenhum, só uma lista de palavras
+incluída é usada.
+
+Dicionários de hifenização (arquivos `hyph_`, como `hyph_pt_BR.dic`) vão nas
+mesmas pastas. Escolha um em [[options.text]] > [[options.paragraph_text]] >
+[[options.hyphenation_patterns]] para hifenizar texto nesse idioma.
 
 ### Gramática {#grammar}
 
@@ -51,21 +73,33 @@ coloca no texto, mantendo as maiúsculas. Em [[writing.options]],
 
 ## Correção automática {#autocorrect}
 
-[[menu.text > menu.text.writing_tools > menu.text.autocorrect]] define o que é
-corrigido enquanto você digita:
+[[menu.text > menu.text.writing_tools > menu.text.autocorrect]] abre a aba
+[[dialog.autocorrect]] de [[menu.tools > menu.tools.options]] >
+[[options.text]], que define o que é corrigido enquanto você digita:
 
-- [[autocorrect.enabled]];
 - [[autocorrect.capitalize]];
 - [[autocorrect.two_capitals]] ("THe" vira "The");
-- [[autocorrect.quotes]], no estilo do idioma da interface;
-- a [[autocorrect.replacements]]: `(c)` vira ©, `(r)` ®, `(tm)` ™, `1/2` ½ e
-  assim por diante. [[autocorrect.add]] e [[autocorrect.remove]] mudam as
-  linhas.
+- [[autocorrect.days]] ("monday" vira "Monday");
+- [[autocorrect.hyperlinks]]: digitar `www.exemplo.com` ou um endereço que
+  começa com `http://` ou `https://` dá esse hiperlink ao objeto de texto, se
+  ele ainda não tiver um;
+- [[autocorrect.language]] o idioma cujas aspas são usadas (o idioma da
+  interface, a menos que você escolha outro);
+- [[autocorrect.quotes]] e [[autocorrect.straight_after_numbers]];
+- [[autocorrect.single_quotes]] e [[autocorrect.double_quotes]]: as aspas de
+  [[autocorrect.open]] e [[autocorrect.close]], se você quiser outras que não
+  as do idioma;
+- a [[autocorrect.replacements]], usada quando
+  [[autocorrect.replace_while_typing]] está ligado: `(c)` vira ©, `(r)` ®,
+  `(tm)` ™, `1/2` ½ e assim por diante. Digite em [[autocorrect.replace_col]] e
+  [[autocorrect.with_col]] e clique em [[autocorrect.add]]; clique em uma linha
+  para [[autocorrect.delete]], ou mude o texto dela e clique em
+  [[autocorrect.replace]].
 
 [[autocorrect.apply_selection]] aplica as regras ao texto selecionado. Texto
 colado ou importado nunca é alterado.
 
-![A caixa de diálogo Correção automática](../../img/text-writing-tools-autocorrect.png)
+![A aba Correção automática](../../img/text-writing-tools-autocorrect.png)
 
 ## Hífens personalizados {#custom-hyphens}
 

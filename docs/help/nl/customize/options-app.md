@@ -93,8 +93,22 @@ Zie [Kleven](../pages-layout/snapping.md).
 
 ![De pagina Tekst van de TraceDraw-opties](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: hoeveel <kbd>Ctrl+8</kbd> en
-  <kbd>Ctrl+2</kbd> de geselecteerde tekst groter en kleiner maken (1 punt).
-- [[options.default_font]] en [[options.default_size]] van nieuwe tekst.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] en
-  [[menu.text.show_text_frames]].
+De pagina heeft vijf tabbladen.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (hoeveel
+  <kbd>Ctrl+8</kbd> en <kbd>Ctrl+2</kbd> de geselecteerde tekst groter en kleiner
+  maken, 1 punt), [[options.default_font]] en [[options.default_size]] van
+  nieuwe tekst, en [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] en de [[options.hyphenation_patterns]]
+  (ingebouwd, of een afbreekwoordenboek voor uw taal).
+- [[docker.fonts]]: [[options.show_recent_fonts]] bovenaan de
+  lettertypelijsten, het [[options.recent_font_count]] (5, tot 20) en de
+  [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  en [[options.add_to_autocorrect]], zodat een woord dat u in de
+  spellingcontrole verbetert de volgende keer tijdens het typen wordt verbeterd;
+  en de [[options.dictionaries]] die ze gebruikt, zie
+  [Woordenboeken](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: wat tijdens het typen wordt verbeterd; zie
+  [AutoCorrectie](../text/writing-tools.md#autocorrect).

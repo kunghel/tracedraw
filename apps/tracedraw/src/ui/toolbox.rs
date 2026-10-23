@@ -61,8 +61,58 @@ pub fn tool_tooltip(ui: &mut Ui, tool: Tool) {
 pub const FLOATING_COLUMNS: usize = 2;
 
 /// The width of a floating toolbox's grid of buttons.
-pub fn floating_width() -> f32 {
-    FLOATING_COLUMNS as f32 * Tokens::TOOL_BUTTON + (FLOATING_COLUMNS - 1) as f32
+pub fn floating_width(app: &App) -> f32 {
+    FLOATING_COLUMNS as f32 * button_width(app) + (FLOATING_COLUMNS - 1) as f32
+}
+
+/// The room a caption takes on each side of its text.
+const CAPTION_PAD: f32 = 6.0;
+
+/// The width of a toolbox button: its side, plus the widest tool name
+/// (as measured when the toolbox was last drawn) when captions show
+/// (the bars' menu > Customize > Toolbox Toolbar); a caption alone
+/// takes the width of the name.
+pub fn button_width(app: &App) -> f32 {
+    let captions = app.settings.toolbox_captions;
+    let side = Tokens::tool_button();
+    if !captions.caption() {
+        return side;
+    }
+    let text = app.toolbox_caption_w + 2.0 * CAPTION_PAD;
+    if captions.image() {
+        side + text
+    } else {
+        text.max(side)
+    }
+}
+
+/// The width of a docked toolbox column (its buttons and the margins).
+pub fn column_width(app: &App) -> f32 {
+    button_width(app) + 6.0
+}
+
+/// The widest tool name among the flyouts shown (any tool of each, so
+/// the buttons keep their width whichever tool they show), in the
+/// caption font.
+fn widest_caption(app: &App, ui: &Ui) -> f32 {
+    let font = caption_font();
+    ui.ctx().fonts_mut(|f| {
+        GROUPS
+            .iter()
+            .enumerate()
+            .filter(|(gi, _)| group_visible(app, *gi))
+            .flat_map(|(_, g)| g.tools.iter())
+            .map(|t| {
+                f.layout_no_wrap(t.name(), font.clone(), egui::Color32::BLACK)
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max)
+    })
+}
+
+fn caption_font() -> egui::FontId {
+    egui::FontId::proportional(12.0)
 }
 
 /// The toolbox, docked at `dock`: a row along the top or the bottom, a
@@ -73,12 +123,15 @@ pub fn toolbox(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
     if !app.drawing_shown() {
         ui.disable();
     }
+    // A right click on the toolbox's empty part opens its menu, as on the
+    // other bars.
+    crate::ui::bars::background(app, ui, crate::ui::bars::Bar::Toolbox);
     match dock {
         Dock::Top | Dock::Bottom => {
             crate::ui::overflow::row(ui, "toolbox_row", |ui| tools(app, ui, dock));
         }
         Dock::Floating => {
-            ui.set_max_width(floating_width());
+            ui.set_max_width(floating_width(app));
             ui.horizontal_wrapped(|ui| tools(app, ui, dock));
         }
         Dock::Left | Dock::Right => {
@@ -101,7 +154,14 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
     if !floating {
         crate::ui::bars::grip(app, ui, Bar::Toolbox, horizontal);
     }
-    let size = Vec2::new(Tokens::TOOL_BUTTON, Tokens::TOOL_BUTTON);
+    // Captions: the icon, the tool's name, or both on each button; the
+    // names measured now size the buttons from the next frame.
+    let captions = app.settings.toolbox_captions;
+    if captions.caption() {
+        app.toolbox_caption_w = widest_caption(app, ui);
+    }
+    let side = Tokens::tool_button();
+    let size = Vec2::new(button_width(app), side);
     for (gi, group) in GROUPS.iter().enumerate() {
         if !group_visible(app, gi) {
             continue;
@@ -139,13 +199,33 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
                 egui::StrokeKind::Inside,
             );
         }
-        let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(22.0));
-        icons::draw(
-            ui.painter(),
-            icon_rect,
-            shown,
-            icons::tool_color(shown, Tokens::icon()),
-        );
+        let icon_side = (side * 22.0 / 32.0).round();
+        if captions.image() {
+            let icon_rect = Rect::from_center_size(
+                egui::pos2(rect.left() + side / 2.0, rect.center().y),
+                Vec2::splat(icon_side),
+            );
+            icons::draw(
+                ui.painter(),
+                icon_rect,
+                shown,
+                icons::tool_color(shown, Tokens::icon()),
+            );
+        }
+        if captions.caption() {
+            let left = if captions.image() {
+                rect.left() + side + CAPTION_PAD
+            } else {
+                rect.left() + CAPTION_PAD
+            };
+            ui.painter().text(
+                egui::pos2(left, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                shown.name(),
+                caption_font(),
+                Tokens::text(),
+            );
+        }
         if has_flyout {
             // The flyout arrow: a small triangle at the bottom-right.
             let p = rect.right_bottom() - Vec2::new(2.0, 2.0);
@@ -165,7 +245,7 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
             .interact_pointer_pos()
             .is_some_and(|p| arrow_zone.contains(p));
 
-        // Opening the flyout: the arrow, a right click, a drag, or a press
+        // Opening the flyout: the arrow, a drag, or a press
         // held for 0.4 s; with a flyout already open, hovering opens this
         // one instead.
         if has_flyout {
@@ -180,7 +260,6 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
             }
             let switch = resp.hovered() && app.flyout_open.is_some_and(|o| o != gi);
             if (resp.clicked() && on_arrow)
-                || resp.secondary_clicked()
                 || resp.drag_started()
                 || resp.long_touched()
                 || held
@@ -189,6 +268,9 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
                 app.flyout_open = Some(gi);
             }
         }
+        // A right click on a tool button opens the toolbox's menu
+        // (customize, button size, the bars), as on the other bars.
+        crate::ui::bars::bar_menu(app, &resp, crate::ui::bars::Bar::Toolbox);
         // A plain click picks the shown tool (not when it opened the flyout).
         if resp.clicked() && !(has_flyout && on_arrow) && app.flyout_open != Some(gi) {
             app.set_tool(shown);
@@ -213,7 +295,8 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
         if GROUP_BREAKS.contains(&gi) && floating {
             // A line across the grid, on a row of its own.
             ui.end_row();
-            let (r, _) = ui.allocate_exact_size(Vec2::new(floating_width(), 3.0), Sense::hover());
+            let (r, _) =
+                ui.allocate_exact_size(Vec2::new(floating_width(app), 3.0), Sense::hover());
             ui.painter().hline(
                 r.x_range().shrink(4.0),
                 r.center().y,
@@ -223,8 +306,7 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
         } else if GROUP_BREAKS.contains(&gi) {
             ui.add_space(2.0);
             if horizontal {
-                let (r, _) =
-                    ui.allocate_exact_size(Vec2::new(1.0, Tokens::TOOL_BUTTON), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(1.0, side), Sense::hover());
                 ui.painter().vline(
                     r.center().x,
                     r.y_range().shrink(4.0),
@@ -232,7 +314,7 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
                 );
             } else {
                 let (r, _) =
-                    ui.allocate_exact_size(Vec2::new(Tokens::TOOL_BUTTON, 1.0), Sense::hover());
+                    ui.allocate_exact_size(Vec2::new(button_width(app), 1.0), Sense::hover());
                 ui.painter().hline(
                     r.x_range().shrink(4.0),
                     r.center().y,
@@ -378,7 +460,7 @@ fn flyout(app: &mut App, ui: &mut Ui, gi: usize, button: Rect, dock: crate::ui::
     let over_toolbox = ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| {
         if dock == Dock::Floating {
             // The grid: any button of the floating toolbox.
-            let reach = Tokens::TOOL_BUTTON + 4.0;
+            let reach = button_width(app) + 4.0;
             p.x <= button.max.x + reach && p.x >= button.min.x - reach
         } else if dock.horizontal() {
             p.y <= button.max.y + 2.0 && p.y >= button.min.y - 4.0
@@ -447,9 +529,50 @@ fn set_group_visible(app: &mut App, gi: usize, on: bool) {
     }
 }
 
+/// The bars' menu > Customize > Toolbox Toolbar > Reset to Default: every
+/// flyout shown (the Outline flyout hidden, as at first), each button
+/// showing its first tool, the default button size and icons only.
+pub fn reset_toolbox(app: &mut App) {
+    app.settings.toolbox_hidden.clear();
+    app.settings.show_outline_flyout = false;
+    app.settings.toolbox_button_size = None;
+    app.settings.toolbox_captions = crate::settings::Captions::ImageOnly;
+    app.toolbox_last = GROUPS.iter().map(|g| g.tools[0]).collect();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The buttons follow the default button size, or the toolbox's
+    /// own; captions widen them by the widest tool name.
+    #[test]
+    fn buttons_follow_the_sizes_and_the_captions() {
+        use crate::settings::{ButtonSize, Captions};
+        let mut app = App::headless();
+        crate::theme::set_button_sizes(ButtonSize::Medium, None);
+        assert_eq!(button_width(&app), 32.0);
+        crate::theme::set_button_sizes(ButtonSize::Large, None);
+        assert_eq!(button_width(&app), 40.0);
+        crate::theme::set_button_sizes(ButtonSize::Large, Some(ButtonSize::Small));
+        assert_eq!(button_width(&app), 24.0);
+        assert_eq!(crate::theme::Tokens::bar_button(), 40.0);
+        assert_eq!(crate::theme::Tokens::prop_button(), 35.0);
+        app.toolbox_caption_w = 50.0;
+        app.settings.toolbox_captions = Captions::CaptionRight;
+        assert_eq!(button_width(&app), 24.0 + 50.0 + 2.0 * CAPTION_PAD);
+        app.settings.toolbox_captions = Captions::CaptionOnly;
+        assert_eq!(button_width(&app), 50.0 + 2.0 * CAPTION_PAD);
+        assert_eq!(floating_width(&app), 2.0 * (50.0 + 2.0 * CAPTION_PAD) + 1.0);
+        // Reset to Default: icons only, the default size, every flyout.
+        app.settings.toolbox_button_size = Some(ButtonSize::Small);
+        set_group_visible(&mut app, 2, false);
+        reset_toolbox(&mut app);
+        assert_eq!(app.settings.toolbox_captions, Captions::ImageOnly);
+        assert_eq!(app.settings.toolbox_button_size, None);
+        assert!(group_visible(&app, 2));
+        crate::theme::set_button_sizes(ButtonSize::Medium, None);
+    }
 
     #[test]
     fn flyout_groups_can_be_hidden_and_reset() {

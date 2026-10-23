@@ -520,7 +520,7 @@ fn swatch(
                 if ui.input(|i| i.modifiers.ctrl) {
                     app.mix_into_fill(*c);
                 } else {
-                    app.apply_fill(Fill::Solid(*c));
+                    app.palette_fill(*c);
                 }
             }
         }
@@ -815,7 +815,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             if outline {
                 app.apply_outline_color(Some(c));
             } else {
-                app.apply_fill(Fill::Solid(c));
+                app.palette_fill(c);
             }
         } else if clicked_outside(ctx, area.response.rect) {
             app.palette_shades = None;
@@ -901,7 +901,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             if outline {
                 app.apply_outline_color(Some(c));
             } else {
-                app.apply_fill(Fill::Solid(c));
+                app.palette_fill(c);
             }
         } else if clicked_outside(ctx, area.response.rect) && !on_expand_button(ctx, which) {
             app.palette_expanded = None;

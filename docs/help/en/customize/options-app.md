@@ -91,8 +91,21 @@ See [Snapping](../pages-layout/snapping.md).
 
 ![The Text page of the TraceDraw options](../../img/customize-options-app-text.png)
 
-- [[options.keyboard_text_increment]]: how much <kbd>Ctrl+8</kbd> and
-  <kbd>Ctrl+2</kbd> grow and shrink the selected text (1 point).
-- [[options.default_font]] and [[options.default_size]] of new text.
-- [[menu.text.use_hyphenation]], [[menu.text.show_non_printing]] and
-  [[menu.text.show_text_frames]].
+The page has five tabs.
+
+- [[options.display]]: [[options.keyboard_text_increment]] (how much <kbd>Ctrl+8</kbd>
+  and <kbd>Ctrl+2</kbd> grow and shrink the selected text, 1 point), the
+  [[options.default_font]] and [[options.default_size]] of new text, and
+  [[menu.text.show_non_printing]].
+- [[options.paragraph_text]]: [[menu.text.show_text_frames]],
+  [[menu.text.use_hyphenation]] and the [[options.hyphenation_patterns]]
+  (built-in, or a hyphenation dictionary for your language).
+- [[docker.fonts]]: [[options.show_recent_fonts]] at the top of the font lists,
+  the [[options.recent_font_count]] (5, up to 20) and the
+  [[options.font_sample_size]].
+- [[options.spelling]]: [[writing.ignore_digits]], [[writing.ignore_capitals]]
+  and [[options.add_to_autocorrect]], so a word you correct in the spell checker
+  is corrected as you type next time; and the [[options.dictionaries]] it uses,
+  see [Dictionaries](../text/writing-tools.md#dictionaries).
+- [[dialog.autocorrect]]: what is corrected as you type; see
+  [Autocorrect](../text/writing-tools.md#autocorrect).

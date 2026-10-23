@@ -21,6 +21,21 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+A, Delete or Backspace | Select all, Delete |
 | Ctrl+F, Ctrl+J, Ctrl+W | Find and Replace panel, Options, Refresh window |
 
+
+### Repeat
+
+Edit > Repeat (Ctrl+R) does again, on the selection of the time, the
+last repeatable action still in effect: a move, scale, rotation or
+skew, a fill, an outline, a transparency, or a copy made with a right
+click during a drag (which makes another copy, transformed as far again
+from the new selection). Each action is kept with the undo step it made
+(`Engine::last_step_id`, `App::repeatables`): an action undone is never
+repeated, the one before it is (#366); redone, it is the last again; and
+an undone step replaced by another change is gone for good. Checks:
+`pick_drag_tests::repeat_after_an_undo_takes_the_last_action_still_in_effect`,
+`pick_drag_tests::repeat_after_a_right_click_copy_makes_another_copy` (#363),
+`engine::tests::steps_have_ids_that_follow_undo_and_redo`.
+
 ## View
 
 | Keys | Action |

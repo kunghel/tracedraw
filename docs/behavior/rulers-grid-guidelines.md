@@ -118,6 +118,17 @@ stand for a distance in the world (`drawing_scale.rs`):
 - Pick tool: a click selects a guideline (Shift adds or removes); a press
   and drag moves it, snapping to the grid, the page and objects; dropping
   it outside the drawing window deletes it. The move is one undo step.
+  With several guidelines selected, a drag on one of them carries the
+  others that are not locked by as much (the pressed one's snapped move;
+  a horizontal one only up and down, a vertical one only sideways), one
+  step "Move Guidelines"; a right click during the drag leaves copies
+  where it ends and the guidelines where they were ("Copy Guidelines",
+  the copies selected); dropped outside the window they all go (#376).
+- Edit > Duplicate (Ctrl+D) with guidelines and no objects selected
+  copies them, moved by the duplicate offset (unlocked), the copies
+  selected; the Guidelines docker's Duplicate does the same, and its
+  Clear deletes every guideline of the type shown, one undo step
+  (`selected_guidelines_move_copy_duplicate_and_clear_together`).
 - A click on the only selected guideline shows its rotation handles: a
   pivot where it was clicked and two curved arrows 70 px along it.
   Dragging an arrow turns the guideline about the pivot in whole degrees;

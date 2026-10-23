@@ -1,7 +1,7 @@
 //! Fill and outline (stroke) properties of a shape.
 
 use crate::color::Color;
-use crate::geometry::{Affine, Point, Rect, Size};
+use crate::geometry::{Affine, Point, Rect, Size, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// Fountain (gradient) fill geometry.
@@ -47,6 +47,52 @@ pub struct Stop {
     /// 0.0 at the start, 1.0 at the end.
     pub pos: f64,
     pub color: Color,
+    /// Where the blend to the next stop is half way, as a fraction of the
+    /// way there (0.5: in the middle; the Interactive Fill tool's
+    /// midpoint slider). Unused on the last stop.
+    #[serde(default = "half", skip_serializing_if = "is_half")]
+    pub mid: f64,
+    /// 1 opaque, 0 clear (the node's transparency).
+    #[serde(default = "one_f32", skip_serializing_if = "is_one_f32")]
+    pub opacity: f32,
+}
+
+impl Stop {
+    /// An opaque stop with its blend half way to the next.
+    pub fn new(pos: f64, color: Color) -> Self {
+        Stop {
+            pos,
+            color,
+            mid: 0.5,
+            opacity: 1.0,
+        }
+    }
+}
+
+fn half() -> f64 {
+    0.5
+}
+
+fn is_half(v: &f64) -> bool {
+    (*v - 0.5).abs() < 1e-12
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn is_one_f32(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// The blend from one stop to the next at `k` (0..1 of the way) with its
+/// midpoint at `mid`: `k^g` with `mid^g = 1/2`.
+pub fn midpoint_curve(k: f64, mid: f64) -> f64 {
+    let m = mid.clamp(0.01, 0.99);
+    if (m - 0.5).abs() < 1e-9 {
+        return k;
+    }
+    k.clamp(0.0, 1.0).powf(0.5f64.ln() / m.ln())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +119,31 @@ pub struct Fountain {
     /// Colours in reverse order.
     #[serde(default, skip_serializing_if = "is_default")]
     pub invert: bool,
+    /// Where the Interactive Fill tool put the fill's nodes (#330): the
+    /// start, the end and the skew handle, free of the object's box. When
+    /// set they place the fill instead of `angle` and `offset` (which
+    /// keep the nearest equivalent for formats that know only those).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handles: Option<FountainHandles>,
+}
+
+/// The nodes of a fountain fill placed freely (see [`Fountain::handles`]),
+/// relative to the object's bounding box `b`: a point `p` is stored as
+/// `((p.x - c.x) / (w / 2), (p.y - c.y) / (h / 2))` with `c` the box's
+/// centre, so they follow the object when it is moved or scaled.
+///
+/// The fill's own frame maps `(u, v)` to `start + u (end - start) +
+/// v (skew - start)`. Linear: `t = u` (0 at the start, 1 at the end; the
+/// bands run along `skew - start`). Radial (elliptical): `t = |(u, v)|`
+/// (the end and the skew handle on the ellipse's two half axes). Conical:
+/// the angle of `(u, v)` from the end, mirrored as the conical fill is.
+/// Square: `t = max(|u|, |v|)` (the end and the skew handle on the
+/// parallelogram's half axes).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FountainHandles {
+    pub start: Point,
+    pub end: Point,
+    pub skew: Point,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -101,16 +172,7 @@ impl Fountain {
     pub fn two(kind: FountainKind, from: Color, to: Color, angle: f64) -> Self {
         Fountain {
             kind,
-            stops: vec![
-                Stop {
-                    pos: 0.0,
-                    color: from,
-                },
-                Stop {
-                    pos: 1.0,
-                    color: to,
-                },
-            ],
+            stops: vec![Stop::new(0.0, from), Stop::new(1.0, to)],
             angle,
             offset: Point::ZERO,
             edge_pad: 0.0,
@@ -118,7 +180,143 @@ impl Fountain {
             repeats: 1,
             bilinear: false,
             invert: false,
+            handles: None,
         }
+    }
+
+    /// A box-relative point (see [`FountainHandles`]) on the page, for the
+    /// object's bounding box `b`.
+    pub fn rel_to_page(b: Rect, r: Point) -> Point {
+        let c = b.center();
+        Point::new(c.x + r.x * b.width() / 2.0, c.y + r.y * b.height() / 2.0)
+    }
+
+    /// A page point as a box-relative one for `b` (0 on a flat side).
+    pub fn page_to_rel(b: Rect, p: Point) -> Point {
+        let c = b.center();
+        let rx = if b.width() > 1e-9 {
+            (p.x - c.x) / (b.width() / 2.0)
+        } else {
+            0.0
+        };
+        let ry = if b.height() > 1e-9 {
+            (p.y - c.y) / (b.height() / 2.0)
+        } else {
+            0.0
+        };
+        Point::new(rx, ry)
+    }
+
+    /// The fill's frame on the page for the object's box `b`, mapping
+    /// `(u, v)` to `start + u (end - start) + v (skew - start)`: from the
+    /// nodes when they are placed freely, else `None` (the angle and the
+    /// offset place the fill). A frame that is flat counts as none.
+    pub fn frame(&self, b: Rect) -> Option<Affine> {
+        if self.kind == FountainKind::Shaped {
+            return None;
+        }
+        let h = self.handles?;
+        let s = Self::rel_to_page(b, h.start);
+        let e = Self::rel_to_page(b, h.end) - s;
+        let k = Self::rel_to_page(b, h.skew) - s;
+        let det = e.x * k.y - e.y * k.x;
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        Some(Affine::new([e.x, e.y, k.x, k.y, s.x, s.y]))
+    }
+
+    /// The fill's parameter `t` (before [`Self::stop_param`]) at the page
+    /// point `p`, for a fill whose nodes are placed freely (`None`
+    /// otherwise; see [`FountainHandles`]).
+    pub fn param_at(&self, b: Rect, p: Point) -> Option<f64> {
+        let q = self.frame(b)?.inverse() * p;
+        let (u, v) = (q.x, q.y);
+        Some(match self.kind {
+            FountainKind::Linear => u,
+            FountainKind::Radial => u.hypot(v),
+            FountainKind::Conical => {
+                let a = v.atan2(u).rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
+                if a < 0.5 {
+                    a * 2.0
+                } else {
+                    2.0 - a * 2.0
+                }
+            }
+            FountainKind::Square => u.abs().max(v.abs()),
+            FountainKind::Shaped => return None,
+        })
+    }
+
+    /// The nodes that place the fill as its angle and offset do now on
+    /// the box `b` (where the Interactive Fill tool shows them before they
+    /// are first dragged).
+    pub fn default_handles(&self, b: Rect) -> FountainHandles {
+        let a = self.angle.to_radians();
+        let (ca, sa) = (a.cos(), a.sin());
+        let c = b.center();
+        let rel = |p: Point| Self::page_to_rel(b, p);
+        match self.kind {
+            FountainKind::Linear | FountainKind::Shaped => {
+                let half = (b.width() * ca.abs() + b.height() * sa.abs()) / 2.0;
+                let d = Vec2::new(ca, sa) * half;
+                let s = c - d;
+                let n = Vec2::new(-sa, ca) * (2.0 * half);
+                FountainHandles {
+                    start: rel(s),
+                    end: rel(c + d),
+                    skew: rel(s + n),
+                }
+            }
+            FountainKind::Radial => {
+                let cc = Point::new(
+                    c.x + self.offset.x * b.width() / 2.0,
+                    c.y + self.offset.y * b.height() / 2.0,
+                );
+                let r = b.width().max(b.height()) / 2.0 * std::f64::consts::SQRT_2;
+                FountainHandles {
+                    start: rel(cc),
+                    end: rel(cc + Vec2::new(ca, sa) * r),
+                    skew: rel(cc + Vec2::new(-sa, ca) * r),
+                }
+            }
+            // Conical and square fills are measured in the box's own
+            // units (half the width and half the height), around the
+            // offset; the conical one turned by the angle.
+            FountainKind::Conical => {
+                let o = self.offset;
+                FountainHandles {
+                    start: o,
+                    end: Point::new(o.x + ca, o.y + sa),
+                    skew: Point::new(o.x - sa, o.y + ca),
+                }
+            }
+            FountainKind::Square => {
+                let o = self.offset;
+                FountainHandles {
+                    start: o,
+                    end: Point::new(o.x + 1.0, o.y),
+                    skew: Point::new(o.x, o.y + 1.0),
+                }
+            }
+        }
+    }
+
+    /// Place the fill's nodes (box `b`) and keep the angle and the offset
+    /// the nearest the formats that know only those can show: the angle
+    /// of the axis, and for the kinds with a centre the start as the
+    /// offset.
+    pub fn set_handles(&mut self, b: Rect, h: FountainHandles) {
+        let s = Self::rel_to_page(b, h.start);
+        let e = Self::rel_to_page(b, h.end);
+        let d = e - s;
+        if d.hypot() > 1e-9 && d.x.is_finite() && d.y.is_finite() {
+            self.angle = d.y.atan2(d.x).to_degrees();
+        }
+        if self.kind != FountainKind::Linear {
+            self.offset = Point::new(h.start.x.clamp(-1.0, 1.0), h.start.y.clamp(-1.0, 1.0));
+        }
+        self.handles = Some(h);
     }
 
     pub fn first_color(&self) -> Color {
@@ -142,6 +340,53 @@ impl Fountain {
         self.cycles() == 1 && !self.bilinear && !self.invert
     }
 
+    /// A stop's midpoint is off the middle.
+    pub fn has_midpoints(&self) -> bool {
+        let n = self.stops.len();
+        self.stops
+            .iter()
+            .take(n.saturating_sub(1))
+            .any(|s| !is_half(&s.mid))
+    }
+
+    /// The sorted stops with each blend whose midpoint is off the middle
+    /// drawn as [`Self::MID_STEPS`] straight pieces along its curve, so a
+    /// plain run of stops gives the same colours (the midpoints set back
+    /// to the middle).
+    pub fn blended_stops(&self) -> Vec<Stop> {
+        let base = self.sorted_stops();
+        let mut out: Vec<Stop> = Vec::with_capacity(base.len());
+        for (i, s) in base.iter().enumerate() {
+            out.push(Stop { mid: 0.5, ..*s });
+            let Some(next) = base.get(i + 1) else {
+                continue;
+            };
+            if is_half(&s.mid) || next.pos - s.pos < 1e-9 {
+                continue;
+            }
+            for j in 1..Self::MID_STEPS {
+                let k = j as f64 / Self::MID_STEPS as f64;
+                let w = midpoint_curve(k, s.mid) as f32;
+                out.push(Stop {
+                    pos: s.pos + (next.pos - s.pos) * k,
+                    color: lerp_color(s.color, next.color, w),
+                    mid: 0.5,
+                    opacity: s.opacity + (next.opacity - s.opacity) * w,
+                });
+            }
+        }
+        out
+    }
+
+    /// Pieces per blend with its midpoint off the middle (see
+    /// [`Self::blended_stops`]).
+    pub const MID_STEPS: usize = 16;
+
+    /// Any stop is not fully opaque.
+    pub fn has_opacity(&self) -> bool {
+        self.stops.iter().any(|s| s.opacity < 1.0)
+    }
+
     /// The stops sorted by position, at least two.
     pub fn sorted_stops(&self) -> Vec<Stop> {
         let mut v = self.stops.clone();
@@ -152,7 +397,7 @@ impl Fountain {
         });
         if v.len() < 2 {
             let c = v.first().map(|s| s.color).unwrap_or(Color::BLACK);
-            v = vec![Stop { pos: 0.0, color: c }, Stop { pos: 1.0, color: c }];
+            v = vec![Stop::new(0.0, c), Stop::new(1.0, c)];
         }
         v
     }
@@ -193,7 +438,12 @@ impl Fountain {
 
     /// Colour at `t` in 0..1 (sRGB interpolation).
     pub fn color_at(&self, t: f64) -> Color {
-        sample_stops(&self.sorted_stops(), self.stop_param(t))
+        sample_stops(&self.blended_stops(), self.stop_param(t))
+    }
+
+    /// The opacity at `t` (0 clear, 1 opaque).
+    pub fn opacity_at(&self, t: f64) -> f32 {
+        sample_opacity(&self.blended_stops(), self.stop_param(t))
     }
 
     /// The fountain as plain stops over 0..1 that give the same colours
@@ -201,7 +451,7 @@ impl Fountain {
     /// inversion worked in (for gradient shaders and exports that only
     /// know a single run of stops). Equal positions are hard edges.
     pub fn resolved_stops(&self) -> Vec<Stop> {
-        let base = self.sorted_stops();
+        let base = self.blended_stops();
         let cycles = self.cycles();
         let n = cycles as f64;
         let e = self.edge_pad.clamp(0.0, 0.49);
@@ -227,13 +477,13 @@ impl Fountain {
         ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
         let mut out: Vec<Stop> = Vec::new();
-        let mut push = |pos: f64, color: Color| {
+        let mut push = |pos: f64, s: Stop| {
             if let Some(l) = out.last() {
-                if (l.pos - pos).abs() < 1e-12 && l.color == color {
+                if (l.pos - pos).abs() < 1e-12 && l.color == s.color && l.opacity == s.opacity {
                     return;
                 }
             }
-            out.push(Stop { pos, color });
+            out.push(Stop { pos, ..s });
         };
         for w in ts.windows(2) {
             let (a, b) = (w[0], w[1]);
@@ -247,7 +497,7 @@ impl Fountain {
             let slope = (p3 - p1) / (q3 - q1);
             let pa = (p1 - slope * (q1 - a)).clamp(0.0, 1.0);
             let pb = (p3 + slope * (b - q3)).clamp(0.0, 1.0);
-            push(a, sample_stops(&base, pa));
+            push(a, sample_stop(&base, pa));
             if (pb - pa).abs() > 1e-12 {
                 let (lo, hi) = (pa.min(pb), pa.max(pb));
                 let mut inner: Vec<Stop> = base
@@ -255,17 +505,17 @@ impl Fountain {
                     .filter(|s| s.pos > lo + 1e-9 && s.pos < hi - 1e-9)
                     .map(|s| Stop {
                         pos: a + (s.pos - pa) / (pb - pa) * (b - a),
-                        color: s.color,
+                        ..*s
                     })
                     .collect();
                 if pb < pa {
                     inner.reverse();
                 }
                 for s in inner {
-                    push(s.pos, s.color);
+                    push(s.pos, s);
                 }
             }
-            push(b, sample_stops(&base, pb));
+            push(b, sample_stop(&base, pb));
         }
         if out.len() < 2 {
             return base;
@@ -279,7 +529,7 @@ impl Fountain {
     /// shaped fountain becomes a square one running from the centre out.
     /// A fountain with none of the options comes back unchanged.
     pub fn to_plain(&self, max_stops: usize) -> Fountain {
-        if self.runs_once() && self.kind != FountainKind::Shaped {
+        if self.runs_once() && self.kind != FountainKind::Shaped && !self.has_midpoints() {
             return self.clone();
         }
         let mut stops = self.resolved_stops();
@@ -298,7 +548,7 @@ impl Fountain {
                     let pos = i as f64 / k;
                     Stop {
                         pos,
-                        color: sample_stops(&stops, pos),
+                        ..sample_stop(&stops, pos)
                     }
                 })
                 .collect();
@@ -316,6 +566,7 @@ impl Fountain {
             repeats: 1,
             bilinear: false,
             invert: false,
+            handles: None,
         }
     }
 }
@@ -337,6 +588,45 @@ pub fn sample_stops(stops: &[Stop], t: f64) -> Color {
         }
     }
     stops.last().map(|s| s.color).unwrap_or(first.color)
+}
+
+/// Opacity at `t` along `stops` (sorted by position), as
+/// [`sample_stops`] mixes the colours.
+pub fn sample_opacity(stops: &[Stop], t: f64) -> f32 {
+    sample_stop(stops, t).opacity
+}
+
+/// The stop at `t` along `stops` (sorted by position): colour and opacity
+/// mixed from the two around it, its blend half way.
+pub fn sample_stop(stops: &[Stop], t: f64) -> Stop {
+    let Some(first) = stops.first() else {
+        return Stop::new(t, Color::BLACK);
+    };
+    if t <= first.pos {
+        return Stop {
+            pos: t,
+            mid: 0.5,
+            ..*first
+        };
+    }
+    for w in stops.windows(2) {
+        if t <= w[1].pos {
+            let span = (w[1].pos - w[0].pos).max(1e-9);
+            let k = ((t - w[0].pos) / span).clamp(0.0, 1.0) as f32;
+            return Stop {
+                pos: t,
+                color: lerp_color(w[0].color, w[1].color, k),
+                mid: 0.5,
+                opacity: w[0].opacity + (w[1].opacity - w[0].opacity) * k,
+            };
+        }
+    }
+    let last = stops.last().copied().unwrap_or(*first);
+    Stop {
+        pos: t,
+        mid: 0.5,
+        ..last
+    }
 }
 
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
@@ -548,10 +838,6 @@ pub struct MeshNode {
     /// 1.0 = opaque.
     #[serde(default = "one_f32")]
     pub alpha: f32,
-}
-
-fn one_f32() -> f32 {
-    1.0
 }
 
 impl Mesh {
@@ -1181,18 +1467,9 @@ mod tests {
         let f = Fountain {
             kind: FountainKind::Linear,
             stops: vec![
-                Stop {
-                    pos: 0.0,
-                    color: Color::rgb8(0, 0, 0),
-                },
-                Stop {
-                    pos: 0.5,
-                    color: Color::rgb8(255, 0, 0),
-                },
-                Stop {
-                    pos: 1.0,
-                    color: Color::rgb8(255, 255, 255),
-                },
+                Stop::new(0.0, Color::rgb8(0, 0, 0)),
+                Stop::new(0.5, Color::rgb8(255, 0, 0)),
+                Stop::new(1.0, Color::rgb8(255, 255, 255)),
             ],
             angle: 0.0,
             offset: Point::ZERO,
@@ -1202,6 +1479,138 @@ mod tests {
         assert_eq!(f.color_at(0.25).to_rgb8(), [128, 0, 0]);
         assert_eq!(f.color_at(0.5).to_rgb8(), [255, 0, 0]);
         assert_eq!(f.color_at(1.5).to_rgb8(), [255, 255, 255]);
+    }
+
+    /// Free nodes: a fill placed with its default nodes looks as the
+    /// angle and offset place it, for every kind; a skew handle tilts
+    /// the bands; the nodes follow the box (#330).
+    #[test]
+    fn midpoints_and_node_opacity_shape_the_blend() {
+        let mut f = Fountain::two(FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        let grey = |c: Color| c.to_rgb8()[0];
+        // In the middle by default.
+        assert!((126..=129).contains(&grey(f.color_at(0.5))));
+        // The midpoint at a quarter: half way there at 0.25, lighter at 0.5.
+        f.stops[0].mid = 0.25;
+        assert!(f.has_midpoints());
+        assert!(
+            (122..=134).contains(&grey(f.color_at(0.25))),
+            "{:?}",
+            f.color_at(0.25)
+        );
+        assert!(grey(f.color_at(0.5)) > 160);
+        // The plain run of stops gives the same colours.
+        let plain = f.resolved_stops();
+        assert!(plain.len() > 2);
+        let at = sample_stops(&plain, 0.25);
+        assert!((i32::from(grey(at)) - i32::from(grey(f.color_at(0.25)))).abs() <= 3);
+        // Opacity runs from node to node like the colour.
+        f.stops[0].mid = 0.5;
+        f.stops[1].opacity = 0.0;
+        assert!(f.has_opacity());
+        assert!((f.opacity_at(0.5) - 0.5).abs() < 0.02);
+        assert_eq!(f.resolved_stops().last().map(|s| s.opacity), Some(0.0));
+        // Saved without the defaults; read back from files that lack them.
+        let plain_json = serde_json::to_string(&Stop::new(0.0, Color::BLACK)).unwrap();
+        assert!(!plain_json.contains("mid") && !plain_json.contains("opacity"));
+        let back: Stop = serde_json::from_str(&plain_json).unwrap();
+        assert_eq!(back, Stop::new(0.0, Color::BLACK));
+    }
+
+    #[test]
+    fn free_nodes_place_the_fill_as_the_frame_says() {
+        let b = Rect::new(10.0, 20.0, 110.0, 70.0);
+        for kind in [
+            FountainKind::Linear,
+            FountainKind::Radial,
+            FountainKind::Conical,
+            FountainKind::Square,
+        ] {
+            let mut f = Fountain::two(kind, Color::BLACK, Color::WHITE, 30.0);
+            f.offset = Point::new(0.2, -0.1);
+            let h = f.default_handles(b);
+            let mut g = f.clone();
+            g.handles = Some(h);
+            for p in [
+                Point::new(30.0, 30.0),
+                Point::new(60.0, 45.0),
+                Point::new(100.0, 65.0),
+            ] {
+                let t = g.param_at(b, p).expect("a frame");
+                let want = legacy_param(&f, b, p);
+                assert!((t - want).abs() < 1e-9, "{kind:?} at {p:?}: {t} vs {want}");
+            }
+        }
+        // Linear from (20, 40) to (60, 40): the start is 0, the end 1.
+        let mut f = Fountain::two(FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        let rel = |p| Fountain::page_to_rel(b, p);
+        f.set_handles(
+            b,
+            FountainHandles {
+                start: rel(Point::new(20.0, 40.0)),
+                end: rel(Point::new(60.0, 40.0)),
+                skew: rel(Point::new(20.0, 60.0)),
+            },
+        );
+        assert!((f.param_at(b, Point::new(20.0, 50.0)).unwrap()).abs() < 1e-9);
+        assert!((f.param_at(b, Point::new(40.0, 40.0)).unwrap() - 0.5).abs() < 1e-9);
+        assert!((f.angle).abs() < 1e-9);
+        // A skew handle leaning right: the bands lean with it.
+        f.handles = Some(FountainHandles {
+            skew: rel(Point::new(40.0, 60.0)),
+            ..f.handles.unwrap()
+        });
+        assert!((f.param_at(b, Point::new(40.0, 60.0)).unwrap()).abs() < 1e-9);
+        // The nodes follow the box: the same fill on a box twice as wide
+        // has its start twice as far from the centre.
+        let wide = Rect::new(10.0, 20.0, 210.0, 70.0);
+        let s = Fountain::rel_to_page(wide, f.handles.unwrap().start);
+        assert!((s.x - (110.0 - 2.0 * 40.0)).abs() < 1e-9, "{s:?}");
+        // A flat frame places nothing.
+        f.handles = Some(FountainHandles {
+            start: Point::ZERO,
+            end: Point::ZERO,
+            skew: Point::ZERO,
+        });
+        assert!(f.frame(b).is_none());
+    }
+
+    /// The parameter as the renderer works it out without free nodes.
+    fn legacy_param(f: &Fountain, b: Rect, p: Point) -> f64 {
+        let a = f.angle.to_radians();
+        let c = b.center();
+        match f.kind {
+            FountainKind::Linear => {
+                let half = (b.width() * a.cos().abs() + b.height() * a.sin().abs()) / 2.0;
+                let s = Point::new(c.x - half * a.cos(), c.y - half * a.sin());
+                let d = Vec2::new(a.cos(), a.sin()) * (2.0 * half);
+                (p - s).dot(d) / d.hypot2()
+            }
+            FountainKind::Radial => {
+                let cc = Point::new(
+                    c.x + f.offset.x * b.width() / 2.0,
+                    c.y + f.offset.y * b.height() / 2.0,
+                );
+                (p - cc).hypot() / (b.width().max(b.height()) / 2.0 * std::f64::consts::SQRT_2)
+            }
+            _ => {
+                let u = (p.x - b.x0) / b.width();
+                let v = (p.y - b.y0) / b.height();
+                let dx = u - 0.5 - f.offset.x / 2.0;
+                let dy = v - 0.5 - f.offset.y / 2.0;
+                if f.kind == FountainKind::Conical {
+                    let a = (dy.atan2(dx) - a).rem_euclid(std::f64::consts::TAU)
+                        / std::f64::consts::TAU;
+                    if a < 0.5 {
+                        a * 2.0
+                    } else {
+                        2.0 - a * 2.0
+                    }
+                } else {
+                    dx.abs().max(dy.abs()) * 2.0
+                }
+            }
+        }
     }
 
     fn black_white() -> Fountain {
@@ -1255,18 +1664,9 @@ mod tests {
     fn resolved_stops_draw_the_same_colours_in_one_run() {
         let three = Fountain {
             stops: vec![
-                Stop {
-                    pos: 0.0,
-                    color: Color::rgb8(255, 0, 0),
-                },
-                Stop {
-                    pos: 0.4,
-                    color: Color::rgb8(0, 255, 0),
-                },
-                Stop {
-                    pos: 1.0,
-                    color: Color::rgb8(0, 0, 255),
-                },
+                Stop::new(0.0, Color::rgb8(255, 0, 0)),
+                Stop::new(0.4, Color::rgb8(0, 255, 0)),
+                Stop::new(1.0, Color::rgb8(0, 0, 255)),
             ],
             ..Default::default()
         };

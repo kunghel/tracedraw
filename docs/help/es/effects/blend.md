@@ -61,3 +61,5 @@ paso en los extremos de la curva.
 
 **Borrar mezcla** quita los pasos y deja ambos objetos. **Separar** convierte
 los pasos en objetos independientes.
+Los pasos salen agrupados junto al objeto. [[menu.object > menu.object.break_blend_apart]] (<kbd>Ctrl+K</kbd>, también en
+el menú del botón derecho) hace lo mismo.

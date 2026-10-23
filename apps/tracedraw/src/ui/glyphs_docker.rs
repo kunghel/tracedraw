@@ -73,6 +73,57 @@ pub fn in_range(chars: &[char], range: usize) -> Vec<char> {
         .collect()
 }
 
+/// The glyphs of `chars` a search finds: a code point in hexadecimal
+/// (`20AC`, `U+20AC`, `0x20ac`) finds that character and those whose code
+/// starts with it; other text finds the characters it holds (#375).
+pub fn search(chars: &[char], query: &str) -> Vec<char> {
+    let q = query.trim();
+    if q.is_empty() {
+        return chars.to_vec();
+    }
+    let stripped = q
+        .strip_prefix("U+")
+        .or_else(|| q.strip_prefix("u+"))
+        .or_else(|| q.strip_prefix("0x"))
+        .or_else(|| q.strip_prefix("0X"));
+    let hex = stripped.unwrap_or(q);
+    let all_hex = !hex.is_empty() && hex.len() <= 6 && hex.chars().all(|c| c.is_ascii_hexdigit());
+    // A prefix always means a code point; bare text means one when it has
+    // two or more hex digits, at least one a digit ("20AC", "004"), so a
+    // typed letter or word ("A", "abc") finds those characters.
+    let by_code = all_hex
+        && (stripped.is_some() || (hex.len() >= 2 && hex.chars().any(|c| c.is_ascii_digit())));
+    if by_code {
+        let hex = hex.to_ascii_uppercase();
+        return chars
+            .iter()
+            .copied()
+            .filter(|c| format!("{:04X}", *c as u32).starts_with(&hex))
+            .collect();
+    }
+    let wanted: Vec<char> = q.chars().filter(|c| !c.is_whitespace()).collect();
+    chars
+        .iter()
+        .copied()
+        .filter(|c| wanted.contains(c))
+        .collect()
+}
+
+/// What the docker says of a glyph: its code point, the character and the
+/// range it belongs to.
+pub fn describe(ch: char) -> String {
+    let cp = ch as u32;
+    let range = RANGES
+        .iter()
+        .skip(1)
+        .find(|(_, spans)| spans.iter().any(|(a, b)| cp >= *a && cp <= *b))
+        .map(|(key, _)| tr(key));
+    match range {
+        Some(r) => format!("U+{cp:04X}   {ch}   {r}"),
+        None => format!("U+{cp:04X}   {ch}"),
+    }
+}
+
 /// The characters `family` draws, cached for the session.
 fn coverage(ui: &Ui, family: &str) -> Arc<Vec<char>> {
     let key = egui::Id::new(("glyph_coverage", family.to_string()));
@@ -260,9 +311,27 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                 ui.selectable_value(&mut app.glyph_range, i, tr(key));
             }
         });
+    ui.add(
+        egui::TextEdit::singleline(&mut app.glyph_search)
+            .hint_text(tr("glyphs.search_hint"))
+            .desired_width(ui.available_width() - 8.0),
+    );
     ui.add_space(4.0);
     let family = app.glyph_font.clone();
-    let chars = in_range(&coverage(ui, &family), app.glyph_range);
+    let chars = search(
+        &in_range(&coverage(ui, &family), app.glyph_range),
+        &app.glyph_search,
+    );
+    let info_id = egui::Id::new("glyphs_info");
+    let mut hovered: Option<char> = None;
+    // The glyph last under the pointer: its code point, the character and
+    // its range (above the grid, which takes the rest of the panel).
+    let info = ui.data(|d| d.get_temp::<char>(info_id)).map(describe);
+    ui.label(
+        egui::RichText::new(info.unwrap_or_default())
+            .monospace()
+            .color(Tokens::text_dim()),
+    );
     if chars.is_empty() {
         ui.label(egui::RichText::new(tr("glyphs.none")).color(Tokens::text_dim()));
     }
@@ -285,6 +354,9 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                             size,
                             !alts.is_empty(),
                         );
+                        if r.hovered() {
+                            hovered = Some(ch);
+                        }
                         if r.clicked() {
                             insert = Some((family.clone(), ch, None));
                         }
@@ -310,6 +382,9 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                 });
             }
         });
+    if let Some(h) = hovered {
+        ui.data_mut(|d| d.insert_temp(info_id, h));
+    }
     if let Some((font, ch, feature)) = insert {
         insert_glyph(app, &font, ch, feature.as_deref());
     }
@@ -319,6 +394,20 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
 mod tests {
     use super::*;
     use tracedraw_core::document::ShapeKind;
+
+    #[test]
+    fn a_search_finds_characters_and_code_points() {
+        let chars: Vec<char> = "AaBé€".chars().collect();
+        assert_eq!(search(&chars, ""), chars);
+        assert_eq!(search(&chars, "é"), vec!['é']);
+        assert_eq!(search(&chars, "U+20AC"), vec!['€']);
+        assert_eq!(search(&chars, "0x20ac"), vec!['€']);
+        // A hexadecimal start finds every code beginning with it.
+        assert_eq!(search(&chars, "004"), vec!['A', 'B']);
+        // A bare letter or word finds those characters, not codes.
+        assert_eq!(search(&chars, "aB"), vec!['a', 'B']);
+        assert!(describe('€').starts_with("U+20AC"));
+    }
 
     #[test]
     fn ranges_pick_their_characters() {

@@ -36,9 +36,10 @@ dialogs it keeps the rest of the application waiting until it closes.
 - **Right side**: the sample text (empty: each face shows its family's
   name) with a list of presets, and a Search field matching family,
   style or PostScript name. Under them the faces of the library, sorted
-  by family: the family's name large and grey, drawn in its first face,
+  by family: the family's name large and faded, drawn in its first face,
   then a card per face with "Family (Style, Width)" above the sample
-  drawn in that face, a technology mark on the right (O for OpenType and
+  drawn in that face (samples in the theme's text colour, light on the
+  dark themes, #380), a technology mark on the right (O for OpenType and
   variable fonts, TT for TrueType) and a bar at the right edge, green
   when installed and grey when not, with a lock on the system's own
   fonts. The pointer over a card shows the family and its status. Only
@@ -52,7 +53,9 @@ dialogs it keeps the rest of the application waiting until it closes.
   action, or "Loading fonts..."), and a slider for the sample size.
 - **Details** (Show Details): family, style, PostScript name, version,
   file, technology, embedding rights, weight, width, glyph count,
-  scripts, OpenType features and status of the face clicked last.
+  scripts, OpenType features and status of the face clicked last. The
+  pane takes its 270 px from the list: the window keeps its width when it
+  is shown (#381).
 - Fonts the drawing names that are not installed are listed above the
   faces in orange, as in the status bar.
 
@@ -94,4 +97,8 @@ dialogs it keeps the rest of the application waiting until it closes.
   (`ui::font_manager::tests::collections_and_favorites_list_the_faces_they_keep`,
   `ui::font_manager::tests::a_folder_lists_its_fonts_installed_or_not`).
 - The window draws with faces and details
-  (`ui::font_manager::tests::the_window_draws_with_faces_and_details`).
+  (`ui::font_manager::tests::the_window_draws_with_faces_and_details`),
+  keeps its width when the details pane is shown
+  (`ui::font_manager::tests::the_details_pane_does_not_widen_the_window`)
+  and draws the samples in the theme's text colour
+  (`ui::font_manager::tests::samples_take_the_theme_text_colour`).

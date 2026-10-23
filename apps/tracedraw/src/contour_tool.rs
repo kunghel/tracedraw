@@ -409,6 +409,37 @@ mod tests {
         assert!(!app.begin_contour(Point::new(500.0, 500.0)));
     }
 
+    /// Break Apart (Ctrl+K, the context menu) on a contour: Break Contour
+    /// Group Apart. The object stays, without its contour, and the rings
+    /// come out beside it, grouped when there are several (#424).
+    #[test]
+    fn break_apart_breaks_a_contour_group() {
+        for (steps, children) in [(3u32, 3usize), (1, 0)] {
+            let mut app = App::headless();
+            let id = square(&mut app);
+            app.select(vec![id]);
+            app.contour.direction = ContourDirection::Inside;
+            app.contour.steps = steps;
+            app.add_contour();
+            assert_eq!(
+                app.effect_group_to_break(),
+                Some("menu.object.break_contour_apart")
+            );
+            assert_eq!(app.break_apart_label(), "menu.object.break_contour_apart");
+            app.break_apart();
+            let s = app.doc().find_shape(id).expect("the object stays");
+            assert!(s.effects.is_empty());
+            assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+            assert_eq!(app.selection[0], id);
+            let other = app.doc().find_shape(app.selection[1]).expect("rings");
+            match &other.kind {
+                ShapeKind::Group { children: c } => assert_eq!(c.len(), children),
+                _ => assert_eq!(children, 0, "one ring stays an object"),
+            }
+            assert_eq!(app.break_apart_label(), "menu.object.break_apart");
+        }
+    }
+
     #[test]
     fn the_bar_edits_the_selected_contour() {
         let mut app = App::headless();

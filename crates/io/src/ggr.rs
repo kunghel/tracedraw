@@ -164,7 +164,7 @@ fn stops_of(segments: &[Segment]) -> Vec<Stop> {
         {
             return;
         }
-        out.push(Stop { pos, color });
+        out.push(Stop::new(pos, color));
     };
     for s in segments {
         let width = s.right - s.left;
@@ -182,10 +182,7 @@ fn stops_of(segments: &[Segment]) -> Vec<Stop> {
     }
     if out.len() == 1 {
         let only = out[0];
-        out.push(Stop {
-            pos: 1.0,
-            color: only.color,
-        });
+        out.push(Stop::new(1.0, only.color));
     }
     out
 }

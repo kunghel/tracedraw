@@ -54,6 +54,19 @@ ervan, in het vulonderdeel van het paneel [[docker.properties]]:
 
 Een strook onder het type toont het hele kleurverloop zoals het getekend wordt.
 
+## Het dialoogvenster Vulling bewerken {#edit-fill}
+
+<kbd>F11</kbd> opent het dialoogvenster [[edit_fill.title]] op de vulling van
+de selectie. Voor een kleurverloop toont het een voorbeeld, de
+[[edit_fill.fill_picker]], het type, de herhaling en de kleurenband: klik op
+een knooppunt om het te kiezen, sleep om het te verplaatsen, dubbelklik om er
+een toe te voegen of te verwijderen. Onder de band: kleur, transparantie,
+positie en [[edit_fill.midpoint]] van het knooppunt, en [[edit_fill.reverse]].
+[[edit_fill.transform]] bevat draaiing, midden en randmarge. **OK** past toe
+wat u veranderde, met [[edit_fill.overprint]].
+
+![Het dialoogvenster Vulling bewerken](../../img/color-fills-edit-fill.png)
+
 ## Het gereedschap Interactieve vulling {#interactive-fill}
 
 Het gereedschap [[tool.interactive_fill]] (<kbd>G</kbd>) bewerkt vullingen op

@@ -57,6 +57,19 @@ riempimento del pannello [[docker.properties]]:
 Una striscia sotto il tipo mostra l'intera sequenza di colori come verrà
 disegnata.
 
+## La finestra di dialogo Modifica riempimento {#edit-fill}
+
+<kbd>F11</kbd> apre la finestra di dialogo [[edit_fill.title]] sul riempimento
+della selezione. Per una sfumatura mostra un'anteprima, il
+[[edit_fill.fill_picker]], il tipo, la ripetizione e la banda dei colori: fate
+clic su un nodo per sceglierlo, trascinatelo per spostarlo, fate doppio clic
+per aggiungerne o toglierne uno. Sotto la banda: colore, trasparenza,
+posizione e [[edit_fill.midpoint]] del nodo, e [[edit_fill.reverse]].
+[[edit_fill.transform]] contiene rotazione, centro e margine del bordo. **OK**
+applica ciò che avete cambiato, con [[edit_fill.overprint]].
+
+![La finestra di dialogo Modifica riempimento](../../img/color-fills-edit-fill.png)
+
 ## Lo strumento Riempimento interattivo {#interactive-fill}
 
 Lo strumento [[tool.interactive_fill]] (<kbd>G</kbd>) modifica i riempimenti

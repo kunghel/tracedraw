@@ -170,7 +170,8 @@ mod tests {
             focus,
             ..Default::default()
         };
-        let img = tracedraw_render::render_page(&doc, page, &opts(Some((a, 0.2)))).expect("render");
+        let img =
+            tracedraw_render::render_page(&doc, page, &opts(Some((vec![a], 0.2)))).expect("render");
         // The object in focus is drawn as it is; the other one faded.
         assert_eq!(img.pixel(15, 25).expect("px").alpha(), 255);
         let faded = img.pixel(35, 25).expect("px").alpha();

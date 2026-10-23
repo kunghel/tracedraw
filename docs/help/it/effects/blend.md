@@ -61,3 +61,5 @@ passaggio alle estremità della curva.
 
 **Cancella fusione** rimuove i passaggi e lascia entrambi gli oggetti.
 **Separa** trasforma i passaggi in oggetti a sé stanti.
+I passaggi escono raggruppati accanto all'oggetto. [[menu.object > menu.object.break_blend_apart]] (<kbd>Ctrl+K</kbd>,
+anche nel menu del tasto destro) fa lo stesso.

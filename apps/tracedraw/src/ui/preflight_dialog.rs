@@ -434,7 +434,7 @@ fn settings(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(tr(before));
             ui.add(
-                egui::DragValue::new(v)
+                crate::ui::field::NumField::new(v)
                     .range(range)
                     .speed(0.5)
                     .max_decimals(2),

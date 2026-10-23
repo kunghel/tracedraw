@@ -482,7 +482,9 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
         ui.horizontal(|ui| {
             if !svg {
                 ui.label(tr("aigen.images"));
-                ui.add(egui::DragValue::new(&mut app.ai_image.count).range(1..=MAX_COUNT));
+                ui.add(
+                    crate::ui::field::NumField::new(&mut app.ai_image.count).range(1..=MAX_COUNT),
+                );
             }
             ui.checkbox(&mut app.ai_image.auto_place, tr("aigen.auto_place"))
                 .on_hover_text(tr("aigen.auto_place_tip"));

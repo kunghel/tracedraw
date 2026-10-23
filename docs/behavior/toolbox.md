@@ -1,12 +1,15 @@
 # Toolbox
 
-- One button per flyout, top to bottom, with
+- One button per flyout, top to bottom (the last one, the Variable
+  Outline tool, after the Fill flyout), with
   separator lines after the Shape, Zoom, Polygon, Text, Connector,
   Transparency and Fill groups (before the "+"). A button shows the tool last used from its flyout
   (kept in the settings); the active tool's button is tinted.
+- A right click on a tool button or on the toolbox's empty part opens the
+  bars' menu (Customize, button size, the bars), as on the other bars.
 - Buttons with a flyout have a small arrow at the bottom-right. Clicking
-  the arrow, right-clicking, dragging, or pressing and holding the button
-  for 0.4 s opens the flyout; a click elsewhere picks the tool the button
+  the arrow, dragging, or pressing and holding the button for 0.4 s
+  opens the flyout; a click elsewhere picks the tool the button
   shows. While a flyout is open, hovering another flyout button opens that
   one instead; moving away from the toolbox or clicking elsewhere closes
   it.
@@ -27,6 +30,14 @@
   first button) drags it to another edge, where it is a column or a row,
   or into a floating window two buttons wide (see "Moving the bars" in
   `toolbars.md`). Flyouts open away from the edge the toolbox is on.
+
+## Button size and captions
+
+The bars' menu (right-click a bar) > Customize sizes the buttons (Default
+Button Size for every bar; Toolbox Toolbar > Button Size for the toolbox
+alone) and chooses what they show: Image Only (the icon, 22 px at the
+medium size, scaled with the button), Caption Only (the tool's name) or
+Caption to Right (both). See `toolbars.md`, "Moving the bars".
 
 ## Checks
 

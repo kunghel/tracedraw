@@ -40,4 +40,6 @@ has the main settings and a 3D menu with the rest.
 - **Bevel**: a beveled edge on the front face, with its width.
 
 **Clear extrude** removes the extrusion; **Break apart** turns the faces into
-objects.
+objects, grouped beside the object.
+[[menu.object > menu.object.break_extrude_apart]] (<kbd>Ctrl+K</kbd>, also on
+the right-click menu) does the same.

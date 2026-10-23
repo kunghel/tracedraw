@@ -506,6 +506,38 @@ impl PageWriter<'_> {
             }
             Fill::Fountain(ft) if ft.kind != FountainKind::Shaped => {
                 let func = stitching_function_in(ft, self.pdf.cmyk_only);
+                // Nodes placed freely (Interactive Fill): a unit shading
+                // drawn through the fill's own frame.
+                if let Some(frame) = ft.frame(bounds) {
+                    let m = frame.as_coeffs();
+                    let shading = if ft.kind == FountainKind::Radial {
+                        format!(
+                            "<< /ShadingType 3 /ColorSpace {} /Coords [0 0 0 0 0 1] /Function {} /Extend [true true] >>",
+                            self.pdf.color_space(), func
+                        )
+                    } else {
+                        format!(
+                            "<< /ShadingType 2 /ColorSpace {} /Coords [0 0 1 0] /Function {} /Extend [true true] >>",
+                            self.pdf.color_space(), func
+                        )
+                    };
+                    let name = format!("Sh{}", self.shadings.len());
+                    let id = self.pdf.add_str(shading);
+                    self.shadings.push((name.clone(), id));
+                    self.content.push_str("q\n");
+                    self.path_ops(path);
+                    let _ = writeln!(
+                        self.content,
+                        "{clip} n {} {} {} {} {} {} cm /{name} sh\nQ",
+                        f(m[0] * MM_PT),
+                        f(m[1] * MM_PT),
+                        f(m[2] * MM_PT),
+                        f(m[3] * MM_PT),
+                        f(m[4] * MM_PT),
+                        f(m[5] * MM_PT)
+                    );
+                    return;
+                }
                 let shading = match ft.kind {
                     FountainKind::Radial => {
                         let c = bounds.center();
@@ -1943,18 +1975,9 @@ mod tests {
         s.fill = Fill::Fountain(tracedraw_core::Fountain {
             kind: FountainKind::Linear,
             stops: vec![
-                tracedraw_core::Stop {
-                    pos: 0.0,
-                    color: Color::rgb8(255, 0, 0),
-                },
-                tracedraw_core::Stop {
-                    pos: 0.3,
-                    color: Color::rgb8(0, 255, 0),
-                },
-                tracedraw_core::Stop {
-                    pos: 1.0,
-                    color: Color::rgb8(0, 0, 255),
-                },
+                tracedraw_core::Stop::new(0.0, Color::rgb8(255, 0, 0)),
+                tracedraw_core::Stop::new(0.3, Color::rgb8(0, 255, 0)),
+                tracedraw_core::Stop::new(1.0, Color::rgb8(0, 0, 255)),
             ],
             angle: 90.0,
             offset: tracedraw_core::geometry::Point::ZERO,
@@ -1965,6 +1988,26 @@ mod tests {
         let text = String::from_utf8_lossy(&document_to_pdf(&doc)).to_string();
         assert!(text.contains("/FunctionType 3"));
         assert!(text.contains("/Bounds [0.3]"));
+    }
+
+    /// A fill whose nodes were placed freely is a unit shading drawn
+    /// through its frame (#330).
+    #[test]
+    fn free_fill_nodes_draw_a_unit_shading_through_their_frame() {
+        use tracedraw_core::style::FountainHandles;
+        let mut f =
+            tracedraw_core::Fountain::two(FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        f.handles = Some(FountainHandles {
+            start: tracedraw_core::geometry::Point::new(-1.0, 0.0),
+            end: tracedraw_core::geometry::Point::new(0.0, 0.0),
+            skew: tracedraw_core::geometry::Point::new(-1.0, 1.0),
+        });
+        let text = one_rect_pdf(Fill::Fountain(f.clone()), None);
+        assert!(text.contains("/Coords [0 0 1 0]"), "{text}");
+        assert!(text.contains(" cm /Sh0 sh"), "{text}");
+        f.kind = FountainKind::Radial;
+        let text = one_rect_pdf(Fill::Fountain(f), None);
+        assert!(text.contains("/Coords [0 0 0 0 0 1]"), "{text}");
     }
 
     fn one_rect_pdf(fill: Fill, stroke: Option<tracedraw_core::Stroke>) -> String {
@@ -2832,6 +2875,55 @@ mod text_tests {
     fn extract(bytes: &[u8]) -> String {
         let doc = lopdf::Document::load_mem(bytes).expect("parses");
         doc.extract_text(&[1]).expect("text")
+    }
+
+    /// A PDF's text read back as curves from the font it embeds (#386):
+    /// filled outlines where the letters were, no text left; read as text
+    /// it stays text.
+    #[test]
+    fn embedded_text_reads_back_as_curves() {
+        use tracedraw_core::geometry::Shape as _;
+        let doc = doc_with(
+            vec![TextSpan::new("Hello PDF", "Quicksand", 24.0)],
+            black(),
+            None,
+        );
+        let (bytes, _) = document_to_pdf_report(&doc, &PdfOptions::default());
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let as_text = crate::pdf_import::parse(&bytes, &mut ids).expect("reads");
+        assert!(as_text.pages[0]
+            .shapes
+            .iter()
+            .any(|s| matches!(s.kind, tracedraw_core::ShapeKind::Text { .. })));
+        let curves = crate::pdf_import::parse_with_options(
+            &bytes,
+            &mut ids,
+            "",
+            crate::pdf_import::ImportOptions {
+                text_as_curves: true,
+            },
+        )
+        .expect("reads");
+        let shapes = &curves.pages[0].shapes;
+        assert!(!shapes
+            .iter()
+            .any(|s| matches!(s.kind, tracedraw_core::ShapeKind::Text { .. })));
+        let paths: Vec<_> = shapes
+            .iter()
+            .filter(|s| matches!(s.kind, tracedraw_core::ShapeKind::Path { .. }))
+            .collect();
+        assert!(!paths.is_empty());
+        // The letters stand about as high as 24 pt capitals (8.5 mm em).
+        let b = paths
+            .iter()
+            .map(|p| p.bounds())
+            .reduce(|a, c| a.union(c))
+            .expect("bounds");
+        assert!(b.height() > 4.0 && b.height() < 9.0, "{b:?}");
+        assert!(b.width() > 20.0, "{b:?}");
+        // Where the text was in the file read as text.
+        let t = as_text.pages[0].shapes[0].bounds();
+        assert!((b.x0 - t.x0).abs() < 3.0, "{b:?} {t:?}");
     }
 
     #[test]

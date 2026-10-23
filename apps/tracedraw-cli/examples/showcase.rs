@@ -117,7 +117,7 @@ fn polygon(pts: &[(f64, f64)]) -> ShapeKind {
 
 fn stops(list: &[(f64, &str)]) -> Vec<Stop> {
     list.iter()
-        .map(|&(pos, c)| Stop { pos, color: hex(c) })
+        .map(|&(pos, c)| Stop::new(pos, hex(c)))
         .collect()
 }
 

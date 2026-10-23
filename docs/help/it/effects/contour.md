@@ -48,3 +48,5 @@ I passaggi esterni vengono disegnati dietro l'oggetto, quelli interni davanti.
 
 **Cancella contorno** rimuove il contorno concentrico; **Separa** trasforma i
 passaggi in oggetti.
+I passaggi escono raggruppati accanto all'oggetto. [[menu.object > menu.object.break_contour_apart]] (<kbd>Ctrl+K</kbd>,
+anche nel menu del tasto destro) fa lo stesso.

@@ -12,6 +12,9 @@ use crate::{Document, Error, Result};
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     label: &'static str,
+    /// The step's identity, unique in this engine (see
+    /// [`Engine::last_step_id`]).
+    id: u64,
     before: Document,
     after: Document,
 }
@@ -31,6 +34,22 @@ pub struct Engine {
     max_history: usize,
     /// Generator of object identities ([`crate::document::Uid`]).
     uid_state: u64,
+    /// The id the next recorded step gets.
+    next_step: u64,
+    /// This engine's identity, unlike any other engine's in this run.
+    instance: u64,
+    /// A preview in progress (see [`Engine::begin_preview`]).
+    preview: Option<PreviewMark>,
+}
+
+/// How the history stood when a preview began, to put it back.
+#[derive(Debug)]
+struct PreviewMark {
+    /// The step on top of the undo stack then.
+    last_step: Option<u64>,
+    redo: Vec<HistoryEntry>,
+    saved: bool,
+    at_step: bool,
 }
 
 /// A seed no other engine in this run has: std's per-run random hash keys
@@ -61,6 +80,9 @@ impl Engine {
             step_revision: u64::MAX,
             max_history: 200,
             uid_state: fresh_seed(),
+            next_step: 1,
+            instance: fresh_seed(),
+            preview: None,
         };
         e.doc.assign_uids(&mut e.uid_state);
         e.doc.refresh_text_flow();
@@ -69,6 +91,12 @@ impl Engine {
 
     pub fn document(&self) -> &Document {
         &self.doc
+    }
+
+    /// This engine's identity: no other engine of this run has it, so a
+    /// value cached for (instance, revision) belongs to one drawing state.
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     pub fn revision(&self) -> u64 {
@@ -118,8 +146,11 @@ impl Engine {
         cmd.apply(&mut self.doc)?;
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
+        let id = self.next_step;
+        self.next_step += 1;
         self.undo.push(HistoryEntry {
             label,
+            id,
             before,
             after: self.doc.clone(),
         });
@@ -146,8 +177,11 @@ impl Engine {
         doc.assign_uids(&mut self.uid_state);
         doc.refresh_text_flow();
         self.doc = doc;
+        let id = self.next_step;
+        self.next_step += 1;
         self.undo.push(HistoryEntry {
             label,
+            id,
             before,
             after: self.doc.clone(),
         });
@@ -248,6 +282,69 @@ impl Engine {
         Ok(label)
     }
 
+    /// Begin a preview: steps recorded from now on can be withdrawn with
+    /// [`withdraw_preview`](Self::withdraw_preview), which leaves the
+    /// drawing, the history (redo included) and the saved state as they
+    /// are now, or kept with [`keep_preview`](Self::keep_preview). A
+    /// preview already begun goes on.
+    pub fn begin_preview(&mut self) {
+        if self.preview.is_some() {
+            return;
+        }
+        self.preview = Some(PreviewMark {
+            last_step: self.last_step_id(),
+            redo: self.redo.clone(),
+            saved: !self.is_dirty(),
+            at_step: self.at_recorded_step(),
+        });
+    }
+
+    /// A preview is in progress.
+    pub fn in_preview(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// Take back what was recorded since [`begin_preview`](Self::begin_preview)
+    /// and put the history back as it was then.
+    pub fn withdraw_preview(&mut self) {
+        let Some(m) = self.preview.take() else {
+            return;
+        };
+        let mut first_before: Option<Document> = None;
+        while !self.undo.is_empty() && self.last_step_id() != m.last_step {
+            if let Some(e) = self.undo.pop() {
+                first_before = Some(e.before);
+            }
+        }
+        if let Some(before) = first_before {
+            self.restore(&before);
+        }
+        self.redo = m.redo;
+        if m.saved {
+            self.saved_revision = self.revision;
+        }
+        self.step_revision = if m.at_step { self.revision } else { u64::MAX };
+    }
+
+    /// Keep what was recorded since [`begin_preview`](Self::begin_preview)
+    /// as ordinary steps.
+    pub fn keep_preview(&mut self) {
+        self.preview = None;
+    }
+
+    /// The id of the step on top of the undo stack (the last one still in
+    /// effect); a step keeps its id through [`amend`](Self::amend), undo
+    /// and redo, and no other step ever gets it.
+    pub fn last_step_id(&self) -> Option<u64> {
+        self.undo.last().map(|e| e.id)
+    }
+
+    /// The step `id` is in effect: it is on the undo stack (not undone,
+    /// not dropped as too old).
+    pub fn step_in_effect(&self, id: u64) -> bool {
+        self.undo.iter().any(|e| e.id == id)
+    }
+
     /// Labels of the undo stack (oldest first) and the redo stack.
     pub fn history_labels(&self) -> (Vec<&'static str>, Vec<&'static str>) {
         (
@@ -283,6 +380,47 @@ mod tests {
     use super::*;
     use crate::document::{Shape, ShapeKind};
     use crate::geometry::Rect;
+
+    /// Each step has an id of its own, kept through undo, redo and
+    /// amend; a step undone and replaced by another is gone for good.
+    #[test]
+    fn steps_have_ids_that_follow_undo_and_redo() {
+        let mut eng = Engine::default();
+        let layer = eng.document().pages[0].layers[0].id;
+        let add = |eng: &mut Engine| {
+            let id = eng.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            eng.run(&Command::AddShape { layer, shape }).unwrap();
+            (id, eng.last_step_id().expect("a step"))
+        };
+        assert_eq!(eng.last_step_id(), None);
+        let (shape, a) = add(&mut eng);
+        let (_, b) = add(&mut eng);
+        assert_ne!(a, b);
+        assert!(eng.step_in_effect(a) && eng.step_in_effect(b));
+        eng.amend(&Command::SetOpacity {
+            shapes: vec![shape],
+            opacity: 0.5,
+        })
+        .unwrap();
+        assert_eq!(eng.last_step_id(), Some(b));
+        eng.undo().unwrap();
+        assert!(eng.step_in_effect(a) && !eng.step_in_effect(b));
+        assert_eq!(eng.last_step_id(), Some(a));
+        eng.redo().unwrap();
+        assert!(eng.step_in_effect(b));
+        eng.undo().unwrap();
+        let (_, c) = add(&mut eng);
+        assert!(c != a && c != b);
+        assert!(!eng.step_in_effect(b));
+    }
 
     #[test]
     fn objects_keep_their_identity_and_copies_get_their_own() {
@@ -486,5 +624,47 @@ mod tests {
             .is_err());
         assert_eq!(eng.revision(), rev);
         assert!(eng.undo_label().is_none());
+    }
+
+    #[test]
+    fn a_withdrawn_preview_leaves_the_history_as_it_was() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let add = |e: &mut Engine| {
+            let id = e.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            e.run(&Command::AddShape { layer, shape }).unwrap();
+        };
+        add(&mut e);
+        add(&mut e);
+        e.undo().unwrap();
+        e.mark_saved();
+        let doc = e.document().clone();
+        let (undo, redo) = e.history_labels();
+        e.begin_preview();
+        add(&mut e);
+        add(&mut e);
+        assert!(e.in_preview());
+        e.withdraw_preview();
+        assert_eq!(e.document().pages, doc.pages);
+        assert_eq!(e.history_labels(), (undo.clone(), redo.clone()));
+        assert!(!e.is_dirty());
+        // The step that could be redone still can.
+        e.redo().unwrap();
+        // Kept: the preview's steps are ordinary steps.
+        e.begin_preview();
+        add(&mut e);
+        e.keep_preview();
+        assert!(!e.in_preview());
+        assert_eq!(e.history_labels().0.len(), undo.len() + 2);
     }
 }

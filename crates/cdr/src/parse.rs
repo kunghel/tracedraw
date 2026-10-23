@@ -1043,20 +1043,14 @@ impl<'a> Ctx<'a> {
             if v >= 13 {
                 r.skip(3);
             }
-            stops.push(Stop {
-                pos: pos.clamp(0.0, 1.0),
-                color,
-            });
+            stops.push(Stop::new(pos.clamp(0.0, 1.0), color));
         }
         if stops.is_empty() {
             return None;
         }
         if stops.len() == 1 {
             let only = stops[0];
-            stops.push(Stop {
-                pos: 1.0,
-                color: only.color,
-            });
+            stops.push(Stop::new(1.0, only.color));
             stops[0].pos = 0.0;
         }
         stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));
@@ -2350,16 +2344,7 @@ impl<'a> Ctx<'a> {
                     } else {
                         FountainKind::Linear
                     },
-                    stops: vec![
-                        Stop {
-                            pos: 0.0,
-                            color: from,
-                        },
-                        Stop {
-                            pos: 1.0,
-                            color: to,
-                        },
-                    ],
+                    stops: vec![Stop::new(0.0, from), Stop::new(1.0, to)],
                     angle,
                     ..Default::default()
                 })
@@ -2711,8 +2696,9 @@ impl<'a> Ctx<'a> {
         let mut kind = match kind {
             Some(k) => k,
             None => {
+                // (A bitmap whose picture is missing has said so already.)
                 match kind_code {
-                    OBJ_ARTISTIC_TEXT | OBJ_PARAGRAPH_TEXT | OBJ_EMBEDDED => {}
+                    OBJ_ARTISTIC_TEXT | OBJ_PARAGRAPH_TEXT | OBJ_EMBEDDED | OBJ_BITMAP => {}
                     other => self
                         .report
                         .warn(format!("object type 0x{other:02x} not modelled yet")),
@@ -2744,6 +2730,15 @@ impl<'a> Ctx<'a> {
                 }
                 None => self.warn_v3_envelope(),
             }
+        }
+
+        // Version 16+: the outline's mitre limit is in the object's style
+        // string (the outline record leaves it out, #384).
+        if let (Some(s), Some(a)) = (
+            stroke.as_mut(),
+            style_string.as_deref().and_then(text::object_miter_limit),
+        ) {
+            s.miter_limit = a;
         }
 
         // Version 16+: a graded transparency in the object's style string

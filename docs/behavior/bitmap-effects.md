@@ -402,8 +402,9 @@ through the master curve, then its channel's curve.
 The Effects menu's bitmap effects work on any object, not only bitmaps.
 A vector object keeps its shape, fill and outlines; its effects are kept
 with it (`Shape::raster_fx`) and it is drawn as the picture they make:
-the object alone, drawn in its own space at 300 dpi (fewer pixels when it
-would pass 4 million) with a margin of 2 mm, its outline width and 8 % of
+the object alone, drawn in its own space at the drawing's rendering
+resolution (Layout > Page Setup, 72 to 1200 dpi; 300 when none is set;
+fewer pixels when it would pass 16 million) with a margin of 2 mm, its outline width and 8 % of
 its size, then the visible effects in order. The picture is kept in the
 drawing, so the screen, PDF, SVG, EPS and EMF draw it without the
 effects' code; DXF and PLT draw the object itself.
@@ -413,7 +414,9 @@ effects' code; DXF and PLT draw the object itself.
   removes the effects as for a bitmap.
 - Any change to the object (nodes, colour, outline, a scale) makes the
   picture again as part of the same undo step; a move or a turn keeps
-  it (it lives in the object's own space).
+  it (it lives in the object's own space). A new rendering resolution
+  makes every such picture again at it, in the same step (#382,
+  `vector_effects_follow_the_rendering_resolution`).
 - Effects > Flatten Effects turns the object into the bitmap of its
   picture, in its place.
 

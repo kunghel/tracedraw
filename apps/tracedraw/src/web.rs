@@ -211,10 +211,10 @@ pub fn register_fonts() {
 }
 
 /// Keep the editor's shortcuts away from the browser: Ctrl/Cmd plus a
-/// letter (export, import, group, duplicate...) and the function keys
-/// would otherwise open browser features. Copy, cut, paste (egui needs
-/// those events), reload (Ctrl+R) and the developer tools stay with the
-/// browser.
+/// letter (export, import, group, duplicate, repeat...) and the function
+/// keys would otherwise open browser features (Ctrl+R and F5 reload the
+/// page). Copy, cut, paste (egui needs those events) and the developer
+/// tools stay with the browser (`web_page::browser_keeps_key`).
 fn guard_shortcuts() {
     use wasm_bindgen::closure::Closure;
     let Some(window) = web_sys::window() else {
@@ -231,9 +231,7 @@ fn guard_shortcuts() {
         if !(e.ctrl_key() || e.meta_key()) {
             return;
         }
-        let k = key.to_ascii_lowercase();
-        let keep = matches!(k.as_str(), "c" | "v" | "x" | "r") || (e.shift_key() && k == "i");
-        if !keep {
+        if !crate::web_page::browser_keeps_key(&key, e.shift_key()) {
             e.prevent_default();
         }
     });

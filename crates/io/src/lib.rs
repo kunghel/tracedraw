@@ -10,12 +10,14 @@ pub mod ggr;
 pub mod html;
 pub mod pdf;
 pub mod pdf_crypt;
+pub(crate) mod pdf_glyphs;
 pub mod pdf_import;
 pub mod plt;
 pub mod psd;
 pub mod svg;
 pub mod svg_import;
 pub mod text_import;
+pub mod xlsx;
 
 use std::path::Path;
 use tracedraw_core::Document;

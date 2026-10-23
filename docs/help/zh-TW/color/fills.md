@@ -30,6 +30,12 @@
 
 類型下方的色條會顯示將要繪製的完整色彩排列。
 
+## 編輯填色對話方塊 {#edit-fill}
+
+<kbd>F11</kbd> 開啟所選物件填色的 [[edit_fill.title]] 對話方塊。漸層會顯示預覽、[[edit_fill.fill_picker]]、類型、重複方式和色帶：按一下節點選取，拖曳移動，按兩下新增或刪除節點。色帶下方是節點的顏色、透明度、位置、[[edit_fill.midpoint]] 和 [[edit_fill.reverse]]。[[edit_fill.transform]] 包含旋轉、中心和邊緣填補。**確定** 套用您所做的變更，並包括 [[edit_fill.overprint]]。
+
+![編輯填色對話方塊](../../img/color-fills-edit-fill.png)
+
 ## 互動式填色工具 {#interactive-fill}
 
 [[tool.interactive_fill]] 工具（<kbd>G</kbd>）可直接在物件上編輯填色。

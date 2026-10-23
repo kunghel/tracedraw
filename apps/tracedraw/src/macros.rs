@@ -556,11 +556,7 @@ impl App {
 
     pub fn show_macro_manager(&mut self) {
         self.macros.ensure_loaded();
-        if !self.open_dockers.contains(&crate::app::DockerTab::Macros) {
-            self.open_dockers.push(crate::app::DockerTab::Macros);
-        }
-        self.show_dockers = true;
-        self.docker_tab = crate::app::DockerTab::Macros;
+        self.open_docker(crate::app::DockerTab::Macros);
     }
 
     /// Run `module.name` of project `project`, after showing its warnings

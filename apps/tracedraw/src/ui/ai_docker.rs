@@ -91,11 +91,7 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
                 );
                 if ui.button(tr("ai.open_in_scripts")).clicked() {
                     app.script_source = app.ai.script.clone();
-                    if !app.open_dockers.contains(&DockerTab::Scripts) {
-                        app.open_dockers.push(DockerTab::Scripts);
-                    }
-                    app.show_dockers = true;
-                    app.docker_tab = DockerTab::Scripts;
+                    app.open_docker(DockerTab::Scripts);
                 }
             });
     }

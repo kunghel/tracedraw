@@ -9,9 +9,10 @@ que fluem entre os nós de uma grade).
 ## Formas de preencher um objeto {#ways}
 
 - Clique em uma cor da paleta para dar à seleção um preenchimento uniforme.
-- Use a seção [[docker.fill]] do painel [[docker.properties]] (<kbd>F11</kbd>):
-  escolha o tipo de preenchimento na fileira de imagens e depois as
-  configurações.
+- Pressione <kbd>F11</kbd> para a caixa de diálogo [[edit_fill.title]] (veja
+  [abaixo](#edit-fill)), ou use a seção [[docker.fill]] do painel
+  [[docker.properties]]: escolha o tipo de preenchimento na fileira de imagens
+  e depois as configurações.
 - Use a ferramenta [[tool.interactive_fill]] (<kbd>G</kbd>) para definir
   gradientes no próprio objeto.
 - Use a ferramenta [[tool.area_fill]] para preencher uma área cercada por vários
@@ -53,19 +54,49 @@ preenchimento do painel [[docker.properties]]:
 
 Uma faixa abaixo do tipo mostra toda a sequência de cores como será desenhada.
 
+## A caixa de diálogo Editar preenchimento {#edit-fill}
+
+<kbd>F11</kbd> abre a caixa de diálogo [[edit_fill.title]] no preenchimento da
+seleção (ou dos objetos novos, sem nada selecionado).
+
+- A fileira de imagens no alto escolhe o tipo de preenchimento.
+- Um preenchimento uniforme mostra o visualizador de cores.
+- Um gradiente mostra à esquerda uma prévia do preenchimento e o
+  [[edit_fill.fill_picker]] com os gradientes prontos. À direita: o tipo, como
+  ele se repete e a faixa de cores com seus nós. Clique num nó para escolhê-lo
+  e arraste para movê-lo; clique duas vezes na faixa para acrescentar um nó e
+  num nó para removê-lo. A cor, a transparência, a posição e o
+  [[edit_fill.midpoint]] do nó escolhido ficam sob a faixa, com
+  [[edit_fill.reverse]]. [[edit_fill.transform]] tem a rotação, o centro (para
+  gradientes radiais, cônicos e quadrados), a margem da borda, o espelho e a
+  inversão.
+- **OK** muda só o que você mudou em todos os objetos selecionados, com
+  [[edit_fill.overprint]].
+
+![A caixa de diálogo Editar preenchimento](../../img/color-fills-edit-fill.png)
+
 ## A ferramenta Preenchimento interativo {#interactive-fill}
 
 A ferramenta [[tool.interactive_fill]] (<kbd>G</kbd>) edita preenchimentos no
 próprio objeto.
 
-1. Escolha a ferramenta e arraste através de um objeto: você obtém um gradiente
-   linear de onde pressiona até onde solta. Mantenha <kbd>Ctrl</kbd>
-   pressionado para limitar o ângulo a passos de 15 graus. Um clique dá o
-   preenchimento padrão.
-2. Arraste os nós no objeto para mudar o gradiente: os dois nós quadrados de um
-   gradiente linear giram a direção e mudam o comprimento; o nó de um gradiente
-   radial, cônico ou quadrado move o centro.
-3. Arraste uma cor da paleta até um nó para mudar a cor dele, ou até a linha
+1. Escolha a ferramenta e arraste através de um objeto: o gradiente começa
+   onde você pressiona e termina onde solta, mantendo as cores de um
+   gradiente que o objeto já tenha. Mantenha <kbd>Ctrl</kbd> pressionado para
+   limitar o ângulo a passos de 15 graus. Um clique num objeto sem gradiente
+   dá o preenchimento padrão.
+2. Arraste os nós para mudar o gradiente: o nó inicial o move, o nó final
+   define o comprimento e a direção, e o nó redondo de inclinação inclina as
+   faixas (ou faz de um gradiente radial uma elipse).
+3. Clique duas vezes na linha entre os nós para acrescentar um nó de cor ali;
+   clique duas vezes num nó de cor para removê-lo. Arraste um nó de cor ao
+   longo da linha, ou a barrinha entre dois nós para mover o ponto onde as
+   cores deles se encontram no meio.
+4. Clique num nó para escolhê-lo: abre-se embaixo dele uma pequena barra com
+   a cor do nó (clique na amostra para o seletor de cores) e a transparência.
+   Uma cor da paleta clicada com um nó escolhido vai para esse nó, e a barra
+   de propriedades mostra a cor, a transparência e a posição do nó.
+5. Arraste uma cor da paleta até um nó para mudar a cor dele, ou até a linha
    entre os nós para acrescentar uma cor ali.
 
 A barra de propriedades tem o tipo de preenchimento e as configurações: a cor

@@ -50,7 +50,7 @@ pub fn printing_page(app: &mut App, ui: &mut Ui) {
         ui.end_row();
         row_label(ui, &tr("print.gutter"));
         ui.add(
-            egui::DragValue::new(&mut p.gutter)
+            crate::ui::field::NumField::new(&mut p.gutter)
                 .range(0.0..=50.0)
                 .speed(0.5)
                 .suffix(" mm"),
@@ -89,13 +89,13 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
         ui.end_row();
         row_label(ui, &tr("dialog.resolution"));
         ui.add(
-            egui::DragValue::new(&mut f.export_dpi)
+            crate::ui::field::NumField::new(&mut f.export_dpi)
                 .range(crate::ui::dialogs::MIN_EXPORT_DPI..=2400.0)
                 .suffix(" dpi"),
         );
         ui.end_row();
         row_label(ui, &tr("dialog.quality"));
-        ui.add(egui::DragValue::new(&mut f.export_quality).range(1..=100));
+        ui.add(crate::ui::field::NumField::new(&mut f.export_quality).range(1..=100));
         ui.end_row();
         row_label(ui, &tr("dialog.pdf_standard"));
         let standards: Vec<usize> = (0..PDF_STANDARDS.len()).collect();
@@ -113,7 +113,7 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
         ui.end_row();
         row_label(ui, &tr("dialog.bleed"));
         ui.add(
-            egui::DragValue::new(&mut f.pdf_bleed_mm)
+            crate::ui::field::NumField::new(&mut f.pdf_bleed_mm)
                 .range(0.0..=50.0)
                 .speed(0.5)
                 .suffix(" mm"),
@@ -138,6 +138,12 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
         ImportPlace::ViewCenter,
         tr("options.import_view_center"),
     );
+    ui.horizontal(|ui| {
+        ui.label(tr("pdf_import.text_as"));
+        ui.radio_value(&mut f.pdf_text_as_curves, false, tr("pdf_import.text"));
+        ui.radio_value(&mut f.pdf_text_as_curves, true, tr("pdf_import.curves"));
+    });
+    ui.checkbox(&mut f.pdf_ask_text, tr("pdf_import.ask"));
     chrome::section(ui, &tr("options.cdr_save_section"));
     f.cdr_version = f.cdr_version.clamp(
         tracedraw_cdr::write::CHECKED_SINCE,

@@ -1704,6 +1704,14 @@ pub struct Shape {
         deserialize_with = "index_keys::deserialize"
     )]
     pub node_types: std::collections::BTreeMap<usize, crate::nodes::NodeType>,
+    /// The control points (local space) of the B-spline the curve is,
+    /// for a curve drawn with the B-spline tool: the Shape tool shows and
+    /// moves these instead of the curve's nodes, and the curve is their
+    /// spline ([`crate::geometry::bspline_path`], [`Command::SetSpline`]).
+    /// Any other change to the curve's outline, and Convert To Curves,
+    /// drops them and leaves an ordinary curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spline: Option<Vec<Point>>,
     /// The object's identity across saves, undo and moves between
     /// drawings (see [`Uid`]); the engine gives one to every object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1990,6 +1998,7 @@ impl Shape {
             wrap_style: crate::text_flow::TextWrap::default(),
             style: None,
             node_types: std::collections::BTreeMap::new(),
+            spline: None,
             uid: None,
             opacity_mask: None,
             parked_effects: Vec::new(),
@@ -2502,7 +2511,10 @@ impl Shape {
     /// already are curves, and a bitmap has no outline to become one.
     pub fn converts_to_curves(&self) -> bool {
         match &self.kind {
-            ShapeKind::Path { .. } | ShapeKind::Group { .. } | ShapeKind::Bitmap { .. } => false,
+            // A B-spline becomes an ordinary curve: its nodes instead of
+            // its control points.
+            ShapeKind::Path { .. } => self.spline.is_some(),
+            ShapeKind::Group { .. } | ShapeKind::Bitmap { .. } => false,
             // A clip frame changes only when its frame or something it
             // holds (inside groups too) is not a curve yet.
             ShapeKind::ClipFrame { frame, contents } => {
@@ -2570,6 +2582,8 @@ impl Shape {
                 let kind = ShapeKind::ClipFrame { frame, contents };
                 (kind != self.kind).then_some(kind)
             }
+            // A B-spline keeps its outline; the control points go.
+            ShapeKind::Path { .. } => Some(self.kind.clone()),
             _ => Some(ShapeKind::Path {
                 path: self.local_path(),
                 closed: true,
@@ -2599,6 +2613,7 @@ impl Shape {
                 if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth) {
                     self.kind = kind;
                     self.node_types.clear();
+                    self.spline = None;
                 }
             }
         }
@@ -2631,6 +2646,7 @@ impl Shape {
                 if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth) {
                     self.kind = kind;
                     self.node_types.clear();
+                    self.spline = None;
                 }
             }
         }

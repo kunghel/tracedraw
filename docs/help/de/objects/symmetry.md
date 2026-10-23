@@ -18,18 +18,23 @@ Bearbeitung der Symmetrie.
 ## Eine Symmetrie bearbeiten {#edit}
 
 [[menu.object.symmetry_edit]] (<kbd>Alt+E</kbd>) bearbeitet die Symmetrie des
-ausgewählten Objekts. Das Original wird rot umrandet, und eine Leiste oben
-links im Zeichenfenster legt fest:
+ausgewählten Objekts. Eine Leiste oben links im Zeichenfenster legt fest:
 
 - die Anzahl der Spiegelachsen, 1 bis 12, gleichmäßig um den Mittelpunkt
   verteilt. Mit mehr Achsen erhalten Sie ein Kaleidoskop: Bei *n* Achsen gibt
   es 2*n* - 1 Kopien;
 - den Mittelpunkt (X und Y);
-- den Winkel der ersten Achse (0 bis 360 Grad).
+- den Winkel der ersten Achse (0 bis 360 Grad);
+- Vollständige Vorschau (Kopien vollständig oder, wenn aus, als rote Umrisse)
+  und Symmetrielinien anzeigen.
 
-Bearbeiten Sie das Original wie gewohnt mit einem beliebigen Werkzeug; die
-Kopien folgen. Solange ein Objekt mit Symmetrie ausgewählt ist, werden seine
-Spiegelachsen gestrichelt angezeigt.
+Bearbeiten Sie die Originale wie gewohnt mit einem beliebigen Werkzeug; die
+Kopien folgen. Ein Klick oder ein Auswahlrahmen wählt eines der Originale in
+der Symmetrie, und Objekte, die Sie zeichnen, einfügen oder duplizieren, kommen
+hinzu. Ziehen Sie eine Spiegelachse mit dem Auswahlwerkzeug, um die Achsen zu
+verschieben; ein Klick auf eine Achse zeigt runde Griffe an ihren Enden, mit
+denen Sie die Achsen drehen. Solange ein Objekt mit Symmetrie ausgewählt ist
+oder bearbeitet wird, werden seine Spiegelachsen gestrichelt angezeigt.
 
 Klicken Sie auf der Leiste auf Fertig stellen oder wählen Sie
 [[menu.object.symmetry_finish]] (<kbd>Alt+Shift+E</kbd>), um die Bearbeitung

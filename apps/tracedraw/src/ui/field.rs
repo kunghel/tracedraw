@@ -1,8 +1,10 @@
-//! Number fields for the bars: a white box
-//! with the value at the left, typed into. Enter or leaving the box
-//! applies the value, Esc puts it back. Sums such as `10+5` or `2*3,5`
-//! work, a comma or a point marks decimals, and a distance field takes a
-//! value in another unit (`1 in` in a millimetre field).
+//! Number fields for the bars: a white box with the value at the left,
+//! typed into, and a pair of spin arrows at its right. Enter or leaving
+//! the box applies the value, Esc puts it back. Sums such as `10+5` or
+//! `2*3,5` work, a comma or a point marks decimals, and a distance field
+//! takes a value in another unit (`1 in` in a millimetre field). The
+//! arrows and the mouse wheel over the box step the value (one unit, or
+//! the step the field was given; Ctrl a tenth, Shift ten times).
 
 use crate::app::Units;
 use egui::{emath::Numeric, Response, TextEdit, Ui, Widget};
@@ -13,6 +15,8 @@ pub struct NumField<'a, N: Numeric> {
     value: &'a mut N,
     range: Option<(f64, f64)>,
     suffix: String,
+    /// A label shown just before the box ("X:").
+    prefix: String,
     min_decimals: usize,
     max_decimals: Option<usize>,
     /// Millimetres per unit of the field, for distances typed with a unit.
@@ -22,7 +26,13 @@ pub struct NumField<'a, N: Numeric> {
     /// The selection has different values here: the box is empty and a
     /// value typed applies even when it equals the one held.
     mixed: bool,
+    /// What the spin arrows and the wheel add or take, in the field's
+    /// unit (1 unless given).
+    step: f64,
 }
+
+/// The width of the spin arrows at the right of a field, points.
+pub const SPIN_W: f32 = 11.0;
 
 /// The width of a field added without a size (see [`NumField::width`]).
 pub const DEFAULT_WIDTH: f32 = 64.0;
@@ -33,12 +43,23 @@ impl<'a, N: Numeric> NumField<'a, N> {
             value,
             range: None,
             suffix: String::new(),
+            prefix: String::new(),
             min_decimals: 0,
             max_decimals: None,
             unit_mm: None,
             width: DEFAULT_WIDTH,
             mixed: false,
+            step: 1.0,
         }
+    }
+
+    /// What the spin arrows and the mouse wheel add or take (1 unless
+    /// given).
+    pub fn step(mut self, step: f64) -> Self {
+        if step.is_finite() && step > 0.0 {
+            self.step = step;
+        }
+        self
     }
 
     /// Show the field empty because the selected objects differ in this
@@ -60,8 +81,15 @@ impl<'a, N: Numeric> NumField<'a, N> {
         self
     }
 
-    /// Kept for the builder's shape: the field is typed into, not dragged.
-    pub fn speed(self, _speed: impl Into<f64>) -> Self {
+    /// The step of the arrows and the wheel (`DragValue` calls it the
+    /// speed).
+    pub fn speed(self, speed: impl Into<f64>) -> Self {
+        self.step(speed.into())
+    }
+
+    /// A label just before the box, such as `X:`.
+    pub fn prefix(mut self, prefix: impl ToString) -> Self {
+        self.prefix = prefix.to_string().trim_end().to_string();
         self
     }
 
@@ -137,11 +165,18 @@ impl<N: Numeric> Widget for NumField<'_, N> {
         let mut buf = stored.clone().unwrap_or_else(|| shown.clone());
         // Fill a sized slot; otherwise keep to the field's own width, so a
         // field in a row of controls does not take the rest of the row.
-        let width = if ui.layout().horizontal_justify() {
-            f32::INFINITY
+        // The spin arrows take their width at the right of the box.
+        let justified = ui.layout().horizontal_justify();
+        let width = if justified {
+            (ui.available_width() - SPIN_W).max(16.0)
         } else {
-            self.width
+            (self.width - SPIN_W).max(16.0)
         };
+        if !self.prefix.is_empty() {
+            ui.label(&self.prefix);
+        }
+        let spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.x = 0.0;
         let mut resp = ui.add(
             TextEdit::singleline(&mut buf)
                 .id(id)
@@ -149,6 +184,99 @@ impl<N: Numeric> Widget for NumField<'_, N> {
                 .vertical_align(egui::Align::Center)
                 .desired_width(width),
         );
+        // The arrows: up over down, each half the box's height.
+        let (spin, spin_resp) =
+            ui.allocate_exact_size(egui::vec2(SPIN_W, resp.rect.height()), egui::Sense::click());
+        ui.spacing_mut().item_spacing = spacing;
+        // The direction of a step and the modifiers held for it.
+        let mut stepped: Option<(f64, egui::Modifiers)> = None;
+        if ui.is_rect_visible(spin) {
+            let p = ui.painter();
+            p.rect_filled(spin, 0.0, crate::theme::Tokens::field());
+            let line = egui::Stroke::new(1.0, crate::theme::Tokens::control_border());
+            p.line_segment([spin.left_top(), spin.left_bottom()], line);
+            let hover = spin_resp.hover_pos();
+            let halves = [
+                (
+                    egui::Rect::from_min_max(spin.min, egui::pos2(spin.max.x, spin.center().y)),
+                    1.0,
+                ),
+                (
+                    egui::Rect::from_min_max(egui::pos2(spin.min.x, spin.center().y), spin.max),
+                    -1.0,
+                ),
+            ];
+            for (half, dir) in halves {
+                let over = hover.is_some_and(|h| half.contains(h));
+                if over {
+                    p.rect_filled(half.shrink(1.0), 0.0, crate::theme::Tokens::icon_off());
+                }
+                let c = half.center();
+                let col = if over {
+                    crate::theme::Tokens::text()
+                } else {
+                    crate::theme::Tokens::text_dim()
+                };
+                let (a, b, t) = (
+                    c + egui::vec2(-2.5, 1.5 * dir as f32),
+                    c + egui::vec2(2.5, 1.5 * dir as f32),
+                    c + egui::vec2(0.0, -1.5 * dir as f32),
+                );
+                p.add(egui::epaint::PathShape::convex_polygon(
+                    vec![a, b, t],
+                    col,
+                    egui::Stroke::NONE,
+                ));
+                if spin_resp.clicked()
+                    && spin_resp
+                        .interact_pointer_pos()
+                        .is_some_and(|q| half.contains(q))
+                {
+                    stepped = Some((dir, ui.input(|i| i.modifiers)));
+                }
+            }
+        }
+        // The wheel over the box or the arrows.
+        if ui.rect_contains_pointer(resp.rect) || ui.rect_contains_pointer(spin) {
+            let scroll: Option<(f32, egui::Modifiers)> = ui.input(|i| {
+                i.raw.events.iter().rev().find_map(|e| match e {
+                    egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } if delta.y != 0.0 => Some((delta.y, *modifiers)),
+                    _ => None,
+                })
+            });
+            if let Some((dy, mods)) = scroll {
+                stepped = Some((if dy > 0.0 { 1.0 } else { -1.0 }, mods));
+            }
+        }
+        if let Some((dir, mods)) = stepped {
+            let factor = if mods.command {
+                0.1
+            } else if mods.shift {
+                10.0
+            } else {
+                1.0
+            };
+            let mut v = self.value.to_f64() + dir * self.step * factor;
+            if let Some((lo, hi)) = self.range {
+                v = v.clamp(lo.min(hi), hi.max(lo));
+            }
+            if N::INTEGRAL {
+                v = v.round();
+            }
+            // A value typed and not applied yet goes; the step counts
+            // from the value held.
+            ui.data_mut(|d| d.remove::<String>(id));
+            if resp.has_focus() {
+                resp.surrender_focus();
+            }
+            if v != self.value.to_f64() {
+                *self.value = N::from_f64(v);
+                resp.mark_changed();
+            }
+            return resp;
+        }
         if self.mixed {
             resp = resp.on_hover_text(crate::i18n::tr("docker.mixed_tip"));
         }
@@ -390,6 +518,114 @@ impl<'a> Expr<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The spin arrows at the right of a field and the mouse wheel over
+    /// it step the value: a unit (or the field's step), ten with Shift,
+    /// a tenth with Ctrl, within the range; a whole-number field stays
+    /// whole.
+    #[test]
+    fn arrows_and_the_wheel_step_the_value() {
+        let ctx = crate::theme::ui_context();
+        let mut v = 10.0f64;
+        let mut n = 3i32;
+        let origin = egui::pos2(100.0, 100.0);
+        let run =
+            |v: &mut f64, n: &mut i32, events: Vec<egui::Event>| -> (egui::Rect, egui::Rect) {
+                let mut rects = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(600.0, 400.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Area::new(egui::Id::new("fields"))
+                            .fixed_pos(origin)
+                            .show(ui.ctx(), |ui| {
+                                ui.horizontal(|ui| {
+                                    let a = ui.add(NumField::new(v).range(0.0..=12.0).step(0.5));
+                                    let b = ui.add(NumField::new(n).range(0..=100));
+                                    rects = (a.rect, b.rect);
+                                });
+                            });
+                    },
+                );
+                out.textures_delta.clear();
+                rects
+            };
+        // The first frame lays the area out; the second has it in place.
+        run(&mut v, &mut n, Vec::new());
+        let (a, b) = run(&mut v, &mut n, Vec::new());
+        assert!(a.width() > 0.0 && b.left() > a.right());
+        assert!(a.left() >= origin.x && a.top() >= origin.y, "{a:?}");
+        // The pointer arrives one frame, the wheel turns the next (a
+        // widget is hovered from the frame after the pointer reaches it).
+        let wheel = |v: &mut f64, n: &mut i32, at: egui::Pos2, up: bool, mods: egui::Modifiers| {
+            run(v, n, vec![egui::Event::PointerMoved(at)]);
+            run(
+                v,
+                n,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, if up { 1.0 } else { -1.0 }),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: mods,
+                }],
+            );
+        };
+        // The wheel over the first field: half a unit up, ten halves
+        // with Shift, within the range; Ctrl a twentieth.
+        wheel(&mut v, &mut n, a.center(), true, egui::Modifiers::NONE);
+        assert_eq!(v, 10.5);
+        wheel(&mut v, &mut n, a.center(), true, egui::Modifiers::SHIFT);
+        assert_eq!(v, 12.0, "clamped to the range");
+        wheel(&mut v, &mut n, a.center(), false, egui::Modifiers::COMMAND);
+        assert!((v - 11.95).abs() < 1e-9, "{v}");
+        // The arrows at the right of the second field (past its box): up
+        // then down.
+        let spin_x = b.right() + SPIN_W / 2.0;
+        let click = |v: &mut f64, n: &mut i32, at: egui::Pos2| {
+            run(v, n, vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                run(
+                    v,
+                    n,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            run(v, n, Vec::new());
+        };
+        click(
+            &mut v,
+            &mut n,
+            egui::pos2(spin_x, b.top() + b.height() * 0.25),
+        );
+        assert_eq!(n, 4);
+        click(
+            &mut v,
+            &mut n,
+            egui::pos2(spin_x, b.top() + b.height() * 0.75),
+        );
+        click(
+            &mut v,
+            &mut n,
+            egui::pos2(spin_x, b.top() + b.height() * 0.75),
+        );
+        assert_eq!(n, 2);
+        // The wheel on the whole-number field with Ctrl: still whole.
+        wheel(&mut v, &mut n, b.center(), true, egui::Modifiers::COMMAND);
+        assert_eq!(n, 2);
+        wheel(&mut v, &mut n, b.center(), true, egui::Modifiers::NONE);
+        assert_eq!(n, 3);
+    }
 
     #[test]
     fn typed_values_read_units_decimal_commas_and_sums() {

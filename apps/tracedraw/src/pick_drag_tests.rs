@@ -188,6 +188,92 @@ fn a_right_click_while_dragging_leaves_the_original() {
     assert!(app.dialog_is_none_or_menu_closed());
 }
 
+/// Repeat after a copy made with a right click during a drag makes
+/// another copy, as far again from the last one (#363).
+#[test]
+fn repeat_after_a_right_click_copy_makes_another_copy() {
+    let (ctx, mut app, id) = setup();
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    let to = from + egui::vec2(150.0, 0.0);
+    let right = |p: Pos2, down: bool| button(p, down, PointerButton::Secondary, Modifiers::NONE);
+    let mid = from + (to - from) * 0.5;
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        to,
+        Modifiers::NONE,
+        vec![right(mid, true), right(mid, false)],
+    );
+    assert_eq!(shape_count(&app), 2);
+    let first = app.selection[0];
+    let step = bounds(&app, first).x0 - bounds(&app, id).x0;
+    assert!(step > 5.0, "{step}");
+    app.repeat_last();
+    assert_eq!(shape_count(&app), 3, "Repeat makes a third copy");
+    let second = app.selection[0];
+    assert!(second != first && second != id);
+    assert!(close(
+        bounds(&app, second).x0,
+        bounds(&app, first).x0 + step
+    ));
+    assert!(
+        close(bounds(&app, first).x0, bounds(&app, id).x0 + step),
+        "the first copy stays"
+    );
+    app.repeat_last();
+    assert_eq!(shape_count(&app), 4);
+}
+
+/// Repeat after an undo repeats the last action still in effect, not the
+/// one just undone; after a redo the redone action is the last again
+/// (#366).
+#[test]
+fn repeat_after_an_undo_takes_the_last_action_still_in_effect() {
+    use tracedraw_core::{Affine, Command};
+    let (_ctx, mut app, id) = setup();
+    app.select(vec![id]);
+    // A: a move; B: a rotation.
+    app.transform_selection(Affine::translate((10.0, 0.0)));
+    let after_a = bounds(&app, id);
+    let c = after_a.center();
+    app.transform_selection(Affine::rotate_about(std::f64::consts::FRAC_PI_2, c));
+    assert!(!close(bounds(&app, id).width(), after_a.width()));
+    app.undo();
+    assert!(close(bounds(&app, id).width(), after_a.width()));
+    // Repeat: the move again, not the rotation.
+    app.repeat_last();
+    let b = bounds(&app, id);
+    assert!(close(b.x0, after_a.x0 + 10.0), "{b:?} {after_a:?}");
+    assert!(close(b.width(), after_a.width()), "not turned: {b:?}");
+    // Undo that, redo the rotation: Repeat turns again.
+    app.undo();
+    app.redo();
+    let turned = bounds(&app, id);
+    app.repeat_last();
+    assert!(
+        close(bounds(&app, id).width(), after_a.width()),
+        "turned a second time: {:?} {turned:?}",
+        bounds(&app, id)
+    );
+    // An undone action followed by another change is never repeated.
+    app.undo();
+    app.undo();
+    app.run(Command::SetOpacity {
+        shapes: vec![id],
+        opacity: 0.5,
+    });
+    app.run(Command::SetOpacity {
+        shapes: vec![id],
+        opacity: 1.0,
+    });
+    app.undo();
+    // The opacity of 0.5 is the last action in effect.
+    app.repeat_last();
+    let op = app.doc().find_shape(id).map(|s| s.opacity).expect("shape");
+    assert!(close(op, 0.5), "{op}");
+}
+
 #[test]
 fn esc_cancels_a_drag() {
     let (ctx, mut app, id) = setup();
@@ -380,14 +466,40 @@ fn handle_modifiers_shape_the_scale() {
         both,
     );
     assert!(close(at(t, 40.0, 10.0).x, -20.0));
-    // A corner keeps the proportions unless Alt frees it.
+    // A corner keeps the proportions unless Alt frees it, by where the
+    // pointer falls along the box's diagonal (#383): (2 * 40² + 1 * 20²) /
+    // (40² + 20²) = 1.8; on the diagonal the corner follows the pointer.
     let t = scale(
         Handle::NE,
         Point::new(0.0, 0.0),
         Point::new(80.0, 20.0),
         none,
     );
-    assert!(close(at(t, 40.0, 20.0).y, 40.0));
+    assert!(close(at(t, 40.0, 20.0).y, 36.0) && close(at(t, 40.0, 20.0).x, 72.0));
+    let t = scale(
+        Handle::NE,
+        Point::new(0.0, 0.0),
+        Point::new(60.0, 30.0),
+        none,
+    );
+    assert!(close(at(t, 40.0, 20.0).x, 60.0) && close(at(t, 40.0, 20.0).y, 30.0));
+    // On a wide, low box a 1 mm move up grows it less than a 1 mm move to
+    // the right: the long side sets the pace (with the larger of the two
+    // ratios the move up grew it twice as fast).
+    let up = scale(
+        Handle::NE,
+        Point::new(0.0, 0.0),
+        Point::new(40.0, 21.0),
+        none,
+    );
+    let right = scale(
+        Handle::NE,
+        Point::new(0.0, 0.0),
+        Point::new(41.0, 20.0),
+        none,
+    );
+    let k = |t: Affine| t.as_coeffs()[0];
+    assert!(k(up) < k(right) && k(up) > 1.0, "{} {}", k(up), k(right));
     let t = scale(
         Handle::NE,
         Point::new(0.0, 0.0),
@@ -2080,6 +2192,171 @@ fn bspline_clicks_place_control_points_of_a_smooth_curve() {
     assert!(near(c.p1, pts[1]) && near(c.p2, pts[2]), "{c:?}");
 }
 
+/// A B-spline keeps its control points: the Shape tool shows them
+/// instead of the curve's nodes, dragging one reshapes the spline, a
+/// double-click on the control polygon adds one and a double-click on a
+/// control point removes it. Any other edit of the outline leaves an
+/// ordinary curve.
+#[test]
+fn a_bspline_keeps_its_control_points_for_the_shape_tool() {
+    use tracedraw_core::geometry::bspline_path;
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::BSpline);
+    let pts = [
+        Point::new(100.0, 150.0),
+        Point::new(130.0, 190.0),
+        Point::new(180.0, 180.0),
+        Point::new(190.0, 140.0),
+    ];
+    for p in pts {
+        let at = app.view.to_screen(p);
+        click_at(&ctx, &mut app, at, Modifiers::NONE);
+    }
+    app.finish_curve();
+    let id = app.selection[0];
+    let spline = |app: &App| app.doc().find_shape(id).expect("shape").spline.clone();
+    let near = |a: &[Point], b: &[Point]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (*p - *q).hypot() < 0.5)
+    };
+    assert!(
+        near(&spline(&app).expect("spline"), &pts),
+        "{:?}",
+        spline(&app)
+    );
+    // One undo step for the whole curve.
+    app.undo();
+    assert!(app.doc().find_shape(id).is_none());
+    app.redo();
+    assert!(
+        near(&spline(&app).expect("spline"), &pts),
+        "{:?}",
+        spline(&app)
+    );
+
+    // The Shape tool: the control points are the nodes shown; a drag of
+    // the second one reshapes the spline.
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(app.node_at(pts[1]).is_none());
+    assert!(matches!(
+        app.kind_node_at(pts[1]),
+        Some((_, crate::kind_nodes::KindNode::Spline { index: 1 }))
+    ));
+    let moved = Point::new(130.0, 210.0);
+    let (from, to) = (app.view.to_screen(pts[1]), app.view.to_screen(moved));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let mut now = pts.to_vec();
+    now[1] = moved;
+    assert!(
+        near(&spline(&app).expect("spline"), &now),
+        "{:?}",
+        spline(&app)
+    );
+    assert_eq!(
+        last_path(&app),
+        bspline_path(&spline(&app).expect("spline"), false)
+    );
+    assert_eq!(app.engine.undo_label(), Some("Edit B-Spline"));
+
+    // A double-click on the control polygon (between the third and the
+    // fourth point) adds a control point there.
+    let double = |ctx: &egui::Context, app: &mut App, at: Pos2| {
+        // Well past the triple-click time since the last click, so these
+        // two clicks make a double-click and not a triple.
+        for _ in 0..40 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+        frame(ctx, app, vec![Event::PointerMoved(at)], Modifiers::NONE);
+        for _ in 0..2 {
+            frame(
+                ctx,
+                app,
+                vec![button(at, true, PointerButton::Primary, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+            frame(
+                ctx,
+                app,
+                vec![button(at, false, PointerButton::Primary, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+        }
+        for _ in 0..20 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+    };
+    let mid = now[2].midpoint(now[3]);
+    let at = app.view.to_screen(mid);
+    double(&ctx, &mut app, at);
+    let five = spline(&app).expect("spline");
+    assert_eq!(five.len(), 5, "{five:?}");
+    assert!((five[3] - mid).hypot() < 0.5, "{five:?}");
+    // A double-click on a control point removes it.
+    let at = app.view.to_screen(five[3]);
+    double(&ctx, &mut app, at);
+    assert!(
+        near(&spline(&app).expect("spline"), &now),
+        "{:?}",
+        spline(&app)
+    );
+
+    // Convert To Curves: the outline stays, the control points go, and
+    // the Shape tool shows the curve's nodes.
+    let outline = last_path(&app);
+    app.select(vec![id]);
+    assert!(app.can_convert_to_curves());
+    app.convert_to_curves();
+    assert_eq!(spline(&app), None);
+    assert_eq!(last_path(&app), outline);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(app.node_at(pts[0]).is_some());
+}
+
+/// Typing while a field has the keyboard (the font search field of the
+/// property bar) goes to the field, not to the text being edited (#342).
+#[test]
+fn typing_in_a_focused_field_leaves_the_edited_text_alone() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.settings.autocorrect.enabled = false;
+    app.start_text(Point::new(30.0, 50.0), None);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // Typed on the canvas: into the text.
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("ab".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.edit_text(), "ab");
+    // A field takes the keyboard (as a click in the font search field
+    // does): what is typed goes there.
+    let field = egui::Id::new("some_field");
+    ctx.memory_mut(|m| m.request_focus(field));
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    ctx.memory_mut(|m| m.request_focus(field));
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("cd".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.edit_text(), "ab");
+    assert!(app.text_edit.is_some());
+    // The keyboard back on the canvas: typing edits the text again.
+    ctx.memory_mut(|m| m.surrender_focus(field));
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("e".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.edit_text(), "abe");
+}
+
 /// With alignment guides on (and every other snapping off), a move of the
 /// rectangle near another one lands its top edge on the other's top and
 /// shows the line while the button is down; a scale handle lines up the
@@ -2256,6 +2533,48 @@ fn a_pen_click_after_a_pulled_node_follows_its_handle() {
     );
 }
 
+/// A 3-point curve whose chord starts on an end node of the selected
+/// curve continues it, and one that ends on the other end node closes
+/// it (the owner's report: the second curve left the object open).
+#[test]
+fn a_three_point_curve_continues_and_closes_the_selected_curve() {
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    app.set_tool(Tool::ThreePointCurve);
+    let before = shape_count(&app);
+    let (a, b) = (Point::new(100.0, 150.0), Point::new(160.0, 150.0));
+    // The chord, then the point the curve passes through.
+    pull(&ctx, &mut app, a, b);
+    click_page(&ctx, &mut app, Point::new(130.0, 170.0));
+    assert_eq!(shape_count(&app), before + 1);
+    let id = app.selection[0];
+    assert_eq!(last_path(&app).segments().count(), 1);
+    // A second curve from the end node back to the start node: the same
+    // object, closed, with two segments.
+    pull(&ctx, &mut app, b, a);
+    click_page(&ctx, &mut app, Point::new(130.0, 130.0));
+    assert_eq!(shape_count(&app), before + 1, "no new object");
+    assert_eq!(app.selection, vec![id]);
+    let p = last_path(&app);
+    assert_eq!(p.segments().count(), 2, "{p:?}");
+    assert!(
+        p.elements()
+            .iter()
+            .any(|e| matches!(e, tracedraw_core::geometry::PathEl::ClosePath)),
+        "closed: {p:?}"
+    );
+    // A chord away from the curve: a curve of its own.
+    pull(
+        &ctx,
+        &mut app,
+        Point::new(200.0, 200.0),
+        Point::new(240.0, 200.0),
+    );
+    click_page(&ctx, &mut app, Point::new(220.0, 220.0));
+    assert_eq!(shape_count(&app), before + 2);
+}
+
 #[test]
 fn clicking_the_last_node_again_makes_it_a_cusp() {
     let (ctx, mut app, _) = setup();
@@ -2278,7 +2597,7 @@ fn clicking_the_last_node_again_makes_it_a_cusp() {
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(over)),
-        ToolCursor::CurveBadge(Tool::Pen, crate::ui::cursors::CurveMark::EditNode)
+        ToolCursor::PenNib(Some(crate::ui::cursors::CurveMark::EditNode))
     );
     click_page(&ctx, &mut app, b);
     assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(2));
@@ -2315,7 +2634,7 @@ fn dragging_from_the_first_node_shapes_only_the_closing_segment() {
     let over = app.view.to_screen(a);
     assert_eq!(
         for_tool(&app, false, false, false, Some(over)),
-        ToolCursor::CurveBadge(Tool::Pen, crate::ui::cursors::CurveMark::Close)
+        ToolCursor::PenNib(Some(crate::ui::cursors::CurveMark::Close))
     );
     pull(&ctx, &mut app, a, Point::new(90.0, 140.0));
     assert!(app.curve.is_none());
@@ -2324,8 +2643,8 @@ fn dragging_from_the_first_node_shapes_only_the_closing_segment() {
     // The first node keeps its own outgoing handle.
     let s0 = cubic(segs[0]);
     assert!(near(s0.p1, a_out), "{s0:?}");
-    // The closing segment arrives at the first node along the mirror of
-    // the drag.
+    // The closing segment arrives at the first node along the drag: its
+    // handle at the first node is where the pointer was let go (#358).
     let last = segs
         .iter()
         .rev()
@@ -2334,8 +2653,64 @@ fn dragging_from_the_first_node_shapes_only_the_closing_segment() {
             _ => None,
         })
         .expect("a curved closing segment");
-    assert!(near(last.p2, Point::new(110.0, 160.0)), "{last:?}");
+    assert!(near(last.p2, Point::new(90.0, 140.0)), "{last:?}");
     assert!(near(last.p1, Point::new(160.0, 130.0)), "{last:?}");
+}
+
+/// A click on the first node closes the curve with the segment the
+/// preview showed: it leaves the last node along its handle and arrives
+/// at the first with no handle (#359). Two curved nodes close into a
+/// leaf (#356).
+#[test]
+fn a_click_on_the_first_node_keeps_the_last_handle_and_two_nodes_close() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let a = Point::new(100.0, 150.0);
+    pull(&ctx, &mut app, a, Point::new(110.0, 170.0));
+    let b = Point::new(160.0, 150.0);
+    let b_out = Point::new(170.0, 130.0);
+    pull(&ctx, &mut app, b, b_out);
+    // Two nodes: the pointer over the first one shows a close.
+    let over = app.view.to_screen(a);
+    assert_eq!(
+        for_tool(&app, false, false, false, Some(over)),
+        ToolCursor::PenNib(Some(crate::ui::cursors::CurveMark::Close))
+    );
+    click_page(&ctx, &mut app, a);
+    assert!(app.curve.is_none(), "closed");
+    let path = last_path(&app);
+    assert!(
+        path.elements()
+            .iter()
+            .any(|e| matches!(e, tracedraw_core::geometry::PathEl::ClosePath)),
+        "{path:?}"
+    );
+    assert_eq!(tracedraw_core::nodes::nodes(&path).len(), 2, "{path:?}");
+    let closing = path
+        .segments()
+        .filter_map(|s| match s {
+            tracedraw_core::geometry::PathSeg::Cubic(c) if near(c.p3, a) => Some(c),
+            _ => None,
+        })
+        .last()
+        .expect("a curved closing segment");
+    // It leaves the last node along its handle and arrives with none.
+    assert!(
+        near(closing.p0, b) && near(closing.p1, b_out),
+        "{closing:?}"
+    );
+    assert!(near(closing.p2, a), "{closing:?}");
+    // A polyline still needs three nodes to close.
+    app.select(Vec::new());
+    app.set_tool(Tool::Polyline);
+    click_page(&ctx, &mut app, Point::new(20.0, 200.0));
+    click_page(&ctx, &mut app, Point::new(60.0, 200.0));
+    let over = app.view.to_screen(Point::new(20.0, 200.0));
+    assert_ne!(
+        for_tool(&app, false, false, false, Some(over)),
+        ToolCursor::CurveBadge(Tool::Polyline, crate::ui::cursors::CurveMark::Close)
+    );
 }
 
 /// A curve from (100, 100) through (150, 100) to (200, 100), selected,
@@ -2375,12 +2750,12 @@ fn the_pen_adds_a_node_on_a_segment_and_drags_a_node_of_the_selected_curve() {
     let on_node = app.view.to_screen(Point::new(150.0, 100.0));
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_segment)),
-        ToolCursor::CurveBadge(Tool::Pen, CurveMark::AddNode)
+        ToolCursor::PenNib(Some(CurveMark::AddNode))
     );
     // With Auto add/delete (the default) a click on the node deletes it.
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_node)),
-        ToolCursor::CurveBadge(Tool::Pen, CurveMark::DeleteNode)
+        ToolCursor::PenNib(Some(CurveMark::DeleteNode))
     );
     click_at(&ctx, &mut app, on_segment, Modifiers::NONE);
     assert_eq!(node_count(&app, id), 4);
@@ -2608,6 +2983,88 @@ fn an_unfilled_rectangle_over_text_takes_the_click_and_alt_reaches_the_text() {
     assert_eq!(kinds_bottom_up(&back), ["text", "shape"]);
 }
 
+/// Moving objects over a clip frame: dropped as they are they land over
+/// it; with W held they go into it; with K held they replace its
+/// contents. The frame under the pointer is noted during the move.
+#[test]
+fn dropping_on_a_clip_frame_with_w_or_k_puts_the_objects_in() {
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    let (rect, text) = text_and_frame(&mut app, true, false);
+    app.place_inside(vec![text], rect);
+    let clip = app.doc().top_level_of(text).expect("clip frame");
+    app.settings.clip_frame.auto_center = crate::settings::AutoCenter::Never;
+    // A small square away from the frame.
+    let square = |app: &mut App| {
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(200.0, 20.0, 220.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("square")
+    };
+    let from = app.view.to_screen(Point::new(210.0, 30.0));
+    let to = app.view.to_screen(Point::new(60.0, 45.0));
+    let hold = |k: egui::Key| vec![key(k, Modifiers::NONE)];
+    let release = |k: egui::Key| Event::Key {
+        key: k,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    // No key: the square lands over the frame, on its own.
+    let a = square(&mut app);
+    app.select(vec![a]);
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    assert_eq!(app.doc().top_level_of(a), Some(a));
+    assert!(app.drop_frame.is_none());
+    app.select(vec![a]);
+    app.delete_selection();
+    // W held during the move: into the frame, which is then selected.
+    let b = square(&mut app);
+    app.select(vec![b]);
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        to,
+        Modifiers::NONE,
+        hold(egui::Key::W),
+    );
+    frame(&ctx, &mut app, vec![release(egui::Key::W)], Modifiers::NONE);
+    assert_eq!(app.doc().top_level_of(b), Some(clip), "in the frame");
+    assert!(
+        app.doc().find_shape(text).is_some(),
+        "the old contents stay"
+    );
+    assert_eq!(app.selection, vec![clip]);
+    assert_eq!(app.tool, Tool::Pick, "W picked no tool");
+    // K held: the old contents go, the square takes their place.
+    let c = square(&mut app);
+    app.select(vec![c]);
+    let depth = app.engine.history_labels().0.len();
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        to,
+        Modifiers::NONE,
+        hold(egui::Key::K),
+    );
+    frame(&ctx, &mut app, vec![release(egui::Key::K)], Modifiers::NONE);
+    assert_eq!(app.doc().top_level_of(c), Some(clip));
+    assert!(app.doc().find_shape(text).is_none(), "replaced");
+    assert!(app.doc().find_shape(b).is_none(), "replaced");
+    assert_eq!(
+        app.engine.history_labels().0.len(),
+        depth + 2,
+        "the move, then the drop"
+    );
+    assert_eq!(app.tool, Tool::Pick);
+}
+
 #[test]
 fn ctrl_click_takes_the_contents_of_a_clip_frame() {
     let (ctx, mut app, first) = setup();
@@ -2739,11 +3196,11 @@ fn the_pen_deletes_a_node_of_the_selected_curve_and_the_toggle_turns_it_off() {
     app.settings.curves.pen_auto_add_delete = false;
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_node)),
-        ToolCursor::CurveBadge(Tool::Pen, CurveMark::EditNode)
+        ToolCursor::PenNib(Some(CurveMark::EditNode))
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_segment)),
-        ToolCursor::Badge(Tool::Pen)
+        ToolCursor::PenNib(None)
     );
     click_at(&ctx, &mut app, on_node, Modifiers::NONE);
     assert_eq!(node_count(&app, id), 3);
@@ -2784,11 +3241,11 @@ fn the_pen_adds_and_deletes_nodes_on_the_curve_being_drawn() {
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_segment)),
-        ToolCursor::CurveBadge(Tool::Pen, CurveMark::AddNode)
+        ToolCursor::PenNib(Some(CurveMark::AddNode))
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_node)),
-        ToolCursor::CurveBadge(Tool::Pen, CurveMark::DeleteNode)
+        ToolCursor::PenNib(Some(CurveMark::DeleteNode))
     );
     click_page(&ctx, &mut app, Point::new(120.0, 150.0));
     let xs: Vec<f64> = app
@@ -2918,7 +3375,7 @@ fn c_during_the_closing_drag_keeps_the_first_node_handle() {
             _ => None,
         })
         .expect("a curved closing segment");
-    assert!(near(closing.p2, Point::new(110.0, 160.0)), "{closing:?}");
+    assert!(near(closing.p2, Point::new(90.0, 140.0)), "{closing:?}");
 }
 
 #[test]
@@ -3293,7 +3750,7 @@ fn the_page_bar_does_nothing_on_the_welcome_screen() {
         }
     }
     let landscape = landscape.expect("the landscape button is on the bar");
-    app.engine.undo();
+    let _ = app.engine.undo();
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     assert_eq!(size(&app), portrait);
     // The Welcome Screen shown (the drawing behind it): the bar is pale.
@@ -3562,4 +4019,328 @@ fn the_constrain_key_can_be_shift_or_alt() {
         click_at(&ctx, &mut app, b, other);
         assert!(!level(&app), "{key:?}: another key does not constrain");
     }
+}
+
+/// Shift with a marquee turns over the selection of the objects it takes
+/// (#401): one picked, a Shift marquee round all three leaves the other
+/// two picked.
+#[test]
+fn a_shift_marquee_inverts_the_objects_it_takes() {
+    let (ctx, mut app, first) = setup();
+    let rect = |app: &mut App, x: f64| {
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(x, 10.0, x + 20.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect")
+    };
+    let b = rect(&mut app, 80.0);
+    let c = rect(&mut app, 120.0);
+    app.select(vec![first]);
+    let from = app.view.to_screen(Point::new(0.0, 60.0));
+    let to = app.view.to_screen(Point::new(150.0, 0.0));
+    drag(&ctx, &mut app, from, to, Modifiers::SHIFT, Vec::new());
+    let mut got = app.selection.clone();
+    got.sort();
+    let mut want = vec![b, c];
+    want.sort();
+    assert_eq!(got, want);
+    // Without Shift a marquee picks all three.
+    app.select(vec![first]);
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    assert_eq!(app.selection.len(), 3);
+}
+
+/// With the Shape tool, the align keys align the selected nodes (#364):
+/// T to the top node, L to the leftmost, E to the middle of their box;
+/// handles move with their node; one undo step each.
+#[test]
+fn align_keys_align_selected_nodes_in_the_shape_tool() {
+    let (ctx, mut app, id) = setup();
+    let mut path = tracedraw_core::BezPath::new();
+    path.move_to((10.0, 10.0));
+    path.curve_to((20.0, 10.0), (30.0, 20.0), (40.0, 30.0));
+    path.line_to((70.0, 20.0));
+    app.select(vec![id]);
+    app.delete_selection();
+    let c = app
+        .new_shape(ShapeKind::Path {
+            path,
+            closed: false,
+        })
+        .expect("curve");
+    app.select(vec![c]);
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let ns = |app: &App| match app.doc().find_shape(c).map(|s| s.kind.clone()) {
+        Some(ShapeKind::Path { path, .. }) => tracedraw_core::nodes::nodes(&path),
+        _ => panic!("curve"),
+    };
+    let all: Vec<_> = ns(&app).iter().map(|n| (c, n.index)).collect();
+    assert_eq!(all.len(), 3);
+    app.node_selection = all;
+    let press = |app: &mut App, k: egui::Key| {
+        frame(&ctx, app, vec![key(k, Modifiers::NONE)], Modifiers::NONE);
+    };
+    press(&mut app, egui::Key::T);
+    let after = ns(&app);
+    assert!(
+        after.iter().all(|n| (n.pos.y - 30.0).abs() < 1e-9),
+        "{after:?}"
+    );
+    // The first node's outgoing handle moved with it, 20 mm up.
+    let first = &after[0];
+    assert!((first.ctrl_out.expect("handle").y - 30.0).abs() < 1e-9);
+    assert_eq!(app.tool, Tool::Shape);
+    assert_eq!(app.selection, vec![c]);
+    press(&mut app, egui::Key::L);
+    assert!(ns(&app).iter().all(|n| (n.pos.x - 10.0).abs() < 1e-9));
+    app.undo();
+    let back = ns(&app);
+    assert!((back[2].pos.x - 70.0).abs() < 1e-9, "{back:?}");
+    press(&mut app, egui::Key::E);
+    assert!(ns(&app).iter().all(|n| (n.pos.y - 30.0).abs() < 1e-9));
+    // One node: the keys do what they did before (nothing to the nodes).
+    app.node_selection.truncate(1);
+    assert!(!app.align_nodes_to(crate::ops::Align::Bottom));
+}
+
+/// A Pen curve keeps its anchors in the history once it is closed and
+/// deselected (#360): Ctrl+Z opens it first, then takes the anchors back
+/// one by one, and redo builds it again.
+#[test]
+fn a_finished_pen_curve_undoes_anchor_by_anchor() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let pts = [
+        Point::new(100.0, 150.0),
+        Point::new(150.0, 150.0),
+        Point::new(150.0, 200.0),
+        Point::new(100.0, 200.0),
+    ];
+    for p in pts {
+        click_page(&ctx, &mut app, p);
+        for _ in 0..40 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+    }
+    // A click on the first node closes it.
+    click_page(&ctx, &mut app, pts[0]);
+    assert!(app.curve.is_none());
+    let id = *app.selection.first().expect("the new curve");
+    let path_of = |app: &App| match app.doc().find_shape(id).map(|s| s.kind.clone()) {
+        Some(ShapeKind::Path { path, closed }) => Some((path, closed)),
+        _ => None,
+    };
+    let count = |p: &tracedraw_core::BezPath| tracedraw_core::nodes::nodes(p).len();
+    let (closed_path, closed) = path_of(&app).expect("curve");
+    assert!(closed);
+    assert_eq!(count(&closed_path), 4);
+    // Deselected, then undone step by step.
+    app.select(Vec::new());
+    app.undo();
+    let (p, closed) = path_of(&app).expect("open again");
+    assert!(!closed && count(&p) == 4, "{p:?}");
+    app.undo();
+    assert_eq!(path_of(&app).map(|(p, _)| count(&p)), Some(3));
+    app.undo();
+    assert_eq!(path_of(&app).map(|(p, _)| count(&p)), Some(2));
+    app.undo();
+    assert!(path_of(&app).is_none());
+    // Redo brings it back the same way, closed at the end.
+    for _ in 0..4 {
+        app.redo();
+    }
+    assert_eq!(path_of(&app), Some((closed_path, true)));
+    // The curve still has the default fill and outline of a closed curve.
+    let s = app.doc().find_shape(id).cloned().expect("curve");
+    let mut want = tracedraw_core::Shape::new(
+        id,
+        ShapeKind::Path {
+            path: s.page_path(),
+            closed: true,
+        },
+    );
+    app.doc().defaults.apply_to(&mut want);
+    assert_eq!((s.fill, s.stroke), (want.fill, want.stroke));
+}
+
+/// A scale handle follows the pointer from the frame the drag starts: no
+/// jump of the few pixels the pointer goes before a press becomes a drag
+/// (#383).
+#[test]
+fn a_scale_handle_follows_the_pointer_from_the_start() {
+    let (ctx, mut app, _) = setup();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let e = handle(&app, Handle::E);
+    let w = app.selection_bounds().expect("bounds").width() as f32 * app.view.zoom;
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(e)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(e, true, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let mut seen = Vec::new();
+    for i in 1..=20 {
+        let p = e + egui::vec2(i as f32, 0.0);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(p)],
+            Modifiers::NONE,
+        );
+        if let Some(t) = app.preview_transform_of(&app.drag) {
+            let want = 1.0 + i as f64 / f64::from(w);
+            seen.push((i, t.as_coeffs()[0], want));
+        }
+    }
+    assert!(!seen.is_empty());
+    for (i, got, want) in seen {
+        assert!((got - want).abs() < 0.01, "step {i}: {got} {want}");
+    }
+}
+
+/// The Shape tool on a B-spline: a marquee round one control point
+/// chooses it alone, Delete removes that point and keeps the curve, a
+/// click chooses one and Shift+click adds another, and a drag of a chosen
+/// point moves the chosen ones together (a delete took the whole curve).
+#[test]
+fn bspline_control_points_are_chosen_and_deleted_alone() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::BSpline);
+    let pts = [
+        Point::new(100.0, 150.0),
+        Point::new(130.0, 190.0),
+        Point::new(180.0, 180.0),
+        Point::new(190.0, 140.0),
+        Point::new(150.0, 120.0),
+    ];
+    for p in pts {
+        let at = app.view.to_screen(p);
+        click_at(&ctx, &mut app, at, Modifiers::NONE);
+    }
+    app.finish_curve();
+    let id = app.selection[0];
+    let spline = |app: &App| app.doc().find_shape(id).and_then(|s| s.spline.clone());
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // A marquee round the second point only.
+    let a = app
+        .view
+        .to_screen(pts[1] + tracedraw_core::geometry::Vec2::new(-6.0, -6.0));
+    let b = app
+        .view
+        .to_screen(pts[1] + tracedraw_core::geometry::Vec2::new(6.0, 6.0));
+    drag(&ctx, &mut app, a, b, Modifiers::NONE, Vec::new());
+    assert_eq!(app.node_selection, vec![(id, 1)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Delete, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let left = spline(&app).expect("the curve stays");
+    assert_eq!(left.len(), 4, "{left:?}");
+    assert!(left.iter().all(|p| (*p - pts[1]).hypot() > 1.0));
+    // A click chooses one point, Shift+click another; a drag moves both.
+    let at = app.view.to_screen(pts[2]);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.node_selection, vec![(id, 1)]);
+    let at = app.view.to_screen(pts[3]);
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    assert_eq!(app.node_selection, vec![(id, 1), (id, 2)]);
+    let from = app.view.to_screen(pts[2]);
+    let to = app
+        .view
+        .to_screen(pts[2] + tracedraw_core::geometry::Vec2::new(10.0, 0.0));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let moved = spline(&app).expect("spline");
+    assert!((moved[1].x - (pts[2].x + 10.0)).abs() < 1.0, "{moved:?}");
+    assert!((moved[2].x - (pts[3].x + 10.0)).abs() < 1.0, "{moved:?}");
+    assert!((moved[0] - pts[0]).hypot() < 0.5, "{moved:?}");
+}
+
+/// Editing a symmetry as in the reference program: a click picks one of
+/// its objects (not the group, not a copy) and the mode stays; a drag on a
+/// mirror line moves the centre; a click on a line shows handles that turn
+/// the lines; a marquee takes members; a new object joins.
+#[test]
+fn symmetry_editing_picks_members_and_drags_lines() {
+    use tracedraw_core::live::Effect;
+    let (ctx, mut app, a) = setup();
+    let b = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(10.0, 60.0, 30.0, 80.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![a, b]);
+    app.create_symmetry();
+    let g = app.symmetry_edit.expect("editing");
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // The rectangle a spans 10..60 x 10..40; the line is at x = 60.
+    let (_, c0, ang0, _) = app.edited_symmetry().expect("symmetry");
+    // A click on b picks b alone; the mode and its bar stay.
+    let at = app.view.to_screen(Point::new(20.0, 70.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.selection, vec![b]);
+    assert_eq!(app.symmetry_edit, Some(g));
+    assert!(app.edited_symmetry().is_some());
+    // A click on a copy (mirrored to the right of the line) picks nothing
+    // of the symmetry.
+    let at = app.view.to_screen(Point::new(100.0, 70.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(!app.selection.contains(&g));
+    // A drag on the line, away from the centre, moves the centre.
+    let from = app.view.to_screen(Point::new(c0.x, c0.y + 40.0));
+    let to = app.view.to_screen(Point::new(c0.x + 15.0, c0.y + 40.0));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let (_, c1, ang1, _) = app.edited_symmetry().expect("symmetry");
+    assert!((c1.x - (c0.x + 15.0)).abs() < 0.6, "{c0:?} -> {c1:?}");
+    assert!((ang1 - ang0).abs() < 1e-9);
+    // One undo takes the move back.
+    app.undo();
+    assert!((app.edited_symmetry().unwrap().1.x - c0.x).abs() < 1e-6);
+    // A click on the line shows the turning handles; dragging one turns.
+    let on_line = app.view.to_screen(Point::new(c0.x, c0.y + 30.0));
+    click_at(&ctx, &mut app, on_line, Modifiers::NONE);
+    assert!(app.symmetry_turning);
+    let hs = app.symmetry_handles();
+    assert_eq!(hs.len(), 2);
+    let h = hs[0];
+    let v = h - c0;
+    let turned = c0 + tracedraw_core::geometry::Vec2::new(-v.y, v.x);
+    let (hf, ht) = (app.view.to_screen(h), app.view.to_screen(turned));
+    drag(&ctx, &mut app, hf, ht, Modifiers::NONE, Vec::new());
+    let (_, _, ang2, _) = app.edited_symmetry().expect("symmetry");
+    let diff = (ang2 - ang0).rem_euclid(360.0);
+    assert!((diff - 90.0).abs() < 2.0, "{ang0} -> {ang2}");
+    // A marquee round both originals takes the two members.
+    app.set_tool(Tool::Pick);
+    let m0 = app.view.to_screen(Point::new(5.0, 5.0));
+    let m1 = app.view.to_screen(Point::new(63.0, 85.0));
+    // Start the marquee off the lines and the objects.
+    app.select(Vec::new());
+    drag(&ctx, &mut app, m0, m1, Modifiers::NONE, Vec::new());
+    let mut sel = app.selection.clone();
+    sel.sort();
+    assert_eq!(sel, vec![a, b]);
+    // Still one symmetry group holding both.
+    assert!(app.doc().find_shape(g).is_some_and(|s| s
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::Symmetry { .. }))));
 }

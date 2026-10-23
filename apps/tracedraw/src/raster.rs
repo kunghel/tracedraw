@@ -115,7 +115,7 @@ struct Key {
     simulate_overprints: bool,
     complex_effects: bool,
     proof: bool,
-    focus: Option<(ShapeId, u32)>,
+    focus: Option<(Vec<ShapeId>, u32)>,
     /// The Pixels view: the document pixels drawn (dpi, first column, top
     /// row).
     pixels: Option<(u64, i64, i64)>,
@@ -198,7 +198,7 @@ impl Raster {
         simulate_overprints: bool,
         complex_effects: bool,
         proof: bool,
-        focus: Option<(ShapeId, f32)>,
+        focus: Option<(Vec<ShapeId>, f32)>,
         pixel_dpi: Option<f64>,
     ) -> Option<(TextureId, Rect)> {
         let ppp = ctx.pixels_per_point();
@@ -222,7 +222,9 @@ impl Raster {
             simulate_overprints,
             complex_effects,
             proof,
-            focus: focus.map(|(id, v)| (id, (v * 1000.0) as u32)),
+            focus: focus
+                .as_ref()
+                .map(|(ids, v)| (ids.clone(), (v * 1000.0) as u32)),
             pixels: window
                 .zip(pixel_dpi)
                 .map(|(win, dpi)| ((dpi * 1000.0).round() as u64, win.ix0, win.iy1)),

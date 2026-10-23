@@ -2,7 +2,20 @@
 
 Both tools have two modes shown on the property bar: Select (sample)
 and Apply. A sample switches to Apply; the Select button or Esc goes
-back. Esc also drops the sample and returns to the Pick tool.
+back. Esc also drops the sample and returns to the Pick tool. The
+pointer is the pipette in Select mode and the paint bucket in Apply mode
+(the pipette again while Shift is held with the attributes eyedropper,
+whose Shift+click samples; `ui::cursors` tests, #403).
+
+Colours and attributes are read from the innermost object under the
+pointer: a group's child, or a clip frame's content inside the frame (the
+frame itself where no content is under the pointer), their transforms
+composed (`App::leaf_to_read`, #403).
+
+Both eyedroppers, and the document palette's, read from any visible
+object under the pointer, a locked one or one on a locked layer too
+(reading leaves it as it is; `App::hit_test_to_read`, #365). Applying a
+sampled colour or attributes never changes a locked object.
 
 ## Colour Eyedropper
 
@@ -11,7 +24,7 @@ back. Esc also drops the sample and returns to the Pick tool.
 - Select mode, click on an object:
   - a bitmap gives the pixel under the pointer, averaged over the
     sample box (box anchored at the pointer pixel, clipped to the
-    image), as RGB;
+    image), as RGB, whatever format the picture keeps (PNG, JPEG ...);
   - a solid fill gives its colour; a gradient fill gives its first
     stop; otherwise the outline colour;
   - Shift+click reads the outline colour first.
@@ -52,3 +65,6 @@ back. Esc also drops the sample and returns to the Pick tool.
   empty one, with default groups the second gets the blue fill and keeps
   its size and opacity; with Size and Effects ticked it becomes 10 x 20
   mm about its own centre at 50 %.
+- `eyedropper::tests::eyedroppers_read_from_locked_objects_but_never_write_to_them`
+- `eyedropper::tests::pictures_give_their_pixels_wherever_they_are` (alone,
+  grouped, inside a clip frame, kept as JPEG)

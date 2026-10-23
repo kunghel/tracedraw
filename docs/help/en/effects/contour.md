@@ -42,4 +42,5 @@ change it at once.
 Outside steps are drawn behind the object, inside steps in front of it.
 
 **Clear contour** removes the contour; **Break apart** turns the steps into
-objects.
+objects, grouped beside the object. [[menu.object > menu.object.break_contour_apart]]
+(<kbd>Ctrl+K</kbd>, also on the right-click menu) does the same.

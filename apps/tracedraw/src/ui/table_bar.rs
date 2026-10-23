@@ -373,7 +373,7 @@ pub fn count_dialog(app: &mut App, ctx: &Context, st: &mut TableCountState, clos
             ui.label(tr(label));
             ui.add_sized(
                 [90.0, 22.0],
-                egui::DragValue::new(&mut st.count).range(min..=100),
+                crate::ui::field::NumField::new(&mut st.count).range(min..=100),
             );
         });
         if let Some((before, after)) = sides {

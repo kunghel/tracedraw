@@ -286,7 +286,7 @@ impl App {
         if (c.nodes[last].0 - p).hypot() <= join {
             return None;
         }
-        if c.nodes.len() >= 3 && (c.nodes[0].0 - p).hypot() <= join {
+        if c.closes_at_first() && (c.nodes[0].0 - p).hypot() <= join {
             return None;
         }
         let reach = self.settings.nodes.pick_px() / zoom;
@@ -395,13 +395,13 @@ mod tests {
             PathSeg::Cubic(k) => {
                 assert!(close(k.p0, pt(60.0, 0.0)));
                 assert!(close(k.p1, pt(70.0, 0.0)));
-                assert!(close(k.p2, pt(10.0, 10.0)), "{k:?}");
+                assert!(close(k.p2, pt(-10.0, -10.0)), "{k:?}");
                 assert!(close(k.p3, pt(0.0, 0.0)));
             }
             other => panic!("{other:?}"),
         }
         assert_eq!(look.nodes[0].1, NodeLook::Current);
-        assert!(look.handles.iter().any(|h| close(h.1, pt(10.0, 10.0))));
+        assert!(look.handles.iter().any(|h| close(h.1, pt(-10.0, -10.0))));
     }
 
     #[test]

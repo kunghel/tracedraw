@@ -51,6 +51,18 @@ wypełnienia panelu [[docker.properties]]:
 
 Pasek pod typem pokazuje cały przebieg kolorów tak, jak zostanie narysowany.
 
+## Okno dialogowe Edytuj wypełnienie {#edit-fill}
+
+<kbd>F11</kbd> otwiera okno [[edit_fill.title]] z wypełnieniem zaznaczenia.
+Dla gradientu pokazuje podgląd, [[edit_fill.fill_picker]], typ, powtarzanie i
+pasek kolorów: kliknij węzeł, aby go wybrać, przeciągnij, aby go przesunąć,
+kliknij dwukrotnie, aby dodać lub usunąć węzeł. Pod paskiem: kolor,
+przezroczystość, położenie i [[edit_fill.midpoint]] węzła oraz
+[[edit_fill.reverse]]. [[edit_fill.transform]] zawiera obrót, środek i
+margines krawędzi. **OK** stosuje to, co zmieniono, z [[edit_fill.overprint]].
+
+![Okno dialogowe Edytuj wypełnienie](../../img/color-fills-edit-fill.png)
+
 ## Narzędzie Wypełnienie interaktywne {#interactive-fill}
 
 Narzędzie [[tool.interactive_fill]] (<kbd>G</kbd>) edytuje wypełnienia

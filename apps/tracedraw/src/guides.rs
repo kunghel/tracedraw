@@ -303,6 +303,7 @@ impl App {
                 press: p,
                 start: g,
                 guide: g,
+                delta: Vec2::ZERO,
             }
         };
         true
@@ -345,6 +346,52 @@ impl App {
         true
     }
 
+    /// Duplicate the selected guidelines (Edit > Duplicate, Ctrl+D, with
+    /// guidelines and no objects selected), moved by the duplicate offset;
+    /// the copies become the selection. False when no guideline is
+    /// selected.
+    pub fn duplicate_selected_guides(&mut self) -> bool {
+        if self.selected_guides.is_empty() {
+            return false;
+        }
+        let mut guides = self.page_guides();
+        let n = guides.len();
+        let d = self.duplicate_offset;
+        let copies: Vec<Guide> = self
+            .selected_guides
+            .iter()
+            .filter_map(|i| guides.get(*i))
+            .map(|g| Guide {
+                locked: false,
+                ..g.with_line(moved_line(g.line, d))
+            })
+            .collect();
+        if copies.is_empty() {
+            return false;
+        }
+        let k = copies.len();
+        guides.extend(copies);
+        self.set_guides(guides, "Duplicate Guidelines");
+        self.selected_guides = (n..n + k).collect();
+        true
+    }
+
+    /// Delete every guideline of one kind on the page (the Guidelines
+    /// docker's Clear): horizontal, vertical or angled. One undo step.
+    pub fn clear_guides_of_kind(&mut self, kind: crate::ui::layout_options::GuideKind) {
+        use crate::ui::layout_options::GuideKind;
+        let kept: Vec<Guide> = self
+            .page_guides()
+            .into_iter()
+            .filter(|g| GuideKind::of(&g.line) != kind)
+            .collect();
+        if kept.len() != self.page_guides().len() {
+            self.set_guides(kept, "Clear Guidelines");
+            self.selected_guides.clear();
+            self.guide_rotate = None;
+        }
+    }
+
     /// Clear the guideline selection and rotate mode.
     pub fn deselect_guides(&mut self) {
         self.selected_guides.clear();
@@ -363,20 +410,25 @@ impl App {
                 ..
             } => {
                 let d = p - press;
-                let line = match start.line {
-                    GuideLine::Horizontal { y } => GuideLine::Horizontal {
-                        y: self.snap_y_without_guides(y + d.y),
-                    },
-                    GuideLine::Vertical { x } => GuideLine::Vertical {
-                        x: self.snap_x_without_guides(x + d.x),
-                    },
+                let (line, delta) = match start.line {
+                    GuideLine::Horizontal { y } => {
+                        let ny = self.snap_y_without_guides(y + d.y);
+                        (GuideLine::Horizontal { y: ny }, Vec2::new(d.x, ny - y))
+                    }
+                    GuideLine::Vertical { x } => {
+                        let nx = self.snap_x_without_guides(x + d.x);
+                        (GuideLine::Vertical { x: nx }, Vec2::new(nx - x, d.y))
+                    }
                     GuideLine::Angled { x, y, angle } => {
                         let q = self.snap_point_without_guides(Point::new(x + d.x, y + d.y));
-                        GuideLine::Angled {
-                            x: q.x,
-                            y: q.y,
-                            angle,
-                        }
+                        (
+                            GuideLine::Angled {
+                                x: q.x,
+                                y: q.y,
+                                angle,
+                            },
+                            Vec2::new(q.x - x, q.y - y),
+                        )
                     }
                 };
                 self.drag = Drag::MoveGuide {
@@ -384,6 +436,7 @@ impl App {
                     press,
                     start,
                     guide: start.with_line(line),
+                    delta,
                 };
             }
             Drag::RotateGuide {
@@ -405,21 +458,78 @@ impl App {
         }
     }
 
-    /// Release after dragging a guideline: commit the move or rotation as
-    /// one undo step, or delete the guideline when it was dropped outside
-    /// the drawing window.
+    /// The guidelines a drag carries and where it has them now: the one
+    /// pressed, then the other selected ones that are not locked, moved as
+    /// far (#376).
+    pub fn guide_drag_moves(&self) -> Vec<(usize, Guide)> {
+        let Drag::MoveGuide {
+            index,
+            guide,
+            delta,
+            ..
+        } = &self.drag
+        else {
+            return Vec::new();
+        };
+        let guides = self.page_guides();
+        let mut out = vec![(*index, *guide)];
+        for &i in &self.selected_guides {
+            if i == *index {
+                continue;
+            }
+            if let Some(g) = guides.get(i).filter(|g| !g.locked) {
+                out.push((i, g.with_line(moved_line(g.line, *delta))));
+            }
+        }
+        out
+    }
+
+    /// Release after dragging guidelines: commit the move or rotation as
+    /// one undo step; after a right click during the drag, copies take the
+    /// move and the guidelines stay; dropped outside the drawing window,
+    /// the guidelines go.
     pub fn finish_guide_move(&mut self, released_at: egui::Pos2) {
+        let moves = self.guide_drag_moves();
+        let copy = std::mem::replace(&mut self.drag_copy, false);
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::MoveGuide {
-                index,
-                start,
-                guide,
-                ..
-            } => {
+            Drag::MoveGuide { start, guide, .. } => {
+                let mut guides = self.page_guides();
                 if !self.canvas_rect.contains(released_at) {
-                    self.delete_guide(index);
+                    if copy {
+                        return;
+                    }
+                    if let [(index, _)] = moves.as_slice() {
+                        self.delete_guide(*index);
+                        return;
+                    }
+                    let gone: Vec<usize> = moves.iter().map(|(i, _)| *i).collect();
+                    let kept: Vec<Guide> = guides
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !gone.contains(i))
+                        .map(|(_, g)| g)
+                        .collect();
+                    self.set_guides(kept, "Delete Guideline");
+                    self.selected_guides.clear();
                 } else if guide != start {
-                    self.replace_guide(index, guide, "Move Guideline");
+                    if copy {
+                        let n = guides.len();
+                        guides.extend(moves.iter().map(|(_, g)| *g));
+                        self.set_guides(guides, "Copy Guidelines");
+                        self.selected_guides = (n..n + moves.len()).collect();
+                    } else {
+                        for (i, g) in &moves {
+                            if let Some(slot) = guides.get_mut(*i) {
+                                *slot = *g;
+                            }
+                        }
+                        let label = if moves.len() > 1 {
+                            "Move Guidelines"
+                        } else {
+                            "Move Guideline"
+                        };
+                        self.set_guides(guides, label);
+                    }
                 }
             }
             Drag::RotateGuide { index, guide, .. } => {
@@ -475,6 +585,20 @@ impl App {
             .iter()
             .any(|h| (*h - p).hypot() <= tol)
             .then_some((index, pivot))
+    }
+}
+
+/// A guideline line moved by `d`: a horizontal one only up and down, a
+/// vertical one only sideways, an angled one both ways.
+pub fn moved_line(line: GuideLine, d: Vec2) -> GuideLine {
+    match line {
+        GuideLine::Horizontal { y } => GuideLine::Horizontal { y: y + d.y },
+        GuideLine::Vertical { x } => GuideLine::Vertical { x: x + d.x },
+        GuideLine::Angled { x, y, angle } => GuideLine::Angled {
+            x: x + d.x,
+            y: y + d.y,
+            angle,
+        },
     }
 }
 
@@ -642,5 +766,75 @@ mod tests {
         .lines(Size::new(100.0, 50.0));
         assert_eq!(grid.len(), 5 + 3);
         assert!(grid.contains(&GuideLine::Horizontal { y: 25.0 }));
+    }
+
+    /// Several selected guidelines move together; a right click during
+    /// the drag leaves copies; Duplicate copies them; Clear empties a
+    /// type (#376).
+    #[test]
+    fn selected_guidelines_move_copy_duplicate_and_clear_together() {
+        let mut app = app();
+        app.add_guide(Guide::horizontal(50.0));
+        app.add_guide(Guide {
+            ..Guide::from(GuideLine::Angled {
+                x: 10.0,
+                y: 10.0,
+                angle: 30.0,
+            })
+        });
+        app.add_guide(Guide::vertical(200.0));
+        app.selected_guides = vec![0, 1];
+        let inside = egui::pos2(100.0, 100.0);
+        // Pressed on the horizontal one, both go.
+        assert!(app.press_guide(Point::new(30.0, 50.0), false));
+        assert_eq!(app.selected_guides, vec![0, 1]);
+        app.drag_guide_to(Point::new(37.0, 61.0));
+        assert_eq!(app.guide_drag_moves().len(), 2);
+        app.finish_guide_move(inside);
+        let gs = app.page_guides();
+        let GuideLine::Horizontal { y } = gs[0].line else {
+            panic!("horizontal");
+        };
+        let dy = y - 50.0;
+        assert!(dy.abs() > 1.0, "{gs:?}");
+        let GuideLine::Angled { x: ax, y: ay, .. } = gs[1].line else {
+            panic!("angled");
+        };
+        assert!(
+            (ay - 10.0 - dy).abs() < 1e-9 && (ax - 17.0).abs() < 1e-9,
+            "{gs:?}"
+        );
+        assert_eq!(gs[2].line, GuideLine::Vertical { x: 200.0 });
+        // One undo puts both back.
+        app.undo();
+        assert_eq!(app.page_guides()[0].line, GuideLine::Horizontal { y: 50.0 });
+        // A right click during the drag: copies, the originals stay.
+        app.selected_guides = vec![0, 1];
+        assert!(app.press_guide(Point::new(30.0, 50.0), false));
+        app.drag_guide_to(Point::new(30.0, 70.0));
+        app.drag_copy = true;
+        app.finish_guide_move(inside);
+        let gs = app.page_guides();
+        assert_eq!(gs.len(), 5);
+        assert_eq!(gs[0].line, GuideLine::Horizontal { y: 50.0 });
+        assert_eq!(app.selected_guides, vec![3, 4]);
+        assert!(!app.drag_copy);
+        // Duplicate with guidelines (and no objects) selected.
+        app.select(Vec::new());
+        app.selected_guides = vec![2];
+        app.duplicate_offset = Vec2::new(5.0, 5.0);
+        app.duplicate();
+        let gs = app.page_guides();
+        assert_eq!(gs.len(), 6);
+        assert_eq!(gs[5].line, GuideLine::Vertical { x: 205.0 });
+        assert_eq!(app.selected_guides, vec![5]);
+        // Clear the vertical ones: one step.
+        app.clear_guides_of_kind(crate::ui::layout_options::GuideKind::Vertical);
+        assert!(app
+            .page_guides()
+            .iter()
+            .all(|g| !matches!(g.line, GuideLine::Vertical { .. })));
+        app.undo();
+        assert_eq!(app.page_guides().len(), 6);
     }
 }

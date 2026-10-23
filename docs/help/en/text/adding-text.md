@@ -21,7 +21,9 @@ with sample text, as much as fits.
 
 Click text with the [[tool.text]] tool, or double-click it with the
 [[tool.pick]] tool, to edit it in place. [[menu.text > menu.text.edit_text]]
-(<kbd>Ctrl+Shift+T</kbd>) does the same.
+(<kbd>Ctrl+Shift+T</kbd>) opens a box with the whole text to edit
+instead; **OK** puts it back in the drawing, and the characters you did
+not change keep their formatting.
 
 | Keys | What they do |
 |---|---|
@@ -89,6 +91,9 @@ drawn, printed or exported. To make it fit:
   to resize the text to fill the frame;
 - link the frame to another one, so the text flows on:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] breaks the link.
+  Or click the small tab under the frame's bottom edge, then click another
+  frame (on this page or another one) or click or drag on an empty spot
+  for a new frame: the text flows on into it.
 
 [[menu.text > menu.text.show_text_frames]] shows or hides the frames.
 

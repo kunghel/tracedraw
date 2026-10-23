@@ -299,7 +299,10 @@ pub fn fill_changes(old: &Fill, new: &Fill) -> Vec<FillField> {
         let inner_same = a.stops.len() == b.stops.len()
             && a.stops.len() >= 2
             && a.stops.iter().zip(&b.stops).enumerate().all(|(i, (x, y))| {
-                x.pos == y.pos && (i == 0 || i + 1 == a.stops.len() || x.color == y.color)
+                x.pos == y.pos
+                    && x.mid == y.mid
+                    && x.opacity == y.opacity
+                    && (i == 0 || i + 1 == a.stops.len() || x.color == y.color)
             });
         if !inner_same {
             out.retain(|f| !matches!(f, FillField::StartColor | FillField::EndColor));

@@ -195,7 +195,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             ui.end_row();
             ui.label(tr("barcode.reduction"));
             ui.add(
-                egui::DragValue::new(&mut spec.reduction_px)
+                crate::ui::field::NumField::new(&mut spec.reduction_px)
                     .range(0.0..=10.0)
                     .speed(0.1),
             );
@@ -203,7 +203,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             ui.end_row();
             ui.label(tr("barcode.magnification"));
             ui.add(
-                egui::DragValue::new(&mut spec.magnification)
+                crate::ui::field::NumField::new(&mut spec.magnification)
                     .range(25.0..=1000.0)
                     .speed(1.0)
                     .max_decimals(1),
@@ -214,7 +214,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             let mut h = units.from_mm(spec.bar_height_mm);
             if ui
                 .add(
-                    egui::DragValue::new(&mut h)
+                    crate::ui::field::NumField::new(&mut h)
                         .speed(0.01)
                         .max_decimals(3)
                         .range(units.from_mm(1.0)..=units.from_mm(500.0)),
@@ -232,7 +232,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             ui.label(tr("barcode.ratio"));
             ui.add_enabled_ui(spec.symbology.two_widths(), |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut spec.ratio)
+                    crate::ui::field::NumField::new(&mut spec.ratio)
                         .range(2.0..=3.0)
                         .speed(0.05)
                         .max_decimals(2),
@@ -253,7 +253,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             });
             ui.horizontal(|ui| {
                 ui.label(tr("barcode.quiet_zone"));
-                ui.add(egui::DragValue::new(&mut st.spec.quiet_zone).range(0..=50));
+                ui.add(crate::ui::field::NumField::new(&mut st.spec.quiet_zone).range(0..=50));
                 ui.label(tr("barcode.modules"));
             });
         });
@@ -284,7 +284,7 @@ fn step_text(ui: &mut Ui, st: &mut BarcodeState) {
                     });
                 ui.label(tr("barcode.size"));
                 ui.add(
-                    egui::DragValue::new(&mut spec.size_pt)
+                    crate::ui::field::NumField::new(&mut spec.size_pt)
                         .range(4.0..=72.0)
                         .speed(0.5),
                 );

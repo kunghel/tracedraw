@@ -114,7 +114,7 @@ pub fn param_widget(
                 changed |= dial(ui, &mut v);
                 changed |= ui
                     .add(
-                        egui::DragValue::new(&mut v)
+                        crate::ui::field::NumField::new(&mut v)
                             .range(-360.0..=360.0)
                             .suffix(" \u{b0}"),
                     )

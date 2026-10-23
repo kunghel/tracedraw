@@ -48,6 +48,17 @@ Přechod prolíná dvě nebo více barev. Jeho nastavení v oddílu výplně pan
 
 Pruh pod typem ukazuje celý průběh barev tak, jak se vykreslí.
 
+## Dialog Upravit výplň {#edit-fill}
+
+<kbd>F11</kbd> otevře dialog [[edit_fill.title]] s výplní výběru. U přechodu
+ukazuje náhled, [[edit_fill.fill_picker]], typ, opakování a pás barev:
+klepnutím uzel vyberete, tažením posunete, poklepáním uzel přidáte nebo
+odstraníte. Pod pásem je barva, průhlednost, poloha a [[edit_fill.midpoint]]
+uzlu a [[edit_fill.reverse]]. [[edit_fill.transform]] obsahuje otočení, střed
+a okraj. **OK** použije, co jste změnili, i s [[edit_fill.overprint]].
+
+![Dialog Upravit výplň](../../img/color-fills-edit-fill.png)
+
 ## Nástroj Interaktivní výplň {#interactive-fill}
 
 Nástroj [[tool.interactive_fill]] (<kbd>G</kbd>) upravuje výplně přímo na

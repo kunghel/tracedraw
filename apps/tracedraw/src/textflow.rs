@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use tracedraw_core::{
     document::text_outline::TextRequest,
     document::{Shape, ShapeKind, TextSpan},
+    geometry::Point,
     Command, ShapeId,
 };
 
@@ -174,16 +175,23 @@ impl App {
             return;
         };
         let (a, b) = (*a, *b);
+        self.link_frames(a, b);
+    }
+
+    /// Link frame `a` to flow into `b` (on any page): false, with the
+    /// reason on the status bar, when they cannot be linked.
+    pub fn link_frames(&mut self, a: ShapeId, b: ShapeId) -> bool {
         let (Some(da), Some(db)) = (self.frame_data(a), self.frame_data(b)) else {
             self.status = tr("status.link_needs_two_frames");
-            return;
+            return false;
         };
-        if self.chain_of(a).contains(&b)
+        if a == b
+            || self.chain_of(a).contains(&b)
             || self.next_frame(a).is_some()
             || self.prev_frame(b).is_some()
         {
             self.status = tr("status.link_already");
-            return;
+            return false;
         }
         let cmds = vec![
             Command::SetObjectData {
@@ -198,6 +206,87 @@ impl App {
         let _ = self.engine.run_batch("Link Frames", &cmds);
         self.reflow_chain(a);
         self.status = tr("status.frames_linked");
+        true
+    }
+
+    /// The frame whose flow tab is under the screen point `at` (Pick
+    /// tool): a frame shown with a tab that flows into no other frame.
+    pub fn flow_tab_at(&self, at: egui::Pos2) -> Option<ShapeId> {
+        self.shown_text_frames(None)
+            .into_iter()
+            .filter(|f| (f.overflow || f.chosen) && !f.linked)
+            .find(|f| {
+                let a = self.view.to_screen(f.corners[0]);
+                let b = self.view.to_screen(f.corners[1]);
+                crate::canvas::flow_tab_rect(a, b).expand(2.0).contains(at)
+            })
+            .map(|f| f.id)
+    }
+
+    /// A click on a frame's flow tab: the next click says where its text
+    /// flows on (#371).
+    pub fn start_text_link(&mut self, from: ShapeId) {
+        self.pending_text_link = Some(from);
+        self.status = tr("status.flow_text_where");
+    }
+
+    /// The click after a flow tab, at page point `p` (a drag: the frame
+    /// `rect`): on another paragraph frame (on any page) the text flows
+    /// into it; elsewhere a new frame takes it, the size of the first one
+    /// with its top left corner at `p`, or the dragged rectangle.
+    pub fn finish_text_link(&mut self, p: Point, rect: Option<tracedraw_core::geometry::Rect>) {
+        let Some(from) = self.pending_text_link.take() else {
+            return;
+        };
+        if rect.is_none() {
+            if let Some(to) = self.hit_test(p).filter(|id| self.frame_data(*id).is_some()) {
+                if to != from {
+                    self.link_frames(from, to);
+                    self.select(vec![to]);
+                    return;
+                }
+            }
+        }
+        let Some(src) = self.doc().find_shape(from).cloned() else {
+            return;
+        };
+        let ShapeKind::Text {
+            spans,
+            frame: Some(size),
+            align,
+            para,
+            ..
+        } = &src.kind
+        else {
+            return;
+        };
+        let (origin, size) = match rect {
+            Some(r) if r.width() > 1.0 && r.height() > 1.0 => (
+                Point::new(r.x0, r.y0),
+                tracedraw_core::geometry::Size::new(r.width(), r.height()),
+            ),
+            _ => (Point::new(p.x, p.y - size.height), *size),
+        };
+        let style = spans.last().cloned().map(|mut s| {
+            s.text.clear();
+            s
+        });
+        let Some(span) = style else {
+            return;
+        };
+        let kind = ShapeKind::Text {
+            spans: vec![span],
+            origin,
+            frame: Some(size),
+            align: *align,
+            para: para.clone(),
+            on_path: None,
+        };
+        let Some(to) = self.new_shape(kind) else {
+            return;
+        };
+        self.link_frames(from, to);
+        self.select(vec![to]);
     }
 
     /// Unlink the selected frames from their neighbours; each keeps the text
@@ -368,6 +457,54 @@ mod tests {
         app.unlink_text_frames();
         assert_eq!(app.next_frame(a), None);
         assert_eq!(text_of(&app, a), ta);
+    }
+
+    /// The flow tab (#371): a click on it, then a click on another page's
+    /// empty space makes a frame there that the text flows into; a click
+    /// on a frame links to that frame.
+    #[test]
+    fn the_flow_tab_links_to_a_new_frame_on_another_page() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        app.canvas_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let page = app.page_rect();
+        app.view.fit(page, app.canvas_rect);
+        let long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let a = frame(&mut app, long, 30.0, 8.0);
+        app.select(vec![a]);
+        // The tab hangs under the bottom edge's middle (10 to 40 at y 10).
+        let edge = app.view.to_screen(Point::new(25.0, 10.0));
+        let tab = crate::canvas::flow_tab_rect(
+            app.view.to_screen(Point::new(10.0, 10.0)),
+            app.view.to_screen(Point::new(40.0, 10.0)),
+        );
+        assert!(tab.top() > edge.y);
+        assert_eq!(app.flow_tab_at(tab.center()), Some(a));
+        app.start_text_link(a);
+        assert_eq!(app.pending_text_link, Some(a));
+        // On to page 2, a click on its empty space.
+        let first_page = app.page;
+        app.add_page();
+        assert_ne!(app.page, first_page);
+        app.finish_text_link(Point::new(50.0, 150.0), None);
+        assert!(app.pending_text_link.is_none());
+        let b = app.next_frame(a).expect("a new frame");
+        let s = app.doc().find_shape(b).cloned().expect("frame");
+        let corners = s.text_frame_corners().expect("a frame");
+        // Its top left at the click, the first frame's size.
+        assert!((corners[3].x - 50.0).abs() < 1e-9 && (corners[3].y - 150.0).abs() < 1e-9);
+        let text = |id: ShapeId| match &app.doc().find_shape(id).unwrap().kind {
+            ShapeKind::Text { spans, .. } => {
+                spans.iter().map(|s| s.text.as_str()).collect::<String>()
+            }
+            _ => String::new(),
+        };
+        assert!(!text(b).is_empty());
+        assert_eq!(format!("{}{}", text(a), text(b)), long);
+        // A frame that flows on has no tab to click.
+        app.page = first_page;
+        app.select(vec![a]);
+        assert_eq!(app.flow_tab_at(tab.center()), None);
     }
 
     /// A copy of one frame of a chain is a frame of its own: editing it

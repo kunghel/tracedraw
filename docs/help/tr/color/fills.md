@@ -50,6 +50,18 @@ panelinin dolgu bölümündeki ayarları:
 
 Türün altındaki bir şerit, renklerin tüm akışını çizileceği gibi gösterir.
 
+## Dolguyu Düzenle iletişim kutusu {#edit-fill}
+
+<kbd>F11</kbd> seçimin dolgusu için [[edit_fill.title]] iletişim kutusunu
+açar. Bir gradyan için önizleme, [[edit_fill.fill_picker]], tür, tekrar ve
+renk bandı gösterilir: seçmek için düğüme tıklayın, taşımak için sürükleyin,
+eklemek veya kaldırmak için çift tıklayın. Bandın altında düğümün rengi,
+saydamlığı, konumu ve [[edit_fill.midpoint]] ile [[edit_fill.reverse]]
+bulunur. [[edit_fill.transform]] döndürme, merkez ve kenar boşluğunu içerir.
+**Tamam** değiştirdiklerinizi [[edit_fill.overprint]] ile uygular.
+
+![Dolguyu Düzenle iletişim kutusu](../../img/color-fills-edit-fill.png)
+
 ## Etkileşimli Dolgu aracı {#interactive-fill}
 
 [[tool.interactive_fill]] aracı (<kbd>G</kbd>) dolguları nesnenin üzerinde

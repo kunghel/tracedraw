@@ -68,6 +68,7 @@ mod guides;
 mod help;
 #[cfg(test)]
 mod help_shots;
+mod hunspell;
 mod i18n;
 mod image_dpi;
 mod imposition;
@@ -126,6 +127,7 @@ mod spell;
 mod splash;
 mod straighten;
 mod styles;
+mod symmetry_edit;
 mod system_prefs;
 mod table;
 mod table_tool;

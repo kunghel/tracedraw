@@ -53,6 +53,13 @@ pub enum ToolCursor {
     /// the selected curve from its end node, or close the curve being
     /// drawn on its first node.
     CurveBadge(Tool, CurveMark),
+    /// Picking the object a command acts on (Place Inside Frame, Order >
+    /// In Front Of and Behind): a thick arrow pointing right, its tip the
+    /// hot spot (#379).
+    TargetArrow,
+    /// The Pen tool: a pen nib whose tip, marked with a dot, is the hot
+    /// spot (the node goes there, #362), with what a press would do.
+    PenNib(Option<CurveMark>),
     /// The cross hair with the nib's outline around it: a circle of
     /// `radius` screen points, or a square of that half side (the Eraser,
     /// the Smooth, Smear, Twirl, Attract and Repel, Smudge and Roughen
@@ -276,6 +283,9 @@ pub fn for_tool(
     if app.pending_palette_sample {
         return ToolCursor::Pipette;
     }
+    if app.pending_clip_frame || app.pending_order.is_some() || app.pending_text_link.is_some() {
+        return ToolCursor::TargetArrow;
+    }
     if matches!(app.tool, Tool::Pick | Tool::FreeformPick) {
         if let Some(c) = pick_cursor(app, pos) {
             return c;
@@ -287,6 +297,16 @@ pub fn for_tool(
         Tool::Pan => ToolCursor::Hand {
             closed: primary_down,
         },
+        // Apply mode paints what was sampled: the bucket (Shift with the
+        // attributes eyedropper samples again: the pipette).
+        Tool::ColorEyedropper if app.eyedropper_apply && app.eyedropper_color.is_some() => {
+            ToolCursor::Bucket
+        }
+        Tool::AttributesEyedropper
+            if app.eyedropper_apply && app.eyedropper_attrs.is_some() && !shift =>
+        {
+            ToolCursor::Bucket
+        }
         Tool::ColorEyedropper | Tool::AttributesEyedropper => ToolCursor::Pipette,
         Tool::AreaFill => ToolCursor::Bucket,
         // The I-beam where a click edits text, else the cross hair with the
@@ -326,9 +346,9 @@ pub fn for_tool(
             radius: nib_px(app.brush_radius, app.view.zoom),
             square: false,
         },
+        Tool::Pen => ToolCursor::PenNib(curve_mark(app, pos)),
         t @ (Tool::Freehand
         | Tool::Bezier
-        | Tool::Pen
         | Tool::BSpline
         | Tool::Polyline
         | Tool::TwoPointLine) => match curve_mark(app, pos) {
@@ -353,7 +373,7 @@ fn curve_mark(app: &App, pos: Option<Pos2>) -> Option<CurveMark> {
         let near = |q: &tracedraw_core::geometry::Point| {
             app.view.to_screen(*q).distance(pos) as f64 <= app.curve_end_reach_px()
         };
-        if c.nodes.len() >= 3 && c.nodes.first().is_some_and(|(f, _)| near(f)) {
+        if c.closes_at_first() && c.nodes.first().is_some_and(|(f, _)| near(f)) {
             return Some(CurveMark::Close);
         }
         if pen && c.nodes.len() >= 2 && c.nodes.last().is_some_and(|(l, _)| near(l)) {
@@ -459,6 +479,13 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
             badge(painter, p, tool);
             curve_mark_sign(painter, p, mark);
         }
+        ToolCursor::TargetArrow => target_arrow(painter, p),
+        ToolCursor::PenNib(mark) => {
+            pen_nib(painter, p);
+            if let Some(m) = mark {
+                curve_mark_at(painter, p + Vec2::new(4.0, 14.0), m);
+            }
+        }
         ToolCursor::Nib { radius, square } => nib(painter, p, radius, square),
         ToolCursor::TableArrow { down } => table_arrow(painter, p, down),
     }
@@ -521,10 +548,75 @@ fn badge(painter: &Painter, p: Pos2, tool: Tool) {
     crate::ui::icons::draw(painter, r, tool, badge_ink());
 }
 
+/// The outline of the arrow that picks a command's target object, its
+/// tip at `tip`, pointing right.
+pub fn target_arrow_outline(tip: Pos2) -> Vec<Pos2> {
+    [
+        (0.0, 0.0),
+        (-11.0, -9.0),
+        (-11.0, -4.0),
+        (-24.0, -4.0),
+        (-24.0, 4.0),
+        (-11.0, 4.0),
+        (-11.0, 9.0),
+    ]
+    .iter()
+    .map(|(x, y)| tip + Vec2::new(*x, *y))
+    .collect()
+}
+
+/// The target arrow: black on a white halo.
+fn target_arrow(painter: &Painter, tip: Pos2) {
+    let o = target_arrow_outline(tip);
+    painter.add(Shape::closed_line(o.clone(), Stroke::new(3.0, HALO)));
+    let head = vec![o[0], o[1], o[2], o[5], o[6]];
+    painter.add(Shape::convex_polygon(head, INK, Stroke::NONE));
+    let shaft = vec![o[2], o[3], o[4], o[5]];
+    painter.add(Shape::convex_polygon(shaft, INK, Stroke::NONE));
+}
+
+/// The outline of the Pen tool's nib with its tip at `tip`: the nib
+/// leans up and to the right, so the tip is its lowest, leftmost point.
+pub fn nib_outline(tip: Pos2) -> Vec<Pos2> {
+    // Along the nib (u, from the tip) and across it (v).
+    let u = Vec2::new(1.0, -1.0).normalized();
+    let v = Vec2::new(u.y, -u.x);
+    [
+        (0.0, 0.0),
+        (9.0, -4.5),
+        (15.0, -4.5),
+        (17.0, -3.0),
+        (17.0, 3.0),
+        (15.0, 4.5),
+        (9.0, 4.5),
+    ]
+    .iter()
+    .map(|(a, b)| tip + u * *a + v * *b)
+    .collect()
+}
+
+/// The Pen tool's cursor: a black nib on a white halo, its slit and
+/// breather hole white, and a dot at the tip where the node goes.
+fn pen_nib(painter: &Painter, tip: Pos2) {
+    let outline = nib_outline(tip);
+    painter.add(Shape::closed_line(outline.clone(), Stroke::new(2.5, HALO)));
+    painter.add(Shape::convex_polygon(outline, INK, Stroke::NONE));
+    let u = Vec2::new(1.0, -1.0).normalized();
+    painter.line_segment([tip + u * 2.5, tip + u * 8.0], Stroke::new(1.0, HALO));
+    painter.circle_filled(tip + u * 9.5, 1.6, HALO);
+    // The tip: a dot ringed in white, exactly on the hot spot.
+    painter.circle_filled(tip, 2.4, HALO);
+    painter.circle_filled(tip, 1.3, INK);
+}
+
 /// Above and to the right of the cross hair: a node with the line going
 /// on from it (join), or a ring (close).
 fn curve_mark_sign(painter: &Painter, p: Pos2, mark: CurveMark) {
-    let c = p + Vec2::new(12.0, -12.0);
+    curve_mark_at(painter, p + Vec2::new(12.0, -12.0), mark);
+}
+
+/// A curve tool's sign (see [`curve_mark_sign`]) centred at `c`.
+fn curve_mark_at(painter: &Painter, c: Pos2, mark: CurveMark) {
     match mark {
         CurveMark::Join => {
             haloed(painter, &[vec![c, c + Vec2::new(7.0, -5.0)]], 1.4);
@@ -901,6 +993,18 @@ mod tests {
             for_tool(&app, false, false, false, None),
             ToolCursor::Pipette
         );
+        // A colour sampled: Apply mode paints with the bucket (#403).
+        app.eyedropper_color = Some(tracedraw_core::Color::rgb8(255, 0, 0));
+        app.eyedropper_apply = true;
+        assert_eq!(
+            for_tool(&app, false, false, false, None),
+            ToolCursor::Bucket
+        );
+        app.eyedropper_reset();
+        assert_eq!(
+            for_tool(&app, false, false, false, None),
+            ToolCursor::Pipette
+        );
         app.tool = Tool::AreaFill;
         assert_eq!(
             for_tool(&app, false, false, false, None),
@@ -968,7 +1072,40 @@ mod tests {
             for_tool(&app, false, false, false, Some(first)),
             ToolCursor::CurveBadge(Tool::Bezier, CurveMark::Close)
         );
+        // The Pen: the nib, with the same signs (#362).
+        app.tool = Tool::Pen;
+        assert_eq!(
+            for_tool(&app, false, false, false, Some(first)),
+            ToolCursor::PenNib(Some(CurveMark::Close))
+        );
         app.curve = None;
+        let away = app
+            .view
+            .to_screen(tracedraw_core::geometry::Point::new(300.0, 300.0));
+        assert_eq!(
+            for_tool(&app, false, false, false, Some(away)),
+            ToolCursor::PenNib(None)
+        );
+        // Its tip is the hot spot: the outline starts there and leans up
+        // and to the right of it.
+        let tip = egui::pos2(50.0, 50.0);
+        let o = nib_outline(tip);
+        assert_eq!(o[0], tip);
+        assert!(
+            o.iter().all(|q| q.x >= tip.x - 4.0 && q.y <= tip.y + 4.0),
+            "{o:?}"
+        );
+        assert!(o.iter().any(|q| q.x > tip.x + 8.0 && q.y < tip.y - 8.0));
+        // Picking the frame for Place Inside Frame: the target arrow.
+        app.pending_clip_frame = true;
+        assert_eq!(
+            for_tool(&app, false, false, false, Some(away)),
+            ToolCursor::TargetArrow
+        );
+        app.pending_clip_frame = false;
+        let o = target_arrow_outline(tip);
+        assert_eq!(o[0], tip);
+        assert!(o.iter().all(|q| q.x <= tip.x));
         // The Eraser and the brushes show their nib at its size on screen.
         app.tool = Tool::Eraser;
         app.eraser_width = 10.0;

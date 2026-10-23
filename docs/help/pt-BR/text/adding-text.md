@@ -22,7 +22,9 @@ selecionadas com texto de exemplo, tanto quanto couber.
 
 Clique em um texto com a ferramenta [[tool.text]], ou clique duas vezes nele com
 a ferramenta [[tool.pick]], para editá-lo no lugar.
-[[menu.text > menu.text.edit_text]] (<kbd>Ctrl+Shift+T</kbd>) faz o mesmo.
+[[menu.text > menu.text.edit_text]] (<kbd>Ctrl+Shift+T</kbd>) abre uma caixa
+com o texto inteiro para editar; **OK** o devolve ao desenho, e os
+caracteres que você não mudou mantêm a formatação.
 
 | Teclas | O que fazem |
 |---|---|
@@ -93,6 +95,9 @@ cabe não é desenhado, impresso nem exportado. Para fazê-lo caber:
   para redimensionar o texto até preencher a moldura;
 - ligue a moldura a outra, para o texto continuar nela:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] desfaz a ligação.
+  Ou clique na pequena aba sob a borda de baixo do quadro e depois clique
+  em outro quadro (nesta página ou em outra) ou clique ou arraste num lugar
+  vazio para um quadro novo: o texto continua nele.
 
 [[menu.text > menu.text.show_text_frames]] mostra ou oculta as molduras.
 

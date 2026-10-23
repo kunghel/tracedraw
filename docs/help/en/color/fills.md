@@ -9,9 +9,10 @@ fill: [[docker.fill_none]], [[docker.fill_uniform]] (one flat color),
 ## Ways to fill an object {#ways}
 
 - Click a color of the palette to give the selection a uniform fill.
-- Use the [[docker.fill]] section of the [[docker.properties]] panel
-  (<kbd>F11</kbd>): choose the kind of fill with the row of pictures, then
-  its settings.
+- Press <kbd>F11</kbd> for the [[edit_fill.title]] dialog box (see
+  [below](#edit-fill)), or use the [[docker.fill]] section of the
+  [[docker.properties]] panel: choose the kind of fill with the row of
+  pictures, then its settings.
 - Use the [[tool.interactive_fill]] tool (<kbd>G</kbd>) to set gradients on
   the object itself.
 - Use the [[tool.area_fill]] tool to fill an area enclosed by several objects.
@@ -50,17 +51,46 @@ the [[docker.properties]] panel:
 
 A strip under the type shows the whole run of colors as it will be drawn.
 
+## The Edit Fill dialog box {#edit-fill}
+
+<kbd>F11</kbd> opens the [[edit_fill.title]] dialog box on the fill of the
+selection (or of new objects, with nothing selected).
+
+- The row of pictures at the top picks the kind of fill.
+- A uniform fill shows the color viewer.
+- A gradient shows a preview of the fill and the [[edit_fill.fill_picker]]
+  with the built-in gradients on the left. On the right: the type, how it
+  repeats, and the band of colors with its nodes. Click a node to pick it and
+  drag it to move it; double-click the band to add a node and a node to
+  remove it. The picked node's color, transparency, position and
+  [[edit_fill.midpoint]] are under the band, with [[edit_fill.reverse]].
+  [[edit_fill.transform]] has the rotation, the center (for radial, conical
+  and square gradients), the edge pad, mirror and inversion.
+- **OK** changes only what you changed on every selected object, with
+  [[edit_fill.overprint]].
+
+![The Edit Fill dialog box](../../img/color-fills-edit-fill.png)
+
 ## The Interactive Fill tool {#interactive-fill}
 
 The [[tool.interactive_fill]] tool (<kbd>G</kbd>) edits fills on the object.
 
-1. Choose the tool and drag across an object: you get a linear gradient from
-   where you press to where you release. Hold <kbd>Ctrl</kbd> to keep the
-   angle to steps of 15 degrees. A click gives the default fill.
-2. Drag the nodes on the object to change the gradient: the two square nodes
-   of a linear gradient turn its direction and length; the node of a radial,
-   conical or square gradient moves its center.
-3. Drag a palette color onto a node to recolor it, or onto the line between
+1. Choose the tool and drag across an object: the gradient starts where you
+   press and ends where you release, keeping the colors of a gradient the
+   object has already. Hold <kbd>Ctrl</kbd> to keep the angle to steps of 15
+   degrees. A click on an object without a gradient gives the default fill.
+2. Drag the nodes to change the gradient: the start node moves it, the end
+   node sets its length and direction, and the round skew node tilts the
+   bands (or makes a radial gradient an ellipse).
+3. Double-click the line between the nodes to add a color node there;
+   double-click a color node to remove it. Drag a color node along the line,
+   or the short bar between two nodes to move the point where their colors
+   meet half way.
+4. Click a node to pick it: a small bar opens under it with the node's color
+   (click the swatch for the color picker) and its transparency. A palette
+   color clicked while a node is picked goes to that node, and the property
+   bar shows the node's color, transparency and position.
+5. Drag a palette color onto a node to recolor it, or onto the line between
    the nodes to add a color there.
 
 The property bar has the kind of fill and its settings: the color of a

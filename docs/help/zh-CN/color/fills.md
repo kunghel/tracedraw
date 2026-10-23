@@ -30,6 +30,12 @@
 
 类型下方的色条按绘制效果显示整个颜色序列。
 
+## 编辑填充对话框 {#edit-fill}
+
+<kbd>F11</kbd> 打开所选对象填充的 [[edit_fill.title]] 对话框。渐变会显示预览、[[edit_fill.fill_picker]]、类型、重复方式和色带：单击节点选中，拖动移动，双击添加或删除节点。色带下方是节点的颜色、透明度、位置、[[edit_fill.midpoint]] 和 [[edit_fill.reverse]]。[[edit_fill.transform]] 包含旋转、中心和边缘填充。**确定** 应用您所做的更改，并包括 [[edit_fill.overprint]]。
+
+![编辑填充对话框](../../img/color-fills-edit-fill.png)
+
 ## 交互式填充工具 {#interactive-fill}
 
 [[tool.interactive_fill]] 工具（<kbd>G</kbd>）直接在对象上编辑填充。

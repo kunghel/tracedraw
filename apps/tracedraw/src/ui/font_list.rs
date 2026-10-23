@@ -22,8 +22,9 @@ const PREVIEW_H: f32 = 104.0;
 /// The preview's sample text and its size in points.
 pub const SAMPLE: &str = "AaBbYyZz";
 const SAMPLE_PX: f32 = 46.0;
-/// How many fonts used last the list keeps at its top.
-pub const RECENT: usize = 5;
+/// The most fonts used last the list may show at its top (Options >
+/// Text > Fonts picks how many, five by default).
+pub const RECENT_MAX: usize = 20;
 /// The sample size's range, in points.
 pub const SAMPLE_SIZES: std::ops::RangeInclusive<f32> = 12.0..=40.0;
 /// The size samples start at.
@@ -234,11 +235,11 @@ pub fn matching(families: &[String], typed: Option<&str>, current: &str) -> Vec<
     exact
 }
 
-/// Put `family` first among the fonts used last, keeping [`RECENT`].
+/// Put `family` first among the fonts used last, keeping [`RECENT_MAX`].
 pub fn remember(recent: &mut Vec<String>, family: &str) {
     recent.retain(|f| f != family);
     recent.insert(0, family.to_string());
-    recent.truncate(RECENT);
+    recent.truncate(RECENT_MAX);
 }
 
 /// One row of the list: a family, or one of its styles under it.
@@ -276,13 +277,17 @@ struct ListState {
 /// A font list showing `current`, `width` points wide. Returns what was
 /// picked; the caller sets it (and keeps it among the fonts used last
 /// through [`remember`], which a pick here already did).
-pub fn font_list(
+///
+/// Also returns the family (and style) the list points at while it is
+/// open: the row under the pointer, or the one the keys moved to (for a
+/// live preview in the drawing, #370).
+pub fn font_list_live(
     app: &mut App,
     ui: &mut Ui,
     id_salt: &str,
     current: &str,
     width: f32,
-) -> Option<FontPick> {
+) -> (Option<FontPick>, Option<FontPick>) {
     let id = ui.make_persistent_id(("font_list", id_salt));
     let popup_id = id.with("popup");
     let ctx = ui.ctx().clone();
@@ -467,11 +472,22 @@ pub fn font_list(
     if shown.is_none() && !field.has_focus() {
         st.typed = None;
         st.rest = None;
+        st.hovered = None;
     }
     if hovered_now.is_some() {
         st.hovered = hovered_now;
         st.keyed = false;
     }
+    let live = if shown.is_none() {
+        None
+    } else if st.keyed {
+        st.highlight.and_then(|h| rows.get(h)).map(row_pick)
+    } else {
+        st.hovered.as_ref().map(|(f, style)| FontPick {
+            family: f.clone(),
+            style: (*style != (false, false)).then_some(*style),
+        })
+    };
 
     if let Some(p) = &pick {
         crate::ui::font_list::remember(&mut app.settings.recent_fonts, &p.family);
@@ -481,14 +497,28 @@ pub fn font_list(
         field.surrender_focus();
     }
     ctx.data_mut(|d| d.insert_temp(id, st));
-    pick
+    (pick, live)
 }
 
 /// A font list for the text settings (`app.text_font`, bold and
-/// italic); true when they changed.
+/// italic); true when they changed. While it is open, the selected text
+/// shows the family under the pointer (#370).
 pub fn text_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) -> bool {
-    let current = app.text_font.clone();
-    match font_list(app, ui, id_salt, &current, width) {
+    let current = app.text_settings_shown().0;
+    let (pick, live) = font_list_live(app, ui, id_salt, &current, width);
+    // Only the lists that set the text's font preview it; the one that
+    // owns the preview ends it when it closes.
+    let owner = id_salt.to_string();
+    // The default font in Options is a setting, not the selection's.
+    let live = live.filter(|_| id_salt != "options_default_font");
+    if pick.is_some() {
+        app.end_font_preview();
+    } else if live.is_some() {
+        app.preview_text(&owner, live.map(LiveText::Font));
+    } else if app.live_font.as_ref().is_some_and(|l| l.owner == owner) {
+        app.end_font_preview();
+    }
+    match pick {
         Some(p) => {
             app.text_font = p.family;
             if let Some((bold, italic)) = p.style {
@@ -572,7 +602,11 @@ fn list_body(
         .recent_fonts
         .iter()
         .filter(|f| app.font_families.contains(f))
-        .take(RECENT)
+        .take(if app.settings.show_recent_fonts {
+            app.settings.recent_font_count.clamp(1, RECENT_MAX)
+        } else {
+            0
+        })
         .cloned()
         .collect();
     if !typing && st.show == Show::All && !recent.is_empty() {
@@ -1024,7 +1058,13 @@ mod tests {
         for f in ["A", "B", "C", "A", "D", "E", "F"] {
             remember(&mut recent, f);
         }
-        assert_eq!(recent, names(&["F", "E", "D", "A", "C"]));
+        assert_eq!(recent, names(&["F", "E", "D", "A", "C", "B"]));
+        // The list keeps up to the most Options > Text > Fonts can show.
+        for i in 0..30 {
+            remember(&mut recent, &format!("Font {i}"));
+        }
+        assert_eq!(recent.len(), RECENT_MAX);
+        assert_eq!(recent[0], "Font 29");
     }
 
     #[test]
@@ -1075,7 +1115,7 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| {
             let current = app.text_font.clone();
-            ui.push_id(id, |ui| font_list(&mut app, ui, "t", &current, 180.0));
+            ui.push_id(id, |ui| font_list_live(&mut app, ui, "t", &current, 180.0));
         });
         out.textures_delta.clear();
         // Every filter and an expanded family draw.
@@ -1129,5 +1169,171 @@ mod tests {
             app.settings.recent_fonts.first().map(String::as_str),
             Some("Picked")
         );
+    }
+}
+
+/// What the drawing shows while a list points at it (#370).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiveText {
+    /// A family (and style) from a font list.
+    Font(FontPick),
+    /// A size, in points, from the size list.
+    Size(f64),
+}
+
+/// A font or size shown in the drawing while a list points at it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveFont {
+    /// The list showing it.
+    pub owner: String,
+    pub shown: LiveText,
+    /// The text settings before (family, bold, italic, size).
+    pub saved: (String, bool, bool, f64),
+}
+
+impl App {
+    /// What a font change would act on: text being edited, table cells or
+    /// a selected text object.
+    fn has_text_target(&self) -> bool {
+        self.text_edit.is_some()
+            || self.table_edit.is_some()
+            || self
+                .selected_shapes()
+                .iter()
+                .any(|s| matches!(s.kind, tracedraw_core::ShapeKind::Text { .. }))
+    }
+
+    /// The text settings as they are, not as a preview shows them.
+    pub fn text_settings_shown(&self) -> (String, bool, bool, f64) {
+        self.live_font.as_ref().map_or_else(
+            || {
+                (
+                    self.text_font.clone(),
+                    self.text_bold,
+                    self.text_italic,
+                    self.text_size_pt,
+                )
+            },
+            |l| l.saved.clone(),
+        )
+    }
+
+    /// Show the selected text in `want` while the list `owner` points at
+    /// it, as a preview the history does not keep; `None` (or what is in
+    /// use already) shows the text as it is.
+    pub fn preview_text(&mut self, owner: &str, want: Option<LiveText>) {
+        if self.live_font.as_ref().map(|l| &l.shown) == want.as_ref() {
+            return;
+        }
+        self.end_font_preview();
+        let Some(w) = want else {
+            return;
+        };
+        let same = match &w {
+            LiveText::Font(p) => p.family == self.text_font && p.style.is_none(),
+            LiveText::Size(s) => (s - self.text_size_pt).abs() < 1e-6,
+        };
+        if same || !self.has_text_target() {
+            return;
+        }
+        let saved = self.text_settings_shown();
+        self.engine.begin_preview();
+        match &w {
+            LiveText::Font(p) => {
+                self.text_font = p.family.clone();
+                if let Some((bold, italic)) = p.style {
+                    self.text_bold = bold;
+                    self.text_italic = italic;
+                }
+            }
+            LiveText::Size(s) => self.text_size_pt = *s,
+        }
+        self.apply_text_style();
+        (
+            self.text_font,
+            self.text_bold,
+            self.text_italic,
+            self.text_size_pt,
+        ) = saved.clone();
+        self.live_font = Some(LiveFont {
+            owner: owner.to_string(),
+            shown: w,
+            saved,
+        });
+    }
+
+    /// End a preview: the text as it was, the history untouched.
+    pub fn end_font_preview(&mut self) {
+        if let Some(l) = self.live_font.take() {
+            self.engine.withdraw_preview();
+            (
+                self.text_font,
+                self.text_bold,
+                self.text_italic,
+                self.text_size_pt,
+            ) = l.saved;
+        }
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use tracedraw_core::geometry::Point;
+
+    fn text_of(app: &App, id: tracedraw_core::ShapeId) -> (String, f64) {
+        match app.doc().find_shape(id).map(|s| s.kind.clone()) {
+            Some(tracedraw_core::ShapeKind::Text { spans, .. }) => {
+                (spans[0].font_family.clone(), spans[0].size_pt)
+            }
+            _ => panic!("text"),
+        }
+    }
+
+    /// While a list points at a family or size, the selected text shows
+    /// it; when it stops, the text, the settings and the history are as
+    /// they were (#370).
+    #[test]
+    fn the_text_shows_the_font_a_list_points_at() {
+        let mut app = App::headless();
+        app.start_text(Point::new(20.0, 50.0), None);
+        app.text_insert("Preview");
+        app.finish_text();
+        let id = *app.selection.first().expect("text");
+        let (font, size) = text_of(&app, id);
+        app.undo();
+        app.redo();
+        let history = app.engine.history_labels();
+        let pick = FontPick {
+            family: "Preview Family".into(),
+            style: None,
+        };
+        app.preview_text("propbar_font", Some(LiveText::Font(pick.clone())));
+        assert_eq!(text_of(&app, id).0, "Preview Family");
+        // The settings stay as they were.
+        assert_eq!(app.text_font, font);
+        assert_eq!(app.text_settings_shown().0, font);
+        // Another family: the preview follows.
+        let other = FontPick {
+            family: "Other Family".into(),
+            style: None,
+        };
+        app.preview_text("propbar_font", Some(LiveText::Font(other)));
+        assert_eq!(text_of(&app, id).0, "Other Family");
+        app.end_font_preview();
+        assert_eq!(text_of(&app, id), (font.clone(), size));
+        assert_eq!(app.engine.history_labels(), history);
+        assert!(app.live_font.is_none());
+        // Sizes too.
+        app.preview_text("size", Some(LiveText::Size(size * 2.0)));
+        assert!((text_of(&app, id).1 - size * 2.0).abs() < 1e-6);
+        app.preview_text("size", None);
+        assert_eq!(text_of(&app, id), (font.clone(), size));
+        assert_eq!(app.engine.history_labels(), history);
+        // Nothing selected: no preview.
+        app.select(Vec::new());
+        app.preview_text("propbar_font", Some(LiveText::Font(pick)));
+        assert!(app.live_font.is_none());
+        assert_eq!(text_of(&app, id).0, font);
     }
 }
