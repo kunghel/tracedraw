@@ -4745,6 +4745,7 @@ macros.compile_error = "編譯錯誤：{e}"
 macros.compile_error_at = "{m} 第 {l} 行編譯錯誤：{e}"
 macros.debug = "偵錯"
 macros.desktop_only = "巨集只能在桌面版中執行。"
+macros.desktop_only_text = "巨集在獨立的執行緒中與繪圖同時執行，而瀏覽器版本無法做到這一點。若要載入並執行巨集專案，請安裝適用於 Windows、macOS 或 Linux 的桌面應用程式。" # mt
 macros.done = "巨集 {name} 已完成。"
 macros.edit = "編輯"
 macros.editor_title = "巨集編輯器 - {name}"

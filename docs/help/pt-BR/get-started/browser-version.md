@@ -33,6 +33,9 @@ computador.
   tablet, use o espaço de trabalho Toque (veja
   [Espaços de trabalho](../customize/workspaces.md)); a tela de um celular é
   pequena demais para editar.
+- **Macros.** Projetos de macro só carregam e rodam na versão para computador.
+  No navegador, qualquer comando de macro mostra uma mensagem avisando, com um
+  botão para baixar o aplicativo.
 - **Atualizações.** A versão para navegador é sempre a mais recente; não há
   nada para instalar. Backup automático e recuperação de sessão são recursos
   do computador.

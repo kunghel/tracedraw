@@ -4745,6 +4745,7 @@ macros.compile_error = "Błąd kompilacji: {e}"
 macros.compile_error_at = "Błąd kompilacji w {m}, wiersz {l}: {e}"
 macros.debug = "Debuguj"
 macros.desktop_only = "Makra działają tylko w wersji na komputer."
+macros.desktop_only_text = "Makra działają obok rysunku, we własnym wątku, a wersja przeglądarkowa tego nie potrafi. Zainstaluj aplikację na Windows, macOS lub Linux, aby wczytywać i uruchamiać projekty makr." # mt
 macros.done = "Makro {name} zakończyło działanie."
 macros.edit = "Edytuj"
 macros.editor_title = "Edytor makr - {name}"

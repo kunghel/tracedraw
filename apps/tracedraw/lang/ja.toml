@@ -4745,6 +4745,7 @@ macros.compile_error = "コンパイル エラー: {e}"
 macros.compile_error_at = "{m} の {l} 行目でコンパイル エラー: {e}"
 macros.debug = "デバッグ"
 macros.desktop_only = "マクロはデスクトップ版でのみ実行できます。"
+macros.desktop_only_text = "マクロは描画と並行して専用のスレッドで実行されますが、ブラウザー版ではそれができません。マクロ プロジェクトを読み込んで実行するには、Windows、macOS、Linux 用のデスクトップ アプリをインストールしてください。" # mt
 macros.done = "マクロ {name} が終了しました。"
 macros.edit = "編集"
 macros.editor_title = "マクロ エディター - {name}"

@@ -3066,7 +3066,7 @@ fn macros_items(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.tools.macro_editor", "Alt+F11", true) {
         app.open_macro_editor();
     }
-    if item(ui, "menu.tools.macros_load", "", !crate::files::WEB) {
+    if item(ui, "menu.tools.macros_load", "", true) {
         app.load_macro_project();
     }
     if item(ui, "menu.tools.macros_stop", "", running) {

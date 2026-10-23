@@ -4745,6 +4745,7 @@ macros.compile_error = "कंपाइल त्रुटि: {e}"
 macros.compile_error_at = "{m} में कंपाइल त्रुटि, पंक्ति {l}: {e}"
 macros.debug = "डिबग"
 macros.desktop_only = "मैक्रो केवल डेस्कटॉप संस्करण में चलते हैं।"
+macros.desktop_only_text = "मैक्रो ड्रॉइंग के साथ-साथ अपने अलग थ्रेड में चलते हैं, और ब्राउज़र संस्करण ऐसा नहीं कर सकता। मैक्रो प्रोजेक्ट लोड करने और चलाने के लिए Windows, macOS या Linux का डेस्कटॉप ऐप इंस्टॉल करें।" # mt
 macros.done = "मैक्रो {name} पूरा हुआ।"
 macros.edit = "संपादित करें"
 macros.editor_title = "मैक्रो संपादक - {name}"

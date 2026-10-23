@@ -4745,6 +4745,7 @@ macros.compile_error = "Kompilierfehler: {e}"
 macros.compile_error_at = "Kompilierfehler in {m}, Zeile {l}: {e}"
 macros.debug = "Debuggen"
 macros.desktop_only = "Makros laufen nur in der Desktop-Version."
+macros.desktop_only_text = "Makros laufen neben der Zeichnung in einem eigenen Thread, und das kann die Browser-Version nicht. Installieren Sie die Desktop-App für Windows, macOS oder Linux, um Makroprojekte zu laden und auszuführen." # mt
 macros.done = "Makro {name} ist beendet."
 macros.edit = "Bearbeiten"
 macros.editor_title = "Makro-Editor - {name}"

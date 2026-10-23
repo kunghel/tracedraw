@@ -4745,6 +4745,7 @@ macros.compile_error = "Error de compilación: {e}"
 macros.compile_error_at = "Error de compilación en {m}, línea {l}: {e}"
 macros.debug = "Depurar"
 macros.desktop_only = "Las macros solo se ejecutan en la versión de escritorio."
+macros.desktop_only_text = "Las macros se ejecutan junto al dibujo, en un hilo propio, y la versión para navegador no puede hacerlo. Instale la aplicación de escritorio para Windows, macOS o Linux para cargar y ejecutar proyectos de macros." # mt
 macros.done = "La macro {name} ha terminado."
 macros.edit = "Editar"
 macros.editor_title = "Editor de macros - {name}"

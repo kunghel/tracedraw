@@ -35,6 +35,9 @@ dasselbe Programm wie die Desktopversion ist und was sich unterscheidet.
   Tastatur. Verwenden Sie auf einem Tablet den Touch-Arbeitsbereich (siehe
   [Arbeitsbereiche](../customize/workspaces.md)); ein Telefonbildschirm ist
   zum Bearbeiten zu klein.
+- **Makros.** Makroprojekte werden nur in der Desktop-Version geladen und
+  ausgeführt. Im Browser zeigt jeder Makrobefehl einen Hinweis darauf, mit
+  einer Schaltfläche zu den Desktop-Downloads.
 - **Aktualisierungen.** Die Browserversion ist immer die neueste; es gibt
   nichts zu installieren. Automatische Sicherung und Sitzungswiederherstellung
   sind Funktionen der Desktopversion.

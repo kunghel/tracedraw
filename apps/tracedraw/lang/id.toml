@@ -4745,6 +4745,7 @@ macros.compile_error = "Galat kompilasi: {e}"
 macros.compile_error_at = "Galat kompilasi di {m}, baris {l}: {e}"
 macros.debug = "Debug"
 macros.desktop_only = "Makro hanya berjalan di versi desktop."
+macros.desktop_only_text = "Makro berjalan di samping gambar, pada thread sendiri, dan versi browser tidak dapat melakukannya. Pasang aplikasi desktop untuk Windows, macOS, atau Linux untuk memuat dan menjalankan proyek makro." # mt
 macros.done = "Makro {name} selesai."
 macros.edit = "Edit"
 macros.editor_title = "Editor Makro - {name}"

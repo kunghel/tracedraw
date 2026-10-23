@@ -4745,6 +4745,7 @@ macros.compile_error = "خطأ في الترجمة البرمجية: {e}"
 macros.compile_error_at = "خطأ في الترجمة البرمجية في {m}، السطر {l}: {e}"
 macros.debug = "تصحيح"
 macros.desktop_only = "تعمل وحدات الماكرو في إصدار سطح المكتب فقط."
+macros.desktop_only_text = "تعمل وحدات الماكرو بجانب الرسم في مسار تنفيذ خاص بها، ولا يستطيع إصدار المتصفح ذلك. ثبّت تطبيق سطح المكتب لنظام Windows أو macOS أو Linux لتحميل مشاريع الماكرو وتشغيلها." # mt
 macros.done = "انتهى الماكرو {name}."
 macros.edit = "تحرير"
 macros.editor_title = "محرر الماكرو - {name}"

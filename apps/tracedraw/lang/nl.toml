@@ -4745,6 +4745,7 @@ macros.compile_error = "Compileerfout: {e}"
 macros.compile_error_at = "Compileerfout in {m}, regel {l}: {e}"
 macros.debug = "Fouten opsporen"
 macros.desktop_only = "Macro's werken alleen in de desktopversie."
+macros.desktop_only_text = "Macro's draaien naast de tekening in een eigen thread, en de browserversie kan dat niet. Installeer de desktop-app voor Windows, macOS of Linux om macroprojecten te laden en uit te voeren." # mt
 macros.done = "Macro {name} is klaar."
 macros.edit = "Bewerken"
 macros.editor_title = "Macro-editor - {name}"

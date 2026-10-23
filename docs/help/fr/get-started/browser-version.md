@@ -37,6 +37,9 @@ ouvre la page de téléchargement de la version de bureau.
   Sur une tablette, utilisez l'espace de travail Tactile (voir
   [Espaces de travail](../customize/workspaces.md)) ; l'écran d'un téléphone
   est trop petit pour modifier un dessin.
+- **Macros.** Les projets de macros ne se chargent et ne s'exécutent que dans
+  la version de bureau. Dans le navigateur, chaque commande de macro l'indique
+  par un message, avec un bouton vers les téléchargements.
 - **Mises à jour.** La version pour navigateur est toujours la plus récente ;
   il n'y a rien à installer. La sauvegarde automatique et la récupération de
   session sont des fonctions de la version de bureau.

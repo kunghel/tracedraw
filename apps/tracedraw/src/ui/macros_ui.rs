@@ -1364,7 +1364,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
     let mut act: Option<&str> = None;
     ui.horizontal_wrapped(|ui| {
         if ui
-            .add_enabled(!crate::files::WEB, egui::Button::new(tr("macros.load")))
+            .button(tr("macros.load"))
             .on_hover_text(tr("macros.load_hint"))
             .clicked()
         {

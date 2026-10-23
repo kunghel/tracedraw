@@ -4745,6 +4745,7 @@ macros.compile_error = "কম্পাইল ত্রুটি: {e}"
 macros.compile_error_at = "{m}-এ কম্পাইল ত্রুটি, লাইন {l}: {e}"
 macros.debug = "ডিবাগ"
 macros.desktop_only = "ম্যাক্রো শুধু ডেস্কটপ সংস্করণে চলে।"
+macros.desktop_only_text = "ম্যাক্রো আঁকার পাশাপাশি নিজস্ব থ্রেডে চলে, আর ব্রাউজার সংস্করণ তা করতে পারে না। ম্যাক্রো প্রকল্প লোড ও চালাতে Windows, macOS বা Linux-এর ডেস্কটপ অ্যাপ ইনস্টল করুন।" # mt
 macros.done = "ম্যাক্রো {name} শেষ হয়েছে।"
 macros.edit = "সম্পাদনা"
 macros.editor_title = "ম্যাক্রো এডিটর - {name}"

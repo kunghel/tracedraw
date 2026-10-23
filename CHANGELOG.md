@@ -6,6 +6,8 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Browser version: every macro command (Macro Manager, Run Macro, Macro Editor, Load Macro Project) opens a message that macros run in the desktop version, with a button to its downloads; before, the commands did nothing visible or only wrote a line in the status bar.
+
 - Symmetry editing: a symmetry made of one object picks the object alone, its selection box no longer spanning the copies; a click on an object where a mirror line crosses it picks the object instead of showing the line's turning handles. The symmetry bar's X and Y fields keep their label, box and arrows on one line.
 
 - Browser version: opening or creating a drawing froze the page in 0.13.0 (the time measured for the lag fix of #441 is not available in the browser and stopped the program); it opens and draws again.

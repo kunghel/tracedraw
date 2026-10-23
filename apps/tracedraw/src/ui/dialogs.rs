@@ -704,6 +704,9 @@ pub enum Dialog {
     /// The browser version, each time the page opens: the same program
     /// compiled for the browser, what is slower there, the desktop app.
     WebNotice,
+    /// The browser version, at any macro command: macros run in the
+    /// desktop app only, with a button to its downloads.
+    MacrosDesktopOnly,
     TimeTracker(crate::ui::time_tracker::TrackerDialog),
     Preflight(crate::ui::preflight_dialog::PreflightState),
     PublishPdf(Box<crate::ui::publish_pdf::PublishState>),
@@ -2016,6 +2019,26 @@ pub fn show(app: &mut App, ctx: &Context) {
         Dialog::About => crate::ui::about::about_dialog(app, ctx, &mut close),
         Dialog::WebNotice => {
             let text = format!("{}\n\n{}", tr("web.notice_title"), tr("web.notice_text"));
+            match crate::ui::chrome::message_box(
+                ctx,
+                crate::ui::chrome::MessageIcon::Info,
+                &text,
+                &[&tr("dialog.ok"), &tr("web.notice_download")],
+            ) {
+                Some(1) => {
+                    app.open_url(crate::updates::RELEASES_PAGE);
+                    close = true;
+                }
+                Some(_) => close = true,
+                None => {}
+            }
+        }
+        Dialog::MacrosDesktopOnly => {
+            let text = format!(
+                "{}\n\n{}",
+                tr("macros.desktop_only"),
+                tr("macros.desktop_only_text")
+            );
             match crate::ui::chrome::message_box(
                 ctx,
                 crate::ui::chrome::MessageIcon::Info,
@@ -4508,6 +4531,7 @@ mod tests {
             )),
             Dialog::About,
             Dialog::WebNotice,
+            Dialog::MacrosDesktopOnly,
             Dialog::GithubOpen(Default::default()),
             Dialog::GithubSave(Default::default()),
         ]

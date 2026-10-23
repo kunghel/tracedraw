@@ -652,8 +652,10 @@ follows the public MS-OVBA and MS-OFORMS specifications.
 
 Macro projects written for other drawing suites load and run in the
 desktop app (`apps/tracedraw/src/macros.rs`, `scripting/vba_run.rs`,
-`ui/macros_ui.rs`). The browser build lists nothing and says that
-macros run in the desktop version.
+`ui/macros_ui.rs`). The browser build has no threads to run them on:
+there every macro command (Macro Manager, Run Macro, Macro Editor, Load
+Macro Project, a macro in the menu) opens a message that macros run in
+the desktop version, with OK and a button to the desktop downloads.
 
 ### Running macros
 

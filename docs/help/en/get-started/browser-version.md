@@ -33,5 +33,8 @@ desktop version.
   tablet, use the Touch workspace (see
   [Workspaces](../customize/workspaces.md)); a phone screen is too small for
   editing.
+- **Macros.** Macro projects load and run in the desktop version only. In
+  the browser, every macro command shows a message saying so, with a button to
+  the desktop downloads.
 - **Updates.** The browser version is always the latest; there is nothing to
   install. Auto-backup and session recovery are desktop features.

@@ -4745,6 +4745,7 @@ macros.compile_error = "Derleme hatası: {e}"
 macros.compile_error_at = "{m} içinde derleme hatası, satır {l}: {e}"
 macros.debug = "Hata Ayıkla"
 macros.desktop_only = "Makrolar yalnızca masaüstü sürümünde çalışır."
+macros.desktop_only_text = "Makrolar çizimle birlikte kendi iş parçacığında çalışır ve tarayıcı sürümü bunu yapamaz. Makro projelerini yüklemek ve çalıştırmak için Windows, macOS veya Linux masaüstü uygulamasını kurun." # mt
 macros.done = "{name} makrosu bitti."
 macros.edit = "Düzenle"
 macros.editor_title = "Makro Düzenleyici - {name}"

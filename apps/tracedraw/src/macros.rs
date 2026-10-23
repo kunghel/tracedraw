@@ -505,10 +505,19 @@ pub fn command_name(key: &str) -> Option<(String, String)> {
 }
 
 impl App {
+    /// The browser version has no macros (they run on a thread of their
+    /// own, and the browser build has none): any macro command shows a
+    /// message saying so, with the desktop app's downloads. True there.
+    pub fn macros_desktop_only(&mut self) -> bool {
+        if crate::files::WEB {
+            self.dialog = crate::ui::dialogs::Dialog::MacrosDesktopOnly;
+        }
+        crate::files::WEB
+    }
+
     /// Tools > Macros > Load Macro Project: pick the files and install them.
     pub fn load_macro_project(&mut self) {
-        if crate::files::WEB {
-            self.status = tr("macros.desktop_only");
+        if self.macros_desktop_only() {
             return;
         }
         crate::files::Dialog::new()
@@ -555,6 +564,9 @@ impl App {
     }
 
     pub fn show_macro_manager(&mut self) {
+        if self.macros_desktop_only() {
+            return;
+        }
         self.macros.ensure_loaded();
         self.open_docker(crate::app::DockerTab::Macros);
     }
@@ -575,8 +587,7 @@ impl App {
 
     /// Start a macro now.
     pub fn run_macro(&mut self, project: usize, module: &str, name: &str) {
-        if crate::files::WEB {
-            self.status = tr("macros.desktop_only");
+        if self.macros_desktop_only() {
             return;
         }
         if self.macros.run.is_some() {
@@ -809,6 +820,9 @@ impl App {
 
     /// Tools > Macros > Run Macro (Alt+Shift+F8).
     pub fn open_run_macro(&mut self) {
+        if self.macros_desktop_only() {
+            return;
+        }
         self.macros.ensure_loaded();
         self.macros.run_dialog = Some(RunDialog::default());
     }
@@ -816,6 +830,9 @@ impl App {
     /// Tools > Macros > Macro Editor (Alt+F11): the chosen project's first
     /// module, else the first project's; with no project, a new one.
     pub fn open_macro_editor(&mut self) {
+        if self.macros_desktop_only() {
+            return;
+        }
         self.macros.ensure_loaded();
         if self.macros.editor.is_some() {
             return;

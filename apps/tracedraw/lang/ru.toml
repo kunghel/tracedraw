@@ -4745,6 +4745,7 @@ macros.compile_error = "Ошибка компиляции: {e}"
 macros.compile_error_at = "Ошибка компиляции в {m}, строка {l}: {e}"
 macros.debug = "Отладка"
 macros.desktop_only = "Макросы работают только в настольной версии."
+macros.desktop_only_text = "Макросы выполняются рядом с рисунком, в отдельном потоке, а версия для браузера этого не умеет. Установите настольное приложение для Windows, macOS или Linux, чтобы загружать и запускать проекты макросов." # mt
 macros.done = "Макрос {name} завершён."
 macros.edit = "Изменить"
 macros.editor_title = "Редактор макросов - {name}"

@@ -4745,6 +4745,7 @@ macros.compile_error = "Chyba kompilace: {e}"
 macros.compile_error_at = "Chyba kompilace v {m}, řádek {l}: {e}"
 macros.debug = "Ladit"
 macros.desktop_only = "Makra běží jen v desktopové verzi."
+macros.desktop_only_text = "Makra běží vedle kresby ve vlastním vlákně a verze pro prohlížeč to neumí. Pro načítání a spouštění projektů maker nainstalujte aplikaci pro Windows, macOS nebo Linux." # mt
 macros.done = "Makro {name} skončilo."
 macros.edit = "Upravit"
 macros.editor_title = "Editor maker - {name}"

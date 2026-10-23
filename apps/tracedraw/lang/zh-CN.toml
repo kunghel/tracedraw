@@ -4745,6 +4745,7 @@ macros.compile_error = "编译错误：{e}"
 macros.compile_error_at = "{m} 第 {l} 行编译错误：{e}"
 macros.debug = "调试"
 macros.desktop_only = "宏只能在桌面版中运行。"
+macros.desktop_only_text = "宏在独立的线程中与绘图同时运行，而浏览器版本无法做到这一点。要加载和运行宏项目，请安装适用于 Windows、macOS 或 Linux 的桌面应用。" # mt
 macros.done = "宏 {name} 已完成。"
 macros.edit = "编辑"
 macros.editor_title = "宏编辑器 - {name}"
