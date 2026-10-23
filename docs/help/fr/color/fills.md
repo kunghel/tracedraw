@@ -69,7 +69,7 @@ double-cliquez pour en ajouter ou en retirer un. Sous la bande : la couleur,
 la transparence, la position et le [[edit_fill.midpoint]] du nœud, et
 [[edit_fill.reverse]]. [[edit_fill.transform]] contient la rotation, le centre
 et la marge du bord. **OK** applique ce que vous avez changé, avec
-[[edit_fill.overprint]].
+[[edit_fill.overprint]]. Tant que la boîte de dialogue est ouverte, la sélection montre le remplissage au fur et à mesure que vous le modifiez ; **Annuler** ou <kbd>Échap</kbd> rétablit l'ancien remplissage.
 
 ![La boîte de dialogue Modifier le remplissage](../../img/color-fills-edit-fill.png)
 

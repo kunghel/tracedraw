@@ -266,8 +266,14 @@ impl App {
         }
         let tol = self.snap_tolerance();
         let mut g = Vec::new();
-        for s in self.selected_shapes() {
-            snap_points::geometry(&s, Affine::IDENTITY, &text_baselines, &mut g);
+        let shapes = self.selected_rc();
+        let bounds = self.selected_bounds();
+        for (s, b) in shapes.iter().zip(bounds.iter()) {
+            // Only the objects whose bounds come near the pointer.
+            if !b.inflate(tol, tol).contains(p) {
+                continue;
+            }
+            snap_points::geometry(s, Affine::IDENTITY, &text_baselines, &mut g);
         }
         let found = snap_points::targets(&g, p, tol, None, &self.settings.snap.modes);
         snap_points::best(&found, true, true)

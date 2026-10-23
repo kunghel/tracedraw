@@ -39,7 +39,13 @@ and center". Pattern and texture: a preview and their editors. OK sends
 the fields that changed to every selected object with Overprint fill in
 one step (`App::apply_edit_fill`, `edit_fill_applies_what_was_changed`,
 `nodes_are_added_moved_and_reversed`); with nothing selected it changes
-the default fill.
+the default fill. While the dialog is open the selection shows what it
+holds, as in the reference program: each change is applied as an engine
+preview (`begin_preview`) and made anew on the next change; OK takes the
+preview back and applies the fill as one step, and Cancel, Esc or the
+close button take it back, leaving the drawing, the undo and redo
+history and the saved state as they were (`App::preview_edit_fill`,
+`the_fill_shows_live_while_the_dialog_is_open`, #436).
 Dragging with Interactive Fill on an object (anywhere inside it, filled
 or not) puts the start node at the press point and the end node at the
 release point, keeping the kind and colours of a gradient the object

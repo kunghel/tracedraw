@@ -54,6 +54,25 @@ the version on the right).
   plain 1600 x 950 window (automation and the visual checks use this).
 - The browser build has no splash: the page shows its own loader.
 
+## The renderer (#445, #439)
+
+- The desktop window is drawn with wgpu (Direct3D 12, Vulkan or Metal).
+  Options > General > Use hardware acceleration (on) picks the graphics
+  card named beside it, or with Fastest available a separate card before
+  a built-in one, a virtual one, others, and a software adapter last.
+  Off, the software adapter (WARP on Windows, a CPU Vulkan driver
+  elsewhere). Options shows what draws the window in this run; the
+  choice takes effect at the next start.
+- A start that cannot open the window that way runs TraceDraw again
+  with `--renderer=software`, and if that fails too with `--renderer=gl`
+  (OpenGL, as earlier versions drew), the other arguments kept; the
+  first process waits for it. The renderer that opened the window when
+  the first choice did not is kept in the settings (`working_renderer`)
+  and used straight away next time; changing the choice in Options
+  clears it (`gpu::tests::a_renderer_that_fails_hands_over_to_the_next`).
+  So a virtual machine without a usable graphics card opens.
+- The browser build draws with WebGL.
+
 ## Back to the defaults
 
 Pressing F8 while the splash screen shows asks, once the editor is up,

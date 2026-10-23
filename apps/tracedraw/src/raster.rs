@@ -3,6 +3,9 @@
 //! moves (a pan, a scroll, a zoom) the last render is shown shifted or
 //! scaled into place and the page is rendered anew once the view has
 //! rested for a moment, so a page of thousands of objects pans smoothly.
+//! A page that takes long to draw is drawn on a thread of its own: the
+//! window keeps answering, showing the last picture moved into place,
+//! until the new one is ready (#345).
 
 use crate::view::View;
 use egui::{ColorImage, Context, Rect, TextureHandle, TextureId, TextureOptions};
@@ -12,6 +15,19 @@ use tracedraw_render::{render_page, Preview, RenderOptions, ViewTransform};
 /// How long the view must rest, seconds, before a moved view is
 /// rendered anew instead of showing the last render moved into place.
 pub const SETTLE_SECONDS: f64 = 0.12;
+
+/// A render that took longer than this, seconds, makes the next ones
+/// run on a thread of their own.
+const SLOW_RENDER: f64 = 0.03;
+
+/// A render running on its own thread: what it is for, and where its
+/// picture will come from.
+#[cfg(not(target_arch = "wasm32"))]
+struct Job {
+    key: Key,
+    page_rect: Option<tracedraw_core::geometry::Rect>,
+    rx: std::sync::mpsc::Receiver<Option<(ColorImage, f64)>>,
+}
 
 #[derive(Default)]
 pub struct Raster {
@@ -25,7 +41,12 @@ pub struct Raster {
     /// Proofed colours on a grid of screen colours (View > Proof Colors),
     /// made when first needed and dropped with the texture (the colour
     /// settings changed).
-    proof: Option<ProofLut>,
+    proof: Option<std::sync::Arc<ProofLut>>,
+    /// How long the last render took, seconds.
+    last_seconds: f64,
+    /// The render running on its own thread, if any.
+    #[cfg(not(target_arch = "wasm32"))]
+    job: Option<Job>,
 }
 
 /// Screen colours as they would print, on a `N` x `N` x `N` grid of the
@@ -97,6 +118,24 @@ impl ProofLut {
         let p = self.apply([un(r), un(g), un(b)]);
         let q = |v: f32| (v.clamp(0.0, 1.0) * af * 255.0).round() as u8;
         egui::Color32::from_rgba_premultiplied(q(p[0]), q(p[1]), q(p[2]), a)
+    }
+}
+
+/// A rendered pixmap as an egui image, proofed through `lut` when given.
+fn to_image(pixmap: &tiny_skia::Pixmap, lut: Option<&ProofLut>) -> ColorImage {
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let pixels: Vec<egui::Color32> = pixmap
+        .pixels()
+        .iter()
+        .map(|p| match lut {
+            Some(lut) => lut.pixel(p.red(), p.green(), p.blue(), p.alpha()),
+            None => egui::Color32::from_rgba_premultiplied(p.red(), p.green(), p.blue(), p.alpha()),
+        })
+        .collect();
+    ColorImage {
+        size: [w as usize, h as usize],
+        source_size: egui::vec2(w as f32, h as f32),
+        pixels,
     }
 }
 
@@ -182,6 +221,11 @@ impl Raster {
         self.key = None;
         self.proof = None;
         self.settle = None;
+        // A render under way is for what no longer holds.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.job = None;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -229,6 +273,16 @@ impl Raster {
                 .zip(pixel_dpi)
                 .map(|(win, dpi)| ((dpi * 1000.0).round() as u64, win.ix0, win.iy1)),
         };
+        // A render on its thread: taken when ready; while it runs for the
+        // view asked for (or the drawing changes faster than it draws), the
+        // last picture shows, moved into place.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.poll_job(ctx) {
+            let running_for_this = self.job.as_ref().is_some_and(|j| j.key == key);
+            if running_for_this || window.is_none() {
+                return self.shown_meanwhile(view, screen);
+            }
+        }
         if self.key.as_ref() == Some(&key) {
             if let Some(t) = &self.texture {
                 self.settle = None;
@@ -282,27 +336,39 @@ impl Raster {
             draft: true,
             focus,
         };
+        let lut = proof.then(|| {
+            self.proof
+                .get_or_insert_with(|| std::sync::Arc::new(ProofLut::new()))
+                .clone()
+        });
+        let page_rect = (window.is_none()).then(|| {
+            tracedraw_core::geometry::Rect::new(
+                -vt.origin_x / vt.zoom,
+                (vt.origin_y - h as f64) / vt.zoom,
+                (w as f64 - vt.origin_x) / vt.zoom,
+                vt.origin_y / vt.zoom,
+            )
+        });
+        // A slow page, with a picture to show meanwhile: drawn on a
+        // thread of its own, the window answering all along.
+        #[cfg(not(target_arch = "wasm32"))]
+        if window.is_none() && self.last_seconds > SLOW_RENDER && self.texture.is_some() {
+            let doc = doc.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let wake = ctx.clone();
+            std::thread::spawn(move || {
+                let t = std::time::Instant::now();
+                let image = render_page(&doc, page, &opts).map(|pm| to_image(&pm, lut.as_deref()));
+                let _ = tx.send(image.map(|i| (i, t.elapsed().as_secs_f64())));
+                wake.request_repaint();
+            });
+            self.job = Some(Job { key, page_rect, rx });
+            return self.shown_meanwhile(view, screen);
+        }
+        let t = std::time::Instant::now();
         let pixmap = render_page(doc, page, &opts)?;
-        let lut = if proof {
-            Some(&*self.proof.get_or_insert_with(ProofLut::new))
-        } else {
-            None
-        };
-        let pixels: Vec<egui::Color32> = pixmap
-            .pixels()
-            .iter()
-            .map(|p| match lut {
-                Some(lut) => lut.pixel(p.red(), p.green(), p.blue(), p.alpha()),
-                None => {
-                    egui::Color32::from_rgba_premultiplied(p.red(), p.green(), p.blue(), p.alpha())
-                }
-            })
-            .collect();
-        let image = ColorImage {
-            size: [w as usize, h as usize],
-            source_size: egui::vec2(w as f32, h as f32),
-            pixels,
-        };
+        let image = to_image(&pixmap, lut.as_deref());
+        self.last_seconds = t.elapsed().as_secs_f64();
         // Document pixels are blown up as blocks, the way they will look.
         let filter = if window.is_some() {
             TextureOptions::NEAREST
@@ -314,15 +380,51 @@ impl Raster {
             None => self.texture = Some(ctx.load_texture("page", image, filter)),
         }
         self.key = Some(key);
-        self.page_rect = (window.is_none()).then(|| {
-            tracedraw_core::geometry::Rect::new(
-                -vt.origin_x / vt.zoom,
-                (vt.origin_y - h as f64) / vt.zoom,
-                (w as f64 - vt.origin_x) / vt.zoom,
-                vt.origin_y / vt.zoom,
-            )
-        });
+        self.page_rect = page_rect;
         self.texture.as_ref().map(|t| (t.id(), screen))
+    }
+
+    /// The last picture, where its part of the page now is on screen
+    /// (while a new one is drawn on its thread).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn shown_meanwhile(&self, view: &View, screen: Rect) -> Option<(TextureId, Rect)> {
+        let t = self.texture.as_ref()?;
+        Some((
+            t.id(),
+            self.page_rect.map_or(screen, |r| view.rect_to_screen(r)),
+        ))
+    }
+
+    /// A render on its thread: its picture taken when ready (`true` when
+    /// it is still running).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_job(&mut self, ctx: &Context) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        match job.rx.try_recv() {
+            Ok(result) => {
+                let job = self.job.take().expect("job");
+                if let Some((image, seconds)) = result {
+                    self.last_seconds = seconds;
+                    match &mut self.texture {
+                        Some(t) => t.set(image, TextureOptions::LINEAR),
+                        None => {
+                            self.texture =
+                                Some(ctx.load_texture("page", image, TextureOptions::LINEAR))
+                        }
+                    }
+                    self.key = Some(job.key);
+                    self.page_rect = job.page_rect;
+                }
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.job = None;
+                false
+            }
+        }
     }
 }
 
@@ -471,6 +573,44 @@ mod tests {
             1.0 + SETTLE_SECONDS + 0.01,
         );
         assert_ne!(raster.key, before);
+    }
+
+    /// A slow page is drawn on a thread of its own: the frame that asks
+    /// for it returns at once with the last picture moved into place, and
+    /// the new picture is taken once it is ready (#345).
+    #[test]
+    fn a_slow_page_is_drawn_on_its_own_thread() {
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let mut raster = Raster::default();
+        let view = View::default();
+        let (first, _) = pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
+        let key = raster.key.clone();
+        // Taken for slow: the next render runs on a thread.
+        raster.last_seconds = 1.0;
+        let mut zoomed = view;
+        zoomed.zoom *= 2.0;
+        let t = SETTLE_SECONDS + 0.01;
+        pass(&ctx, &mut raster, &doc, &zoomed, rect, 0.0);
+        let (tex, screen) = pass(&ctx, &mut raster, &doc, &zoomed, rect, t);
+        assert_eq!(tex, first);
+        assert!(raster.job.is_some(), "drawn on its thread");
+        assert_eq!(raster.key, key, "the old picture shows meanwhile");
+        assert!((screen.width() - 640.0).abs() < 1e-3, "{screen:?}");
+        // Ready a moment later: taken, for the view asked for.
+        let mut done = false;
+        for i in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let (_, screen) = pass(&ctx, &mut raster, &doc, &zoomed, rect, t + 0.01 * i as f64);
+            if raster.job.is_none() && raster.key != key {
+                assert_eq!(screen, rect);
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "the picture from the thread was taken");
+        assert!(raster.last_seconds < 1.0, "its time measured");
     }
 
     #[test]

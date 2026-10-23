@@ -171,6 +171,17 @@ pub struct Settings {
     /// Options > General: show the splash screen while TraceDraw starts.
     #[serde(default = "default_true")]
     pub show_splash: bool,
+    /// Options > General: draw the window with the graphics card (off:
+    /// its software adapter), from the next start (#445).
+    #[serde(default = "default_true")]
+    pub hardware_acceleration: bool,
+    /// The graphics card chosen by name; empty, the fastest one.
+    #[serde(default)]
+    pub gpu_adapter: String,
+    /// The renderer that opened the window when the first choice could
+    /// not ("software" or "gl"); cleared when the choice changes.
+    #[serde(default)]
+    pub working_renderer: String,
     /// Customization > Appearance: dialogs open in the middle of the
     /// window and stay there; off, they move by their title bar and open
     /// where they were left.
@@ -1323,6 +1334,9 @@ impl Default for Settings {
             toolbox_captions: Captions::ImageOnly,
             ui_size: 0.0,
             show_splash: true,
+            hardware_acceleration: true,
+            gpu_adapter: String::new(),
+            working_renderer: String::new(),
             center_dialogs: true,
             ui_shadows: true,
             colored_icons: false,

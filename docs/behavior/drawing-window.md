@@ -128,12 +128,28 @@ window shows.
   page of thousands of objects pans at the screen's rate whatever its
   size; a zoom looks coarse for that moment. The Pixels view never
   shows a moved render.
+- The page is rendered in horizontal bands, one per processor core
+  (up to 16), each on its own thread, when the canvas has a quarter of
+  a million pixels or more; a band reaches past its edges by twice the
+  widest drop shadow blur so shadows join without seams. A page with a
+  lens is rendered whole, since a lens reads what is under it. The web
+  build renders on one thread.
+- When the last render took longer than 0.03 s
+  (`raster::SLOW_RENDER`), the next one runs on a thread of its own
+  with a copy of the drawing, and the last render stays on screen
+  until it is ready; the window keeps answering the pointer and the
+  keyboard meanwhile. A render made stale by a newer change is
+  dropped.
+- Undo keeps one copy of the drawing per step (the state the step
+  replaced) and swaps it in and out, instead of a copy before and one
+  after; a command costs one copy of the drawing instead of two.
 
 ## Checks
 
 - `tracedraw_render::culling_tests::objects_out_of_sight_are_skipped`
 - `raster::tests::a_moving_view_shows_the_last_render_until_it_rests`
 - `raster::tests::a_canvas_that_moves_renders_again`
+- `raster::tests::a_slow_page_is_drawn_on_its_own_thread`
 
 - `ui::windows::tests::windows_tile_and_cascade_inside_the_area`
 - `ui::windows::tests::tiled_windows_draw_every_drawing_and_switch`

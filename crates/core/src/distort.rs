@@ -21,7 +21,8 @@
 //!   into short steps so the turn bends it smoothly.
 
 use crate::geometry::{
-    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point, Shape as _, Vec2,
+    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point, Rect,
+    Shape as _, Vec2,
 };
 use kurbo::QuadBez;
 
@@ -109,7 +110,12 @@ fn finite(p: Point) -> bool {
 
 /// Apply `how` to `path`.
 pub fn distort(path: &BezPath, how: Distort) -> BezPath {
-    let b = path.bounding_box();
+    distort_in(path, path.bounding_box(), how)
+}
+
+/// As [`distort`], about the box `b` instead of the path's own (the
+/// objects of a group, each distorted about the box of them all).
+pub fn distort_in(path: &BezPath, b: Rect, how: Distort) -> BezPath {
     if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()) {
         return path.clone();
     }

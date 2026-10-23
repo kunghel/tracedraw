@@ -614,11 +614,8 @@ fn fill_row(
             }
         });
     let mut c = color.unwrap_or(Color::BLACK);
-    let [r, g, b] = c.to_rgb8();
-    let mut rgb = [r, g, b];
     ui.add_enabled_ui(uniform, |ui| {
-        if ui.color_edit_button_srgb(&mut rgb).changed() {
-            c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+        if crate::ui::color_picker::color_button(ui, &mut c) {
             out = Some(Some(Fill::Solid(c)));
         }
     });
@@ -771,11 +768,8 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 }
             });
         let mut c = stroke.as_ref().map_or(Color::BLACK, |s| s.color);
-        let [r, g, b] = c.to_rgb8();
-        let mut rgb = [r, g, b];
         ui.add_enabled_ui(stroke.is_some(), |ui| {
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+            if crate::ui::color_picker::color_button(ui, &mut c) {
                 app.apply_outline_color(Some(c));
             }
         });
@@ -1036,11 +1030,8 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
             p.frame_fill = if has { None } else { Some(Fill::Solid(c)) };
             pc = true;
         }
-        let [r, g, b] = c.to_rgb8();
-        let mut rgb = [r, g, b];
         ui.add_enabled_ui(has, |ui| {
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+            if crate::ui::color_picker::color_button(ui, &mut c) {
                 p.frame_fill = Some(Fill::Solid(c));
                 pc = true;
             }

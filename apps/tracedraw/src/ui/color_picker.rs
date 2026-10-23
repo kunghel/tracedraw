@@ -85,6 +85,14 @@ pub fn from_viewer(h: f32, s: f32, b: f32, model: &str) -> Color {
     Color::Hsb { h, s, b }.convert_to(model)
 }
 
+/// Whether the popup closes: on Esc, or on a press outside it and its
+/// swatch. While its Model list is open a press is not outside: the list
+/// opens below the popup and reaches past it, and a press on its lower
+/// entries (Lab, Grayscale, YIQ) is a choice (#440).
+fn closes(pressed_at: Option<Pos2>, esc: bool, popup: Rect, swatch: Rect, list_open: bool) -> bool {
+    esc || (!list_open && pressed_at.is_some_and(|p| !popup.contains(p) && !swatch.contains(p)))
+}
+
 /// A colour swatch that opens the picker. True when the colour changed.
 pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
     let (swatch, resp) = ui.allocate_exact_size(Vec2::new(40.0, 18.0), Sense::click());
@@ -172,8 +180,8 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
                 i.key_pressed(egui::Key::Escape),
             )
         });
-        let outside = pressed_at.is_some_and(|p| !popup.contains(p) && !swatch.contains(p));
-        open = (!outside && !esc).then_some(st);
+        let list_open = egui::Popup::is_any_open(ui.ctx());
+        open = (!closes(pressed_at, esc, popup, swatch, list_open)).then_some(st);
         ui.data_mut(|d| {
             d.insert_temp(last_id(), Shown { swatch, popup });
         });
@@ -264,6 +272,25 @@ mod tests {
             Color::Rgb { .. }
         ));
         assert_eq!(edit_model(Color::Registration), "CMYK");
+    }
+
+    /// A press below the popup closes it, unless the Model list is open
+    /// there: its lower entries reach past the popup (#440).
+    #[test]
+    fn a_choice_in_the_model_list_keeps_the_popup_open() {
+        let popup = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::new(250.0, 330.0));
+        let swatch = Rect::from_min_size(Pos2::new(50.0, 100.0), Vec2::new(40.0, 18.0));
+        let below = Some(Pos2::new(150.0, 450.0));
+        assert!(closes(below, false, popup, swatch, false));
+        assert!(!closes(below, false, popup, swatch, true));
+        assert!(!closes(
+            Some(Pos2::new(150.0, 200.0)),
+            false,
+            popup,
+            swatch,
+            false
+        ));
+        assert!(closes(None, true, popup, swatch, true), "Esc always closes");
     }
 
     /// A click on a swatch near the window's right edge opens the popup

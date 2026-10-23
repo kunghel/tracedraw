@@ -61,6 +61,41 @@ pub struct ShapeTransparency {
     pub target: u8,
 }
 
+/// Uniform transparency of `amount` % kept with a merge mode other than
+/// Normal: the object is drawn through a mask of one grey (its lightness
+/// is the opacity), so the merge mode applies as for the other kinds, as
+/// the reference program offers it for uniform transparency too.
+pub fn uniform_mask(amount: f64) -> Fill {
+    Fill::Solid(tracedraw_core::Color::Gray {
+        v: (1.0 - (amount / 100.0).clamp(0.0, 1.0)) as f32,
+    })
+}
+
+/// The amount (%) of a [`uniform_mask`] colour.
+fn uniform_amount(c: tracedraw_core::Color) -> f64 {
+    let [r, g, b] = c.to_rgb_f32();
+    let v = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+    // The grey is kept in single precision: rounded back to what was set.
+    (((1.0 - v) * 100.0).clamp(0.0, 100.0) * 1e4).round() / 1e4
+}
+
+/// The transparency effect and the opacity that stand for uniform
+/// transparency of `amount` % with `merge`.
+pub fn uniform_transparency(amount: f64, merge: MergeMode, target: u8) -> (Option<Effect>, f64) {
+    if merge == MergeMode::Normal {
+        (None, 1.0 - (amount / 100.0).clamp(0.0, 1.0))
+    } else {
+        (
+            Some(Effect::Transparency {
+                mask: uniform_mask(amount),
+                merge,
+                target,
+            }),
+            1.0,
+        )
+    }
+}
+
 impl ShapeTransparency {
     pub fn of(s: &Shape) -> Self {
         let mask = s.effects.iter().find_map(|e| match e {
@@ -72,6 +107,14 @@ impl ShapeTransparency {
             _ => None,
         });
         match mask {
+            // Uniform transparency with a merge mode: a mask of one grey.
+            Some((Fill::Solid(c), merge, target)) => ShapeTransparency {
+                kind: 1,
+                amount: uniform_amount(c),
+                mask: None,
+                merge,
+                target,
+            },
             Some((mask, merge, target)) => ShapeTransparency {
                 kind: match mask {
                     Fill::Pattern(_) => 3,
@@ -154,6 +197,20 @@ pub fn transparency_mixed(ts: &[ShapeTransparency]) -> Vec<TransparencyField> {
 impl App {
     /// The objects the selection's fill and outline editors show and
     /// change: the selected objects, a group standing for what is in it.
+    /// The first of [`Self::paint_targets`], without copying the others
+    /// (the bars ask for it every frame, #345).
+    pub fn first_paint_target(&self) -> Option<Shape> {
+        let selected = self.selected_rc();
+        let mut first = Vec::new();
+        for s in selected.iter() {
+            leaf_refs(s, &mut first);
+            if let Some(f) = first.first() {
+                return Some((*f).clone());
+            }
+        }
+        None
+    }
+
     pub fn paint_targets(&self) -> Vec<Shape> {
         let mut out = Vec::new();
         for s in self.selected_rc().iter() {
@@ -384,22 +441,22 @@ impl App {
                 .filter(|e| !matches!(e, Effect::Transparency { .. }))
                 .cloned()
                 .collect();
+            let mut opacity = 1.0;
             if let (true, Some(mask)) = (t.kind > 1, t.mask.clone()) {
                 effects.push(Effect::Transparency {
                     mask,
                     merge: t.merge,
                     target: t.target,
                 });
+            } else if t.kind == 1 {
+                let (effect, o) = uniform_transparency(t.amount, t.merge, t.target);
+                effects.extend(effect);
+                opacity = o;
             }
             cmds.push(Command::SetEffects {
                 shape: s.id,
                 effects,
             });
-            let opacity = if t.kind == 1 {
-                1.0 - (t.amount / 100.0).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
             cmds.push(Command::SetOpacity {
                 shapes: vec![s.id],
                 opacity,

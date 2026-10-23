@@ -9,7 +9,11 @@ seguir um padrão ou uma textura.
 - Com a ferramenta [[tool.transparency]]: clique em um objeto e escolha um tipo
   de transparência na barra de propriedades, ou arraste através do objeto para
   uma transparência em gradiente, de opaco (onde você pressiona) a
-  transparente (onde solta).
+  transparente (onde solta). Os nós do gradiente aparecem então no objeto,
+  como na ferramenta [[tool.interactive_fill]]: arraste o início, o fim ou o
+  nó redondo de inclinação; arraste a barra entre dois nós (o ponto médio)
+  para mudar onde a mistura chega à metade; dê um duplo clique na linha para
+  acrescentar um nó, e num nó para removê-lo.
 - Na seção [[docker.transparency]] do painel [[docker.properties]].
 
 ## Configurações {#settings}

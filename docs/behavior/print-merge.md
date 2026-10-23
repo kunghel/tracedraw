@@ -53,11 +53,59 @@ Record); Save Data Source, Finish and Cancel.
   copy never changes the template.
 - The placeholder buttons insert `<Field>` into the text being edited.
 
+## The Print Merge docker
+
+Finish keeps the records and opens the Print Merge docker (also Window >
+Panels > Print Merge), as in the reference program; it no longer merges
+at once (#437). From top to bottom:
+
+- Create (greyed while records are loaded) opens the dialog on new
+  records, Edit on the ones kept.
+- Text, Image or QR code: the kind of field Insert Field makes.
+- Data source columns: the field to insert.
+- For Image: Pictures folder (#460): the folder picture cells that are
+  relative paths are looked for in first, before the data file's folder
+  (the folder button picks it, the cross forgets it); a cell naming a
+  picture without an extension ("1024") finds it with .jpg, .jpeg, .png,
+  .webp, .bmp, .gif, .tif or .tiff
+  (`each_record_gets_its_photo_from_the_pictures_folder`). Then
+  Placeholder image (a picture that stands in for the merged
+  ones on the page; the folder button picks it) and Align and scale: a
+  grid of nine anchor points (the point of the placeholder the picture
+  is placed by) and Actual size (its own size: its resolution, else
+  96 dpi), Fit proportionally (the default), Fill proportionally (covers
+  the placeholder, cut by it) or Stretch to fill.
+- Insert Field: Text puts `<Field>` at the caret of the text being
+  edited, else makes a text holding it in the middle of the view. Image
+  makes a frame named `<Field>` in the middle of the view, 40 mm square,
+  or the placeholder picture's shape at most 80 mm long with the picture
+  inside it as a clip frame; it keeps the Align and scale in its object
+  data (`PrintMerge.Scale`: actual, fit, fill or stretch;
+  `PrintMerge.Anchor`: 0 top left to 8 bottom right, row by row). QR
+  code makes a 40 mm square named `<Field>`. One undo step each.
+- Update Field (when a placeholder is selected: a text holding only
+  `<Field>`, or an object named `<Field>`): the selected placeholders
+  take the chosen column, and with Image the Align and scale shown.
+- Create Merged Document: the current page merged into a new drawing
+  (one page per record, named as below); the drawing it came from stays
+  as it was. Print Merged Document... does the same, then opens Print.
+
+Clip frames keep the object data of the object they were made from, as
+they keep its name.
+
 ## Merge
 
-Finish (or File > Print Merge > Perform Merge) copies the current page once per record, right after it,
-in the records' order, names the copies "<page> 1", "<page> 2", ... and
-fills them. It is two undo steps (the copies, then the fills).
+File > Print Merge > Perform Merge copies the current page once per
+record, right after it, in the records' order, names the copies
+"<page> 1", "<page> 2", ... and fills them. It is two undo steps (the
+copies, then the fills).
+
+An object named `<Field>` of a picture field on the page (not in a
+group) takes the record's picture inside it as a clip frame, placed by
+its Align and scale (placeholders without it fill it from the centre, as
+before); a clip frame's old contents, such as the placeholder picture,
+give way. An object named `<Field>` of a QR field becomes the code, as
+large as its box allows.
 
 ## Checks
 
@@ -65,3 +113,7 @@ fills them. It is two undo steps (the copies, then the fills).
 - `print_merge::tests::fields_and_records_are_added_and_removed`
 - `print_merge::tests::csv_round_trips_with_counters_written_out`
 - `print_merge::tests::merge_fills_text_qr_and_counters`
+- `print_merge::tests::pictures_are_placed_by_scale_and_anchor`
+- `ui::print_merge_docker::tests::the_docker_inserts_fields_and_makes_a_merged_document`
+- `ui::print_merge_docker::tests::update_field_changes_the_column_and_the_placement`
+- `ui::print_merge_docker::tests::the_docker_draws_with_and_without_data`

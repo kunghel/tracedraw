@@ -62,6 +62,7 @@ effects/index
   effects/contour
   effects/distort
   effects/envelope
+  effects/mockup
   effects/extrude
   effects/block-shadow
   effects/drop-shadow

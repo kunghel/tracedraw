@@ -244,6 +244,14 @@ impl App {
     pub fn text_keyboard(&mut self, ctx: &egui::Context) {
         use egui::{Event, Key};
         let events = ctx.input(|i| i.events.clone());
+        // Alt let go after digits: the character they number (0 first: code
+        // page 1252, as the Glyphs docker shows; else the Unicode number).
+        if !self.alt_code.is_empty() && !ctx.input(|i| i.modifiers.alt) {
+            let code = std::mem::take(&mut self.alt_code);
+            if let Some(ch) = alt_code_char(&code) {
+                self.text_insert(&ch.to_string());
+            }
+        }
         for ev in &events {
             // An input method composing text owns the keys until it
             // commits (Enter, Backspace and the arrows edit the
@@ -280,6 +288,14 @@ impl App {
                 } => {
                     let shift = modifiers.shift;
                     let ctrl = modifiers.command;
+                    // Alt and digits: a character by its number, typed when
+                    // Alt is let go (Windows does this itself).
+                    if !cfg!(target_os = "windows") && modifiers.alt && !ctrl {
+                        if let Some(d) = digit_of(*key) {
+                            self.alt_code.push(d);
+                            continue;
+                        }
+                    }
                     // In vertical text the caret goes down the column with
                     // Down and across the columns with Left and Right.
                     let vertical = self.editing_vertical();
@@ -889,9 +905,51 @@ fn word_end_after(text: &[char], from: usize) -> usize {
     i
 }
 
+/// The digit a key types, for Alt codes.
+fn digit_of(key: egui::Key) -> Option<char> {
+    use egui::Key::*;
+    Some(match key {
+        Num0 => '0',
+        Num1 => '1',
+        Num2 => '2',
+        Num3 => '3',
+        Num4 => '4',
+        Num5 => '5',
+        Num6 => '6',
+        Num7 => '7',
+        Num8 => '8',
+        Num9 => '9',
+        _ => return None,
+    })
+}
+
+/// The character an Alt code names: with a leading zero a code page 1252
+/// number (Alt+0169 is ©), else a Unicode number.
+pub fn alt_code_char(code: &str) -> Option<char> {
+    let n: u32 = code.parse().ok()?;
+    if code.starts_with('0') {
+        crate::ui::glyphs_docker::from_cp1252(u8::try_from(n).ok()?)
+    } else {
+        char::from_u32(n).filter(|c| !c.is_control())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Alt codes as the Glyphs docker shows them: a leading zero reads
+    /// code page 1252, else the Unicode number (#447).
+    #[test]
+    fn alt_codes_name_characters() {
+        assert_eq!(alt_code_char("0169"), Some('©'));
+        assert_eq!(alt_code_char("0128"), Some('€'));
+        assert_eq!(alt_code_char("8364"), Some('€'));
+        assert_eq!(alt_code_char("65"), Some('A'));
+        assert_eq!(alt_code_char("0129"), None, "no character there");
+        assert_eq!(alt_code_char("7"), None, "a control character");
+        assert_eq!(alt_code_char(""), None);
+    }
 
     fn fonts_available() -> bool {
         !tracedraw_text::fonts().families().is_empty()

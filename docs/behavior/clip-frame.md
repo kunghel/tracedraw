@@ -8,7 +8,12 @@ them.
 `ShapeKind::ClipFrame { frame, contents }`: the frame is any closed
 object, kept whole with its own transform, fill and outline; the
 contents keep their own page-space transforms. The frame's fill and
-outline are drawn, the contents are clipped to the frame's path.
+outline are drawn, the contents are clipped to the frame's path. The
+contents are drawn over a copy of what lies beneath the frame, which
+then takes the page's place inside the frame (with the frame's
+opacity), so a merge mode inside a frame (Multiply on a photo) works on
+the backdrop as it does outside one
+(`tracedraw_render::band_tests::merge_modes_inside_a_clip_frame_reach_the_backdrop`).
 
 The clip frame keeps the id of the object it was made from; the frame
 inside it gets an id of its own (Place Inside Frame), so it can be

@@ -62,7 +62,7 @@ memindahkannya, klik ganda untuk menambah atau menghapus node. Di bawah pita:
 warna, transparansi, posisi, dan [[edit_fill.midpoint]] node, serta
 [[edit_fill.reverse]]. [[edit_fill.transform]] berisi rotasi, pusat, dan
 bantalan tepi. **OK** menerapkan yang Anda ubah, dengan
-[[edit_fill.overprint]].
+[[edit_fill.overprint]]. Selama kotak dialog terbuka, seleksi menampilkan isian saat Anda mengubahnya; **Batal** atau <kbd>Esc</kbd> mengembalikan isian lama.
 
 ![Kotak dialog Edit Isian](../../img/color-fills-edit-fill.png)
 

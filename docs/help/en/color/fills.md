@@ -68,6 +68,7 @@ selection (or of new objects, with nothing selected).
   and square gradients), the edge pad, mirror and inversion.
 - **OK** changes only what you changed on every selected object, with
   [[edit_fill.overprint]].
+- While the dialog box is open, the selection shows the fill as you change it; **Cancel** or <kbd>Esc</kbd> puts the old fill back.
 
 ![The Edit Fill dialog box](../../img/color-fills-edit-fill.png)
 

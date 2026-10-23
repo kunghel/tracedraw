@@ -1933,6 +1933,31 @@ pub struct OpacityMask {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Uid(pub u128);
 
+/// Hashing of identities, which are random already: their bits folded.
+#[derive(Default, Clone, Copy)]
+pub struct UidHasher(u64);
+
+impl std::hash::Hasher for UidHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(b))
+                .wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+    fn write_u128(&mut self, v: u128) {
+        self.0 =
+            ((v as u64) ^ ((v >> 64) as u64).rotate_left(29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// The hasher maps of identities use.
+pub type UidHash = std::hash::BuildHasherDefault<UidHasher>;
+
 impl std::fmt::Display for Uid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:032x}", self.0)
@@ -4010,8 +4035,11 @@ impl Document {
                 }
             }
         }
-        // Who keeps each identity: the lowest id carrying it.
-        let mut owner: std::collections::HashMap<Uid, ShapeId> = std::collections::HashMap::new();
+        // Who keeps each identity: the lowest id carrying it. Identities
+        // are random already, so a plain fold of their bits hashes them
+        // (std's keyed hash made this walk a fifth of every edit, #345).
+        let mut owner: std::collections::HashMap<Uid, ShapeId, UidHash> =
+            std::collections::HashMap::with_capacity_and_hasher(1024, UidHash::default());
         let mut count = 0usize;
         let mut carried = 0usize;
         {
@@ -4041,7 +4069,8 @@ impl Document {
         if carried == count && owner.len() == count {
             return 0;
         }
-        let mut seen: std::collections::HashSet<Uid> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<Uid, UidHash> =
+            std::collections::HashSet::with_capacity_and_hasher(owner.len(), UidHash::default());
         let mut given = 0;
         let mut fix = |s: &mut Shape| {
             let keep = s

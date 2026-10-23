@@ -9,7 +9,10 @@ pattern or texture.
 - With the [[tool.transparency]] tool: click an object, then choose a kind of
   transparency on the property bar, or drag across the object for a gradient
   transparency from opaque (where you press) to transparent (where you
-  release).
+  release). The gradient's nodes then show on the object, as with the
+  [[tool.interactive_fill]] tool: drag the start, the end or the round skew
+  node; drag the bar between two nodes (the midpoint) to move where the blend
+  is half way; double-click the line to add a node, a node to remove it.
 - In the [[docker.transparency]] section of the [[docker.properties]] panel.
 
 ## Settings {#settings}

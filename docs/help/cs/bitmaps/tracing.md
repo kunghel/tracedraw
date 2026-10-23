@@ -10,6 +10,8 @@ Vyberte bitmapu a zvolte [[menu.bitmaps > menu.bitmaps.quick_trace]]. Použije
 se předvolba zvolená na stránce [[options.bitmap_tracing]] v globálních
 možnostech (výchozí Clipart).
 
+[[menu.bitmaps.repeat_last_trace]] obtáhne vybranou bitmapu znovu jako poslední obtažení, bez dialogového okna, a [[menu.bitmaps.last_trace_settings]] otevře dialogové okno s nastavením posledního obtažení. Tyto příkazy má i místní nabídka bitmapy, spolu s [[menu.bitmaps.centerline_trace]] a [[menu.bitmaps.outline_trace]].
+
 ## Dialogové okno vektorizace bitmapy {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] a

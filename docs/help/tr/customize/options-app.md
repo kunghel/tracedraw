@@ -13,6 +13,7 @@ bir sayfa seçin.
 - [[options.show_new_document_dialog]] (açık): yeni bir çizimin ayarlarını
   sor; bkz. [Çizim oluşturma](../get-started/new-document.md).
 - [[options.show_splash]] (açık).
+- [[options.hardware_acceleration]] (açık): pencere yanında seçilen ekran kartıyla çizilir (başta [[options.gpu_automatic]]); kapalıyken bilgisayarın yazılım oluşturucusuyla. Bir sonraki açılışta geçerli olur. Pencere böyle açılamazsa TraceDraw yazılım oluşturucuyla, ardından OpenGL ile yeniden başlar ve çalışanı hatırlar.
 - [[options.undo_levels]]: kaç adımı geri alabileceğiniz (başlangıçta 150).
 
 ## Ekran {#display}

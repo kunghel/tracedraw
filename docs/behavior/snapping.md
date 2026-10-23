@@ -46,6 +46,12 @@ in black on a white halo, with the mode's name beside it in the
 selection colour, also haloed in white (no box), so both read on any
 drawing.
 
+Only objects whose bounds come within the radius of the pointer are
+looked at. An intersection is found on chords an eighth of the radius
+long, cut from the segments near the pointer, and then refined onto both
+curves, so it is exact while a page of thousands of curves still snaps
+at the screen's rate (#345, `curves_snap_to_their_exact_crossing`).
+
 Drawing tools snap the pointer. A move with the Pick tool that starts on
 one of the selection's points (a node, a midpoint, a quadrant or the
 centre within the radius) carries that point onto another object's point

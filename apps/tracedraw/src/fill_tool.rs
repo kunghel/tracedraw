@@ -124,8 +124,21 @@ impl App {
     pub fn selected_fountain(&self) -> Option<(ShapeId, Fountain, Rect)> {
         use tracedraw_core::geometry::Shape as _;
         let s = self.selected_shapes().into_iter().next()?;
+        let b = s.page_path().bounding_box();
+        if self.tool == crate::tools::Tool::Transparency {
+            // The Transparency tool edits the gradient of the mask with the
+            // same nodes: start, end, skew, the nodes between and the
+            // midpoint sliders (#448).
+            return s.effects.iter().find_map(|e| match e {
+                tracedraw_core::live::Effect::Transparency {
+                    mask: Fill::Fountain(f),
+                    ..
+                } => Some((s.id, f.clone(), b)),
+                _ => None,
+            });
+        }
         match &s.fill {
-            Fill::Fountain(f) => Some((s.id, f.clone(), s.page_path().bounding_box())),
+            Fill::Fountain(f) => Some((s.id, f.clone(), b)),
             _ => None,
         }
     }
@@ -203,6 +216,36 @@ impl App {
     /// Put the edited fountain on the selected object: one undo step
     /// "Fill", which the next edits of the same drag join (`begun`).
     fn set_selected_fountain(&mut self, id: ShapeId, f: Fountain, begun: bool) {
+        if self.tool == crate::tools::Tool::Transparency {
+            // The transparency mask: one step "Transparency".
+            let Some(s) = self.doc().find_shape(id) else {
+                return;
+            };
+            let effects: Vec<tracedraw_core::live::Effect> = s
+                .effects
+                .iter()
+                .map(|e| match e {
+                    tracedraw_core::live::Effect::Transparency { merge, target, .. } => {
+                        tracedraw_core::live::Effect::Transparency {
+                            mask: Fill::Fountain(f.clone()),
+                            merge: *merge,
+                            target: *target,
+                        }
+                    }
+                    other => other.clone(),
+                })
+                .collect();
+            let cmd = Command::SetEffects { shape: id, effects };
+            let r = if begun && self.engine.undo_label() == Some("Transparency") {
+                self.engine.amend(&cmd)
+            } else {
+                self.engine.run_with_label(&cmd, "Transparency")
+            };
+            if let Err(e) = r {
+                self.status = e.to_string();
+            }
+            return;
+        }
         let cmd = Command::SetFill {
             shapes: vec![id],
             fill: Fill::Fountain(f),
@@ -212,6 +255,73 @@ impl App {
         } else {
             self.run(cmd);
         }
+    }
+
+    /// A drag across the object with the Transparency tool: a linear mask
+    /// from opaque where the drag began to clear where it ended (a
+    /// gradient mask there already keeps its nodes and gets the new
+    /// line), its nodes then shown for editing (#448).
+    pub fn transparency_from_drag(&mut self, id: ShapeId, from: Point, to: Point) {
+        use tracedraw_core::geometry::Shape as _;
+        let Some(s) = self.doc().shape_on_page(id) else {
+            return;
+        };
+        let b = s.page_path().bounding_box();
+        let old = s.effects.iter().find_map(|e| match e {
+            tracedraw_core::live::Effect::Transparency {
+                mask: Fill::Fountain(f),
+                merge,
+                target,
+            } if f.kind != FountainKind::Shaped => Some((f.clone(), *merge, *target)),
+            _ => None,
+        });
+        let (mut f, merge, target) = old.unwrap_or_else(|| {
+            (
+                Fountain::two(
+                    FountainKind::Linear,
+                    tracedraw_core::Color::WHITE,
+                    tracedraw_core::Color::BLACK,
+                    0.0,
+                ),
+                self.transparency_default.merge,
+                self.transparency_default.target,
+            )
+        });
+        let d = to - from;
+        let skew = from + Vec2::new(-d.y, d.x);
+        let rel = |q: Point| Fountain::page_to_rel(b, q);
+        f.set_handles(
+            b,
+            FountainHandles {
+                start: rel(from),
+                end: rel(to),
+                skew: rel(skew),
+            },
+        );
+        let mut effects: Vec<tracedraw_core::live::Effect> = s
+            .effects
+            .iter()
+            .filter(|e| !matches!(e, tracedraw_core::live::Effect::Transparency { .. }))
+            .cloned()
+            .collect();
+        effects.push(tracedraw_core::live::Effect::Transparency {
+            mask: Fill::Fountain(f.clone()),
+            merge,
+            target,
+        });
+        self.transparency_default.kind = 1;
+        self.transparency_default.mask = Fill::Fountain(f);
+        let cmds = vec![
+            Command::SetEffects { shape: id, effects },
+            Command::SetOpacity {
+                shapes: vec![id],
+                opacity: 1.0,
+            },
+        ];
+        if let Err(e) = self.engine.run_batch("Transparency", &cmds) {
+            self.status = e.to_string();
+        }
+        self.select(vec![id]);
     }
 
     /// Add a colour node at `t` on the line, in the colour and opacity
@@ -540,6 +650,37 @@ mod tests {
             Some(FountainHandle::End)
         );
         assert_eq!(app.fountain_handle_at(Point::new(35.0, 2.0)), None);
+    }
+
+    /// The Transparency tool: a drag gives a linear mask from where it
+    /// began to where it ended, and its nodes are edited as a fill's,
+    /// the midpoint slider included; the fill is left alone (#448).
+    #[test]
+    fn the_transparency_mask_has_nodes_and_a_midpoint() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        let fill = app.doc().find_shape(id).expect("square").fill.clone();
+        app.tool = crate::tools::Tool::Transparency;
+        let (from, to) = (Point::new(10.0, 20.0), Point::new(30.0, 20.0));
+        app.transparency_from_drag(id, from, to);
+        let (_, f, b) = app.selected_fountain().expect("a gradient mask");
+        assert_eq!(f.kind, FountainKind::Linear);
+        let hs = fountain_handles(&f, b);
+        assert!(near(hs[0].1, from) && near(hs[1].1, to), "{hs:?}");
+        assert_eq!(app.doc().find_shape(id).expect("square").opacity, 1.0);
+        // The midpoint slider sits halfway; dragged to a quarter, the
+        // blend's middle moves there.
+        let mid = on_line(from, to, 0.5);
+        assert_eq!(app.fountain_handle_at(mid), Some(FountainHandle::Mid(0)));
+        app.drag_fountain_handle(FountainHandle::Mid(0), on_line(from, to, 0.25), false);
+        app.drag_fountain_handle(FountainHandle::Mid(0), on_line(from, to, 0.3), true);
+        let (_, f, _) = app.selected_fountain().expect("mask");
+        assert!((f.stops[0].mid - 0.3).abs() < 1e-6, "{}", f.stops[0].mid);
+        assert_eq!(app.engine.undo_label(), Some("Transparency"));
+        // A node added on the line, then the fill untouched.
+        assert!(app.add_fountain_stop(0.7).is_some());
+        assert_eq!(app.selected_fountain().expect("mask").1.stops.len(), 3);
+        assert_eq!(app.doc().find_shape(id).expect("square").fill, fill);
     }
 
     #[test]

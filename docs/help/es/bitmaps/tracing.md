@@ -10,6 +10,8 @@ Seleccione un mapa de bits y elija [[menu.bitmaps > menu.bitmaps.quick_trace]].
 Usa el ajuste preestablecido elegido en la página [[options.bitmap_tracing]]
 de las opciones globales (Imágenes prediseñadas de forma predeterminada).
 
+[[menu.bitmaps.repeat_last_trace]] vuelve a calcar el mapa de bits seleccionado como el último calco, sin el cuadro de diálogo, y [[menu.bitmaps.last_trace_settings]] abre el cuadro de diálogo con la configuración del último calco. El menú contextual de un mapa de bits también tiene estos comandos, con [[menu.bitmaps.centerline_trace]] y [[menu.bitmaps.outline_trace]].
+
 ## El cuadro de diálogo Calcar mapa de bits {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] y

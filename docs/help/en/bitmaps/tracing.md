@@ -9,6 +9,8 @@ Select a bitmap and choose [[menu.bitmaps > menu.bitmaps.quick_trace]]. It uses
 the preset chosen on the [[options.bitmap_tracing]] page of the global options
 (Clipart at first).
 
+[[menu.bitmaps.repeat_last_trace]] traces the selected bitmap again as the last trace did, without the dialog box, and [[menu.bitmaps.last_trace_settings]] opens the dialog box with the last trace's settings. A bitmap's right-click menu has these commands too, with [[menu.bitmaps.centerline_trace]] and [[menu.bitmaps.outline_trace]].
+
 ## The Trace Bitmap dialog box {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] and

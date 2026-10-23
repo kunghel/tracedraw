@@ -6,6 +6,8 @@
 
 选择一个位图并选择 [[menu.bitmaps > menu.bitmaps.quick_trace]]。它使用全局选项中 [[options.bitmap_tracing]] 页面上选定的预设（起初为剪贴画）。
 
+[[menu.bitmaps.repeat_last_trace]] 不打开对话框，按上次的方式再次描摹所选位图；[[menu.bitmaps.last_trace_settings]] 以上次的设置打开对话框。位图的右键菜单中也有这些命令，以及 [[menu.bitmaps.centerline_trace]] 和 [[menu.bitmaps.outline_trace]]。
+
 ## 描摹位图对话框 {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] 和 [[menu.bitmaps.centerline_trace]] 列出预设；选择一个即可打开描摹对话框。

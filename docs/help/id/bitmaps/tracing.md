@@ -10,6 +10,8 @@ Pilih bitmap lalu pilih [[menu.bitmaps > menu.bitmaps.quick_trace]]. Perintah
 ini memakai preset yang dipilih di halaman [[options.bitmap_tracing]] pada
 opsi global (awalnya Clipart).
 
+[[menu.bitmaps.repeat_last_trace]] menjiplak ulang bitmap terpilih seperti jiplakan terakhir, tanpa kotak dialog, dan [[menu.bitmaps.last_trace_settings]] membuka kotak dialog dengan pengaturan jiplakan terakhir. Menu klik kanan bitmap juga memiliki perintah ini, bersama [[menu.bitmaps.centerline_trace]] dan [[menu.bitmaps.outline_trace]].
+
 ## Kotak dialog Jiplak Bitmap {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] dan

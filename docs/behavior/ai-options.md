@@ -26,6 +26,14 @@ Remove Background (see `ai-generate.md`), with the same key.
 Fields: Preset, Service, Address, Model (the text model), API key, an
 Image model row (only for a service that can make pictures), Show the
 prompt bar, Remember the key, and the hint for local model servers.
+The Model field can be typed in, and the arrow beside it lists the
+models to pick from: the ones the service listed (Test Connection or
+Refresh list, the last entry, asks for them), else the usual ones of its
+kind (the current Claude models for the Messages API), with the model in
+use first when it is in neither. `ai::tests::live_claude_api` (ignored)
+runs against the real Messages API with a key in
+`TRACEDRAW_ANTHROPIC_KEY`; without one it checks the service's "no key"
+answer.
 Test Connection asks the service for its models and says how many it
 has, or shows its error; for a service that makes pictures it also asks
 for the image models, which then fill the Image model list (an error of

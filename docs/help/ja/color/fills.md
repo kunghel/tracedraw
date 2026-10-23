@@ -32,7 +32,7 @@
 
 ## 塗りつぶしの編集ダイアログ {#edit-fill}
 
-<kbd>F11</kbd> で選択範囲の塗りつぶしについて [[edit_fill.title]] ダイアログが開きます。グラデーションではプレビュー、[[edit_fill.fill_picker]]、種類、繰り返し、色の帯が表示されます。ノードをクリックで選択、ドラッグで移動、ダブルクリックで追加または削除します。帯の下にはノードの色、透明度、位置、[[edit_fill.midpoint]]、[[edit_fill.reverse]] があります。[[edit_fill.transform]] には回転、中心、エッジパッドがあります。**OK** で変更した内容が [[edit_fill.overprint]] とともに適用されます。
+<kbd>F11</kbd> で選択範囲の塗りつぶしについて [[edit_fill.title]] ダイアログが開きます。グラデーションではプレビュー、[[edit_fill.fill_picker]]、種類、繰り返し、色の帯が表示されます。ノードをクリックで選択、ドラッグで移動、ダブルクリックで追加または削除します。帯の下にはノードの色、透明度、位置、[[edit_fill.midpoint]]、[[edit_fill.reverse]] があります。[[edit_fill.transform]] には回転、中心、エッジパッドがあります。**OK** で変更した内容が [[edit_fill.overprint]] とともに適用されます。ダイアログを開いている間は、変更した塗りつぶしが選択範囲にすぐ表示されます。**キャンセル** または <kbd>Esc</kbd> で元の塗りつぶしに戻ります。
 
 ![塗りつぶしの編集ダイアログ](../../img/color-fills-edit-fill.png)
 

@@ -16,6 +16,15 @@
 | Delete original | off (Options > Global > Bitmap Tracing) | |
 | Remove background | on (Options > Global > Bitmap Tracing) | auto or colour |
 
+## Commands
+
+Bitmaps > Quick Trace, Repeat Last Trace (the selected bitmaps traced
+with the last trace's settings, no dialog), Open Last Trace Settings
+(the dialog on them), Centerline Trace and Outline Trace with their
+presets; a bitmap's right-click menu has the same, as in the reference
+program (#452, `ops2::tests::the_last_trace_can_be_repeated_and_reopened`).
+The last trace is kept for the session.
+
 ## Dialog preview
 
 The Trace Bitmap dialog opens with the bitmap before and its trace after,

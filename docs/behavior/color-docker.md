@@ -44,9 +44,15 @@ until the selection changes again.
 
 ## The colour picker popup
 
-The swatches of the Properties docker (fill, outline, the extra fills
-and outlines, the text's character colours) open a popup beside the
-swatch (`ui/color_picker.rs`): the viewer (saturation and brightness
+Every colour of the drawing is picked with this one popup (#442): the
+swatches of the Properties docker (fill, outline, the extra fills and
+outlines, the text's character colours), the Interactive Fill bar
+(uniform colour, gradient start, end and picked node, the palette
+menu's other colour), the Text docker's character fill, outline and
+frame fill, the shadow and block shadow colours, the gradient stops of
+the fill editors, the table bar's cell fill and borders, the Border and
+Grommet colour, the palette editor and the page background. It opens
+beside the swatch (`ui/color_picker.rs`): the viewer (saturation and brightness
 square with the hue strip), a **Model** list and the sliders of the
 colour's model. The colour is edited in its own model, a CMYK colour in
 CMYK and an RGB one in RGB; choosing another model in the list converts
@@ -54,5 +60,13 @@ the colour and the object holds a colour of that model from then on,
 with the sliders changing to it. The list offers the docker's models
 (RGB, CMYK, HSB, HSL, Lab, Grayscale, YIQ); a spot ink or registration
 colour is edited in CMYK until another model is chosen. Esc or a click
-outside closes the popup
-(`ui::color_picker::tests::the_model_can_be_changed_on_demand`).
+outside closes the popup; a click on the Model list's entries that reach
+below the popup (Lab, Grayscale, YIQ) chooses them, it does not count
+as outside (#440,
+`ui::color_picker::tests::a_choice_in_the_model_list_keeps_the_popup_open`,
+`ui::color_picker::tests::the_model_can_be_changed_on_demand`).
+
+A drag in the popup on the Properties docker's or the Interactive Fill
+bar's uniform colour is one undo step, and the colour joins the
+document palette when the button is let go, not every colour passed
+over (#442).

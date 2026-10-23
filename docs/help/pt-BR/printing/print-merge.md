@@ -17,12 +17,39 @@ QR. Cada registro dos seus dados vira uma cópia da página, preenchida.
      aparecem logo para serem mudados;
    - ou **Adicionar coluna** para acrescentar campos à mão, depois acrescente
      registros com **+**.
-4. Clique em **Concluir**.
+4. Clique em **Concluir**. Abre o painel [[docker.print_merge]], onde você
+   põe os campos na página e faz a mesclagem.
 
 ![A caixa de diálogo Mesclagem de impressão](../../img/printing-print-merge.png)
 
-A página atual é copiada uma vez por registro, logo depois dela, e cada cópia é
-preenchida. As cópias recebem o nome da página e o número do registro.
+## O painel Mala direta {#docker}
+
+O painel [[docker.print_merge]] (também em Janela > Painéis) trabalha com a
+fonte de dados que você criou ou carregou:
+
+- **[[merge.create]]** e **[[merge.edit]]** abrem os registros.
+- Escolha o tipo de campo, **Texto**, **Imagem** ou **Código QR**, e a coluna
+  em **[[merge.columns]]**.
+- Para uma imagem, **[[merge.pictures_folder]]** escolhe a pasta onde estão as
+  fotos, quando os dados trazem só o nome dos arquivos (um nome sem extensão,
+  como `1024`, encontra `1024.jpg` ou `1024.png`). **[[merge.placeholder]]** escolhe uma imagem que representa
+  as mescladas enquanto você desenha, e **[[merge.align_scale]]** define onde
+  cada imagem fica na moldura: clique em um dos nove pontos para ancorá-la e
+  escolha [[merge.scale_actual]], [[merge.scale_fit]], [[merge.scale_fill]]
+  (a moldura corta o que sobra) ou [[merge.scale_stretch]].
+- **[[merge.insert_field]]** põe o campo no texto que você está editando, ou
+  cria um texto, uma moldura de imagem ou um quadrado de QR no meio da
+  visualização. Mova e redimensione como qualquer objeto.
+- Selecione um campo e clique em **[[merge.update_field]]** para mudar a coluna
+  ou o alinhamento e a escala.
+- **[[merge.create_document]]** cria as páginas mescladas em um desenho novo: a
+  página em que você está é copiada uma vez por registro e cada cópia é
+  preenchida. O seu desenho fica como está. **[[merge.print_document]]** faz o
+  mesmo e abre Imprimir.
+
+[[menu.file.print_merge_perform]] em vez disso acrescenta as cópias
+preenchidas ao desenho atual, logo depois da página, com o nome da página e o
+número do registro.
 
 ## Tipos de campo {#fields}
 
@@ -52,5 +79,4 @@ formulário; use as setas ou **Ir para o registro** para percorrê-los. Os
 botões de marcador inserem um campo no texto que você está editando. **Salvar
 fonte de dados** grava os registros como arquivo CSV.
 
-[[menu.file.print_merge_edit]] reabre os registros, e
-[[menu.file.print_merge_perform]] executa a mesclagem de novo.
+[[menu.file.print_merge_edit]] reabre os registros.

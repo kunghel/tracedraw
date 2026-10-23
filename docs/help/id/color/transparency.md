@@ -9,7 +9,7 @@ gradien, atau mengikuti pola atau tekstur.
 - Dengan alat [[tool.transparency]]: klik objek, lalu pilih jenis
   transparansi di bilah properti, atau seret melintasi objek untuk
   transparansi gradien dari buram (tempat Anda menekan) hingga transparan
-  (tempat Anda melepas).
+  (tempat Anda melepas). Simpul gradien lalu tampil pada objek, seperti pada alat [[tool.interactive_fill]]: seret awal, akhir, atau simpul miring yang bulat; seret batang di antara dua simpul (titik tengah) untuk memindahkan tempat campuran mencapai setengah; klik ganda garis untuk menambah simpul, dan simpul untuk menghapusnya.
 - Di bagian [[docker.transparency]] pada panel [[docker.properties]].
 
 ## Pengaturan {#settings}

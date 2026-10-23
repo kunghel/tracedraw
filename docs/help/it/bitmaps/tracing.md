@@ -10,6 +10,8 @@ Seleziona una bitmap e scegli [[menu.bitmaps > menu.bitmaps.quick_trace]].
 Usa il preset scelto nella pagina [[options.bitmap_tracing]] delle opzioni
 globali (Clipart in partenza).
 
+[[menu.bitmaps.repeat_last_trace]] vettorizza di nuovo la bitmap selezionata come l'ultima vettorizzazione, senza finestra di dialogo, e [[menu.bitmaps.last_trace_settings]] apre la finestra di dialogo con le sue impostazioni. Anche il menu contestuale di una bitmap ha questi comandi, con [[menu.bitmaps.centerline_trace]] e [[menu.bitmaps.outline_trace]].
+
 ## La finestra di dialogo Ricalca bitmap {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] e

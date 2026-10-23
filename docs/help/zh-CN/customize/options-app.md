@@ -9,6 +9,7 @@
 - [[options.on_startup]]：显示欢迎屏幕、新建文档，或打开上次编辑的文档。
 - [[options.show_new_document_dialog]]（打开）：询问新绘图的设置；请参阅 [创建绘图](../get-started/new-document.md)。
 - [[options.show_splash]]（打开）。
+- [[options.hardware_acceleration]]（开）：用旁边选择的显卡绘制窗口（开始时为 [[options.gpu_automatic]]）；关闭时使用计算机的软件渲染器。下次启动时生效。如果窗口无法这样打开，TraceDraw 会改用软件渲染器、再改用 OpenGL 重新启动，并记住可用的那个。
 - [[options.undo_levels]]：可以撤消的步骤数（起初为 150）。
 
 ## 显示 {#display}

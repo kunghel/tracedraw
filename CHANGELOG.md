@@ -6,6 +6,39 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Status bar: a double click on the fill opens the Edit Fill dialog box and on the outline the Outline Pen dialog box, as in the reference program, instead of the Properties panel (#465).
+
+## 0.13.0 (2026-10-23)
+
+- Print Merge docker: a Pictures folder for the photos the data names, so a folder of 50 photos fills 50 ID cards, each with its own; a name without an extension finds the .jpg or .png (#460).
+
+- Tracing: Repeat Last Trace and Open Last Trace Settings in the Bitmaps menu, and a bitmap's right-click menu now lists them with Centerline Trace and Outline Trace and all their presets, not only Quick Trace (#452).
+
+- Glyphs docker: the font list is the property bar's, so a font can be found by typing its name, and the line above the glyphs shows the keystroke that types the glyph (Alt+0169 for ©), as in the reference program. While editing text, Alt and a number types the character on every system, not only on Windows (#447).
+
+- Transparency tool: a gradient transparency shows its nodes on the object, as Interactive Fill does: start, end, skew, nodes added on the line and the midpoint slider between two nodes to set where the blend is half way. A drag sets the gradient from where it began to where it ended, not only its angle (#448).
+
+- Options > Text > Display: the default font and size can be changed while a text is selected, and they no longer turn into the selected text's font and size; with nothing selected the Text tool's bar shows them (#449).
+
+- Envelope, perspective and distortions keep curves smooth: the letters of an enveloped text were drawn in visible facets (#455).
+
+- T-shirt mockups work as in the reference program, and a new Help page walks through one (Effects > Making a T-shirt mockup). Three fixes made it possible:
+  - An envelope, perspective or distortion on a group now bends each object from the box of the whole group and keeps its colours; before, the group vanished.
+  - Uniform transparency keeps its merge mode (Multiply and the others), where it used to keep Normal only.
+  - Objects inside a clip frame blend with what lies beneath the frame through their merge mode, so a print clipped to a shirt keeps the cloth's shading.
+
+- Colour picker: Lab, Grayscale and YIQ can be chosen again in the Model list; the click on them closed the popup instead (#440). The Interactive Fill bar, the Text docker, shadows, gradient stops, tables, the palette editor and the page background now use the same picker as the Properties docker, with its Model list, and dragging in the bar's colour is one undo step that adds one colour to the document palette, not one for every colour passed over (#442).
+
+- Options > General: Use hardware acceleration, with the graphics card to draw with, as in the reference program (#445). The window is now drawn with Direct3D 12, Vulkan or Metal. Turned off, or when the card cannot open the window (a virtual machine, for example), TraceDraw uses the software renderer and then OpenGL by itself and remembers what worked, so it opens where it used to fail (#439).
+
+- Print Merge works as in the reference program: Finish opens the Print Merge docker instead of merging at once. There you insert Text, Image and QR code fields from the data source's columns. An image field takes a placeholder picture and an Align and scale setting (anchor point, then Actual size, Fit proportionally, Fill proportionally or Stretch to fill). Update Field changes the selected placeholder, and Create Merged Document or Print Merged Document makes the merged pages in a new drawing (#437).
+
+- Tools > Options > AI > Service: the Model field has a list to pick from, with the models the service offers (Refresh list asks it for them) or the usual ones of its kind, as the AI bar has.
+
+- Edit Fill (F11): the selection shows the fill as you change it, as in the reference program, so a gradient can be judged on the object. OK keeps it as one undo step, and Cancel or Esc puts the old fill back (#436).
+
+- Less lag on heavy drawings (#345): the page is drawn on all the processor cores at once, and a page that takes long to draw is drawn on a thread of its own while the last picture stays on screen, so the window keeps answering. Each undo step keeps one copy of the drawing instead of two, objects are numbered with a faster table, snapping finds crossings without solving every pair of curves, and the bars, the cursor and the hover marks measure a large selection once instead of every frame. On a page of 5000 curves, moving an object went from 126 ms to 18 ms a frame, and hovering over all of them selected from 82 ms to 20 ms.
+
 - Toolbox: a right click on a tool button or on its empty part opens the bars' menu (Customize, button size, the bars), as on the other bars; it used to open the flyout or nothing.
 
 - Symmetry editing as in the reference program: a click or a marquee picks one of the objects inside (not the whole symmetry, not a copy), and the bar and the lines stay while you work inside it. The mirror lines can be dragged to move them, and a click on a line shows handles that turn them. The bar has icons, spin fields, Show full preview (copies as red outlines when off) and Show symmetry lines.

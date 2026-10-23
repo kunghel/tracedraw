@@ -286,6 +286,38 @@ thread_local! {
     static HIGHLIGHT_NEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Centerline Trace's presets, as the Bitmaps menu and a bitmap's
+/// right-click menu list them.
+pub const CENTERLINE_TRACES: [(&str, crate::trace::Preset); 2] = [
+    (
+        "menu.bitmaps.trace_technical",
+        crate::trace::Preset::Technical,
+    ),
+    (
+        "menu.bitmaps.trace_line_drawing",
+        crate::trace::Preset::LineDrawing,
+    ),
+];
+
+/// Outline Trace's presets.
+pub const OUTLINE_TRACES: [(&str, crate::trace::Preset); 6] = [
+    ("menu.bitmaps.trace_line_art", crate::trace::Preset::LineArt),
+    ("menu.bitmaps.trace_logo", crate::trace::Preset::Logo),
+    (
+        "menu.bitmaps.trace_detailed_logo",
+        crate::trace::Preset::DetailedLogo,
+    ),
+    ("menu.bitmaps.trace_clipart", crate::trace::Preset::Clipart),
+    (
+        "menu.bitmaps.trace_low_quality",
+        crate::trace::Preset::LowQualityImage,
+    ),
+    (
+        "menu.bitmaps.trace_high_quality",
+        crate::trace::Preset::HighQualityImage,
+    ),
+];
+
 pub fn set_highlight_new(on: bool) {
     HIGHLIGHT_NEW.with(|h| h.set(on));
 }
@@ -2711,48 +2743,29 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.bitmaps.quick_trace", "", has_bitmap) {
         app.quick_trace();
     }
+    let last = app.last_trace.is_some();
+    if item(ui, "menu.bitmaps.repeat_last_trace", "", has_bitmap && last) {
+        app.repeat_last_trace();
+    }
+    if item(
+        ui,
+        "menu.bitmaps.last_trace_settings",
+        "",
+        has_bitmap && last,
+    ) {
+        app.open_last_trace_settings();
+    }
     sub_if(ui, "menu.bitmaps.centerline_trace", has_bitmap, |ui| {
-        for (key, preset) in [
-            (
-                "menu.bitmaps.trace_technical",
-                crate::trace::Preset::Technical,
-            ),
-            (
-                "menu.bitmaps.trace_line_drawing",
-                crate::trace::Preset::LineDrawing,
-            ),
-        ] {
+        for (key, preset) in CENTERLINE_TRACES {
             if item(ui, key, "", has_bitmap) {
-                app.dialog = Dialog::Trace(crate::ui::dialogs::TraceState::new(
-                    preset,
-                    &app.settings.tracing,
-                ));
+                app.open_trace(preset);
             }
         }
     });
     sub_if(ui, "menu.bitmaps.outline_trace", has_bitmap, |ui| {
-        for (key, preset) in [
-            ("menu.bitmaps.trace_line_art", crate::trace::Preset::LineArt),
-            ("menu.bitmaps.trace_logo", crate::trace::Preset::Logo),
-            (
-                "menu.bitmaps.trace_detailed_logo",
-                crate::trace::Preset::DetailedLogo,
-            ),
-            ("menu.bitmaps.trace_clipart", crate::trace::Preset::Clipart),
-            (
-                "menu.bitmaps.trace_low_quality",
-                crate::trace::Preset::LowQualityImage,
-            ),
-            (
-                "menu.bitmaps.trace_high_quality",
-                crate::trace::Preset::HighQualityImage,
-            ),
-        ] {
+        for (key, preset) in OUTLINE_TRACES {
             if item(ui, key, "", has_bitmap) {
-                app.dialog = Dialog::Trace(crate::ui::dialogs::TraceState::new(
-                    preset,
-                    &app.settings.tracing,
-                ));
+                app.open_trace(preset);
             }
         }
     });

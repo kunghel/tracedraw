@@ -109,8 +109,68 @@ pub fn search(chars: &[char], query: &str) -> Vec<char> {
         .collect()
 }
 
-/// What the docker says of a glyph: its code point, the character and the
-/// range it belongs to.
+/// The characters of Windows code page 1252 at 0x80 to 0x9F (the rest
+/// of the page is Latin-1); `None` where the page has none.
+const CP1252_HIGH: [Option<char>; 32] = [
+    Some('\u{20AC}'),
+    None,
+    Some('\u{201A}'),
+    Some('\u{0192}'),
+    Some('\u{201E}'),
+    Some('\u{2026}'),
+    Some('\u{2020}'),
+    Some('\u{2021}'),
+    Some('\u{02C6}'),
+    Some('\u{2030}'),
+    Some('\u{0160}'),
+    Some('\u{2039}'),
+    Some('\u{0152}'),
+    None,
+    Some('\u{017D}'),
+    None,
+    None,
+    Some('\u{2018}'),
+    Some('\u{2019}'),
+    Some('\u{201C}'),
+    Some('\u{201D}'),
+    Some('\u{2022}'),
+    Some('\u{2013}'),
+    Some('\u{2014}'),
+    Some('\u{02DC}'),
+    Some('\u{2122}'),
+    Some('\u{0161}'),
+    Some('\u{203A}'),
+    Some('\u{0153}'),
+    None,
+    Some('\u{017E}'),
+    Some('\u{0178}'),
+];
+
+/// The character code page 1252 has at `b`.
+pub fn from_cp1252(b: u8) -> Option<char> {
+    match b {
+        0x80..=0x9F => CP1252_HIGH[(b - 0x80) as usize],
+        _ => Some(b as char),
+    }
+}
+
+/// The keystroke that types `ch` (Alt and its code page 1252 number with
+/// a leading zero, as the reference program shows it), when it has one.
+pub fn keystroke(ch: char) -> Option<String> {
+    let cp = ch as u32;
+    let b = if cp < 0x80 || (0xA0..=0xFF).contains(&cp) {
+        Some(cp as u8)
+    } else {
+        CP1252_HIGH
+            .iter()
+            .position(|c| *c == Some(ch))
+            .map(|i| 0x80 + i as u8)
+    }?;
+    (b >= 0x20).then(|| format!("Alt+{:04}", b))
+}
+
+/// What the docker says of a glyph: its code point, the character, the
+/// range it belongs to and the keystroke that types it (#447).
 pub fn describe(ch: char) -> String {
     let cp = ch as u32;
     let range = RANGES
@@ -118,10 +178,17 @@ pub fn describe(ch: char) -> String {
         .skip(1)
         .find(|(_, spans)| spans.iter().any(|(a, b)| cp >= *a && cp <= *b))
         .map(|(key, _)| tr(key));
-    match range {
-        Some(r) => format!("U+{cp:04X}   {ch}   {r}"),
-        None => format!("U+{cp:04X}   {ch}"),
+    let mut out = format!("U+{cp:04X}   {ch}");
+    if let Some(r) = range {
+        out.push_str(&format!("   {r}"));
     }
+    if let Some(k) = keystroke(ch) {
+        out.push_str(&format!(
+            "   {}",
+            crate::i18n::trf("glyphs.keystroke", &[("keys", &k)])
+        ));
+    }
+    out
 }
 
 /// The characters `family` draws, cached for the session.
@@ -291,18 +358,14 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
             }
         });
     ui.add_space(4.0);
-    let families = tracedraw_text::fonts().families();
-    egui::ComboBox::from_id_salt("glyphs_font")
-        .width(ui.available_width() - 8.0)
-        .selected_text(app.glyph_font.clone())
-        .height(400.0)
-        .show_ui(ui, |ui| {
-            for f in &families {
-                if ui.selectable_label(*f == app.glyph_font, f).clicked() {
-                    app.glyph_font = f.clone();
-                }
-            }
-        });
+    // The font list of the property bar, with its search as you type and
+    // its previews (#447).
+    let current = app.glyph_font.clone();
+    let width = ui.available_width() - 8.0;
+    let (pick, _) = crate::ui::font_list::font_list_live(app, ui, "glyphs_font", &current, width);
+    if let Some(p) = pick {
+        app.glyph_font = p.family;
+    }
     egui::ComboBox::from_id_salt("glyphs_range")
         .width(ui.available_width() - 8.0)
         .selected_text(tr(RANGES[app.glyph_range.min(RANGES.len() - 1)].0))
@@ -407,6 +470,15 @@ mod tests {
         // A bare letter or word finds those characters, not codes.
         assert_eq!(search(&chars, "aB"), vec!['a', 'B']);
         assert!(describe('€').starts_with("U+20AC"));
+        // The keystroke of the code page the reference program shows
+        // (#447), and back.
+        assert_eq!(keystroke('©').as_deref(), Some("Alt+0169"));
+        assert_eq!(keystroke('€').as_deref(), Some("Alt+0128"));
+        assert_eq!(keystroke('A').as_deref(), Some("Alt+0065"));
+        assert_eq!(keystroke('\u{2192}'), None);
+        assert_eq!(from_cp1252(0x80), Some('€'));
+        assert_eq!(from_cp1252(169), Some('©'));
+        assert!(describe('©').contains("Alt+0169"));
     }
 
     #[test]

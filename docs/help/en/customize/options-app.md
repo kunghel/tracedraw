@@ -12,6 +12,7 @@ sets how the program works. Choose a page from the list on the left.
 - [[options.show_new_document_dialog]] (on): ask for the settings of a new
   drawing; see [Creating a drawing](../get-started/new-document.md).
 - [[options.show_splash]] (on).
+- [[options.hardware_acceleration]] (on): draw the window with the graphics card chosen beside it ([[options.gpu_automatic]] at first); off, with the computer's software renderer. It takes effect at the next start. If the window cannot open that way, TraceDraw starts again with the software renderer, then with OpenGL, and keeps the one that worked.
 - [[options.undo_levels]]: how many steps you can undo (150 at first).
 
 ## Display {#display}

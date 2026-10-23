@@ -424,7 +424,7 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
     // Fill and outline of the selection, or of new objects.
     let shapes = app.selected_rc();
     // A clip frame shows its frame's, a group its first member's.
-    let (fill, stroke) = match app.paint_targets().first() {
+    let (fill, stroke) = match app.first_paint_target().as_ref() {
         Some(s) => (s.fill.clone(), s.stroke.clone()),
         None => (app.default_fill(), app.default_stroke()),
     };
@@ -476,8 +476,10 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
         tip: &tr("status.swatch_fill"),
     }
     .show(ui, &painter, fill_part);
+    // A double click opens the dialog box, as in the reference program
+    // (#465): Edit Fill for the fill, Outline Pen for the outline.
     if fill_hit && doc {
-        app.open_fill_editor();
+        app.open_edit_fill();
     }
     let outline_part = Rect::from_min_max(
         Pos2::new(outline_x, row.min.y),
@@ -492,7 +494,7 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
     }
     .show(ui, &painter, outline_part);
     if outline_hit && doc {
-        app.open_outline_editor();
+        app.open_outline_pen();
     }
 
     // Proof colours.

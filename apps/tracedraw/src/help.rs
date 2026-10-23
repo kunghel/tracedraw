@@ -183,6 +183,7 @@ pub fn docker_topic(t: DockerTab) -> &'static str {
         DockerTab::FindReplace => "objects/find-replace",
         DockerTab::Scripts => "customize/scripts",
         DockerTab::Macros => "customize/scripts#macros",
+        DockerTab::PrintMerge => "printing/print-merge#docker",
         DockerTab::Palettes => "color/palettes",
         DockerTab::Lens => "effects/lens",
         DockerTab::Blend => "effects/blend",

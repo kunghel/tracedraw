@@ -9,7 +9,7 @@ deseni ya da dokuyu izleyebilir.
 - [[tool.transparency]] aracıyla: bir nesneye tıklayın, ardından özellik
   çubuğunda bir saydamlık türü seçin veya opaktan (bastığınız yer) saydama
   (bıraktığınız yer) uzanan bir degrade saydamlık için nesnenin üzerinde
-  sürükleyin.
+  sürükleyin. Degradenin düğümleri ardından [[tool.interactive_fill]] aracındaki gibi nesnede görünür: başlangıcı, sonu veya yuvarlak eğim düğümünü sürükleyin; iki düğüm arasındaki çubuğu (orta nokta) sürükleyerek geçişin yarıya ulaştığı yeri değiştirin; çizgiye çift tıklamak düğüm ekler, düğüme çift tıklamak onu kaldırır.
 - [[docker.properties]] panelinin [[docker.transparency]] bölümünde.
 
 ## Ayarlar {#settings}

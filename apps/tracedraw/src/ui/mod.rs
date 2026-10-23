@@ -75,6 +75,7 @@ pub mod pdf_password;
 pub mod picture_mosaic_docker;
 pub mod preflight_dialog;
 pub mod preview;
+pub mod print_merge_docker;
 pub mod print_preview;
 pub mod propbar;
 pub mod publish_pdf;

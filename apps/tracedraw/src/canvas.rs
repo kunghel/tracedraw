@@ -805,7 +805,8 @@ fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
 /// first and last colours, and for an elliptical or square fill its
 /// outline dashed (the frame's unit circle or square).
 fn draw_fountain_handles(app: &App, painter: &Painter) {
-    if app.tool != Tool::InteractiveFill {
+    // The Transparency tool shows its mask's nodes the same way (#448).
+    if app.tool != Tool::InteractiveFill && app.tool != Tool::Transparency {
         return;
     }
     let Some((_, f, b)) = app.selected_fountain() else {
@@ -1150,14 +1151,12 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
     let view = &app.view;
     // What the objects draw (live effects included), moved by the
     // transform being previewed.
-    let bounds = shapes
+    let bounds = app
+        .selected_bounds()
         .iter()
-        .map(|s| {
-            let b = app.visual_bounds(s);
-            match preview {
-                Some(t) => t.transform_rect_bbox(b),
-                None => b,
-            }
+        .map(|&b| match preview {
+            Some(t) => t.transform_rect_bbox(b),
+            None => b,
         })
         .reduce(|a, b| a.union(b))
         .unwrap_or(Rect::ZERO);

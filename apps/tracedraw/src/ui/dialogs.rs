@@ -469,6 +469,9 @@ pub struct PrintMergeState {
     pub adding: Option<(String, usize)>,
     /// The Go to Record field.
     pub go_to: String,
+    /// The folder picture cells are looked for in first (the Print Merge
+    /// docker's Pictures folder, #460).
+    pub pictures: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1008,6 +1011,10 @@ pub fn show(app: &mut App, ctx: &Context) {
         if let Some(back) = app.dialog_return.take() {
             app.dialog = *back;
         }
+    }
+    // The Edit Fill dialog closed some other way (Esc): its preview goes.
+    if app.fill_preview && !matches!(app.dialog, Dialog::EditFill(_)) {
+        app.end_edit_fill_preview();
     }
     let mut dialog = std::mem::replace(&mut app.dialog, Dialog::None);
     app.dialog_help = crate::help::dialog_topic(&dialog, app.options_page);
@@ -2027,6 +2034,9 @@ pub fn show(app: &mut App, ctx: &Context) {
     // A dialog's close button closes it like Esc.
     if crate::ui::chrome::take_close_request(ctx) {
         close = true;
+    }
+    if close {
+        app.end_edit_fill_preview();
     }
     // A closing dialog may have opened the next one (the next unsaved
     // drawing's question); keep that.
@@ -3654,11 +3664,18 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                 if ui.button(tr("dialog.cancel")).clicked() {
                     *close = true;
                 }
+                // Finish keeps the data source and opens the Print Merge
+                // docker, where the fields are put on the page and the
+                // merge is made, as in the reference program (#437).
                 if ui
-                    .add_enabled(!st.rows.is_empty(), egui::Button::new(tr("merge.finish")))
+                    .add_enabled(
+                        !st.headers.is_empty(),
+                        egui::Button::new(tr("merge.finish")),
+                    )
                     .clicked()
                 {
-                    pm::perform(app, st);
+                    app.merge_state = Some(st.clone());
+                    app.open_docker(crate::app::DockerTab::PrintMerge);
                     *close = true;
                 }
             });
@@ -3740,6 +3757,7 @@ fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &mut b
         if ok_cancel(ui, close) {
             let settings = st.settings.clone();
             app.trace_bitmaps(&settings);
+            app.last_trace = Some((st.preset, settings));
         }
     });
 }
@@ -3965,11 +3983,7 @@ fn border_grommet_dialog(
                             ui.end_row();
                             if st.border == BorderKind::Solid {
                                 ui.label(tr("border_grommet.border_color"));
-                                let [r, g, b] = st.color.to_rgb8();
-                                let mut rgb = [r, g, b];
-                                if ui.color_edit_button_srgb(&mut rgb).changed() {
-                                    st.color = Color::rgb8(rgb[0], rgb[1], rgb[2]);
-                                }
+                                crate::ui::color_picker::color_button(ui, &mut st.color);
                                 ui.end_row();
                             }
                         });
@@ -4306,10 +4320,9 @@ fn palette_editor_dialog(
             if let Some((name, c)) = pal.colors.get_mut(i) {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(name);
-                    let [r, g, b] = c.to_rgb8();
-                    let mut rgb = [r, g, b];
-                    if ui.color_edit_button_srgb(&mut rgb).changed() && !pal.builtin {
-                        *c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+                    let mut edited = *c;
+                    if crate::ui::color_picker::color_button(ui, &mut edited) && !pal.builtin {
+                        *c = edited;
                     }
                     ui.label(crate::app::color_description(*c));
                 });

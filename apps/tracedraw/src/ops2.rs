@@ -818,52 +818,6 @@ impl App {
         self.set_tool(crate::tools::Tool::Shape);
     }
 
-    /// Apply the Transparency tool settings to the selection. Uniform
-    /// transparency is plain opacity; the other kinds use a greyscale mask
-    /// (white opaque, black transparent) blended with the merge mode.
-    pub fn apply_transparency(&mut self, settings: &crate::effects_ui::TransparencySettings) {
-        let shapes = self.selection.clone();
-        if shapes.is_empty() {
-            return;
-        }
-        let mut cmds = Vec::new();
-        for id in &shapes {
-            let Some(s) = self.doc().find_shape(*id).cloned() else {
-                continue;
-            };
-            let mut effects: Vec<Effect> = s
-                .effects
-                .iter()
-                .filter(|e| !matches!(e, Effect::Transparency { .. }))
-                .cloned()
-                .collect();
-            if settings.kind != 0 {
-                effects.push(Effect::Transparency {
-                    mask: settings.mask.clone(),
-                    merge: settings.merge,
-                    target: settings.target,
-                });
-            }
-            cmds.push(Command::SetEffects {
-                shape: *id,
-                effects,
-            });
-        }
-        let opacity = if settings.kind == 0 {
-            1.0 - (settings.amount / 100.0).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        cmds.push(Command::SetOpacity {
-            shapes: shapes.clone(),
-            opacity,
-        });
-        if self.engine.undo_label() == Some("Transparency") {
-            let _ = self.engine.undo();
-        }
-        let _ = self.engine.run_batch("Transparency", &cmds);
-    }
-
     /// Remove any transparency from the selection.
     pub fn clear_transparency(&mut self) {
         let shapes = self.selection.clone();
@@ -997,6 +951,17 @@ impl App {
     /// The clip frame under `p` (page) that is not part of the selection
     /// being moved, for a drop into it.
     pub fn frame_under_pointer(&self, p: Point) -> Option<ShapeId> {
+        // Without a clip frame on the page there is nothing to drop on;
+        // this runs every frame of a move, so the hit test below (which
+        // asks each object for its top-level object) is skipped.
+        let frames = self
+            .page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .any(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }));
+        if !frames {
+            return None;
+        }
         let doc = self.doc();
         let moved = |id: ShapeId| {
             self.selection.contains(&id)
@@ -1631,8 +1596,37 @@ impl App {
     /// Bitmap Tracing.
     pub fn quick_trace(&mut self) {
         let prefs = &self.settings.tracing;
-        let settings = prefs.settings(prefs.quick_preset);
+        let preset = prefs.quick_preset;
+        let settings = prefs.settings(preset);
         self.trace_bitmaps(&settings);
+        self.last_trace = Some((preset, settings));
+    }
+
+    /// The Trace dialog on `preset` (Centerline and Outline Trace).
+    pub fn open_trace(&mut self, preset: crate::trace::Preset) {
+        self.dialog = crate::ui::dialogs::Dialog::Trace(crate::ui::dialogs::TraceState::new(
+            preset,
+            &self.settings.tracing,
+        ));
+    }
+
+    /// Repeat Last Trace: the selected bitmaps traced as the last trace
+    /// was, without the dialog.
+    pub fn repeat_last_trace(&mut self) {
+        if let Some((_, settings)) = self.last_trace.clone() {
+            self.trace_bitmaps(&settings);
+        }
+    }
+
+    /// Open Last Trace Settings: the Trace dialog with the last trace's
+    /// preset and settings.
+    pub fn open_last_trace_settings(&mut self) {
+        let Some((preset, settings)) = self.last_trace.clone() else {
+            return;
+        };
+        let mut st = crate::ui::dialogs::TraceState::new(preset, &self.settings.tracing);
+        st.settings = settings;
+        self.dialog = crate::ui::dialogs::Dialog::Trace(st);
     }
 
     pub fn trace_bitmaps(&mut self, settings: &crate::trace::Settings) {
@@ -2956,6 +2950,46 @@ pub(crate) fn with_stand_ins(missing: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Repeat Last Trace and Open Last Trace Settings follow the last
+    /// trace, whichever way it was made (#452).
+    #[test]
+    fn the_last_trace_can_be_repeated_and_reopened() {
+        let mut app = App::headless();
+        let img = image::RgbaImage::from_fn(60, 60, |x, y| {
+            let d = ((x as f32 - 30.0).powi(2) + (y as f32 - 30.0).powi(2)).sqrt();
+            if d < 18.0 {
+                image::Rgba([0, 0, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        });
+        let bmp = app.place_image(img, Some("Disc".into())).expect("bitmap");
+        assert!(app.last_trace.is_none());
+        app.select(vec![bmp]);
+        app.quick_trace();
+        let (preset, settings) = app.last_trace.clone().expect("remembered");
+        assert_eq!(preset, app.settings.tracing.quick_preset);
+        let count = |app: &App| {
+            app.doc().pages[0]
+                .layers
+                .iter()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let after_first = count(&app);
+        app.select(vec![bmp]);
+        app.repeat_last_trace();
+        assert!(count(&app) > after_first, "traced again");
+        app.open_last_trace_settings();
+        match &app.dialog {
+            crate::ui::dialogs::Dialog::Trace(st) => {
+                assert_eq!(st.preset, preset);
+                assert_eq!(st.settings, settings);
+            }
+            _ => panic!("the Trace dialog"),
+        }
+    }
 
     #[test]
     fn fit_text_to_path_waits_for_a_path_and_starts_text_on_it() {

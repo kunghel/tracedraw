@@ -102,6 +102,10 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
 
 /// Service, address, model and key, and whether the key is remembered.
 pub fn connection(app: &mut App, ui: &mut Ui) {
+    // The models to pick from: the service's own once listed, else the
+    // usual ones of its kind.
+    let choices = app.ai_model_choices();
+    let mut fetch = false;
     let prefs = &mut app.settings.ai;
     grid("ai_connection_grid").show(ui, |ui| {
         row_label(ui, &tr("aipreset.label"));
@@ -158,11 +162,31 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
             "" => tr("ai.model_hint"),
             m => m.to_string(),
         };
-        ui.add(
-            egui::TextEdit::singleline(&mut prefs.model)
-                .hint_text(model_hint)
-                .desired_width(FIELD_W),
-        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.add(
+                egui::TextEdit::singleline(&mut prefs.model)
+                    .hint_text(model_hint)
+                    .desired_width(FIELD_W - 26.0),
+            );
+            ui.menu_button("\u{25BE}", |ui| {
+                for m in &choices {
+                    if ui.selectable_label(prefs.model == *m, m).clicked() {
+                        prefs.model = m.clone();
+                        ui.close();
+                    }
+                }
+                if !choices.is_empty() {
+                    ui.separator();
+                }
+                if ui.button(tr("ai.refresh_models")).clicked() {
+                    fetch = true;
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(tr("ai.model"));
+        });
         ui.end_row();
         row_label(ui, &tr("ai.key"));
         let key = ui.add(
@@ -197,6 +221,9 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
         app.settings.save();
     }
     dim(ui, tr("ai.local_hint"));
+    if fetch {
+        app.ai_fetch_models();
+    }
 }
 
 /// The Image model field: typed, or picked from the service's image

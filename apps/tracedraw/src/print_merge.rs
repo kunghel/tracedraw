@@ -27,6 +27,171 @@ pub enum FieldKind {
     Qr,
 }
 
+/// How a picture sits in the placeholder of a picture field: the Print
+/// Merge docker's Align and scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scale {
+    /// At its own size (its resolution, else 96 dpi), placed by the anchor.
+    Actual,
+    /// As large as fits inside, keeping its proportions.
+    #[default]
+    Fit,
+    /// As small as covers the placeholder, keeping its proportions; the
+    /// placeholder cuts what is outside.
+    Fill,
+    /// Stretched to the placeholder.
+    Stretch,
+}
+
+impl Scale {
+    pub const ALL: [Scale; 4] = [Scale::Actual, Scale::Fit, Scale::Fill, Scale::Stretch];
+
+    /// How it is kept in the placeholder's object data.
+    pub fn id(self) -> &'static str {
+        match self {
+            Scale::Actual => "actual",
+            Scale::Fit => "fit",
+            Scale::Fill => "fill",
+            Scale::Stretch => "stretch",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Scale> {
+        Scale::ALL.into_iter().find(|s| s.id() == id)
+    }
+
+    /// i18n key of its name.
+    pub fn key(self) -> &'static str {
+        match self {
+            Scale::Actual => "merge.scale_actual",
+            Scale::Fit => "merge.scale_fit",
+            Scale::Fill => "merge.scale_fill",
+            Scale::Stretch => "merge.scale_stretch",
+        }
+    }
+}
+
+/// The object data names a placeholder keeps its Align and scale under.
+pub const SCALE_DATA: &str = "PrintMerge.Scale";
+pub const ANCHOR_DATA: &str = "PrintMerge.Anchor";
+
+/// A placeholder's Align and scale: its object data, else (placeholders
+/// made before the docker) filling it from the centre.
+pub fn placement_of(s: &Shape) -> (Scale, u8) {
+    let get = |k: &str| s.data.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let scale = get(SCALE_DATA)
+        .and_then(Scale::from_id)
+        .unwrap_or(Scale::Fill);
+    let anchor = get(ANCHOR_DATA)
+        .and_then(|v| v.parse::<u8>().ok())
+        .filter(|a| *a < 9)
+        .unwrap_or(4);
+    (scale, anchor)
+}
+
+/// Where a picture `w` x `h` mm goes in `area` for `scale`; `anchor` is
+/// the point of the area it is placed by, 0 top left to 8 bottom right
+/// row by row (page space: y grows upward).
+pub fn place(area: Rect, w: f64, h: f64, scale: Scale, anchor: u8) -> Rect {
+    let (w, h) = (w.max(1e-9), h.max(1e-9));
+    let (w, h) = match scale {
+        Scale::Actual => (w, h),
+        Scale::Fit => {
+            let k = (area.width() / w).min(area.height() / h);
+            (w * k, h * k)
+        }
+        Scale::Fill => {
+            let k = (area.width() / w).max(area.height() / h);
+            (w * k, h * k)
+        }
+        Scale::Stretch => return area,
+    };
+    let (col, row) = ((anchor % 3) as f64, (anchor / 3).min(2) as f64);
+    let x0 = area.x0 + (area.width() - w) * col / 2.0;
+    let y1 = area.y1 - (area.height() - h) * row / 2.0;
+    Rect::new(x0, y1 - h, x0 + w, y1)
+}
+
+/// A picture field's picture: the PNG, its size in pixels and in mm.
+pub struct Picture {
+    pub png: Vec<u8>,
+    pub px: (u32, u32),
+    pub mm: (f64, f64),
+}
+
+/// The picture a cell names (relative paths from the data file's
+/// folder), or `None` when it does not load.
+pub fn picture(value: &str, base: Option<&std::path::Path>) -> Option<Picture> {
+    let dirs: Vec<std::path::PathBuf> = base
+        .and_then(|b| b.parent())
+        .map(|d| d.to_path_buf())
+        .into_iter()
+        .collect();
+    picture_in(value, &dirs)
+}
+
+/// The folders a picture cell's relative path is looked for in: the
+/// pictures folder chosen in the Print Merge docker, then the data
+/// file's folder (#460).
+pub fn picture_dirs(st: &PrintMergeState) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = st.pictures.iter().cloned().collect();
+    if let Some(d) = st.path.as_deref().and_then(|p| p.parent()) {
+        dirs.push(d.to_path_buf());
+    }
+    dirs
+}
+
+/// The extensions tried for a cell that names a picture without one (an
+/// ID card's "1024" finds "1024.jpg").
+const PICTURE_EXTENSIONS: [&str; 8] = ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff"];
+
+/// The bytes of the picture a cell names: an absolute path as it is, a
+/// relative one in each of `dirs` in turn; a name without an extension
+/// with each picture extension.
+fn picture_bytes(value: &str, dirs: &[std::path::PathBuf]) -> Option<Vec<u8>> {
+    let name = std::path::PathBuf::from(value.trim());
+    let mut tries: Vec<std::path::PathBuf> = Vec::new();
+    if name.is_absolute() {
+        tries.push(name.clone());
+    } else {
+        tries.extend(dirs.iter().map(|d| d.join(&name)));
+        tries.push(name.clone());
+    }
+    for t in tries {
+        if let Ok(b) = crate::files::read(&t) {
+            return Some(b);
+        }
+        if t.extension().is_none() {
+            for ext in PICTURE_EXTENSIONS {
+                for e in [ext.to_string(), ext.to_uppercase()] {
+                    if let Ok(b) = crate::files::read(t.with_extension(&e)) {
+                        return Some(b);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// [`picture`] looked for in `dirs`.
+pub fn picture_in(value: &str, dirs: &[std::path::PathBuf]) -> Option<Picture> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let bytes = picture_bytes(value, dirs)?;
+    let (dx, dy) = crate::image_dpi::resolution(&bytes)
+        .unwrap_or((crate::image_dpi::DEFAULT_DPI, crate::image_dpi::DEFAULT_DPI));
+    let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let png = crate::bitmap_fx::encode(&img)?;
+    let (w, h) = img.dimensions();
+    Some(Picture {
+        png,
+        px: (w, h),
+        mm: (w as f64 * 25.4 / dx, h as f64 * 25.4 / dy),
+    })
+}
+
 /// The records of a data file: a CSV (comma or semicolon) or an Excel
 /// workbook's first sheet (`.xlsx`); the first row names the fields.
 pub fn read_data(path: &std::path::Path) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
@@ -202,7 +367,7 @@ fn replacement(
     kind: &FieldKind,
     value: &str,
     area: Rect,
-    base: Option<&std::path::Path>,
+    dirs: &[std::path::PathBuf],
     fill: bool,
 ) -> Option<(ShapeKind, Fill)> {
     if value.trim().is_empty() {
@@ -210,16 +375,8 @@ fn replacement(
     }
     match kind {
         FieldKind::Image => {
-            let mut path = std::path::PathBuf::from(value.trim());
-            if path.is_relative() {
-                if let Some(dir) = base.and_then(|b| b.parent()) {
-                    path = dir.join(path);
-                }
-            }
-            let bytes = crate::files::read(&path).ok()?;
-            let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
-            let png = crate::bitmap_fx::encode(&img)?;
-            let (w, h) = (img.width() as f64, img.height() as f64);
+            let pic = picture_in(value, dirs)?;
+            let (w, h) = (pic.px.0 as f64, pic.px.1 as f64);
             Some((
                 ShapeKind::Bitmap {
                     rect: if fill {
@@ -227,9 +384,9 @@ fn replacement(
                     } else {
                         fit(area, w, h)
                     },
-                    width_px: img.width(),
-                    height_px: img.height(),
-                    png,
+                    width_px: pic.px.0,
+                    height_px: pic.px.1,
+                    png: pic.png,
                     fx: None,
                 },
                 Fill::None,
@@ -298,6 +455,15 @@ fn fill_shape(
     cmds: &mut Vec<Command>,
 ) {
     let value_of = |i: usize| row.get(i).map(String::as_str).unwrap_or("");
+    // An object named `<Field>` of a picture or QR field, on the page (not
+    // in a group): a placeholder the Print Merge docker made, or a frame
+    // the user named (#378, #437).
+    if top && text_of(s).is_none() {
+        if let Some(i) = s.name.as_deref().and_then(|n| whole_field(st, n)) {
+            named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+            return;
+        }
+    }
     match &s.kind {
         ShapeKind::Group { children } => {
             for c in children {
@@ -315,30 +481,6 @@ fn fill_shape(
         _ => {}
     }
     let Some(text) = text_of(s) else {
-        // A closed object named `<Field>` of a picture field: the picture
-        // goes inside it, filling it (#378).
-        let named = s.name.as_deref().and_then(|n| whole_field(st, n));
-        if let (Some(i), true) = (named, top) {
-            if kind_of(st, i) == FieldKind::Image {
-                if let Some((kind, _)) = replacement(
-                    &FieldKind::Image,
-                    value_of(i),
-                    s.bounds(),
-                    st.path.as_deref(),
-                    true,
-                ) {
-                    let id = new_id();
-                    let mut pic = Shape::new(id, kind);
-                    pic.stroke = None;
-                    pic.fill = Fill::None;
-                    cmds.push(Command::AddShape { layer, shape: pic });
-                    cmds.push(Command::PlaceInside {
-                        contents: vec![id],
-                        frame: s.id,
-                    });
-                }
-            }
-        }
         return;
     };
     // A picture or QR field: the object holds only its placeholder.
@@ -352,7 +494,7 @@ fn fill_shape(
             ),
             _ => (local_box(s), false),
         };
-        match replacement(&kind_of(st, i), value_of(i), area, st.path.as_deref(), fill) {
+        match replacement(&kind_of(st, i), value_of(i), area, &picture_dirs(st), fill) {
             Some((kind, fill)) => {
                 cmds.push(Command::SetShapeKind { shape: s.id, kind });
                 cmds.push(Command::SetFill {
@@ -415,33 +557,104 @@ fn fill_shape(
     }
 }
 
-/// Duplicate the current page once per record and fill the copies'
-/// fields, as one undo step per stage.
-pub fn perform(app: &mut App, st: &PrintMergeState) {
+/// A placeholder object named `<Field>` filled with the record's value:
+/// for a picture field the picture goes inside it (a clip frame's old
+/// contents, such as the placeholder picture, give way), placed by its
+/// Align and scale; for a QR field the object becomes the code, as large
+/// as its box allows. Nothing happens for a picture that does not load.
+#[allow(clippy::too_many_arguments)]
+fn named_placeholder(
+    st: &PrintMergeState,
+    layer: LayerId,
+    s: &Shape,
+    i: usize,
+    value: &str,
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+    cmds: &mut Vec<Command>,
+) {
+    match kind_of(st, i) {
+        FieldKind::Image => {
+            if let ShapeKind::ClipFrame { contents, .. } = &s.kind {
+                if !contents.is_empty() {
+                    cmds.push(Command::ExtractContents { clip: s.id });
+                    cmds.push(Command::DeleteShapes {
+                        shapes: contents.iter().map(|c| c.id).collect(),
+                    });
+                }
+            }
+            let Some(pic) = picture_in(value, &picture_dirs(st)) else {
+                return;
+            };
+            let (scale, anchor) = placement_of(s);
+            let rect = place(s.bounds(), pic.mm.0, pic.mm.1, scale, anchor);
+            let id = new_id();
+            let mut shape = Shape::new(
+                id,
+                ShapeKind::Bitmap {
+                    rect,
+                    width_px: pic.px.0,
+                    height_px: pic.px.1,
+                    png: pic.png,
+                    fx: None,
+                },
+            );
+            shape.stroke = None;
+            shape.fill = Fill::None;
+            cmds.push(Command::AddShape { layer, shape });
+            cmds.push(Command::PlaceInside {
+                contents: vec![id],
+                frame: s.id,
+            });
+        }
+        FieldKind::Qr => match replacement(&FieldKind::Qr, value, local_box(s), &[], false) {
+            Some((kind, fill)) => {
+                cmds.push(Command::SetShapeKind { shape: s.id, kind });
+                cmds.push(Command::SetFill {
+                    shapes: vec![s.id],
+                    fill,
+                });
+                cmds.push(Command::SetStroke {
+                    shapes: vec![s.id],
+                    stroke: None,
+                });
+            }
+            None => cmds.push(Command::DeleteShapes { shapes: vec![s.id] }),
+        },
+        _ => {}
+    }
+}
+
+/// Duplicate `page` once per record right after it and fill the copies'
+/// fields, as one undo step per stage; the new pages, in the records'
+/// order.
+fn merge_with(
+    engine: &mut tracedraw_core::Engine,
+    page: tracedraw_core::PageId,
+    st: &PrintMergeState,
+) -> Result<Vec<tracedraw_core::PageId>, String> {
     let rows = values(st);
     if rows.is_empty() {
-        return;
+        return Ok(Vec::new());
     }
-    let page = app.page;
-    let template = match app.doc().page(page) {
-        Ok(p) => p.clone(),
-        Err(_) => return,
-    };
+    let template = engine
+        .document()
+        .page(page)
+        .map_err(|e| e.to_string())?
+        .clone();
     let cmds: Vec<Command> = rows.iter().map(|_| Command::duplicate_page(page)).collect();
-    if let Err(e) = app.engine.run_batch("Print Merge", &cmds) {
-        app.status = e.to_string();
-        return;
-    }
+    engine
+        .run_batch("Print Merge", &cmds)
+        .map_err(|e| e.to_string())?;
     // The copies follow the template; record k goes on the k-th of them,
     // so the pages read in the records' order.
-    let idx = app
-        .doc()
+    let idx = engine
+        .document()
         .pages
         .iter()
         .position(|p| p.id == page)
         .unwrap_or(0);
-    let new_pages: Vec<tracedraw_core::PageId> = app
-        .doc()
+    let new_pages: Vec<tracedraw_core::PageId> = engine
+        .document()
         .pages
         .iter()
         .skip(idx + 1)
@@ -450,22 +663,61 @@ pub fn perform(app: &mut App, st: &PrintMergeState) {
         .collect();
     let mut cmds = Vec::new();
     for (k, pid) in new_pages.iter().enumerate() {
-        let (Some(row), Ok(p)) = (rows.get(k), app.doc().page(*pid)) else {
+        let (Some(row), Ok(p)) = (rows.get(k), engine.document().page(*pid)) else {
             continue;
         };
         let p = p.clone();
-        let mut new_id = || app.engine.new_shape_id();
+        let mut new_id = || engine.new_shape_id();
         cmds.extend(fill_page(st, &p, row, &mut new_id));
         cmds.push(Command::RenamePage {
             page: *pid,
             name: format!("{} {}", template.name, k + 1),
         });
     }
-    if let Err(e) = app.engine.run_batch("Print Merge", &cmds) {
-        app.status = e.to_string();
-        return;
+    engine
+        .run_batch("Print Merge", &cmds)
+        .map_err(|e| e.to_string())?;
+    Ok(new_pages)
+}
+
+/// Duplicate the current page once per record and fill the copies'
+/// fields, as one undo step per stage.
+pub fn perform(app: &mut App, st: &PrintMergeState) {
+    let page = app.page;
+    match merge_with(&mut app.engine, page, st) {
+        Ok(pages) if !pages.is_empty() => {
+            app.status = trf("status.merge_done", &[("n", &pages.len().to_string())]);
+        }
+        Ok(_) => {}
+        Err(e) => app.status = e,
     }
-    app.status = trf("status.merge_done", &[("n", &rows.len().to_string())]);
+}
+
+/// The merged pages as a drawing of their own (the docker's Create
+/// Merged Document): the current page filled once per record, the
+/// drawing it came from left as it is.
+pub fn merged_document(
+    app: &App,
+    st: &PrintMergeState,
+) -> Result<tracedraw_core::Document, String> {
+    let mut engine = tracedraw_core::Engine::new(app.doc().clone());
+    let pages = merge_with(&mut engine, app.page, st)?;
+    if pages.is_empty() {
+        return Err(crate::i18n::tr("merge.no_records"));
+    }
+    let others: Vec<tracedraw_core::PageId> = engine
+        .document()
+        .pages
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| !pages.contains(id))
+        .collect();
+    for page in others {
+        engine
+            .run(&Command::DeletePage { page })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(engine.document().clone())
 }
 
 #[cfg(test)]
@@ -675,6 +927,92 @@ mod tests {
         }
         let tpl_texts: Vec<String> = tpl.iter().filter_map(|s| text_of(s)).collect();
         assert!(tpl_texts.contains(&"<Photo>".to_string()), "{tpl_texts:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Align and scale: the four sizes, and the anchor placing what does
+    /// not fill the area (y grows upward: row 0 is the top).
+    #[test]
+    fn pictures_are_placed_by_scale_and_anchor() {
+        let area = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let near = |a: Rect, b: Rect| {
+            (a.x0 - b.x0).abs() < 1e-9
+                && (a.y0 - b.y0).abs() < 1e-9
+                && (a.x1 - b.x1).abs() < 1e-9
+                && (a.y1 - b.y1).abs() < 1e-9
+        };
+        // A 10 x 10 picture.
+        let r = place(area, 10.0, 10.0, Scale::Actual, 0);
+        assert!(near(r, Rect::new(0.0, 10.0, 10.0, 20.0)), "{r:?}");
+        let r = place(area, 10.0, 10.0, Scale::Actual, 8);
+        assert!(near(r, Rect::new(30.0, 0.0, 40.0, 10.0)), "{r:?}");
+        let r = place(area, 10.0, 10.0, Scale::Fit, 4);
+        assert!(near(r, Rect::new(10.0, 0.0, 30.0, 20.0)), "{r:?}");
+        let r = place(area, 10.0, 10.0, Scale::Fit, 3);
+        assert!(near(r, Rect::new(0.0, 0.0, 20.0, 20.0)), "{r:?}");
+        let r = place(area, 10.0, 10.0, Scale::Fill, 4);
+        assert!(near(r, Rect::new(0.0, -10.0, 40.0, 30.0)), "{r:?}");
+        let r = place(area, 10.0, 10.0, Scale::Stretch, 0);
+        assert!(near(r, area));
+    }
+
+    /// ID cards from a folder of photos (#460): the cells name the photos
+    /// (with or without an extension), the folder is chosen in the docker,
+    /// and each card gets its own.
+    #[test]
+    fn each_record_gets_its_photo_from_the_pictures_folder() {
+        let dir = std::env::temp_dir().join(format!("td_merge_photos_{}", std::process::id()));
+        let photos = dir.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        image::RgbImage::from_pixel(10, 20, image::Rgb([200, 0, 0]))
+            .save(photos.join("1001.jpg"))
+            .unwrap();
+        image::RgbaImage::from_pixel(30, 10, image::Rgba([0, 0, 200, 255]))
+            .save(photos.join("1002.png"))
+            .unwrap();
+        let mut app = App::headless();
+        let frame = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("frame");
+        app.run(Command::SetShapeName {
+            shape: frame,
+            name: Some("<Photo>".into()),
+        });
+        let st = PrintMergeState {
+            headers: vec!["Photo".into()],
+            rows: vec![vec!["1001".into()], vec!["1002.png".into()]],
+            kinds: vec![FieldKind::Image],
+            // The data file is somewhere else.
+            path: Some(dir.join("data").join("cards.xlsx")),
+            pictures: Some(photos.clone()),
+            ..Default::default()
+        };
+        perform(&mut app, &st);
+        let doc = app.doc();
+        let size_on = |page: usize| -> Option<(u32, u32)> {
+            fn find(s: &Shape) -> Option<(u32, u32)> {
+                match &s.kind {
+                    ShapeKind::Bitmap {
+                        width_px,
+                        height_px,
+                        ..
+                    } => Some((*width_px, *height_px)),
+                    ShapeKind::ClipFrame { contents, .. } => contents.iter().find_map(find),
+                    _ => None,
+                }
+            }
+            doc.pages[page]
+                .layers
+                .iter()
+                .flat_map(|l| &l.shapes)
+                .find_map(find)
+        };
+        assert_eq!(size_on(1), Some((10, 20)), "the first card, its photo");
+        assert_eq!(size_on(2), Some((30, 10)), "the second card, its own");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

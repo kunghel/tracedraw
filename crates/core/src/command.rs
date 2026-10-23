@@ -1074,6 +1074,9 @@ impl Command {
                     },
                 );
                 clip.name = frame_shape.name.clone();
+                // Its object data stays with the object too (a Print Merge
+                // placeholder keeps its Align and scale there).
+                clip.data = frame_shape.data.clone();
                 clip.opacity = frame_shape.opacity;
                 let target = &mut doc.layer_mut(flid)?.shapes;
                 target.insert(fi.min(target.len()), clip);

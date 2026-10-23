@@ -238,6 +238,8 @@ pub struct OptionsSnapshot {
     eraser_square: bool,
     text_font: String,
     text_size_pt: f64,
+    text_default_font: String,
+    text_default_size: f64,
     text_hyphenation: bool,
     show_non_printing: bool,
     workspace: crate::app::Workspace,
@@ -285,6 +287,8 @@ impl OptionsSnapshot {
             eraser_square: app.eraser_square,
             text_font: app.text_font.clone(),
             text_size_pt: app.text_size_pt,
+            text_default_font: app.text_default_font.clone(),
+            text_default_size: app.text_default_size,
             text_hyphenation: app.text_hyphenation,
             show_non_printing: app.show_non_printing,
             workspace: app.workspace,
@@ -341,6 +345,8 @@ impl OptionsSnapshot {
         app.eraser_square = self.eraser_square;
         app.text_font = self.text_font;
         app.text_size_pt = self.text_size_pt;
+        app.text_default_font = self.text_default_font;
+        app.text_default_size = self.text_default_size;
         app.text_hyphenation = self.text_hyphenation;
         app.show_non_printing = self.show_non_printing;
         app.show_dockers = self.show_dockers;
@@ -615,6 +621,8 @@ fn general_page(app: &mut App, ui: &mut Ui) {
         if !crate::files::WEB {
             ui.checkbox(&mut app.settings.show_splash, tr("options.show_splash"));
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        hardware_acceleration(app, ui);
     });
     chrome::section(ui, &tr("options.undo_levels"));
     ui.indent("undo", |ui| {
@@ -627,6 +635,60 @@ fn general_page(app: &mut App, ui: &mut Ui) {
             ui.end_row();
         });
     });
+}
+
+/// Use hardware acceleration and the graphics card (#445); they take
+/// effect at the next start.
+#[cfg(not(target_arch = "wasm32"))]
+fn hardware_acceleration(app: &mut App, ui: &mut Ui) {
+    let before = (
+        app.settings.hardware_acceleration,
+        app.settings.gpu_adapter.clone(),
+    );
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(
+            &mut app.settings.hardware_acceleration,
+            tr("options.hardware_acceleration"),
+        );
+        let on = app.settings.hardware_acceleration;
+        let chosen = &mut app.settings.gpu_adapter;
+        let shown = if chosen.is_empty() {
+            tr("options.gpu_automatic")
+        } else {
+            chosen.clone()
+        };
+        ui.add_enabled_ui(on, |ui| {
+            egui::ComboBox::from_id_salt("gpu_adapter")
+                .width(260.0)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(chosen, String::new(), tr("options.gpu_automatic"));
+                    for name in crate::gpu::adapters() {
+                        ui.selectable_value(chosen, name.clone(), name);
+                    }
+                });
+        });
+    });
+    let dim = |ui: &mut Ui, text: String| {
+        ui.label(
+            egui::RichText::new(text)
+                .color(Tokens::text_dim())
+                .size(11.0),
+        );
+    };
+    if let Some(name) = crate::gpu::in_use() {
+        dim(ui, trf("options.gpu_in_use", &[("name", name)]));
+    }
+    dim(ui, tr("options.restart_to_apply"));
+    // A new choice is tried afresh at the next start.
+    if (
+        app.settings.hardware_acceleration,
+        app.settings.gpu_adapter.clone(),
+    ) != before
+    {
+        app.settings.working_renderer.clear();
+    }
 }
 
 fn display_page(app: &mut App, ui: &mut Ui) {
@@ -1282,15 +1344,22 @@ fn text_display_tab(app: &mut App, ui: &mut Ui) {
             ui.label(tr("options.points"));
         });
         ui.end_row();
+        // The font and size of new text, whatever text is selected (#449).
         row_label(ui, &tr("options.default_font"));
-        crate::ui::font_list::text_font_list(app, ui, "options_default_font", 220.0);
+        crate::ui::font_list::default_font_list(app, ui, "options_default_font", 220.0);
         ui.end_row();
         row_label(ui, &tr("options.default_size"));
-        ui.add(
-            crate::ui::field::NumField::new(&mut app.text_size_pt)
-                .range(1.0..=999.0)
-                .suffix(" pt"),
-        );
+        if ui
+            .add(
+                crate::ui::field::NumField::new(&mut app.text_default_size)
+                    .range(1.0..=999.0)
+                    .suffix(" pt"),
+            )
+            .changed()
+            && !app.has_text_target()
+        {
+            app.text_size_pt = app.text_default_size;
+        }
         ui.end_row();
     });
     ui.checkbox(
@@ -2932,11 +3001,8 @@ fn background_page(app: &mut App, ui: &mut Ui) {
                 Some(Fill::Solid(c)) => *c,
                 _ => Color::WHITE,
             };
-            let [r, g, b] = c.to_rgb8();
-            let mut rgb = [r, g, b];
-            let changed = ui.color_edit_button_srgb(&mut rgb).changed();
+            let changed = crate::ui::color_picker::color_button(ui, &mut c);
             if changed || !matches!(current, Some(Fill::Solid(_))) {
-                c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
                 app.run(Command::SetPageBackground {
                     page,
                     background: Some(Fill::Solid(c)),

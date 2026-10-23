@@ -63,7 +63,7 @@ een knooppunt om het te kiezen, sleep om het te verplaatsen, dubbelklik om er
 een toe te voegen of te verwijderen. Onder de band: kleur, transparantie,
 positie en [[edit_fill.midpoint]] van het knooppunt, en [[edit_fill.reverse]].
 [[edit_fill.transform]] bevat draaiing, midden en randmarge. **OK** past toe
-wat u veranderde, met [[edit_fill.overprint]].
+wat u veranderde, met [[edit_fill.overprint]]. Zolang het dialoogvenster open is, toont de selectie de vulling terwijl u die wijzigt; **Annuleren** of <kbd>Esc</kbd> zet de oude vulling terug.
 
 ![Het dialoogvenster Vulling bewerken](../../img/color-fills-edit-fill.png)
 

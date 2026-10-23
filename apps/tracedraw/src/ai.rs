@@ -1419,4 +1419,46 @@ mod tests {
             );
         }
     }
+
+    /// Against the real Messages API: lists the models and asks for a
+    /// small drawing. Run with the key in `TRACEDRAW_ANTHROPIC_KEY`;
+    /// without it, only checks that the service answers the request with
+    /// its own "no key" error, read as the program shows it.
+    #[test]
+    #[ignore]
+    fn live_claude_api() {
+        let send = |req: HttpRequest| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            crate::net::spawn(req, 8 * 1024 * 1024, tx);
+            rx.recv_timeout(std::time::Duration::from_secs(120))
+                .expect("an answer")
+                .expect("a response")
+        };
+        let prefs = AiPrefs {
+            provider: Provider::Anthropic,
+            ..AiPrefs::default()
+        };
+        let key = std::env::var("TRACEDRAW_ANTHROPIC_KEY").unwrap_or_default();
+        let listed = parse_models(&send(build_models_request(&prefs, &key)));
+        if key.is_empty() {
+            let e = listed.expect_err("no key");
+            eprintln!("without a key: {e}");
+            assert!(e.contains("401"), "{e}");
+            return;
+        }
+        let models = listed.expect("the models");
+        eprintln!("models: {models:?}");
+        assert!(models.iter().any(|m| m.starts_with("claude-")));
+        let reply = send(build_request(
+            &prefs,
+            &key,
+            &[(
+                Role::User,
+                "Draw one red circle in the middle of the page.".into(),
+            )],
+        ));
+        let text = parse_reply(Provider::Anthropic, &reply).expect("a reply");
+        eprintln!("reply: {}", text.chars().take(400).collect::<String>());
+        assert!(!text.trim().is_empty());
+    }
 }

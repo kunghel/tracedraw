@@ -12,6 +12,7 @@ stelt in hoe het programma werkt. Kies een pagina in de lijst links.
 - [[options.show_new_document_dialog]] (aan): om de instellingen van een
   nieuwe tekening vragen; zie [Een tekening maken](../get-started/new-document.md).
 - [[options.show_splash]] (aan).
+- [[options.hardware_acceleration]] (aan): tekent het venster met de grafische kaart die ernaast is gekozen ([[options.gpu_automatic]] in het begin); uit, met de softwarerenderer van de computer. Het geldt vanaf de volgende start. Als het venster zo niet opent, start TraceDraw opnieuw met de softwarerenderer, daarna met OpenGL, en onthoudt wat werkte.
 - [[options.undo_levels]]: hoeveel stappen u ongedaan kunt maken (in het begin
   150).
 

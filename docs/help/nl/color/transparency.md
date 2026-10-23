@@ -9,7 +9,7 @@ volgen.
 - Met het gereedschap [[tool.transparency]]: klik op een object en kies daarna
   een soort transparantie op de eigenschappenbalk, of sleep over het object voor
   een verlooptransparantie van dekkend (waar u indrukt) naar transparant (waar u
-  loslaat).
+  loslaat). De knooppunten van het verloop verschijnen dan op het object, zoals bij het gereedschap [[tool.interactive_fill]]: sleep het begin, het eind of het ronde schuinknooppunt; sleep de balk tussen twee knooppunten (het middelpunt) om te verplaatsen waar de overgang halverwege is; dubbelklik op de lijn om een knooppunt toe te voegen, op een knooppunt om het te verwijderen.
 - In het onderdeel [[docker.transparency]] van het paneel
   [[docker.properties]].
 

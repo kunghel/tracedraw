@@ -9,7 +9,7 @@ seguire un motivo o una texture.
 - Con lo strumento [[tool.transparency]]: fai clic su un oggetto, poi scegli
   un tipo di trasparenza nella barra delle proprietà, oppure trascina
   attraverso l'oggetto per una trasparenza sfumata da opaca (dove premi) a
-  trasparente (dove rilasci).
+  trasparente (dove rilasci). I nodi della sfumatura compaiono poi sull'oggetto, come con lo strumento [[tool.interactive_fill]]: trascina l'inizio, la fine o il nodo rotondo di inclinazione; trascina la barra tra due nodi (il punto medio) per spostare dove la fusione è a metà; fai doppio clic sulla linea per aggiungere un nodo, su un nodo per rimuoverlo.
 - Nella sezione [[docker.transparency]] del pannello [[docker.properties]].
 
 ## Impostazioni {#settings}

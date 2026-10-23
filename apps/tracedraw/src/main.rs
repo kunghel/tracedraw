@@ -62,6 +62,8 @@ mod font_folder;
 mod frame_type;
 mod fx;
 mod github;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu;
 mod gradient_presets;
 mod grammar;
 mod guides;
@@ -86,6 +88,8 @@ mod mcp_link;
 mod media;
 mod mesh_tool;
 mod mixed;
+#[cfg(test)]
+mod mockup_tests;
 mod multipage;
 mod net;
 mod new_document;
@@ -214,22 +218,39 @@ fn main() -> eframe::Result<()> {
             .with_maximized(settings.window_maximized && !plain)
             .with_title("TraceDraw")
     };
+    // The graphics card, or its software adapter with hardware
+    // acceleration off; `--renderer=` when a start before could not open
+    // the window (#445, #439).
+    let mode = gpu::Mode::for_start(&args, &settings);
+    let (renderer, wgpu_options) = gpu::options(mode, &settings.gpu_adapter);
     let options = eframe::NativeOptions {
         viewport,
         centered: splash,
+        renderer,
+        wgpu_options,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "TraceDraw",
         options,
         Box::new(move |cc| {
+            gpu::note_renderer(cc, mode);
             Ok(Box::new(if splash {
                 Shell::with_splash(cc, open_path)
             } else {
                 Shell::new(cc, open_path)
             }))
         }),
-    )
+    );
+    match result {
+        // The window could not be opened this way: the next renderer, in a
+        // new start (a window system cannot be set up twice in one).
+        Err(e) if gpu::restart_with_next(mode, &args) => {
+            log::warn!("the window did not open with {mode:?} ({e}); trying the next renderer");
+            Ok(())
+        }
+        r => r,
+    }
 }
 
 /// The browser build starts from `web::start` (the page loads the module,

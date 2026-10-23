@@ -32,7 +32,7 @@
 
 ## 编辑填充对话框 {#edit-fill}
 
-<kbd>F11</kbd> 打开所选对象填充的 [[edit_fill.title]] 对话框。渐变会显示预览、[[edit_fill.fill_picker]]、类型、重复方式和色带：单击节点选中，拖动移动，双击添加或删除节点。色带下方是节点的颜色、透明度、位置、[[edit_fill.midpoint]] 和 [[edit_fill.reverse]]。[[edit_fill.transform]] 包含旋转、中心和边缘填充。**确定** 应用您所做的更改，并包括 [[edit_fill.overprint]]。
+<kbd>F11</kbd> 打开所选对象填充的 [[edit_fill.title]] 对话框。渐变会显示预览、[[edit_fill.fill_picker]]、类型、重复方式和色带：单击节点选中，拖动移动，双击添加或删除节点。色带下方是节点的颜色、透明度、位置、[[edit_fill.midpoint]] 和 [[edit_fill.reverse]]。[[edit_fill.transform]] 包含旋转、中心和边缘填充。**确定** 应用您所做的更改，并包括 [[edit_fill.overprint]]。对话框打开期间，所选对象会随着你的修改实时显示填充；**取消** 或 <kbd>Esc</kbd> 会恢复原来的填充。
 
 ![编辑填充对话框](../../img/color-fills-edit-fill.png)
 

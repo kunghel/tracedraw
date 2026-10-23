@@ -72,6 +72,7 @@ seleção (ou dos objetos novos, sem nada selecionado).
   inversão.
 - **OK** muda só o que você mudou em todos os objetos selecionados, com
   [[edit_fill.overprint]].
+- Enquanto a caixa de diálogo está aberta, a seleção mostra o preenchimento conforme você o altera; **Cancelar** ou <kbd>Esc</kbd> devolve o preenchimento anterior.
 
 ![A caixa de diálogo Editar preenchimento](../../img/color-fills-edit-fill.png)
 

@@ -11,6 +11,8 @@ Sélectionnez une image bitmap et choisissez
 choisi dans la page [[options.bitmap_tracing]] des options globales (Clipart
 au départ).
 
+[[menu.bitmaps.repeat_last_trace]] vectorise à nouveau le bitmap sélectionné comme la dernière vectorisation, sans la boîte de dialogue, et [[menu.bitmaps.last_trace_settings]] ouvre la boîte de dialogue avec ses paramètres. Le menu contextuel d'un bitmap propose aussi ces commandes, avec [[menu.bitmaps.centerline_trace]] et [[menu.bitmaps.outline_trace]].
+
 ## La boîte de dialogue de vectorisation {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] et

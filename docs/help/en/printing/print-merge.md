@@ -16,12 +16,40 @@ your data becomes a copy of the page, filled in.
      pictures, fields named QR as QR codes; the types show at once to be
      changed;
    - or **Add column** to add fields by hand, then add records with **+**.
-4. Click **Finish**.
+4. Click **Finish**. The [[docker.print_merge]] panel opens, where you put
+   the fields on the page and make the merge.
 
 ![The Print Merge dialog box](../../img/printing-print-merge.png)
 
-The current page is copied once per record, right after it, and each copy is
-filled in. The copies are named after the page and the record number.
+## The Print Merge panel {#docker}
+
+The [[docker.print_merge]] panel (also under Window > Panels) works with the
+data source you created or loaded:
+
+- **[[merge.create]]** and **[[merge.edit]]** open the records.
+- Choose the kind of field, **Text**, **Picture** or **QR code**, and the
+  column under **[[merge.columns]]**.
+- For a picture, **[[merge.pictures_folder]]** chooses the folder your photos
+  are in, when the data names only their files (a name without an extension,
+  such as `1024`, finds `1024.jpg` or `1024.png`). **[[merge.placeholder]]** chooses a picture that stands in
+  for the merged ones while you design, and **[[merge.align_scale]]** sets
+  where each picture goes in its frame: click one of the nine points to
+  anchor it, then choose [[merge.scale_actual]], [[merge.scale_fit]],
+  [[merge.scale_fill]] (the frame cuts what is outside) or
+  [[merge.scale_stretch]].
+- **[[merge.insert_field]]** puts the field in the text you are editing, or
+  places a new text, picture frame or QR square in the middle of the view.
+  Move and size it like any object.
+- Select a field and click **[[merge.update_field]]** to change its column or
+  its alignment and scale.
+- **[[merge.create_document]]** makes the merged pages in a new drawing: the
+  page you are on is copied once per record and each copy is filled in. Your
+  design stays as it is. **[[merge.print_document]]** does the same and opens
+  Print.
+
+[[menu.file.print_merge_perform]] instead adds the filled copies to the
+current drawing, right after the page, named after the page and the record
+number.
 
 ## Kinds of field {#fields}
 
@@ -49,5 +77,4 @@ arrows or **Go to record** to move through them. The placeholder buttons
 insert a field into the text you are editing. **Save data source** writes the
 records as a CSV file.
 
-[[menu.file.print_merge_edit]] reopens the records, and
-[[menu.file.print_merge_perform]] runs the merge again.
+[[menu.file.print_merge_edit]] reopens the records.

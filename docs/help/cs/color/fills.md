@@ -55,7 +55,7 @@ ukazuje náhled, [[edit_fill.fill_picker]], typ, opakování a pás barev:
 klepnutím uzel vyberete, tažením posunete, poklepáním uzel přidáte nebo
 odstraníte. Pod pásem je barva, průhlednost, poloha a [[edit_fill.midpoint]]
 uzlu a [[edit_fill.reverse]]. [[edit_fill.transform]] obsahuje otočení, střed
-a okraj. **OK** použije, co jste změnili, i s [[edit_fill.overprint]].
+a okraj. **OK** použije, co jste změnili, i s [[edit_fill.overprint]]. Dokud je dialogové okno otevřené, výběr ukazuje výplň průběžně při změnách; **Zrušit** nebo <kbd>Esc</kbd> vrátí původní výplň.
 
 ![Dialog Upravit výplň](../../img/color-fills-edit-fill.png)
 

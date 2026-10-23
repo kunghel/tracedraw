@@ -12,6 +12,7 @@ mengatur cara kerja program. Pilih halaman dari daftar di sebelah kiri.
 - [[options.show_new_document_dialog]] (aktif): menanyakan pengaturan gambar
   baru; lihat [Membuat gambar](../get-started/new-document.md).
 - [[options.show_splash]] (aktif).
+- [[options.hardware_acceleration]] (aktif): jendela digambar dengan kartu grafis yang dipilih di sebelahnya ([[options.gpu_automatic]] pada awalnya); nonaktif, dengan perender perangkat lunak komputer. Berlaku pada mulai berikutnya. Jika jendela tidak bisa terbuka dengan cara itu, TraceDraw mulai lagi dengan perender perangkat lunak, lalu dengan OpenGL, dan mengingat yang berhasil.
 - [[options.undo_levels]]: berapa langkah yang dapat Anda urungkan (awalnya
   150).
 

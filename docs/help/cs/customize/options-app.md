@@ -12,6 +12,7 @@ nastavuje, jak program pracuje. Stránku zvolte ze seznamu vlevo.
 - [[options.show_new_document_dialog]] (zapnuto): ptát se na nastavení nové
   kresby; viz [Vytvoření kresby](../get-started/new-document.md).
 - [[options.show_splash]] (zapnuto).
+- [[options.hardware_acceleration]] (zapnuto): okno se kreslí grafickou kartou vybranou vedle ([[options.gpu_automatic]] na začátku); vypnuto, softwarovým vykreslováním počítače. Platí od dalšího spuštění. Pokud se okno takto neotevře, TraceDraw se spustí znovu se softwarovým vykreslováním, pak s OpenGL, a pamatuje si, co fungovalo.
 - [[options.undo_levels]]: kolik kroků můžete vrátit zpět (výchozí 150).
 
 ## Zobrazení {#display}

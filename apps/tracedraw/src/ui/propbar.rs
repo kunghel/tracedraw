@@ -2144,7 +2144,7 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
     use tracedraw_core::patch::StrokeField;
     // The first object's outline; values that differ across the selection
     // show empty. Each control changes only its own value on each object.
-    let first = app.paint_targets().into_iter().next();
+    let first = app.first_paint_target();
     let stroke = first.as_ref().and_then(|s| s.stroke.clone());
     let mix = app.selection_stroke_mix();
     label_pic(ui, Pic::Pen, &tr("toolbar.outline_width"));

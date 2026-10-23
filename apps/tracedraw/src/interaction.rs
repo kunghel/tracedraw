@@ -1080,7 +1080,36 @@ impl App {
                 }
             }
             Tool::Transparency => {
+                // The mask's nodes, as the Interactive Fill tool edits a
+                // fill's: a double click on the line adds a node, on a node
+                // removes it; a drag moves the start, the end, the skew, a
+                // node or a midpoint slider (#448).
+                if response.double_clicked_by(PointerButton::Primary) {
+                    match self.fountain_handle_at(p) {
+                        Some(crate::fill_tool::FountainHandle::Stop(i)) => {
+                            self.remove_fountain_stop(i);
+                            return;
+                        }
+                        Some(_) => return,
+                        None => {
+                            if let Some(t) = self.fountain_line_at(p) {
+                                self.add_fountain_stop(t);
+                                return;
+                            }
+                        }
+                    }
+                }
                 if response.drag_started_by(PointerButton::Primary) {
+                    if let Some(h) = self.fountain_handle_at(p) {
+                        if let Some(i) = self.fountain_stop_of(h) {
+                            self.fill_node = Some(i);
+                        }
+                        self.drag = Drag::FountainHandle {
+                            handle: h,
+                            begun: false,
+                        };
+                        return;
+                    }
                     if let Some(id) = self.hit_test(p) {
                         self.select(vec![id]);
                         self.drag = Drag::FillGradient {
@@ -1091,11 +1120,28 @@ impl App {
                     }
                 }
                 if response.dragged_by(PointerButton::Primary) {
+                    if let Drag::FountainHandle { handle, begun } = self.drag {
+                        self.drag_fountain_handle(handle, p, begun);
+                        self.drag = Drag::FountainHandle {
+                            handle,
+                            begun: true,
+                        };
+                        return;
+                    }
                     if let Drag::FillGradient { current, .. } = &mut self.drag {
                         *current = p;
                     }
                 }
                 if response.clicked() {
+                    if let Some(h) = self.fountain_handle_at(p) {
+                        if let Some(i) = self.fountain_stop_of(h) {
+                            self.fill_node = Some(i);
+                        }
+                        return;
+                    }
+                    if self.fountain_line_at(p).is_some() {
+                        return;
+                    }
                     match self.hit_test(p) {
                         Some(id) => {
                             if !self.selection.contains(&id) {
@@ -2312,13 +2358,7 @@ impl App {
                 current,
             } if self.tool == Tool::Transparency => {
                 if (current - start).hypot() > 0.5 {
-                    let angle = (current - start).atan2().to_degrees();
-                    self.transparency_default.kind = 1;
-                    self.transparency_default.mask =
-                        Fill::linear(Color::WHITE, Color::BLACK, angle);
-                    self.selection = vec![shape];
-                    let s = self.transparency_default.clone();
-                    self.apply_transparency(&s);
+                    self.transparency_from_drag(shape, start, current);
                 }
             }
             Drag::FillGradient {

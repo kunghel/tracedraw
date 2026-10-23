@@ -5,9 +5,10 @@
 //! moves it, a double click on the band adds one, on a node removes it),
 //! the picked node's colour, transparency, position and midpoint, Reverse,
 //! and the transform (rotation, centre, edge pad). Uniform colours get the
-//! colour viewer; patterns, textures and meshes their editors. OK applies
-//! what was changed, with Overprint fill, in one undo step; with nothing
-//! selected it sets the fill of new objects. See
+//! colour viewer; patterns, textures and meshes their editors. The
+//! selection shows the fill as it is edited; OK applies what was changed,
+//! with Overprint fill, in one undo step, and Cancel takes it back; with
+//! nothing selected it sets the fill of new objects. See
 //! docs/behavior/gradient-fill.md.
 
 use crate::app::App;
@@ -38,6 +39,9 @@ pub struct EditFillState {
     pub defaults: bool,
     /// The hue the colour viewer shows (kept for greys).
     pub hue: f32,
+    /// What the selection shows meanwhile: the fill, the fields set and
+    /// Overprint fill last previewed.
+    pub shown: Option<(Fill, Vec<FillField>, Option<bool>)>,
 }
 
 /// Width of the band of colours.
@@ -81,7 +85,38 @@ impl App {
             overprint_old,
             defaults,
             hue,
+            shown: None,
         }));
+    }
+
+    /// Show what the dialog holds on the selection while it is open, as
+    /// the reference program does: the change is taken back and made
+    /// anew each time the dialog changes, OK keeps it as one step and
+    /// Cancel, Esc or the close button take it back (#436).
+    pub fn preview_edit_fill(&mut self, st: &mut EditFillState) {
+        if st.defaults {
+            return;
+        }
+        let now = (st.fill.clone(), st.touched.clone(), st.overprint);
+        if st.shown.as_ref() == Some(&now) {
+            return;
+        }
+        self.end_edit_fill_preview();
+        let unchanged =
+            st.fill == st.old && st.touched.is_empty() && st.overprint == st.overprint_old;
+        if !unchanged {
+            self.engine.begin_preview();
+            self.fill_preview = true;
+            self.apply_edit_fill(st);
+        }
+        st.shown = Some(now);
+    }
+
+    /// Take back the fill the Edit Fill dialog shows on the selection.
+    pub fn end_edit_fill_preview(&mut self) {
+        if std::mem::take(&mut self.fill_preview) {
+            self.engine.withdraw_preview();
+        }
     }
 
     /// OK in the Edit Fill dialog.
@@ -167,7 +202,12 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut EditFillState, close:
         app.open_dialog_help();
     }
     if ok {
+        app.end_edit_fill_preview();
         app.apply_edit_fill(st);
+    } else if *close {
+        app.end_edit_fill_preview();
+    } else {
+        app.preview_edit_fill(st);
     }
 }
 
@@ -778,5 +818,81 @@ mod tests {
         app.apply_edit_fill(&st);
         let s = app.doc().find_shape(b).cloned().expect("shape");
         assert!(matches!(s.fill, Fill::Solid(_)));
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn fill_of(app: &App, id: tracedraw_core::ShapeId) -> Fill {
+        app.doc().find_shape(id).expect("shape").fill.clone()
+    }
+
+    /// The dialog's fill shows on the object while the dialog is open;
+    /// closing it without OK takes it back, history and all, and OK
+    /// keeps it as one step (#436).
+    #[test]
+    fn the_fill_shows_live_while_the_dialog_is_open() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Fountain(two()));
+        let before = fill_of(&app, id);
+        let steps = app.engine.history_labels();
+        let edit = |app: &mut App| {
+            let crate::ui::dialogs::Dialog::EditFill(st) = &mut app.dialog else {
+                panic!("the dialog");
+            };
+            let Fill::Fountain(f) = &mut st.fill else {
+                panic!("a gradient");
+            };
+            f.kind = FountainKind::Radial;
+        };
+        app.open_edit_fill();
+        frame(&ctx, &mut app);
+        assert_eq!(fill_of(&app, id), before, "nothing changed yet");
+        edit(&mut app);
+        frame(&ctx, &mut app);
+        let Fill::Fountain(shown) = fill_of(&app, id) else {
+            panic!("a gradient");
+        };
+        assert_eq!(shown.kind, FountainKind::Radial, "shown at once");
+        // Esc (the keyboard closes any dialog): taken back.
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        frame(&ctx, &mut app);
+        assert_eq!(fill_of(&app, id), before);
+        assert_eq!(app.engine.history_labels(), steps);
+        // OK: one step.
+        app.open_edit_fill();
+        frame(&ctx, &mut app);
+        edit(&mut app);
+        frame(&ctx, &mut app);
+        let crate::ui::dialogs::Dialog::EditFill(st) = &app.dialog else {
+            panic!("the dialog");
+        };
+        let st = st.as_ref().clone();
+        app.end_edit_fill_preview();
+        app.apply_edit_fill(&st);
+        assert!(!app.fill_preview);
+        assert_eq!(app.engine.history_labels().0.len(), steps.0.len() + 1);
+        let Fill::Fountain(kept) = fill_of(&app, id) else {
+            panic!("a gradient");
+        };
+        assert_eq!(kept.kind, FountainKind::Radial);
     }
 }

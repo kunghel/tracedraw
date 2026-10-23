@@ -113,9 +113,9 @@ fn background(app: &mut App, ui: &mut Ui, cells: bool) {
         });
     }
     if let Fill::Solid(c) = &fill {
-        let mut rgb = c.to_rgb8();
-        if ui.color_edit_button_srgb(&mut rgb).changed() {
-            new = Some(Fill::Solid(Color::rgb8(rgb[0], rgb[1], rgb[2])));
+        let mut c = *c;
+        if crate::ui::color_picker::color_button(ui, &mut c) {
+            new = Some(Fill::Solid(c));
         }
     }
     let Some(f) = new else {
@@ -182,10 +182,7 @@ fn borders(app: &mut App, ui: &mut Ui, cells: bool) {
         };
     }
     if let Some(b) = &mut border {
-        let mut rgb = b.color.to_rgb8();
-        if ui.color_edit_button_srgb(&mut rgb).changed() {
-            b.color = Color::rgb8(rgb[0], rgb[1], rgb[2]);
-        }
+        crate::ui::color_picker::color_button(ui, &mut b.color);
         let idx = crate::table_tool::BORDER_DASHES
             .iter()
             .position(|(_, d)| *d == b.dash.as_slice())

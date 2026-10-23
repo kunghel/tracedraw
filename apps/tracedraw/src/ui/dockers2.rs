@@ -10,15 +10,9 @@ use crate::theme::Tokens;
 use egui::Ui;
 use tracedraw_core::{document::ShapeKind, live::Effect, Color, Command, Fill, ShapeId};
 
+/// The colour picker every colour of the drawing uses (#442).
 fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
-    let [r, g, b] = c.to_rgb8();
-    let mut rgb = [r, g, b];
-    if ui.color_edit_button_srgb(&mut rgb).changed() {
-        *c = Color::rgb8(rgb[0], rgb[1], rgb[2]);
-        true
-    } else {
-        false
-    }
+    crate::ui::color_picker::color_button(ui, c)
 }
 
 fn dim(ui: &mut Ui, text: String) {
@@ -68,6 +62,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
         DockerTab::AiGenerate => crate::ui::ai_generate_docker::ai_generate(app, ui),
         DockerTab::Effects => crate::ui::effects_docker::effects_docker(app, ui),
         DockerTab::Macros => crate::ui::macros_ui::manager(app, ui),
+        DockerTab::PrintMerge => crate::ui::print_merge_docker::print_merge(app, ui),
         _ => {}
     }
 }

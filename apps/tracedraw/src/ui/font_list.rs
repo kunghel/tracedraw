@@ -520,6 +520,11 @@ pub fn text_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) -> 
     }
     match pick {
         Some(p) => {
+            // With no text to change, the font picked is the one of new
+            // text.
+            if !app.has_text_target() {
+                app.text_default_font = p.family.clone();
+            }
             app.text_font = p.family;
             if let Some((bold, italic)) = p.style {
                 app.text_bold = bold;
@@ -528,6 +533,19 @@ pub fn text_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) -> 
             true
         }
         None => false,
+    }
+}
+
+/// The font of new text (Options > Text > Display): it changes the
+/// default only, never the text selected (#449).
+pub fn default_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) {
+    let current = app.text_default_font.clone();
+    let (pick, _) = font_list_live(app, ui, id_salt, &current, width);
+    if let Some(p) = pick {
+        if !app.has_text_target() {
+            app.text_font = p.family.clone();
+        }
+        app.text_default_font = p.family;
     }
 }
 
@@ -1194,7 +1212,7 @@ pub struct LiveFont {
 impl App {
     /// What a font change would act on: text being edited, table cells or
     /// a selected text object.
-    fn has_text_target(&self) -> bool {
+    pub fn has_text_target(&self) -> bool {
         self.text_edit.is_some()
             || self.table_edit.is_some()
             || self
@@ -1280,6 +1298,54 @@ impl App {
 mod live_tests {
     use super::*;
     use tracedraw_core::geometry::Point;
+
+    /// Selecting a text shows its font and size, but the font and size of
+    /// new text (Options > Text > Display) stay as set, can be changed
+    /// with the text selected, and are what is kept for the next session
+    /// (#449).
+    #[test]
+    fn the_default_text_font_does_not_follow_the_selection() {
+        let mut app = App::headless();
+        app.text_default_font = "Arial".into();
+        app.text_default_size = 24.0;
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new("Text", "Impact", 130.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.sync_text_defaults_from(id);
+        assert_eq!(app.text_font, "Impact");
+        assert_eq!(app.text_default_font, "Arial");
+        // Options sets a default while the text is selected: the text is
+        // left alone.
+        app.text_default_size = 48.0;
+        assert_eq!(text_of(&app, id), ("Impact".to_string(), 130.0));
+        let prefs = app.tool_prefs();
+        assert_eq!(
+            (prefs.text_font.as_str(), prefs.text_size_pt),
+            ("Arial", 48.0)
+        );
+        // Nothing selected: the Text tool's bar shows the defaults again.
+        app.select(Vec::new());
+        app.tool = crate::tools::Tool::Text;
+        let ctx = crate::theme::ui_context();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+        out.textures_delta.clear();
+        assert_eq!((app.text_font.as_str(), app.text_size_pt), ("Arial", 48.0));
+    }
 
     fn text_of(app: &App, id: tracedraw_core::ShapeId) -> (String, f64) {
         match app.doc().find_shape(id).map(|s| s.kind.clone()) {

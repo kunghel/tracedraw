@@ -58,7 +58,7 @@ renk bandı gösterilir: seçmek için düğüme tıklayın, taşımak için sü
 eklemek veya kaldırmak için çift tıklayın. Bandın altında düğümün rengi,
 saydamlığı, konumu ve [[edit_fill.midpoint]] ile [[edit_fill.reverse]]
 bulunur. [[edit_fill.transform]] döndürme, merkez ve kenar boşluğunu içerir.
-**Tamam** değiştirdiklerinizi [[edit_fill.overprint]] ile uygular.
+**Tamam** değiştirdiklerinizi [[edit_fill.overprint]] ile uygular. İletişim kutusu açıkken seçim, dolguyu siz değiştirdikçe gösterir; **İptal** veya <kbd>Esc</kbd> eski dolguyu geri getirir.
 
 ![Dolguyu Düzenle iletişim kutusu](../../img/color-fills-edit-fill.png)
 

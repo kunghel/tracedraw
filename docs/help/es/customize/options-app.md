@@ -13,6 +13,7 @@ izquierda.
 - [[options.show_new_document_dialog]] (activado): pedir los ajustes de un
   dibujo nuevo; vea [Crear un dibujo](../get-started/new-document.md).
 - [[options.show_splash]] (activado).
+- [[options.hardware_acceleration]] (activado): dibuja la ventana con la tarjeta gráfica elegida al lado ([[options.gpu_automatic]] al principio); desactivado, con el renderizador por software del equipo. Se aplica en el siguiente inicio. Si la ventana no se abre así, TraceDraw vuelve a iniciarse con el renderizador por software y luego con OpenGL, y conserva el que funcionó.
 - [[options.undo_levels]]: cuántos pasos puede deshacer (150 de forma
   predeterminada).
 

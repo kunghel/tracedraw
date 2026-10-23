@@ -59,7 +59,7 @@ pasek kolorów: kliknij węzeł, aby go wybrać, przeciągnij, aby go przesuną�
 kliknij dwukrotnie, aby dodać lub usunąć węzeł. Pod paskiem: kolor,
 przezroczystość, położenie i [[edit_fill.midpoint]] węzła oraz
 [[edit_fill.reverse]]. [[edit_fill.transform]] zawiera obrót, środek i
-margines krawędzi. **OK** stosuje to, co zmieniono, z [[edit_fill.overprint]].
+margines krawędzi. **OK** stosuje to, co zmieniono, z [[edit_fill.overprint]]. Gdy okno dialogowe jest otwarte, zaznaczenie pokazuje wypełnienie na bieżąco podczas zmian; **Anuluj** lub <kbd>Esc</kbd> przywraca poprzednie wypełnienie.
 
 ![Okno dialogowe Edytuj wypełnienie](../../img/color-fills-edit-fill.png)
 

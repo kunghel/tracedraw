@@ -111,12 +111,9 @@ pub fn color_pick(
                 });
             }
             ui.separator();
-            let [r, g, b] = color.to_rgb8();
-            let mut rgb = [r, g, b];
             ui.horizontal(|ui| {
                 ui.label(tr("toolbar.other_colour"));
-                if ui.color_edit_button_srgb(&mut rgb).changed() {
-                    *color = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+                if crate::ui::color_picker::color_button(ui, color) {
                     changed = true;
                 }
             });

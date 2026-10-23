@@ -4344,3 +4344,107 @@ fn symmetry_editing_picks_members_and_drags_lines() {
         .iter()
         .any(|e| matches!(e, Effect::Symmetry { .. }))));
 }
+
+/// Frame times on a page of many objects (#345): run with
+/// `cargo test --release -- --ignored frame_times_on_a_heavy_page --nocapture`.
+#[test]
+#[ignore]
+fn frame_times_on_a_heavy_page() {
+    let (ctx, mut app, _) = setup();
+    let mut s = 7u64;
+    let mut r = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 33) as f64) / (1u64 << 31) as f64
+    };
+    let n: usize = std::env::var("FRAME_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5000);
+    let only: Option<String> = std::env::var("FRAME_ONLY").ok();
+    for _ in 0..n {
+        let (x, y) = (r() * 200.0, r() * 280.0);
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to((x, y));
+        for _ in 0..6 {
+            p.curve_to(
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+            );
+        }
+        p.close_path();
+        app.new_shape(ShapeKind::Path {
+            path: p,
+            closed: true,
+        });
+    }
+    app.select(Vec::new());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let time = |label: &str, app: &mut App, f: &mut dyn FnMut(&mut App)| {
+        if only.as_deref().is_some_and(|o| !label.starts_with(o)) {
+            return;
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..10 {
+            f(app);
+        }
+        eprintln!("{label}: {:?} per frame", t.elapsed() / 10);
+    };
+    let mut x = 300.0f32;
+    time("hover", &mut app, &mut |app| {
+        x += 3.0;
+        frame(
+            &ctx,
+            app,
+            vec![Event::PointerMoved(egui::pos2(x, 300.0))],
+            Modifiers::NONE,
+        );
+    });
+    let at = app.view.to_screen(Point::new(100.0, 100.0));
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(at)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(at, true, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let mut d = 0.0f32;
+    time("drag (marquee or move)", &mut app, &mut |app| {
+        d += 4.0;
+        frame(
+            &ctx,
+            app,
+            vec![Event::PointerMoved(at + egui::vec2(d, d))],
+            Modifiers::NONE,
+        );
+    });
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            at + egui::vec2(d, d),
+            false,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    app.select_all();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    time("all selected, hover", &mut app, &mut |app| {
+        x += 3.0;
+        frame(
+            &ctx,
+            app,
+            vec![Event::PointerMoved(egui::pos2(x, 320.0))],
+            Modifiers::NONE,
+        );
+    });
+}

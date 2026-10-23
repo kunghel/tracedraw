@@ -66,7 +66,7 @@ clic su un nodo per sceglierlo, trascinatelo per spostarlo, fate doppio clic
 per aggiungerne o toglierne uno. Sotto la banda: colore, trasparenza,
 posizione e [[edit_fill.midpoint]] del nodo, e [[edit_fill.reverse]].
 [[edit_fill.transform]] contiene rotazione, centro e margine del bordo. **OK**
-applica ciò che avete cambiato, con [[edit_fill.overprint]].
+applica ciò che avete cambiato, con [[edit_fill.overprint]]. Finché la finestra di dialogo è aperta, la selezione mostra il riempimento mentre lo modificate; **Annulla** o <kbd>Esc</kbd> ripristina il riempimento precedente.
 
 ![La finestra di dialogo Modifica riempimento](../../img/color-fills-edit-fill.png)
 

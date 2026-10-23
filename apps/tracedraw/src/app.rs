@@ -835,6 +835,12 @@ pub struct App {
     /// Korean and other input methods), shown underlined until it is
     /// committed.
     pub ime_preedit: String,
+    /// The last trace made (its preset and settings), for Repeat Last
+    /// Trace and Open Last Trace Settings (#452).
+    pub last_trace: Option<(crate::trace::Preset, crate::trace::Settings)>,
+    /// The digits typed with Alt held while editing text, for a character
+    /// by its number (#447; the system does it on Windows).
+    pub alt_code: String,
     /// The last colours picked for a fill and for an outline (the
     /// palette's left and right clicks): the "current colours" the first
     /// built-in gradient runs between.
@@ -965,6 +971,10 @@ pub struct App {
     pub shadow_default: tracedraw_core::Shadow,
     pub text_font: String,
     pub text_size_pt: f64,
+    /// The font and size of new text (Options > Text > Display): the
+    /// fields above follow the text selected, these do not (#449).
+    pub text_default_font: String,
+    pub text_default_size: f64,
     pub text_bold: bool,
     pub text_italic: bool,
     pub text_underline: bool,
@@ -995,6 +1005,9 @@ pub struct App {
     /// The visual bounds of objects with live effects, for the document
     /// revision they were measured at (see [`App::visual_bounds`]).
     pub visual_cache: std::cell::RefCell<(u64, std::collections::HashMap<ShapeId, Rect>)>,
+    /// The Edit Fill dialog's fill is shown on the selection as an engine
+    /// preview (#436).
+    pub fill_preview: bool,
     /// The selected objects in page space, for the drawing, its revision
     /// and the selection they were gathered for (see
     /// [`App::selected_rc`]).
@@ -1061,6 +1074,8 @@ pub struct App {
     pub page_numbers: PageNumberSettings,
     /// Last loaded print-merge data, for Edit / Perform without reloading.
     pub merge_state: Option<crate::ui::dialogs::PrintMergeState>,
+    /// The Print Merge docker's choices.
+    pub merge_docker: crate::ui::print_merge_docker::MergeDocker,
     pub show_welcome: bool,
     /// Object > Clip to Frame > Place Inside Frame is waiting for a click on the frame.
     pub pending_clip_frame: bool,
@@ -1594,10 +1609,11 @@ pub enum DockerTab {
     AiGenerate,
     Effects,
     Macros,
+    PrintMerge,
 }
 
 impl DockerTab {
-    pub const ALL: [DockerTab; 42] = [
+    pub const ALL: [DockerTab; 43] = [
         DockerTab::Properties,
         DockerTab::Objects,
         DockerTab::Hints,
@@ -1640,6 +1656,7 @@ impl DockerTab {
         DockerTab::Shelf,
         DockerTab::Effects,
         DockerTab::Macros,
+        DockerTab::PrintMerge,
     ];
 
     /// Window > Panels, in groups divided by separators, in the order of
@@ -1656,6 +1673,7 @@ impl DockerTab {
             DockerTab::Symbols,
             DockerTab::FindReplace,
             DockerTab::Export,
+            DockerTab::PrintMerge,
             DockerTab::AiGenerate,
         ],
         &[DockerTab::Transformations, DockerTab::Coordinates],
@@ -1746,6 +1764,7 @@ impl DockerTab {
             DockerTab::AiGenerate => "docker.ai_generate",
             DockerTab::Macros => "docker.macros",
             DockerTab::Effects => "docker.effects",
+            DockerTab::PrintMerge => "docker.print_merge",
         }
     }
 
@@ -1784,6 +1803,8 @@ pub struct SelectedCache {
     key: (u64, u64, tracedraw_core::PageId),
     selection: Vec<ShapeId>,
     shapes: std::rc::Rc<Vec<Shape>>,
+    /// Their visual bounds, once asked for.
+    bounds: std::cell::RefCell<Option<std::rc::Rc<Vec<Rect>>>>,
 }
 
 /// An action Edit > Repeat can repeat.
@@ -1939,6 +1960,8 @@ impl App {
             curve: None,
             text_edit: None,
             ime_preedit: String::new(),
+            last_trace: None,
+            alt_code: String::new(),
             current_colors: (Color::BLACK, Color::WHITE),
             live_fill: None,
             live_stroke: None,
@@ -2011,6 +2034,8 @@ impl App {
             shadow_default: tracedraw_core::Shadow::default(),
             text_font: "Arial".into(),
             text_size_pt: 24.0,
+            text_default_font: "Arial".into(),
+            text_default_size: 24.0,
             text_bold: false,
             text_italic: false,
             text_underline: false,
@@ -2030,6 +2055,7 @@ impl App {
             palette_expanded: None,
             raster: std::cell::RefCell::new(crate::raster::Raster::default()),
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
+            fill_preview: false,
             selected_cache: std::cell::RefCell::new(None),
             view_anchor: None,
             window_layout: Default::default(),
@@ -2057,6 +2083,7 @@ impl App {
             dialog: crate::ui::dialogs::Dialog::None,
             dialog_help: crate::help::HOME,
             merge_state: None,
+            merge_docker: Default::default(),
             page_numbers: PageNumberSettings::default(),
             show_welcome: false,
             pending_clip_frame: false,
@@ -2720,8 +2747,8 @@ impl App {
             contour: self.contour,
             eraser_width: self.eraser_width,
             eraser_square: self.eraser_square,
-            text_font: self.text_font.clone(),
-            text_size_pt: self.text_size_pt,
+            text_font: self.text_default_font.clone(),
+            text_size_pt: self.text_default_size,
             text_hyphenation: self.text_hyphenation,
             envelope_mode: self.envelope_mode.id().into(),
             envelope_mapping: self.envelope_mapping.id().into(),
@@ -2782,6 +2809,8 @@ impl App {
             self.text_font = t.text_font.clone();
         }
         self.text_size_pt = finite(t.text_size_pt, 0.5, 3000.0, 24.0);
+        self.text_default_font = self.text_font.clone();
+        self.text_default_size = self.text_size_pt;
         self.text_hyphenation = t.text_hyphenation;
         self.envelope_mode = tracedraw_core::envelope::Mode::from_id(&t.envelope_mode);
         self.envelope_mapping = tracedraw_core::envelope::Mapping::from_id(&t.envelope_mapping);
@@ -3627,6 +3656,7 @@ impl App {
                 key,
                 selection: self.selection.clone(),
                 shapes: shapes.clone(),
+                bounds: Default::default(),
             });
         }
         shapes
@@ -3712,10 +3742,43 @@ impl App {
     /// The selection's bounds as drawn: live effects (an envelope, a
     /// contour...) included.
     pub fn selection_bounds(&self) -> Option<Rect> {
-        self.selected_rc()
+        self.selected_bounds()
             .iter()
-            .map(|s| self.visual_bounds(s))
+            .copied()
             .reduce(|a, b| a.union(b))
+    }
+
+    /// The visual bounds of each of [`Self::selected_rc`], in its order:
+    /// kept with the gathered selection, since the bars, the canvas, the
+    /// cursor and the status bar ask for them many times a frame and
+    /// thousands of selected objects made each answer slow (#345).
+    pub fn selected_bounds(&self) -> std::rc::Rc<Vec<Rect>> {
+        let shapes = self.selected_rc();
+        let cached = |c: &SelectedCache| {
+            std::rc::Rc::ptr_eq(&c.shapes, &shapes)
+                .then(|| c.bounds.borrow().clone())
+                .flatten()
+        };
+        if let Ok(cache) = self.selected_cache.try_borrow() {
+            if let Some(b) = cache.as_ref().and_then(cached) {
+                return b;
+            }
+        }
+        let b = std::rc::Rc::new(
+            shapes
+                .iter()
+                .map(|s| self.visual_bounds(s))
+                .collect::<Vec<_>>(),
+        );
+        if let Ok(cache) = self.selected_cache.try_borrow() {
+            if let Some(c) = cache
+                .as_ref()
+                .filter(|c| std::rc::Rc::ptr_eq(&c.shapes, &shapes))
+            {
+                *c.bounds.borrow_mut() = Some(b.clone());
+            }
+        }
+        b
     }
 
     /// The bounds of what `s` (in page space) draws, its live effects
@@ -6877,6 +6940,9 @@ mod tests {
         app.spiral_revolutions = 7;
         app.text_font = "Georgia".into();
         app.text_size_pt = 36.0;
+        // The font and size of new text are what is kept (#449).
+        app.text_default_font = "Georgia".into();
+        app.text_default_size = 36.0;
         app.eraser_square = true;
         app.show_grid = true;
         app.show_page_border = false;

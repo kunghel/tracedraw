@@ -11,6 +11,8 @@ Wählen Sie eine Bitmap aus und wählen Sie
 der Seite [[options.bitmap_tracing]] der globalen Optionen gewählt ist
 (anfangs Clipart).
 
+[[menu.bitmaps.repeat_last_trace]] vektorisiert die ausgewählte Bitmap erneut wie die letzte Vektorisierung, ohne Dialogfeld, und [[menu.bitmaps.last_trace_settings]] öffnet das Dialogfeld mit deren Einstellungen. Auch das Kontextmenü einer Bitmap enthält diese Befehle, zusammen mit [[menu.bitmaps.centerline_trace]] und [[menu.bitmaps.outline_trace]].
+
 ## Das Dialogfeld Bitmap nachzeichnen {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] und

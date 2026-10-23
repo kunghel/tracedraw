@@ -9,6 +9,8 @@ Zaznacz bitmapę i wybierz [[menu.bitmaps > menu.bitmaps.quick_trace]]. Używa o
 ustawienia wstępnego wybranego na stronie [[options.bitmap_tracing]] opcji
 globalnych (domyślnie Clipart).
 
+[[menu.bitmaps.repeat_last_trace]] ponownie obrysowuje zaznaczoną bitmapę jak ostatnio, bez okna dialogowego, a [[menu.bitmaps.last_trace_settings]] otwiera okno dialogowe z ustawieniami ostatniego obrysowania. Menu kontekstowe bitmapy też ma te polecenia, razem z [[menu.bitmaps.centerline_trace]] i [[menu.bitmaps.outline_trace]].
+
 ## Okno dialogowe wektoryzacji bitmapy {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] i

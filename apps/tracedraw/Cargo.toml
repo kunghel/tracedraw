@@ -47,6 +47,10 @@ web-time = "1"
 jiff = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The window drawn with wgpu (Direct3D 12, Vulkan or Metal): the graphics
+# card chosen in Options, or its software adapter (#445, #439).
+eframe = { workspace = true, features = ["wgpu"] }
+pollster = "0.4"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 # AI Drawing: HTTPS requests to the AI service the user sets up.
 ureq = { version = "3", features = ["platform-verifier"] }

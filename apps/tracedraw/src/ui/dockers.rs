@@ -878,7 +878,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                 // A group shows what is inside it; values that differ
                 // across the selection show as mixed, and an edit changes
                 // only what was edited on each object.
-                let base = app.paint_targets().into_iter().next();
+                let base = app.first_paint_target();
                 let old = base
                     .as_ref()
                     .map_or(first.stroke.clone(), |b| b.stroke.clone());
@@ -908,7 +908,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                 }
             }
             "fill" => {
-                let base = app.paint_targets().into_iter().next();
+                let base = app.first_paint_target();
                 let old = base.as_ref().map_or(first.fill.clone(), |b| b.fill.clone());
                 let mix = app.selection_fill_mix();
                 let mut fill = old.clone();
@@ -1695,10 +1695,7 @@ fn fountain_editor(ui: &mut Ui, f: &mut Fountain) -> bool {
     for i in 0..n {
         let stop = &mut f.stops[i];
         ui.horizontal(|ui| {
-            let [r, g, b] = stop.color.to_rgb8();
-            let mut rgb = [r, g, b];
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                stop.color = Color::rgb8(rgb[0], rgb[1], rgb[2]);
+            if crate::ui::color_picker::color_button(ui, &mut stop.color) {
                 changed = true;
             }
             let mut pct = stop.pos * 100.0;
@@ -3020,7 +3017,7 @@ mod tests {
                     for kind in 0..4u8 {
                         app.transparency_default.set_kind(kind);
                         let t = app.transparency_default.clone();
-                        app.apply_transparency(&t);
+                        app.patch_transparency(&t, &[crate::mixed::TransparencyField::Kind]);
                         let (need, w) = overflow(&ctx, &mut app);
                         assert!(need <= 0.5, "{lang}, fill {k}, transparency {kind}: {need}");
                         assert!((w - empty).abs() < 1.0, "{lang}, fill {k}: {w}");

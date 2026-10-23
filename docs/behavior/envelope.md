@@ -20,6 +20,16 @@ Ctrl+F7).
   mapping }`. Files written before handles existed have only the eight
   nodes: each side is then the single arc through its three nodes (the
   quadratic through corner, middle and corner), which is what they showed.
+- On a group (or a clip frame) the frame is around the box of all its
+  objects, and each object is mapped from that box into the frame,
+  keeping its own fill and outline; perspective and distortions on a
+  group work the same way. The group used to be drawn as one path with
+  its own empty fill, so it vanished
+  (`tracedraw_core::live::tests::an_envelope_on_a_group_keeps_each_object`).
+- Curves are flattened before the mapping with a tolerance of 1/50 000
+  of the object's size (at most 0.05 units), so letters stay smooth; a
+  fixed 0.05 left chords about 2 mm long on large text
+  (`an_envelope_keeps_small_curves_smooth`, #455).
 
 ## Envelope tool (Effects group of the toolbox)
 

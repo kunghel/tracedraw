@@ -66,7 +66,7 @@ clic en un nodo para elegirlo, arrástrelo para moverlo y haga doble clic para
 añadir o quitar uno. Bajo la banda: el color, la transparencia, la posición y
 el [[edit_fill.midpoint]] del nodo, e [[edit_fill.reverse]].
 [[edit_fill.transform]] tiene la rotación, el centro y el relleno del borde.
-**Aceptar** aplica lo que cambió, con [[edit_fill.overprint]].
+**Aceptar** aplica lo que cambió, con [[edit_fill.overprint]]. Mientras el cuadro de diálogo está abierto, la selección muestra el relleno a medida que lo cambia; **Cancelar** o <kbd>Esc</kbd> restaura el relleno anterior.
 
 ![El cuadro de diálogo Editar relleno](../../img/color-fills-edit-fill.png)
 

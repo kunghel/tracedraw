@@ -1,8 +1,11 @@
 //! The engine owns a document and its history.
 //!
-//! History is snapshot-based for now: before each command the document is
-//! cloned. Vector documents are small, so this is cheap and, more
-//! importantly, always correct. A delta-based history can replace it later
+//! History is snapshot-based: each step keeps one copy of the drawing, the
+//! state on the other side of it (on the undo stack the drawing before the
+//! step, on the redo stack the drawing after it). Undo and Redo swap that
+//! copy with the drawing, so they copy nothing, and an edit copies the
+//! drawing once (#345: two or three copies per edit made every change of
+//! a large drawing slow). A delta-based history can replace it later
 //! without changing this API.
 
 use crate::command::Command;
@@ -15,8 +18,9 @@ struct HistoryEntry {
     /// The step's identity, unique in this engine (see
     /// [`Engine::last_step_id`]).
     id: u64,
-    before: Document,
-    after: Document,
+    /// The drawing on the other side of the step: before it on the undo
+    /// stack, after it on the redo stack.
+    other: Document,
 }
 
 #[derive(Debug)]
@@ -143,7 +147,11 @@ impl Engine {
             return cmd.apply(&mut self.doc);
         }
         let before = self.doc.clone();
-        cmd.apply(&mut self.doc)?;
+        if let Err(e) = cmd.apply(&mut self.doc) {
+            // A command that fails part-way leaves nothing behind.
+            self.doc = before;
+            return Err(e);
+        }
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
         let id = self.next_step;
@@ -151,8 +159,7 @@ impl Engine {
         self.undo.push(HistoryEntry {
             label,
             id,
-            before,
-            after: self.doc.clone(),
+            other: before,
         });
         self.finish_step();
         Ok(())
@@ -170,20 +177,20 @@ impl Engine {
     /// Apply several commands as one undo step.
     pub fn run_batch(&mut self, label: &'static str, cmds: &[Command]) -> Result<()> {
         let before = self.doc.clone();
-        let mut doc = self.doc.clone();
         for c in cmds {
-            c.apply(&mut doc)?;
+            if let Err(e) = c.apply(&mut self.doc) {
+                self.doc = before;
+                return Err(e);
+            }
         }
-        doc.assign_uids(&mut self.uid_state);
-        doc.refresh_text_flow();
-        self.doc = doc;
+        self.doc.assign_uids(&mut self.uid_state);
+        self.doc.refresh_text_flow();
         let id = self.next_step;
         self.next_step += 1;
         self.undo.push(HistoryEntry {
             label,
             id,
-            before,
-            after: self.doc.clone(),
+            other: before,
         });
         self.finish_step();
         Ok(())
@@ -200,15 +207,15 @@ impl Engine {
         if self.revision != self.step_revision {
             return self.run(cmd);
         }
-        let Some(last) = self.undo.last_mut() else {
+        if self.undo.is_empty() {
             return self.run(cmd);
-        };
+        }
+        // The step keeps the drawing from before it; the change joins it.
         let mut doc = self.doc.clone();
         cmd.apply(&mut doc)?;
         doc.assign_uids(&mut self.uid_state);
         doc.refresh_text_flow();
         self.doc = doc;
-        last.after = self.doc.clone();
         self.revision += 1;
         self.step_revision = self.revision;
         Ok(())
@@ -237,9 +244,6 @@ impl Engine {
         }
         doc.assign_uids(&mut self.uid_state);
         self.doc = doc;
-        if let Some(last) = self.undo.last_mut() {
-            last.after = self.doc.clone();
-        }
         self.redo.clear();
         self.revision += 1;
         self.step_revision = self.revision;
@@ -251,13 +255,18 @@ impl Engine {
         self.doc.ids_mut().shape()
     }
 
-    fn restore(&mut self, snapshot: &Document) {
+    /// Put `snapshot` in place of the drawing, keeping the id counters and
+    /// the time tracker (they never rewind); the drawing it replaced is
+    /// returned, for the other stack.
+    fn swap_in(&mut self, snapshot: Document) -> Document {
         let ids = self.doc.ids().clone();
         let tracker = std::mem::take(&mut self.doc.time_tracker);
-        self.doc = snapshot.clone();
+        let mut was = std::mem::replace(&mut self.doc, snapshot);
         self.doc.set_ids(ids);
         self.doc.time_tracker = tracker;
+        was.time_tracker = Default::default();
         self.revision += 1;
+        was
     }
 
     /// Mark the drawing changed without an undo step (an edit of state kept
@@ -267,16 +276,18 @@ impl Engine {
     }
 
     pub fn undo(&mut self) -> Result<&'static str> {
-        let e = self.undo.pop().ok_or(Error::NothingToUndo)?;
-        self.restore(&e.before);
+        let mut e = self.undo.pop().ok_or(Error::NothingToUndo)?;
+        let other = std::mem::take(&mut e.other);
+        e.other = self.swap_in(other);
         let label = e.label;
         self.redo.push(e);
         Ok(label)
     }
 
     pub fn redo(&mut self) -> Result<&'static str> {
-        let e = self.redo.pop().ok_or(Error::NothingToRedo)?;
-        self.restore(&e.after);
+        let mut e = self.redo.pop().ok_or(Error::NothingToRedo)?;
+        let other = std::mem::take(&mut e.other);
+        e.other = self.swap_in(other);
         let label = e.label;
         self.undo.push(e);
         Ok(label)
@@ -313,11 +324,11 @@ impl Engine {
         let mut first_before: Option<Document> = None;
         while !self.undo.is_empty() && self.last_step_id() != m.last_step {
             if let Some(e) = self.undo.pop() {
-                first_before = Some(e.before);
+                first_before = Some(e.other);
             }
         }
         if let Some(before) = first_before {
-            self.restore(&before);
+            self.swap_in(before);
         }
         self.redo = m.redo;
         if m.saved {

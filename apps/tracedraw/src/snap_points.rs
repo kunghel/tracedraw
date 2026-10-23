@@ -529,6 +529,18 @@ pub fn targets(
         }
     }
     if modes.intersection {
+        // Each segment near the pointer is cut once into short chords
+        // (an eighth of the radius), keeping only those that come within
+        // the radius (a crossing farther away is no target); chords that
+        // cross give a start from which the crossing of the curves is
+        // refined. Solving curve against curve for every pair took most
+        // of a frame on a page of thousands of curves (#345).
+        let reach = Rect::new(p.x - tol, p.y - tol, p.x + tol, p.y + tol);
+        let step = (tol / 8.0).max(1e-6);
+        let pieces: Vec<Vec<Chord>> = near
+            .iter()
+            .map(|(_, _, s)| chords_in(s, reach, step))
+            .collect();
         for i in 0..near.len() {
             for j in i + 1..near.len() {
                 let (_, _, a) = &near[i];
@@ -537,11 +549,16 @@ pub fn targets(
                 let at_end = |s: &PathSeg, q: Point| {
                     (s.eval(0.0) - q).hypot() < 1e-6 || (s.eval(1.0) - q).hypot() < 1e-6
                 };
-                for q in intersections(a, b) {
-                    if at_end(a, q) && at_end(b, q) {
-                        continue;
+                for ca in &pieces[i] {
+                    for cb in &pieces[j] {
+                        let Some(q) = crossing(a, ca, b, cb, step) else {
+                            continue;
+                        };
+                        if at_end(a, q) && at_end(b, q) {
+                            continue;
+                        }
+                        add(&mut out, p, q, SnapMode::Intersection, tol);
                     }
-                    add(&mut out, p, q, SnapMode::Intersection, tol);
                 }
             }
         }
@@ -549,40 +566,89 @@ pub fn targets(
     out
 }
 
-/// Where two segments cross.
-fn intersections(a: &PathSeg, b: &PathSeg) -> Vec<Point> {
-    let lines_of = |s: &PathSeg| -> Vec<Line> {
-        match s {
-            PathSeg::Line(l) => vec![*l],
-            _ => {
-                let mut pts = Vec::new();
-                let mut path = BezPath::new();
-                path.move_to(s.eval(0.0));
-                path.push(match s {
-                    PathSeg::Quad(q) => tracedraw_core::geometry::PathEl::QuadTo(q.p1, q.p2),
-                    PathSeg::Cubic(c) => {
-                        tracedraw_core::geometry::PathEl::CurveTo(c.p1, c.p2, c.p3)
-                    }
-                    PathSeg::Line(l) => tracedraw_core::geometry::PathEl::LineTo(l.p1),
-                });
-                tracedraw_core::geometry::flatten(&path, 1e-4, &mut |el| match el {
-                    tracedraw_core::geometry::PathEl::MoveTo(p)
-                    | tracedraw_core::geometry::PathEl::LineTo(p) => pts.push(p),
-                    _ => {}
-                });
-                pts.windows(2).map(|w| Line::new(w[0], w[1])).collect()
-            }
-        }
+/// A chord of a segment: its line and the parameters of its ends.
+struct Chord {
+    line: Line,
+    t0: f64,
+    t1: f64,
+}
+
+/// The chords of `s`, about `step` long, that reach into `r`.
+fn chords_in(s: &PathSeg, r: Rect, step: f64) -> Vec<Chord> {
+    let meets = |l: &Line| {
+        l.p0.x.min(l.p1.x) <= r.x1
+            && l.p0.x.max(l.p1.x) >= r.x0
+            && l.p0.y.min(l.p1.y) <= r.y1
+            && l.p0.y.max(l.p1.y) >= r.y0
     };
-    let mut out = Vec::new();
-    for l in lines_of(b) {
-        for hit in a.intersect_line(l) {
-            if (0.0..=1.0).contains(&hit.line_t) {
-                out.push(l.eval(hit.line_t));
-            }
+    let n = match s {
+        PathSeg::Line(_) => 0.0,
+        // The control polygon is at least as long as the curve.
+        PathSeg::Quad(q) => ((q.p1 - q.p0).hypot() + (q.p2 - q.p1).hypot()) / step,
+        PathSeg::Cubic(c) => {
+            ((c.p1 - c.p0).hypot() + (c.p2 - c.p1).hypot() + (c.p3 - c.p2).hypot()) / step
         }
     }
+    .ceil()
+    .clamp(1.0, 512.0) as usize;
+    let mut out = Vec::new();
+    let mut prev = (0.0, s.eval(0.0));
+    for k in 1..=n {
+        let t = k as f64 / n as f64;
+        let q = s.eval(t);
+        let line = Line::new(prev.1, q);
+        if meets(&line) {
+            out.push(Chord {
+                line,
+                t0: prev.0,
+                t1: t,
+            });
+        }
+        prev = (t, q);
+    }
     out
+}
+
+/// Where segments `a` and `b` cross near their chords `ca` and `cb`: the
+/// chords' crossing, refined onto both curves by Newton's method (kept
+/// as it is when the refinement wanders off).
+fn crossing(a: &PathSeg, ca: &Chord, b: &PathSeg, cb: &Chord, step: f64) -> Option<Point> {
+    let (la, lb) = (&ca.line, &cb.line);
+    let (d, e) = (la.p1 - la.p0, lb.p1 - lb.p0);
+    let den = d.cross(e);
+    if den.abs() < 1e-18 {
+        return None;
+    }
+    let w = lb.p0 - la.p0;
+    let fa = w.cross(e) / den;
+    let fb = w.cross(d) / den;
+    let eps = 1e-9;
+    if !(-eps..=1.0 + eps).contains(&fa) || !(-eps..=1.0 + eps).contains(&fb) {
+        return None;
+    }
+    let chord_hit = la.p0 + d * fa;
+    if matches!((a, b), (PathSeg::Line(_), PathSeg::Line(_))) {
+        return Some(chord_hit);
+    }
+    let (mut t, mut u) = (ca.t0 + fa * (ca.t1 - ca.t0), cb.t0 + fb * (cb.t1 - cb.t0));
+    for _ in 0..8 {
+        let gap = a.eval(t) - b.eval(u);
+        if gap.hypot() < 1e-10 {
+            break;
+        }
+        // a(t) - b(u) = 0: the columns are a'(t) and -b'(u).
+        let (m1, m2) = (deriv(a, t), -deriv(b, u));
+        let det = m1.cross(m2);
+        if det.abs() < 1e-18 {
+            break;
+        }
+        let c = -gap;
+        t = (t + c.cross(m2) / det).clamp(0.0, 1.0);
+        u = (u + m1.cross(c) / det).clamp(0.0, 1.0);
+    }
+    let q = a.eval(t);
+    let refined = (q - b.eval(u)).hypot() < 1e-7 && (q - chord_hit).hypot() <= step;
+    Some(if refined { q } else { chord_hit })
 }
 
 /// The best target: the nearest point (node, intersection, midpoint,
@@ -708,6 +774,37 @@ mod tests {
         let t = snap(&[a, b], Point::new(10.3, 19.6), None).unwrap();
         assert_eq!(t.mode, SnapMode::Intersection);
         assert!((t.point - Point::new(10.0, 20.0)).hypot() < 1e-6, "{t:?}");
+    }
+
+    /// Two curves cross where their equations meet, exactly, not where
+    /// a flattened copy of them would.
+    #[test]
+    fn curves_snap_to_their_exact_crossing() {
+        let curve = |path: BezPath| {
+            Shape::new(
+                ShapeId(5),
+                ShapeKind::Path {
+                    path,
+                    closed: false,
+                },
+            )
+        };
+        let mut a = BezPath::new();
+        a.move_to((0.0, 0.0));
+        a.curve_to((5.0, 20.0), (15.0, 20.0), (20.0, 0.0));
+        let mut b = BezPath::new();
+        b.move_to((0.0, 12.0));
+        b.curve_to((7.0, 9.0), (13.0, 18.0), (20.0, 14.0));
+        let t = snap(
+            &[curve(a.clone()), curve(b.clone())],
+            Point::new(4.0, 11.5),
+            None,
+        )
+        .unwrap();
+        assert_eq!(t.mode, SnapMode::Intersection, "{t:?}");
+        let (sa, sb) = (a.segments().next().unwrap(), b.segments().next().unwrap());
+        let on = |s: &PathSeg| s.nearest(t.point, 1e-12).distance_sq.sqrt();
+        assert!(on(&sa) < 1e-7 && on(&sb) < 1e-7, "{t:?}");
     }
 
     #[test]

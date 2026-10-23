@@ -11,6 +11,8 @@
 выбранный на странице [[options.bitmap_tracing]] общих параметров (по
 умолчанию «Клипарт»).
 
+[[menu.bitmaps.repeat_last_trace]] снова трассирует выбранное растровое изображение как в последний раз, без диалогового окна, а [[menu.bitmaps.last_trace_settings]] открывает диалоговое окно с параметрами последней трассировки. Эти команды есть и в контекстном меню изображения, вместе с [[menu.bitmaps.centerline_trace]] и [[menu.bitmaps.outline_trace]].
+
 ## Диалоговое окно трассировки {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] и

@@ -371,7 +371,9 @@ Window > Panels > Glyphs. From the top:
 - Recent glyphs: the glyphs inserted last, newest first (up to 24, kept
   in the preferences as font and glyph); empty, it says "Shows the most
   recently used glyphs". A click inserts one again in its own font.
-- The font list (every family installed or carried by a drawing).
+- The font list (every family installed or carried by a drawing): the
+  property bar's list, with its search as you type and font previews
+  (#447).
 - The character range: Entire Font, Basic Latin, Latin-1 Supplement,
   Latin Extended, Greek, Cyrillic, Hebrew, Arabic, Punctuation, Numbers,
   Currency, Arrows, Mathematical Operators, Symbols.
@@ -379,7 +381,12 @@ Window > Panels > Glyphs. From the top:
   code point with a U+ or 0x prefix, or bare hex digits with at least one
   digit ("20AC", "004"), keeps the characters whose code starts with it.
 - An info line: the code point, the character and its range of the glyph
-  last under the pointer.
+  last under the pointer, and the keystroke that types it when code page
+  1252 has it ("Keystroke: Alt+0169" for ©, `keystroke`). While text is
+  edited, digits typed with Alt held give a character when Alt is let go:
+  with a leading zero the code page 1252 number, else the Unicode number
+  (`text_editing::alt_code_char`); on Windows the system does this itself
+  and TraceDraw leaves it to it.
 - A grid of large cells with the glyphs the font draws in that range
   (from its character map), scrolled row by row. The tip names the
   character and its code point. A small arrow under a glyph means the

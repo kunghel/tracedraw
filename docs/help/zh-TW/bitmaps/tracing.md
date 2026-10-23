@@ -6,6 +6,8 @@
 
 選取點陣圖並選擇 [[menu.bitmaps > menu.bitmaps.quick_trace]]。它會使用全域選項的 [[options.bitmap_tracing]] 頁面上所選擇的預設集（預設為美工圖案）。
 
+[[menu.bitmaps.repeat_last_trace]] 不開啟對話方塊，依上次的方式再次描圖所選點陣圖；[[menu.bitmaps.last_trace_settings]] 以上次的設定開啟對話方塊。點陣圖的右鍵選單中也有這些命令，以及 [[menu.bitmaps.centerline_trace]] 和 [[menu.bitmaps.outline_trace]]。
+
 ## 描繪點陣圖對話方塊 {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] 和 [[menu.bitmaps.centerline_trace]] 會列出預設集；選擇其中一個即可開啟描繪對話方塊。

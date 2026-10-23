@@ -10,6 +10,8 @@ Bir bitmap seçin ve [[menu.bitmaps > menu.bitmaps.quick_trace]] komutunu
 seçin. Genel seçeneklerin [[options.bitmap_tracing]] sayfasında seçilen ön
 ayarı kullanır (başlangıçta Küçük Resim).
 
+[[menu.bitmaps.repeat_last_trace]] seçili bit eşlemi iletişim kutusu olmadan son izleme gibi yeniden izler; [[menu.bitmaps.last_trace_settings]] iletişim kutusunu son izlemenin ayarlarıyla açar. Bir bit eşlemin sağ tık menüsünde de [[menu.bitmaps.centerline_trace]] ve [[menu.bitmaps.outline_trace]] ile birlikte bu komutlar vardır.
+
 ## Bitmapi İzle iletişim kutusu {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] ve

@@ -189,7 +189,7 @@ pub fn extrude(path: &BezPath, depth: Vec2) -> (Vec<BezPath>, BezPath) {
     (sides, back)
 }
 
-pub use crate::distort::{distort, Distort};
+pub use crate::distort::{distort, distort_in, Distort};
 
 /// The subpaths of `path`, each with whether it is closed.
 pub fn subpaths(path: &BezPath) -> Vec<(BezPath, bool)> {

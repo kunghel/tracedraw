@@ -6,6 +6,8 @@
 
 ビットマップを選択し、[[menu.bitmaps > menu.bitmaps.quick_trace]] を選びます。グローバルオプションの [[options.bitmap_tracing]] ページで選んだプリセット (最初はクリップアート) を使います。
 
+[[menu.bitmaps.repeat_last_trace]] は選択したビットマップをダイアログを開かずに前回と同じ設定でトレースし、[[menu.bitmaps.last_trace_settings]] は前回の設定でダイアログボックスを開きます。ビットマップの右クリックメニューにも、[[menu.bitmaps.centerline_trace]] と [[menu.bitmaps.outline_trace]] とともにこれらのコマンドがあります。
+
 ## ビットマップのトレースダイアログボックス {#trace}
 
 [[menu.bitmaps > menu.bitmaps.outline_trace]] と [[menu.bitmaps.centerline_trace]] にはプリセットが一覧されています。一つを選ぶとトレースのダイアログボックスが開きます。
