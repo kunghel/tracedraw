@@ -63,7 +63,10 @@ to make room.
 
 ## Hyphenation {#hyphenation}
 
-[[menu.text > menu.text.use_hyphenation]] lets words break at the end of
-lines, with at least two letters before and three after the break. Words
-with a capital letter are never broken. To decide yourself where a word may
+[[menu.text > menu.text.use_hyphenation]] lets the selected text's words
+break at the end of lines (while you type in a text, the paragraphs at the
+cursor; with no text selected, it is the setting for new text), with at least two letters before and three after the break. A comma
+or other punctuation next to a word does not stop it from breaking, and
+words with an apostrophe (such as Italian *dell'anno*) break too. Words with
+a capital letter are never broken. To decide yourself where a word may
 break, see [Custom hyphens](writing-tools.md#custom-hyphens).

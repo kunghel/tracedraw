@@ -733,6 +733,28 @@ impl Shaping {
     }
 }
 
+/// The objects of a group (groups inside opened), their transforms
+/// composed with the group's so each `page_path` is in page space;
+/// empty for anything but a group.
+fn group_leaves(s: &Shape) -> Vec<Shape> {
+    fn walk(s: &Shape, parent: tracedraw_core::geometry::Affine, out: &mut Vec<Shape>) {
+        let t = parent * s.transform;
+        match &s.kind {
+            ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, t, out)),
+            _ => {
+                let mut leaf = s.clone();
+                leaf.transform = t;
+                out.push(leaf);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let ShapeKind::Group { children } = &s.kind {
+        children.iter().for_each(|c| walk(c, s.transform, &mut out));
+    }
+    out
+}
+
 impl App {
     /// The operation as the menus and the property bar do it (see
     /// `Shaping::default_leave`).
@@ -829,16 +851,76 @@ impl App {
             return;
         };
         let id = self.engine.new_shape_id();
-        let mut shape = Shape::new(
-            id,
-            ShapeKind::Path {
-                path: result,
-                closed: true,
-            },
-        );
-        shape.fill = attrs.fill.clone();
-        shape.stroke = attrs.stroke.clone();
-        shape.opacity = attrs.opacity;
+        let leaves = group_leaves(&attrs);
+        let shape = if leaves.is_empty() {
+            let mut shape = Shape::new(
+                id,
+                ShapeKind::Path {
+                    path: result,
+                    closed: true,
+                },
+            );
+            shape.fill = attrs.fill.clone();
+            shape.stroke = attrs.stroke.clone();
+            shape.opacity = attrs.opacity;
+            shape
+        } else if matches!(
+            op,
+            Shaping::Trim | Shaping::FrontMinusBack | Shaping::BackMinusFront
+        ) {
+            // A group keeping its attributes is cut object by object, each
+            // keeping its own fill and outline, the pieces a group; the
+            // result took the group's (none) and showed only in Wireframe
+            // (#539).
+            let cutters: Vec<tracedraw_core::BezPath> = ordered
+                .iter()
+                .filter(|s| s.id != attrs.id)
+                .map(Shape::page_path)
+                .collect();
+            let mut children = Vec::new();
+            for leaf in &leaves {
+                let p = cutters
+                    .iter()
+                    .fold(leaf.page_path(), |acc, c| overlay(&acc, c, Op::Trim));
+                if p.elements().is_empty() {
+                    continue;
+                }
+                let mut piece = Shape::new(
+                    self.engine.new_shape_id(),
+                    ShapeKind::Path {
+                        path: p,
+                        closed: true,
+                    },
+                );
+                piece.fill = leaf.fill.clone();
+                piece.stroke = leaf.stroke.clone();
+                piece.opacity = leaf.opacity;
+                children.push(piece);
+            }
+            if children.is_empty() {
+                self.status = crate::i18n::tr("status.shaping_empty");
+                return;
+            }
+            Shape::new(id, ShapeKind::Group { children })
+        } else {
+            // Weld and Intersect with a group: the attributes of its
+            // first object with a fill (else its first).
+            let first = leaves
+                .iter()
+                .find(|l| !matches!(l.fill, tracedraw_core::Fill::None))
+                .unwrap_or(&leaves[0]);
+            let mut shape = Shape::new(
+                id,
+                ShapeKind::Path {
+                    path: result,
+                    closed: true,
+                },
+            );
+            shape.fill = first.fill.clone();
+            shape.stroke = first.stroke.clone();
+            shape.opacity = first.opacity;
+            shape
+        };
         let mut cmds = vec![Command::AddShape { layer, shape }];
         let gone: Vec<_> = shapes
             .iter()
@@ -928,9 +1010,67 @@ mod smoke_tests {
     use crate::tools::Tool;
     use tracedraw_core::{
         document::{ParagraphStyle, ShapeKind, TextSpan},
-        geometry::{Point, Rect},
+        geometry::{Point, Rect, Shape as _},
         TextAlign,
     };
+
+    /// Back Minus Front with a group at the back: each of its objects is
+    /// cut and keeps its own fill, the pieces a group; the result took the
+    /// group's attributes (none) and showed only in Wireframe (#539).
+    #[test]
+    fn back_minus_front_with_a_group_keeps_each_objects_colours() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        let mut square = |app: &mut App, r: Rect, c: Color| {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.select(vec![id]);
+            app.apply_fill(Fill::Solid(c));
+            id
+        };
+        let orange = Color::rgb8(240, 130, 30);
+        let grey = Color::rgb8(160, 190, 210);
+        let blue = Color::rgb8(0, 150, 220);
+        let a = square(&mut app, Rect::new(0.0, 0.0, 20.0, 20.0), orange);
+        let b = square(&mut app, Rect::new(22.0, 0.0, 42.0, 20.0), grey);
+        let c = square(&mut app, Rect::new(10.0, -6.0, 30.0, 14.0), blue);
+        app.select(vec![a, b, c]);
+        app.group_selection();
+        let g = app.selection[0];
+        // The front: a frame over their top halves, no fill of its own.
+        let front = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(-5.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("front");
+        app.select(vec![g, front]);
+        app.shaping(crate::ops::Shaping::BackMinusFront);
+        let result = app
+            .doc()
+            .find_shape(app.selection[0])
+            .cloned()
+            .expect("result");
+        let ShapeKind::Group { children } = &result.kind else {
+            panic!("a group: {:?}", result.kind);
+        };
+        let fills: Vec<Fill> = children.iter().map(|s| s.fill.clone()).collect();
+        assert_eq!(
+            fills,
+            vec![Fill::Solid(orange), Fill::Solid(grey), Fill::Solid(blue)]
+        );
+        // Each piece below the front only.
+        assert!(children
+            .iter()
+            .all(|s| s.page_path().bounding_box().y1 <= 10.0 + 1e-6));
+        assert!(app.doc().find_shape(g).is_none() && app.doc().find_shape(front).is_none());
+    }
 
     /// The sequence a user runs through: draw one of everything, then
     /// group, ungroup, combine, break apart and convert to curves.

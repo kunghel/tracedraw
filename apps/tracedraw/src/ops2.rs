@@ -858,8 +858,18 @@ impl App {
             return;
         };
         let ids: Vec<ShapeId> = contents.iter().map(|c| c.id).collect();
+        // What is on the page besides: everything else that comes along
+        // while editing (the members of a content ungrouped, objects
+        // drawn or pasted) is contents too (#537).
+        let outside: Vec<ShapeId> = self
+            .page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .map(|s| s.id)
+            .filter(|id| *id != clip.id)
+            .collect();
         self.run(Command::ExtractContents { clip: clip.id });
-        self.clip_frame_edit = Some((clip.id, ids.clone()));
+        self.clip_frame_edit = Some((clip.id, outside));
         self.select(ids);
         self.status = tr("status.editing_clip_frame");
     }
@@ -867,21 +877,35 @@ impl App {
     /// Object > Clip to Frame > Finish Editing Contents: place the (surviving) contents
     /// back inside the frame.
     pub fn finish_clip_frame_edit(&mut self) {
-        let Some((frame, ids)) = self.clip_frame_edit.take() else {
+        let contents = self.clip_edit_contents();
+        let Some((frame, _)) = self.clip_frame_edit.take() else {
             return;
         };
         if self.doc().find_shape(frame).is_none() {
             return;
         }
-        let contents: Vec<ShapeId> = ids
-            .into_iter()
-            .filter(|id| self.doc().find_shape(*id).is_some())
-            .collect();
         if contents.is_empty() {
             return;
         }
         self.place_inside(contents, frame);
         self.select(vec![frame]);
+    }
+
+    /// The contents of the clip frame being edited: the page's objects
+    /// that were not there besides it when editing began, so a content
+    /// ungrouped stays in as its members, and objects drawn or pasted
+    /// meanwhile go in (#537).
+    pub fn clip_edit_contents(&self) -> Vec<ShapeId> {
+        let Some((frame, outside)) = &self.clip_frame_edit else {
+            return Vec::new();
+        };
+        let outside: std::collections::HashSet<&ShapeId> = outside.iter().collect();
+        self.page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .map(|s| s.id)
+            .filter(|id| id != frame && !outside.contains(id))
+            .collect()
     }
 
     /// The clip frame bar's Select Contents: the frame's contents become
@@ -939,9 +963,9 @@ impl App {
     /// in focus (focus mode), or the frame and the contents being edited
     /// (Edit Contents).
     pub fn render_focus(&self) -> Option<(Vec<ShapeId>, f32)> {
-        if let Some((frame, ids)) = &self.clip_frame_edit {
+        if let Some((frame, _)) = &self.clip_frame_edit {
             let mut all = vec![*frame];
-            all.extend(ids.iter().copied());
+            all.extend(self.clip_edit_contents());
             return Some((all, CLIP_EDIT_VISIBILITY));
         }
         self.focus_target()
@@ -1932,6 +1956,52 @@ impl App {
         };
         f(&mut p);
         self.set_paragraph_style(id, p);
+    }
+
+    /// The texts Text > Use Hyphenation acts on: the one being edited,
+    /// else the selected ones.
+    fn hyphenation_targets(&self) -> Vec<ShapeId> {
+        if let Some(te) = &self.text_edit {
+            return vec![te.shape];
+        }
+        self.selected_shapes()
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::Text { .. }))
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Whether Text > Use Hyphenation shows checked: the text being
+    /// edited, or every selected text, hyphenates; with no text, whether
+    /// new text does (#470).
+    pub fn uses_hyphenation(&self) -> bool {
+        let ids = self.hyphenation_targets();
+        if ids.is_empty() {
+            return self.text_hyphenation;
+        }
+        ids.iter().all(|id| {
+            self.doc()
+                .find_shape(*id)
+                .and_then(|s| self.paragraph_style_of(s))
+                .is_some_and(|(_, p)| p.hyphenate)
+        })
+    }
+
+    /// Text > Use Hyphenation: the selected texts hyphenate (or stop, when
+    /// they all did), as in the reference program; before, only text made
+    /// afterwards did, so turning it on for a selected text changed
+    /// nothing (#255). While a text is edited it is that text's setting
+    /// (#470); with no text selected, the setting new text takes.
+    pub fn toggle_use_hyphenation(&mut self) {
+        let ids = self.hyphenation_targets();
+        if ids.is_empty() {
+            self.text_hyphenation = !self.text_hyphenation;
+            return;
+        }
+        let on = !self.uses_hyphenation();
+        for id in ids {
+            self.edit_paragraph_style(id, |p| p.hyphenate = on);
+        }
     }
 
     /// Whether any selected object wraps paragraph text, and the wrap

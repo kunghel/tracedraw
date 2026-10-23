@@ -1861,9 +1861,17 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
         ui.end_row();
         row_label(ui, &tr("options.desktop_color"));
         ui.horizontal(|ui| {
-            rgb_button(ui, &mut app.settings.desktop_rgb);
+            // The colour shown is the one around the page, the theme's
+            // until one is picked; any pick counts, white too (#530).
+            let [r, g, b, _] = app.desktop_color().to_array();
+            let mut rgb = [r, g, b];
+            if rgb_button(ui, &mut rgb) {
+                app.settings.desktop_rgb = rgb;
+                app.settings.desktop_custom = true;
+            }
             if ui.button(tr("options.reset")).clicked() {
                 app.settings.desktop_rgb = [255, 255, 255];
+                app.settings.desktop_custom = false;
             }
         });
         ui.end_row();

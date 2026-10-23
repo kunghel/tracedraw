@@ -209,24 +209,55 @@ fn patterns(lang: &str) -> &'static Patterns {
 /// Liang's algorithm over the pattern set, then the heuristic for words
 /// the patterns leave unbroken.
 /// Words with a capital letter (names, acronyms) are not broken.
+/// Punctuation before or after the word ("parola," at a line's end, a
+/// quotation) is left aside and the letters between broken; an apostrophe
+/// inside the word ("dell'anno", "l’università") is kept for the patterns
+/// that know it, and without a pattern file only the part after the last
+/// one breaks (#255).
 pub fn break_points_lang(word: &str, lang: &str) -> Vec<usize> {
-    let chars: Vec<char> = word.chars().collect();
+    let all: Vec<char> = word.chars().collect();
     // The user's own hyphens win, capitals or not.
-    if let Some(p) = custom()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&word.to_lowercase())
-    {
+    let mine = |w: &str| {
+        custom()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&w.to_lowercase())
+            .cloned()
+    };
+    if let Some(p) = mine(word) {
         return p
             .iter()
             .copied()
-            .filter(|&i| i > 0 && i < chars.len())
+            .filter(|&i| i > 0 && i < all.len())
             .collect();
     }
-    if !chars.iter().all(|c| c.is_alphabetic()) {
+    let Some(start) = all.iter().position(|c| c.is_alphabetic()) else {
+        return Vec::new();
+    };
+    let end = all
+        .iter()
+        .rposition(|c| c.is_alphabetic())
+        .map_or(start, |i| i + 1);
+    let chars = &all[start..end];
+    let shift = |p: Vec<usize>| -> Vec<usize> { p.into_iter().map(|i| i + start).collect() };
+    if start > 0 || end < all.len() {
+        let core: String = chars.iter().collect();
+        if let Some(p) = mine(&core) {
+            return shift(
+                p.into_iter()
+                    .filter(|&i| i > 0 && i < chars.len())
+                    .collect(),
+            );
+        }
+    }
+    if !chars.iter().all(|c| c.is_alphabetic() || is_apostrophe(*c)) {
         return Vec::new();
     }
-    let lower: Vec<char> = chars.iter().flat_map(|c| c.to_lowercase()).collect();
+    let lower: Vec<char> = chars
+        .iter()
+        .flat_map(|c| c.to_lowercase())
+        .map(|c| if is_apostrophe(c) { '\'' } else { c })
+        .collect();
     // A pattern file: words with a capital first letter break too (nouns
     // in some languages); other capitals (acronyms, names in capitals,
     // inner capitals) do not.
@@ -234,7 +265,21 @@ pub fn break_points_lang(word: &str, lang: &str) -> Vec<usize> {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    break_points_with(&chars, &lower, lang, set.as_deref())
+    if set.is_none() {
+        // The built-in patterns know no apostrophes: the part after the
+        // last one.
+        if let Some(a) = chars.iter().rposition(|c| is_apostrophe(*c)) {
+            let after = a + 1;
+            let p = break_points_with(&chars[after..], &lower[after..], lang, None);
+            return shift(p.into_iter().map(|i| i + after).collect());
+        }
+    }
+    shift(break_points_with(chars, &lower, lang, set.as_deref()))
+}
+
+/// A straight or a typographic apostrophe.
+fn is_apostrophe(c: char) -> bool {
+    c == '\'' || c == '\u{2019}'
 }
 
 /// The break points of a word of letters (`chars`, and `lower` in small
@@ -376,6 +421,29 @@ mod tests {
             break_points("Banana").is_empty(),
             "built-in: names stay whole"
         );
+    }
+
+    /// A word with punctuation round it breaks between its letters, the
+    /// points counted in the whole word; an apostrophe inside it is kept
+    /// (the built-in patterns break after it only); other marks inside a
+    /// word still keep it whole (#255).
+    #[test]
+    fn punctuation_round_a_word_and_apostrophes_inside_it() {
+        let bare = break_points("information");
+        assert!(!bare.is_empty());
+        assert_eq!(break_points("information,"), bare);
+        assert_eq!(break_points("information."), bare);
+        let shifted: Vec<usize> = bare.iter().map(|i| i + 1).collect();
+        assert_eq!(break_points("\u{201c}information\u{201d}"), shifted);
+        let after: Vec<usize> = break_points("information").iter().map(|i| i + 2).collect();
+        assert_eq!(break_points("l'information"), after);
+        assert_eq!(break_points("l\u{2019}information"), after);
+        assert!(break_points("e-mail").is_empty());
+        assert!(break_points("...").is_empty());
+        // A pattern set that knows the apostrophe breaks before it.
+        let set = PatternSet::parse("UTF-8\n1l'\n").expect("set");
+        let w: Vec<char> = "dell'anno".chars().collect();
+        assert_eq!(break_points_with(&w, &w, "it", Some(&set)), vec![3]);
     }
 
     #[test]

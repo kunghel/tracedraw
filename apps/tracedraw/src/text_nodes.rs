@@ -56,7 +56,13 @@ pub fn char_nodes(s: &Shape) -> Vec<(usize, Point)> {
             if matches!(chars.get(c), Some('\n') | None) {
                 continue;
             }
-            let Some(x) = line.edges.get(c - line.start_char) else {
+            // Where the character's own glyph starts (right-to-left text
+            // too, #474).
+            let Some(x) = line
+                .starts
+                .get(c - line.start_char)
+                .or_else(|| line.edges.get(c - line.start_char))
+            else {
                 continue;
             };
             let (dx, dy) = span_at(spans, c)
@@ -513,6 +519,27 @@ mod tests {
             assert!(nodes[2].1.y < nodes[0].1.y);
         }
         assert_eq!(app.text_node_at(Point::new(10.0, 10.0)), Some((id, 0)));
+    }
+
+    /// Right-to-left text: each character's node sits under its own
+    /// glyph, the first character's on the right, the nodes spread along
+    /// the text instead of bunched at one end (#474).
+    #[test]
+    fn right_to_left_characters_have_their_nodes_under_their_glyphs() {
+        if !has_fonts() {
+            return;
+        }
+        let (app, id) = text_app("\u{628}\u{633}\u{645} \u{627}\u{644}\u{644}\u{647}");
+        let s = app.doc().find_shape(id).cloned().expect("text");
+        let nodes = char_nodes(&s);
+        assert_eq!(nodes.len(), 8);
+        let xs: Vec<f64> = nodes.iter().map(|n| n.1.x).collect();
+        // Read right to left: each character's node left of the one
+        // before it.
+        assert!(xs.windows(2).all(|w| w[1] < w[0] + 1e-6), "{xs:?}");
+        let b = app.visual_bounds(&s);
+        let spread = xs[0] - xs[7];
+        assert!(spread > b.width() * 0.6, "bunched: {xs:?} in {b:?}");
     }
 
     #[test]

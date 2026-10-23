@@ -18,13 +18,18 @@ any other colour. The choices are kept in the preferences
 
 ## Algorithm
 
-1. The page is drawn at 4 pixels per mm as walls: every outline of every
-   visible object on the page (stroked or not, open curves too), groups
-   opened up; an object with live effects counts as it is drawn (its
-   warped outline and the objects its effects add).
+1. The area around the outlines (their bounds and 2 mm more, on the page
+   or off it on the desktop; #499) is drawn at 4 pixels per mm, fewer
+   for a large drawing (16 million pixels at most), as walls: every
+   outline of every visible object on the page (stroked or not, open
+   curves too, a curve crossing itself enclosing the areas between its
+   crossings), groups opened up; an object with live effects counts as
+   it is drawn (its warped outline and the objects its effects add).
 2. From the pixel under the click the region is flooded up to the walls.
-   A click on a wall makes nothing; a flood that reaches 98% of the page
-   (nothing encloses it) makes nothing and the status bar says so.
+   A click on a wall makes nothing; a click outside the outlines' area,
+   or a flood that reaches its margin (nothing encloses it), makes
+   nothing and the status bar says so
+   (`fill_tool_bars::tests::smart_fill_works_off_the_page_in_a_large_drawing`).
 3. The region, with the wall pixels it touches so the new object meets
    the outlines, is traced to rings, each simplified within a pixel; the
    rings become one closed curve on top of the active layer, selected,

@@ -27,6 +27,14 @@ The result goes on top of the active layer and becomes the selection; an
 empty result changes nothing and the status bar says so. Each operation
 is one undo step.
 
+When the object whose attributes the result takes is a group: Trim, Front
+Minus Back and Back Minus Front cut each object of the group on its own,
+each keeping its fill, outline and opacity, the pieces a group (pieces
+cut away entirely are left out); Weld and Intersect take the attributes
+of the group's first object with a fill. The result took the group's own
+attributes, none, and showed only in Wireframe (#539,
+`back_minus_front_with_a_group_keeps_each_objects_colours`).
+
 ## Curves
 
 - The operations run on the outlines flattened to 0.02 mm (`i_overlay`),

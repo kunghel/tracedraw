@@ -530,7 +530,8 @@ impl App {
 /// the reference program shows it, the node's colour (a swatch that opens
 /// the colour picker) and its transparency (0 % opaque, 100 % clear).
 /// Hidden while a node is dragged. An edit made while the pointer stays
-/// down (a picker or slider drag) is one undo step.
+/// down (a picker or slider drag) is one undo step. The dotted grip at its
+/// left drags it off the object; it keeps that offset from its node.
 pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     use crate::tools::Tool;
     if app.tool != Tool::InteractiveFill || !matches!(app.drag, crate::app::Drag::None) {
@@ -554,14 +555,17 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     let mut transparency = ((1.0 - f.stops[i].opacity) * 100.0).round();
     let mut changed_color = false;
     let mut changed_opacity = false;
+    let offset_id = id.with("offset");
+    let mut offset = ui.data(|d| d.get_temp::<egui::Vec2>(offset_id).unwrap_or_default());
     egui::Area::new(id)
         .order(egui::Order::Foreground)
-        .fixed_pos(at + egui::vec2(-12.0, 10.0))
+        .fixed_pos(at + egui::vec2(-12.0, 10.0) + offset)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        offset += crate::ui::color_picker::drag_strip(ui, egui::vec2(8.0, 18.0));
                         changed_color = crate::ui::color_picker::color_button(ui, &mut color);
                         ui.label(
                             egui::RichText::new(crate::i18n::tr("toolbar.node_transparency"))
@@ -577,6 +581,7 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
                     });
                 });
         });
+    ui.data_mut(|d| d.insert_temp(offset_id, offset));
     if changed_color || changed_opacity {
         app.set_fountain_node(
             i,

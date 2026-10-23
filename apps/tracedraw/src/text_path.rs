@@ -87,6 +87,10 @@ impl App {
     /// undo step.
     pub fn mirror_fitted_text(&mut self, h: bool, v: bool) {
         self.edit_fitted_text(|t, align| {
+            // Flipped, the letters stand on the path's other side, whose
+            // line is longer or shorter away from the path: the offset
+            // scales with it, as when the distance changes (#193).
+            let before = t.baseline().length();
             if t.mirrors().0 != h {
                 t.offset = -t.offset;
                 *align = match *align {
@@ -96,6 +100,10 @@ impl App {
                 };
             }
             t.set_mirrors(h, v);
+            let after = t.baseline().length();
+            if before > 1e-9 && after.is_finite() {
+                t.offset *= after / before;
+            }
         });
     }
 
@@ -189,12 +197,14 @@ impl App {
             d1 - d0
         };
         ft.on_path.offset += ds;
-        ft.on_path.distance += across;
+        let mut distance = ft.on_path.distance + across;
         // Tick snapping: away from the path in whole steps.
         let tick = self.settings.path_tick_mm;
         if self.settings.path_tick_snap && tick.is_finite() && tick > 1e-6 {
-            ft.on_path.distance = (ft.on_path.distance / tick).round() * tick;
+            distance = (distance / tick).round() * tick;
         }
+        // Across the path the text keeps its place along it.
+        ft.on_path.set_distance(distance);
         Some(ft)
     }
 
@@ -409,6 +419,57 @@ mod tests {
         app.start_text(Point::new(10.0, 10.0), None);
         app.begin_fit_text_to_path();
         assert_eq!(count(&app), 2);
+    }
+
+    /// Text centred on the bottom of a circle stays centred there when it
+    /// is moved off the path, in or out, from the bar or after the mirror
+    /// buttons; it slid round the circle before (#193).
+    #[test]
+    fn distance_from_the_path_keeps_the_text_in_its_place() {
+        tracedraw_text::install();
+        if tracedraw_text::fonts().families().is_empty() {
+            return;
+        }
+        let mut app = App::headless();
+        let e = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(60.0, 110.0, 140.0, 190.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.start_text(Point::new(10.0, 20.0), None);
+        app.text_insert("BOTTOM TEXT");
+        app.finish_text();
+        let t = app.selection[0];
+        app.selection = vec![t, e];
+        app.fit_text_to_path();
+        app.selection = vec![t];
+        let middle = |app: &App| {
+            let sh = app.doc().shape(t).expect("text").1.clone();
+            app.visual_bounds(&sh).center()
+        };
+        // Corel's way: round to the bottom, then both mirrors.
+        app.place_fitted_text_round(false);
+        let len = app.fitted_text().unwrap().on_path.guide().length();
+        app.edit_fitted_text(|tp, _| tp.offset += len / 2.0);
+        // The letters' box is not quite symmetric about their advance; the
+        // place at no distance is the one kept.
+        app.mirror_fitted_text(true, false);
+        app.mirror_fitted_text(true, true);
+        let x0 = middle(&app).x;
+        assert!((x0 - 100.0).abs() < 1.0, "{x0}");
+        for d in [4.0, -4.0, 8.0] {
+            app.mirror_fitted_text(false, false);
+            app.edit_fitted_text(|tp, _| tp.set_distance(d));
+            app.mirror_fitted_text(true, false);
+            app.mirror_fitted_text(true, true);
+            let m = middle(&app);
+            assert!((m.x - x0).abs() < 0.3, "distance {d}: {m:?}");
+            assert!(m.y < 150.0, "under the middle: {m:?}");
+            app.edit_fitted_text(|tp, _| tp.set_distance(d + 2.0));
+            let m = middle(&app);
+            assert!((m.x - x0).abs() < 0.3, "moved off to {}: {m:?}", d + 2.0);
+        }
     }
 
     /// On an ellipse the placement list's Top and Bottom centre the text

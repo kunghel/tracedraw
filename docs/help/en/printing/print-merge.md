@@ -10,8 +10,9 @@ your data becomes a copy of the page, filled in.
    in a text object, such as `<Name>`.
 2. Choose [[menu.file > menu.file.print_merge > menu.file.print_merge_create]].
 3. Add the data:
-   - **Import file** reads a CSV file or an Excel workbook (`.xlsx`, its
-     first sheet) whose first line names the fields. Fields named like a
+   - **Import file** reads a CSV file (separated by commas, semicolons or
+     tabs, as Excel or any other program saves it) or an Excel workbook
+     (`.xlsx`, its first sheet) whose first line names the fields. Fields named like a
      photo or a picture, or whose cells are picture files, start as
      pictures, fields named QR as QR codes; the types show at once to be
      changed;
@@ -40,6 +41,10 @@ data source you created or loaded:
 - **[[merge.insert_field]]** puts the field in the text you are editing, or
   places a new text, picture frame or QR square in the middle of the view.
   Move and size it like any object.
+- To put each photo inside a shape of your own (a circle, an oval, any
+  outline, also inside a grouped card design), choose Image and the photo
+  column, select the shape and click **[[merge.place_inside]]**. Every card's
+  photo then goes inside that shape, placed by the alignment and scale.
 - Select a field and click **[[merge.update_field]]** to change its column or
   its alignment and scale.
 - **[[merge.create_document]]** makes the merged pages in a new drawing: the
@@ -76,5 +81,11 @@ and removes fields. **View single record** shows one record as a form; use the
 arrows or **Go to record** to move through them. The placeholder buttons
 insert a field into the text you are editing. **Save data source** writes the
 records as a CSV file.
+
+To work on several cells at once, drag from one cell to another, or over the
+record numbers or the field names to take whole records or fields. Then
+**[[merge.sel_add]]** adds as many empty records after them, **[[merge.sel_delete]]**
+removes their records and **[[merge.sel_clear]]** (or the Delete key) empties
+the cells.
 
 [[menu.file.print_merge_edit]] reopens the records.

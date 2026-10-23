@@ -1795,7 +1795,7 @@ fn pages(app: &mut App, ui: &mut Ui) {
             .add_enabled(n > 1, egui::Button::new(tr("menu.layout.delete_page")))
             .clicked()
         {
-            app.delete_page();
+            app.ask_delete_page();
         }
         if ui.button(tr("menu.layout.duplicate_page")).clicked() {
             app.dialog = crate::ui::dialogs::Dialog::duplicate_page();

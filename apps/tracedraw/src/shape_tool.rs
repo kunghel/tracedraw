@@ -623,14 +623,22 @@ impl App {
                     which,
                 } => {
                     if let Some((path, closed, t)) = self.path_of(shape) {
-                        // The handle snaps like a node does.
-                        let q = self.snap_point_excluding(p, &[shape]);
+                        // The handle snaps like a node does; Ctrl or Shift
+                        // keeps it to the constrain angle about its node,
+                        // on the page, and a smooth node's other handle
+                        // still follows (#510).
+                        let mut q = self.snap_point_excluding(p, &[shape]);
+                        if mods.ctrl || mods.command || mods.shift {
+                            if let Some(n) = nodes::nodes(&path).iter().find(|n| n.index == index) {
+                                q = crate::interaction::constrain_from(
+                                    t * n.pos,
+                                    q,
+                                    self.settings.constrain_angle,
+                                );
+                            }
+                        }
                         let lp = t.inverse() * q;
-                        let ty = if mods.ctrl {
-                            NodeType::Cusp
-                        } else {
-                            self.node_type_of(shape, index)
-                        };
+                        let ty = self.node_type_of(shape, index);
                         let np = nodes::move_handle(&path, index, which, lp, ty);
                         self.set_path(shape, np, closed, "Edit Handle");
                     }

@@ -17,3 +17,7 @@ log.workspace = true
 # its fonts with `add_font_data`.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fontdb = { version = "0.24", features = ["fs", "memmap", "fontconfig"] }
+
+# The fonts Windows lists as installed, from its registry.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }

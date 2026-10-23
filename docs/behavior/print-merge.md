@@ -12,8 +12,11 @@ Columns and View Single Record; the records; + and - (add a record, delete
 the current one) and the navigation (first, previous, next, last, Go to
 Record); Save Data Source, Finish and Cancel.
 
-- Import File reads a CSV whose first line names the fields (comma or
-  semicolon, whichever the first line has more of), or an Excel workbook
+- Import File reads a CSV whose first line names the fields (comma,
+  semicolon or tab, whichever the first line has most of; UTF-8 with or
+  without its byte order mark, UTF-16 with its mark, else code page 1252,
+  as Excel saves CSV on Windows: that one failed to read as UTF-8, #495,
+  `export::tests::data_files_in_every_encoding_read`), or an Excel workbook
   (`.xlsx`): its first sheet, shared, inline and formula strings, numbers
   as plain text (whole numbers without a decimal point), TRUE and FALSE,
   empty rows and trailing empty cells left out (`tracedraw_io::xlsx`,
@@ -30,6 +33,16 @@ Record); Save Data Source, Finish and Cancel.
 - View Single Record shows the current record as a form; View All
   Records goes back to the grid, where a click on a record's number makes
   it the current one.
+- The grid selects a block of cells (#501): a drag from one cell to
+  another (the text editing stops once the drag reaches another cell), a
+  drag over record numbers (whole records) or field names (whole fields),
+  a click on one of those, or Shift+click on a cell from the block's first
+  cell; a block of more than one cell is tinted. Beside + and -: Add puts
+  as many empty records as the block spans after it (and selects them),
+  Delete removes the block's records, Clear (or Delete with no field
+  being edited) empties its cells, counter fields keeping their numbers
+  (`ui::dialogs::tests::the_merge_grid_selects_a_block_of_cells_by_dragging`,
+  `print_merge::tests::clearing_cells_leaves_counters`).
 - Types:
   - Text: put in place of `<Field>` in every text object of the page.
   - Number: a counter, not typed in: Start, then Step more for each
@@ -83,6 +96,15 @@ at once (#437). From top to bottom:
   data (`PrintMerge.Scale`: actual, fit, fill or stretch;
   `PrintMerge.Anchor`: 0 top left to 8 bottom right, row by row). QR
   code makes a 40 mm square named `<Field>`. One undo step each.
+- Place Inside Frame (Image only; enabled with something selected): each
+  selected object that is not a text or a group (a circle, an oval, any
+  outline, a clip frame), on the page or inside a group, is named
+  `<Field>` of the chosen column and keeps the Align and scale shown; on
+  the page, with a placeholder picture chosen, the picture goes inside
+  it. One undo step "Place Inside Frame". Nothing selected: the status
+  bar says to select the shape first
+  (`print_merge_docker::tests::place_inside_frame_uses_the_users_shapes_also_in_a_group`,
+  #460).
 - Update Field (when a placeholder is selected: a text holding only
   `<Field>`, or an object named `<Field>`): the selected placeholders
   take the chosen column, and with Image the Align and scale shown.
@@ -100,11 +122,12 @@ record, right after it, in the records' order, names the copies
 "<page> 1", "<page> 2", ... and fills them. It is two undo steps (the
 copies, then the fills).
 
-An object named `<Field>` of a picture field on the page (not in a
-group) takes the record's picture inside it as a clip frame, placed by
-its Align and scale (placeholders without it fill it from the centre, as
-before); a clip frame's old contents, such as the placeholder picture,
-give way. An object named `<Field>` of a QR field becomes the code, as
+An object named `<Field>` of a picture field takes the record's picture
+inside it as a clip frame, placed by its Align and scale (placeholders
+without it fill it from the centre, as before); a clip frame's old
+contents, such as the placeholder picture, give way. On the page the
+picture is placed inside the object; inside a group the object becomes,
+in place, a clip frame of its own outline holding the picture (#460). An object named `<Field>` of a QR field becomes the code, as
 large as its box allows.
 
 ## Checks

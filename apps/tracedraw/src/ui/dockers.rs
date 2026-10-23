@@ -460,7 +460,17 @@ pub fn dockers(app: &mut App, ui: &mut Ui, place: DockerPlace) {
     let mut page = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     page.set_clip_rect(content.intersect(ui.clip_rect()));
     ui.advance_cursor_after_rect(content);
-    docker_page(app, &mut page, front);
+    // The Welcome Screen is no drawing: the dockers that work on one say
+    // so instead of showing the hidden drawing's selection (#482); Hints
+    // still helps.
+    if !app.drawing_shown() && front != DockerTab::Hints {
+        page.label(
+            egui::RichText::new(crate::i18n::tr("docker.no_drawing"))
+                .color(crate::theme::Tokens::text_dim()),
+        );
+    } else {
+        docker_page(app, &mut page, front);
+    }
     // How wide the page's widgets came out, for the tests that check
     // that every section keeps to the docker.
     #[cfg(test)]

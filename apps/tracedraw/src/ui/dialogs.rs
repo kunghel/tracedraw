@@ -472,6 +472,10 @@ pub struct PrintMergeState {
     /// The folder picture cells are looked for in first (the Print Merge
     /// docker's Pictures folder, #460).
     pub pictures: Option<std::path::PathBuf>,
+    /// The block of cells selected in the grid (#501).
+    pub cells: Option<crate::print_merge::CellRange>,
+    /// A drag selecting in the grid: what it selects and where it began.
+    pub grid_drag: Option<(crate::print_merge::GridDrag, (usize, usize))>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -598,6 +602,13 @@ pub enum Dialog {
     InsertPage {
         count: u32,
         after: bool,
+    },
+    /// Layout > Delete Page: the page (1 = the first) and, with `through`,
+    /// the last one of a range to delete with it (#500).
+    DeletePage {
+        from: usize,
+        to: usize,
+        through: bool,
     },
     /// Layout > Duplicate Page and the page tab menu: where the copy goes
     /// and whether the layers keep their objects.
@@ -1127,6 +1138,33 @@ pub fn show(app: &mut App, ctx: &Context) {
                         });
                     }
                     app.goto_page(target);
+                }
+            });
+        }
+        Dialog::DeletePage { from, to, through } => {
+            let n = app.doc().pages.len();
+            window(ctx, tr("dialog.delete_page")).show(ctx, |ui| {
+                egui::Grid::new("delete_page")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(tr("dialog.delete_page_from"));
+                        ui.add(crate::ui::field::NumField::new(from).range(1..=n.max(1)));
+                        ui.end_row();
+                        ui.checkbox(through, tr("dialog.delete_through"));
+                        ui.add_enabled(
+                            *through,
+                            crate::ui::field::NumField::new(to).range(1..=n.max(1)),
+                        );
+                        ui.end_row();
+                    });
+                let (a, b) = delete_page_range(*from, *to, *through, n);
+                let all = b + 1 - a >= n;
+                if all {
+                    ui.colored_label(Tokens::text_dim(), tr("dialog.delete_keeps_one"));
+                }
+                if ok_cancel(ui, &mut close) && !all {
+                    app.delete_pages(a, b);
                 }
             });
         }
@@ -2819,6 +2857,19 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
     });
 }
 
+/// The pages Delete Page deletes, as indices (0 = the first): `from`
+/// alone, or `from` through `to` in either order, kept to the `n` pages.
+pub(crate) fn delete_page_range(from: usize, to: usize, through: bool, n: usize) -> (usize, usize) {
+    let last = n.saturating_sub(1);
+    let a = from.saturating_sub(1).min(last);
+    let b = if through {
+        to.saturating_sub(1).min(last)
+    } else {
+        a
+    };
+    (a.min(b), a.max(b))
+}
+
 /// Print > Layout: the imposition, the sheet and the gap between pages,
 /// with a sketch of the first sheet.
 pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
@@ -2848,9 +2899,9 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                     if matches!(st.layout_kind, 1 | 3) {
                         ui.label(tr("print.grid"));
                         ui.horizontal(|ui| {
-                            ui.add(crate::ui::field::NumField::new(&mut st.cols).range(1..=20));
+                            ui.add(crate::ui::field::NumField::new(&mut st.cols).range(1..=99));
                             ui.label("x");
-                            ui.add(crate::ui::field::NumField::new(&mut st.rows).range(1..=20));
+                            ui.add(crate::ui::field::NumField::new(&mut st.rows).range(1..=99));
                         });
                         ui.end_row();
                     }
@@ -2909,7 +2960,11 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 let w = sheet.size.width as f32 * k;
                 let h = sheet.size.height as f32 * k;
                 let o = r.center() - egui::vec2(w / 2.0, h / 2.0);
-                let p = ui.painter();
+                // Pages kept at their size may run off the sheet: the
+                // sketch shows the sheet's part of them.
+                let p = ui
+                    .painter()
+                    .with_clip_rect(egui::Rect::from_min_size(o, egui::vec2(w, h)).expand(1.0));
                 p.rect(
                     egui::Rect::from_min_size(o, egui::vec2(w, h)),
                     0.0,
@@ -2950,6 +3005,9 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 egui::RichText::new(trf("print.sheets", &[("n", &plan.len().to_string())]))
                     .color(Tokens::text_dim()),
             );
+            if crate::imposition::overflows(&plan) {
+                ui.colored_label(ui.visuals().warn_fg_color, tr("print.keep_size_overflow"));
+            }
         });
     });
 }
@@ -3530,21 +3588,35 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                         if st.headers.is_empty() {
                             return;
                         }
-                        let cell =
-                            |ui: &mut Ui, st: &mut PrintMergeState, r: usize, c: usize, w: f32| {
-                                if matches!(pm::kind_of(st, c), FieldKind::Number { .. }) {
-                                    let v = values
-                                        .get(r)
-                                        .and_then(|row| row.get(c))
-                                        .cloned()
-                                        .unwrap_or_default();
-                                    ui.label(egui::RichText::new(v).color(Tokens::text_dim()));
-                                } else if let Some(text) =
-                                    st.rows.get_mut(r).and_then(|row| row.get_mut(c))
-                                {
-                                    ui.add(egui::TextEdit::singleline(text).desired_width(w));
-                                }
-                            };
+                        let cell = |ui: &mut Ui,
+                                    st: &mut PrintMergeState,
+                                    r: usize,
+                                    c: usize,
+                                    w: f32|
+                         -> Option<egui::Response> {
+                            if matches!(pm::kind_of(st, c), FieldKind::Number { .. }) {
+                                let v = values
+                                    .get(r)
+                                    .and_then(|row| row.get(c))
+                                    .cloned()
+                                    .unwrap_or_default();
+                                Some(
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(v).color(Tokens::text_dim()),
+                                        )
+                                        .sense(egui::Sense::click_and_drag()),
+                                    ),
+                                )
+                            } else {
+                                st.rows
+                                    .get_mut(r)
+                                    .and_then(|row| row.get_mut(c))
+                                    .map(|text| {
+                                        ui.add(egui::TextEdit::singleline(text).desired_width(w))
+                                    })
+                            }
+                        };
                         for row in st.rows.iter_mut() {
                             row.resize(st.headers.len(), String::new());
                         }
@@ -3556,37 +3628,117 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                 .show(ui, |ui| {
                                     for c in 0..st.headers.len() {
                                         ui.label(st.headers[c].clone());
-                                        cell(ui, st, r, c, 420.0);
+                                        let _ = cell(ui, st, r, c, 420.0);
                                         ui.end_row();
                                     }
                                 });
                         } else {
+                            // Where each cell, record number and field name
+                            // is, to select by dragging over them (#501).
+                            let mut cells: Vec<((usize, usize), egui::Rect)> = Vec::new();
+                            let mut heads: Vec<(pm::GridDrag, usize, egui::Rect)> = Vec::new();
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            let last_col = st.headers.len() - 1;
                             egui::Grid::new("merge_grid")
                                 .striped(true)
                                 .spacing([6.0, 4.0])
                                 .show(ui, |ui| {
                                     ui.label("");
-                                    for h in &st.headers {
-                                        ui.strong(h.as_str());
+                                    for c in 0..st.headers.len() {
+                                        let h = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(st.headers[c].as_str())
+                                                    .strong(),
+                                            )
+                                            .sense(egui::Sense::click_and_drag()),
+                                        );
+                                        heads.push((pm::GridDrag::Fields, c, h.rect));
+                                        if h.drag_started() || h.clicked() {
+                                            st.grid_drag = Some((pm::GridDrag::Fields, (0, c)));
+                                            let rows = st.rows.len().saturating_sub(1);
+                                            st.cells = Some(((0, c), (rows, c)));
+                                        }
                                     }
                                     ui.end_row();
                                     for r in 0..st.rows.len() {
                                         let mark = if r == st.current { "\u{25b6}" } else { "" };
-                                        if ui
-                                            .selectable_label(
+                                        let n = ui.add(
+                                            egui::Button::selectable(
                                                 r == st.current,
                                                 format!("{mark}{}", r + 1),
                                             )
-                                            .clicked()
-                                        {
+                                            .sense(egui::Sense::click_and_drag()),
+                                        );
+                                        heads.push((pm::GridDrag::Records, r, n.rect));
+                                        if n.drag_started() || n.clicked() {
                                             st.current = r;
+                                            st.grid_drag = Some((pm::GridDrag::Records, (r, 0)));
+                                            st.cells = Some(((r, 0), (r, last_col)));
                                         }
                                         for c in 0..st.headers.len() {
-                                            cell(ui, st, r, c, 130.0);
+                                            let Some(resp) = cell(ui, st, r, c, 130.0) else {
+                                                continue;
+                                            };
+                                            cells.push(((r, c), resp.rect));
+                                            if resp.drag_started() {
+                                                st.grid_drag = Some((pm::GridDrag::Cells, (r, c)));
+                                            }
+                                            if resp.clicked() || resp.gained_focus() {
+                                                let from = match st.cells {
+                                                    Some((from, _)) if shift => from,
+                                                    _ => (r, c),
+                                                };
+                                                st.cells = Some((from, (r, c)));
+                                            }
                                         }
                                         ui.end_row();
                                     }
                                 });
+                            // A drag carried over other cells selects the
+                            // block between and leaves the text alone.
+                            let pointer = ui.input(|i| i.pointer.interact_pos());
+                            let down = ui.input(|i| i.pointer.primary_down());
+                            if let (Some((kind, from)), Some(p)) = (st.grid_drag, pointer) {
+                                let to = match kind {
+                                    pm::GridDrag::Cells => cells
+                                        .iter()
+                                        .find(|(_, rect)| rect.contains(p))
+                                        .map(|(rc, _)| *rc),
+                                    _ => heads
+                                        .iter()
+                                        .find(|(k, _, rect)| *k == kind && rect.contains(p))
+                                        .map(|(_, i, _)| *i)
+                                        .map(|i| match kind {
+                                            pm::GridDrag::Records => (i, last_col),
+                                            _ => (st.rows.len().saturating_sub(1), i),
+                                        }),
+                                };
+                                if let Some(to) = to {
+                                    if kind == pm::GridDrag::Cells && to != from {
+                                        ui.memory_mut(|m| m.stop_text_input());
+                                    }
+                                    if kind != pm::GridDrag::Cells || to != from {
+                                        st.cells = Some((from, to));
+                                    }
+                                }
+                            }
+                            if !down {
+                                st.grid_drag = None;
+                            }
+                            // The block selected, tinted over its cells.
+                            if let Some(sel) = st.cells {
+                                let (rows, cols) = pm::range_bounds(sel);
+                                let several =
+                                    rows.end() > rows.start() || cols.end() > cols.start();
+                                if several {
+                                    let tint = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
+                                    for ((r, c), rect) in &cells {
+                                        if rows.contains(r) && cols.contains(c) {
+                                            ui.painter().rect_filled(rect.expand(1.0), 0.0, tint);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     });
             });
@@ -3608,6 +3760,47 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
             {
                 st.rows.remove(st.current);
                 st.current = st.current.min(st.rows.len().saturating_sub(1));
+                st.cells = None;
+            }
+            // The block selected in the grid: records added after it,
+            // its records deleted, its cells emptied (#501).
+            let sel = st.cells.filter(|_| !st.single && !st.rows.is_empty());
+            ui.separator();
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new(tr("merge.sel_add")))
+                .on_hover_text(tr("merge.sel_add_tip"))
+                .clicked()
+            {
+                if let Some(sel) = sel {
+                    let (rows, cols) = pm::range_bounds(sel);
+                    let n = rows.end() + 1 - rows.start();
+                    pm::insert_records(st, rows.end() + 1, n);
+                    let a = rows.end() + 1;
+                    st.cells = Some(((a, *cols.start()), (a + n - 1, *cols.end())));
+                    st.current = a;
+                }
+            }
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new(tr("merge.sel_delete")))
+                .on_hover_text(tr("merge.sel_delete_tip"))
+                .clicked()
+            {
+                if let Some(sel) = sel {
+                    pm::delete_records(st, pm::range_bounds(sel).0);
+                    st.cells = None;
+                }
+            }
+            let clear_key = ui.memory(|m| m.focused().is_none())
+                && ui.input(|i| i.key_pressed(egui::Key::Delete));
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new(tr("merge.sel_clear")))
+                .on_hover_text(tr("merge.sel_clear_tip"))
+                .clicked()
+                || (clear_key && sel.is_some())
+            {
+                if let Some(sel) = sel {
+                    pm::clear_cells(st, sel);
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let n = st.rows.len();
@@ -4434,6 +4627,11 @@ mod tests {
                 count: 1,
                 after: true,
             },
+            Dialog::DeletePage {
+                from: 1,
+                to: 1,
+                through: true,
+            },
             Dialog::duplicate_page(),
             Dialog::PageSize {
                 width: 210.0,
@@ -4556,6 +4754,114 @@ mod tests {
         }
         let mut out = ctx.run_ui(input, |ui| show(app, &ui.ctx().clone()));
         out.textures_delta.clear();
+    }
+
+    /// One frame of `show` with `events`; where each text was drawn.
+    fn frame_texts(
+        ctx: &Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, egui::Pos2)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| show(app, &ui.ctx().clone()));
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(s: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => texts.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                _ => {}
+            }
+        }
+        for c in &out.shapes {
+            walk(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// A drag from one cell of the Print Merge grid to another selects the
+    /// block between; Delete empties it, Delete (the button) removes its
+    /// records and Add puts as many empty ones after it (#501).
+    #[test]
+    fn the_merge_grid_selects_a_block_of_cells_by_dragging() {
+        use egui::{Event, Modifiers, PointerButton};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.dialog = Dialog::PrintMerge(PrintMergeState {
+            headers: vec!["Name".into(), "City".into()],
+            rows: vec![
+                vec!["a1".into(), "b1".into()],
+                vec!["a2".into(), "b2".into()],
+                vec!["a3".into(), "b3".into()],
+            ],
+            ..Default::default()
+        });
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame_texts(&ctx, &mut app, Vec::new());
+        }
+        let at = |texts: &[(String, egui::Pos2)], t: &str| {
+            texts
+                .iter()
+                .find(|(s, _)| s == t)
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("{t} not drawn"))
+        };
+        let (from, to) = (at(&texts, "a1"), at(&texts, "b2"));
+        let press = |p, pressed| Event::PointerButton {
+            pos: p,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame_texts(&ctx, &mut app, vec![Event::PointerMoved(from)]);
+        frame_texts(&ctx, &mut app, vec![press(from, true)]);
+        for i in 1..=6 {
+            let p = from + (to - from) * (i as f32 / 6.0);
+            frame_texts(&ctx, &mut app, vec![Event::PointerMoved(p)]);
+        }
+        frame_texts(&ctx, &mut app, vec![press(to, false)]);
+        frame_texts(&ctx, &mut app, Vec::new());
+        let st = |app: &App| match &app.dialog {
+            Dialog::PrintMerge(st) => st.clone(),
+            _ => panic!("the dialog closed"),
+        };
+        assert_eq!(st(&app).cells, Some(((0, 0), (1, 1))));
+        let key = Event::Key {
+            key: egui::Key::Delete,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        frame_texts(&ctx, &mut app, vec![key]);
+        assert_eq!(
+            st(&app).rows,
+            vec![
+                vec![String::new(), String::new()],
+                vec![String::new(), String::new()],
+                vec!["a3".to_string(), "b3".to_string()],
+            ]
+        );
+        // The helpers the buttons run.
+        let mut m = st(&app);
+        crate::print_merge::insert_records(&mut m, 2, 2);
+        assert_eq!(m.rows.len(), 5);
+        assert_eq!(m.rows[4], vec!["a3".to_string(), "b3".to_string()]);
+        crate::print_merge::delete_records(&mut m, 0..=3);
+        assert_eq!(m.rows, vec![vec!["a3".to_string(), "b3".to_string()]]);
+        crate::print_merge::delete_records(&mut m, 5..=9);
+        assert_eq!(m.rows.len(), 1, "past the end deletes nothing");
     }
 
     #[test]

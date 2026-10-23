@@ -250,6 +250,21 @@ impl Engine {
         Ok(())
     }
 
+    /// Join the steps recorded after the first `depth` into one step named
+    /// `label` (the newest step's id), so one Undo takes them all back; an
+    /// action made of several commands run one by one records as one.
+    pub fn squash_since(&mut self, depth: usize, label: &'static str) {
+        if self.undo.len() <= depth {
+            return;
+        }
+        let last = self.undo.last().map(|e| e.id).unwrap_or(0);
+        self.undo.truncate(depth + 1);
+        if let Some(e) = self.undo.last_mut() {
+            e.label = label;
+            e.id = last;
+        }
+    }
+
     /// Mint a fresh shape id. Ids never rewind on undo.
     pub fn new_shape_id(&mut self) -> ShapeId {
         self.doc.ids_mut().shape()

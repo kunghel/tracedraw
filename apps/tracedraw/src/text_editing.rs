@@ -195,8 +195,8 @@ impl App {
         else {
             return;
         };
-        let mut para = para;
-        para.hyphenate = self.text_hyphenation;
+        // The text keeps its own hyphenation: typing took the setting for
+        // new text, turning it on or off for the text edited (#470).
         let kind = ShapeKind::Text {
             spans,
             origin,
@@ -243,6 +243,14 @@ impl App {
     /// Keyboard input while a text is being edited.
     pub fn text_keyboard(&mut self, ctx: &egui::Context) {
         use egui::{Event, Key};
+        // Ctrl+Space leaves the text for the Pick tool, as in the
+        // reference program (Space alone types a space), before any space
+        // the key would type (#478).
+        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::Space)) {
+            self.finish_text();
+            self.set_tool(crate::tools::Tool::Pick);
+            return;
+        }
         let events = ctx.input(|i| i.events.clone());
         // Alt let go after digits: the character they number (0 first: code
         // page 1252, as the Glyphs docker shows; else the Unicode number).
@@ -282,6 +290,7 @@ impl App {
                 }
                 Event::Key {
                     key,
+                    physical_key,
                     pressed: true,
                     modifiers,
                     ..
@@ -289,9 +298,12 @@ impl App {
                     let shift = modifiers.shift;
                     let ctrl = modifiers.command;
                     // Alt and digits: a character by its number, typed when
-                    // Alt is let go (Windows does this itself).
-                    if !cfg!(target_os = "windows") && modifiers.alt && !ctrl {
-                        if let Some(d) = digit_of(*key) {
+                    // Alt is let go. On Windows too: the windowing layer
+                    // drops the character the system makes of them (#469).
+                    // The physical key reads the keypad with Num Lock off.
+                    if modifiers.alt && !ctrl {
+                        if let Some(d) = physical_key.and_then(digit_of).or_else(|| digit_of(*key))
+                        {
                             self.alt_code.push(d);
                             continue;
                         }

@@ -163,6 +163,59 @@ fn near(a: Point, b: Point) -> bool {
 }
 
 impl App {
+    /// The connectors copies bring along (#476): each connector of the
+    /// page that joins a copied object (`originals[i]`, copied as
+    /// `copies[i]`) to one not copied, and is not copied itself, gives a
+    /// connector of the same kind, outline and anchors from that object to
+    /// the copy. Their ids come from the engine; add them with the copies.
+    pub fn connector_copies(&mut self, originals: &[ShapeId], copies: &[Shape]) -> Vec<Shape> {
+        let copy_of = |id: ShapeId| {
+            originals
+                .iter()
+                .position(|o| *o == id)
+                .and_then(|i| copies.get(i))
+        };
+        let connectors: Vec<(Shape, Connection)> = self
+            .page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| !originals.contains(&s.id))
+            .filter_map(|s| Connection::of(s).map(|c| (s.clone(), c)))
+            .collect();
+        let mut out = Vec::new();
+        for (s, c) in connectors {
+            // Exactly one end copied: the other end stays where it is.
+            let (from, to, fb, tb) = match (copy_of(c.from), copy_of(c.to)) {
+                (Some(f), None) => match self.anchor_box(c.to) {
+                    Some(tb) => (f.id, c.to, f.bounds(), tb),
+                    None => continue,
+                },
+                (None, Some(t)) => match self.anchor_box(c.from) {
+                    Some(fb) => (c.from, t.id, fb, t.bounds()),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let (pa, pb) = (at(fb, c.from_anchor), at(tb, c.to_anchor));
+            let joined = Connection {
+                from,
+                to,
+                ends: (pa, pb),
+                ..c.clone()
+            };
+            let id = self.engine.new_shape_id();
+            let mut copy = crate::app::reid_pub(s.clone(), id, &mut self.engine);
+            copy.transform = tracedraw_core::geometry::Affine::IDENTITY;
+            copy.kind = ShapeKind::Path {
+                path: route(c.kind, c.radius, pa, pb),
+                closed: false,
+            };
+            copy.data = with_connection(s.data.clone(), Some(&joined));
+            out.push(copy);
+        }
+        out
+    }
+
     /// An object's bounds on the page, for its anchors.
     fn anchor_box(&self, id: ShapeId) -> Option<Rect> {
         self.doc().shape_on_page(id).map(|s| s.bounds())
@@ -387,6 +440,59 @@ mod tests {
             ShapeKind::Path { path, .. } => ends_of(&(s.transform * path.clone())).expect("ends"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A copy of a connected object comes with a copy of its connector,
+    /// joining the object at the other end to the copy, of the same kind
+    /// and in the same undo step; copied with its connector, or pasted
+    /// from elsewhere, nothing more comes (#476).
+    #[test]
+    fn copies_of_connected_objects_bring_their_connector() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let a = rect(&mut app, 0.0, 0.0);
+        let b = rect(&mut app, 60.0, 0.0);
+        let c = app
+            .connect(
+                a,
+                Point::new(20.0, 10.0),
+                b,
+                Point::new(60.0, 10.0),
+                ConnectorKind::RightAngle,
+            )
+            .expect("connector");
+        app.refresh_connectors();
+        let connectors = |app: &App| -> Vec<(ShapeId, Connection)> {
+            app.page_layers()
+                .iter()
+                .flat_map(|l| &l.shapes)
+                .filter_map(|s| Connection::of(s).map(|k| (s.id, k)))
+                .collect()
+        };
+        let steps = app.engine.history_labels().0.len();
+        app.duplicate_offset = tracedraw_core::geometry::Vec2::new(0.0, 40.0);
+        app.select(vec![b]);
+        app.duplicate();
+        let copy = app.selection[0];
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1, "one step");
+        let all = connectors(&app);
+        assert_eq!(all.len(), 2);
+        let (nid, n) = all
+            .iter()
+            .find(|(id, _)| *id != c)
+            .cloned()
+            .expect("a new connector");
+        assert_eq!((n.from, n.to, n.kind), (a, copy, ConnectorKind::RightAngle));
+        app.refresh_connectors();
+        assert_eq!(
+            ends(&app, nid),
+            (Point::new(20.0, 10.0), Point::new(60.0, 50.0)),
+            "from a to the copy's left side"
+        );
+        // The object and its connector copied together: no third one.
+        app.select(vec![b, c]);
+        app.duplicate();
+        assert_eq!(connectors(&app).len(), 3);
     }
 
     /// A connector follows the objects it joins; moved with them it stays

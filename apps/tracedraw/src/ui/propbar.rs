@@ -1351,6 +1351,8 @@ fn distance_in_mixed(
         1.0
     };
     let mut v = mm / unit_mm;
+    // The field's own arrows and wheel step by `step` units; the bar had
+    // a second pair beside them doing the same (#488).
     let r = ui.add_sized(
         [width, ROW],
         crate::ui::field::NumField::new(&mut v)
@@ -1358,51 +1360,14 @@ fn distance_in_mixed(
             .max_decimals(d)
             .suffix(format!(" {}", u.short()))
             .unit_mm(u.mm())
+            .step(step.unwrap_or(1.0))
             .mixed(mixed),
     );
-    let mut out = None;
     // Typed values apply with Enter or when the field is left.
     if r.changed() && (mixed || (v * unit_mm - mm).abs() > 1e-12) {
-        out = Some(v * unit_mm);
+        return Some(v * unit_mm);
     }
-    if let Some(step) = step {
-        if let Some(delta) = spin(ui) {
-            out = Some((mm / unit_mm + delta * step) * unit_mm);
-        }
-    }
-    out
-}
-
-/// Two tiny arrows side by side; returns -1 or +1 when clicked.
-fn spin(ui: &mut Ui) -> Option<f64> {
-    let mut out = None;
-    for (dir, up) in [(-1.0, false), (1.0, true)] {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(10.0, ROW), Sense::click());
-        frame(ui, rect, resp.hovered(), false);
-        let c = rect.center();
-        let pts = if up {
-            vec![
-                c + Vec2::new(-3.0, 1.5),
-                c + Vec2::new(3.0, 1.5),
-                c + Vec2::new(0.0, -2.0),
-            ]
-        } else {
-            vec![
-                c + Vec2::new(-3.0, -1.5),
-                c + Vec2::new(3.0, -1.5),
-                c + Vec2::new(0.0, 2.0),
-            ]
-        };
-        ui.painter().add(epaint::PathShape::convex_polygon(
-            pts,
-            Tokens::text_dim(),
-            Stroke::NONE,
-        ));
-        if resp.clicked() {
-            out = Some(dir);
-        }
-    }
-    out
+    None
 }
 
 /// Two rows stacked in the bar's height.

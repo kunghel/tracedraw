@@ -122,6 +122,10 @@ impl App {
 
     /// Copy to the internal clipboard and, as SVG, to the system clipboard.
     pub fn copy_with_system(&mut self) {
+        // Guidelines selected and no objects: they are copied (#376).
+        if self.selection.is_empty() && self.copy_selected_guides() {
+            return;
+        }
         // Nothing selected: the last copy stays as it was.
         let Some(svg) = self.selection_svg() else {
             return;

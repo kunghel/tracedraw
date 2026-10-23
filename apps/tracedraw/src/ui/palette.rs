@@ -97,6 +97,13 @@ impl Axis {
 
 fn colors_of(app: &App, which: Row) -> Vec<(String, Color)> {
     match which {
+        // An RGB drawing gets the palette's colours as RGB, so what it
+        // applies is RGB too; spot inks and registration stay (#483).
+        Row::Main if rgb_drawing(app) => app
+            .palette
+            .iter()
+            .map(|(n, c)| (n.clone(), in_rgb(*c)))
+            .collect(),
         Row::Main => app.palette.clone(),
         Row::Document => app
             .doc()
@@ -104,6 +111,20 @@ fn colors_of(app: &App, which: Row) -> Vec<(String, Color)> {
             .iter()
             .map(|c| (name_of(app, *c), *c))
             .collect(),
+    }
+}
+
+/// Whether the drawing's primary colour mode is RGB.
+fn rgb_drawing(app: &App) -> bool {
+    app.has_document()
+        && app.doc().metadata.primary_color_mode == tracedraw_core::document::PrimaryColorMode::Rgb
+}
+
+/// `c` as an RGB colour, a spot ink or registration as it is.
+fn in_rgb(c: Color) -> Color {
+    match c {
+        Color::Spot { .. } | Color::Registration => c,
+        _ => c.convert_to("RGB"),
     }
 }
 
@@ -154,6 +175,12 @@ pub fn visible_slots(width: f32) -> usize {
 }
 
 fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
+    // Nothing to colour on the Welcome Screen: the swatches show pale
+    // and take no clicks (#482).
+    if !app.drawing_shown() {
+        ui.disable();
+        ui.multiply_opacity(0.4);
+    }
     let size = if vertical {
         vec2(ROW_H, ui.available_height())
     } else {
@@ -1099,6 +1126,98 @@ mod tests {
         app.settings.palette.auto_update_document = false;
         app.apply_fill(Fill::Solid(Color::cmyk_pct(0.0, 100.0, 0.0, 0.0)));
         assert_eq!(app.doc().palette, vec![green]);
+    }
+
+    /// On the Welcome Screen the palette takes no clicks: a click on a
+    /// swatch fills the selection of the drawing behind only while the
+    /// drawing shows (#482).
+    #[test]
+    fn the_palette_rests_on_the_welcome_screen() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let ctx = crate::theme::ui_context();
+        // A second apart, so no two clicks make a double click.
+        let clock = std::cell::Cell::new(0.0);
+        let click = |app: &mut App, x: f32| {
+            clock.set(clock.get() + 1.0);
+            // Over the swatch first, then pressed and let go.
+            for (i, pressed) in [(0, false), (1, true), (2, false), (3, false)] {
+                let mut events = vec![egui::Event::PointerMoved(egui::pos2(x, 10.0))];
+                if i == 1 || i == 2 {
+                    events.push(egui::Event::PointerButton {
+                        pos: egui::pos2(x, 10.0),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 100.0),
+                    )),
+                    events,
+                    time: Some({
+                        clock.set(clock.get() + 0.05);
+                        clock.get()
+                    }),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+                out.textures_delta.clear();
+            }
+        };
+        let fill = |app: &App| app.doc().find_shape(id).expect("shape").fill.clone();
+        // A swatch that fills while the drawing shows...
+        let before = fill(&app);
+        let x = (0..30)
+            .map(|k| 30.0 + k as f32 * 21.0)
+            .find(|x| {
+                click(&mut app, *x);
+                let changed = fill(&app) != before;
+                if changed {
+                    app.undo();
+                }
+                changed
+            })
+            .expect("a swatch");
+        // ...does nothing on the Welcome Screen.
+        app.show_welcome = true;
+        click(&mut app, x);
+        assert_eq!(fill(&app), before);
+        app.show_welcome = false;
+        click(&mut app, x);
+        assert_ne!(fill(&app), before);
+    }
+
+    /// An RGB drawing's palette holds the palette's colours as RGB (named
+    /// as before); a CMYK drawing's keeps them CMYK (#483).
+    #[test]
+    fn an_rgb_drawing_gets_an_rgb_palette() {
+        let mut app = App::headless();
+        app.palette = vec![
+            ("Cyan".into(), Color::cmyk_pct(100.0, 0.0, 0.0, 0.0)),
+            ("Mine".into(), Color::rgb8(10, 20, 30)),
+        ];
+        let cmyk = colors_of(&app, Row::Main);
+        assert_eq!(cmyk, app.palette);
+        let mut metadata = app.doc().metadata.clone();
+        metadata.primary_color_mode = tracedraw_core::document::PrimaryColorMode::Rgb;
+        app.run(tracedraw_core::Command::SetMetadata { metadata });
+        let rgb = colors_of(&app, Row::Main);
+        assert_eq!(rgb.len(), 2);
+        assert!(rgb.iter().all(|(_, c)| c.model_name() == "RGB"), "{rgb:?}");
+        assert_eq!(rgb[0].0, "Cyan");
+        assert_eq!(rgb[0].1.to_rgb8(), cmyk[0].1.to_rgb8());
+        assert_eq!(rgb[1].1, Color::rgb8(10, 20, 30));
     }
 
     #[test]

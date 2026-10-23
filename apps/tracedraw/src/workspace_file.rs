@@ -102,6 +102,8 @@ pub struct AppearancePart {
     /// 0 is 100 % too.
     pub ui_size: f32,
     pub desktop_rgb: [u8; 3],
+    /// The desktop colour was picked (white is then white, #530).
+    pub desktop_custom: bool,
     pub page_border: bool,
 }
 
@@ -110,6 +112,7 @@ impl Default for AppearancePart {
         AppearancePart {
             ui_size: 0.0,
             desktop_rgb: [255, 255, 255],
+            desktop_custom: false,
             page_border: true,
         }
     }
@@ -277,6 +280,7 @@ impl App {
             appearance: parts.appearance.then_some(AppearancePart {
                 ui_size: s.ui_size,
                 desktop_rgb: s.desktop_rgb,
+                desktop_custom: s.desktop_custom,
                 page_border: self.show_page_border,
             }),
         }
@@ -316,6 +320,7 @@ impl App {
         if let (true, Some(a)) = (parts.appearance, &file.appearance) {
             self.settings.ui_size = a.ui_size;
             self.settings.desktop_rgb = a.desktop_rgb;
+            self.settings.desktop_custom = a.desktop_custom;
             self.show_page_border = a.page_border;
             applied.push(PART_APPEARANCE);
         }

@@ -192,8 +192,9 @@ pub fn picture_in(value: &str, dirs: &[std::path::PathBuf]) -> Option<Picture> {
     })
 }
 
-/// The records of a data file: a CSV (comma or semicolon) or an Excel
-/// workbook's first sheet (`.xlsx`); the first row names the fields.
+/// The records of a data file: a CSV (comma, semicolon or tab, in any
+/// encoding [`crate::export::decode_text`] reads) or an Excel workbook's
+/// first sheet (`.xlsx`); the first row names the fields.
 pub fn read_data(path: &std::path::Path) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     let excel = path
         .extension()
@@ -208,8 +209,10 @@ pub fn read_data(path: &std::path::Path) -> Result<(Vec<String>, Vec<Vec<String>
         let headers = rows.remove(0);
         return Ok((headers, rows));
     }
-    let text = crate::files::read_to_string(path).map_err(|e| e.to_string())?;
-    Ok(crate::export::parse_csv(&text))
+    let bytes = crate::files::read(path).map_err(|e| e.to_string())?;
+    Ok(crate::export::parse_csv(&crate::export::decode_text(
+        &bytes,
+    )))
 }
 
 /// Field types guessed from a data file: a field whose name says picture
@@ -308,6 +311,65 @@ pub fn remove_field(st: &mut PrintMergeState, i: usize) {
 /// Add an empty record at the end.
 pub fn add_record(st: &mut PrintMergeState) {
     st.rows.push(vec![String::new(); st.headers.len()]);
+}
+
+/// What a drag in the data grid selects: a block of cells, whole records
+/// (from the record numbers) or whole fields (from the field names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridDrag {
+    Cells,
+    Records,
+    Fields,
+}
+
+/// A block of cells of the data grid: the cell a drag started on and the
+/// one it reached, as (record, field), both 0-based (#501).
+pub type CellRange = ((usize, usize), (usize, usize));
+
+/// The records and fields a block spans, in order.
+pub fn range_bounds(
+    sel: CellRange,
+) -> (
+    std::ops::RangeInclusive<usize>,
+    std::ops::RangeInclusive<usize>,
+) {
+    let ((r0, c0), (r1, c1)) = sel;
+    (r0.min(r1)..=r0.max(r1), c0.min(c1)..=c0.max(c1))
+}
+
+/// Insert `n` empty records before record `at` (at the end when past it).
+pub fn insert_records(st: &mut PrintMergeState, at: usize, n: usize) {
+    let at = at.min(st.rows.len());
+    let width = st.headers.len();
+    for _ in 0..n {
+        st.rows.insert(at, vec![String::new(); width]);
+    }
+}
+
+/// Delete the records `rows` spans (those that exist).
+pub fn delete_records(st: &mut PrintMergeState, rows: std::ops::RangeInclusive<usize>) {
+    let n = st.rows.len();
+    let (a, b) = (*rows.start(), (*rows.end()).min(n.saturating_sub(1)));
+    if a < n && a <= b {
+        st.rows.drain(a..=b);
+    }
+    st.current = st.current.min(st.rows.len().saturating_sub(1));
+}
+
+/// Empty the cells of a block; counter fields, worked out rather than
+/// typed, keep theirs.
+pub fn clear_cells(st: &mut PrintMergeState, sel: CellRange) {
+    let (rows, cols) = range_bounds(sel);
+    for r in rows {
+        for c in cols.clone() {
+            if matches!(kind_of(st, c), FieldKind::Number { .. }) {
+                continue;
+            }
+            if let Some(cell) = st.rows.get_mut(r).and_then(|row| row.get_mut(c)) {
+                cell.clear();
+            }
+        }
+    }
 }
 
 /// The records as CSV text, counters written out, with a header line.
@@ -455,12 +517,18 @@ fn fill_shape(
     cmds: &mut Vec<Command>,
 ) {
     let value_of = |i: usize| row.get(i).map(String::as_str).unwrap_or("");
-    // An object named `<Field>` of a picture or QR field, on the page (not
-    // in a group): a placeholder the Print Merge docker made, or a frame
-    // the user named (#378, #437).
-    if top && text_of(s).is_none() {
+    // An object named `<Field>` of a picture or QR field: a placeholder
+    // the Print Merge docker made, or a shape of the user's made the
+    // field's frame (#378, #437), on the page or inside a group (#460).
+    if text_of(s).is_none() && (top || !matches!(s.kind, ShapeKind::Group { .. })) {
         if let Some(i) = s.name.as_deref().and_then(|n| whole_field(st, n)) {
-            named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+            if top {
+                named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+            } else if kind_of(st, i) == FieldKind::Image {
+                nested_picture_frame(st, s, value_of(i), new_id, cmds);
+            } else {
+                named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+            }
             return;
         }
     }
@@ -624,6 +692,58 @@ fn named_placeholder(
     }
 }
 
+/// [`named_placeholder`] for a picture field's frame inside a group, where
+/// objects cannot be moved into it: the object becomes, in place, a clip
+/// frame of its own outline holding the picture (a clip frame's contents
+/// give way). Its transform stays on the clip frame, so the frame and the
+/// picture are laid out in the object's own space.
+fn nested_picture_frame(
+    st: &PrintMergeState,
+    s: &Shape,
+    value: &str,
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+    cmds: &mut Vec<Command>,
+) {
+    let frame = match &s.kind {
+        ShapeKind::ClipFrame { frame, .. } => (**frame).clone(),
+        _ => {
+            let mut f = s.clone();
+            f.id = new_id();
+            f.name = None;
+            f.data.clear();
+            f.transform = tracedraw_core::geometry::Affine::IDENTITY;
+            f
+        }
+    };
+    let mut contents = Vec::new();
+    if let Some(pic) = picture_in(value, &picture_dirs(st)) {
+        let (scale, anchor) = placement_of(s);
+        let rect = place(frame.bounds(), pic.mm.0, pic.mm.1, scale, anchor);
+        let mut shape = Shape::new(
+            new_id(),
+            ShapeKind::Bitmap {
+                rect,
+                width_px: pic.px.0,
+                height_px: pic.px.1,
+                png: pic.png,
+                fx: None,
+            },
+        );
+        shape.stroke = None;
+        shape.fill = Fill::None;
+        contents.push(shape);
+    } else if !matches!(s.kind, ShapeKind::ClipFrame { .. }) {
+        return;
+    }
+    cmds.push(Command::SetShapeKind {
+        shape: s.id,
+        kind: ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents,
+        },
+    });
+}
+
 /// Duplicate `page` once per record right after it and fill the copies'
 /// fields, as one undo step per stage; the new pages, in the records'
 /// order.
@@ -770,6 +890,21 @@ mod tests {
         assert_eq!(st.headers, vec!["Name", "Link", "City"]);
         assert_eq!(st.kinds[1], FieldKind::Qr);
         assert!(st.rows.iter().all(|r| r.len() == 3));
+    }
+
+    /// Clearing a block of the grid empties its typed cells; a counter
+    /// field, worked out, keeps its numbers (#501).
+    #[test]
+    fn clearing_cells_leaves_counters() {
+        let mut st = state();
+        for row in st.rows.iter_mut() {
+            row.resize(3, String::new());
+        }
+        st.rows[0][1] = "kept".into();
+        clear_cells(&mut st, ((1, 2), (0, 0)));
+        assert_eq!(st.rows[0], vec!["", "kept", ""]);
+        assert_eq!(values(&st)[1][1], "010");
+        assert_eq!(range_bounds(((3, 1), (1, 4))), (1..=3, 1..=4));
     }
 
     #[test]

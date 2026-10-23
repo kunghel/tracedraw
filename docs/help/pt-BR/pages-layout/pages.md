@@ -33,7 +33,14 @@ e [[menu.layout.duplicate_page]] agem sobre a página atual, e
 
 ![A caixa de diálogo Inserir página](../../img/pages-layout-pages-insert-page.png)
 
-[[menu.layout.delete_page]] exclui páginas.
+## Excluir páginas {#delete-page}
+
+[[menu.layout.delete_page]] pergunta quais páginas excluir: o número da página
+em [[dialog.delete_page_from]] (de início, a página atual) e, para excluir um
+intervalo, [[dialog.delete_through]] com a última página dele. Todas saem em
+um passo só, que [[menu.edit.undo]] desfaz. Um desenho mantém pelo menos uma
+página. [[page_tab.delete]] no menu de uma aba de página exclui essa página na
+hora.
 
 ## Duplicar uma página {#duplicate-page}
 

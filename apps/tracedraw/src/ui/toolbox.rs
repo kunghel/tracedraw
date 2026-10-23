@@ -128,19 +128,46 @@ pub fn toolbox(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
     crate::ui::bars::background(app, ui, crate::ui::bars::Bar::Toolbox);
     match dock {
         Dock::Top | Dock::Bottom => {
-            crate::ui::overflow::row(ui, "toolbox_row", |ui| tools(app, ui, dock));
+            crate::ui::overflow::row(ui, "toolbox_row", |ui| tools(app, ui, dock, None));
         }
         Dock::Floating => {
             ui.set_max_width(floating_width(app));
-            ui.horizontal_wrapped(|ui| tools(app, ui, dock));
+            ui.horizontal_wrapped(|ui| tools(app, ui, dock, None));
         }
         Dock::Left | Dock::Right => {
-            crate::ui::overflow::column(ui, "toolbox_column", |ui| tools(app, ui, dock))
+            // Buttons shorter, down to a floor, so the column fits the
+            // window without scrolling (#494).
+            let room = ui.available_rect_before_wrap().height();
+            let side = fitted_side(Tokens::tool_button(), visible_groups(app), room);
+            crate::ui::overflow::column(ui, "toolbox_column", |ui| tools(app, ui, dock, Some(side)))
         }
     }
 }
 
-fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
+/// The height a column toolbox's buttons get so `n` of them (with the
+/// grip) fit `room`: their side, less when that does not fit, never under
+/// [`MIN_FITTED_SIDE`] (the overflow arrows take over from there).
+pub fn fitted_side(side: f32, n: usize, room: f32) -> f32 {
+    const GRIP: f32 = 9.0;
+    if n == 0 || !room.is_finite() {
+        return side;
+    }
+    let n = n as f32;
+    let fit = ((room - GRIP - (n - 1.0)) / n).floor();
+    fit.clamp(MIN_FITTED_SIDE.min(side), side)
+}
+
+/// The shortest a column toolbox's buttons get to fit the window.
+pub const MIN_FITTED_SIDE: f32 = 22.0;
+
+/// How many buttons the toolbox shows.
+fn visible_groups(app: &App) -> usize {
+    (0..GROUPS.len())
+        .filter(|gi| group_visible(app, *gi))
+        .count()
+}
+
+fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock, fitted: Option<f32>) {
     use crate::ui::bars::{Bar, Dock};
     let horizontal = dock.horizontal();
     let floating = dock == Dock::Floating;
@@ -160,7 +187,7 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
     if captions.caption() {
         app.toolbox_caption_w = widest_caption(app, ui);
     }
-    let side = Tokens::tool_button();
+    let side = fitted.unwrap_or_else(Tokens::tool_button);
     let size = Vec2::new(button_width(app), side);
     for (gi, group) in GROUPS.iter().enumerate() {
         if !group_visible(app, gi) {
@@ -598,5 +625,20 @@ mod tests {
                 .expect("in a group");
             assert_ne!(g.tools.last(), Some(&t), "{t:?}");
         }
+    }
+
+    /// A column toolbox fits the window: its buttons get shorter as the
+    /// room shrinks, down to a floor, and keep their size when they fit
+    /// (#494).
+    #[test]
+    fn a_column_toolbox_fits_the_window() {
+        // 20 buttons of 32 px with the grip need 9 + 640 + 19 = 668.
+        assert_eq!(fitted_side(32.0, 20, 900.0), 32.0);
+        assert_eq!(fitted_side(32.0, 20, 668.0), 32.0);
+        assert_eq!(fitted_side(32.0, 20, 600.0), 28.0);
+        assert_eq!(fitted_side(32.0, 20, 300.0), MIN_FITTED_SIDE);
+        // A small toolbox never grows, and nothing to fit changes nothing.
+        assert_eq!(fitted_side(20.0, 20, 300.0), 20.0);
+        assert_eq!(fitted_side(32.0, 0, 10.0), 32.0);
     }
 }

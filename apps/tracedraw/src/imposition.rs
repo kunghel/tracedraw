@@ -84,9 +84,10 @@ pub struct Options {
     /// so each page lands behind its front on the other side; the pages
     /// themselves are not mirrored (#387).
     pub back_side: bool,
-    /// On a fixed sheet the pages keep their size (scaled down only when
-    /// they would not fit the sheet itself), the marks taking the room
-    /// there is (#388).
+    /// On a fixed sheet the pages keep their size, the marks taking the
+    /// room there is (#388), and the grid keeps its columns and rows: what
+    /// does not fit runs off the sheet instead of the pages shrinking
+    /// (#496, see [`overflows`]).
     pub keep_size: bool,
     /// Where the page information sits, moved from its place (mm).
     pub info_offset: (f64, f64),
@@ -209,11 +210,15 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             let grid_h = rows as f64 * step_y - gutter;
             let (size, scale) = match o.sheet {
                 Some(sheet) => {
-                    // Kept size: only the sheet itself bounds the pages.
-                    let m = if o.keep_size { 0.0 } else { margin };
-                    let avail_w = (sheet.width - 2.0 * m).max(1.0);
-                    let avail_h = (sheet.height - 2.0 * m).max(1.0);
-                    let s = (avail_w / grid_w).min(avail_h / grid_h).min(1.0);
+                    // Kept size: the pages as they are; else the grid
+                    // shrinks to fit inside the marks.
+                    let avail_w = (sheet.width - 2.0 * margin).max(1.0);
+                    let avail_h = (sheet.height - 2.0 * margin).max(1.0);
+                    let s = if o.keep_size {
+                        1.0
+                    } else {
+                        (avail_w / grid_w).min(avail_h / grid_h).min(1.0)
+                    };
                     (sheet, s)
                 }
                 None => {
@@ -259,6 +264,20 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             SheetPlan { size, cells }
         })
         .collect()
+}
+
+/// Whether a page of the plan runs off its sheet (pages kept at their
+/// size in a grid larger than the sheet, #496).
+pub fn overflows(plan: &[SheetPlan]) -> bool {
+    const EPS: f64 = 1e-6;
+    plan.iter().any(|sheet| {
+        sheet.cells.iter().filter(|c| c.page.is_some()).any(|c| {
+            c.trim.x0 < -EPS
+                || c.trim.y0 < -EPS
+                || c.trim.x1 > sheet.size.width + EPS
+                || c.trim.y1 > sheet.size.height + EPS
+        })
+    })
 }
 
 /// A mark object on the sheet.
@@ -847,6 +866,7 @@ mod tests {
         let w = |p: &[SheetPlan]| p[0].cells[0].trim.width();
         assert!(w(&shrunk) < 199.0, "{}", w(&shrunk));
         assert!((w(&kept) - 200.0).abs() < 1e-9);
+        assert!(!overflows(&kept));
         // The page information where the drag put it.
         let origin = |o: &Options| {
             let sheets = plan(&[page], o);
@@ -864,5 +884,51 @@ mod tests {
             ..base.clone()
         });
         assert!(((b.x - a.x) - 15.0).abs() < 1e-9 && ((b.y - a.y) - 40.0).abs() < 1e-9);
+    }
+
+    /// Keep size with more columns and rows than fit: the grid stays as
+    /// set and the pages keep their size, running off the sheet, which
+    /// `overflows` tells; without it the pages shrink to fit (#496).
+    #[test]
+    fn kept_size_keeps_the_grid_and_the_page_size() {
+        let page = Size::new(90.0, 50.0);
+        let base = Options {
+            layout: Layout::NUp { cols: 3, rows: 7 },
+            sheet: Some(Size::new(210.0, 297.0)),
+            ..Default::default()
+        };
+        let pages = vec![page; 21];
+        let shrunk = plan(&pages, &base);
+        assert_eq!(shrunk.len(), 1);
+        assert_eq!(shrunk[0].cells.len(), 21);
+        assert!(shrunk[0].cells[0].trim.width() < 89.0);
+        assert!(!overflows(&shrunk));
+        let kept = plan(
+            &pages,
+            &Options {
+                keep_size: true,
+                ..base.clone()
+            },
+        );
+        assert_eq!(kept.len(), 1, "the grid as set: one sheet");
+        assert_eq!(kept[0].cells.len(), 21);
+        assert!(
+            kept[0]
+                .cells
+                .iter()
+                .all(|c| (c.trim.width() - 90.0).abs() < 1e-9
+                    && (c.trim.height() - 50.0).abs() < 1e-9)
+        );
+        assert!(overflows(&kept));
+        // A grid that fits keeps its pages on the sheet.
+        let fits = plan(
+            &vec![page; 4],
+            &Options {
+                layout: Layout::NUp { cols: 2, rows: 2 },
+                keep_size: true,
+                ..base
+            },
+        );
+        assert!(!overflows(&fits));
     }
 }

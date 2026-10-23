@@ -6,6 +6,84 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Symmetry: after Finish the mirror lines no longer show on the selected symmetry, so it reads as one object; they stayed whenever it was selected and editing looked still open.
+
+## 0.14.0 (2026-10-23)
+
+- Variable Outline: a width node dragged along the path slides along it, and its reach handles change its width; a drag on a node could only change its width (#479).
+
+- Variable Outline: the width eases along a smooth curve between nodes however close they are; short spans on long paths ran in a few straight pieces. Shift or Alt for one side counts while dragging, not only when the drag starts (#492).
+
+- Connectors: a copy of a connected object (Duplicate, right-click drag copy, Repeat, Copy and Paste) comes with a copy of its connector, of the same kind and style, joining the object at the other end to the copy (#476).
+
+- Convert Outline to Object (Ctrl+Shift+Q) keeps a dashed outline's dashes: each dash becomes a closed shape and the gaps stay empty; the result was a solid band (#490).
+
+- Repeat (Ctrl+R) after a copy made with a right click during a drag is one undo step, as is that copy itself; the first Undo only moved the new copy back onto the original (#471).
+
+- Export: WebP takes the quality setting; it was ignored. The files stay lossless, and below 100 their colours are first rounded to fewer levels (near-lossless), so a lower quality makes a smaller file (#544).
+
+- Edit Fill > Uniform: the colour's model list and a field for each value (C, M, Y, K or R, G, B and so on), as in the colour picker; it showed only the swatch and the hex code (#468).
+
+- Colour palette: in an RGB drawing the default palette shows and applies its colours as RGB (converted, names kept); it applied CMYK colours. CMYK drawings keep the CMYK palette (#483).
+
+- Welcome Screen: the colour palette shows pale and takes no clicks, and the dockers that work on a drawing say to open or create one, instead of showing and changing the selection of the drawing behind it (#482).
+
+- Toolbox: docked on a side it fits the window's height, its buttons and icons getting smaller (down to 22 px) instead of the tools running off the bottom and needing the scroll arrows (#494).
+
+- Property bar: the page size, nudge, duplicate distance, autofit margin and origin fields have one set of up/down arrows; a second pair beside each field did the same job. The field's own arrows and wheel step as the extra pair did (1 unit, 0.1 for nudge and duplicate) (#488).
+
+- Shaping: Back Minus Front, Front Minus Back and Trim on a group cut each of its objects, each keeping its own fill and outline; the result had no fill or outline and showed only in Wireframe. Weld and Intersect with a group take its first filled object's attributes (#539).
+
+- PowerClip (Clip to Frame) Edit Contents: a group inside can be ungrouped and its members stay in the frame, drawn in full and back inside on Finish; objects drawn or pasted while editing go in too. The members faded as if outside and Finish emptied the frame (#537).
+
+- Print: Fit to page shrinks objects that run off the page (or the selection printed) to fit inside it, centred; they were cut at the page's edge. Print Preview's Close button sits at the right end of its bar (#534).
+
+- Options > Customization > Appearance: the desktop colour button shows the colour around the page, and white picked makes the desktop white; white stood for the theme's colour, so picking it changed nothing until another colour had been picked (#530).
+
+- Smart Fill fills enclosed areas off the page, on the desktop, and in drawings of any size; it worked only inside the page and gave up on drawings much larger than it. An area is open when the flood reaches past the outlines, not when it covers almost the whole page (#499).
+
+- Print: Keep page size keeps the pages at their size for Several Pages per Sheet and Step and Repeat too; the pages shrank once the columns and rows no longer fit the sheet. The grid stays as set, and a warning says when pages run off the sheet. Columns and rows go up to 99, not 20 (#496).
+
+- Print Merge: the data grid selects a block of cells by dragging across them (or over the record numbers or field names for whole records or fields), with Add (as many empty records after it), Delete (its records) and Clear (its cells, also the Delete key) (#501).
+
+- Layout > Delete Page opens a dialog: the page to delete (the current one to start with) and, with Through to page, the last page of a range, deleted in one undo step; it deleted the current page only (#500).
+
+- Print Merge: CSV files saved by Excel on Windows import; they are in code page 1252, not UTF-8, and failed to read. UTF-16 files (Excel's Unicode Text) and tab-separated files import too, and a UTF-8 byte order mark no longer sticks to the first field's name (#495).
+
+- Paragraph text: the bottom handle of a selected frame drags it taller; the flow tab sat under that handle and took the press, so the next click linked the text to another object (after Text > Convert, for one). The tab now hangs below the handle (#503).
+
+- Fonts: on Windows the font lists offer only the fonts Windows lists as installed; a font uninstalled while in use left its file in the font folder until the next restart and was still offered. A font for new text that is no longer installed gives way to Arial at start, instead of being named in the bars while text was drawn with a stand-in (#504).
+
+- Text: typing in a text keeps its own hyphenation; it took the setting for new text, so editing a text turned its hyphenation on or off behind the menu's back. Text > Use Hyphenation while editing acts on the paragraphs at the caret, and its check mark shows them (#470).
+
+- Text: Alt codes type their character on Windows (Alt+0193 gives Á, or the glyph a symbol font draws there, as the Glyphs docker's keystroke says); nothing was typed (#469).
+
+- Text: Ctrl+Space while editing text finishes the text and switches to the Pick tool, as in the reference program; it typed a space (#478).
+
+- Shape tool on text: in right-to-left text (Arabic, Hebrew) each character's node sits under its own letter; they were bunched at one end in left-to-right order (#474).
+
+- Pen: the dashed blue preview to the pointer is drawn over a solid white line, so it stays one line over dark objects and any colour, as in the reference program (#489).
+
+- Pen and Bezier: the constrain key (Ctrl) keeps the closing handle to the constrain angle when dragging on the first node to close a curve, as on every other node (#473).
+
+- Shape tool: deleting the first node of a closed curve keeps the curve's shape, as deleting any other node does; the two segments around it kept their old handles and the curve changed (#472).
+
+- Shape tool: Ctrl or Shift while dragging a control handle keeps it to the constrain angle (15° by default), and a smooth node's other handle keeps following; Ctrl turned the node into a cusp instead and Shift did nothing (#510).
+
+- Interactive Fill: the colour node's bar and the colour picker popup have a dotted grip that drags them off the object they cover; they stay where they were put while open.
+
+- About TraceDraw: a green ALPHA badge beside the version, with a tooltip saying what the alpha stage means.
+
+- Symmetry: a double click on a symmetry goes back into editing it, as in the reference program; it opened the group's focus mode instead, so after Finish the only way back was the menu.
+
+- Guidelines: Copy, Cut and Paste work on selected guidelines (no objects selected), pasting them in the same place, and the Transformations docker moves, rotates, scales and copies them; the Help says where the Ctrl+D duplicate offset is set (#376).
+
+- Hyphenation: a word with a comma, full stop or quotation mark next to it can break at a line's end (before, any punctuation kept the whole word on the next line, in every language), words with an apostrophe break too (Italian *dell'informazione*), and Text > Use Hyphenation now turns hyphenation on for the selected text instead of only for text made afterwards. Checked with the Italian, English, Portuguese and German dictionaries (#255).
+
+- Text on a path: changing the distance from the path, or pressing a mirror button with a distance set, no longer slides the text round the path; text centred on the bottom of a circle (Placement: Bottom, or both mirrors) stays centred as it moves in or out, as in the reference program (#193).
+
+- Print Merge docker: Place Inside Frame makes a shape of your own (a circle, an oval, any outline, also inside a grouped card design) the frame of a picture field, so each card's photo goes inside it, placed by Align and scale; before, the photo went into a square frame the docker made, and a shape inside a group could not be a frame at all (#460).
+
 - Browser version: every macro command (Macro Manager, Run Macro, Macro Editor, Load Macro Project) opens a message that macros run in the desktop version, with a button to its downloads; before, the commands did nothing visible or only wrote a line in the status bar.
 
 - Symmetry editing: a symmetry made of one object picks the object alone, its selection box no longer spanning the copies; a click on an object where a mirror line crosses it picks the object instead of showing the line's turning handles. The symmetry bar's X and Y fields keep their label, box and arrows on one line.

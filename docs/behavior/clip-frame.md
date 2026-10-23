@@ -42,7 +42,13 @@ frame is edited node by node, and the clip frame stays one
   rest of the page fades to a quarter of its strength while the frame
   and the contents are drawn in full (`App::render_focus`, the
   renderer's focus option with several objects, `CLIP_EDIT_VISIBILITY`).
-  Finish Editing Contents (the bar's Finish) puts them back.
+  Finish Editing Contents (the bar's Finish) puts them back. The
+  contents are every object on the page that was not there besides the
+  frame when editing began (`App::clip_edit_contents`): a group inside
+  ungrouped stays in as its members, drawn in full, and objects drawn or
+  pasted while editing go in too; the members of an ungrouped group were
+  left out and faded, and Finish emptied the frame (#537,
+  `a_group_inside_a_clip_frame_being_edited_drags_and_ungroups`).
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame

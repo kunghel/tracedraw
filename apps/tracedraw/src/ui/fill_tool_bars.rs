@@ -290,6 +290,53 @@ mod tests {
         assert!(s.stroke.is_none());
     }
 
+    /// Smart Fill fills an area enclosed by a curve crossing itself, off
+    /// the page on the desktop and in a drawing far larger than the page;
+    /// a click in an open area makes nothing (#499).
+    #[test]
+    fn smart_fill_works_off_the_page_in_a_large_drawing() {
+        use tracedraw_core::geometry::BezPath;
+        use tracedraw_core::ShapeKind;
+        let mut app = App::headless();
+        // A bow tie 2 m wide, right of an A4 page: two triangles meeting
+        // where the curve crosses itself at (1500, 500).
+        let mut path = BezPath::new();
+        path.move_to((500.0, 0.0));
+        path.line_to((2500.0, 1000.0));
+        path.line_to((2500.0, 0.0));
+        path.line_to((500.0, 1000.0));
+        path.close_path();
+        app.new_shape(ShapeKind::Path { path, closed: true })
+            .expect("curve");
+        let before = app
+            .doc()
+            .all_layers()
+            .map(|l| l.shapes.len())
+            .sum::<usize>();
+        app.area_fill_at(tracedraw_core::Point::new(2200.0, 500.0));
+        let id = *app.selection.first().expect("an area");
+        let b = app.doc().find_shape(id).expect("area").bounds();
+        // The right triangle: from the crossing to the right edge.
+        assert!(
+            (b.x0 - 1500.0).abs() < 5.0 && (b.x1 - 2500.0).abs() < 5.0,
+            "{b:?}"
+        );
+        assert!(
+            (b.y0 - 0.0).abs() < 5.0 && (b.y1 - 1000.0).abs() < 5.0,
+            "{b:?}"
+        );
+        let count = |app: &App| {
+            app.doc()
+                .all_layers()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        assert_eq!(count(&app), before + 1);
+        // Above the tie, open to the outside: nothing.
+        app.area_fill_at(tracedraw_core::Point::new(1500.0, 900.0));
+        assert_eq!(count(&app), before + 1);
+    }
+
     /// Both bars draw, with and without a mesh and a chosen node.
     #[test]
     fn the_fill_tool_bars_draw() {

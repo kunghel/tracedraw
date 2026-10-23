@@ -6,7 +6,8 @@
 //! colour keeps its model: a CMYK colour is edited in CMYK, an RGB one in
 //! RGB, and a Model list switches it on demand (the colour converts and
 //! the object holds a colour of the new model). A click outside the
-//! popup or Esc closes it.
+//! popup or Esc closes it. The dotted strip at the popup's top drags it
+//! elsewhere (off the object it colours), and it stays there while open.
 
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -29,6 +30,38 @@ struct Open {
     hue: f32,
     /// The popup's size, as measured on the frame before.
     size: Vec2,
+    /// How far the popup was dragged by its strip from where it opened.
+    offset: Vec2,
+}
+
+/// A dotted strip `width` points wide that drags what it sits on: the
+/// distance the pointer moved over it this frame.
+pub fn drag_strip(ui: &mut Ui, size: Vec2) -> Vec2 {
+    let (r, resp) = ui.allocate_exact_size(size, Sense::drag());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::Grab);
+    let c = if resp.hovered() || resp.dragged() {
+        Tokens::text()
+    } else {
+        Tokens::text_dim()
+    };
+    let p = ui.painter();
+    let (cols, rows) = if size.x >= size.y {
+        (((size.x - 4.0) / 5.0).floor().clamp(1.0, 12.0) as i32, 2)
+    } else {
+        (2, ((size.y - 4.0) / 5.0).floor().clamp(1.0, 12.0) as i32)
+    };
+    let step = 4.0;
+    let start = r.center() - Vec2::new((cols - 1) as f32, (rows - 1) as f32) * step / 2.0;
+    for i in 0..cols {
+        for j in 0..rows {
+            p.circle_filled(start + Vec2::new(i as f32, j as f32) * step, 1.0, c);
+        }
+    }
+    if resp.dragged() {
+        resp.drag_delta()
+    } else {
+        Vec2::ZERO
+    }
 }
 
 /// The swatch and popup of the picker shown last, for checks.
@@ -113,13 +146,19 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
             None => Some(Open {
                 hue: c.to_hsb().0 as f32,
                 size: FIRST_SIZE,
+                offset: Vec2::ZERO,
             }),
         };
     }
     let mut changed = false;
     if let Some(mut st) = open {
         let screen = ui.ctx().content_rect();
-        let rect = place(swatch, st.size, screen);
+        let placed = place(swatch, st.size, screen);
+        // Dragged by its strip, kept inside the window.
+        let lo = screen.min + Vec2::splat(MARGIN);
+        let hi = (screen.max - st.size - Vec2::splat(MARGIN)).max(lo);
+        let rect = Rect::from_min_size((placed.min + st.offset).clamp(lo, hi), st.size);
+        st.offset = rect.min - placed.min;
         let model = edit_model(*c);
         let area = egui::Area::new(id.with("area"))
             .order(egui::Order::Foreground)
@@ -128,6 +167,7 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_width(CONTENT_WIDTH);
+                    st.offset += drag_strip(ui, Vec2::new(CONTENT_WIDTH, 8.0));
                     if let Some((h, s, b)) = crate::ui::color_docker::viewer(ui, st.hue, *c) {
                         st.hue = h;
                         *c = from_viewer(h, s, b, model);
@@ -329,5 +369,30 @@ mod tests {
         assert!(screen().contains_rect(shown.popup), "{shown:?}");
         assert!(shown.popup.right() <= shown.swatch.left(), "{shown:?}");
         assert!(matches!(c, Color::Cmyk { .. }));
+        // Its dotted strip drags it off what it covers; it stays open
+        // there, inside the window.
+        let grip = Pos2::new(shown.popup.center().x, shown.popup.top() + 10.0);
+        let to = grip + Vec2::new(-300.0, 150.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&ctx, &mut c, vec![egui::Event::PointerMoved(grip)]);
+        run(&ctx, &mut c, vec![button(grip, true)]);
+        for k in 1..=5 {
+            let p = grip + (to - grip) * (k as f32 / 5.0);
+            run(&ctx, &mut c, vec![egui::Event::PointerMoved(p)]);
+        }
+        run(&ctx, &mut c, vec![button(to, false)]);
+        run(&ctx, &mut c, Vec::new());
+        let moved = last_shown(&ctx).expect("still open");
+        let d = moved.popup.min - shown.popup.min;
+        assert!(
+            (d.x + 300.0).abs() < 2.0 && (d.y - 150.0).abs() < 2.0,
+            "{d:?}"
+        );
+        assert!(screen().contains_rect(moved.popup));
     }
 }

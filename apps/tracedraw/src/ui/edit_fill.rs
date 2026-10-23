@@ -300,8 +300,30 @@ fn uniform(ui: &mut Ui, st: &mut EditFillState) {
             }
         });
         ui.vertical(|ui| {
-            ui.label(tr("edit_fill.color"));
-            crate::ui::color_picker::color_button(ui, c);
+            // The colour's model and its values to type or drag, as the
+            // colour picker has them (#468).
+            ui.horizontal(|ui| {
+                ui.label(tr("edit_fill.color"));
+                crate::ui::color_picker::color_button(ui, c);
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("docker.model"));
+                let model = crate::ui::color_picker::edit_model(*c);
+                egui::ComboBox::from_id_salt("edit_fill_model")
+                    .selected_text(model)
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for m in crate::ui::color_docker::MODELS {
+                            if ui.selectable_label(model == m, m).clicked() && model != m {
+                                *c = c.convert_to(m);
+                            }
+                        }
+                    });
+            });
+            let mut m = c.convert_to(crate::ui::color_picker::edit_model(*c));
+            if crate::ui::color_docker::sliders(ui, &mut m) {
+                *c = m;
+            }
             ui.label(
                 egui::RichText::new(c.to_hex())
                     .monospace()
@@ -830,6 +852,54 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
         out.textures_delta.clear();
+    }
+
+    /// Uniform fill shows the colour's model and a field for each of its
+    /// values, as the colour picker does, not just the hex code (#468).
+    #[test]
+    fn a_uniform_fill_shows_its_model_and_values() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Solid(tracedraw_core::Color::cmyk_pct(
+            0.0, 40.0, 100.0, 0.0,
+        )));
+        // Only the dialog may show a colour's values.
+        app.show_dockers = false;
+        app.open_edit_fill();
+        let texts = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+            let mut all = Vec::new();
+            fn walk(s: &egui::Shape, all: &mut Vec<String>) {
+                match s {
+                    egui::Shape::Text(t) => all.push(t.galley.text().to_string()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                    _ => {}
+                }
+            }
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+            all
+        };
+        texts(&mut app);
+        let all = texts(&mut app);
+        for want in ["CMYK", "C", "M", "Y", "K"] {
+            assert!(all.iter().any(|t| t == want), "{want} in {all:?}");
+        }
     }
 
     fn fill_of(app: &App, id: tracedraw_core::ShapeId) -> Fill {

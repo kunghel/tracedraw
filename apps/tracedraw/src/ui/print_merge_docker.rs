@@ -161,6 +161,94 @@ impl App {
         }
     }
 
+    /// Place Inside Frame: each selected shape (a circle, an oval, any
+    /// outline, a clip frame) becomes the frame of the chosen picture
+    /// field, keeping the Align and scale shown; every card's picture then
+    /// goes inside it, also inside a group (#460). The placeholder
+    /// picture, when one is chosen, goes into a frame on the page.
+    pub fn place_merge_field_inside(&mut self) {
+        let Some(name) = self
+            .merge_state
+            .as_ref()
+            .and_then(|st| st.headers.get(self.merge_docker.column))
+            .cloned()
+        else {
+            return;
+        };
+        let field = format!("<{name}>");
+        let d = self.merge_docker.clone();
+        let frames: Vec<Shape> = self
+            .selected_rc()
+            .iter()
+            .filter(|s| !matches!(s.kind, ShapeKind::Text { .. } | ShapeKind::Group { .. }))
+            .cloned()
+            .collect();
+        if frames.is_empty() {
+            self.status = tr("merge.place_inside_none");
+            return;
+        }
+        let picture = (!d.placeholder.trim().is_empty())
+            .then(|| crate::print_merge::picture(&d.placeholder, None))
+            .flatten();
+        let layer = self.active_layer();
+        let mut cmds = Vec::new();
+        for s in &frames {
+            cmds.push(Command::SetShapeName {
+                shape: s.id,
+                name: Some(field.clone()),
+            });
+            let mut data: Vec<(String, String)> = s
+                .data
+                .iter()
+                .filter(|(k, _)| k != SCALE_DATA && k != ANCHOR_DATA)
+                .cloned()
+                .collect();
+            data.extend(placement_data(d.scale, d.anchor));
+            cmds.push(Command::SetObjectData { shape: s.id, data });
+            // The stand-in picture, in a frame on the page.
+            let on_page = self.doc().top_level_of(s.id) == Some(s.id);
+            if let (Some(p), Some(layer), true) = (&picture, layer, on_page) {
+                if let ShapeKind::ClipFrame { contents, .. } = &s.kind {
+                    if !contents.is_empty() {
+                        continue;
+                    }
+                }
+                let pid = self.engine.new_shape_id();
+                let mut pic = Shape::new(
+                    pid,
+                    ShapeKind::Bitmap {
+                        rect: crate::print_merge::place(
+                            s.bounds(),
+                            p.mm.0,
+                            p.mm.1,
+                            d.scale,
+                            d.anchor,
+                        ),
+                        width_px: p.px.0,
+                        height_px: p.px.1,
+                        png: p.png.clone(),
+                        fx: None,
+                    },
+                );
+                pic.stroke = None;
+                pic.fill = Fill::None;
+                cmds.push(Command::AddShape { layer, shape: pic });
+                cmds.push(Command::PlaceInside {
+                    contents: vec![pid],
+                    frame: s.id,
+                });
+            }
+        }
+        let ids: Vec<ShapeId> = frames.iter().map(|s| s.id).collect();
+        match self.engine.run_batch("Place Inside Frame", &cmds) {
+            Ok(()) => {
+                self.select(ids);
+                self.status = tr("merge.place_inside_done");
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
     /// The selected placeholders (see [`field_of`]).
     pub fn selected_merge_fields(&self) -> Vec<ShapeId> {
         self.selected_rc()
@@ -426,6 +514,21 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         {
             app.insert_merge_field();
         }
+        if app.merge_docker.kind == 1 {
+            // A shape of the user's as the picture's frame (#460).
+            let any = !app.selection.is_empty();
+            if ui
+                .add_enabled(
+                    any,
+                    egui::Button::new(tr("merge.place_inside")).min_size(wide),
+                )
+                .on_hover_text(tr("merge.place_inside_tip"))
+                .on_disabled_hover_text(tr("merge.place_inside_none"))
+                .clicked()
+            {
+                app.place_merge_field_inside();
+            }
+        }
         let can_update = !app.selected_merge_fields().is_empty();
         if ui
             .add_enabled(
@@ -613,6 +716,128 @@ mod tests {
         // The drawing it came from keeps its placeholders.
         app.switch_document(0);
         assert_eq!(app.doc(), &before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Place Inside Frame makes the user's own shapes the picture's frame,
+    /// one on the page and one inside a moved group of the card's design;
+    /// the merge puts each record's photo inside both, clipped to the
+    /// ellipse, in place (#460).
+    #[test]
+    fn place_inside_frame_uses_the_users_shapes_also_in_a_group() {
+        use tracedraw_core::geometry::Affine;
+        let dir = std::env::temp_dir().join(format!("td_merge_own_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_pixel(96, 48, image::Rgba([0, 0, 200, 255]))
+            .save(dir.join("wide.png"))
+            .unwrap();
+        let mut app = App::headless();
+        app.merge_state = Some(data(&dir));
+        let ellipse = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Ellipse { rect: r, arc: None })
+                .expect("ellipse")
+        };
+        let back = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 90.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("card");
+        let inner = ellipse(&mut app, Rect::new(10.0, 10.0, 40.0, 40.0));
+        app.select(vec![back, inner]);
+        app.group_selection();
+        let group = app.selection[0];
+        app.engine
+            .run(&Command::TransformShapes {
+                shapes: vec![group],
+                transform: Affine::translate((100.0, 20.0)),
+            })
+            .unwrap();
+        let alone = ellipse(&mut app, Rect::new(10.0, 120.0, 50.0, 140.0));
+        // Nothing selected: the button says what to do.
+        app.merge_docker.kind = 1;
+        app.merge_docker.column = 1;
+        app.select(Vec::new());
+        app.place_merge_field_inside();
+        assert_eq!(app.status, tr("merge.place_inside_none"));
+        app.select(vec![inner]);
+        app.place_merge_field_inside();
+        app.select(vec![alone]);
+        app.place_merge_field_inside();
+        for id in [inner, alone] {
+            let s = app.doc().find_shape(id).cloned().expect("frame");
+            assert_eq!(s.name.as_deref(), Some("<Photo>"));
+            assert_eq!(app.selected_merge_fields().len(), 1);
+        }
+        let inner_box = app.doc().shape_on_page(inner).expect("inner").bounds();
+        let alone_box = app.doc().shape_on_page(alone).expect("alone").bounds();
+        app.create_merged_document(false);
+        let doc = app.doc().clone();
+        assert_eq!(doc.pages.len(), 2);
+        // Drawn: blue at the ellipse's middle, clipped off just outside
+        // its curve where the photo's box still reaches.
+        let zoom = 4.0;
+        let area = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let opts = tracedraw_render::RenderOptions {
+            width: (area.width() * zoom) as u32,
+            height: (area.height() * zoom) as u32,
+            view: tracedraw_render::ViewTransform {
+                zoom,
+                origin_x: -area.x0 * zoom,
+                origin_y: area.y1 * zoom,
+            },
+            ..Default::default()
+        };
+        let px = tracedraw_render::render_page(&doc, doc.pages[0].id, &opts).expect("render");
+        let blue = |x: f64, y: f64| {
+            let c = px
+                .pixel(((x - area.x0) * zoom) as u32, ((area.y1 - y) * zoom) as u32)
+                .expect("pixel");
+            c.blue() > 150 && c.red() < 60
+        };
+        let c = inner_box.center();
+        assert!(blue(c.x, c.y), "the photo in the grouped ellipse");
+        assert!(
+            !blue(inner_box.x0 + 0.8, c.y + 7.0),
+            "clipped by the ellipse"
+        );
+        assert!(blue(alone_box.center().x, alone_box.center().y));
+        for b in [inner_box, alone_box] {
+            // The copies have ids of their own; find the frames by name.
+            let found: Vec<Shape> = all_of(&doc.pages[0])
+                .into_iter()
+                .filter(|s| s.name.as_deref() == Some("<Photo>"))
+                .cloned()
+                .collect();
+            let clip = found
+                .iter()
+                .find(|s| {
+                    let on = doc.shape_on_page(s.id).expect("on page").bounds();
+                    (on.x0 - b.x0).abs() < 1e-6 && (on.y0 - b.y0).abs() < 1e-6
+                })
+                .unwrap_or_else(|| panic!("a frame where {b:?} was: {found:?}"));
+            let ShapeKind::ClipFrame { frame, contents } = &clip.kind else {
+                panic!("not a frame: {:?}", clip.kind);
+            };
+            assert!(
+                matches!(frame.kind, ShapeKind::Ellipse { .. }),
+                "the user's ellipse"
+            );
+            assert_eq!(contents.len(), 1, "the record's photo");
+            assert!(matches!(
+                contents[0].kind,
+                ShapeKind::Bitmap { width_px: 96, .. }
+            ));
+            // Fitted in the ellipse's box, in the frame's own space.
+            let pic = contents[0].bounds();
+            let fb = frame.bounds();
+            assert!((pic.width() - fb.width()).abs() < 1e-6, "{pic:?} {fb:?}");
+            assert!(
+                pic.x0 >= fb.x0 - 1e-6 && pic.y1 <= fb.y1 + 1e-6,
+                "{pic:?} {fb:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

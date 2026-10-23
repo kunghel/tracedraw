@@ -6,7 +6,7 @@
 use crate::app::{App, Drag};
 use tracedraw_core::{
     document::{Guide, GuideLine},
-    geometry::{Point, Size, Vec2},
+    geometry::{Affine, Point, Rect, Size, Vec2},
     Color, Command,
 };
 
@@ -231,6 +231,112 @@ impl App {
         self.selected_guides.clear();
         self.guide_rotate = None;
         self.set_guides(keep, "Delete Guideline");
+        true
+    }
+
+    /// Edit > Copy (and Cut) with guidelines selected and no objects: the
+    /// guidelines go on the clipboard, to be pasted where they are (#376).
+    /// False when no guideline is selected.
+    pub fn copy_selected_guides(&mut self) -> bool {
+        let guides = self.page_guides();
+        let copied: Vec<Guide> = self
+            .selected_guides
+            .iter()
+            .filter_map(|i| guides.get(*i))
+            .map(|g| Guide {
+                locked: false,
+                ..*g
+            })
+            .collect();
+        if copied.is_empty() {
+            return false;
+        }
+        let n = copied.len();
+        self.clipboard = Some(crate::app::Clipboard {
+            shapes: Vec::new(),
+            styles: Vec::new(),
+            system: 0,
+            guides: copied,
+        });
+        self.mark_system_clipboard(None);
+        self.status = crate::i18n::trf("status.guides_copied", &[("n", &n.to_string())]);
+        true
+    }
+
+    /// Edit > Paste of copied guidelines: copies at the same places on the
+    /// current page, selected, in one undo step (#376).
+    pub fn paste_guides(&mut self, copied: &[Guide]) {
+        let mut guides = self.page_guides();
+        let n = guides.len();
+        guides.extend_from_slice(copied);
+        self.select(Vec::new());
+        self.set_guides(guides, "Paste Guidelines");
+        self.selected_guides = (n..n + copied.len()).collect();
+        self.guide_rotate = None;
+    }
+
+    /// The box the Transformations docker works on for the selected
+    /// guidelines: round the points that place them (a vertical one at the
+    /// page's middle height, a horizontal one at its middle width, an
+    /// angled one at its point). `None` with none selected.
+    pub fn selected_guides_bounds(&self) -> Option<Rect> {
+        let guides = self.page_guides();
+        let mid = self.page_rect().center();
+        self.selected_guides
+            .iter()
+            .filter_map(|i| guides.get(*i))
+            .map(|g| {
+                let p = line_point(g.line, mid);
+                Rect::from_points(p, p)
+            })
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// The Transformations docker on guidelines (no objects selected): the
+    /// selected ones moved, turned, scaled or skewed by `t` (page space),
+    /// or with `copies` that many copies, each the one before transformed
+    /// again, the last ones selected. Locked guidelines stay. One undo
+    /// step named `label`; false when nothing changed (#376).
+    pub fn transform_selected_guides(
+        &mut self,
+        t: Affine,
+        copies: u32,
+        label: &'static str,
+    ) -> bool {
+        let mut guides = self.page_guides();
+        let mid = self.page_rect().center();
+        let picked: Vec<usize> = self
+            .selected_guides
+            .iter()
+            .copied()
+            .filter(|i| guides.get(*i).is_some_and(|g| copies > 0 || !g.locked))
+            .collect();
+        if picked.is_empty() {
+            return false;
+        }
+        if copies == 0 {
+            for &i in &picked {
+                guides[i].line = transformed_line(guides[i].line, t, mid);
+            }
+            self.set_guides(guides, label);
+            return true;
+        }
+        let mut last: Vec<Guide> = picked.iter().map(|i| guides[*i]).collect();
+        for _ in 0..copies {
+            last = last
+                .iter()
+                .map(|g| Guide {
+                    locked: false,
+                    line: transformed_line(g.line, t, mid),
+                    ..*g
+                })
+                .collect();
+            guides.extend_from_slice(&last);
+        }
+        let k = last.len();
+        let total = guides.len();
+        self.set_guides(guides, label);
+        self.selected_guides = (total - k..total).collect();
         true
     }
 
@@ -590,6 +696,50 @@ impl App {
 
 /// A guideline line moved by `d`: a horizontal one only up and down, a
 /// vertical one only sideways, an angled one both ways.
+/// A point that places `line`: on a horizontal one at `mid`'s x, on a
+/// vertical one at `mid`'s y, an angled one's own point.
+fn line_point(line: GuideLine, mid: Point) -> Point {
+    match line {
+        GuideLine::Horizontal { y } => Point::new(mid.x, y),
+        GuideLine::Vertical { x } => Point::new(x, mid.y),
+        GuideLine::Angled { x, y, .. } => Point::new(x, y),
+    }
+}
+
+/// `line` under `t` (page space): the line through the image of a point on
+/// it, along the image of its direction; horizontal or vertical again when
+/// it ends up so. `mid` places the point taken on a horizontal or vertical
+/// line (see [`line_point`]).
+pub fn transformed_line(line: GuideLine, t: Affine, mid: Point) -> GuideLine {
+    let p = line_point(line, mid);
+    let dir = match line {
+        GuideLine::Horizontal { .. } => Vec2::new(1.0, 0.0),
+        GuideLine::Vertical { .. } => Vec2::new(0.0, 1.0),
+        GuideLine::Angled { angle, .. } => {
+            let a = angle.to_radians();
+            Vec2::new(a.cos(), a.sin())
+        }
+    };
+    let q = t * p;
+    let d = t * (p + dir) - q;
+    if !(q.x.is_finite() && q.y.is_finite()) || d.hypot() < 1e-12 {
+        return line;
+    }
+    let angle = d.y.atan2(d.x).to_degrees().rem_euclid(180.0);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    if near(angle, 0.0) || near(angle, 180.0) {
+        GuideLine::Horizontal { y: q.y }
+    } else if near(angle, 90.0) {
+        GuideLine::Vertical { x: q.x }
+    } else {
+        GuideLine::Angled {
+            x: q.x,
+            y: q.y,
+            angle,
+        }
+    }
+}
+
 pub fn moved_line(line: GuideLine, d: Vec2) -> GuideLine {
     match line {
         GuideLine::Horizontal { y } => GuideLine::Horizontal { y: y + d.y },
@@ -771,6 +921,97 @@ mod tests {
     /// Several selected guidelines move together; a right click during
     /// the drag leaves copies; Duplicate copies them; Clear empties a
     /// type (#376).
+    /// Copy and Paste of selected guidelines (no objects selected) puts
+    /// copies where they were, selected, in one undo step; Cut removes
+    /// them; the Transformations docker moves, turns and copies them; the
+    /// duplicate offset is the document's (#376).
+    #[test]
+    fn guidelines_copy_paste_in_place_and_take_the_transformations_docker() {
+        let mut app = app();
+        app.add_guide(Guide::horizontal(50.0));
+        app.add_guide(Guide::vertical(200.0));
+        app.add_guide(Guide::from(GuideLine::Angled {
+            x: 10.0,
+            y: 10.0,
+            angle: 30.0,
+        }));
+        app.select(Vec::new());
+        app.selected_guides = vec![0, 2];
+        app.copy_with_system();
+        assert_eq!(
+            app.status,
+            crate::i18n::trf("status.guides_copied", &[("n", "2")])
+        );
+        let depth = app.engine.history_labels().0.len();
+        app.paste();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let g = app.page_guides();
+        assert_eq!(g.len(), 5);
+        assert_eq!(g[3].line, g[0].line, "in the same place");
+        assert_eq!(g[4].line, g[2].line);
+        assert_eq!(app.selected_guides, vec![3, 4]);
+        // Cut takes the pasted ones away; Paste brings them back.
+        app.cut();
+        assert_eq!(app.page_guides().len(), 3);
+        app.paste();
+        assert_eq!(app.page_guides().len(), 5);
+        app.undo();
+        app.undo();
+        app.undo();
+        assert_eq!(app.page_guides().len(), 3);
+        // The docker: moved 10 right and 5 up.
+        app.selected_guides = vec![0, 1];
+        app.transform = Default::default();
+        app.transform.position = [10.0, 5.0];
+        crate::ui::transform_docker::apply(&mut app);
+        let g = app.page_guides();
+        assert_eq!(g[0].line, GuideLine::Horizontal { y: 55.0 });
+        assert_eq!(g[1].line, GuideLine::Vertical { x: 210.0 });
+        // Turned 90 degrees about their box's centre: the horizontal one
+        // becomes vertical and the vertical one horizontal.
+        app.transform.tab = crate::app::TransformTab::Rotate;
+        app.transform.angle = 90.0;
+        crate::ui::transform_docker::apply(&mut app);
+        let g = app.page_guides();
+        assert!(
+            matches!(g[0].line, GuideLine::Vertical { .. }),
+            "{:?}",
+            g[0].line
+        );
+        assert!(
+            matches!(g[1].line, GuideLine::Horizontal { .. }),
+            "{:?}",
+            g[1].line
+        );
+        // Two copies, each 20 further right, the last ones selected.
+        app.undo();
+        app.transform.tab = crate::app::TransformTab::Position;
+        app.transform.position = [20.0, 0.0];
+        app.transform.copies = 2;
+        app.selected_guides = vec![1];
+        crate::ui::transform_docker::apply(&mut app);
+        let g = app.page_guides();
+        assert_eq!(g.len(), 5);
+        assert_eq!(g[4].line, GuideLine::Vertical { x: 250.0 });
+        assert_eq!(app.selected_guides, vec![4]);
+        // An angled one keeps its angle when moved.
+        let angled = transformed_line(
+            GuideLine::Angled {
+                x: 0.0,
+                y: 0.0,
+                angle: 30.0,
+            },
+            Affine::translate((5.0, 0.0)),
+            Point::ZERO,
+        );
+        match angled {
+            GuideLine::Angled { x, angle, .. } => {
+                assert!((x - 5.0).abs() < 1e-9 && (angle - 30.0).abs() < 1e-9)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn selected_guidelines_move_copy_duplicate_and_clear_together() {
         let mut app = app();

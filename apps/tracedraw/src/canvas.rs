@@ -262,7 +262,15 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
             }
         }
         if let Some(seg) = &look.preview {
+            // A solid white line under the dashes keeps the preview one
+            // line over any colour, as in the reference program (#489).
             for (pts, _) in flatten(seg, view) {
+                if pts.len() > 1 {
+                    painter.add(epaint::PathShape::line(
+                        pts.clone(),
+                        EStroke::new(2.0, Color32::WHITE),
+                    ));
+                }
                 dashed_polyline(
                     painter,
                     &pts,
@@ -755,25 +763,13 @@ fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
             painter.add(egui::Shape::line(pts, EStroke::new(1.0, red)));
         }
     }
-    // The lines of the symmetry being edited, whatever is selected; else
-    // those of the selected objects.
+    // The lines of the symmetry being edited, whatever is selected; a
+    // symmetry merely selected shows none, so after Finish it reads as one
+    // object, as in the reference program.
     let mut shown: Vec<(Point, f64, u8)> = Vec::new();
     if let Some((_, center, angle, lines)) = app.edited_symmetry() {
         if app.settings.symmetry_show_lines {
             shown.push((center, angle, lines));
-        }
-    } else {
-        for s in app.selected_rc().iter() {
-            for e in &s.effects {
-                if let tracedraw_core::live::Effect::Symmetry {
-                    center,
-                    angle,
-                    lines,
-                } = e
-                {
-                    shown.push((*center, *angle, *lines));
-                }
-            }
         }
     }
     for (center, angle, lines) in shown {
@@ -1330,10 +1326,13 @@ pub(crate) fn text_frame_color(f: &crate::text_frames::ShownFrame) -> Color32 {
 }
 
 /// The flow tab of a frame whose bottom edge runs from `a` to `b` on
-/// screen: hanging under its middle.
+/// screen: hanging under its middle, below the bottom handle of the
+/// selection (it sat under that handle, so dragging the frame taller
+/// started a text link instead, #503).
 pub fn flow_tab_rect(a: Pos2, b: Pos2) -> ERect {
     let mid = a + (b - a) * 0.5;
-    ERect::from_min_size(mid + egui::vec2(-6.0, 1.0), egui::vec2(12.0, 9.0))
+    let top = crate::interaction::HANDLE_OFFSET + crate::interaction::HANDLE_SIZE / 2.0 + 2.0;
+    ERect::from_min_size(mid + egui::vec2(-6.0, top), egui::vec2(12.0, 9.0))
 }
 
 /// Paragraph text frames: dashed lines in the colour `text_frame_color`

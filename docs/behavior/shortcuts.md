@@ -31,7 +31,10 @@ click during a drag (which makes another copy, transformed as far again
 from the new selection). Each action is kept with the undo step it made
 (`Engine::last_step_id`, `App::repeatables`): an action undone is never
 repeated, the one before it is (#366); redone, it is the last again; and
-an undone step replaced by another change is gone for good. Checks:
+an undone step replaced by another change is gone for good. A copy made
+by a right click during a drag, or by its Repeat, is one undo step, the
+copies and their move together (`Engine::squash_since`; it was two, the
+first Undo only moving the copy back onto the original, #471). Checks:
 `pick_drag_tests::repeat_after_an_undo_takes_the_last_action_still_in_effect`,
 `pick_drag_tests::repeat_after_a_right_click_copy_makes_another_copy` (#363),
 `engine::tests::steps_have_ids_that_follow_undo_and_redo`.
@@ -53,7 +56,7 @@ an undone step replaced by another change is gone for good. Checks:
 | --- | --- |
 | Ctrl+G, Ctrl+U | Group, Ungroup |
 | Ctrl+L, Ctrl+K | Combine, Break apart |
-| Ctrl+Q, Ctrl+Shift+Q | Convert to curves, Convert outline to object |
+| Ctrl+Q, Ctrl+Shift+Q | Convert to curves, Convert outline to object (a dashed outline keeps its dashes, each a closed shape, the pattern in widths as drawn; #490, `tools2::tests::a_dashed_outline_becomes_one_shape_per_dash`) |
 | Ctrl+Home, Ctrl+End | To front and back of the page |
 | Shift+PgUp, Shift+PgDn | To front and back of the layer |
 | Ctrl+PgUp, Ctrl+PgDn | Forward one, back one |

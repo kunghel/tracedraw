@@ -258,11 +258,31 @@ const TABS: [TransformTab; 5] = [
     TransformTab::Skew,
 ];
 
-/// Apply the docker's page to the selection (see the module notes).
+/// What the docker works on: the selection's bounds, else (no objects
+/// selected) the selected guidelines' box (#376).
+fn target_bounds(app: &App) -> Option<PageRect> {
+    app.selection_bounds().or_else(|| {
+        app.selection
+            .is_empty()
+            .then(|| app.selected_guides_bounds())
+            .flatten()
+    })
+}
+
+/// Apply the docker's page to the selection (see the module notes), or
+/// with no objects selected to the selected guidelines.
 pub fn apply(app: &mut App) {
-    let Some(b) = app.selection_bounds() else {
+    let Some(b) = target_bounds(app) else {
         return;
     };
+    if app.selection.is_empty() {
+        let origin = app.ruler_origin();
+        let t = app.transform.affine(b, origin);
+        let copies = app.transform.copies.min(MAX_COPIES);
+        let label = tab_info(app.transform.tab).2;
+        app.transform_selected_guides(t, copies, label);
+        return;
+    }
     app.transform.pivot = app.moved_rotation_center();
     let origin = app.ruler_origin();
     let t = app.transform.affine(b, origin);
@@ -510,7 +530,7 @@ fn label(ui: &mut Ui, key: &str) {
 
 /// Draw the docker.
 pub fn transformations(app: &mut App, ui: &mut Ui) {
-    let bounds = app.selection_bounds();
+    let bounds = target_bounds(app);
     let origin = app.ruler_origin();
     let selection = app.selection.clone();
     app.transform.pivot = app.moved_rotation_center();

@@ -13,7 +13,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Tracking (range kerning) | 0% of em |
 | Baseline shift | 0 pt |
 | Alignment | left; justify stretches spaces only, last line left |
-| Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken. Options > Text > Paragraph Text > Hyphenation patterns picks a hyphenation dictionary instead (`hyph_*.dic`, found where the spelling dictionaries are, see `writing-tools.md`): its first line names the character set; `LEFTHYPHENMIN` and `RIGHTHYPHENMIN` set the minimums (else 2 and 3); `%` and `#` lines are comments; `NEXTLEVEL` starts a second level of patterns, a word breaking where either level allows; patterns with a replacement (`/`) are left out. With a dictionary a capital first letter no longer stops a break (nouns in some languages); other capitals still do. A dictionary that is gone at start-up leaves the built-in patterns and a status message (`hyphen::tests::pattern_files`, `spell::tests::real_hyphenation_files`, ignored, over English, Brazilian Portuguese and German files: hy-phen-ation, com-pu-ta-dor, Haus-tür, Schiff-fahrt) |
+| Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken. Options > Text > Paragraph Text > Hyphenation patterns picks a hyphenation dictionary instead (`hyph_*.dic`, found where the spelling dictionaries are, see `writing-tools.md`): its first line names the character set; `LEFTHYPHENMIN` and `RIGHTHYPHENMIN` set the minimums (else 2 and 3); `%` and `#` lines are comments; `NEXTLEVEL` starts a second level of patterns, a word breaking where either level allows; patterns with a replacement (`/`) are left out. With a dictionary a capital first letter no longer stops a break (nouns in some languages); other capitals still do. A dictionary that is gone at start-up leaves the built-in patterns and a status message (`hyphen::tests::pattern_files`, `spell::tests::real_hyphenation_files`, ignored, over English, Brazilian Portuguese, German and Italian files: hy-phen-ation, com-pu-ta-dor, Haus-tür, Schiff-fahrt, in-for-ma-zione). Punctuation before or after a word (a comma at a line's end, quotation marks) is left aside and the letters between break; an apostrophe inside a word (' or ’) is kept for the patterns, and without a pattern file only the part after the last apostrophe breaks (#255, `hyphen::tests::punctuation_round_a_word_and_apostrophes_inside_it`). Text > Use Hyphenation turns hyphenation on or off for the selected texts (off when they all have it); while a text is edited it is the setting of the paragraphs at the caret, its check following them; with no text selected it is the setting new text takes (`writing_tools::tests::use_hyphenation_acts_on_the_selected_text`). Typing keeps a text's own hyphenation; it took the setting for new text, so editing a text turned its hyphenation on or off (#470, `writing_tools::tests::editing_a_text_keeps_its_hyphenation`) |
 | Columns | 1, gutter 5 mm |
 | Bullets | off; indent 5 mm, bullet "*" from the paragraph font |
 | Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column |
@@ -123,6 +123,15 @@ Text and Glyphs dockers and Options (default font):
   state as they were (`Engine::begin_preview`, `withdraw_preview`;
   `the_text_shows_the_font_a_list_points_at`). Options' default font
   list does not preview.
+- The font for new text is kept between runs; at start, one that is no
+  longer installed gives way to Arial (else Liberation Sans, DejaVu Sans,
+  Selawik, or the first font there is), since text typed in it was drawn
+  with a stand-in while the bars named the missing font (#504,
+  `a_default_font_no_longer_installed_gives_way`).
+- On Windows the installed fonts are the ones its font registry lists
+  (the machine's and the user's): a file left in a font folder by a font
+  uninstalled while in use is not offered (#504,
+  `installed::tests::faces_of_files_not_registered_are_left_out`).
 
 Names are drawn by the text engine into pictures of the screen's
 resolution, only for the rows in view, and kept until fonts are added.
@@ -163,6 +172,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Click / Shift+click / drag | place the caret / extend / select |
 | Double-click | select the word |
 | Esc | finish editing and return to the Pick tool; an empty text is removed |
+| Ctrl+Space | finish editing and switch to the Pick tool (Space alone types a space) |
 | Undo of typing | the typing of one editing session of one text is one step ("Edit Text"); a session folds keystrokes only into its own step, while it is the last one, so editing another text never touches it (#373, `text_editing::tests::editing_a_second_text_keeps_the_edit_of_the_first`) |
 | Typing while a field has the keyboard (the font search field, a docker's box) | goes to the field only; the text waits until the field lets the keyboard go (#342, `pick_drag_tests::typing_in_a_focused_field_leaves_the_edited_text_alone`) |
 
@@ -261,9 +271,14 @@ any other object; the steps and sides follow the letters' outlines
   data as `text.next` and `text.prev`). Unlink leaves each frame with the
   text it shows.
 - The flow tab (#371): a paragraph frame that is picked, or whose text
-  does not fit, has a tab under its bottom edge's middle (a down arrow
-  when the text does not fit, two links when the frame flows on, empty
-  otherwise). A click on the tab of a frame that flows into no other
+  does not fit, has a tab under its bottom edge's middle, below the
+  selection's bottom handle (a down arrow when the text does not fit,
+  two links when the frame flows on, empty otherwise). A press on a
+  handle is the handle's, never the tab's: the tab sat under the bottom
+  handle, so dragging a frame taller (one just made by Text > Convert,
+  say) started a text link and the next click linked the text to
+  whatever it hit (#503,
+  `the_bottom_handle_of_a_converted_frame_drags_it_taller`). A click on the tab of a frame that flows into no other
   (Pick tool) waits for the next click, with the target arrow pointer
   and a hint on the status bar: on another paragraph frame, on this page
   or on another one reached meanwhile, the text flows into it; on empty
@@ -385,8 +400,9 @@ Window > Panels > Glyphs. From the top:
   1252 has it ("Keystroke: Alt+0169" for ©, `keystroke`). While text is
   edited, digits typed with Alt held give a character when Alt is let go:
   with a leading zero the code page 1252 number, else the Unicode number
-  (`text_editing::alt_code_char`); on Windows the system does this itself
-  and TraceDraw leaves it to it.
+  (`text_editing::alt_code_char`), on every system: on Windows the
+  windowing layer drops the character the system makes of them (#469).
+  The keypad digits count with Num Lock off too (the physical key).
 - A grid of large cells with the glyphs the font draws in that range
   (from its character map), scrolled row by row. The tip names the
   character and its code point. A small arrow under a glyph means the
@@ -417,7 +433,8 @@ Window > Panels > Glyphs. From the top:
 
 ## Shape tool on text
 
-- A node at the lower left of every character, on its (shifted)
+- A node at the lower left of every character (of its own glyph, in right-to-left text too, each under its letter in reading order, #474,
+  `text_nodes::tests::right_to_left_characters_have_their_nodes_under_their_glyphs`), on its (shifted)
   baseline; newlines have none. Click chooses one, Ctrl+click adds or
   removes, Shift+click adds, a marquee (rectangular or freehand) chooses
   the nodes inside. Chosen nodes are filled.
@@ -707,7 +724,14 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   on its lowest point, inside and reading left to right, both mirrors
   on; the list shows these while the text is so placed,
   `text_path::tests::top_and_bottom_placement_on_a_closed_path`),
-  Distance from path and Offset along path in the document's units,
+  Distance from path and Offset along path in the document's units
+  (a new distance, from the bar or a drag across the path, keeps the
+  text where it is along the path: the offset, measured along the
+  baseline, scales with the baseline's length, so text centred on the
+  bottom of a circle stays centred as it moves in or out; the mirrors,
+  which put the baseline on the path's other side, scale it the same
+  way, #193,
+  `text_path::tests::distance_from_the_path_keeps_the_text_in_its_place`),
   Tick snapping and its spacing (1 mm by default, kept in the
   preferences: a drag off the path then moves the text away from it in
   whole steps,

@@ -262,6 +262,29 @@ pub fn human_size(bytes: usize) -> String {
     }
 }
 
+/// Round each colour channel (not alpha) to fewer levels for WebP's
+/// near-lossless quality: 100 keeps every value, lower qualities drop up
+/// to 4 low bits.
+fn near_lossless(img: &mut image::RgbaImage, quality: u8) {
+    let bits: u32 = match quality {
+        100.. => 0,
+        90..=99 => 1,
+        75..=89 => 2,
+        50..=74 => 3,
+        _ => 4,
+    };
+    if bits == 0 {
+        return;
+    }
+    let half = 1u16 << (bits - 1);
+    for p in img.pixels_mut() {
+        for v in &mut p.0[..3] {
+            let q = ((*v as u16 + half) >> bits) << bits;
+            *v = q.min(255) as u8;
+        }
+    }
+}
+
 /// Encode a rendered page in the bitmap format `ext`.
 fn encode_raster(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u8>, String> {
     let (w, h) = (pm.width(), pm.height());
@@ -294,6 +317,14 @@ fn encode_raster(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u
                 .to_rgb8()
                 .write_to(&mut out, format)
                 .map_err(|e| e.to_string())?;
+        }
+        image::ImageFormat::WebP => {
+            // The WebP encoder at hand writes lossless files only; below
+            // 100 the colours are first rounded to fewer levels, WebP's
+            // near-lossless way, so quality shrinks the file (#544).
+            let mut rgba = dynimg.to_rgba8();
+            near_lossless(&mut rgba, quality);
+            rgba.write_to(&mut out, format).map_err(|e| e.to_string())?;
         }
         _ => dynimg
             .write_to(&mut out, format)
@@ -433,6 +464,47 @@ fn postscript_level(ps: String, level: u8) -> String {
 /// The sheets the printer gets for the Print dialog's settings: the pages
 /// imposed with their marks, mirrored and inverted when asked. Print and
 /// Print Preview both start here, so the preview shows what prints.
+/// The objects `page` shows (every one with `all`) scaled down and moved
+/// as one to fit inside it, centred, when they run off it; objects wholly
+/// off the page stay out of it.
+fn fit_contents_to_page(page: &mut tracedraw_core::document::Page, all: bool) {
+    const EPS: f64 = 1e-6;
+    let area = page.rect();
+    let shows = |b: &Rect| {
+        all || (b.x0 <= area.x1 && b.x1 >= area.x0 && b.y0 <= area.y1 && b.y1 >= area.y0)
+    };
+    let Some(b) = page
+        .layers
+        .iter()
+        .flat_map(|l| &l.shapes)
+        .map(|s| s.bounds())
+        .filter(|b| b.width().is_finite() && b.height().is_finite() && shows(b))
+        .reduce(|a, b| a.union(b))
+    else {
+        return;
+    };
+    let inside = b.x0 >= area.x0 - EPS
+        && b.y0 >= area.y0 - EPS
+        && b.x1 <= area.x1 + EPS
+        && b.y1 <= area.y1 + EPS;
+    if inside {
+        return;
+    }
+    let k = (area.width() / b.width().max(EPS))
+        .min(area.height() / b.height().max(EPS))
+        .min(1.0);
+    let t = Affine::translate(area.center().to_vec2())
+        * Affine::scale(k)
+        * Affine::translate(-b.center().to_vec2());
+    for layer in page.layers.iter_mut() {
+        for s in layer.shapes.iter_mut() {
+            if shows(&s.bounds()) {
+                s.transform = t * s.transform;
+            }
+        }
+    }
+}
+
 pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     let mut doc = app.engine.document().clone();
     let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
@@ -448,6 +520,14 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
             for layer in page.layers.iter_mut() {
                 layer.shapes.retain(|s| app.selection.contains(&s.id));
             }
+        }
+    }
+    // Fit to page: objects running off the page (the selection, when
+    // that is printed) shrink to fit inside it, centred, rather than
+    // being cut at its edge (#534).
+    if st.fit_to_page {
+        for page in doc.pages.iter_mut() {
+            fit_contents_to_page(page, st.range == 3);
         }
     }
     for page in doc.pages.iter_mut() {
@@ -942,17 +1022,52 @@ fn user_dir(env: &str, name: &str) -> Option<std::path::PathBuf> {
 
 // ----- print merge ---------------------------------------------------------------
 
-pub fn parse_csv(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
-    let delim = if text
-        .lines()
-        .next()
-        .map(|l| l.matches(';').count() > l.matches(',').count())
-        .unwrap_or(false)
-    {
-        b';'
-    } else {
-        b','
+/// The text of a data file as spreadsheets save it: UTF-8 (with or
+/// without the byte order mark), UTF-16 with its mark (Excel's Unicode
+/// Text), else code page 1252 (Excel's CSV on Windows), which failed to
+/// read as UTF-8 (#495).
+pub fn decode_text(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    let utf16 = |rest: &[u8], le: bool| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| {
+                if le {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                }
+            })
+            .collect();
+        String::from_utf16_lossy(&units)
     };
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(rest, true);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(rest, false);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes
+            .iter()
+            .map(|&b| crate::ui::glyphs_docker::from_cp1252(b).unwrap_or('\u{FFFD}'))
+            .collect(),
+    }
+}
+
+/// Records of a CSV text: the first row names the fields; the separator
+/// is the comma, semicolon or tab the first row holds most of.
+pub fn parse_csv(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
+    let first = text.lines().next().unwrap_or_default();
+    let delim = b",;\t"
+        .iter()
+        .copied()
+        .max_by_key(|d| first.matches(*d as char).count())
+        .filter(|d| first.contains(*d as char))
+        .unwrap_or(b',');
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(delim)
         .flexible(true)
@@ -1496,6 +1611,33 @@ mod tests {
         assert_eq!(r[1][1], "Lisboa");
         let (h2, _) = parse_csv("a;b\n1;2\n");
         assert_eq!(h2, vec!["a", "b"]);
+        let (h3, r3) = parse_csv("a\tb, c\n1\t2\n");
+        assert_eq!(h3, vec!["a", "b, c"]);
+        assert_eq!(r3[0], vec!["1", "2"]);
+    }
+
+    /// Data files as spreadsheets save them read: UTF-8 with its mark (no
+    /// stray mark in the first field), UTF-16 (Unicode Text) and code page
+    /// 1252, which Excel writes CSV in on Windows (#495).
+    #[test]
+    fn data_files_in_every_encoding_read() {
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend("Nome,Cidade\nJoão,Évora\n".as_bytes());
+        let (h, r) = parse_csv(&decode_text(&bom));
+        assert_eq!(h, vec!["Nome", "Cidade"]);
+        assert_eq!(r[0], vec!["João", "Évora"]);
+        let mut le = vec![0xFF, 0xFE];
+        for u in "Name\tCity\nAna\tPorto\n".encode_utf16() {
+            le.extend(u.to_le_bytes());
+        }
+        let (h, r) = parse_csv(&decode_text(&le));
+        assert_eq!(h, vec!["Name", "City"]);
+        assert_eq!(r[0], vec!["Ana", "Porto"]);
+        // "João" and the euro sign in code page 1252 are not UTF-8.
+        let ansi = b"Name;Price\nJo\xe3o;5 \x80\n";
+        let (h, r) = parse_csv(&decode_text(ansi));
+        assert_eq!(h, vec!["Name", "Price"]);
+        assert_eq!(r[0], vec!["João", "5 €"]);
     }
 
     #[test]
@@ -1509,6 +1651,81 @@ mod tests {
             replace_in("cat concat", "cat", "dog", false, true),
             "dog concat"
         );
+    }
+
+    /// WebP takes the quality: lower values make smaller files (colours
+    /// rounded, near-lossless), 100 keeps the image exact (#544).
+    #[test]
+    fn webp_quality_shrinks_the_file() {
+        let mut pm = tiny_skia::Pixmap::new(256, 128).expect("pixmap");
+        for (i, p) in pm.pixels_mut().iter_mut().enumerate() {
+            let (x, y) = ((i % 256) as u8, (i / 256) as u8);
+            let n = ((x as u32 * 7 + y as u32 * 13) % 5) as u8;
+            *p = tiny_skia::PremultipliedColorU8::from_rgba(x, y.wrapping_mul(2), x ^ y ^ n, 255)
+                .expect("pixel");
+        }
+        let full = encode_raster(&pm, "webp", 100).expect("webp");
+        let low = encode_raster(&pm, "webp", 40).expect("webp");
+        assert!(
+            low.len() < full.len() * 3 / 4,
+            "{} vs {}",
+            low.len(),
+            full.len()
+        );
+        let back = image::load_from_memory(&full).expect("decode").to_rgba8();
+        assert_eq!(back.get_pixel(37, 21).0, {
+            let d = pm.pixel(37, 21).expect("pixel").demultiply();
+            [d.red(), d.green(), d.blue(), d.alpha()]
+        });
+    }
+
+    /// Fit to page shrinks objects running off the page to fit inside it,
+    /// centred; objects wholly off the page stay out (#534).
+    #[test]
+    fn fit_to_page_shrinks_what_runs_off_the_page() {
+        let mut app = App::headless();
+        let size = app.page_size();
+        let rect = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        // Twice the page's width, off its right edge; another wholly off.
+        let wide = rect(
+            &mut app,
+            Rect::new(10.0, 10.0, 10.0 + size.width * 2.0, 60.0),
+        );
+        let away = rect(&mut app, Rect::new(-300.0, 0.0, -250.0, 50.0));
+        let mut page = app.doc().pages[0].clone();
+        fit_contents_to_page(&mut page, false);
+        let bounds = |page: &tracedraw_core::document::Page, id| {
+            page.layers
+                .iter()
+                .flat_map(|l| &l.shapes)
+                .find(|s| s.id == id)
+                .map(|s| s.bounds())
+                .expect("shape")
+        };
+        let b = bounds(&page, wide);
+        assert!(b.x0 >= -1e-6 && b.x1 <= size.width + 1e-6, "{b:?}");
+        assert!((b.width() - size.width).abs() < 1e-6, "as wide as the page");
+        assert!((b.center().y - size.height / 2.0).abs() < 1e-6, "centred");
+        assert_eq!(bounds(&page, away), Rect::new(-300.0, 0.0, -250.0, 50.0));
+        // Printing the selection fits it whatever it covers.
+        let mut page = app.doc().pages[0].clone();
+        fit_contents_to_page(&mut page, true);
+        assert!(bounds(&page, away).x0 >= -1e-6);
+        // Objects inside the page stay as they are.
+        let mut page = app.doc().pages[0].clone();
+        page.layers
+            .iter_mut()
+            .for_each(|l| l.shapes.retain(|s| s.id != wide && s.id != away));
+        let before = page.clone();
+        fit_contents_to_page(&mut page, false);
+        assert_eq!(page, before);
     }
 }
 

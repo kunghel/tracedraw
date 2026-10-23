@@ -223,6 +223,17 @@ fn repeat_after_a_right_click_copy_makes_another_copy() {
     );
     app.repeat_last();
     assert_eq!(shape_count(&app), 4);
+    // Each copy, the drag's and Repeat's, is one undo step: one Undo
+    // takes the newest copy away whole, not just its move (#471).
+    let third = app.selection[0];
+    let steps = app.engine.history_labels().0.len();
+    app.undo();
+    assert_eq!(app.engine.history_labels().0.len(), steps - 1);
+    assert_eq!(shape_count(&app), 3);
+    assert!(app.doc().find_shape(third).is_none());
+    app.undo();
+    app.undo();
+    assert_eq!(shape_count(&app), 1, "three Undos for three copies");
 }
 
 /// Repeat after an undo repeats the last action still in effect, not the
@@ -4487,4 +4498,434 @@ fn a_lone_symmetry_object_is_picked_alone_and_takes_new_drawings() {
         _ => 0,
     };
     assert_eq!(kids, 2);
+}
+
+fn double_click_at(ctx: &egui::Context, app: &mut App, at: Pos2) {
+    let m = Modifiers::NONE;
+    // Past the triple-click time since the last click.
+    for _ in 0..40 {
+        frame(ctx, app, Vec::new(), m);
+    }
+    frame(ctx, app, vec![Event::PointerMoved(at)], m);
+    for _ in 0..2 {
+        frame(
+            ctx,
+            app,
+            vec![button(at, true, PointerButton::Primary, m)],
+            m,
+        );
+        frame(
+            ctx,
+            app,
+            vec![button(at, false, PointerButton::Primary, m)],
+            m,
+        );
+    }
+    for _ in 0..20 {
+        frame(ctx, app, Vec::new(), m);
+    }
+}
+
+/// A finished symmetry is one object, as in the reference program: a
+/// click picks the whole of it and a drag moves it all; a double click
+/// goes back into editing it, where a click picks one object inside.
+#[test]
+fn a_finished_symmetry_is_picked_whole_and_a_double_click_edits_it() {
+    let (ctx, mut app, a) = setup();
+    let b = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(10.0, 60.0, 30.0, 80.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![a, b]);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        200, 30, 30,
+    )));
+    app.create_symmetry();
+    let g = app.symmetry_edit.expect("editing");
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // The bar's Finish, clicked.
+    let finish = app.canvas_rect.min + egui::vec2(14.0 + 10.0 + 30.0, 14.0 + 6.0 + 9.0);
+    click_at(&ctx, &mut app, finish, Modifiers::NONE);
+    assert_eq!(app.symmetry_edit, None, "Finish ends the editing");
+    app.select(Vec::new());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let on_a = app.view.to_screen(Point::new(30.0, 25.0));
+    click_at(&ctx, &mut app, on_a, Modifiers::NONE);
+    assert_eq!(app.symmetry_edit, None, "a click does not edit");
+    assert_eq!(app.selection, vec![g], "the whole symmetry");
+    let before = app.doc().shape_on_page(g).expect("g").bounds();
+    let to = app.view.to_screen(Point::new(50.0, 25.0));
+    drag(&ctx, &mut app, on_a, to, Modifiers::NONE, Vec::new());
+    let after = app.doc().shape_on_page(g).expect("g").bounds();
+    assert!(
+        (after.x0 - before.x0 - 20.0).abs() < 1.0,
+        "{before:?} -> {after:?}"
+    );
+    // Off the selection's centre mark (a double click there resets it).
+    let on_a = app.view.to_screen(Point::new(36.0, 14.0));
+    double_click_at(&ctx, &mut app, on_a);
+    assert_eq!(app.symmetry_edit, Some(g), "a double click edits it");
+    click_at(&ctx, &mut app, on_a, Modifiers::NONE);
+    assert_eq!(app.selection, vec![a], "one object inside");
+}
+
+/// Shape tool: Ctrl or Shift while dragging a handle keeps it to the
+/// constrain angle about its node, and a smooth node's other handle keeps
+/// following it (Ctrl made the node a cusp instead, Shift did nothing;
+/// #510).
+#[test]
+fn ctrl_or_shift_keeps_a_handle_to_the_constrain_angle() {
+    use tracedraw_core::geometry::BezPath;
+    use tracedraw_core::nodes;
+    for mods in [Modifiers::CTRL, Modifiers::SHIFT] {
+        let (ctx, mut app, _) = setup();
+        let mut path = BezPath::new();
+        path.move_to((10.0, 50.0));
+        path.curve_to((20.0, 50.0), (30.0, 60.0), (40.0, 60.0));
+        path.curve_to((50.0, 60.0), (60.0, 50.0), (70.0, 50.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path,
+                closed: false,
+            })
+            .expect("curve");
+        app.select(vec![id]);
+        app.set_tool(Tool::Shape);
+        app.node_selection = vec![(id, 1)];
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        let from = app.view.to_screen(Point::new(50.0, 60.0));
+        let to = app.view.to_screen(Point::new(58.0, 63.0));
+        drag(&ctx, &mut app, from, to, mods, Vec::new());
+        let ShapeKind::Path { path, .. } = &app.doc().find_shape(id).expect("curve").kind else {
+            panic!("a curve");
+        };
+        let n = nodes::nodes(path)
+            .into_iter()
+            .find(|n| n.index == 1)
+            .expect("node");
+        let out = n.ctrl_out.expect("out") - n.pos;
+        let back = n.ctrl_in.expect("in") - n.pos;
+        let a = out.y.atan2(out.x).to_degrees();
+        assert!((a - 15.0).abs() < 0.5, "{mods:?}: {a}");
+        let b = back.y.atan2(back.x).to_degrees();
+        assert!(
+            ((b - a).abs() - 180.0).abs() < 0.5,
+            "{mods:?}: still smooth, {b}"
+        );
+    }
+}
+
+/// Pen: Ctrl while dragging on the first node to close the curve keeps
+/// the closing handle to the constrain angle, as on every other node
+/// (#473).
+#[test]
+fn ctrl_keeps_the_closing_handle_to_the_constrain_angle() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let a = Point::new(100.0, 150.0);
+    pull(&ctx, &mut app, a, Point::new(110.0, 170.0));
+    pull(
+        &ctx,
+        &mut app,
+        Point::new(150.0, 190.0),
+        Point::new(170.0, 190.0),
+    );
+    click_page(&ctx, &mut app, Point::new(160.0, 130.0));
+    let (from, to) = (
+        app.view.to_screen(a),
+        app.view.to_screen(Point::new(88.0, 146.0)),
+    );
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        to,
+        Modifiers::CTRL,
+        vec![key(egui::Key::C, Modifiers::CTRL)],
+    );
+    assert!(app.curve.is_none());
+    let segs: Vec<_> = last_path(&app).segments().collect();
+    let closing = segs
+        .iter()
+        .rev()
+        .find_map(|s| match s {
+            tracedraw_core::geometry::PathSeg::Cubic(c) if near(c.p3, a) => Some(*c),
+            _ => None,
+        })
+        .expect("a curved closing segment");
+    let d = closing.p2 - a;
+    let angle = d.y.atan2(d.x).to_degrees().rem_euclid(360.0);
+    // Free, the handle would point at 198.4°; kept to 15° steps, 195°.
+    assert!((angle - 195.0).abs() < 0.5, "{angle} {closing:?}");
+}
+
+/// While a text is edited, Space types a space and Ctrl+Space leaves the
+/// text for the Pick tool, the text kept as typed (autocorrect starting
+/// the sentence with a capital) (#478).
+#[test]
+fn ctrl_space_leaves_text_editing_for_the_pick_tool() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.start_text(Point::new(50.0, 50.0), None);
+    app.text_insert("ab");
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            key(egui::Key::Space, Modifiers::NONE),
+            Event::Text(" ".into()),
+        ],
+        Modifiers::NONE,
+    );
+    assert!(app.text_edit.is_some());
+    assert_eq!(
+        app.edit_spans()
+            .map(|s| tracedraw_core::document::spans_text(&s)),
+        Some("Ab ".into())
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            key(egui::Key::Space, Modifiers::CTRL),
+            Event::Text(" ".into()),
+        ],
+        Modifiers::CTRL,
+    );
+    assert!(app.text_edit.is_none(), "editing ended");
+    assert_eq!(app.tool, Tool::Pick);
+    let id = app.selection[0];
+    match &app.doc().find_shape(id).expect("text").kind {
+        ShapeKind::Text { spans, .. } => {
+            assert_eq!(tracedraw_core::document::spans_text(spans), "Ab ")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Alt held while 0193 is typed on the keypad gives Á when Alt is let
+/// go, the keystroke the Glyphs docker shows; with Num Lock off the
+/// keypad sends Insert, End, PageDown and PageDown, read by their
+/// physical keys (#469).
+#[test]
+fn alt_codes_typed_on_the_keypad_give_their_character() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.start_text(Point::new(50.0, 50.0), None);
+    let pad = |logical: egui::Key, physical: egui::Key| Event::Key {
+        key: logical,
+        physical_key: Some(physical),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::ALT,
+    };
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            pad(egui::Key::Insert, egui::Key::Num0),
+            pad(egui::Key::End, egui::Key::Num1),
+            pad(egui::Key::PageDown, egui::Key::Num9),
+            pad(egui::Key::PageDown, egui::Key::Num3),
+        ],
+        Modifiers::ALT,
+    );
+    assert_eq!(
+        app.edit_spans()
+            .map(|s| tracedraw_core::document::spans_text(&s)),
+        Some(String::new()),
+        "nothing typed while Alt is held"
+    );
+    frame(&ctx, &mut app, vec![], Modifiers::NONE);
+    assert_eq!(
+        app.edit_spans()
+            .map(|s| tracedraw_core::document::spans_text(&s)),
+        Some("\u{c1}".into())
+    );
+}
+
+/// Artistic text converted to a paragraph frame (Text > Convert) grows
+/// down with its bottom handle: the flow tab sat under that handle and
+/// took the press, so the next click linked the text to another object
+/// (#503).
+#[test]
+fn the_bottom_handle_of_a_converted_frame_drags_it_taller() {
+    let (ctx, mut app, rect) = setup();
+    app.select(Vec::new());
+    app.start_text(Point::new(80.0, 80.0), None);
+    app.text_insert("Hello world");
+    app.finish_text();
+    let id = app.selection[0];
+    app.toggle_text_kind();
+    assert_eq!(app.selection, vec![id]);
+    app.set_tool(Tool::Pick);
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let size = |app: &App| match &app.doc().find_shape(id).expect("text").kind {
+        ShapeKind::Text { frame, .. } => frame.expect("a paragraph frame"),
+        other => panic!("{other:?}"),
+    };
+    let before = size(&app);
+    // The lower half of the handle, where the tab was.
+    let from = handle(&app, Handle::S) + egui::vec2(0.0, 3.0);
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(0.0, 80.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert!(app.pending_text_link.is_none(), "no text link started");
+    assert!(size(&app).height > before.height + 1.0, "{before:?}");
+    // A click on the rectangle afterwards selects it; nothing links.
+    let c = app.view.to_screen(bounds(&app, rect).center());
+    click_at(&ctx, &mut app, c, Modifiers::NONE);
+    assert!(app.next_frame(id).is_none());
+}
+
+/// Editing a clip frame's contents, a group inside drags, ungroups, and
+/// its members (and an object drawn meanwhile) go back into the frame on
+/// Finish; the ungrouped members were left out and the frame lost its
+/// contents (#537).
+#[test]
+fn a_group_inside_a_clip_frame_being_edited_drags_and_ungroups() {
+    let (ctx, mut app, frame_id) = setup();
+    let mk = |app: &mut App, r: Rect| {
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            0, 0, 200,
+        )));
+        id
+    };
+    let a = mk(&mut app, Rect::new(15.0, 15.0, 30.0, 30.0));
+    let b = mk(&mut app, Rect::new(32.0, 15.0, 45.0, 30.0));
+    let outside = mk(&mut app, Rect::new(150.0, 150.0, 160.0, 160.0));
+    app.select(vec![a, b]);
+    app.group_selection();
+    let g = app.selection[0];
+    app.place_inside(vec![g], frame_id);
+    app.select(vec![frame_id]);
+    app.edit_clip_frame();
+    assert_eq!(app.selection, vec![g]);
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let x0 = bounds(&app, g).x0;
+    let from = app.view.to_screen(Point::new(22.0, 22.0));
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(60.0, 0.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert!(bounds(&app, g).x0 > x0 + 1.0, "the group moved");
+    app.ungroup_selection();
+    assert_eq!(app.selection, vec![a, b]);
+    let (focus, _) = app.render_focus().expect("editing");
+    assert!(
+        focus.contains(&a) && focus.contains(&b),
+        "the members stay in full"
+    );
+    assert!(!focus.contains(&outside));
+    let c = mk(&mut app, Rect::new(20.0, 32.0, 25.0, 36.0));
+    app.finish_clip_frame_edit();
+    match &app.doc().find_shape(frame_id).expect("frame").kind {
+        ShapeKind::ClipFrame { contents, .. } => {
+            let ids: Vec<ShapeId> = contents.iter().map(|s| s.id).collect();
+            assert_eq!(ids, vec![a, b, c]);
+        }
+        other => panic!("not a clip frame: {other:?}"),
+    }
+    assert!(app.doc().find_shape(outside).is_some());
+}
+
+/// Finish on the symmetry bar ends the editing: the bar and the mirror
+/// lines go, the symmetry stays selected whole, a click takes it whole
+/// and a drag moves it whole.
+#[test]
+fn finish_on_the_symmetry_bar_leaves_one_object() {
+    let (ctx, mut app, id) = setup();
+    app.select(vec![id]);
+    app.create_symmetry();
+    let sym = app.selection[0];
+    assert_eq!(
+        app.symmetry_edit,
+        Some(sym),
+        "a new symmetry opens for editing"
+    );
+    let texts = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        let mut all: Vec<(String, Pos2)> = Vec::new();
+        fn walk(s: &egui::Shape, all: &mut Vec<(String, Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => all.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    };
+    texts(&mut app);
+    let finish = texts(&mut app)
+        .into_iter()
+        .find(|(t, _)| t.trim() == "Finish")
+        .map(|(_, p)| p)
+        .expect("the bar's Finish");
+    for _ in 0..40 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    click_at(&ctx, &mut app, finish, Modifiers::NONE);
+    assert_eq!(app.symmetry_edit, None, "editing ended");
+    assert!(app.edited_symmetry().is_none());
+    assert_eq!(app.selection, vec![sym]);
+    assert!(
+        !texts(&mut app).iter().any(|(t, _)| t.trim() == "Finish"),
+        "the bar is gone"
+    );
+    // One object: a click takes it whole, a drag moves it whole.
+    for _ in 0..40 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let c = app.view.to_screen(bounds(&app, sym).center());
+    click_at(&ctx, &mut app, c, Modifiers::NONE);
+    assert_eq!(app.selection, vec![sym]);
+    assert_eq!(app.symmetry_edit, None);
+    let x0 = bounds(&app, sym).x0;
+    drag(
+        &ctx,
+        &mut app,
+        c,
+        c + egui::vec2(80.0, 0.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert!(bounds(&app, sym).x0 > x0 + 5.0);
+    assert_eq!(app.symmetry_edit, None);
 }

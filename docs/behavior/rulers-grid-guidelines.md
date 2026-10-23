@@ -128,7 +128,23 @@ stand for a distance in the world (`drawing_scale.rs`):
   copies them, moved by the duplicate offset (unlocked), the copies
   selected; the Guidelines docker's Duplicate does the same, and its
   Clear deletes every guideline of the type shown, one undo step
-  (`selected_guidelines_move_copy_duplicate_and_clear_together`).
+  (`selected_guidelines_move_copy_duplicate_and_clear_together`). The
+  duplicate offset is Layout > Document Options > General > Duplicate
+  offset.
+- Edit > Copy (Ctrl+C) and Cut (Ctrl+X) with guidelines and no objects
+  selected put them on the clipboard (status "n guideline(s) copied"; Cut
+  then deletes the unlocked ones); Edit > Paste (Ctrl+V) adds copies at
+  the same places on the current page, unlocked and selected, one step
+  "Paste Guidelines".
+- The Transformations docker with guidelines and no objects selected
+  works on them: its box is round the points that place them (a
+  vertical one at the page's middle height, a horizontal one at its
+  middle width, an angled one's point); Position moves them, Rotate
+  turns them (a horizontal one turned 90 degrees becomes vertical),
+  Scale, Size and Skew move them as the box changes; with copies, that
+  many copies, each the one before transformed again, the last ones
+  selected; locked ones stay unless copied. One undo step (#376,
+  `guidelines_copy_paste_in_place_and_take_the_transformations_docker`).
 - A click on the only selected guideline shows its rotation handles: a
   pivot where it was clicked and two curved arrows 70 px along it.
   Dragging an arrow turns the guideline about the pivot in whole degrees;

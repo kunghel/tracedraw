@@ -1093,6 +1093,61 @@ mod tests {
         .expect("text")
     }
 
+    /// Text > Use Hyphenation turns hyphenation on for the selected text
+    /// and off again, the menu's check following it; with nothing
+    /// selected it is the setting new text takes (#255).
+    #[test]
+    fn use_hyphenation_acts_on_the_selected_text() {
+        let mut app = App::headless();
+        let hy = |app: &App, id| match &app.doc().find_shape(id).expect("text").kind {
+            ShapeKind::Text { para, .. } => para.hyphenate,
+            _ => false,
+        };
+        let a = text(&mut app, "una informazione", Some(Size::new(30.0, 40.0)));
+        let b = text(&mut app, "sillabazione", Some(Size::new(30.0, 40.0)));
+        assert!(!app.text_hyphenation && !hy(&app, a));
+        app.select(vec![a, b]);
+        assert!(!app.uses_hyphenation());
+        app.toggle_use_hyphenation();
+        assert!(hy(&app, a) && hy(&app, b));
+        assert!(app.uses_hyphenation());
+        assert!(!app.text_hyphenation, "new text keeps its setting");
+        app.toggle_use_hyphenation();
+        assert!(!hy(&app, a) && !hy(&app, b));
+        app.select(Vec::new());
+        app.toggle_use_hyphenation();
+        assert!(app.text_hyphenation && app.uses_hyphenation());
+        app.text_hyphenation = false;
+    }
+
+    /// Typing in a text keeps its own hyphenation (it took the setting
+    /// for new text, so editing turned it on or off), and Use
+    /// Hyphenation while editing is that text's, its check following
+    /// it (#470).
+    #[test]
+    fn editing_a_text_keeps_its_hyphenation() {
+        let mut app = App::headless();
+        // The paragraph's own setting, as the layout reads it.
+        let hy = |app: &App, id| {
+            let s = app.doc().find_shape(id).expect("text").clone();
+            app.paragraph_style_of(&s).is_some_and(|(_, p)| p.hyphenate)
+        };
+        let a = text(&mut app, "una informazione", Some(Size::new(30.0, 40.0)));
+        app.select(vec![a]);
+        app.toggle_use_hyphenation();
+        assert!(hy(&app, a) && !app.text_hyphenation);
+        app.begin_text_edit(a);
+        assert!(app.text_edit.is_some());
+        app.text_insert(" nuova");
+        assert!(hy(&app, a), "typing kept it");
+        assert!(app.uses_hyphenation(), "the check is the edited text's");
+        app.toggle_use_hyphenation();
+        assert!(!hy(&app, a) && !app.uses_hyphenation());
+        assert!(!app.text_hyphenation, "new text keeps its setting");
+        app.text_insert("!");
+        assert!(!hy(&app, a));
+    }
+
     fn frame(ctx: &Context, app: &mut App) {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(

@@ -33,6 +33,8 @@ impressora e imprime. Na versão para navegador, o PDF é baixado.
 ## Layout {#layout}
 
 - **Como no documento**, **Ajustar à página** ou **Escala** em porcentagem.
+  **Ajustar à página** também reduz objetos maiores que a página (ou a
+  seleção, quando só ela é impressa) para que saiam inteiros nela.
 - **Limite de sangria**: até onde além da página os objetos são impressos
   (4 mm de início).
 - A imposição: várias páginas em uma folha, ou um livreto, cujas páginas são
@@ -40,8 +42,10 @@ impressora e imprime. Na versão para navegador, o PDF é baixado.
   Um esboço mostra o resultado. Para o verso de cartões frente e verso, marque
   **Verso**: as páginas vão da direita para a esquerda na folha, então cada uma
   sai atrás da sua frente, e o texto não é espelhado. **Manter tamanho da
-  página** impede que as páginas encolham numa folha fixa para dar lugar às
-  marcas. Na Visualização de impressão, arraste na folha para mover a
+  página** mantém as páginas no tamanho delas numa folha fixa: elas não
+  encolhem pelas marcas, e as colunas e linhas ficam como você definiu (as
+  páginas que não cabem saem da folha, e um aviso diz isso). Sem ela, as
+  páginas encolhem para caber nas colunas e linhas pedidas. Na Visualização de impressão, arraste na folha para mover a
   informação da página.
 
 ## Pré-impressão {#prepress}

@@ -64,7 +64,10 @@ encurtadas para dar espaço.
 
 ## Hifenização {#hyphenation}
 
-[[menu.text > menu.text.use_hyphenation]] deixa as palavras quebrarem no fim
-das linhas, com pelo menos duas letras antes e três depois da quebra. Palavras
-com letra maiúscula nunca são quebradas. Para decidir você mesmo onde uma
+[[menu.text > menu.text.use_hyphenation]] deixa as palavras do texto
+selecionado quebrarem no fim das linhas (durante a digitação, os parágrafos
+no cursor; sem texto selecionado, vale para o texto novo), com pelo menos duas letras antes e três depois da quebra. Uma
+vírgula ou outra pontuação colada à palavra não impede a quebra, e palavras
+com apóstrofo (como o italiano *dell'anno*) também quebram. Palavras com letra
+maiúscula nunca são quebradas. Para decidir você mesmo onde uma
 palavra pode quebrar, veja [Hífens personalizados](writing-tools.md#custom-hyphens).

@@ -154,7 +154,7 @@ pub fn text_path_bar(app: &mut App, ui: &mut Ui) {
             let mm = u.to_mm(v);
             app.edit_fitted_text(|t, _| {
                 if is_distance {
-                    t.distance = mm;
+                    t.set_distance(mm);
                 } else {
                     t.offset = mm;
                 }

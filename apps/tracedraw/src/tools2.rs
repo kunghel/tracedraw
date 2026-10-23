@@ -359,6 +359,18 @@ impl App {
             if let Some(b) = &band {
                 out = b.clone();
             }
+            // A dashed outline: each dash becomes a closed shape of its
+            // own, the gaps kept (#490). The pattern is in widths, as the
+            // renderer draws it.
+            let pp = if st.dash.is_empty() || band.is_some() {
+                pp
+            } else {
+                let mut pattern: Vec<f64> = st.dash.iter().map(|d| (d * width).max(0.01)).collect();
+                if pattern.len() % 2 == 1 {
+                    pattern = [pattern.clone(), pattern].concat();
+                }
+                kurbo::dash(pp.elements().iter().copied(), 0.0, &pattern).collect()
+            };
             for contour in polylines(&pp).into_iter().filter(|_| band.is_none()) {
                 let closed = contour.1;
                 let pts = contour.0;
@@ -503,6 +515,50 @@ mod tests {
 
     fn bounds(p: &BezPath) -> Rect {
         p.bounding_box()
+    }
+
+    /// Convert Outline to Object on a dashed line keeps the dashes: each
+    /// becomes a closed shape and the gaps stay empty (#490).
+    #[test]
+    fn a_dashed_outline_becomes_one_shape_per_dash() {
+        let mut app = App::headless();
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((70.0, 10.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("line");
+        let mut st = Stroke::new(tracedraw_core::Color::BLACK, 1.0);
+        // 4 on, 2 off, in widths: 10 dashes over 60 mm.
+        st.dash = vec![4.0, 2.0];
+        st.cap = tracedraw_core::LineCap::Butt;
+        app.select(vec![id]);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st),
+        });
+        app.convert_outline_to_object();
+        let out = app
+            .doc()
+            .find_shape(app.selection[0])
+            .cloned()
+            .expect("object");
+        let ShapeKind::Path { path, .. } = &out.kind else {
+            panic!("a curve");
+        };
+        let moves = path
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(moves, 10, "one closed shape per dash");
+        // The gap between the first two dashes (4 to 6 mm in) is empty.
+        let pp = out.page_path();
+        assert!(!kurbo::Shape::contains(&pp, Point::new(15.0, 10.0)));
+        assert!(kurbo::Shape::contains(&pp, Point::new(12.0, 10.0)));
     }
 
     /// Every shape tool previews the object it is about to create, sized

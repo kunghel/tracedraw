@@ -36,6 +36,12 @@ Magenta, then tints in 20% steps (Purple 20 80 0 20, Orange 0 60 100 0,
 Pink 0 40 20 0, Dark Brown 0 20 20 60, Powder Blue 20 20 0 0 and so on,
 to Deep Blue 60 60 0 60).
 
+In a drawing whose primary colour mode is RGB (New Document's colour
+mode, Document Properties) the default palette shows and applies its
+colours as RGB, converted as the colour management converts (names kept;
+spot inks and registration stay as they are); a CMYK drawing keeps them
+CMYK (#483, `ui::palette::tests::an_rgb_drawing_gets_an_rgb_palette`).
+
 ## Using a palette
 
 | Action | Result |

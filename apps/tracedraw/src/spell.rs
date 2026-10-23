@@ -40,9 +40,24 @@ struct Loaded {
     size: usize,
 }
 
-fn state() -> &'static RwLock<(SpellConfig, Option<Arc<Loaded>>)> {
-    static STATE: OnceLock<RwLock<(SpellConfig, Option<Arc<Loaded>>)>> = OnceLock::new();
+type State = RwLock<(SpellConfig, Option<Arc<Loaded>>)>;
+
+#[cfg(not(test))]
+fn state() -> &'static State {
+    static STATE: OnceLock<State> = OnceLock::new();
     STATE.get_or_init(|| RwLock::new((SpellConfig::default(), None)))
+}
+
+/// In tests each thread (each test) has dictionaries of its own: an app
+/// made by another test configures them from its settings, and shared
+/// they changed under a test checking a folder of its own.
+#[cfg(test)]
+fn state() -> &'static State {
+    thread_local! {
+        static STATE: &'static State =
+            Box::leak(Box::new(RwLock::new((SpellConfig::default(), None))));
+    }
+    STATE.with(|s| *s)
 }
 
 /// Use the dictionaries `cfg` names from now on (read again on the next
@@ -545,8 +560,9 @@ mod tests {
     }
 
     /// Real hyphenation dictionaries, where `HUNSPELL_TEST_DIR` holds
-    /// them (not in the repository): English, Brazilian Portuguese and
-    /// German (eight-bit, two levels).
+    /// them (not in the repository): English, Brazilian Portuguese,
+    /// German (eight-bit, two levels) and Italian (apostrophes, words
+    /// followed by punctuation, #255).
     #[test]
     #[ignore]
     fn real_hyphenation_files() {
@@ -557,11 +573,15 @@ mod tests {
         let found = find_hyphenation(Some(&dir));
         let names: Vec<&str> = found.iter().map(|d| d.name.as_str()).collect();
         eprintln!("{names:?}");
-        let cases: [(&str, &str, &[usize]); 4] = [
+        let cases: [(&str, &str, &[usize]); 8] = [
             ("hyph_en_US", "hyphenation", &[2, 6]),
             ("hyph_pt_BR", "computador", &[3, 5, 7]),
             ("hyph_de_DE", "Haustür", &[4]),
             ("hyph_de_DE", "Schifffahrt", &[6]),
+            ("hyph_it_IT", "informazione", &[2, 5, 7]),
+            ("hyph_it_IT", "informazione,", &[2, 5, 7]),
+            ("hyph_it_IT", "dell'università", &[8, 11]),
+            ("hyph_it_IT", "«sillabazione»", &[4, 6, 8]),
         ];
         for (name, word, want) in cases {
             let d = found.iter().find(|d| d.name == name).expect(name);

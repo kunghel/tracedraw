@@ -1803,10 +1803,12 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         app.repeat_last();
     }
     sep(ui);
-    if item(ui, "menu.edit.cut", "Ctrl+X", has) {
+    // Guidelines selected (no objects) are cut and copied too.
+    let guides_picked = !app.selected_guides.is_empty();
+    if item(ui, "menu.edit.cut", "Ctrl+X", has || guides_picked) {
         app.cut();
     }
-    if item(ui, "menu.edit.copy", "Ctrl+C", has) {
+    if item(ui, "menu.edit.copy", "Ctrl+C", has || guides_picked) {
         app.copy_with_system();
     }
     if item(ui, "menu.edit.copy_properties_from", "", has) {
@@ -1834,7 +1836,6 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     }
     sep(ui);
     // Guidelines selected (no objects) duplicate too.
-    let guides_picked = !app.selected_guides.is_empty();
     if item(ui, "menu.edit.duplicate", "Ctrl+D", has || guides_picked) {
         app.duplicate();
     }
@@ -2036,7 +2037,7 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
         app.dialog = Dialog::RenamePage { name };
     }
     if item(ui, "menu.layout.delete_page", "", app.doc().pages.len() > 1) {
-        app.delete_page();
+        app.ask_delete_page();
     }
     if item(ui, "menu.layout.go_to_page", "", true) {
         app.dialog = Dialog::GoToPage {
@@ -2886,11 +2887,8 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         app.toggle_baseline_grid();
     }
     sep(ui);
-    if check(ui, "menu.text.use_hyphenation", "", app.text_hyphenation) {
-        app.text_hyphenation = !app.text_hyphenation;
-        if let Some(spans) = app.edit_spans() {
-            app.set_edit_spans(spans);
-        }
+    if check(ui, "menu.text.use_hyphenation", "", app.uses_hyphenation()) {
+        app.toggle_use_hyphenation();
     }
     if item(ui, "menu.text.custom_hyphens", "", true) {
         app.dialog = Dialog::CustomHyphens(Default::default());

@@ -22,6 +22,8 @@ use tracedraw_core::{
 
 pub mod catalog;
 pub mod hyphen;
+#[cfg(any(windows, all(test, not(target_arch = "wasm32"))))]
+mod installed;
 
 /// Points to millimetres.
 pub const PT_MM: f64 = 25.4 / 72.0;
@@ -751,6 +753,11 @@ pub struct LineBox {
     /// Pen x before each character from `start_char` to `end_char`, then
     /// after the last one: `end_char - start_char + 1` entries.
     pub edges: Vec<f64>,
+    /// The left x of each character's own glyph (a share of it for a
+    /// cluster), `end_char - start_char` entries. Unlike `edges` it holds
+    /// in right-to-left text too, where the glyphs run the other way and
+    /// one character's end is not the next one's start (#474).
+    pub starts: Vec<f64>,
 }
 
 impl TextLayout {
@@ -823,6 +830,8 @@ impl FontSystem {
         let mut db = fontdb::Database::new();
         #[cfg(not(target_arch = "wasm32"))]
         db.load_system_fonts();
+        #[cfg(windows)]
+        installed::drop_unregistered(&mut db);
         if let Ok(extra) = EXTRA_FONTS.lock() {
             for data in extra.iter() {
                 let source: Arc<dyn AsRef<[u8]> + Sync + Send> = data.clone();
@@ -2583,6 +2592,7 @@ impl FontSystem {
             // Pen x before each character; clusters of several characters
             // share their glyph's advance evenly.
             let mut edges: Vec<f64> = vec![line_start; n_chars + 1];
+            let mut starts: Vec<Option<f64>> = vec![None; n_chars];
             let mut record = |from: usize, to: usize, x0: f64, x1: f64| {
                 let from = from.max(line.start_char);
                 let to = to.min(end_char);
@@ -2591,8 +2601,12 @@ impl FontSystem {
                 }
                 let n = (to - from) as f64;
                 for (k, c) in (from..to).enumerate() {
+                    let x = x0 + (x1 - x0) * k as f64 / n;
                     if let Some(e) = edges.get_mut(c - line.start_char) {
-                        *e = x0 + (x1 - x0) * k as f64 / n;
+                        *e = x;
+                    }
+                    if let Some(s) = starts.get_mut(c - line.start_char) {
+                        s.get_or_insert(x);
                     }
                 }
                 if let Some(e) = edges.get_mut(to - line.start_char) {
@@ -2634,6 +2648,11 @@ impl FontSystem {
                 pen += adv;
                 glyph_count += 1;
             }
+            let starts: Vec<f64> = starts
+                .iter()
+                .zip(&edges)
+                .map(|(s, e)| s.unwrap_or(*e))
+                .collect();
             line_boxes.push(LineBox {
                 start_char: line.start_char,
                 end_char,
@@ -2641,6 +2660,7 @@ impl FontSystem {
                 ascent: m.ascent,
                 descent: m.descent,
                 edges,
+                starts,
             });
             if let Some(h) = &line.hyphen {
                 if line.glyphs.last().is_none_or(|g| span_drawn(g.span)) {

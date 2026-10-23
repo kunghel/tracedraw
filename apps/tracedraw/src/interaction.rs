@@ -1200,7 +1200,11 @@ impl App {
         if response.clicked_by(PointerButton::Primary)
             || response.drag_started_by(PointerButton::Primary)
         {
-            if let Some(id) = self.flow_tab_at(screen) {
+            // A handle comes first: the tab never takes a drag of one.
+            if let Some(id) = self
+                .flow_tab_at(screen)
+                .filter(|_| self.handle_at(screen).is_none())
+            {
                 self.start_text_link(id);
                 return;
             }
@@ -1434,6 +1438,21 @@ impl App {
                 }
             }
             if let Some(id) = self.hit_test(p) {
+                // An object with a symmetry (or inside one): editing the
+                // symmetry, as in the reference program.
+                if self.symmetry_edit.is_none() {
+                    let top = self.doc().top_level_of(id).unwrap_or(id);
+                    let has = self.doc().find_shape(top).is_some_and(|s| {
+                        s.effects
+                            .iter()
+                            .any(|e| matches!(e, tracedraw_core::live::Effect::Symmetry { .. }))
+                    });
+                    if has {
+                        self.select(vec![top]);
+                        self.edit_symmetry();
+                        return;
+                    }
+                }
                 // A group or clip frame: into focus mode.
                 if self.focus_on_double_click(id) {
                     self.focus_on(id);
@@ -1914,13 +1933,20 @@ impl App {
                 self.finish_curve();
             }
         }
+        // The closing drag's handle, from the first node, kept to the
+        // constrain angle like any other handle (#473).
+        let closing_at = |c: &CurveInProgress, step: f64| match c.nodes.first() {
+            Some(first) if constrain => constrain_from(first.0, raw, step),
+            _ => raw,
+        };
+        let step = self.settings.constrain_angle;
         if response.dragged_by(PointerButton::Primary) {
             // C held (pressed before or during the pull): a cusp; it stays
             // one after C is let go.
             let c_pressed = response.ctx.input(|i| i.key_down(egui::Key::C));
             if let Some(c) = &mut self.curve {
                 if c.closing.is_some() {
-                    c.closing = Some(raw);
+                    c.closing = Some(closing_at(c, step));
                 } else if c.dragging_handle && smooth {
                     if c_pressed {
                         c.freeze_last_in();
@@ -1950,7 +1976,7 @@ impl App {
         if response.drag_stopped_by(PointerButton::Primary) {
             if self.curve.as_ref().is_some_and(|c| c.closing.is_some()) {
                 if let Some(mut c) = self.curve.take() {
-                    c.closing = Some(raw);
+                    c.closing = Some(closing_at(&c, step));
                     self.close_curve(c);
                 }
                 return;

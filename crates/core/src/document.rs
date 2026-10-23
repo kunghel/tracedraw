@@ -1423,6 +1423,20 @@ impl TextOnPath {
         self.mirror_v = v;
     }
 
+    /// Move the text `distance` from the path, keeping it where it is along
+    /// the path: the offset is measured along the baseline, which grows
+    /// or shrinks with the distance (round a circle, with its radius), so
+    /// it is scaled with the baseline's length. Text centred on the bottom
+    /// of a circle stays centred there as it moves out or in (#193).
+    pub fn set_distance(&mut self, distance: f64) {
+        let before = self.baseline().length();
+        self.distance = distance;
+        let after = self.baseline().length();
+        if before > 1e-9 && after.is_finite() {
+            self.offset *= after / before;
+        }
+    }
+
     /// The letters are drawn flipped across the baseline (one mirror on).
     pub fn flipped(&self) -> bool {
         let (h, v) = self.mirrors();

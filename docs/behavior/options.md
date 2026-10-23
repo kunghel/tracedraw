@@ -206,7 +206,11 @@ Customization > Appearance > Color > Theme: Light (the default), Medium
 Light, Medium Dark, Dark or High Contrast (`theme.rs`, one palette each). Panels, bars,
 menus, dialogs, lists, rulers, tabs and icons take the theme's colours;
 the page, the drawing, the accent blue and the desktop colour (its own
-setting) do not. The button with a moon (light themes) or a sun (dark
+setting) do not. The desktop colour is the theme's until one is picked;
+its button shows the colour around the page, and any colour picked holds,
+white too (white stood for the theme's colour, so picking it changed
+nothing, #530, `app::tests::a_white_desktop_picked_is_white`); Reset goes
+back to the theme's. The button with a moon (light themes) or a sun (dark
 themes) at the right end of the status bar switches to Dark or to
 Light. The choice is kept in the preferences and applies at once. The
 system's dark mode (the browser's `prefers-color-scheme` in the browser

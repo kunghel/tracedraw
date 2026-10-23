@@ -140,6 +140,10 @@ pub struct Settings {
     /// Colour of the area around the page (Customization > Appearance).
     #[serde(default = "default_desktop")]
     pub desktop_rgb: [u8; 3],
+    /// The desktop colour was picked: white too is then white, not the
+    /// theme's colour that white stood for (#530).
+    #[serde(default)]
+    pub desktop_custom: bool,
     /// What the status bar's first field shows.
     #[serde(default)]
     pub status_info: crate::ui::status::StatusInfo,
@@ -1326,6 +1330,7 @@ impl Default for Settings {
             show_new_document_dialog: true,
             new_document: crate::new_document::NewDocSettings::default(),
             desktop_rgb: default_desktop(),
+            desktop_custom: false,
             status_info: crate::ui::status::StatusInfo::default(),
             toolbox_hidden: Vec::new(),
             button_size: ButtonSize::Medium,

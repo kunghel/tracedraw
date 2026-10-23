@@ -24,7 +24,10 @@ Shortcut: F11 opens the Edit Fill dialog; G is the Interactive Fill tool.
 
 Edit Fill dialog (#361, `ui/edit_fill.rs`): the fill kinds as pictures
 across the top (none, uniform, gradient, pattern, texture, mesh), then
-the kind's settings. Uniform: the colour viewer and the colour picker.
+the kind's settings. Uniform: the colour viewer and the colour picker's swatch, then the
+colour's model (RGB, CMYK, HSB, HSL, Lab, Grayscale, YIQ; a choice converts
+the colour) and a slider with a field for each of its values, and the hex
+code (#468, `edit_fill::tests::a_uniform_fill_shows_its_model_and_values`).
 Gradient: on the left a 180 point preview of the fill drawn by the
 renderer on a checker, and the fill picker (the built-in gradients); on
 the right the type, the repeat (Default, Repeat and mirror, Repeat with
@@ -97,7 +100,11 @@ pos_i)`.
   picker) and its transparency (0 % opaque to 100 % clear); the
   property bar shows the node's colour, transparency and position
   (the position only for nodes between the ends). A palette colour
-  clicked while a node is picked goes to the node.
+  clicked while a node is picked goes to the node. The node bar's
+  dotted grip (at its left) and the colour picker's (along its top)
+  drag them off the object; the bar keeps that offset from its node,
+  the picker stays where it was put while open, inside the window
+  (`color_picker::tests::a_swatch_click_opens_the_popup_inside_the_window`).
 - A palette colour dropped on a node recolours it; dropped on the line
   it adds a node of that colour (one undo step).
 

@@ -11,7 +11,11 @@ button) 480 points wide:
   (`#5CAEFF`) curves on the right with one selected node (a square node,
   two handles along the tangent, round handle ends), the 76 px
   application icon, the name in the bold face at 29 px ("Trace" white,
-  "Draw" `#7FC3FF`), the tagline and the version in a rounded chip.
+  "Draw" `#7FC3FF`), the tagline and the version in a rounded chip,
+  then a green ALPHA badge whose tooltip says the program is at an
+  early stage: most tools work, some features are missing or
+  incomplete, keep copies of important files, report problems on
+  GitHub.
 - The description at 13.5 px with 20 px lines, a light separator, then
   the facts as two columns with dim labels: Author, License, Source code
   (a link that opens the repository), Developed with.

@@ -327,20 +327,10 @@ impl App {
     }
 
     /// Area Fill: flood the enclosed area under the click (all visible
-    /// outlines count as walls) and create a filled object from it.
+    /// outlines count as walls) and create a filled object from it. The
+    /// area can be anywhere, on the page or off it on the desktop, and a
+    /// drawing of any size (#499).
     pub fn area_fill_at(&mut self, p: Point) {
-        let page = self.page_rect();
-        if !page.contains(p) {
-            return;
-        }
-        let res = 4.0; // pixels per mm
-        let w = (page.width() * res).ceil() as usize;
-        let h = (page.height() * res).ceil() as usize;
-        if w == 0 || h == 0 || w * h > 40_000_000 {
-            return;
-        }
-        // Walls: every outline (stroked or not) of every visible object.
-        let mut walls = vec![false; w * h];
         let shapes: Vec<Shape> = self
             .doc()
             .layers_for_page(self.page)
@@ -349,18 +339,6 @@ impl App {
             .filter(|l| l.visible)
             .flat_map(|l| l.shapes.clone())
             .collect();
-        let mut pts: Vec<Point> = Vec::new();
-        let stamp = |a: Point, b: Point, walls: &mut Vec<bool>| {
-            let n = ((b - a).hypot() * res).ceil().max(1.0) as usize;
-            for i in 0..=n {
-                let q = a + (b - a) * (i as f64 / n as f64);
-                let x = (q.x * res) as i64;
-                let y = ((page.height() - q.y) * res) as i64;
-                if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
-                    walls[y as usize * w + x as usize] = true;
-                }
-            }
-        };
         fn collect(s: &Shape, parent: Affine, out: &mut Vec<BezPath>) {
             let t = parent * s.transform;
             if !s.effects.is_empty() {
@@ -383,8 +361,40 @@ impl App {
         for s in &shapes {
             collect(s, Affine::IDENTITY, &mut paths);
         }
+        // The area flooded: around the outlines, with a margin an open
+        // area leaks into; a click outside them encloses nothing.
+        let domain = paths
+            .iter()
+            .map(kurbo::Shape::bounding_box)
+            .filter(|b| b.width().is_finite() && b.height().is_finite())
+            .reduce(|a, b| a.union(b))
+            .map(|b| b.inflate(2.0, 2.0));
+        let Some(domain) = domain.filter(|d| d.contains(p)) else {
+            self.status = tr("status.area_fill_open");
+            return;
+        };
+        // Pixels per mm: 4, fewer for a large drawing (16 million pixels
+        // at most).
+        let res = 4.0f64.min((16.0e6 / (domain.width() * domain.height()).max(1e-9)).sqrt());
+        let w = (domain.width() * res).ceil() as usize;
+        let h = (domain.height() * res).ceil() as usize;
+        if w < 3 || h < 3 {
+            return;
+        }
+        let px = |q: Point| ((q.x - domain.x0) * res, (domain.y1 - q.y) * res);
+        // Walls: every outline (stroked or not) of every visible object.
+        let mut walls = vec![false; w * h];
+        let stamp = |a: Point, b: Point, walls: &mut Vec<bool>| {
+            let n = ((b - a).hypot() * res).ceil().max(1.0) as usize;
+            for i in 0..=n {
+                let (x, y) = px(a + (b - a) * (i as f64 / n as f64));
+                let (x, y) = (x as i64, y as i64);
+                if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
+                    walls[y as usize * w + x as usize] = true;
+                }
+            }
+        };
         for path in paths {
-            pts.clear();
             let mut start: Option<Point> = None;
             let mut last: Option<Point> = None;
             kurbo::flatten(path.elements().iter().copied(), 0.05, |el| match el {
@@ -407,14 +417,15 @@ impl App {
             });
         }
         // Flood fill from the click.
-        let sx = (p.x * res) as usize;
-        let sy = ((page.height() - p.y) * res) as usize;
+        let (sx, sy) = px(p);
+        let (sx, sy) = (sx as usize, sy as usize);
         if sx >= w || sy >= h || walls[sy * w + sx] {
             return;
         }
         let mut filled = vec![false; w * h];
         let mut stack = vec![(sx, sy)];
         let mut count = 0usize;
+        let mut open = false;
         while let Some((x, y)) = stack.pop() {
             let i = y * w + x;
             if filled[i] || walls[i] {
@@ -422,21 +433,14 @@ impl App {
             }
             filled[i] = true;
             count += 1;
-            if x > 0 {
-                stack.push((x - 1, y));
+            // The margin reached: the area is not closed.
+            if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                open = true;
+                break;
             }
-            if x + 1 < w {
-                stack.push((x + 1, y));
-            }
-            if y > 0 {
-                stack.push((x, y - 1));
-            }
-            if y + 1 < h {
-                stack.push((x, y + 1));
-            }
+            stack.extend([(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]);
         }
-        if count == 0 || count as f64 > (w * h) as f64 * 0.98 {
-            // Leaked to the whole page: nothing enclosed here.
+        if count == 0 || open {
             self.status = tr("status.area_fill_open");
             return;
         }
@@ -469,7 +473,7 @@ impl App {
             }
             let pts: Vec<Point> = simplified
                 .iter()
-                .map(|q| Point::new(q.x / res, page.height() - q.y / res))
+                .map(|q| Point::new(domain.x0 + q.x / res, domain.y1 - q.y / res))
                 .collect();
             path.extend(tracedraw_core::geometry::polyline_path(&pts, true));
         }

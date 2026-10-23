@@ -30,14 +30,19 @@ printer and print. In the browser version, the PDF is downloaded.
 
 ## Layout {#layout}
 
-- **As in document**, **Fit to page**, or **Scale** to a percentage.
+- **As in document**, **Fit to page**, or **Scale** to a percentage. **Fit
+  to page** also shrinks objects larger than the page (or the selection, when
+  you print only that) so they print whole on it.
 - **Bleed limit**: how far beyond the page objects print (4 mm at first).
 - The imposition: several pages on one sheet, or a booklet, whose pages are
   paired for folding, with the sheet size and the gap between pages. A sketch
   shows the result. For the back of double-sided cards, tick **Back side**:
   the pages run right to left on the sheet, so each one prints behind its
-  front, and the text is not mirrored. **Keep page size** stops the pages
-  from shrinking on a fixed sheet to make room for the marks. In Print
+  front, and the text is not mirrored. **Keep page size** keeps the pages at
+  their size on a fixed sheet: they do not shrink for the marks, and the
+  columns and rows stay as you set them (pages that do not fit run off the
+  sheet, and a warning says so). Without it, the pages shrink to fit the
+  columns and rows you ask for. In Print
   Preview, drag on the sheet to move the page information.
 
 ## Prepress {#prepress}

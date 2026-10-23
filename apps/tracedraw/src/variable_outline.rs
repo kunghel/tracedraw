@@ -37,6 +37,12 @@ struct NodeDrag {
     /// The first change of the drag has been recorded (later ones amend
     /// it, so the drag is one undo step).
     recorded: bool,
+    /// What the drag does: slide the node along the path or change its
+    /// reach; `None` until the first move says (along the path or
+    /// across it) for a press on a node's centre (#479).
+    slide: Option<bool>,
+    /// Where the press was (page space).
+    from: Point,
 }
 
 /// Sorted nodes, with the index the node at `keep` ends up at.
@@ -109,6 +115,11 @@ impl App {
             self.vo.more.clear();
         }
         if response.dragged_by(PointerButton::Primary) {
+            // Shift or Alt held (or let go) during the drag: one side, or
+            // both again, from then on (#492).
+            if let Some(d) = &mut self.vo.drag {
+                d.one_side = mods.shift || mods.alt;
+            }
             self.variable_outline_drag(p);
         }
         if response.drag_stopped() || response.clicked_by(PointerButton::Primary) {
@@ -205,6 +216,36 @@ impl App {
                         index: i,
                         one_side,
                         recorded: false,
+                        slide: None,
+                        from: p,
+                    });
+                    return;
+                }
+                // A node's reach handle (the dots at its ends): the drag
+                // changes its reach (#479).
+                let handle = stroke.widths.iter().enumerate().find_map(|(i, n)| {
+                    let (q, nn) = tracedraw_core::shaping::point_on_path(&path, n.at)?;
+                    [n.left * scale, -n.right * scale]
+                        .into_iter()
+                        .map(|d| Point::new(q.x + nn[0] * d, q.y + nn[1] * d))
+                        .any(|e| (e - p).hypot() <= grab)
+                        .then_some(i)
+                });
+                if let Some(i) = handle {
+                    let picked = self.picked_width_nodes();
+                    self.vo.more = if extend || picked.contains(&i) {
+                        picked.into_iter().filter(|k| *k != i).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    self.vo.node = Some(i);
+                    self.vo.drag = Some(NodeDrag {
+                        shape: id,
+                        index: i,
+                        one_side,
+                        recorded: false,
+                        slide: Some(false),
+                        from: p,
                     });
                     return;
                 }
@@ -234,6 +275,8 @@ impl App {
                             index,
                             one_side,
                             recorded: true,
+                            slide: Some(false),
+                            from: p,
                         });
                         return;
                     }
@@ -264,6 +307,45 @@ impl App {
         let Some((q, n)) = tracedraw_core::shaping::point_on_path(&path, node.at) else {
             return;
         };
+        // A press on the node's centre: the first move along the path
+        // slides the node, across it changes the reach (#479).
+        let slide = match drag.slide {
+            Some(s) => s,
+            None => {
+                let d = p - drag.from;
+                if d.hypot() < 1.0 / self.view.zoom.max(1e-6) as f64 {
+                    return;
+                }
+                let across = (d.x * n[0] + d.y * n[1]).abs();
+                let along = (d.x * n[1] - d.y * n[0]).abs();
+                let s = along > across;
+                if let Some(dr) = self.vo.drag.as_mut() {
+                    dr.slide = Some(s);
+                }
+                s
+            }
+        };
+        if slide {
+            let Some((t, _, _)) = tracedraw_core::shaping::locate_on_path(&path, p) else {
+                return;
+            };
+            // Between its neighbours, so the nodes keep their order.
+            let mut nodes = stroke.widths.clone();
+            let lo = drag
+                .index
+                .checked_sub(1)
+                .and_then(|k| nodes.get(k))
+                .map_or(0.0, |m| m.at + 1e-4);
+            let hi = nodes.get(drag.index + 1).map_or(1.0, |m| m.at - 1e-4);
+            if let Some(m) = nodes.get_mut(drag.index) {
+                m.at = t.clamp(lo.min(hi), hi.max(lo));
+            }
+            self.set_width_nodes(drag.shape, nodes, drag.recorded);
+            if let Some(d) = self.vo.drag.as_mut() {
+                d.recorded = true;
+            }
+            return;
+        }
         // Distance across the outline, measured along the normal.
         let across = (p.x - q.x) * n[0] + (p.y - q.y) * n[1];
         let reach = across.abs() / scale;
@@ -565,6 +647,52 @@ mod tests {
         assert_eq!(widths(&app, id).len(), 1);
         app.undo();
         assert_eq!(widths(&app, id).len(), 3);
+    }
+
+    /// A node pressed on its centre slides along the path when the drag
+    /// goes along it (kept between its neighbours) and changes its reach
+    /// when it goes across; a press on a reach handle changes the reach.
+    /// All of it one undo step per drag (#479).
+    #[test]
+    fn width_nodes_slide_along_the_path_and_their_handles_change_the_reach() {
+        let (mut app, id) = line_app();
+        app.view.zoom = 4.0;
+        // A node at 60, 4 mm each way.
+        app.variable_outline_press(Point::new(60.0, 50.0), false);
+        app.variable_outline_drag(Point::new(60.0, 54.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 1);
+        assert!((w[0].at - 0.5).abs() < 1e-9 && (w[0].left - 4.0).abs() < 1e-6);
+        // Along the path: it slides to 80, its reach as it was.
+        let steps = app.engine.history_labels().0.len();
+        app.variable_outline_press(Point::new(60.0, 50.0), false);
+        app.variable_outline_drag(Point::new(65.0, 50.2));
+        app.variable_outline_drag(Point::new(80.0, 50.5));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!((w[0].at - 0.7).abs() < 1e-6, "{w:?}");
+        assert!((w[0].left - 4.0).abs() < 1e-6 && (w[0].right - 4.0).abs() < 1e-6);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1, "one step");
+        // Its handle (4 mm out): the reach follows the pointer.
+        app.variable_outline_press(Point::new(80.0, 54.0), false);
+        app.variable_outline_drag(Point::new(80.0, 57.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!((w[0].at - 0.7).abs() < 1e-6);
+        assert!(
+            (w[0].left - 7.0).abs() < 1e-6 && (w[0].right - 7.0).abs() < 1e-6,
+            "{w:?}"
+        );
+        // A second node at 30 cannot slide past the first.
+        app.variable_outline_press(Point::new(30.0, 50.0), false);
+        app.vo.drag = None;
+        app.variable_outline_press(Point::new(30.0, 50.0), false);
+        app.variable_outline_drag(Point::new(40.0, 50.0));
+        app.variable_outline_drag(Point::new(100.0, 50.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!(w[0].at < w[1].at && w[1].at > 0.69, "{w:?}");
     }
 }
 

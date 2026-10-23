@@ -45,3 +45,15 @@ free on every side (`App::fit_page_to_drawing_with_margin`; a margin
 that is not a number counts as none). Checked by
 `ops2::fit_page_tests::the_page_fits_the_selection_or_the_drawing` and
 `ui::propbar::tests::the_page_bar_draws_with_its_fit_page_button`.
+
+## Delete Page
+
+Layout > Delete Page... and the Delete Page... button of the Pages panel
+open the Delete Page dialog (#500): Delete page (the current page to start
+with) and a Through to page check box with the last page of a range, off
+to start with (the range may be given in either order; numbers are kept to
+the drawing's pages). OK deletes the pages in one undo step; the page after
+them, else the one before, becomes the current page. A range of every page
+deletes nothing and the dialog says a drawing keeps at least one page. The
+page tab menu's Delete Page deletes that page at once
+(`app::tests::delete_page_takes_a_range_of_pages`).

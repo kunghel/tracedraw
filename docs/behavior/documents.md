@@ -9,7 +9,12 @@ rulers:
 - The Welcome Screen tab comes first (a filled dark house and its title).
   With no drawing open it is the only tab, and the menu bar shows only
   File, Tools, Window and Help; File commands that need a drawing are
-  disabled.
+  disabled. While it is shown (with drawings open too) the toolbox and the
+  property bar show pale, the colour palette shows pale and takes no
+  clicks, and the dockers that work on a drawing say "Open or create a
+  drawing to use this docker." instead of showing the hidden drawing's
+  selection; Hints still shows (#482,
+  `ui::palette::tests::the_palette_rests_on_the_welcome_screen`).
 - Each drawing's tab (at least 116 px wide) shows its file name, or its
   document name when it has never been saved, followed by `*` while it has
   unsaved changes. A close button shows on the hovered tab; a middle click

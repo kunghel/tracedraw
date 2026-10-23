@@ -72,6 +72,26 @@ fn banner(ui: &mut Ui, icon: Option<&TextureHandle>) {
         egui::StrokeKind::Inside,
     );
     painter.galley(chip_rect.min + Vec2::new(8.0, 3.0), version, Color32::WHITE);
+    // The ALPHA badge beside the version, its meaning on hover.
+    let alpha = painter.layout_no_wrap(
+        tr("dialog.alpha"),
+        FontId::proportional(11.5),
+        Color32::WHITE,
+    );
+    let badge = Rect::from_min_size(
+        Pos2::new(chip_rect.right() + 8.0, chip_rect.top()),
+        Vec2::new(alpha.size().x + 16.0, chip.y),
+    );
+    painter.rect(
+        badge,
+        CornerRadius::same(10),
+        Color32::from_rgb(0x2E, 0xA0, 0x43),
+        Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(badge.min + Vec2::new(8.0, 3.0), alpha, Color32::WHITE);
+    ui.interact(badge, ui.id().with("about_alpha"), Sense::hover())
+        .on_hover_text(tr("dialog.alpha_tip"));
 }
 
 /// One row of the facts list: a dim label and its value.

@@ -770,6 +770,23 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
     let step = (total / 256.0).max(0.05);
     let mut marks: Vec<f64> = nodes.iter().map(|n| n.at.clamp(0.0, 1.0) * total).collect();
     marks.sort_by(|a, b| a.total_cmp(b));
+    // Between neighbouring nodes whose reach differs the width eases in
+    // and out: sampled finely there, however short the span, so the band
+    // curves smoothly instead of running in a few straight pieces (#492).
+    let mut ends = vec![0.0];
+    ends.extend(marks.iter().copied());
+    ends.push(total);
+    let mut eased = Vec::new();
+    for w in ends.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b - a <= 1e-9 || reach(a) == reach(b) {
+            continue;
+        }
+        const EASE_STEPS: usize = 48;
+        eased.extend((1..EASE_STEPS).map(|i| a + (b - a) * i as f64 / EASE_STEPS as f64));
+    }
+    marks.extend(eased);
+    marks.sort_by(|a, b| a.total_cmp(b));
     let mut polys: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut run = 0.0;
     for (line, closed) in &lines {
@@ -1269,6 +1286,34 @@ pub fn simplify(path: &BezPath) -> BezPath {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    /// The width eases between nodes along a smooth curve however short
+    /// the span on a long path: half-way into the ease the reach is the
+    /// smoothstep's, not that of a few straight pieces (#492).
+    fn variable_band_eases_smoothly_between_close_nodes() {
+        use super::variable_band;
+        use crate::geometry::{BezPath, Point, Shape as _};
+        use crate::style::WidthNode;
+        let mut line = BezPath::new();
+        line.move_to(Point::new(0.0, 0.0));
+        line.line_to(Point::new(1000.0, 0.0));
+        // 2 mm wide at 500, 10 mm at 510.
+        let band = variable_band(
+            &line,
+            2.0,
+            &[
+                WidthNode::symmetric(0.5, 2.0),
+                WidthNode::symmetric(0.51, 10.0),
+            ],
+        );
+        // A quarter into the ease: 1 + 4 * smoothstep(0.25) = 1.625.
+        assert!(band.contains(Point::new(502.5, 1.58)));
+        assert!(!band.contains(Point::new(502.5, 1.67)));
+        // Three quarters: 1 + 4 * 0.84375 = 4.375.
+        assert!(band.contains(Point::new(507.5, 4.33)));
+        assert!(!band.contains(Point::new(507.5, 4.42)));
+    }
+
     #[test]
     fn variable_band_follows_the_width_nodes() {
         use super::{locate_on_path, outline_band, variable_band};

@@ -108,9 +108,6 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 if ui.button(tr("dialog.print")).clicked() {
                     print = true;
                 }
-                if ui.button(tr("dialog.close")).clicked() {
-                    close = true;
-                }
                 ui.separator();
                 let n = sheets(app, &mut pv).pages.len().max(1);
                 pv.sheet = pv.sheet.min(n - 1);
@@ -158,6 +155,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 if ui.button(tr("print.fit")).clicked() {
                     pv.zoom = 1.0;
                 }
+                // Close at the bar's right end, where windows keep it
+                // (#534).
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(tr("dialog.close")).clicked() {
+                        close = true;
+                    }
+                });
             });
         });
 

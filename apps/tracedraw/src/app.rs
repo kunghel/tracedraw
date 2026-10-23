@@ -769,6 +769,9 @@ pub struct Clipboard {
     /// What the system clipboard held right after this copy (see
     /// `ClipboardContent::fingerprint`).
     pub system: u64,
+    /// Guidelines copied with no objects selected: pasted where they were
+    /// (#376).
+    pub guides: Vec<tracedraw_core::document::Guide>,
 }
 
 /// Centres of rotation the user moved. One object's is kept in the
@@ -1089,7 +1092,8 @@ pub struct App {
     pub pdf_text_chosen: bool,
     /// Where a drag for the new frame of a flow began.
     pub text_link_drag: Option<Point>,
-    /// Clip frame being edited in place: (frame id, content ids).
+    /// Clip frame being edited in place: (frame id, the page's other
+    /// objects when editing began; see `clip_edit_contents`).
     pub clip_frame_edit: Option<(ShapeId, Vec<ShapeId>)>,
     /// Object > Symmetry > Edit Symmetry: the object whose symmetry is
     /// being edited.
@@ -1873,7 +1877,11 @@ impl App {
         // The Bitmap Effects lens runs the application's bitmap effects.
         tracedraw_render::set_pixel_effects(crate::fx::lens_effects);
         Self::setup_context(ctx);
-        Self::build(open)
+        let mut app = Self::build(open);
+        if !crate::files::WEB {
+            app.keep_default_font_installed();
+        }
+        app
     }
 
     /// The interface style every window context takes: options, visuals
@@ -2466,11 +2474,11 @@ impl App {
         matches!(self.drag, Drag::RulerOrigin { .. })
     }
 
-    /// The colour around the page (Options > Customization), white by
-    /// default.
+    /// The colour around the page (Options > Customization): the theme's
+    /// until one is picked (white included, #530).
     pub fn desktop_color(&self) -> egui::Color32 {
         // The default white desktop follows the theme.
-        if self.settings.desktop_rgb == [255, 255, 255] {
+        if !self.settings.desktop_custom && self.settings.desktop_rgb == [255, 255, 255] {
             return crate::theme::Tokens::desktop();
         }
         let [r, g, b] = self.settings.desktop_rgb;
@@ -2497,6 +2505,32 @@ impl App {
         if !crate::ui::font_manager::install_saved(&self.settings.font_manager).is_empty() {
             self.font_families = tracedraw_text::fonts().available_families();
         }
+    }
+
+    /// A font for new text that is no longer installed gives way to Arial,
+    /// or the first font there is: text typed in it was drawn with a
+    /// stand-in while the bars named the missing font (#504).
+    pub fn keep_default_font_installed(&mut self) {
+        let installed = |f: &str| self.font_families.iter().any(|g| g.eq_ignore_ascii_case(f));
+        if self.font_families.is_empty() || installed(&self.text_default_font) {
+            return;
+        }
+        let Some(font) = ["Arial", "Liberation Sans", "DejaVu Sans", "Selawik"]
+            .iter()
+            .find(|f| installed(f))
+            .map(|f| f.to_string())
+            .or_else(|| self.font_families.first().cloned())
+        else {
+            return;
+        };
+        log::info!(
+            "the font for new text, {}, is not installed: {font} instead",
+            self.text_default_font
+        );
+        if self.text_font == self.text_default_font {
+            self.text_font = font.clone();
+        }
+        self.text_default_font = font;
     }
 
     /// Apply a set of preferences to the running editor.
@@ -3474,8 +3508,11 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
+        // One step: the copies and their move (#471).
+        let depth = self.engine.history_labels().0.len();
         self.duplicate_in_place();
         self.transform_selection(t);
+        self.engine.squash_since(depth, "Duplicate");
         self.note_repeatable(Repeatable::Copy(t));
     }
 
@@ -4377,6 +4414,7 @@ impl App {
                 shapes,
                 styles: self.doc().object_styles.clone(),
                 system: 0,
+                guides: Vec::new(),
             });
             self.status = crate::i18n::trf(
                 "status.objects_copied",
@@ -4386,6 +4424,11 @@ impl App {
     }
 
     pub fn cut(&mut self) {
+        // Guidelines selected and no objects: they go (#376).
+        if self.selection.is_empty() && self.copy_selected_guides() {
+            self.delete_selected_guides();
+            return;
+        }
         self.copy_with_system();
         self.delete_selection();
     }
@@ -4394,6 +4437,10 @@ impl App {
         let Some(cb) = self.clipboard.clone() else {
             return;
         };
+        if !cb.guides.is_empty() && cb.shapes.is_empty() {
+            self.paste_guides(&cb.guides);
+            return;
+        }
         let Some(layer) = self.active_layer() else {
             return;
         };
@@ -4409,7 +4456,25 @@ impl App {
             copies.push(shape);
         }
         crate::textflow::relink_copies(&cb.shapes, &mut copies);
-        for shape in copies {
+        // Copies of connected objects still in the drawing come with
+        // their connectors (#476).
+        // Only objects of this drawing count (the same id and identity):
+        // another drawing's ids may name other objects here.
+        let originals: Vec<ShapeId> = cb
+            .shapes
+            .iter()
+            .zip(&copies)
+            .map(|(o, c)| {
+                let here = self.doc().find_shape(o.id).is_some_and(|s| s.uid == o.uid);
+                if here {
+                    o.id
+                } else {
+                    c.id
+                }
+            })
+            .collect();
+        let connectors = self.connector_copies(&originals, &copies);
+        for shape in copies.into_iter().chain(connectors) {
             cmds.push(Command::AddShape { layer, shape });
         }
         if let Err(e) = self.engine.run_batch("Paste", &cmds) {
@@ -4443,8 +4508,12 @@ impl App {
             copies.push(shape);
         }
         crate::textflow::relink_copies(&shapes, &mut copies);
+        // A copy of a connected object comes with its connector (#476).
+        let originals: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
+        let connectors = self.connector_copies(&originals, &copies);
         let cmds: Vec<Command> = copies
             .into_iter()
+            .chain(connectors)
             .map(|shape| Command::AddShape { layer, shape })
             .collect();
         if cmds.is_empty() {
@@ -6474,6 +6543,44 @@ impl App {
         self.fit_pending = true;
     }
 
+    /// Layout > Delete Page: the pages from index `a` to `b` (0 = the
+    /// first, both kept in range) in one undo step, never every page; the
+    /// page after them (else the one before) is the current one (#500).
+    pub fn delete_pages(&mut self, a: usize, b: usize) {
+        let ids: Vec<_> = self.doc().pages.iter().map(|p| p.id).collect();
+        let n = ids.len();
+        if n == 0 || a > b || a >= n || b + 1 - a >= n {
+            return;
+        }
+        let b = b.min(n - 1);
+        let cmds: Vec<Command> = ids[a..=b]
+            .iter()
+            .map(|&page| Command::DeletePage { page })
+            .collect();
+        if let Err(e) = self.engine.run_batch("Delete Page", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        let next = ids
+            .get(b + 1)
+            .or_else(|| a.checked_sub(1).and_then(|i| ids.get(i)));
+        if let Some(&p) = next {
+            self.page = p;
+        }
+        self.selection.clear();
+        self.fit_pending = true;
+    }
+
+    /// Layout > Delete Page asks which pages, the current one first.
+    pub fn ask_delete_page(&mut self) {
+        let i = self.page_index() + 1;
+        self.dialog = crate::ui::dialogs::Dialog::DeletePage {
+            from: i,
+            to: i,
+            through: false,
+        };
+    }
+
     pub fn goto_page(&mut self, idx: usize) {
         if self.multipage {
             if let Some(id) = self.doc().pages.get(idx).map(|p| p.id) {
@@ -6940,6 +7047,73 @@ mod tests {
     /// Tool settings, what the window shows, snapping and the dockers'
     /// choices come back the next time, through the preferences file
     /// (JSON, as in the browser's storage).
+    /// The desktop is the theme's colour until one is picked; white picked
+    /// is white (it stood for the theme's colour, so picking it did
+    /// nothing, #530); Reset goes back to the theme's.
+    #[test]
+    fn a_white_desktop_picked_is_white() {
+        let mut app = App::headless();
+        let theme = crate::theme::Tokens::desktop();
+        assert_eq!(app.desktop_color(), theme);
+        app.settings.desktop_rgb = [255, 255, 255];
+        app.settings.desktop_custom = true;
+        assert_eq!(app.desktop_color(), egui::Color32::WHITE);
+        app.settings.desktop_custom = false;
+        assert_eq!(app.desktop_color(), theme);
+        // A colour kept before the flag existed still shows.
+        app.settings.desktop_rgb = [200, 10, 10];
+        assert_eq!(app.desktop_color(), egui::Color32::from_rgb(200, 10, 10));
+    }
+
+    /// Delete Page with a range deletes those pages in one undo step and
+    /// never every page; the page after them is the current one (#500).
+    #[test]
+    fn delete_page_takes_a_range_of_pages() {
+        let mut app = App::headless();
+        for _ in 0..4 {
+            app.add_page();
+        }
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 5);
+        assert_eq!(crate::ui::dialogs::delete_page_range(4, 2, true, 5), (1, 3));
+        assert_eq!(
+            crate::ui::dialogs::delete_page_range(9, 2, false, 5),
+            (4, 4)
+        );
+        app.delete_pages(1, 3);
+        let left: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(left, vec![ids[0], ids[4]]);
+        assert_eq!(app.page, ids[4]);
+        app.undo();
+        assert_eq!(app.doc().pages.len(), 5, "one undo step");
+        app.delete_pages(0, 4);
+        assert_eq!(app.doc().pages.len(), 5, "a drawing keeps a page");
+        app.delete_pages(3, 4);
+        assert_eq!(app.doc().pages.len(), 3);
+        assert_eq!(app.page, ids[2], "the page before them");
+    }
+
+    /// A font for new text that is not installed (uninstalled since it
+    /// was kept) gives way to an installed one; an installed one stays,
+    /// whatever its case (#504).
+    #[test]
+    fn a_default_font_no_longer_installed_gives_way() {
+        let mut app = App::headless();
+        app.font_families = vec!["Arial".into(), "Georgia".into()];
+        app.text_default_font = "georgia".into();
+        app.keep_default_font_installed();
+        assert_eq!(app.text_default_font, "georgia");
+        app.text_default_font = "Uninstalled Font".into();
+        app.text_font = "Uninstalled Font".into();
+        app.keep_default_font_installed();
+        assert_eq!(app.text_default_font, "Arial");
+        assert_eq!(app.text_font, "Arial");
+        app.font_families = vec!["Georgia".into()];
+        app.text_default_font = "Gone".into();
+        app.keep_default_font_installed();
+        assert_eq!(app.text_default_font, "Georgia");
+    }
+
     #[test]
     fn tools_view_snapping_and_dockers_survive_a_restart() {
         let mut app = App::headless();

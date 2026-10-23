@@ -31,7 +31,13 @@ to it. Its buttons [[menu.layout.insert_page]], [[menu.layout.delete_page]] and
 
 ![The Insert Page dialog box](../../img/pages-layout-pages-insert-page.png)
 
-[[menu.layout.delete_page]] deletes pages.
+## Deleting pages {#delete-page}
+
+[[menu.layout.delete_page]] asks which pages to delete: the page number in
+[[dialog.delete_page_from]] (the current page to start with), and to delete a
+range, [[dialog.delete_through]] with the last page of it. All of them go in
+one step, which [[menu.edit.undo]] brings back. A drawing keeps at least one
+page. [[page_tab.delete]] on a page tab's menu deletes that page at once.
 
 ## Duplicating a page {#duplicate-page}
 

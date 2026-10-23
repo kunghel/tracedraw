@@ -53,7 +53,13 @@ the drawing:
 - moved on its own (or pasted elsewhere): it is let go and stays where it
   is as a plain line (Undo attaches it again);
 - one of its objects deleted: it stays where it is, and follows again if
-  Undo brings the object back.
+  Undo brings the object back;
+- one of its objects copied without it (Duplicate, a right click during a
+  drag and its Repeat, Copy and Paste in the same drawing): a copy of the
+  connector, of the same kind, outline and anchors, joins the object at the
+  other end to the copy, in the same undo step; copied with the connector,
+  or pasted into another drawing, no more is added (#476,
+  `connectors::tests::copies_of_connected_objects_bring_their_connector`).
 
 ## Property bar
 

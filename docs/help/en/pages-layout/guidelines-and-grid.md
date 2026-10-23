@@ -46,6 +46,12 @@ Guidelines are lines across the drawing window that objects can snap to.
 - [[menu.edit > menu.edit.select_all > menu.edit.select_all_guidelines]]
   selects every guideline of the page, and [[menu.view.guidelines]] shows or
   hides them.
+- With guidelines selected (and no objects), [[menu.edit.copy]] and
+  [[menu.edit.paste]] make copies in the same place, and
+  [[menu.edit.duplicate]] makes copies moved by the duplicate offset (set in
+  [[menu.layout > menu.layout.document_options]], General). The
+  Transformations panel moves, rotates and scales selected guidelines as it
+  does objects.
 
 ## The Guidelines panel {#guidelines-docker}
 

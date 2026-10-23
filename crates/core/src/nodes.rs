@@ -530,6 +530,36 @@ fn sample_cubic(cubic: kurbo::CubicBez, n: usize, skip_start: bool, out: &mut Ve
     }
 }
 
+/// The one segment that takes the place of `seg_a` (from `a` to a node B)
+/// and `seg_b` (from B on) when B is deleted: a cubic from `a` to
+/// `seg_b`'s end refitted to the old A-B-C shape when either is a curve,
+/// keeping the outer tangents, so the curve is kept instead of collapsing
+/// to the far handles. `None` for two lines (a straight join).
+fn joined_segment(a: Point, seg_a: PathEl, seg_b: PathEl) -> Option<PathEl> {
+    if matches!((seg_a, seg_b), (PathEl::LineTo(_), PathEl::LineTo(_))) {
+        return None;
+    }
+    let b = end_point(&seg_a)?;
+    let ca = element_cubic(a, seg_a)?;
+    let cb = element_cubic(b, seg_b)?;
+    let c = cb.p3;
+    let t1 = unit(ca.p1 - ca.p0)
+        .or_else(|| unit(ca.p2 - ca.p0))
+        .or_else(|| unit(ca.p3 - ca.p0))
+        .or_else(|| unit(c - a))
+        .unwrap_or(Vec2::new(1.0, 0.0));
+    let t2 = unit(cb.p2 - cb.p3)
+        .or_else(|| unit(cb.p1 - cb.p3))
+        .or_else(|| unit(cb.p0 - cb.p3))
+        .or_else(|| unit(a - c))
+        .unwrap_or(Vec2::new(-1.0, 0.0));
+    let mut pts = Vec::new();
+    sample_cubic(ca, 8, false, &mut pts);
+    sample_cubic(cb, 8, true, &mut pts);
+    let (h1, h2) = fit_cubic(a, c, t1, t2, &pts);
+    Some(PathEl::CurveTo(h1, h2, c))
+}
+
 pub fn delete_node(path: &BezPath, index: usize) -> BezPath {
     let mut els: Vec<PathEl> = normalize(path).elements().to_vec();
     if index >= els.len() {
@@ -538,24 +568,16 @@ pub fn delete_node(path: &BezPath, index: usize) -> BezPath {
     match els[index] {
         PathEl::MoveTo(_) if twin_of(&els, index).is_some_and(|t| t > index + 1) => {
             // A closed subpath's start: the next node becomes the start and
-            // the last segment runs on to it, keeping the outer handles.
+            // the last segment runs on to it, refitted over the two old
+            // segments as for any other node, so the shape is kept (#472).
             let last = twin_of(&els, index).unwrap_or(index);
             let first = els[index + 1];
             let next = match first {
                 PathEl::LineTo(p) | PathEl::CurveTo(_, _, p) | PathEl::QuadTo(_, p) => p,
                 _ => return path.clone(),
             };
-            els[last] = match (els[last], first) {
-                (PathEl::CurveTo(c1, _, _), PathEl::CurveTo(_, c2, _)) => {
-                    PathEl::CurveTo(c1, c2, next)
-                }
-                (PathEl::CurveTo(c1, _, _), _) => PathEl::CurveTo(c1, next, next),
-                (_, PathEl::CurveTo(_, c2, _)) => {
-                    let from = prev_point(&els, last);
-                    PathEl::CurveTo(from, c2, next)
-                }
-                _ => PathEl::LineTo(next),
-            };
+            let from = prev_point(&els, last);
+            els[last] = joined_segment(from, els[last], first).unwrap_or(PathEl::LineTo(next));
             els[index + 1] = PathEl::MoveTo(next);
             els.remove(index);
         }
@@ -572,45 +594,15 @@ pub fn delete_node(path: &BezPath, index: usize) -> BezPath {
         }
         PathEl::LineTo(_) | PathEl::CurveTo(..) | PathEl::QuadTo(..) => {
             // The node to delete (B) ends segment `index` (A to B); segment
-            // `index + 1` (B to C) carries on. When either side is a curve,
-            // refit one cubic A to C to the old A-B-C shape so the curve is
-            // kept, instead of collapsing to the far handles (which cut a
-            // corner, or a straight line when a neighbour was a line).
+            // `index + 1` (B to C) carries on: the two become one.
             let seg_a = els[index];
             let a = prev_point(&els, index);
-            let next = els.get(index + 1).copied();
-            let refit = match (seg_a, next) {
-                (PathEl::LineTo(_), Some(PathEl::LineTo(_))) => None,
-                (_, Some(nx)) => {
-                    let b = end_point(&seg_a);
-                    match (
-                        b,
-                        element_cubic(a, seg_a),
-                        b.and_then(|b| element_cubic(b, nx)),
-                    ) {
-                        (Some(_), Some(ca), Some(cb)) => Some((ca, cb)),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            if let Some((ca, cb)) = refit {
-                let c = cb.p3;
-                let t1 = unit(ca.p1 - ca.p0)
-                    .or_else(|| unit(ca.p2 - ca.p0))
-                    .or_else(|| unit(ca.p3 - ca.p0))
-                    .or_else(|| unit(c - a))
-                    .unwrap_or(Vec2::new(1.0, 0.0));
-                let t2 = unit(cb.p2 - cb.p3)
-                    .or_else(|| unit(cb.p1 - cb.p3))
-                    .or_else(|| unit(cb.p0 - cb.p3))
-                    .or_else(|| unit(a - c))
-                    .unwrap_or(Vec2::new(-1.0, 0.0));
-                let mut pts = Vec::new();
-                sample_cubic(ca, 8, false, &mut pts);
-                sample_cubic(cb, 8, true, &mut pts);
-                let (h1, h2) = fit_cubic(a, c, t1, t2, &pts);
-                els[index + 1] = PathEl::CurveTo(h1, h2, c);
+            let joined = els
+                .get(index + 1)
+                .copied()
+                .and_then(|nx| joined_segment(a, seg_a, nx));
+            if let Some(seg) = joined {
+                els[index + 1] = seg;
                 els.remove(index);
             } else {
                 // Two lines, or no following segment: drop the node and keep
@@ -1621,6 +1613,51 @@ mod tests {
         // chord between the two remaining nodes.
         let mid = point_on_segment(&back, 1, 0.5).unwrap();
         assert!(mid.y > 15.0, "curve collapsed towards the chord: {mid:?}");
+    }
+
+    /// A closed curve split at its start and at a middle point, then the
+    /// added node deleted: the first node of a closed curve keeps the
+    /// shape as well as any other node does (#472).
+    #[test]
+    fn deleting_the_start_of_a_closed_curve_keeps_the_shape() {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.curve_to((10.0, 30.0), (30.0, 30.0), (40.0, 0.0));
+        p.curve_to((30.0, -30.0), (10.0, -30.0), (0.0, 0.0));
+        p.close_path();
+        // A node in the middle of the second curve, then that curve split
+        // so the path starts at the added node: deleting the start must
+        // give back the original shape.
+        let split = add_node(&p, 2, 0.5);
+        let ns = nodes(&split);
+        assert_eq!(ns.len(), 3);
+        let start = ns[2].pos;
+        let mut rotated = BezPath::new();
+        rotated.move_to(start);
+        let els = split.elements();
+        // From the added node: its curve's second half, the first curve,
+        // the second curve's first half back to it.
+        if let (
+            PathEl::CurveTo(a1, a2, a),
+            PathEl::CurveTo(b1, b2, b),
+            PathEl::CurveTo(c1, c2, c),
+        ) = (els[1], els[2], els[3])
+        {
+            rotated.curve_to(c1, c2, c);
+            rotated.curve_to(a1, a2, a);
+            rotated.curve_to(b1, b2, b);
+        } else {
+            panic!("curves: {els:?}");
+        }
+        rotated.close_path();
+        let back = delete_node(&rotated, 0);
+        assert_eq!(nodes(&back).len(), 2);
+        for i in 0..=10 {
+            let t = i as f64 / 10.0;
+            let q = point_on_segment(&p, 2, t).unwrap();
+            let d = nearest_segment(&back, q).unwrap().2;
+            assert!(d < 0.3, "off by {d} at t={t}");
+        }
     }
 
     #[test]

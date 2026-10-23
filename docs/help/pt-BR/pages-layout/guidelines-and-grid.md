@@ -49,6 +49,12 @@ objetos se encaixam.
 - [[menu.edit > menu.edit.select_all > menu.edit.select_all_guidelines]]
   seleciona todas as linhas-guia da página, e [[menu.view.guidelines]] as
   mostra ou oculta.
+- Com linhas-guia selecionadas (e nenhum objeto), [[menu.edit.copy]] e
+  [[menu.edit.paste]] fazem cópias no mesmo lugar, e [[menu.edit.duplicate]]
+  faz cópias deslocadas pelo deslocamento de duplicação (definido em
+  [[menu.layout > menu.layout.document_options]], Geral). O painel
+  Transformações move, gira e redimensiona linhas-guia selecionadas como faz
+  com objetos.
 
 ## O painel Linhas-guia {#guidelines-docker}
 

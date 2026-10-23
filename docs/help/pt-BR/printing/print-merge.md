@@ -10,8 +10,10 @@ QR. Cada registro dos seus dados vira uma cópia da página, preenchida.
    menor e maior em um objeto de texto, como `<Name>`.
 2. Escolha [[menu.file > menu.file.print_merge > menu.file.print_merge_create]].
 3. Acrescente os dados:
-   - **Importar arquivo** lê um arquivo CSV ou uma pasta do Excel (`.xlsx`,
-     a primeira planilha) cuja primeira linha nomeia os campos. Campos com
+   - **Importar arquivo** lê um arquivo CSV (separado por vírgulas,
+     ponto e vírgula ou tabulações, como o Excel ou outro programa o
+     salva) ou uma pasta do Excel (`.xlsx`, a primeira planilha) cuja
+     primeira linha nomeia os campos. Campos com
      nome de foto ou imagem, ou cujas células são arquivos de imagem,
      começam como imagens, campos com QR no nome como códigos QR; os tipos
      aparecem logo para serem mudados;
@@ -40,6 +42,11 @@ fonte de dados que você criou ou carregou:
 - **[[merge.insert_field]]** põe o campo no texto que você está editando, ou
   cria um texto, uma moldura de imagem ou um quadrado de QR no meio da
   visualização. Mova e redimensione como qualquer objeto.
+- Para colocar cada foto dentro de uma forma sua (um círculo, um oval,
+  qualquer contorno, também dentro de um cartão agrupado), escolha Imagem e a
+  coluna da foto, selecione a forma e clique em **[[merge.place_inside]]**. A
+  foto de cada cartão vai para dentro dessa forma, conforme o alinhamento e a
+  escala.
 - Selecione um campo e clique em **[[merge.update_field]]** para mudar a coluna
   ou o alinhamento e a escala.
 - **[[merge.create_document]]** cria as páginas mescladas em um desenho novo: a
@@ -78,5 +85,11 @@ contador e remove campos. **Ver um registro** mostra um registro como
 formulário; use as setas ou **Ir para o registro** para percorrê-los. Os
 botões de marcador inserem um campo no texto que você está editando. **Salvar
 fonte de dados** grava os registros como arquivo CSV.
+
+Para trabalhar em várias células de uma vez, arraste de uma célula a outra, ou
+sobre os números dos registros ou os nomes dos campos para pegar registros ou
+campos inteiros. Então **[[merge.sel_add]]** adiciona o mesmo número de
+registros vazios depois deles, **[[merge.sel_delete]]** remove os registros e
+**[[merge.sel_clear]]** (ou a tecla Delete) esvazia as células.
 
 [[menu.file.print_merge_edit]] reabre os registros.

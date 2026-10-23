@@ -11,8 +11,16 @@ length with width nodes.
   selects the object under the pointer.
 - Drag across the outline: a width node is added where the drag starts
   (or the node under the pointer is picked) and the outline reaches to
-  the pointer on both sides. With Shift (or Alt) held at the start of
-  the drag, only the side the pointer is on changes (#374).
+  the pointer on both sides. With Shift (or Alt) held, only the side the
+  pointer is on changes (#374); it counts while the drag goes on, so
+  pressing or letting go of it mid-drag switches between one side and
+  both (#492).
+- A drag that starts on a node's centre slides the node along the path
+  when it first moves along the path (kept between its neighbours), and
+  changes its reach when it first moves across it; a drag from one of a
+  node's reach handles (the dots at its ends) changes its reach. One undo
+  step per drag (#479,
+  `width_nodes_slide_along_the_path_and_their_handles_change_the_reach`).
 - Picking several nodes: Shift+click picks the nodes from the picked one
   to the one clicked; Ctrl+click adds a node or takes it out; a plain
   click picks one alone. A drag that starts on a picked node changes
@@ -38,7 +46,11 @@ length with width nodes.
   a node sits on them. Between neighbouring nodes `a` and `b` the reach
   eases with `s = u^2 (3 - 2u)`, `u = (t - t_a) / (t_b - t_a)`.
 - The band is built from the path flattened to 0.05 mm and cut into
-  pieces no longer than 1/256 of its length (at least 0.05 mm), split at
+  pieces no longer than 1/256 of its length (at least 0.05 mm), with 48
+  pieces between neighbouring nodes whose reach differs, however short
+  that span (so the ease is a smooth curve, not a few straight pieces;
+  #492, `shaping::tests::variable_band_eases_smoothly_between_close_nodes`),
+  split at
   the nodes; corners get round joins, ends are butt.
 - With "Scale with object", the reach scales with the object like the
   width.

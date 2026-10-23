@@ -39,6 +39,11 @@ alone) and chooses what they show: Image Only (the icon, 22 px at the
 medium size, scaled with the button), Caption Only (the tool's name) or
 Caption to Right (both). See `toolbars.md`, "Moving the bars".
 
+Docked on a side, the toolbox fits the window's height: when its buttons
+do not fit, they get shorter (their icons smaller) down to 22 px, and
+only below that do the overflow arrows take over; with room they keep
+their size (#494, `ui::toolbox::tests::a_column_toolbox_fits_the_window`).
+
 ## Checks
 
 - `ui::toolbox::tests::flyout_groups_can_be_hidden_and_reset`
