@@ -53,6 +53,8 @@ písmeno. Viz [Klávesové zkratky](../reference/keyboard-shortcuts.md).
 [[options.reset]] vrátí lišty na místo. V části [[options.other]]:
 [[bars.lock]] a [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Barevná paleta {#color-palette}
 
 ![Stránka Barevná paleta v možnostech přizpůsobení](../../img/customize-customization-color-palette.png)

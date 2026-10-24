@@ -168,6 +168,8 @@ pub enum ImportPlace {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FormatPrefs {
+    /// Export presets saved in the Export dialog, by name (#547).
+    pub export_presets: Vec<ExportPreset>,
     /// An index into the export formats.
     pub export_format: usize,
     /// Bitmap formats, dots per inch.
@@ -214,11 +216,115 @@ impl Default for FormatPrefs {
             skip_export_dialog: false,
             pdf_text_as_curves: false,
             pdf_ask_text: true,
+            export_presets: Vec::new(),
         }
     }
 }
 
+/// A named set of export choices (#547): the format and its settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportPreset {
+    pub name: String,
+    pub format: usize,
+    pub dpi: f64,
+    pub quality: u8,
+    pub transparent: bool,
+    pub selection_only: bool,
+    pub all_pages: bool,
+    pub pdf_standard: usize,
+    pub bleed_mm: f64,
+    pub output_condition: String,
+}
+
+impl Default for ExportPreset {
+    fn default() -> Self {
+        let d = ExportState::default();
+        ExportPreset::from_state("", &d)
+    }
+}
+
+impl ExportPreset {
+    /// The choices of the Export dialog as they stand, named `name`.
+    pub fn from_state(name: &str, st: &ExportState) -> ExportPreset {
+        ExportPreset {
+            name: name.trim().to_string(),
+            format: st.format,
+            dpi: st.dpi,
+            quality: st.quality,
+            transparent: st.transparent,
+            selection_only: st.selection_only,
+            all_pages: st.all_pages,
+            pdf_standard: st.pdf_standard,
+            bleed_mm: st.bleed_mm,
+            output_condition: st.output_condition.clone(),
+        }
+    }
+
+    /// Put the preset's choices into the dialog (values out of range
+    /// leave the dialog's own).
+    pub fn apply(&self, st: &mut ExportState) {
+        if self.format < EXPORT_FORMATS.len() {
+            st.format = self.format;
+            st.script = None;
+        }
+        if self.dpi.is_finite() {
+            st.dpi = self.dpi.clamp(crate::ui::dialogs::MIN_EXPORT_DPI, 2400.0);
+        }
+        st.quality = self.quality.clamp(1, 100);
+        st.transparent = self.transparent;
+        st.selection_only = self.selection_only;
+        st.all_pages = self.all_pages;
+        if self.pdf_standard < PDF_STANDARDS.len() {
+            st.pdf_standard = self.pdf_standard;
+        }
+        if self.bleed_mm.is_finite() {
+            st.bleed_mm = self.bleed_mm.clamp(0.0, 50.0);
+        }
+        if !self.output_condition.trim().is_empty() {
+            st.output_condition = self.output_condition.chars().take(64).collect();
+        }
+        st.preset = self.name.clone();
+    }
+}
+
 impl FormatPrefs {
+    /// Save the dialog's choices as the preset `name`, replacing one of
+    /// that name; false for an empty name.
+    pub fn save_preset(&mut self, name: &str, st: &ExportState) -> bool {
+        let p = ExportPreset::from_state(name, st);
+        if p.name.is_empty() {
+            return false;
+        }
+        match self.export_presets.iter_mut().find(|q| q.name == p.name) {
+            Some(q) => *q = p,
+            None => self.export_presets.push(p),
+        }
+        true
+    }
+
+    /// Rename the preset `from` to `to`; false when `to` is empty or
+    /// taken by another preset.
+    pub fn rename_preset(&mut self, from: &str, to: &str) -> bool {
+        let to = to.trim();
+        if to.is_empty() || (to != from && self.export_presets.iter().any(|q| q.name == to)) {
+            return false;
+        }
+        match self.export_presets.iter_mut().find(|q| q.name == from) {
+            Some(q) => {
+                q.name = to.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn delete_preset(&mut self, name: &str) -> bool {
+        let before = self.export_presets.len();
+        self.export_presets.retain(|q| q.name != name);
+        self.export_presets.len() != before
+    }
+
     /// The Export dialog starting with these choices; values out of range
     /// fall back to the usual ones.
     pub fn state(&self) -> ExportState {
@@ -412,6 +518,46 @@ impl CurvePrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Export presets keep the format and its settings under a name;
+    /// choosing one puts them back; they can be renamed and deleted, and
+    /// last in the preferences (#547).
+    #[test]
+    fn export_presets_save_apply_rename_and_delete() {
+        let mut f = FormatPrefs::default();
+        let mut st = ExportState {
+            format: 6,
+            dpi: 96.0,
+            quality: 80,
+            transparent: false,
+            ..Default::default()
+        };
+        assert!(f.save_preset("WebP Web 80%", &st));
+        assert!(!f.save_preset("  ", &st), "a name is needed");
+        st.format = 3;
+        st.quality = 40;
+        assert!(f.save_preset("jpeg web 40%", &st));
+        let mut other = ExportState::default();
+        f.export_presets[0].apply(&mut other);
+        assert_eq!((other.format, other.dpi, other.quality), (6, 96.0, 80));
+        assert!(!other.transparent);
+        assert_eq!(other.preset, "WebP Web 80%");
+        // Saved again under its name: replaced, not doubled.
+        st.quality = 45;
+        assert!(f.save_preset("jpeg web 40%", &st));
+        assert_eq!(f.export_presets.len(), 2);
+        assert_eq!(f.export_presets[1].quality, 45);
+        assert!(!f.rename_preset("jpeg web 40%", "WebP Web 80%"), "taken");
+        assert!(f.rename_preset("jpeg web 40%", "JPEG 45"));
+        let json = serde_json::to_string(&f).expect("json");
+        let back: FormatPrefs = serde_json::from_str(&json).expect("back");
+        assert_eq!(back.export_presets, f.export_presets);
+        assert!(f.delete_preset("JPEG 45"));
+        assert_eq!(f.export_presets.len(), 1);
+        // Preferences from before have none.
+        let old: FormatPrefs = serde_json::from_str("{}").expect("old");
+        assert!(old.export_presets.is_empty());
+    }
 
     #[test]
     fn print_preferences_start_the_print_dialog() {

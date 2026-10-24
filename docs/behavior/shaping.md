@@ -13,6 +13,15 @@ bottom-most object of it (as long as the selection is not changed by a
 click afterwards). Checked by
 `ops::curves_and_target_tests::shaping_targets_the_last_clicked_object_but_the_bottom_one_of_a_marquee`.
 
+With only one object selected, Weld, Trim and Intersect (menu, Shaping
+panel, property bar) wait for the target: the status bar asks for it,
+the pointer becomes the target arrow, and the next click on an object
+makes it the target, the selected object acting on it (found under the
+selected object too, where they overlap). Esc, a right click, or a
+click on nothing or on the selected object cancels. The operation and
+its result are one undo step. Checked by
+`pick_drag_tests::trim_with_one_object_waits_for_the_target`.
+
 | Operation | Needs | Result | What stays (menu, property bar) |
 |---|---|---|---|
 | Weld | 2 | one object covering all of them | nothing |

@@ -692,6 +692,18 @@ pub fn needs_system_font(code: &str) -> bool {
     matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn")
 }
 
+/// The family of the font folder (browser build) that covers the script
+/// of the interface language `code`, when no bundled font does.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn ui_script_family(code: &str) -> Option<&'static str> {
+    match code {
+        "zh-CN" => Some("Noto Sans SC"),
+        "zh-TW" => Some("Noto Sans TC"),
+        "ja" => Some("Noto Sans JP"),
+        _ => None,
+    }
+}
+
 /// A context with the interface fonts installed (headless tests draw
 /// the real interface, which uses the bold family).
 #[cfg(test)]
@@ -771,6 +783,11 @@ fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
         }
         let mut fd = egui::FontData::from_owned(data.as_ref().clone());
         fd.index = index;
+        // A variable font draws at its default weight, Thin in some (the
+        // browser build's Noto Sans CJK faces): set it to Regular.
+        if fd.variation_axes().iter().any(|a| a.tag == *b"wght") {
+            fd.tweak.coords = egui::epaint::text::VariationCoords::new([(b"wght", 400.0)]);
+        }
         defs.font_data.insert(key.clone(), std::sync::Arc::new(fd));
         added.push(key);
     }
@@ -798,6 +815,17 @@ mod theme_tests {
         assert_eq!(Theme::from_id("purple"), Theme::Light);
         assert_eq!(toggled(Theme::MediumLight), Theme::Dark);
         assert_eq!(toggled(Theme::MediumDark), Theme::Light);
+    }
+
+    /// The browser build fetches a font for the interface languages no
+    /// bundled font covers (#561).
+    #[test]
+    fn cjk_interface_languages_have_a_font_to_fetch() {
+        for code in ["zh-CN", "zh-TW", "ja"] {
+            assert!(needs_system_font(code));
+            assert!(ui_script_family(code).is_some(), "{code}");
+        }
+        assert_eq!(ui_script_family("pt-BR"), None);
     }
 }
 

@@ -16,6 +16,10 @@ thread_local! {
     /// The font catalog: every other family of the google/fonts collection
     /// (see `font_folder.rs`).
     static CATALOG: RefCell<crate::font_folder::Catalog> = RefCell::new(Default::default());
+    /// The interface language and font generation last looked at, and
+    /// the script font last installed into the interface fonts.
+    static UI_FONT: RefCell<(String, u64, Option<&'static str>)> =
+        const { RefCell::new((String::new(), u64::MAX, None)) };
 }
 
 // Fonts found at build time (see build.rs): Liberation, DejaVu and Noto
@@ -197,6 +201,36 @@ pub fn fetch_requested_fonts() {
             }
             request_repaint();
         });
+    }
+}
+
+/// The interface in Chinese or Japanese needs a font this build does not
+/// bundle: ask the font folder for it, and install the interface fonts
+/// again once it has arrived; the menus showed empty boxes (#561). Looks
+/// again only when the language or the fonts change.
+pub fn sync_ui_fonts(ctx: &egui::Context) {
+    let fonts = tracedraw_text::fonts();
+    let language = crate::i18n::language();
+    let generation = fonts.generation();
+    let install = UI_FONT.with(|u| {
+        let mut u = u.borrow_mut();
+        if u.0 == language && u.1 == generation {
+            return false;
+        }
+        u.0 = language.clone();
+        u.1 = generation;
+        let Some(family) = crate::theme::ui_script_family(&language) else {
+            return false;
+        };
+        if !fonts.has_family(family) {
+            fonts.request_family(family);
+            return false;
+        }
+        u.2.replace(family) != Some(family)
+    });
+    if install {
+        crate::theme::install_fonts(ctx);
+        request_repaint();
     }
 }
 

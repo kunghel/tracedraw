@@ -116,6 +116,19 @@ drag lasts. A scale or skew handle snaps the point of the box it
 stands for, and turning snaps the pointer, to other objects' points and
 edges, guidelines, the grid and the page (Ctrl turns in steps instead).
 
+## Duplicate
+
+Edit > Duplicate (Ctrl+D) copies the selection at the duplicate offset
+(Options > Document > General, 6.35 mm right and up at first) and
+selects the copies. While the copies stay the selection, the next
+Duplicate repeats the step from each original to its copy: the offset
+if they were left alone, or the move, scale, turn or skew done to them
+since (smart duplicate, as in the reference program): duplicate a box,
+move the copy 20 mm, and each next Duplicate is 20 mm further; scale the
+copy by 10 % and each next one is 10 % larger. With anything else
+selected it is the offset again (#559,
+`app::tests::duplicate_repeats_what_was_done_to_the_copy`).
+
 ## Snap marks over the selection
 
 With snapping to objects on, the pointer resting over the selection (not

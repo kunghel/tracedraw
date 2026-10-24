@@ -99,6 +99,7 @@ Stránka má pět karet.
   <kbd>Ctrl+8</kbd> a <kbd>Ctrl+2</kbd> zvětší a zmenší vybraný text, 1 bod),
   [[options.default_font]] a [[options.default_size]] nového textu a
   [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] a [[options.hyphenation_patterns]]
   (vestavěné, nebo slovník dělení slov pro váš jazyk).

@@ -23,7 +23,9 @@ for (Carlito for Calibri, Caladea for Cambria, Gelasio for Georgia, the
 TeX Gyre faces for Palatino, Bookman, Century Schoolbook, Century
 Gothic and Zapf Chancery, Comic Neue for Comic Sans ...), or letters of
 a script only it has (Chinese, Japanese, Korean, Arabic, Hebrew, Thai).
-The font lists show these families from the start. `fonts/licences/`
+The font lists show these families from the start. With the interface in Chinese
+or Japanese, the page also fetches Noto Sans SC, TC or JP when it starts,
+for the menus and dialogs. `fonts/licences/`
 holds the licence of every font in the folder.
 
 | Fonts | Licence |

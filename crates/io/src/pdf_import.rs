@@ -527,6 +527,102 @@ struct TextRun {
     clip: Option<BezPath>,
 }
 
+/// A Devanagari consonant (with the nukta forms).
+fn deva_consonant(c: char) -> bool {
+    matches!(c, '\u{0915}'..='\u{0939}' | '\u{0958}'..='\u{095F}' | '\u{0978}'..='\u{097F}')
+}
+
+const DEVA_NUKTA: char = '\u{093C}';
+const DEVA_VIRAMA: char = '\u{094D}';
+const DEVA_SIGN_I: char = '\u{093F}';
+const DEVA_RA: char = '\u{0930}';
+
+/// A sign that goes on a consonant: vowel signs, candrabindu, anusvara,
+/// visarga, nukta, virama.
+fn deva_mark(c: char) -> bool {
+    matches!(c, '\u{0900}'..='\u{0903}' | '\u{093A}'..='\u{094F}' | '\u{0951}'..='\u{0957}' | '\u{0962}' | '\u{0963}')
+}
+
+/// Devanagari text taken from a PDF in the order its glyphs are drawn,
+/// put back in the order it is typed (#585). A PDF draws the short i sign
+/// (ि) before the consonant cluster it follows when typed, and the reph
+/// (र्, drawn on top) after the syllable it begins; the text kept the
+/// drawn order, so the signs went on the wrong letters. Only text that
+/// shows the drawn order is changed: an i sign at the start of a word or
+/// after another sign never happens in typed text.
+pub(crate) fn devanagari_logical_order(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let visual = chars.iter().enumerate().any(|(i, &c)| {
+        c == DEVA_SIGN_I
+            && chars.get(i + 1).is_some_and(|n| deva_consonant(*n))
+            && (i == 0 || !(deva_consonant(chars[i - 1]) || chars[i - 1] == DEVA_NUKTA))
+    });
+    if !visual {
+        return text.to_string();
+    }
+    // The end of the consonant cluster starting at `i`: consonants joined
+    // by viramas, each with its nukta.
+    let cluster_end = |i: usize| -> usize {
+        let mut j = i;
+        loop {
+            if !chars.get(j).is_some_and(|c| deva_consonant(*c)) {
+                return j;
+            }
+            j += 1;
+            if chars.get(j) == Some(&DEVA_NUKTA) {
+                j += 1;
+            }
+            if chars.get(j) == Some(&DEVA_VIRAMA)
+                && chars.get(j + 1).is_some_and(|c| deva_consonant(*c))
+            {
+                j += 1;
+                continue;
+            }
+            return j;
+        }
+    };
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == DEVA_SIGN_I && chars.get(i + 1).is_some_and(|n| deva_consonant(*n)) {
+            let end = cluster_end(i + 1);
+            out.extend_from_slice(&chars[i + 1..end]);
+            out.push(DEVA_SIGN_I);
+            i = end;
+            continue;
+        }
+        // A reph drawn after its syllable, at the end of a word: back to
+        // the start of that syllable.
+        if c == DEVA_RA
+            && chars.get(i + 1) == Some(&DEVA_VIRAMA)
+            && !chars
+                .get(i + 2)
+                .is_some_and(|n| deva_consonant(*n) || deva_mark(*n))
+        {
+            let mut start = out.len();
+            while start > 0 && deva_mark(out[start - 1]) {
+                start -= 1;
+            }
+            if start > 0 && deva_consonant(out[start - 1]) {
+                start -= 1;
+                // Back over the rest of the cluster.
+                while start >= 2 && out[start - 1] == DEVA_VIRAMA && deva_consonant(out[start - 2])
+                {
+                    start -= 2;
+                }
+                out.insert(start, DEVA_VIRAMA);
+                out.insert(start, DEVA_RA);
+                i += 2;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
 impl<'a> Importer<'a> {
     fn warn(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
@@ -2471,10 +2567,13 @@ impl<'a> Importer<'a> {
         }
         // Take the size out of the matrix: the span carries it in points.
         let transform = r.matrix * Affine::scale(1.0 / scale);
+        // Hindi and the other Devanagari languages: back from the order
+        // the glyphs are drawn in to the order they are typed (#585).
+        let text = devanagari_logical_order(&r.text);
         let span = TextSpan {
             bold: r.font.bold,
             italic: r.font.italic,
-            ..TextSpan::new(r.text, r.font.family.clone(), r.size_pt)
+            ..TextSpan::new(text, r.font.family.clone(), r.size_pt)
         };
         let mut shape = self.new_shape(ShapeKind::Text {
             spans: vec![span],
@@ -3544,6 +3643,39 @@ mod tests {
         assert!(rect.stroke.is_none());
         let rb = rect.bounds();
         assert!((rb.y1 - 80.0 * PT_MM).abs() < 1e-6);
+    }
+
+    /// Devanagari in drawn order comes back in typed order: the short i
+    /// sign after its consonant (and the whole cluster), a reph before
+    /// its syllable; text already in typed order is left alone (#585).
+    #[test]
+    fn devanagari_text_from_a_pdf_comes_back_in_typed_order() {
+        // किताब (book): drawn ि क ता ब.
+        assert_eq!(
+            devanagari_logical_order("\u{093F}\u{0915}\u{0924}\u{093E}\u{092C}"),
+            "किताब"
+        );
+        // हिन्दी: drawn ि ह न ् द ी.
+        assert_eq!(
+            devanagari_logical_order("\u{093F}\u{0939}\u{0928}\u{094D}\u{0926}\u{0940}"),
+            "हिन्दी"
+        );
+        // A cluster: स्थिति drawn ि स ् थ ि त → स्थिति.
+        assert_eq!(
+            devanagari_logical_order("\u{093F}\u{0938}\u{094D}\u{0925}\u{093F}\u{0924}"),
+            "स्थिति"
+        );
+        // कर्म with its reph drawn last: क म र ् , in a run that shows the
+        // drawn order (कि drawn first).
+        assert_eq!(
+            devanagari_logical_order("\u{093F}\u{0915} \u{0915}\u{092E}\u{0930}\u{094D}"),
+            "कि कर्म"
+        );
+        // Typed order stays as it is.
+        for typed in ["किताब", "समिति", "कर्म", "हिन्दी", "abc"]
+        {
+            assert_eq!(devanagari_logical_order(typed), typed);
+        }
     }
 
     #[test]

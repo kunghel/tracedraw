@@ -100,6 +100,7 @@ De pagina heeft vijf tabbladen.
   <kbd>Ctrl+8</kbd> en <kbd>Ctrl+2</kbd> de geselecteerde tekst groter en kleiner
   maken, 1 punt), [[options.default_font]] en [[options.default_size]] van
   nieuwe tekst, en [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] en de [[options.hyphenation_patterns]]
   (ingebouwd, of een afbreekwoordenboek voor uw taal).

@@ -17,10 +17,15 @@ pub struct PrintPreview {
     pub st: PrintState,
     /// Index of the sheet shown.
     pub sheet: usize,
-    /// 0 = composite, n = the n-th plate of [`plates`].
-    pub plate: usize,
+    /// The inks shown while Print separations is on, one per plate of
+    /// [`plates`] (all at first, #571).
+    pub inks: Vec<bool>,
     /// Zoom over the fitted size (1 = the sheet fits the window).
     pub zoom: f32,
+    /// A drag on the sheet moves the page information, not the artwork.
+    pub move_info: bool,
+    /// The margin line being dragged (0 left, 1 right, 2 top, 3 bottom).
+    pub margin_drag: Option<usize>,
     built: Option<(String, Document)>,
     texture: Option<(String, egui::TextureHandle)>,
 }
@@ -30,8 +35,10 @@ impl PrintPreview {
         PrintPreview {
             st,
             sheet: 0,
-            plate: 0,
+            inks: Vec::new(),
             zoom: 1.0,
+            move_info: false,
+            margin_drag: None,
             built: None,
             texture: None,
         }
@@ -72,6 +79,38 @@ pub fn shown_page(
     }
     let p = plates(doc).get(plate - 1)?.0;
     Some(plate_page(page, p))
+}
+
+/// The page shown with the inks ticked: every ink, the sheet as it is; one
+/// ink, its plate in grey (black = full ink); some, the colours those
+/// inks print (#571).
+pub fn shown_page_inks(
+    doc: &Document,
+    sheet: usize,
+    inks: &[bool],
+    separations: bool,
+) -> Option<tracedraw_core::document::Page> {
+    let page = doc.pages.get(sheet)?;
+    let all = plates(doc);
+    let on: Vec<usize> = (0..all.len())
+        .filter(|i| inks.get(*i).copied().unwrap_or(true))
+        .collect();
+    if !separations || on.len() == all.len() {
+        return Some(page.clone());
+    }
+    if let [one] = on.as_slice() {
+        return shown_page(doc, sheet, one + 1, true);
+    }
+    let mut process = [false; 4];
+    let mut spots = Vec::new();
+    for i in on {
+        match all[i].0 {
+            crate::export::Plate::Process(k) if k < 4 => process[k] = true,
+            crate::export::Plate::Spot(id) => spots.push(id),
+            _ => {}
+        }
+    }
+    Some(crate::export::inks_page(page, process, &spots))
 }
 
 /// The names of the plates, translated for the process inks.
@@ -134,16 +173,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
                 ui.separator();
                 if pv.st.separations {
+                    // Each ink with a box, always in view: one alone shows
+                    // its plate, several print together (#571).
                     let names = plate_names(sheets(app, &mut pv));
-                    pv.plate = pv.plate.min(names.len() - 1);
-                    ui.label(tr("print.plate"));
-                    egui::ComboBox::from_id_salt("print_preview_plate")
-                        .selected_text(names[pv.plate].clone())
-                        .show_ui(ui, |ui| {
-                            for (i, name) in names.iter().enumerate() {
-                                ui.selectable_value(&mut pv.plate, i, name.clone());
-                            }
-                        });
+                    let inks = names.len().saturating_sub(1);
+                    pv.inks.resize(inks, true);
+                    ui.label(tr("print.inks"));
+                    for (i, name) in names.iter().skip(1).enumerate() {
+                        ui.checkbox(&mut pv.inks[i], name.clone());
+                    }
                     ui.separator();
                 }
                 ui.label(tr("print.zoom"));
@@ -191,6 +229,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.checkbox(&mut st.color_bars, tr("print.color_bars"));
                 ui.checkbox(&mut st.densitometer, tr("print.densitometer"));
                 ui.checkbox(&mut st.page_info, tr("print.page_info_mark"));
+                if st.page_info {
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        ui.checkbox(&mut pv.move_info, tr("print.move_info"));
+                    });
+                }
+                let st = &mut pv.st;
                 if st.info_offset != (0.0, 0.0)
                     && ui
                         .small_button(tr("print.info_reset"))
@@ -199,6 +244,59 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 {
                     st.info_offset = (0.0, 0.0);
                 }
+                // The paper's margins kept clear: typed here, or their
+                // dashed lines dragged on the sheet (#580, #582).
+                ui.label(tr("print.margins"));
+                ui.horizontal(|ui| {
+                    for (i, key) in [
+                        "print.margin_left",
+                        "print.margin_right",
+                        "print.margin_top",
+                        "print.margin_bottom",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        ui.add(
+                            crate::ui::field::NumField::new(&mut st.margins[i])
+                                .range(0.0..=200.0)
+                                .speed(0.5)
+                                .suffix(" mm")
+                                .width(62.0),
+                        )
+                        .on_hover_text(tr(key));
+                    }
+                });
+                // Where the artwork sits on its page: a drag on the sheet
+                // moves it too (#536).
+                ui.horizontal(|ui| {
+                    ui.label(tr("print.art_position"));
+                    ui.add(
+                        crate::ui::field::NumField::new(&mut st.art_offset.0)
+                            .range(-1000.0..=1000.0)
+                            .speed(0.5)
+                            .prefix("x ")
+                            .suffix(" mm")
+                            .width(70.0),
+                    );
+                    ui.add(
+                        crate::ui::field::NumField::new(&mut st.art_offset.1)
+                            .range(-1000.0..=1000.0)
+                            .speed(0.5)
+                            .prefix("y ")
+                            .suffix(" mm")
+                            .width(70.0),
+                    );
+                    if ui
+                        .add_enabled(
+                            st.art_offset != (0.0, 0.0),
+                            egui::Button::new(tr("print.art_reset")).small(),
+                        )
+                        .clicked()
+                    {
+                        st.art_offset = (0.0, 0.0);
+                    }
+                });
                 ui.checkbox(&mut st.mirror, tr("dialog.mirror"));
                 ui.checkbox(&mut st.invert, tr("dialog.invert"));
                 ui.separator();
@@ -211,10 +309,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         .show(ui, |ui| {
             let area = ui.available_rect_before_wrap();
             let separations = pv.st.separations;
-            let (sheet, plate) = (pv.sheet, pv.plate);
-            let Some(page) = shown_page(sheets(app, &mut pv), sheet, plate, separations) else {
+            let sheet = pv.sheet;
+            let inks = pv.inks.clone();
+            let Some(page) = shown_page_inks(sheets(app, &mut pv), sheet, &inks, separations)
+            else {
                 return;
             };
+            let plate: String = inks.iter().map(|on| if *on { '1' } else { '0' }).collect();
             let margin = 24.0;
             let fit = ((area.width() - 2.0 * margin) as f64 / page.size.width.max(1e-6))
                 .min((area.height() - 2.0 * margin) as f64 / page.size.height.max(1e-6))
@@ -235,30 +336,71 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
             }
             let size = egui::vec2(w as f32, h as f32);
-            let info = pv.st.page_info;
+            // A drag moves the artwork, or the page information when
+            // that is asked for (#388, #536).
+            let info = pv.st.page_info && pv.move_info;
             let mut moved: Option<egui::Vec2> = None;
             egui::ScrollArea::both().show(ui, |ui| {
                 let avail = ui
                     .available_size()
                     .max(size + egui::vec2(2.0 * margin, 2.0 * margin));
-                let sense = if info {
-                    egui::Sense::drag()
+                let (r, resp) = ui.allocate_exact_size(avail, egui::Sense::drag());
+                let resp = resp.on_hover_text(if info {
+                    tr("print.info_drag_tip")
                 } else {
-                    egui::Sense::hover()
+                    tr("print.art_drag_tip")
+                });
+                let sheet_rect = egui::Rect::from_center_size(r.center(), size);
+                // The margins' lines on the sheet (mm, y up).
+                let k = zoom as f32;
+                let m = pv.st.margins.map(|v| v.max(0.0) as f32);
+                let (left, right) = (sheet_rect.left() + m[0] * k, sheet_rect.right() - m[1] * k);
+                let (top, bottom) = (sheet_rect.top() + m[2] * k, sheet_rect.bottom() - m[3] * k);
+                let near = |p: egui::Pos2| -> Option<usize> {
+                    let inside_y = p.y >= top - 6.0 && p.y <= bottom + 6.0;
+                    let inside_x = p.x >= left - 6.0 && p.x <= right + 6.0;
+                    [
+                        (inside_y && (p.x - left).abs() <= 6.0, 0),
+                        (inside_y && (p.x - right).abs() <= 6.0, 1),
+                        (inside_x && (p.y - top).abs() <= 6.0, 2),
+                        (inside_x && (p.y - bottom).abs() <= 6.0, 3),
+                    ]
+                    .into_iter()
+                    .find(|(hit, _)| *hit)
+                    .map(|(_, i)| i)
                 };
-                let (r, resp) = ui.allocate_exact_size(avail, sense);
-                // With the page information on, a drag on the sheet moves
-                // it (#388).
-                if info {
-                    let resp = resp.on_hover_text(tr("print.info_drag_tip"));
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
-                    }
-                    if resp.dragged() {
-                        moved = Some(resp.drag_delta());
+                let over = resp.hover_pos().and_then(near);
+                if resp.drag_started() {
+                    pv.margin_drag = resp.interact_pointer_pos().and_then(near);
+                }
+                let edge = pv.margin_drag.or(over);
+                if resp.hovered() || pv.margin_drag.is_some() {
+                    ui.ctx().set_cursor_icon(match edge {
+                        Some(0 | 1) => egui::CursorIcon::ResizeHorizontal,
+                        Some(_) => egui::CursorIcon::ResizeVertical,
+                        None => egui::CursorIcon::Move,
+                    });
+                }
+                if resp.dragged() {
+                    let d = resp.drag_delta();
+                    match pv.margin_drag {
+                        Some(i) => {
+                            // Inwards makes the margin larger.
+                            let along = match i {
+                                0 => d.x,
+                                1 => -d.x,
+                                2 => d.y,
+                                _ => -d.y,
+                            };
+                            let v = &mut pv.st.margins[i];
+                            *v = (*v + f64::from(along) / zoom.max(1e-6)).clamp(0.0, 200.0);
+                        }
+                        None => moved = Some(d),
                     }
                 }
-                let sheet_rect = egui::Rect::from_center_size(r.center(), size);
+                if resp.drag_stopped() {
+                    pv.margin_drag = None;
+                }
                 let p = ui.painter();
                 p.rect_filled(
                     sheet_rect.translate(egui::vec2(4.0, 4.0)),
@@ -273,13 +415,49 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         egui::Color32::WHITE,
                     );
                 }
+                // The margins dashed in blue, the one under the pointer or
+                // dragged bolder.
+                for (i, (a, b)) in [
+                    (
+                        egui::pos2(left, sheet_rect.top()),
+                        egui::pos2(left, sheet_rect.bottom()),
+                    ),
+                    (
+                        egui::pos2(right, sheet_rect.top()),
+                        egui::pos2(right, sheet_rect.bottom()),
+                    ),
+                    (
+                        egui::pos2(sheet_rect.left(), top),
+                        egui::pos2(sheet_rect.right(), top),
+                    ),
+                    (
+                        egui::pos2(sheet_rect.left(), bottom),
+                        egui::pos2(sheet_rect.right(), bottom),
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let width = if edge == Some(i) { 2.0 } else { 1.0 };
+                    p.extend(egui::Shape::dashed_line(
+                        &[a, b],
+                        egui::Stroke::new(width, Tokens::ACCENT),
+                        5.0,
+                        4.0,
+                    ));
+                }
             });
             if let Some(d) = moved {
                 // Screen points over the sheet are `zoom` per millimetre;
                 // the sheet's y runs up.
                 let k = zoom.max(1e-6);
-                pv.st.info_offset.0 += f64::from(d.x) / k;
-                pv.st.info_offset.1 -= f64::from(d.y) / k;
+                let target = if info {
+                    &mut pv.st.info_offset
+                } else {
+                    &mut pv.st.art_offset
+                };
+                target.0 += f64::from(d.x) / k;
+                target.1 -= f64::from(d.y) / k;
             }
         });
 
@@ -399,6 +577,41 @@ mod tests {
             Fill::Solid(Color::Cmyk { .. })
         ));
         assert!(shown_page(&doc, 5, 0, false).is_none());
+        // Ticked inks (#571): one alone is its plate in grey; cyan and
+        // yellow together keep only those channels; every ink, the sheet.
+        let fill = |inks: &[bool]| {
+            shown_page_inks(&doc, 0, inks, true).expect("page").layers[0].shapes[0]
+                .fill
+                .clone()
+        };
+        assert!(
+            matches!(fill(&[false, true, false, false]), Fill::Solid(Color::Gray { v }) if (v - 0.5).abs() < 1e-6)
+        );
+        match fill(&[true, false, true, false]) {
+            Fill::Solid(Color::Cmyk { c, m, y, k }) => {
+                assert!((c - 1.0).abs() < 1e-6 && m == 0.0 && y == 0.0 && k == 0.0)
+            }
+            f => panic!("{f:?}"),
+        }
+        assert_eq!(
+            fill(&[true; 4]),
+            Fill::Solid(Color::Cmyk {
+                c: 1.0,
+                m: 0.5,
+                y: 0.0,
+                k: 0.0
+            })
+        );
+        assert_eq!(
+            fill(&[]),
+            Fill::Solid(Color::Cmyk {
+                c: 1.0,
+                m: 0.5,
+                y: 0.0,
+                k: 0.0
+            }),
+            "all at first"
+        );
     }
 
     #[test]

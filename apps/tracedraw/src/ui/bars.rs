@@ -433,6 +433,7 @@ pub fn reset(app: &mut App) {
     for b in Bar::ALL {
         b.set_visible(app, true);
     }
+    crate::ui::bar_items::reset(app);
 }
 
 /// Put `bar` at `dock` (floating at `at` when given).

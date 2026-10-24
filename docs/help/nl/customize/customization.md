@@ -56,6 +56,8 @@ letter of <kbd>Shift</kbd> en een letter. Zie
 [[options.reset]] zet de balken terug. Onder [[options.other]]:
 [[bars.lock]] en [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Kleurenpalet {#color-palette}
 
 ![De pagina Kleurenpalet van de aanpassingsopties](../../img/customize-customization-color-palette.png)

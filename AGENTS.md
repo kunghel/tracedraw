@@ -40,6 +40,14 @@ The product name is **TraceDraw** in prose; machine names are `tracedraw`
    1/254000 inch (= 0.0001 mm). Points only appear in text sizes.
 7. **Code and comments in English.** Commit messages in English.
 8. **No em dashes** in prose, code or commits.
+9. **Lag is a bug, always.** Every change keeps the interface smooth:
+   nothing slower in a frame (pointer moves, drags, previews, panning,
+   zooming) than it was. Measure before and after (`cargo test --release
+   -- --ignored frame_times --nocapture` runs the frame benchmarks in
+   `pick_drag_tests.rs`), compare with the last release when a report
+   says it got slower, and prefer the cheapest drawing (plain line
+   segments over path shapes in overlays redrawn every frame, cached
+   renders over re-rendering, work only when its input changed).
 
 ## Workspace map
 

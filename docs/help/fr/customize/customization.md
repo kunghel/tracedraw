@@ -58,6 +58,8 @@ lettre. Voir [Raccourcis clavier](../reference/keyboard-shortcuts.md).
 place. Sous [[options.other]] : [[bars.lock]] et
 [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Palette de couleurs {#color-palette}
 
 ![La page Palette de couleurs des options de personnalisation](../../img/customize-customization-color-palette.png)

@@ -253,17 +253,78 @@ impl Window {
 /// takes every click, drag and scroll meant for the menus, toolbars,
 /// dockers and the drawing.
 pub fn modal_blocker(ctx: &Context) {
-    let id = egui::Id::new("modal_blocker");
+    modal_blocker_except(ctx, &[]);
+}
+
+/// [`modal_blocker`] leaving `holes` open: the toolbars whose buttons
+/// the Customization options let the user move (#563).
+pub fn modal_blocker_except(ctx: &Context, holes: &[Rect]) {
     let screen = ctx.content_rect();
-    egui::Area::new(id)
-        .order(egui::Order::Middle)
-        .fixed_pos(screen.min)
-        .interactable(true)
-        .show(ctx, |ui| {
-            ui.set_min_size(screen.size());
-            ui.interact(screen, id.with("cover"), Sense::click_and_drag());
-        });
-    ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+    let pieces = if holes.is_empty() {
+        vec![screen]
+    } else {
+        uncovered(screen, holes)
+    };
+    for (i, r) in pieces.into_iter().enumerate() {
+        let id = if i == 0 {
+            egui::Id::new("modal_blocker")
+        } else {
+            egui::Id::new(("modal_blocker", i))
+        };
+        egui::Area::new(id)
+            .order(egui::Order::Middle)
+            .fixed_pos(r.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                ui.set_min_size(r.size());
+                ui.interact(r, id.with("cover"), Sense::click_and_drag());
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+    }
+}
+
+/// `screen` without `holes`, as rectangles: bands between the holes'
+/// top and bottom edges, each cut where holes cross it.
+pub fn uncovered(screen: Rect, holes: &[Rect]) -> Vec<Rect> {
+    let holes: Vec<Rect> = holes
+        .iter()
+        .map(|h| h.intersect(screen))
+        .filter(|h| h.is_positive())
+        .collect();
+    let mut ys = vec![screen.top(), screen.bottom()];
+    for h in &holes {
+        ys.push(h.top());
+        ys.push(h.bottom());
+    }
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+    let mut out = Vec::new();
+    for w in ys.windows(2) {
+        let (y0, y1) = (w[0], w[1]);
+        if y1 - y0 < 0.5 {
+            continue;
+        }
+        let mut xs: Vec<(f32, f32)> = holes
+            .iter()
+            .filter(|h| h.top() <= y0 && h.bottom() >= y1)
+            .map(|h| (h.left(), h.right()))
+            .collect();
+        xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut x = screen.left();
+        for (a, b) in xs {
+            if a > x {
+                out.push(Rect::from_min_max(Pos2::new(x, y0), Pos2::new(a, y1)));
+            }
+            x = x.max(b);
+        }
+        if x < screen.right() {
+            out.push(Rect::from_min_max(
+                Pos2::new(x, y0),
+                Pos2::new(screen.right(), y1),
+            ));
+        }
+    }
+    out
 }
 
 /// The frame of every dialog window: white, a grey border and a shadow.
@@ -817,6 +878,27 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The screen less the holes is covered once, and no piece reaches
+    /// into a hole (#563).
+    #[test]
+    fn the_blocker_leaves_the_holes_open() {
+        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        let holes = [
+            Rect::from_min_max(Pos2::new(0.0, 24.0), Pos2::new(700.0, 60.0)),
+            Rect::from_min_max(Pos2::new(300.0, 100.0), Pos2::new(500.0, 140.0)),
+        ];
+        let pieces = uncovered(screen, &holes);
+        let area: f32 = pieces.iter().map(|r| r.area()).sum();
+        let holes_area: f32 = holes.iter().map(|r| r.area()).sum();
+        assert!((area + holes_area - screen.area()).abs() < 1.0, "{area}");
+        for p in &pieces {
+            for h in &holes {
+                assert!(!p.intersect(*h).is_positive(), "{p:?} {h:?}");
+            }
+        }
+        assert_eq!(uncovered(screen, &[]), vec![screen]);
+    }
 
     /// A dialog opens centred, moves when its title bar is dragged and
     /// stays there while open; opened again it is centred again.

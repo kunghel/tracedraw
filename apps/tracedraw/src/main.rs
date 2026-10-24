@@ -129,6 +129,8 @@ mod snap_points;
 mod spell;
 #[cfg(not(target_arch = "wasm32"))]
 mod splash;
+#[cfg(not(target_arch = "wasm32"))]
+mod startup_log;
 mod straighten;
 mod styles;
 mod symmetry_edit;
@@ -165,7 +167,9 @@ mod workspace_file;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // The log in a file too and panics reported: the Windows build has no
+    // console to show them (#570).
+    startup_log::init();
     tracedraw_text::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
@@ -317,6 +321,8 @@ impl eframe::App for Shell {
             return;
         };
         // Fonts text asked for (browser build), and fonts that arrived.
+        #[cfg(target_arch = "wasm32")]
+        web::sync_ui_fonts(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         web::fetch_requested_fonts();
         app.sync_fonts();

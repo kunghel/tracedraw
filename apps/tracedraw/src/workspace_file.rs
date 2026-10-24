@@ -92,6 +92,8 @@ pub struct BarsPart {
     pub toolbox_hidden: Vec<String>,
     pub show_outline_flyout: bool,
     pub status_info: StatusInfo,
+    /// The buttons of the Standard and Zoom toolbars, when changed.
+    pub bar_items: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// The interface's look.
@@ -221,6 +223,15 @@ impl WorkspaceFile {
             }
             bars.toolbox_hidden.truncate(MAX_LIST);
             bars.toolbox_hidden.retain(|id| short_text(id));
+            bars.bar_items.retain(|bar, _| {
+                crate::ui::bar_items::ItemBar::ALL
+                    .iter()
+                    .any(|b| b.id() == bar)
+            });
+            for list in bars.bar_items.values_mut() {
+                list.truncate(MAX_LIST);
+                list.retain(|id| short_text(id));
+            }
         }
         if let Some(a) = &mut self.appearance {
             if !(a.ui_size == 0.0 || (0.5..=4.0).contains(&a.ui_size)) {
@@ -275,6 +286,7 @@ impl App {
                 toolbox_hidden: s.toolbox_hidden.clone(),
                 show_outline_flyout: s.show_outline_flyout,
                 status_info: s.status_info,
+                bar_items: s.bar_items.clone(),
             }),
             palette: parts.palette.then_some(s.palette),
             appearance: parts.appearance.then_some(AppearancePart {
@@ -305,6 +317,7 @@ impl App {
             self.settings.toolbox_hidden = b.toolbox_hidden.clone();
             self.settings.show_outline_flyout = b.show_outline_flyout;
             self.settings.status_info = b.status_info;
+            self.settings.bar_items = b.bar_items.clone();
             applied.push(PART_BARS);
         }
         if let (true, Some(list)) = (parts.shortcuts, &file.shortcuts) {

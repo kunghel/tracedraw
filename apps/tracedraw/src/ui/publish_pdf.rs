@@ -61,6 +61,54 @@ impl Printing {
     }
 }
 
+/// How bitmaps go into the file (Objects tab, #550); presets carry them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BitmapPrefs {
+    pub downsample_color: bool,
+    pub color_dpi: f64,
+    pub downsample_gray: bool,
+    pub gray_dpi: f64,
+    pub downsample_mono: bool,
+    pub mono_dpi: f64,
+    /// JPEG (lossy) rather than ZIP for colour and gray pictures.
+    pub jpeg: bool,
+    pub jpeg_quality: u8,
+    /// Compress the pages' text and line art.
+    pub compress_content: bool,
+}
+
+impl Default for BitmapPrefs {
+    fn default() -> Self {
+        BitmapPrefs {
+            downsample_color: false,
+            color_dpi: 300.0,
+            downsample_gray: false,
+            gray_dpi: 300.0,
+            downsample_mono: false,
+            mono_dpi: 1200.0,
+            jpeg: false,
+            jpeg_quality: 85,
+            compress_content: true,
+        }
+    }
+}
+
+impl BitmapPrefs {
+    /// The writer's bitmap options.
+    pub fn options(&self) -> tracedraw_io::pdf::PdfImages {
+        let dpi = |on: bool, v: f64| (on && v.is_finite()).then(|| v.clamp(10.0, 9600.0));
+        tracedraw_io::pdf::PdfImages {
+            color_dpi: dpi(self.downsample_color, self.color_dpi),
+            gray_dpi: dpi(self.downsample_gray, self.gray_dpi),
+            mono_dpi: dpi(self.downsample_mono, self.mono_dpi),
+            jpeg: self.jpeg,
+            jpeg_quality: self.jpeg_quality.clamp(1, 100),
+            compress_content: self.compress_content,
+        }
+    }
+}
+
 /// A named set of choices (PDF preset): the compatibility, the output
 /// condition, the flattening resolution, the bookmarks and the bleed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +121,7 @@ pub struct PdfPreset {
     pub bookmarks: bool,
     pub show_bookmarks: bool,
     pub bleed_mm: f64,
+    pub bitmaps: BitmapPrefs,
 }
 
 impl Default for PdfPreset {
@@ -85,6 +134,7 @@ impl Default for PdfPreset {
             bookmarks: true,
             show_bookmarks: false,
             bleed_mm: 0.0,
+            bitmaps: BitmapPrefs::default(),
         }
     }
 }
@@ -105,6 +155,18 @@ pub fn builtin_presets() -> Vec<(&'static str, PdfPreset)> {
             PdfPreset {
                 bookmarks: false,
                 flatten_dpi: 150.0,
+                // Small files for the screen (#550).
+                bitmaps: BitmapPrefs {
+                    downsample_color: true,
+                    color_dpi: 150.0,
+                    downsample_gray: true,
+                    gray_dpi: 150.0,
+                    downsample_mono: true,
+                    mono_dpi: 300.0,
+                    jpeg: true,
+                    jpeg_quality: 75,
+                    compress_content: true,
+                },
                 ..base.clone()
             },
         ),
@@ -171,6 +233,8 @@ pub struct PublishPrefs {
     pub subset_fonts: bool,
     /// ...when a font uses fewer than this share of its glyphs (percent).
     pub subset_below_pct: f64,
+    /// Bitmap resolution and compression (#550).
+    pub bitmaps: BitmapPrefs,
 }
 
 impl Default for PublishPrefs {
@@ -195,6 +259,7 @@ impl Default for PublishPrefs {
             embed_base14: false,
             subset_fonts: true,
             subset_below_pct: 80.0,
+            bitmaps: BitmapPrefs::default(),
         }
     }
 }
@@ -359,6 +424,7 @@ impl PublishState {
             self.prefs.bookmarks = p.bookmarks;
             self.prefs.show_bookmarks = p.show_bookmarks;
             self.bleed_mm = p.bleed_mm.max(0.0);
+            self.prefs.bitmaps = p.bitmaps;
             self.prefs.preset = key.to_string();
         }
     }
@@ -378,6 +444,7 @@ impl PublishState {
             bookmarks: self.prefs.bookmarks,
             show_bookmarks: self.prefs.show_bookmarks,
             bleed_mm: self.bleed_mm,
+            bitmaps: self.prefs.bitmaps,
         };
         self.prefs.user_presets.retain(|q| q.name != name);
         self.prefs.user_presets.push(p);
@@ -462,6 +529,7 @@ impl PublishState {
             show_bookmarks: self.prefs.bookmarks && self.prefs.show_bookmarks,
             security: self.security(),
             text: self.prefs.text(),
+            images: self.prefs.bitmaps.options(),
         }
     }
 }
@@ -900,7 +968,63 @@ fn objects(ui: &mut Ui, st: &mut PublishState) {
     });
     note(ui, "publish.objects_note");
     ui.add_space(8.0);
+    bitmaps(ui, &mut st.prefs.bitmaps);
     text_and_fonts(ui, &mut st.prefs);
+}
+
+/// Objects: the pictures' resolution and compression (#550).
+fn bitmaps(ui: &mut Ui, b: &mut BitmapPrefs) {
+    group(ui, &tr("publish.bitmaps"), |ui| {
+        for (on, dpi, key) in [
+            (
+                &mut b.downsample_color,
+                &mut b.color_dpi,
+                "publish.downsample_color",
+            ),
+            (
+                &mut b.downsample_gray,
+                &mut b.gray_dpi,
+                "publish.downsample_gray",
+            ),
+            (
+                &mut b.downsample_mono,
+                &mut b.mono_dpi,
+                "publish.downsample_mono",
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.checkbox(on, tr(key));
+                ui.add_enabled_ui(*on, |ui| {
+                    ui.add(
+                        crate::ui::field::NumField::new(dpi)
+                            .range(10.0..=9600.0)
+                            .speed(5.0)
+                            .max_decimals(0)
+                            .suffix(" dpi"),
+                    );
+                });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label(tr("publish.compression"));
+            egui::ComboBox::from_id_salt("publish_compression")
+                .selected_text(if b.jpeg {
+                    tr("publish.compression_jpeg")
+                } else {
+                    tr("publish.compression_zip")
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut b.jpeg, false, tr("publish.compression_zip"));
+                    ui.selectable_value(&mut b.jpeg, true, tr("publish.compression_jpeg"));
+                });
+            ui.add_enabled_ui(b.jpeg, |ui| {
+                ui.label(tr("publish.jpeg_quality"));
+                ui.add(egui::Slider::new(&mut b.jpeg_quality, 1..=100));
+            });
+        });
+        ui.checkbox(&mut b.compress_content, tr("publish.compress_content"));
+        note(ui, "publish.bitmaps_note");
+    });
 }
 
 /// Objects: how text and fonts go into the file.

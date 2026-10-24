@@ -62,7 +62,7 @@ pub fn apply(app: &mut App) {
     let (source, target) = leave_slot(op)
         .map(|i| (app.shaping_leave[i][0], app.shaping_leave[i][1]))
         .unwrap_or_else(|| op.default_leave());
-    app.shaping_with(op, source, target);
+    app.begin_shaping(op, source, target);
 }
 
 /// Draw the docker.
@@ -104,6 +104,13 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
                     .color(Tokens::text_dim())
                     .size(11.0),
             );
+            if op.picks_target() {
+                ui.label(
+                    egui::RichText::new(tr("docker.shaping_pick"))
+                        .color(Tokens::text_dim())
+                        .size(11.0),
+                );
+            }
         });
     });
     ui.add_space(6.0);
@@ -118,7 +125,7 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
         );
         ui.add_space(6.0);
     }
-    let enough = app.selection.len() >= op.needs();
+    let enough = op.ready(app.selection.len());
     let width = ui.available_width().min(240.0);
     let clicked = ui
         .add_enabled_ui(enough, |ui| {
@@ -131,7 +138,7 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
     }
     if !enough {
         ui.label(
-            egui::RichText::new(if op.needs() > 1 {
+            egui::RichText::new(if op.needs() > 1 && !op.picks_target() {
                 tr("docker.shaping_needs_two")
             } else {
                 tr("docker.shaping_needs_one")

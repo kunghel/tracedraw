@@ -31,6 +31,8 @@
 
 [[options.command_bars_hint]] [[menu.window.toolbar_menu_bar]]、[[menu.window.toolbar_standard]]、[[menu.window.toolbar_property_bar]]、[[menu.window.toolbar_toolbox]]、[[menu.window.toolbar_status_bar]]、[[bars.palette]]，以及 [[menu.window.toolbar_text]]、[[menu.window.toolbar_zoom]] 和 [[menu.window.toolbar_transform]] 工具栏。[[options.reset]] 恢复各栏。在 [[options.other]] 下：[[bars.lock]] 和 [[options.show_outline_flyout]]。
 
+[[options.toolbar_drag_hint]]
+
 ## 调色板 {#color-palette}
 
 ![自定义选项的调色板页面](../../img/customize-customization-color-palette.png)

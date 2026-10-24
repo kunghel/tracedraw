@@ -20,7 +20,198 @@ pub struct FittedText {
     pub to_page: Affine,
 }
 
+/// `text` fitted to `curve` (see `App::fit_text_to_path`): on a closed
+/// curve centred on the point nearest `at`, else on its highest point;
+/// with `at`, as far from the curve as `at` is, on its side.
+pub fn fit_kind(
+    text: &tracedraw_core::Shape,
+    curve: &tracedraw_core::Shape,
+    at: Option<Point>,
+) -> Option<ShapeKind> {
+    let ShapeKind::Text {
+        spans,
+        origin,
+        align,
+        para,
+        ..
+    } = text.kind.clone()
+    else {
+        return None;
+    };
+    // The path turned and started as text sits on it (in page space,
+    // where outside and top are seen), then in the text's local space.
+    let (page_path, closed) = crate::ops2::path_for_text_at(&curve.page_path(), at);
+    let to_local = Affine::translate(-origin.to_vec2()) * text.transform.inverse();
+    let path = to_local * page_path;
+    let (align, offset) = crate::ops2::placement_on(&path, closed, align);
+    let mut on_path = TextOnPath {
+        path,
+        offset,
+        distance: 0.0,
+        mirror: false,
+        ..Default::default()
+    };
+    if let Some((_, d)) = at.and_then(|p| on_path.guide().nearest(to_local * p)) {
+        if d.is_finite() {
+            on_path.set_distance(d);
+        }
+    }
+    Some(ShapeKind::Text {
+        spans,
+        origin,
+        frame: None,
+        align,
+        para,
+        on_path: Some(on_path),
+    })
+}
+
+/// What Fit Text to Path shows while the pointer is near a path: the
+/// letters and the line they would stand on, the point of the path
+/// nearest the pointer, where the text begins (point and direction) and
+/// its distance from the path, in page space.
+#[derive(Debug, Clone)]
+pub struct PathPreview {
+    pub letters: BezPath,
+    pub line: BezPath,
+    pub nearest: Point,
+    pub start: (Point, tracedraw_core::geometry::Vec2),
+    pub distance: f64,
+}
+
+/// How far from an object's outline, in screen pixels, the pointer still
+/// picks it for Fit Text to Path.
+const PATH_REACH: f64 = 150.0;
+
 impl App {
+    /// The path Fit Text to Path would take at `p`: the object under the
+    /// pointer, else the one whose outline is nearest within reach.
+    /// Texts, pictures and groups are not paths.
+    pub fn text_path_target(&self, p: Point) -> Option<ShapeId> {
+        let doc = self.doc();
+        let usable = |s: &tracedraw_core::Shape| {
+            !matches!(
+                s.kind,
+                ShapeKind::Text { .. } | ShapeKind::Bitmap { .. } | ShapeKind::Group { .. }
+            ) && !self.selection.contains(&s.id)
+        };
+        if let Some(id) = self.hit_test(p) {
+            if doc.shape(id).ok().is_some_and(|(_, s)| usable(s)) {
+                return Some(id);
+            }
+        }
+        let reach = PATH_REACH / f64::from(self.view.zoom).max(1e-6);
+        let mut best: Option<(f64, ShapeId)> = None;
+        for s in self
+            .page_layers()
+            .into_iter()
+            .filter(|l| l.visible && !l.locked)
+            .flat_map(|l| l.shapes.iter())
+            .filter(|s| s.visible && !s.locked && usable(s))
+        {
+            // Only objects whose box comes within reach are measured.
+            if !s.bounds().inflate(reach, reach).contains(p) {
+                continue;
+            }
+            let path = s.page_path();
+            let d = path
+                .segments()
+                .map(|seg| {
+                    tracedraw_core::geometry::ParamCurveNearest::nearest(&seg, p, 1e-3).distance_sq
+                })
+                .fold(f64::INFINITY, f64::min)
+                .sqrt();
+            if d <= reach && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, s.id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// The preview of the selected text fitted to the path near `p`, while
+    /// Fit Text to Path waits for its path; none with no text selected.
+    pub fn text_path_preview(&self, p: Point) -> Option<PathPreview> {
+        let doc = self.doc();
+        let text = self.selection.iter().find_map(|id| {
+            doc.shape(*id)
+                .ok()
+                .map(|(_, s)| s)
+                .filter(|s| matches!(s.kind, ShapeKind::Text { .. }))
+        })?;
+        let target = self.text_path_target(p)?;
+        let (_, curve) = doc.shape(target).ok()?;
+        let kind = fit_kind(text, curve, Some(p))?;
+        let ShapeKind::Text {
+            spans,
+            origin,
+            align,
+            para,
+            on_path: Some(on_path),
+            ..
+        } = &kind
+        else {
+            return None;
+        };
+        let to_page = text.transform * Affine::translate(origin.to_vec2());
+        let req = tracedraw_core::document::text_outline::TextRequest {
+            spans,
+            frame: None,
+            align: *align,
+            para,
+            on_path: Some(on_path),
+        };
+        let letters = tracedraw_core::document::text_outline::outline(&req).unwrap_or_default();
+        // The text's length as set straight: where along the line it begins.
+        let straight = tracedraw_core::document::text_outline::TextRequest {
+            on_path: None,
+            ..req
+        };
+        let width = tracedraw_core::document::text_outline::outline(&straight)
+            .map(|o| o.bounding_box().width())
+            .unwrap_or(0.0);
+        let base = on_path.baseline();
+        let total = base.length();
+        let steps = ((total / 1.0).ceil() as usize).clamp(2, 4000);
+        let mut line = BezPath::new();
+        for i in 0..=steps {
+            if let Some((q, _)) = base.at(total * i as f64 / steps as f64) {
+                if i == 0 {
+                    line.move_to(q);
+                } else {
+                    line.line_to(q);
+                }
+            }
+        }
+        let begin = on_path.offset
+            + match align {
+                TextAlign::Center => (total - width) / 2.0,
+                TextAlign::Right => total - width,
+                _ => 0.0,
+            };
+        // The mark goes at the end of the run where the first letter is.
+        let first_letter = tracedraw_core::document::text_outline::glyphs(&req)
+            .and_then(|g| g.glyphs.into_iter().find(|g| !g.path.elements().is_empty()))
+            .map(|g| g.path.bounding_box().center());
+        let (a, b) = (base.at(begin)?, base.at(begin + width)?);
+        let (sp, dir) = match first_letter {
+            Some(c) if (c - b.0).hypot() < (c - a.0).hypot() => (b.0, -b.1),
+            _ => a,
+        };
+        let guide = on_path.guide();
+        let to_local = to_page.inverse();
+        let (s_near, _) = guide.nearest(to_local * p)?;
+        let (near, _) = guide.at(s_near)?;
+        let dir_page = to_page * (sp + dir) - to_page * sp;
+        let len = dir_page.hypot().max(1e-9);
+        Some(PathPreview {
+            letters: to_page * letters,
+            line: to_page * line,
+            nearest: to_page * near,
+            start: (to_page * sp, dir_page / len),
+            distance: on_path.distance,
+        })
+    }
+
     /// The selection is a single text fitted to a path.
     pub fn fitted_text(&self) -> Option<FittedText> {
         let [id] = self.selection.as_slice() else {
@@ -476,6 +667,54 @@ mod tests {
     /// on the highest and lowest points: at the top outside and upright,
     /// at the bottom inside and reading left to right (both mirrors);
     /// each is one undo step and the bar shows it again.
+    /// While Fit Text to Path waits for its path, the pointer near an
+    /// ellipse shows the text on it, centred under the pointer and as far
+    /// from it as the pointer; nothing far from every path; the click
+    /// puts the text where the preview showed it.
+    #[test]
+    fn the_path_near_the_pointer_previews_the_text_and_a_click_places_it() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let e = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(40.0, 100.0, 140.0, 160.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.start_text(Point::new(10.0, 20.0), None);
+        app.text_insert("HOME");
+        app.finish_text();
+        let t = app.selection[0];
+        app.begin_fit_text_to_path();
+        assert!(app.pending_text_path);
+        // 10 mm above the top of the ellipse (y grows upwards).
+        let p = Point::new(90.0, 170.0);
+        let pv = app.text_path_preview(p).expect("a preview");
+        assert_eq!(app.text_path_target(p), Some(e));
+        assert!((pv.distance - 10.0).abs() < 0.3, "{}", pv.distance);
+        assert!((pv.nearest.x - 90.0).abs() < 0.5 && (pv.nearest.y - 160.0).abs() < 0.5);
+        let b = pv.letters.bounding_box();
+        assert!(b.y0 > 169.0, "the letters stand above the pointer: {b:?}");
+        assert!((b.center().x - 90.0).abs() < 2.0, "centred: {b:?}");
+        // The text begins left of the middle, on its line.
+        assert!(pv.start.0.x < 90.0, "{:?} {b:?}", pv.start);
+        // Far from every path: nothing.
+        assert!(app.text_path_preview(Point::new(400.0, 400.0)).is_none());
+        // The click (as `pending_click` does it).
+        let target = app.text_path_target(p).expect("target");
+        app.pending_text_path = false;
+        app.fit_text_to_picked_path(target, Some(p));
+        app.selection = vec![t];
+        let ft = app.fitted_text().expect("fitted");
+        assert!((ft.on_path.distance - 10.0).abs() < 0.3);
+        let sh = app.doc().shape(t).expect("text").1.clone();
+        let vb = app.visual_bounds(&sh);
+        assert!(
+            (vb.y1 - b.y1).abs() < 0.5 && (vb.x0 - b.x0).abs() < 0.5,
+            "{vb:?} {b:?}"
+        );
+    }
+
     #[test]
     fn top_and_bottom_placement_on_a_closed_path() {
         tracedraw_text::install();

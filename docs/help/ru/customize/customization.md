@@ -56,6 +56,8 @@
 [[options.reset]] возвращает панели на место. В разделе [[options.other]]:
 [[bars.lock]] и [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Цветовая палитра {#color-palette}
 
 ![Страница «Цветовая палитра» параметров настройки](../../img/customize-customization-color-palette.png)

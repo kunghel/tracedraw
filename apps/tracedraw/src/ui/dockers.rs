@@ -953,10 +953,17 @@ fn properties(app: &mut App, ui: &mut Ui) {
                     // else the first span.
                     let chosen = app.text_selection_span();
                     if let Some(sp) = chosen.as_ref().or(spans.first()) {
+                        let u = app.text_units();
                         ui.label(format!(
-                            "{} {} pt{}{}",
+                            "{} {} {}{}{}",
                             sp.font_family,
-                            sp.size_pt,
+                            crate::ui::field::format_number(
+                                u.from_pt(sp.size_pt),
+                                false,
+                                0,
+                                Some(2)
+                            ),
+                            u.short(),
                             if sp.bold {
                                 format!(" {}", tr("docker.bold"))
                             } else {

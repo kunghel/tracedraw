@@ -2941,7 +2941,11 @@ pub fn arrange_part(app: &mut App, ui: &mut Ui) -> bool {
             false,
         ),
     ] {
-        let on = if need_many { many } else { !shapes.is_empty() };
+        let on = if need_many {
+            op.ready(shapes.len())
+        } else {
+            !shapes.is_empty()
+        };
         let tip = format!("{}\n{}", tr(key), tr(hint));
         if pic_button(ui, pic, &tip, on, false).clicked() {
             app.shaping(op);

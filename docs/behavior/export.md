@@ -44,6 +44,19 @@ Office presets start with their own (see `options.md`).
 - OK asks where to save; the file name is the drawing's with the format's
   extension.
 
+## Presets
+
+Above the format: Preset, a list of the presets saved (each shown with
+its format, "(none)" first), "+" to save the dialog's choices under a
+name (typed in a field that opens below, OK or Enter; the same name
+replaces that preset), a pencil to rename the chosen preset (a name
+another preset has is refused) and "−" to delete it. Choosing a preset
+puts back its format, resolution, quality, transparent background,
+selection only, all pages and the PDF choices (standard, bleed, output
+condition). Presets are kept in the preferences
+(`formats.export_presets`; #547,
+`prefs::tests::export_presets_save_apply_rename_and_delete`).
+
 ## Checks
 
 - `export::tests::the_export_preview_shows_the_page_and_estimates_the_size`

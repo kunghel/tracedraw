@@ -127,3 +127,12 @@ their own crypt filter and signature contents are left alone.
 - A raw 2 x 1 RGB image gives a 2 x 1 bitmap at the CTM's rectangle,
   also when the file starts with a PostScript preamble (`.ai`).
 - Garbage and truncated input return an error, never a panic.
+
+- Devanagari text (Hindi, Marathi, Nepali, ...) read in Text mode comes
+  back in the order it is typed: a PDF draws the short i sign (ि) before
+  the consonant cluster it belongs to and the reph (र्) after its
+  syllable, and its text kept that drawn order, so the signs went on the
+  wrong letters. A run is changed only when it shows the drawn order (an
+  i sign at the start of a word or after another sign); a reph moves back
+  only at the end of a word (#585,
+  `pdf_import::tests::devanagari_text_from_a_pdf_comes_back_in_typed_order`).

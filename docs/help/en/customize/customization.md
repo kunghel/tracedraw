@@ -52,6 +52,8 @@ letter. See [Keyboard shortcuts](../reference/keyboard-shortcuts.md).
 [[options.reset]] puts the bars back. Under [[options.other]]:
 [[bars.lock]] and [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Color Palette {#color-palette}
 
 ![The Color Palette page of the customization options](../../img/customize-customization-color-palette.png)

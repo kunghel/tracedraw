@@ -75,8 +75,9 @@
 
 - [[options.display]]：[[options.keyboard_text_increment]]（<kbd>Ctrl+8</kbd> 和
   <kbd>Ctrl+2</kbd> 放大和缩小所选文本的幅度，1 点）、新文本的
-  [[options.default_font]] 和 [[options.default_size]]，以及
+  [[options.text_units]] [[options.default_font]] 和 [[options.default_size]]，以及
   [[menu.text.show_non_printing]]。
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]：[[menu.text.show_text_frames]]、
   [[menu.text.use_hyphenation]] 和 [[options.hyphenation_patterns]]
   （内置，或您所用语言的断字词典）。

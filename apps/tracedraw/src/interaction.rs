@@ -2599,6 +2599,14 @@ impl App {
         }
         // Esc during a move, scale, rotation or skew cancels it: nothing
         // changes and the selection stays.
+        if (self.pending_shaping.is_some() || self.pending_merge_frame)
+            && ctx.input(|i| i.key_pressed(Key::Escape))
+        {
+            self.pending_shaping = None;
+            self.pending_merge_frame = false;
+            self.status = crate::i18n::tr("status.cancelled");
+            return;
+        }
         if self.pending_text_link.is_some() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.pending_text_link = None;
             self.text_link_drag = None;

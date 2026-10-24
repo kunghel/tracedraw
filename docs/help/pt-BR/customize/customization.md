@@ -53,6 +53,8 @@ teclas de ferramenta são uma letra ou <kbd>Shift</kbd> e uma letra. Veja
 [[options.reset]] devolve as barras. Em [[options.other]]: [[bars.lock]] e
 [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Paleta de cores {#color-palette}
 
 ![A página Paleta de cores das opções de personalização](../../img/customize-customization-color-palette.png)

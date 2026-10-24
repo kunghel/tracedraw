@@ -88,6 +88,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::InflateBitmap(_) => "bitmaps/resample-and-straighten#inflate",
         Dialog::Trace(_) => "bitmaps/tracing",
         Dialog::Effect(_) => "effects/bitmap-effects",
+        Dialog::TextDefaults { .. } => "text/fonts",
         Dialog::EditText { .. } => "text/adding-text#edit",
         Dialog::TextTabs => "text/paragraphs#tabs",
         Dialog::TextColumns => "text/paragraphs#columns",

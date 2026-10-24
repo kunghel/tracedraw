@@ -24,7 +24,9 @@ is downloaded). The dialog is `ui/publish_pdf.rs`; the file comes from
   PDF/X-3, then the presets saved with "+" (it asks a name; a built-in
   name is not taken; the same name replaces the preset). "-" deletes the
   chosen saved preset. A preset sets the compatibility, output
-  condition, flattening resolution, bookmarks and bleed.
+  condition, flattening resolution, bookmarks, bleed and the Bitmaps
+  choices of Objects (Web: colour and gray pictures to 150 dpi, black and
+  white to 300 dpi, JPEG at quality 75).
 - Compatibility: PDF 1.4, PDF/X-1a:2003, PDF/X-3:2003 or PDF/X-4.
 
 ## Color
@@ -37,6 +39,19 @@ PDF keeps the drawing's colours as they are.
 
 Flatten transparency at (300 dpi), for PDF/X-1a and X-3 only; greyed
 for the others, which keep transparency live.
+
+### Bitmaps
+
+How pictures go into the file (#550; kept in the preferences and in the
+presets; `pdf::tests::pictures_are_downsampled_and_compressed_as_asked`):
+
+| Choice | Default | What it does |
+|---|---|---|
+| Downsample colour images to | off, 300 dpi | A colour picture with more than 1.05 times that resolution as placed (its pixels over its width on the page) is resized to it (Triangle filter); its transparency mask with it. |
+| Downsample gray images to | off, 300 dpi | The same for pictures whose pixels are all gray; gray pictures go in with one channel (DeviceGray) whatever the choice. |
+| Downsample black-and-white images to | off, 1200 dpi | The same for pictures of black and white pixels only; after the filter the pixels go back to black or white. |
+| Compression | ZIP (lossless) | JPEG (DCTDecode) for colour and gray pictures at the Quality (1 to 100, 85 at first); black-and-white pictures, transparency masks and PDF/X-1a pictures (CMYK) stay ZIP. Pictures made while exporting (flattened transparency, bitmap effects) take JPEG too. |
+| Compress text and line art | on | The pages' content streams are compressed (Flate); off, they are written as they are. |
 
 ### Text and fonts
 

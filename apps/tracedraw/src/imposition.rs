@@ -91,6 +91,9 @@ pub struct Options {
     pub keep_size: bool,
     /// Where the page information sits, moved from its place (mm).
     pub info_offset: (f64, f64),
+    /// Margins of the paper kept clear (mm: left, right, top, bottom):
+    /// the pages and marks go inside them (#580).
+    pub paper_margins: [f64; 4],
     pub marks: Marks,
     /// The drawing's name and the moment, for the page information.
     pub title: String,
@@ -108,6 +111,7 @@ impl Default for Options {
             back_side: false,
             keep_size: false,
             info_offset: (0.0, 0.0),
+            paper_margins: [0.0; 4],
             marks: Marks::default(),
             title: String::new(),
             when: String::new(),
@@ -182,6 +186,10 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             .collect(),
     };
     let margin = if o.marks.any() { MARK_MARGIN } else { 0.0 } + o.bleed.max(0.0);
+    let pm = o
+        .paper_margins
+        .map(|m| if m.is_finite() { m.max(0.0) } else { 0.0 });
+    let [ml, mr, mt, mb] = pm;
     // Booklet pages share the spine: no gutter or bleed between them.
     let (gutter, inner_bleed) = match o.layout {
         Layout::Booklet => (0.0, 0.0),
@@ -212,8 +220,8 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                 Some(sheet) => {
                     // Kept size: the pages as they are; else the grid
                     // shrinks to fit inside the marks.
-                    let avail_w = (sheet.width - 2.0 * margin).max(1.0);
-                    let avail_h = (sheet.height - 2.0 * margin).max(1.0);
+                    let avail_w = (sheet.width - ml - mr - 2.0 * margin).max(1.0);
+                    let avail_h = (sheet.height - mt - mb - 2.0 * margin).max(1.0);
                     let s = if o.keep_size {
                         1.0
                     } else {
@@ -228,14 +236,18 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                         1.0
                     };
                     (
-                        Size::new(grid_w * s + 2.0 * margin, grid_h * s + 2.0 * margin),
+                        Size::new(
+                            grid_w * s + 2.0 * margin + ml + mr,
+                            grid_h * s + 2.0 * margin + mt + mb,
+                        ),
                         s,
                     )
                 }
             };
-            // The grid centred on the sheet.
-            let x0 = (size.width - grid_w * scale) / 2.0;
-            let y_top = (size.height + grid_h * scale) / 2.0;
+            // The grid centred in the paper's margins (the sheet when
+            // there are none).
+            let x0 = ml + (size.width - ml - mr - grid_w * scale) / 2.0;
+            let y_top = size.height - mt - (size.height - mt - mb - grid_h * scale) / 2.0;
             let cells = cells
                 .iter()
                 .enumerate()
@@ -642,6 +654,45 @@ fn renumber(s: &mut Shape, ids: &mut tracedraw_core::id::IdSource) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The paper's margins are kept clear: the page sits in the middle of
+    /// what is left, and shrinks to fit inside it when it would not; a
+    /// fitted sheet grows by them (#580).
+    #[test]
+    fn pages_sit_inside_the_paper_margins() {
+        let a4 = Size::new(210.0, 297.0);
+        let o = Options {
+            sheet: Some(a4),
+            paper_margins: [20.0, 0.0, 10.0, 30.0],
+            ..Default::default()
+        };
+        let one = plan(&[Size::new(100.0, 100.0)], &o);
+        let t = one[0].cells[0].trim;
+        assert!(
+            (t.center().x - (20.0 + (210.0 - 20.0) / 2.0)).abs() < 1e-9,
+            "{t:?}"
+        );
+        // y up: 30 at the bottom, 10 at the top.
+        assert!(
+            (t.center().y - (30.0 + (297.0 - 10.0 - 30.0) / 2.0)).abs() < 1e-9,
+            "{t:?}"
+        );
+        // A page as large as the paper shrinks to the room inside.
+        let full = plan(&[a4], &o);
+        let t = full[0].cells[0].trim;
+        assert!(
+            t.x0 >= 20.0 - 1e-9 && t.y0 >= 30.0 - 1e-9 && t.y1 <= 297.0 - 10.0 + 1e-9,
+            "{t:?}"
+        );
+        let fitted = plan(
+            &[Size::new(100.0, 100.0)],
+            &Options {
+                paper_margins: [5.0, 5.0, 5.0, 5.0],
+                ..Default::default()
+            },
+        );
+        assert_eq!(fitted[0].size, Size::new(110.0, 110.0));
+    }
 
     const A5: Size = Size {
         width: 148.0,

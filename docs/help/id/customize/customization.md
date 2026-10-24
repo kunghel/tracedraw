@@ -55,6 +55,8 @@ berupa satu huruf atau <kbd>Shift</kbd> dan satu huruf. Lihat
 [[options.reset]] mengembalikan bilah-bilah. Di bawah [[options.other]]:
 [[bars.lock]] dan [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Palet Warna {#color-palette}
 
 ![Halaman Palet Warna pada opsi kustomisasi](../../img/customize-customization-color-palette.png)

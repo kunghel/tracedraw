@@ -53,6 +53,8 @@ i litera. Zobacz [Skróty klawiaturowe](../reference/keyboard-shortcuts.md).
 [[options.reset]] przywraca paski. W sekcji [[options.other]]:
 [[bars.lock]] i [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Paleta kolorów {#color-palette}
 
 ![Strona Paleta kolorów opcji dostosowywania](../../img/customize-customization-color-palette.png)

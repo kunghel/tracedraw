@@ -101,8 +101,10 @@ meets the start) `Path` objects with the toolbox defaults.
   handle as it was frozen). While the first node is dragged to close,
   the closing segment shows dashed in blue with its handle.
 - Preview mode (Pen, on by default): while the button is up a dashed blue
-  segment (over a solid white line one point wider, so it reads over any
-  colour, #489) runs from the last node to the pointer (as the next node would
+  segment (5 px dashes, 2 px gaps, over a white line as thin as the dashes
+  that shows in the gaps, so it reads over any colour, #489; plain line
+  segments, so the preview costs nothing noticeable in a frame:
+  `frame_times_of_the_pen_preview`, #560) runs from the last node to the pointer (as the next node would
   take it, snapped and with Ctrl's steps), curved by the last node's
   outgoing handle, so the next segment shows before the click. The
   Bezier tool and the Pen with Preview mode off show nothing past the

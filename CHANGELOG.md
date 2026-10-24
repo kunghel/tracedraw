@@ -6,6 +6,48 @@ full, row-by-row status.
 
 ## Unreleased
 
+## 0.15.0 (2026-10-24)
+
+- Windows: the program carries the C runtime it needs (no Visual C++ redistributable required). A start that fails now says so: the log is written to `tracedraw.log` in the settings folder (`%APPDATA%\TraceDraw`, or `tracedraw-settings` beside a portable copy), and a crash shows a message and writes `crash.log` there; nothing was shown before (#570).
+
+- PDF import in Text mode: Hindi and other Devanagari text comes back in the order it is typed. The short i sign (ि) and the reph (र्) were taken in the order the PDF draws them, so they sat on the wrong letters (#585).
+
+- Print Preview: paper margins for each side, typed in the left panel or set by dragging their dashed lines on the sheet; the pages go inside them, clear of what the printer cannot print (#580, #582).
+
+- Print Merge: Place Inside Frame with nothing selected waits for a click on the shape, with the Place Inside arrow as the pointer, and takes the shape clicked (also inside a group). It was greyed until a shape was selected (#577).
+
+- Print Preview with separations: a box for each ink, always in view, instead of a list. One ink shows its plate; several show what those inks print together, to check two or three colours at once (#571).
+
+- Duplicate (Ctrl+D) repeats what was done to the copy: duplicate an object, move, scale or turn the copy while it stays selected, and each next Duplicate takes the same step from the last copy, as in the reference program. It always used the duplicate offset (#559).
+
+- Print Preview: a drag on the sheet moves the artwork on the paper before printing (clear of the margins the printer cannot print), with Artwork position fields and Reset on the left; Print prints it where it was put. A drag moved only the page information (#536).
+
+- Export: presets with names. "+" saves the format and its settings (resolution, quality, transparency, selection only, all pages, PDF choices) as a preset; the Preset list puts them back, each shown with its format; presets can be renamed and deleted, and stay in the preferences (#547).
+
+- Publish to PDF: Objects > Bitmaps downsamples colour, gray and black-and-white pictures to a resolution of your choice, compresses colour and gray pictures as JPEG with a quality, and can leave text and line art uncompressed. Gray pictures take one channel. The Web preset now makes small files (150 dpi, JPEG 75). Pictures always went in at full resolution, lossless (#550).
+
+- Dimensions: the property bar of the dimension tools sets the label's font and colour, the line colour and width, the arrowheads (arrow, open arrow, dot, tick, none) and rounded line ends, for new dimensions and the selected ones. Lines were always black hairlines and the label took the current font (#475).
+
+- Text: Options > Text > Display > Text units sets the unit font sizes are shown and typed in (points at first; millimetres, centimetres, inches and the other units of the rulers), for large work. A unit typed with the value counts, as in the other fields (#529).
+
+- Text: a font or size picked on the property bar or the Text docker with nothing selected asks whether it becomes the default for new text, as the reference program does. It changed the default without a word, so new text could start in another font than Arial after a pick made by mistake.
+
+- Fit Text to Path: while it waits for the path, the pointer near a path shows the text where a click puts it, centred on the nearest point and as far from the path as the pointer, with the distance and a red mark where the text begins; the click places it so. Nothing showed until the click, which always put the text on the path itself.
+
+- Toolbars: a new installation starts with Small buttons (Default Button Size), as the reference program does; it started with Medium. A size already saved in the preferences stays.
+
+- Symmetry: Finish selects the whole symmetry. The object picked inside it while editing (the last one drawn, for one) stayed selected, so the next drag moved that object alone, as if it had been double-clicked into.
+
+- Toolbars: the buttons of the Standard and Zoom toolbars can be changed. With Tools > Options > Customization open (or with Alt held), drag a button along its bar to move it, onto the other bar, or off the bars to remove it; drag a command or a tool from the Commands page onto a bar to add it. Reset on the Command Bars page brings the first buttons back. The Zoom toolbar shows pictures, as the Zoom tool's property bar does; it showed words only (#563).
+
+- Downloads: Linux on 64-bit ARM (arm64) gets its own `.deb`, AppImage and `.tar.gz`, built on an ARM machine (#561).
+
+- Browser version: with the interface in Chinese or Japanese, the menus and dialogs show their text; they showed empty boxes, the browser having no system fonts. The page fetches Noto Sans SC, TC or JP from its font folder when it starts. Variable interface fonts are drawn at Regular weight, not at their default, which is Thin in some (#561).
+
+- Shaping: Weld, Trim and Intersect work with one object selected: choose the command (Object > Shaping, the Shaping panel or the property bar), then click the object it acts on, as in other drawing programs. The buttons were greyed until two objects were selected, and which one was cut depended on the selection order (#562).
+
+- Pen: the preview follows the pointer as smoothly as in 0.13.0; its white line, drawn as a path shape, cost about a third of each frame. The white line is now as thin as the dashes, so the preview reads mostly blue with short white gaps (#560).
+
 - Symmetry: after Finish the mirror lines no longer show on the selected symmetry, so it reads as one object; they stayed whenever it was selected and editing looked still open.
 
 ## 0.14.0 (2026-10-23)

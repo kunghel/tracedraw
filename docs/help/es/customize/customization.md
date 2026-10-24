@@ -57,6 +57,8 @@ letra o <kbd>Shift</kbd> y una letra. Vea
 [[options.reset]] vuelve a colocar las barras. En [[options.other]]:
 [[bars.lock]] y [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Paleta de colores {#color-palette}
 
 ![La página Paleta de colores de las opciones de personalización](../../img/customize-customization-color-palette.png)

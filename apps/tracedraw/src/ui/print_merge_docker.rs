@@ -515,18 +515,24 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             app.insert_merge_field();
         }
         if app.merge_docker.kind == 1 {
-            // A shape of the user's as the picture's frame (#460).
-            let any = !app.selection.is_empty();
+            // A shape of the user's as the picture's frame (#460): the
+            // one selected, else the one clicked next, the pointer the
+            // Place Inside arrow meanwhile (#577).
             if ui
-                .add_enabled(
-                    any,
-                    egui::Button::new(tr("merge.place_inside")).min_size(wide),
+                .add(
+                    egui::Button::new(tr("merge.place_inside"))
+                        .min_size(wide)
+                        .selected(app.pending_merge_frame),
                 )
                 .on_hover_text(tr("merge.place_inside_tip"))
-                .on_disabled_hover_text(tr("merge.place_inside_none"))
                 .clicked()
             {
-                app.place_merge_field_inside();
+                if app.selection.is_empty() {
+                    app.pending_merge_frame = true;
+                    app.status = tr("merge.place_inside_click");
+                } else {
+                    app.place_merge_field_inside();
+                }
             }
         }
         let can_update = !app.selected_merge_fields().is_empty();

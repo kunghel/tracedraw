@@ -50,6 +50,43 @@ impl TextPosition {
     }
 }
 
+/// The marks at the ends of the dimension line (#475).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrowStyle {
+    /// A filled triangle.
+    #[default]
+    Filled,
+    /// Two strokes, open.
+    Open,
+    /// A filled dot.
+    Dot,
+    /// An architect's tick across the line.
+    Tick,
+    /// Nothing.
+    None,
+}
+
+impl ArrowStyle {
+    pub const ALL: [ArrowStyle; 5] = [
+        ArrowStyle::Filled,
+        ArrowStyle::Open,
+        ArrowStyle::Dot,
+        ArrowStyle::Tick,
+        ArrowStyle::None,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ArrowStyle::Filled => "dimension.arrow_filled",
+            ArrowStyle::Open => "dimension.arrow_open",
+            ArrowStyle::Dot => "dimension.arrow_dot",
+            ArrowStyle::Tick => "dimension.arrow_tick",
+            ArrowStyle::None => "dimension.arrow_none",
+        }
+    }
+}
+
 /// How a dimension's label reads and sits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,6 +101,17 @@ pub struct DimensionStyle {
     pub text_position: TextPosition,
     /// Label size, points.
     pub text_size: f64,
+    /// The label's font; empty for the font of new text (as before the
+    /// style had one).
+    pub font: String,
+    /// The colour of the lines and arrowheads, and of the label (#475).
+    pub line_color: Color,
+    pub text_color: Color,
+    /// The lines' width, mm; 0 for a hairline.
+    pub line_width: f64,
+    pub arrows: ArrowStyle,
+    /// The lines' ends and corners rounded.
+    pub round_ends: bool,
 }
 
 impl Default for DimensionStyle {
@@ -76,6 +124,12 @@ impl Default for DimensionStyle {
             suffix: String::new(),
             text_position: TextPosition::Above,
             text_size: 10.0,
+            font: String::new(),
+            line_color: Color::BLACK,
+            text_color: Color::BLACK,
+            line_width: 0.0,
+            arrows: ArrowStyle::Filled,
+            round_ends: false,
         }
     }
 }
@@ -193,6 +247,11 @@ impl Dimension {
     /// The group's children: lines, arrowheads, label (ids from `ids`).
     pub fn shapes(&self, ids: [ShapeId; 3], font: &str, drawing_units: Units) -> [Shape; 3] {
         let text = self.label(drawing_units);
+        let font = if self.style.font.trim().is_empty() {
+            font
+        } else {
+            self.style.font.as_str()
+        };
         let mut label = Shape::new(
             ids[2],
             ShapeKind::Text {
@@ -208,7 +267,7 @@ impl Dimension {
                 on_path: None,
             },
         );
-        label.fill = Fill::Solid(Color::BLACK);
+        label.fill = Fill::Solid(self.style.text_color);
         label.stroke = None;
         // The label's own box: its width and how far it reaches below and
         // above its baseline.
@@ -222,13 +281,36 @@ impl Dimension {
         };
         let mut lines = BezPath::new();
         let mut arrows = BezPath::new();
+        // The open and tick marks are strokes, drawn with the lines.
+        let mut marks = BezPath::new();
+        let style = self.style.arrows;
         let mut arrow = |tip: Point, back_dir: Vec2| {
             let n = Vec2::new(-back_dir.y, back_dir.x);
             let back = tip + back_dir * ARROW_LEN;
-            arrows.move_to(tip);
-            arrows.line_to(back + n * ARROW_HALF);
-            arrows.line_to(back - n * ARROW_HALF);
-            arrows.close_path();
+            match style {
+                ArrowStyle::Filled => {
+                    arrows.move_to(tip);
+                    arrows.line_to(back + n * ARROW_HALF);
+                    arrows.line_to(back - n * ARROW_HALF);
+                    arrows.close_path();
+                }
+                ArrowStyle::Open => {
+                    marks.move_to(back + n * ARROW_HALF);
+                    marks.line_to(tip);
+                    marks.line_to(back - n * ARROW_HALF);
+                }
+                ArrowStyle::Dot => {
+                    let r = ARROW_HALF;
+                    arrows.extend(kurbo::Circle::new(tip, r).path_elements(0.01));
+                }
+                ArrowStyle::Tick => {
+                    // At 45 degrees across the line.
+                    let d = (n + back_dir) * (ARROW_LEN * 0.5 / 2f64.sqrt());
+                    marks.move_to(tip - d);
+                    marks.line_to(tip + d);
+                }
+                ArrowStyle::None => {}
+            }
         };
         let pos = self.style.text_position;
         match self.measure {
@@ -330,6 +412,7 @@ impl Dimension {
                 label.transform = Affine::translate(origin.to_vec2());
             }
         }
+        lines.extend(marks);
         let mut line = Shape::new(
             ids[0],
             ShapeKind::Path {
@@ -338,7 +421,16 @@ impl Dimension {
             },
         );
         line.fill = Fill::None;
-        line.stroke = Some(Stroke::hairline(Color::BLACK));
+        let mut stroke = if self.style.line_width > 1e-9 {
+            Stroke::new(self.style.line_color, self.style.line_width.min(50.0))
+        } else {
+            Stroke::hairline(self.style.line_color)
+        };
+        if self.style.round_ends {
+            stroke.cap = tracedraw_core::LineCap::Round;
+            stroke.join = tracedraw_core::LineJoin::Round;
+        }
+        line.stroke = Some(stroke);
         let mut heads = Shape::new(
             ids[1],
             ShapeKind::Path {
@@ -346,7 +438,7 @@ impl Dimension {
                 closed: true,
             },
         );
-        heads.fill = Fill::Solid(Color::BLACK);
+        heads.fill = Fill::Solid(self.style.line_color);
         heads.stroke = None;
         [line, heads, label]
     }
@@ -816,6 +908,87 @@ mod tests {
             },
         };
         assert_eq!(angle.label(Units::Millimeters), "90.0\u{b0}");
+    }
+
+    /// The style's font, colours, line width, arrowheads and rounded ends
+    /// reach the dimension's lines, heads and label; a style saved before
+    /// they existed reads as before (#475).
+    #[test]
+    fn the_style_sets_the_look_of_lines_heads_and_label() {
+        use tracedraw_core::LineCap;
+        let red = Color::rgb8(200, 0, 0);
+        let blue = Color::rgb8(0, 0, 200);
+        let d = Dimension {
+            measure: Measure::Linear {
+                a: Point::new(0.0, 0.0),
+                b: Point::new(50.0, 0.0),
+                at: Point::new(0.0, 10.0),
+            },
+            style: DimensionStyle {
+                font: "Some Font".into(),
+                line_color: red,
+                text_color: blue,
+                line_width: 0.5,
+                arrows: ArrowStyle::Open,
+                round_ends: true,
+                ..Default::default()
+            },
+        };
+        let ids = [ShapeId(1), ShapeId(2), ShapeId(3)];
+        let [line, heads, label] = d.shapes(ids, "Arial", Units::Millimeters);
+        let st = line.stroke.clone().expect("stroke");
+        assert_eq!((st.color, st.width, st.cap), (red, 0.5, LineCap::Round));
+        assert_eq!(label.fill, Fill::Solid(blue));
+        match &label.kind {
+            ShapeKind::Text { spans, .. } => assert_eq!(spans[0].font_family, "Some Font"),
+            _ => panic!("label"),
+        }
+        // Open heads are strokes with the lines: no filled heads.
+        let heads_path = |s: &Shape| match &s.kind {
+            ShapeKind::Path { path, .. } => path.elements().len(),
+            _ => 0,
+        };
+        assert_eq!(heads_path(&heads), 0);
+        let plain = Dimension {
+            style: DimensionStyle::default(),
+            ..d.clone()
+        };
+        let [pl, ph, plabel] = plain.shapes(ids, "Arial", Units::Millimeters);
+        assert!(heads_path(&ph) > 0, "filled heads at first");
+        assert!(
+            line_count(&line) > line_count(&pl),
+            "the open heads' strokes"
+        );
+        match &plabel.kind {
+            ShapeKind::Text { spans, .. } => assert_eq!(spans[0].font_family, "Arial"),
+            _ => panic!("label"),
+        }
+        for a in [ArrowStyle::Dot, ArrowStyle::Tick, ArrowStyle::None] {
+            let x = Dimension {
+                style: DimensionStyle {
+                    arrows: a,
+                    ..Default::default()
+                },
+                ..d.clone()
+            };
+            let [_, h, _] = x.shapes(ids, "Arial", Units::Millimeters);
+            assert_eq!(heads_path(&h) > 0, a == ArrowStyle::Dot, "{a:?}");
+        }
+        let old: DimensionStyle = serde_json::from_str(r#"{"precision":1}"#).expect("old");
+        assert_eq!(old.line_color, Color::BLACK);
+        assert_eq!(old.arrows, ArrowStyle::Filled);
+        assert!(old.font.is_empty());
+    }
+
+    fn line_count(s: &Shape) -> usize {
+        match &s.kind {
+            ShapeKind::Path { path, .. } => path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+                .count(),
+            _ => 0,
+        }
     }
 
     /// A dimension is a group that knows what it measures; its style is

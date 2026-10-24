@@ -100,6 +100,7 @@ Halaman ini punya lima tab.
   <kbd>Ctrl+8</kbd> dan <kbd>Ctrl+2</kbd> memperbesar dan memperkecil teks yang
   dipilih, 1 poin), [[options.default_font]] dan [[options.default_size]] untuk
   teks baru, serta [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] dan [[options.hyphenation_patterns]]
   (bawaan, atau kamus pemenggalan untuk bahasa Anda).

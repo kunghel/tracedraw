@@ -1345,20 +1345,41 @@ fn text_display_tab(app: &mut App, ui: &mut Ui) {
         });
         ui.end_row();
         // The font and size of new text, whatever text is selected (#449).
+        // The unit of font sizes everywhere (#529): points, or millimetres
+        // and the like for large work.
+        row_label(ui, &tr("options.text_units"));
+        let u = app.text_units();
+        egui::ComboBox::from_id_salt("options_text_units")
+            .selected_text(u.label())
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                for v in Units::ALL {
+                    if ui.selectable_label(v == u, v.label()).clicked() {
+                        app.settings.text_units = v.id().to_string();
+                    }
+                }
+            });
+        ui.end_row();
         row_label(ui, &tr("options.default_font"));
         crate::ui::font_list::default_font_list(app, ui, "options_default_font", 220.0);
         ui.end_row();
         row_label(ui, &tr("options.default_size"));
+        let u = app.text_units();
+        let mut shown = u.from_pt(app.text_default_size);
         if ui
             .add(
-                crate::ui::field::NumField::new(&mut app.text_default_size)
-                    .range(1.0..=999.0)
-                    .suffix(" pt"),
+                crate::ui::field::NumField::new(&mut shown)
+                    .range(u.from_pt(1.0)..=u.from_pt(999.0))
+                    .max_decimals(if u == Units::Points { 1 } else { 3 })
+                    .unit_mm(u.mm())
+                    .suffix(format!(" {}", u.short())),
             )
             .changed()
-            && !app.has_text_target()
         {
-            app.text_size_pt = app.text_default_size;
+            app.text_default_size = u.to_pt(shown);
+            if !app.has_text_target() {
+                app.text_size_pt = app.text_default_size;
+            }
         }
         ui.end_row();
     });
@@ -2075,6 +2096,11 @@ fn commands_page(app: &mut App, ui: &mut Ui) {
         app.shortcut_editor.entries = crate::ui::menus::commands(app, &ctx);
     }
     capture_keys(app, ui);
+    ui.label(
+        egui::RichText::new(tr("options.toolbar_drag_hint"))
+            .color(Tokens::text_dim())
+            .size(11.0),
+    );
     let category_name = |c: Option<&str>| match c {
         None => tr("options.all_commands"),
         Some(TOOLBOX) => tr("menu.window.toolbar_toolbox"),
@@ -2171,10 +2197,23 @@ fn commands_page(app: &mut App, ui: &mut Ui) {
 
 /// One row of the list: the command's picture and name.
 fn command_list_row(app: &mut App, ui: &mut Ui, c: &CommandItem) {
+    // A command or a tool dragged onto the Standard or Zoom toolbar
+    // joins it (#563).
+    let item = match c.tool {
+        Some(t) => Some(format!("{}{}", crate::ui::bar_items::TOOL, t.id())),
+        None => c.id.starts_with("menu.").then(|| c.id.clone()),
+    };
     let (row, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_H),
-        egui::Sense::click(),
+        if item.is_some() {
+            egui::Sense::click_and_drag()
+        } else {
+            egui::Sense::click()
+        },
     );
+    if let (true, Some(item)) = (resp.drag_started(), item) {
+        app.bar_item_drag = Some(crate::ui::bar_items::ItemDrag { item, from: None });
+    }
     let on = app.shortcut_editor.selected.as_deref() == Some(c.id.as_str());
     if on {
         ui.painter()
@@ -2387,6 +2426,11 @@ fn command_bars_page(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(230.0);
             ui.label(tr("options.command_bars_hint"));
+            ui.label(
+                egui::RichText::new(tr("options.toolbar_drag_hint"))
+                    .color(Tokens::text_dim())
+                    .size(11.0),
+            );
             egui::Frame::new()
                 .stroke(egui::Stroke::new(1.0, Tokens::border()))
                 .fill(crate::theme::Tokens::field())

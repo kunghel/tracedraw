@@ -75,6 +75,14 @@ the version on the right).
   and used straight away next time; changing the choice in Options
   clears it (`gpu::tests::a_renderer_that_fails_hands_over_to_the_next`).
   So a virtual machine without a usable graphics card opens.
+- The log goes to `tracedraw.log` in the settings folder as well as to
+  the console (written afresh each start; a start handed over to the
+  next renderer adds to it). A panic is written to `crash.log` there and
+  shown in a message box naming that file, once; the Windows build has
+  no console, so a start that failed showed nothing (#570,
+  `startup_log::tests::the_log_and_the_crash_report_go_in_the_settings_folder`).
+- The Windows builds link the C runtime statically (`.cargo/config.toml`,
+  `+crt-static`): they do not need `vcruntime140.dll` (#570).
 - The browser build draws with WebGL.
 
 ## Back to the defaults

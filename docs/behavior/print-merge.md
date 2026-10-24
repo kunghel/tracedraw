@@ -96,15 +96,20 @@ at once (#437). From top to bottom:
   data (`PrintMerge.Scale`: actual, fit, fill or stretch;
   `PrintMerge.Anchor`: 0 top left to 8 bottom right, row by row). QR
   code makes a 40 mm square named `<Field>`. One undo step each.
-- Place Inside Frame (Image only; enabled with something selected): each
+- Place Inside Frame (Image only): each
   selected object that is not a text or a group (a circle, an oval, any
   outline, a clip frame), on the page or inside a group, is named
   `<Field>` of the chosen column and keeps the Align and scale shown; on
   the page, with a placeholder picture chosen, the picture goes inside
-  it. One undo step "Place Inside Frame". Nothing selected: the status
-  bar says to select the shape first
+  it. One undo step "Place Inside Frame". Nothing selected: the button
+  waits for a click on the shape (it shows pressed, the status bar asks
+  for the shape and the pointer is the Place Inside arrow, as for Place
+  Inside Frame on the Object menu); the click takes the object under it,
+  also one inside a group, and makes it the frame; Esc, a right click or
+  a click on nothing cancels
   (`print_merge_docker::tests::place_inside_frame_uses_the_users_shapes_also_in_a_group`,
-  #460).
+  `pick_drag_tests::place_inside_frame_waits_for_a_click_with_its_arrow`,
+  #460, #577).
 - Update Field (when a placeholder is selected: a text holding only
   `<Field>`, or an object named `<Field>`): the selected placeholders
   take the chosen column, and with Image the Align and scale shown.

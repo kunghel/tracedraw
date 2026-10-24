@@ -101,6 +101,7 @@ La pagina ha cinque schede.
   <kbd>Ctrl+8</kbd> e <kbd>Ctrl+2</kbd> ingrandiscono e riducono il testo
   selezionato, 1 punto), [[options.default_font]] e [[options.default_size]] del
   nuovo testo, e [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] e gli [[options.hyphenation_patterns]]
   (integrati, o un dizionario di sillabazione per la tua lingua).

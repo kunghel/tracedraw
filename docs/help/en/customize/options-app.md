@@ -98,6 +98,7 @@ The page has five tabs.
   and <kbd>Ctrl+2</kbd> grow and shrink the selected text, 1 point), the
   [[options.default_font]] and [[options.default_size]] of new text, and
   [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] and the [[options.hyphenation_patterns]]
   (built-in, or a hyphenation dictionary for your language).

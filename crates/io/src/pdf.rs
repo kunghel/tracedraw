@@ -57,6 +57,102 @@ impl PdfStandard {
     }
 }
 
+/// How bitmaps and page content go into the file (#550): pictures
+/// above a resolution are downsampled to it, colour and gray ones can be
+/// JPEG compressed, and the pages' text and line art compressed or not.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PdfImages {
+    /// Downsample colour, gray and black-and-white pictures to these
+    /// resolutions (dots per inch, as placed) when they have more;
+    /// `None` keeps every pixel.
+    pub color_dpi: Option<f64>,
+    pub gray_dpi: Option<f64>,
+    pub mono_dpi: Option<f64>,
+    /// JPEG for colour and gray pictures (lossy), else ZIP (lossless).
+    /// Black-and-white pictures, transparency masks and PDF/X-1a files
+    /// stay ZIP.
+    pub jpeg: bool,
+    /// JPEG quality, 1 to 100.
+    pub jpeg_quality: u8,
+    /// Compress the pages' text and line art.
+    pub compress_content: bool,
+}
+
+impl Default for PdfImages {
+    fn default() -> Self {
+        PdfImages {
+            color_dpi: None,
+            gray_dpi: None,
+            mono_dpi: None,
+            jpeg: false,
+            jpeg_quality: 85,
+            compress_content: true,
+        }
+    }
+}
+
+/// What a picture holds, for its resolution and how it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageKind {
+    Color,
+    Gray,
+    Mono,
+}
+
+fn image_kind(rgb: &[u8]) -> ImageKind {
+    let mut mono = true;
+    for px in rgb.chunks_exact(3) {
+        if px[0] != px[1] || px[1] != px[2] {
+            return ImageKind::Color;
+        }
+        if px[0] != 0 && px[0] != 255 {
+            mono = false;
+        }
+    }
+    if mono {
+        ImageKind::Mono
+    } else {
+        ImageKind::Gray
+    }
+}
+
+/// `data` (`channels` bytes a pixel, `w` x `h`) resized to `nw` x `nh`.
+fn resample(data: &[u8], channels: u8, w: u32, h: u32, nw: u32, nh: u32) -> Option<Vec<u8>> {
+    use image::imageops::{resize, FilterType};
+    let out = match channels {
+        1 => resize(
+            &image::GrayImage::from_raw(w, h, data.to_vec())?,
+            nw,
+            nh,
+            FilterType::Triangle,
+        )
+        .into_raw(),
+        3 => resize(
+            &image::RgbImage::from_raw(w, h, data.to_vec())?,
+            nw,
+            nh,
+            FilterType::Triangle,
+        )
+        .into_raw(),
+        _ => return None,
+    };
+    Some(out)
+}
+
+/// `data` as a JPEG file (gray with one channel, else RGB).
+fn jpeg_bytes(data: &[u8], channels: u8, w: u32, h: u32, quality: u8) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut enc =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+    let color = if channels == 1 {
+        image::ExtendedColorType::L8
+    } else {
+        image::ExtendedColorType::Rgb8
+    };
+    enc.encode(data, w, h, color).ok()?;
+    Some(out)
+}
+
 /// Options for `document_to_pdf_with`.
 #[derive(Debug, Clone, Default)]
 pub struct PdfOptions {
@@ -85,6 +181,8 @@ pub struct PdfOptions {
     pub security: Option<crate::pdf_crypt::Security>,
     /// Text as text with fonts, or as curves.
     pub text: PdfText,
+    /// Bitmap resolution and compression (#550).
+    pub images: PdfImages,
 }
 
 /// What went into a file besides the drawing: its fonts.
@@ -112,6 +210,7 @@ struct Pdf {
     /// Fonts that cannot go in a given way: (data address, index, kind).
     bad_fonts: Vec<(usize, u32, fonts::SlotKind)>,
     report: PdfReport,
+    images: PdfImages,
 }
 
 impl Pdf {
@@ -130,6 +229,14 @@ impl Pdf {
                 &format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceCMYK /BitsPerComponent 8 /Filter /FlateDecode"),
                 &data,
             );
+        }
+        if self.images.jpeg {
+            if let Some(data) = jpeg_bytes(rgb, 3, w, h, self.images.jpeg_quality) {
+                return self.stream(
+                    &format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"),
+                    &data,
+                );
+            }
         }
         let data = flate(rgb);
         self.stream(
@@ -782,25 +889,79 @@ impl PageWriter<'_> {
                     }
                     None
                 };
-                let cs = self.pdf.color_space();
-                let data = if self.pdf.cmyk_only {
-                    flate(&rgb_to_cmyk_bytes(&rgb))
+                let opts = self.pdf.images;
+                let kind = image_kind(&rgb);
+                // Gray and black-and-white pictures go in with one channel.
+                let (mut data, mut channels): (Vec<u8>, u8) = if kind == ImageKind::Color {
+                    (rgb, 3)
                 } else {
-                    flate(&rgb)
+                    (rgb.chunks_exact(3).map(|p| p[0]).collect(), 1)
                 };
+                let (mut w, mut h) = (*width_px, *height_px);
+                let mut alpha = alpha;
+                // Downsampled to the resolution asked for its kind, as
+                // placed on the page.
+                let wide_mm = {
+                    let c = transform.as_coeffs();
+                    (c[0] * rect.width()).hypot(c[1] * rect.width())
+                };
+                let target = match kind {
+                    ImageKind::Color => opts.color_dpi,
+                    ImageKind::Gray => opts.gray_dpi,
+                    ImageKind::Mono => opts.mono_dpi,
+                };
+                if let Some(t) = target.filter(|t| *t >= 1.0) {
+                    let dpi = if wide_mm > 1e-9 {
+                        w as f64 / (wide_mm / 25.4)
+                    } else {
+                        0.0
+                    };
+                    if dpi > t * 1.05 {
+                        let k = t / dpi;
+                        let nw = ((w as f64 * k).round() as u32).max(1);
+                        let nh = ((h as f64 * k).round() as u32).max(1);
+                        if let Some(d) = resample(&data, channels, w, h, nw, nh) {
+                            data = d;
+                            if kind == ImageKind::Mono {
+                                // Back to black and white after the filter.
+                                for v in data.iter_mut() {
+                                    *v = if *v >= 128 { 255 } else { 0 };
+                                }
+                            }
+                            alpha = alpha.and_then(|a| resample(&a, 1, w, h, nw, nh));
+                            (w, h) = (nw, nh);
+                        }
+                    }
+                }
                 // Transparent pixels go to a soft mask.
                 let smask = alpha.map(|a| {
                     let adata = flate(&a);
                     self.pdf.stream(
-                        &format!("/Type /XObject /Subtype /Image /Width {width_px} /Height {height_px} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode"),
+                        &format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode"),
                         &adata,
                     )
                 });
                 let smask_ref = smask
                     .map(|id| format!(" /SMask {id} 0 R"))
                     .unwrap_or_default();
+                let cs = if channels == 1 {
+                    "/DeviceGray"
+                } else {
+                    self.pdf.color_space()
+                };
+                if channels == 3 && self.pdf.cmyk_only {
+                    data = rgb_to_cmyk_bytes(&data);
+                    channels = 4;
+                }
+                let jpeg = (opts.jpeg && kind != ImageKind::Mono && channels != 4)
+                    .then(|| jpeg_bytes(&data, channels, w, h, opts.jpeg_quality))
+                    .flatten();
+                let (data, filter) = match jpeg {
+                    Some(j) => (j, "/DCTDecode"),
+                    None => (flate(&data), "/FlateDecode"),
+                };
                 let id = self.pdf.stream(
-                    &format!("/Type /XObject /Subtype /Image /Width {width_px} /Height {height_px} /ColorSpace {cs} /BitsPerComponent 8 /Filter /FlateDecode{smask_ref}"),
+                    &format!("/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace {cs} /BitsPerComponent 8 /Filter {filter}{smask_ref}"),
                     &data,
                 );
                 self.images.push((name.clone(), id));
@@ -1526,6 +1687,7 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
         fonts: Vec::new(),
         bad_fonts: Vec::new(),
         report: PdfReport::default(),
+        images: opts.images,
     };
     // PDF/X wants every font in the file.
     let text_mode = (!opts.text.as_curves).then_some(TextMode {
@@ -1614,8 +1776,12 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
             fonts,
             ..
         } = w;
-        let data = flate(content.as_bytes());
-        let content_id = pdf.stream("/Filter /FlateDecode", &data);
+        let content_id = if pdf.images.compress_content {
+            let data = flate(content.as_bytes());
+            pdf.stream("/Filter /FlateDecode", &data)
+        } else {
+            pdf.stream("", content.as_bytes())
+        };
         let mut res = String::from("<< ");
         if !shadings.is_empty() {
             res.push_str("/Shading << ");
@@ -1958,6 +2124,104 @@ fn xmp_packet(text: &XmpText, std_: PdfStandard, date: &str) -> String {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect;
+
+    /// A 600 x 600 pixel picture placed 25.4 mm wide (600 dpi): kept as
+    /// it is at first; downsampled to 150 dpi (150 x 150) when asked; JPEG
+    /// compressed when asked; a gray picture goes in with one channel; the
+    /// page content can stay uncompressed (#550).
+    #[test]
+    fn pictures_are_downsampled_and_compressed_as_asked() {
+        let picture = |gray: bool| {
+            let img = image::RgbImage::from_fn(600, 600, |x, y| {
+                let v = ((x * 7 + y * 3) % 256) as u8;
+                if gray {
+                    image::Rgb([v, v, v])
+                } else {
+                    image::Rgb([v, 255 - v, (x % 256) as u8])
+                }
+            });
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png)
+                .expect("png");
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let id = doc.ids_mut().shape();
+            let s = Shape::new(
+                id,
+                ShapeKind::Bitmap {
+                    rect: Rect::new(10.0, 10.0, 35.4, 35.4),
+                    width_px: 600,
+                    height_px: 600,
+                    png: png.into_inner().into(),
+                    fx: Default::default(),
+                },
+            );
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+            doc
+        };
+        let text = |doc: &Document, images: PdfImages| {
+            let opts = PdfOptions {
+                images,
+                ..Default::default()
+            };
+            String::from_utf8_lossy(&document_to_pdf_with(doc, &opts)).to_string()
+        };
+        let color = picture(false);
+        let plain = text(&color, PdfImages::default());
+        assert!(plain.contains("/Width 600 /Height 600"));
+        assert!(plain.contains("/DeviceRGB"));
+        let small = text(
+            &color,
+            PdfImages {
+                color_dpi: Some(150.0),
+                ..Default::default()
+            },
+        );
+        assert!(small.contains("/Width 150 /Height 150"), "downsampled");
+        assert!(small.len() < plain.len());
+        let jpeg = text(
+            &color,
+            PdfImages {
+                jpeg: true,
+                jpeg_quality: 60,
+                ..Default::default()
+            },
+        );
+        assert!(jpeg.contains("/DCTDecode"));
+        // Below the resolution asked: left alone.
+        let kept = text(
+            &color,
+            PdfImages {
+                color_dpi: Some(1200.0),
+                ..Default::default()
+            },
+        );
+        assert!(kept.contains("/Width 600 /Height 600"));
+        // Gray: one channel, its own resolution.
+        let gray = picture(true);
+        let g = text(
+            &gray,
+            PdfImages {
+                color_dpi: Some(72.0),
+                gray_dpi: Some(300.0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            g.contains("/Width 300 /Height 300 /ColorSpace /DeviceGray"),
+            "gray"
+        );
+        // The page content uncompressed: its operators readable.
+        let raw = text(
+            &color,
+            PdfImages {
+                compress_content: false,
+                ..Default::default()
+            },
+        );
+        assert!(raw.contains("cm /Im0 Do"));
+        assert!(!plain.contains("cm /Im0 Do"));
+    }
 
     #[test]
     fn multi_stop_fountain_uses_stitching_function() {
@@ -2999,6 +3263,7 @@ mod text_tests {
             fonts: Vec::new(),
             bad_fonts: Vec::new(),
             report: PdfReport::default(),
+            images: PdfImages::default(),
         };
         let mut w = PageWriter {
             content: String::new(),

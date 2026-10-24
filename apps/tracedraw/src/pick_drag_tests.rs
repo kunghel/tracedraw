@@ -4929,3 +4929,521 @@ fn finish_on_the_symmetry_bar_leaves_one_object() {
     assert!(bounds(&app, sym).x0 > x0 + 5.0);
     assert_eq!(app.symmetry_edit, None);
 }
+
+/// Frame times of the Pen with its preview following the pointer, with
+/// the preview off and on (#560): run with
+/// `cargo test --release -- --ignored frame_times_of_the_pen_preview --nocapture`.
+/// The preview may add little to the frame; the white line drawn as a
+/// path shape cost about 0.25 ms of 0.7 and the preview lagged.
+#[test]
+#[ignore]
+fn frame_times_of_the_pen_preview() {
+    for preview in [false, true] {
+        let (ctx, mut app, _) = setup();
+        app.select(Vec::new());
+        app.settings.curves.pen_preview = preview;
+        app.set_tool(Tool::Pen);
+        let a = Pos2::new(500.0, 400.0);
+        click_at(&ctx, &mut app, a, Modifiers::NONE);
+        let n = 300;
+        let (mut ui_t, mut tess_t, mut verts) = (0.0, 0.0, 0usize);
+        for i in 0..n {
+            let p = a + egui::vec2(
+                100.0 + (i as f32 * 3.0) % 400.0,
+                50.0 + (i as f32 * 7.0) % 200.0,
+            );
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events: vec![Event::PointerMoved(p)],
+                time: Some(i as f64 * 0.016),
+                ..Default::default()
+            };
+            let t = std::time::Instant::now();
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+            ui_t += t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let clipped = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+            tess_t += t.elapsed().as_secs_f64();
+            for c in &clipped {
+                if let egui::epaint::Primitive::Mesh(m) = &c.primitive {
+                    verts += m.vertices.len();
+                }
+            }
+            out.textures_delta.clear();
+        }
+        eprintln!(
+            "pen preview {preview}: ui {:.3} ms, tessellation {:.3} ms, {} vertices a frame",
+            ui_t * 1000.0 / n as f64,
+            tess_t * 1000.0 / n as f64,
+            verts / n
+        );
+    }
+}
+
+/// Trim with one object selected waits for a click on the target, found
+/// under the selected object too; the selection cuts it, in one undo
+/// step. Esc or a click on nothing cancels (#562).
+#[test]
+fn trim_with_one_object_waits_for_the_target() {
+    use crate::ops::Shaping;
+    let (ctx, mut app, cutter) = setup();
+    let target = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(40.0, 20.0, 90.0, 70.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![target]);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        30, 30, 200,
+    )));
+    let settle = |ctx: &egui::Context, app: &mut App| {
+        for _ in 0..20 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+    };
+    // Esc cancels.
+    app.select(vec![cutter]);
+    app.shaping(Shaping::Trim);
+    assert!(app.pending_shaping.is_some(), "waits for the target");
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Escape, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    assert!(app.pending_shaping.is_none());
+    settle(&ctx, &mut app);
+    // A click on nothing cancels and changes nothing.
+    app.select(vec![cutter]);
+    app.shaping(Shaping::Trim);
+    let rev = app.engine.revision();
+    let at = app.view.to_screen(Point::new(150.0, 150.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(app.pending_shaping.is_none());
+    assert_eq!(app.engine.revision(), rev);
+    // The target clicked, where it shows beside the cutter.
+    app.select(vec![cutter]);
+    app.shaping(Shaping::Trim);
+    let before = shape_count(&app);
+    let at = app.view.to_screen(Point::new(80.0, 60.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(app.pending_shaping.is_none());
+    assert!(app.doc().find_shape(cutter).is_some(), "the cutter stays");
+    assert!(app.doc().find_shape(target).is_none(), "the target is cut");
+    assert_eq!(shape_count(&app), before);
+    let cut = app.selection[0];
+    let b = bounds(&app, cut);
+    assert!(close(b.x1, 90.0) && close(b.y1, 70.0), "{b:?}");
+    let s = app.doc().find_shape(cut).expect("cut").clone();
+    assert_eq!(
+        s.fill,
+        tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(30, 30, 200)),
+        "the target's fill"
+    );
+    // The part under the cutter is gone.
+    assert!(!crate::tools2::point_in_path(
+        &s.page_path(),
+        Point::new(50.0, 30.0)
+    ));
+    // One step undoes it.
+    app.undo();
+    assert!(app.doc().find_shape(target).is_some());
+    assert!(app.doc().find_shape(cut).is_none());
+    settle(&ctx, &mut app);
+    // The target under the selected object: the top one cuts the one
+    // beneath, clicked where they overlap.
+    app.select(vec![target]);
+    app.shaping(Shaping::Trim);
+    let at = app.view.to_screen(Point::new(50.0, 30.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(
+        app.doc().find_shape(cutter).is_none(),
+        "the one beneath is cut"
+    );
+    assert!(app.doc().find_shape(target).is_some());
+}
+
+/// With the Customization options open, a toolbar button dragged off
+/// the bars goes away and one dragged along its bar moves; with them
+/// closed a drag does nothing to the bar. The Zoom toolbar shows
+/// pictures, not words (#563).
+#[test]
+fn toolbar_buttons_move_and_leave_in_customize_mode() {
+    use crate::ui::bar_items::{items, ItemBar};
+    let (ctx, mut app, _) = setup();
+    app.show_zoom_toolbar = true;
+    let settle = |ctx: &egui::Context, app: &mut App| {
+        for _ in 0..20 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+    };
+    settle(&ctx, &mut app);
+    let slot = |app: &App, bar: ItemBar| {
+        app.shown_bar_slots
+            .iter()
+            .find(|s| s.bar == bar)
+            .cloned()
+            .expect("bar drawn")
+    };
+    // The Zoom bar: its level box, then square picture buttons.
+    let zoom = slot(&app, ItemBar::Zoom);
+    assert_eq!(zoom.items.len(), ItemBar::Zoom.defaults().len());
+    let side = crate::theme::Tokens::bar_button();
+    for (id, r) in ItemBar::Zoom.defaults().iter().zip(&zoom.items) {
+        if id.starts_with("zoom_") && *id != "zoom_levels" {
+            assert!((r.width() - side).abs() < 0.5, "{id} {r:?}");
+        }
+    }
+    // Closed options: a drag of Print leaves the bar as it is.
+    let print = ItemBar::Standard
+        .defaults()
+        .iter()
+        .position(|i| *i == "print")
+        .expect("print");
+    let at = slot(&app, ItemBar::Standard).items[print].center();
+    drag(
+        &ctx,
+        &mut app,
+        at,
+        Pos2::new(60.0, 600.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    assert!(items(&app, ItemBar::Standard).contains(&"print".to_string()));
+    settle(&ctx, &mut app);
+    // Open: off the bars it goes.
+    app.options_page = crate::ui::options::OptionsPage::CommandBars;
+    app.dialog = crate::ui::dialogs::Dialog::Options;
+    settle(&ctx, &mut app);
+    let at = slot(&app, ItemBar::Standard).items[print].center();
+    drag(
+        &ctx,
+        &mut app,
+        at,
+        Pos2::new(60.0, 600.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    settle(&ctx, &mut app);
+    let now = items(&app, ItemBar::Standard);
+    assert!(!now.contains(&"print".to_string()), "{now:?}");
+    assert_eq!(slot(&app, ItemBar::Standard).items.len(), now.len());
+    // New moved after Save (between the second and third buttons).
+    let s = slot(&app, ItemBar::Standard);
+    let gap = Pos2::new(
+        (s.items[2].right() + s.items[3].left()) / 2.0 + 1.0,
+        s.items[2].center().y,
+    );
+    drag(
+        &ctx,
+        &mut app,
+        s.items[0].center(),
+        gap,
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let now = items(&app, ItemBar::Standard);
+    assert_eq!(&now[..3], ["open", "save", "new"], "{now:?}");
+    // A command dragged from the Commands page onto the Zoom bar joins it.
+    app.options_page = crate::ui::options::OptionsPage::Commands;
+    app.shortcut_editor.filter = "convert to curves".into();
+    settle(&ctx, &mut app);
+    let texts = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        let mut all: Vec<(String, Pos2)> = Vec::new();
+        fn walk(s: &egui::Shape, all: &mut Vec<(String, Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => all.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    };
+    let row = texts(&mut app)
+        .into_iter()
+        .find(|(t, _)| t.trim() == "Convert to Curves")
+        .map(|(_, p)| p)
+        .expect("the command's row");
+    settle(&ctx, &mut app);
+    let z = slot(&app, ItemBar::Zoom);
+    let end = Pos2::new(
+        z.items.last().expect("buttons").right() - 2.0,
+        z.items[1].center().y,
+    );
+    drag(&ctx, &mut app, row, end, Modifiers::NONE, Vec::new());
+    let zoom_items = items(&app, ItemBar::Zoom);
+    assert_eq!(
+        zoom_items.last().map(String::as_str),
+        Some("menu.object.convert_to_curves"),
+        "{zoom_items:?}"
+    );
+    // Reset brings them back.
+    crate::ui::bars::reset(&mut app);
+    assert_eq!(items(&app, ItemBar::Standard)[0], "new");
+    assert!(items(&app, ItemBar::Standard).contains(&"print".to_string()));
+}
+
+/// A symmetry of two objects (one drawn while editing): after Finish the
+/// symmetry is selected, not the object picked inside it, and a drag
+/// moves the whole symmetry.
+#[test]
+fn finish_selects_the_whole_symmetry_of_several_objects() {
+    let (ctx, mut app, id) = setup();
+    app.select(vec![id]);
+    app.create_symmetry();
+    // Another object drawn while editing joins the symmetry.
+    app.set_tool(Tool::Rectangle);
+    let a = app.view.to_screen(Point::new(20.0, 60.0));
+    let b = app.view.to_screen(Point::new(40.0, 80.0));
+    drag(&ctx, &mut app, a, b, Modifiers::NONE, vec![]);
+    app.set_tool(Tool::Pick);
+    for _ in 0..20 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let sym = app.symmetry_edit.expect("editing");
+    assert!(matches!(
+        app.doc().find_shape(sym).map(|s| &s.kind),
+        Some(ShapeKind::Group { .. })
+    ));
+    assert_ne!(app.selection, vec![sym], "the new object is picked inside");
+    app.finish_symmetry_edit();
+    assert_eq!(app.symmetry_edit, None);
+    assert_eq!(app.selection, vec![sym], "the whole symmetry");
+    for _ in 0..20 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let x0 = bounds(&app, sym).x0;
+    let inner = bounds(&app, id).x0;
+    let c = app.view.to_screen(bounds(&app, id).center());
+    drag(
+        &ctx,
+        &mut app,
+        c,
+        c + egui::vec2(80.0, 0.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert_eq!(app.selection, vec![sym]);
+    assert!(bounds(&app, sym).x0 > x0 + 5.0, "the symmetry moved");
+    assert!(
+        (page_bounds(&app, id).x0 - inner) > 5.0,
+        "its objects with it"
+    );
+}
+
+/// A size typed on the property bar with no text selected asks before it
+/// becomes the size of new text, as the reference program does; OK makes
+/// it the default, Cancel leaves the default as it was.
+#[test]
+fn a_size_picked_with_nothing_selected_asks_before_changing_the_default() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Text);
+    let before = app.text_default_size;
+    let texts = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        let mut all: Vec<(String, Pos2)> = Vec::new();
+        fn walk(s: &egui::Shape, all: &mut Vec<(String, Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => all.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    };
+    for _ in 0..5 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let shown = format!("{} pt", before);
+    let field = texts(&mut app)
+        .into_iter()
+        .find(|(t, _)| t.trim() == shown)
+        .map(|(_, p)| p)
+        .expect("the size field");
+    click_at(&ctx, &mut app, field, Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::A, Modifiers::COMMAND)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("36".into())],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Enter, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    match &app.dialog {
+        crate::ui::dialogs::Dialog::TextDefaults { size, font, .. } => {
+            assert_eq!(*size, Some(36.0));
+            assert!(font.is_none());
+        }
+        other => panic!("no question: {:?}", std::mem::discriminant(other)),
+    }
+    assert_eq!(app.text_default_size, before, "not before OK");
+    // Cancel: the default stays; OK: it changes.
+    app.dialog = crate::ui::dialogs::Dialog::None;
+    assert_eq!(app.text_default_size, before);
+    app.set_text_defaults(Some("Arial".into()), None, Some(36.0));
+    assert_eq!(app.text_default_size, 36.0);
+    assert_eq!(app.text_default_font, "Arial");
+}
+
+/// With Options > Text > Text units at millimetres the property bar shows
+/// font sizes in millimetres, and a size typed in them is kept in points;
+/// a unit typed with the value counts (#529).
+#[test]
+fn font_sizes_show_and_type_in_the_text_units() {
+    use crate::app::Units;
+    assert!((Units::Millimeters.from_pt(72.0) - 25.4).abs() < 1e-9);
+    assert!((Units::Centimeters.to_pt(2.54) - 72.0).abs() < 1e-9);
+    assert!((Units::Points.from_pt(24.0) - 24.0).abs() < 1e-12);
+    let (ctx, mut app, _) = setup();
+    app.start_text(Point::new(20.0, 100.0), None);
+    app.text_insert("Big");
+    app.finish_text();
+    let t = app.selection[0];
+    app.settings.text_units = "mm".into();
+    let texts = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        let mut all: Vec<(String, Pos2)> = Vec::new();
+        fn walk(s: &egui::Shape, all: &mut Vec<(String, Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => all.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    };
+    for _ in 0..5 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let size = match &app.doc().find_shape(t).expect("text").kind {
+        ShapeKind::Text { spans, .. } => spans[0].size_pt,
+        _ => unreachable!(),
+    };
+    let shown = format!(
+        "{} mm",
+        crate::ui::field::format_number(Units::Millimeters.from_pt(size), false, 0, Some(3))
+    );
+    // The object's height can read the same: the size field is the
+    // rightmost.
+    let field = texts(&mut app)
+        .into_iter()
+        .filter(|(s, _)| s.trim() == shown)
+        .max_by(|a, b| a.1.x.total_cmp(&b.1.x))
+        .map(|(_, p)| p)
+        .unwrap_or_else(|| panic!("the size field showing {shown}"));
+    click_at(&ctx, &mut app, field, Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::A, Modifiers::COMMAND)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("1cm".into())],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Enter, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let after = match &app.doc().find_shape(t).expect("text").kind {
+        ShapeKind::Text { spans, .. } => spans[0].size_pt,
+        _ => unreachable!(),
+    };
+    assert!(
+        (after - Units::Centimeters.to_pt(1.0)).abs() < 0.01,
+        "{after}"
+    );
+}
+
+/// Print Merge's Place Inside Frame with nothing selected waits for a
+/// click on the shape, the pointer the Place Inside arrow; the click
+/// takes the shape under it, Esc cancels (#577).
+#[test]
+fn place_inside_frame_waits_for_a_click_with_its_arrow() {
+    let (ctx, mut app, id) = setup();
+    app.select(Vec::new());
+    app.pending_merge_frame = true;
+    let at = app.view.to_screen(bounds(&app, id).center());
+    assert_eq!(
+        for_tool(&app, false, false, false, Some(at)),
+        ToolCursor::TargetArrow
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Escape, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    assert!(!app.pending_merge_frame, "Esc cancels");
+    for _ in 0..20 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    app.pending_merge_frame = true;
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(!app.pending_merge_frame);
+    assert_eq!(app.selection, vec![id], "the shape clicked");
+}

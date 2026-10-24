@@ -711,14 +711,19 @@ impl App {
     }
 
     /// Object > Symmetry > Finish Editing Symmetry (Alt+Shift+E), and the
-    /// symmetry bar's Finish.
+    /// symmetry bar's Finish. The symmetry is then selected as one object:
+    /// the object picked inside it while editing stayed selected, so the
+    /// next drag moved that object alone, as if inside a group.
     pub fn finish_symmetry_edit(&mut self) {
         self.symmetry_turning = false;
         self.symmetry_step = None;
         *self.symmetry_doc.borrow_mut() = None;
-        if self.symmetry_edit.take().is_some() {
+        if let Some(id) = self.symmetry_edit.take() {
             self.status.clear();
             self.raster.borrow_mut().invalidate();
+            if self.doc().find_shape(id).is_some() {
+                self.select(vec![id]);
+            }
         }
     }
 
@@ -2160,7 +2165,8 @@ impl App {
 
     /// Fit the selected text to the selected curve; on a closed curve the
     /// text is centred on the point nearest to `at`, else on its highest
-    /// point.
+    /// point, and as far from the curve as `at` is (as the preview while
+    /// picking the curve showed it).
     fn fit_text_to_path_at(&mut self, at: Option<Point>) {
         let shapes = self.selected_shapes();
         let Some(text) = shapes
@@ -2175,37 +2181,12 @@ impl App {
         else {
             return;
         };
-        let ShapeKind::Text {
-            spans,
-            origin,
-            align,
-            para,
-            ..
-        } = text.kind.clone()
-        else {
+        let Some(kind) = crate::text_path::fit_kind(text, curve, at) else {
             return;
         };
-        // The path turned and started as text sits on it (in page space,
-        // where outside and top are seen), then in the text's local space.
-        let (page_path, closed) = path_for_text_at(&curve.page_path(), at);
-        let path = Affine::translate(-origin.to_vec2()) * (text.transform.inverse() * page_path);
-        let (align, offset) = placement_on(&path, closed, align);
         self.run(Command::SetShapeKind {
             shape: text.id,
-            kind: ShapeKind::Text {
-                spans,
-                origin,
-                frame: None,
-                align,
-                para,
-                on_path: Some(tracedraw_core::TextOnPath {
-                    path,
-                    offset,
-                    distance: 0.0,
-                    mirror: false,
-                    ..Default::default()
-                }),
-            },
+            kind,
         });
         self.selection = vec![text.id];
     }

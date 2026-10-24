@@ -104,6 +104,7 @@ La page a cinq onglets.
   <kbd>Ctrl+8</kbd> et <kbd>Ctrl+2</kbd> agrandissent et réduisent le texte
   sélectionné, 1 point), la [[options.default_font]] et la
   [[options.default_size]] du nouveau texte, et [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]] : [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] et les [[options.hyphenation_patterns]]
   (intégrés, ou un dictionnaire de césure de votre langue).

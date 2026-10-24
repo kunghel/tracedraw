@@ -101,6 +101,7 @@ Sayfada beş sekme vardır.
   ve <kbd>Ctrl+2</kbd> seçili metni ne kadar büyütüp küçültür, 1 punto), yeni
   metnin [[options.default_font]] ve [[options.default_size]] değerleri ve
   [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] ve [[options.hyphenation_patterns]]
   (yerleşik ya da dilinize ait bir heceleme sözlüğü).

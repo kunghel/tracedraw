@@ -103,6 +103,7 @@ La página tiene cinco pestañas.
   reducen <kbd>Ctrl+8</kbd> y <kbd>Ctrl+2</kbd> el texto seleccionado, 1 punto),
   la [[options.default_font]] y el [[options.default_size]] del texto nuevo, y
   [[menu.text.show_non_printing]].
+  - [[options.text_units]] pt, mm, cm, in, px…
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] y los [[options.hyphenation_patterns]]
   (integrados, o un diccionario de división de su idioma).

@@ -56,6 +56,8 @@ degli strumenti sono una lettera o <kbd>Shift</kbd> e una lettera. Vedi
 [[options.reset]] rimette a posto le barre. Sotto [[options.other]]:
 [[bars.lock]] e [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Tavolozza dei colori {#color-palette}
 
 ![La pagina Tavolozza dei colori delle opzioni di personalizzazione](../../img/customize-customization-color-palette.png)

@@ -42,8 +42,12 @@ moved, scaled, turned or skewed (`dimensions.rs`).
   angles outside the arc), In the line (centred on it, the line broken
   1 mm either side of the label), Below the line (for angles inside the
   arc).
-- Lines are hairlines, arrowheads and label black, the label in the
-  current font at the style's size.
+- Lines, arrowheads and label take the style's look (#475): at first
+  hairlines, black filled arrowheads and a black label in the font of new
+  text at the style's size
+  (`dimensions::tests::the_style_sets_the_look_of_lines_heads_and_label`).
+  Open arrowheads and ticks are strokes drawn with the lines; a dot is a
+  filled circle at each end.
 
 ## Property bar
 
@@ -60,6 +64,12 @@ is kept in the preferences (`tools.dimension_style`).
 | Prefix, Suffix | empty | text before and after (applied when the field is left or Enter is pressed) |
 | Text | Above the line | Above the line, In the line, Below the line |
 | Label size | 10 pt | 1 to 500 pt |
+| Font | the font of new text | any font (the label keeps it; empty in styles saved before) |
+| Label colour | black | any colour (the swatch opens the colour picker) |
+| Line colour | black | the lines and arrowheads |
+| Line width | hairline (0) | 0 to 50 mm, shown in the outline units |
+| Arrowheads | Arrow (filled) | Arrow, Open arrow, Dot, Tick, None |
+| Round ends | off | round caps and joins on the lines |
 
 ## Dynamic dimensioning
 

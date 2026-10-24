@@ -77,14 +77,34 @@ over its settings), fills the window with the sheets exactly as Print
 sends them: the imposition, the marks, Mirror and Invert, built by the
 same function (`export::print_sheets`).
 
-- Top bar: Print (prints these settings and closes), the sheet shown with previous and next (Page Up, Page Down), the Plate
-  (Composite, then cyan, magenta, yellow, black and each spot ink) while
-  Print separations is on, Zoom from 25 to 400 % of the fitted size
+- Top bar: Print (prints these settings and closes), the sheet shown with previous and next (Page Up, Page Down), the Inks
+  while Print separations is on: a box for cyan, magenta, yellow, black
+  and each spot ink, all ticked at first (#571). Every ink ticked shows
+  the sheet as it is; one alone shows its plate in grey; some show the
+  colours those inks print together (process colours keep the channels
+  ticked, a spot colour shows when its ink is ticked and is paper
+  otherwise; `print_preview::tests::plates_split_the_sheet_by_ink`), Zoom from 25 to 400 % of the fitted size
   with Fit, and Close (Esc) at the right end (#534).
 - Left: the Print dialog's options (all pages, fit, scale, prepress and
   layout with its sketch); every change rebuilds the sheets at once.
 - A plate shows the ink's coverage in grey, black = full ink, as the
   separations print; registration colour shows on every plate.
+- Paper margins (left, right, top, bottom, mm, 0 at first) keep the
+  paper's edges clear: the pages and their marks go in the middle of what
+  is left, shrinking to fit inside it unless Keep size is on; a sheet
+  fitted to the pages grows by them (`imposition::tests::pages_sit_inside_the_paper_margins`).
+  They are typed in the left panel or set by dragging their dashed blue
+  lines on the sheet (within 6 pixels; the pointer turns to a resize
+  arrow and the line under it is drawn bolder; a drag inwards makes the
+  margin larger, 0 to 200 mm; #580, #582).
+- A drag on the sheet moves the artwork on its page (the move cursor and
+  a tip say so), clear of the margins a printer leaves blank; Artwork
+  position on the left shows and takes the move in millimetres (x right,
+  y up) with Reset. Print prints it so: `export::print_sheets` moves
+  every object of the printed pages by it before the imposition (#536,
+  `export::tests::the_artwork_moved_in_print_preview_prints_moved`).
+  With the page information on, "Drag moves the page information" makes
+  a drag move that instead (#388).
 
 ## Imposition
 

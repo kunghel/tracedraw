@@ -57,6 +57,8 @@ harf veya <kbd>Shift</kbd> ile bir harftir. Bkz.
 [[options.other]] altında: [[bars.lock]] ve
 [[options.show_outline_flyout]].
 
+[[options.toolbar_drag_hint]]
+
 ## Renk Paleti {#color-palette}
 
 ![Özelleştirme seçeneklerinin Renk Paleti sayfası](../../img/customize-customization-color-palette.png)

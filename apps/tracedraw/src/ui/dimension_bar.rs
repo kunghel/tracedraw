@@ -5,7 +5,7 @@
 //! selected dimensions and to the ones made next.
 
 use crate::app::App;
-use crate::dimensions::{units_choices, DimensionStyle, TextPosition};
+use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, TextPosition};
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::tools::Tool;
@@ -51,6 +51,74 @@ fn text_field(
         if buf != shown {
             app.set_dimension_style(|s| apply(s, buf.clone()));
         }
+    }
+}
+
+/// The look of the dimension (#475): the label's font and colour, the
+/// lines' colour and width, the arrowheads and rounded ends.
+fn style_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
+    crate::ui::propbar::sep(ui);
+    let current = if style.font.trim().is_empty() {
+        app.text_default_font.clone()
+    } else {
+        style.font.clone()
+    };
+    let (pick, _) =
+        crate::ui::font_list::font_list_live(app, ui, "dimension_font", &current, 130.0);
+    if let Some(p) = pick {
+        app.set_dimension_style(|s| s.font = p.family.clone());
+    }
+    let mut text_color = style.text_color;
+    if crate::ui::color_picker::color_button(ui, &mut text_color) && text_color != style.text_color
+    {
+        app.set_dimension_style(|s| s.text_color = text_color);
+    }
+    crate::ui::propbar::sep(ui);
+    dim(ui, tr("dimension.line"));
+    let mut line_color = style.line_color;
+    if crate::ui::color_picker::color_button(ui, &mut line_color) && line_color != style.line_color
+    {
+        app.set_dimension_style(|s| s.line_color = line_color);
+    }
+    let u = app.outline_units();
+    let mut width = u.from_mm(style.line_width);
+    let r = ui
+        .add(
+            NumField::new(&mut width)
+                .speed(u.from_mm(0.05))
+                .range(0.0..=u.from_mm(50.0))
+                .max_decimals(3)
+                .unit_mm(u.mm())
+                .suffix(format!(" {}", u.short()))
+                .width(64.0),
+        )
+        .rich_tip(tr("dimension.line_width"));
+    let width_mm = u.to_mm(width);
+    if (r.drag_stopped() || r.lost_focus() || (r.changed() && !r.has_focus()))
+        && (width_mm - style.line_width).abs() > 1e-9
+    {
+        app.set_dimension_style(|s| s.line_width = width_mm);
+    }
+    let mut arrows = style.arrows;
+    egui::ComboBox::from_id_salt("dimension_arrows")
+        .selected_text(tr(arrows.key()))
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            for a in ArrowStyle::ALL {
+                ui.selectable_value(&mut arrows, a, tr(a.key()));
+            }
+        })
+        .response
+        .rich_tip(tr("dimension.arrows"));
+    if arrows != style.arrows {
+        app.set_dimension_style(|s| s.arrows = arrows);
+    }
+    let mut round = style.round_ends;
+    if ui
+        .checkbox(&mut round, tr("dimension.round_ends"))
+        .changed()
+    {
+        app.set_dimension_style(|s| s.round_ends = round);
     }
 }
 
@@ -128,6 +196,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     if (r.drag_stopped() || r.lost_focus()) && (size - style.text_size).abs() > 1e-9 {
         app.set_dimension_style(|s| s.text_size = size);
     }
+    style_part(app, ui, &style);
     if matches!(
         app.tool,
         Tool::ParallelDimension

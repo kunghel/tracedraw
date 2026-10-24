@@ -264,7 +264,10 @@ impl App {
     pub(crate) fn duplicate_in_place(&mut self) {
         let saved = self.duplicate_offset;
         self.duplicate_offset = Vec2::ZERO;
+        // Copies in place are not a Duplicate the next one repeats (#559).
+        self.last_duplicate.clear();
         self.duplicate();
+        self.last_duplicate.clear();
         self.duplicate_offset = saved;
     }
 
@@ -724,6 +727,18 @@ impl Shaping {
             .unwrap_or(Shaping::Weld)
     }
 
+    /// With one object selected it waits for a click on the target, as
+    /// the other drawing programs do (#562).
+    pub fn picks_target(self) -> bool {
+        matches!(self, Shaping::Weld | Shaping::Trim | Shaping::Intersect)
+    }
+
+    /// Whether it can start with `selected` objects selected: enough of
+    /// them, or one when it then waits for the target.
+    pub fn ready(self, selected: usize) -> bool {
+        selected >= self.needs() || (selected == 1 && self.picks_target())
+    }
+
     /// How many objects it needs selected.
     pub fn needs(self) -> usize {
         match self {
@@ -760,7 +775,44 @@ impl App {
     /// `Shaping::default_leave`).
     pub fn shaping(&mut self, op: Shaping) {
         let (source, target) = op.default_leave();
-        self.shaping_with(op, source, target);
+        self.begin_shaping(op, source, target);
+    }
+
+    /// Start an operation: with two or more objects selected it runs at
+    /// once (the last selected the target); Weld, Trim and Intersect with
+    /// one selected wait for a click on the target, the selected object
+    /// acting on it (#562).
+    pub fn begin_shaping(&mut self, op: Shaping, leave_source: bool, leave_target: bool) {
+        if self.selection.len() == 1 && op.picks_target() {
+            self.pending_shaping = Some((op, leave_source, leave_target));
+            self.status = crate::i18n::tr("status.click_shaping_target");
+            return;
+        }
+        self.shaping_with(op, leave_source, leave_target);
+    }
+
+    /// The target of the waiting operation was clicked: the selection
+    /// acts on it. A click on the selection itself or on nothing cancels.
+    pub fn shaping_onto(&mut self, target: Option<tracedraw_core::ShapeId>) {
+        let Some((op, leave_source, leave_target)) = self.pending_shaping.take() else {
+            return;
+        };
+        let sources = self.selection.clone();
+        let Some(target) = target.filter(|t| !sources.contains(t)) else {
+            self.status = crate::i18n::tr("status.cancelled");
+            return;
+        };
+        let rev = self.engine.revision();
+        let mut picked = sources.clone();
+        picked.push(target);
+        self.select(picked);
+        self.shaping_with(op, leave_source, leave_target);
+        if self.engine.revision() == rev {
+            // Nothing made (no overlap): the selection is as it was.
+            let status = std::mem::take(&mut self.status);
+            self.select(sources);
+            self.status = status;
+        }
     }
 
     /// Convention: the last selected object is the target and

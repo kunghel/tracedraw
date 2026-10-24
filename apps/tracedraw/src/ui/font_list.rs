@@ -520,10 +520,15 @@ pub fn text_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) -> 
     }
     match pick {
         Some(p) => {
-            // With no text to change, the font picked is the one of new
-            // text.
+            // With no text to change, the font picked would be the one of
+            // new text: asked first, as the reference program does.
             if !app.has_text_target() {
-                app.text_default_font = p.family.clone();
+                app.dialog = crate::ui::dialogs::Dialog::TextDefaults {
+                    font: Some(p.family),
+                    style: p.style,
+                    size: None,
+                };
+                return false;
             }
             app.text_font = p.family;
             if let Some((bold, italic)) = p.style {
@@ -1219,6 +1224,33 @@ impl App {
                 .selected_shapes()
                 .iter()
                 .any(|s| matches!(s.kind, tracedraw_core::ShapeKind::Text { .. }))
+    }
+
+    /// The unit font sizes are shown and typed in (#529).
+    pub fn text_units(&self) -> crate::app::Units {
+        crate::app::Units::from_id(&self.settings.text_units)
+    }
+
+    /// The answer OK to "make it the default of new text?": the font
+    /// (with its style) and the size new text gets.
+    pub fn set_text_defaults(
+        &mut self,
+        font: Option<String>,
+        style: Option<(bool, bool)>,
+        size: Option<f64>,
+    ) {
+        if let Some(f) = font {
+            self.text_default_font = f.clone();
+            self.text_font = f;
+        }
+        if let Some((bold, italic)) = style {
+            self.text_bold = bold;
+            self.text_italic = italic;
+        }
+        if let Some(s) = size.filter(|s| s.is_finite() && *s > 0.0) {
+            self.text_default_size = s;
+            self.text_size_pt = s;
+        }
     }
 
     /// The text settings as they are, not as a preview shows them.

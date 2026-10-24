@@ -10,8 +10,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ButtonSize {
-    Small,
     #[default]
+    Small,
     Medium,
     Large,
 }
@@ -117,6 +117,11 @@ pub struct Settings {
     /// by default); widths are kept in millimetres.
     #[serde(default = "default_outline_units")]
     pub outline_units: String,
+    /// Options > Text > Display > Text units: the unit font sizes are shown
+    /// and typed in (a unit id, "pt" by default); sizes are kept in
+    /// points (#529).
+    #[serde(default = "default_outline_units")]
+    pub text_units: String,
     /// Grid, ruler and guideline settings new drawings start with
     /// (Document Options > Save as Default).
     #[serde(default)]
@@ -152,7 +157,8 @@ pub struct Settings {
     #[serde(default)]
     pub toolbox_hidden: Vec<String>,
     /// The bars' menu > Customize > Default Button Size: how large the
-    /// buttons of every bar are (Medium at first; a choice saved stays).
+    /// buttons of every bar are (Small at first, as in the reference
+    /// program; a size already saved stays).
     #[serde(default)]
     pub button_size: ButtonSize,
     /// The property bar's Autofit Page: the margin (mm) left around the
@@ -206,6 +212,10 @@ pub struct Settings {
     /// Where the toolbox, palette, toolbars and status bar sit.
     #[serde(default)]
     pub bars: crate::ui::bars::BarLayout,
+    /// The buttons of the Standard and Zoom toolbars, by bar, when
+    /// changed (see ui/bar_items.rs).
+    #[serde(default)]
+    pub bar_items: std::collections::BTreeMap<String, Vec<String>>,
     /// The main window as it was left: maximized, else its inner size in
     /// points ([0, 0] until the first exit).
     #[serde(default = "default_true")]
@@ -1293,6 +1303,7 @@ impl Default for Settings {
             custom_arrowheads: Vec::new(),
             custom_dashes: Vec::new(),
             outline_units: default_outline_units(),
+            text_units: default_outline_units(),
             document_defaults: DocumentDefaults::default(),
             startup: Startup::default(),
             undo_levels: default_undo_levels(),
@@ -1333,7 +1344,7 @@ impl Default for Settings {
             desktop_custom: false,
             status_info: crate::ui::status::StatusInfo::default(),
             toolbox_hidden: Vec::new(),
-            button_size: ButtonSize::Medium,
+            button_size: ButtonSize::Small,
             fit_page_margin: 0.0,
             toolbox_button_size: None,
             toolbox_captions: Captions::ImageOnly,
@@ -1347,6 +1358,7 @@ impl Default for Settings {
             colored_icons: false,
             theme: String::new(),
             bars: crate::ui::bars::BarLayout::default(),
+            bar_items: Default::default(),
             window_maximized: true,
             window_size: [0.0, 0.0],
             time_tracker: TimeTrackerPrefs::default(),

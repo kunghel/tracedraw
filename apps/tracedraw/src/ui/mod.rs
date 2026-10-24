@@ -9,6 +9,7 @@ pub mod ai_docker;
 pub mod ai_generate_docker;
 pub mod ai_ui;
 pub mod align_docker;
+pub mod bar_items;
 pub mod barcode_wizard;
 pub mod bars;
 pub mod bitmap_dialogs;
@@ -578,6 +579,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // dockers and a docker being moved likewise.
     bars::floating_bars(app, &ctx);
     bars::drag_overlay(app, &ctx, 24.0);
+    bar_items::drop_overlay(app, &ctx);
     dockers::floating_dockers(app, &ctx);
     dockers::drag_overlay(app, &ctx, 24.0);
 
