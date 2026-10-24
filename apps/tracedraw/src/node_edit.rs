@@ -498,6 +498,8 @@ impl App {
         }
         sel.extend(self.spline_points_where(|q| in_polygon(poly, q)));
         self.node_selection = sel;
+        self.rect_corners_selected =
+            crate::kind_nodes::corners_where(&self.shape_tool_shapes(), |q| in_polygon(poly, q));
         self.choose_chars_in(|q| in_polygon(poly, q));
     }
 

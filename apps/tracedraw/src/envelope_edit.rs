@@ -850,4 +850,143 @@ mod tests {
             assert_eq!(f.len(), 8, "{p:?}");
         }
     }
+
+    fn page_shape(app: &App, id: ShapeId) -> tracedraw_core::Shape {
+        app.doc().shape_on_page(id).expect("shape")
+    }
+
+    /// Convert to Curves makes the envelope part of the curve (#647): it
+    /// used to do nothing on an enveloped curve, and a rectangle lost its
+    /// envelope's shape. One undo step brings the envelope back.
+    #[test]
+    fn convert_to_curves_bakes_the_envelope() {
+        let mut app = App::headless();
+        let id = rect(&mut app, 0.0, 0.0, 40.0, 20.0);
+        app.select(vec![id]);
+        app.convert_to_curves();
+        assert!(!app.can_convert_to_curves());
+        app.apply_envelope_preset(Preset::Arch);
+        assert!(app.can_convert_to_curves());
+        app.convert_to_curves();
+        let s = page_shape(&app, id);
+        assert!(matches!(s.kind, ShapeKind::Path { .. }), "{:?}", s.kind);
+        assert!(s.effects.is_empty() && app.envelope_of(id).is_none());
+        assert!((s.bounds().y1 - 26.0).abs() < 0.1, "{:?}", s.bounds());
+        assert_eq!(app.engine.undo_label(), Some("Convert To Curves"));
+        assert!(!app.can_convert_to_curves());
+        app.undo();
+        assert!(app.envelope_of(id).is_some());
+        // A rectangle with an envelope becomes the warped curve at once.
+        let r = rect(&mut app, 100.0, 0.0, 140.0, 20.0);
+        app.select(vec![r]);
+        app.apply_envelope_preset(Preset::Arch);
+        app.convert_to_curves();
+        let s = page_shape(&app, r);
+        assert!(matches!(s.kind, ShapeKind::Path { .. }), "{:?}", s.kind);
+        assert!(s.effects.is_empty());
+        assert!((s.bounds().y1 - 26.0).abs() < 0.1, "{:?}", s.bounds());
+        assert!((s.bounds().x0 - 100.0).abs() < 0.1, "{:?}", s.bounds());
+    }
+
+    /// Break Apart of an enveloped curve breaks the warped curve: the
+    /// pieces are drawn where the whole was, with no envelope left (they
+    /// used to lose the warp).
+    #[test]
+    fn break_apart_bakes_an_enveloped_curve() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 15.0, 20.0);
+        let b = rect(&mut app, 25.0, 0.0, 40.0, 20.0);
+        app.select(vec![a, b]);
+        app.combine();
+        assert_eq!(app.selection.len(), 1);
+        app.apply_envelope_preset(Preset::Arch);
+        let drawn = app.selection_bounds().expect("bounds");
+        assert!(drawn.y1 > 25.0, "{drawn:?}");
+        app.break_apart();
+        assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+        let mut all: Option<Rect> = None;
+        for id in app.selection.clone() {
+            let s = page_shape(&app, id);
+            assert!(s.effects.is_empty(), "{:?}", s.effects);
+            assert!(matches!(s.kind, ShapeKind::Path { .. }));
+            all = Some(all.map_or(s.bounds(), |u| u.union(s.bounds())));
+        }
+        let all = all.expect("pieces");
+        for (got, want) in [
+            (all.x0, drawn.x0),
+            (all.y0, drawn.y0),
+            (all.x1, drawn.x1),
+            (all.y1, drawn.y1),
+        ] {
+            assert!((got - want).abs() < 0.1, "{all:?} {drawn:?}");
+        }
+        assert_eq!(app.engine.undo_label(), Some("Break Apart"));
+    }
+
+    /// An envelope on a group bakes into each of its objects: the group
+    /// stays, with the same objects, now curves.
+    #[test]
+    fn an_enveloped_group_converts_object_by_object() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 15.0, 20.0);
+        let b = rect(&mut app, 25.0, 0.0, 40.0, 20.0);
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        app.apply_envelope_preset(Preset::Arch);
+        assert!(app.envelope_of(g).is_some());
+        assert!(app.can_convert_to_curves());
+        app.convert_to_curves();
+        let s = page_shape(&app, g);
+        assert!(s.effects.is_empty() && app.envelope_of(g).is_none());
+        let ShapeKind::Group { children } = &s.kind else {
+            panic!("still a group: {:?}", s.kind);
+        };
+        let mut ids: Vec<ShapeId> = children.iter().map(|c| c.id).collect();
+        ids.sort_by_key(|id| id.0);
+        let mut want = vec![a, b];
+        want.sort_by_key(|id| id.0);
+        assert_eq!(ids, want);
+        assert!(children
+            .iter()
+            .all(|c| matches!(c.kind, ShapeKind::Path { .. })));
+        assert!(s.bounds().y1 > 25.0, "{:?}", s.bounds());
+    }
+
+    /// Break Apart has nothing to break in a group: it keeps its envelope
+    /// and its objects (Convert to Curves bakes it).
+    #[test]
+    fn break_apart_leaves_an_enveloped_group() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 15.0, 20.0);
+        let b = rect(&mut app, 25.0, 0.0, 40.0, 20.0);
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        app.apply_envelope_preset(Preset::Arch);
+        let before = page_shape(&app, g);
+        app.break_apart();
+        assert_eq!(page_shape(&app, g).kind, before.kind);
+        assert!(app.envelope_of(g).is_some());
+    }
+
+    /// A brush press on an enveloped group leaves it as it is: brushes
+    /// never touch groups, so nothing is converted or baked.
+    #[test]
+    fn a_brush_press_leaves_an_enveloped_group() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 15.0, 20.0);
+        let b = rect(&mut app, 25.0, 0.0, 40.0, 20.0);
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        app.apply_envelope_preset(Preset::Arch);
+        let before = page_shape(&app, g);
+        let depth = app.engine.history_labels().0.len();
+        app.brush_begin(Point::new(10.0, 10.0));
+        let after = page_shape(&app, g);
+        assert_eq!(after.kind, before.kind);
+        assert_eq!(after.effects, before.effects);
+        assert_eq!(app.engine.history_labels().0.len(), depth);
+    }
 }

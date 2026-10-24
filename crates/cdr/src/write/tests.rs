@@ -1250,6 +1250,32 @@ fn the_version_21_configuration_record_has_its_fields() {
 }
 
 #[test]
+fn pages_of_large_format_work_keep_their_size() {
+    // A 22 m by 1.15 m banner page; such pages used to open as A4.
+    let doc = Document::new("w", Size::new(22_000.0, 1_150.0));
+    for v in versions() {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let size = back.pages[0].size;
+        assert!(
+            (size.width - 22_000.0).abs() < 0.01 && (size.height - 1_150.0).abs() < 0.01,
+            "{v}: {size:?} {:?}",
+            rep.warnings
+        );
+        assert!(
+            !rep.warnings.iter().any(|w| w.contains("looks wrong")),
+            "{v}"
+        );
+    }
+    // Past 100 m a page size is taken for a misread record.
+    let doc = Document::new("w", Size::new(150_000.0, 1_000.0));
+    let (back, rep) =
+        crate::open_bytes(&document_to_cdr_version(&doc, 22), "back").expect("reads back");
+    assert!(back.pages[0].size.width < 1_000.0);
+    assert!(rep.warnings.iter().any(|w| w.contains("looks wrong")));
+}
+
+#[test]
 fn chosen_node_types_round_trip_in_the_continuity_bits() {
     use tracedraw_core::nodes::{self, NodeType};
     // Node 1 has aligned handles of equal length (reads as symmetrical) but is

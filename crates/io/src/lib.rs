@@ -103,7 +103,10 @@ pub fn resolve_open_fills(doc: &Document) -> std::borrow::Cow<'_, Document> {
 
 /// Native format: pretty JSON with a `.tdraw` extension.
 pub fn save_native(doc: &Document, path: impl AsRef<Path>) -> Result<()> {
-    std::fs::write(path, doc.to_json()?)?;
+    // Written as it is made, not gathered in memory first.
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    doc.write_json_version(&mut w, tracedraw_core::document::TDRAW_FORMAT_VERSION)?;
+    std::io::Write::flush(&mut w)?;
     Ok(())
 }
 

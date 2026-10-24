@@ -139,6 +139,23 @@ fn pdf_security(
     })
 }
 
+/// What the .cdr reader skipped or guessed, one line each, as the other
+/// readers report it while they read.
+fn reader_warnings(report: &tracedraw_cdr::ParseReport) -> Vec<String> {
+    let mut lines: Vec<String> = report
+        .warnings
+        .iter()
+        .map(|w| format!("warning: {w}"))
+        .collect();
+    if report.skipped_objects > 0 {
+        lines.push(format!(
+            "warning: {} object(s) skipped",
+            report.skipped_objects
+        ));
+    }
+    lines
+}
+
 /// Read a document of any kind the CLI knows; the fonts it carries are
 /// loaded for its text.
 fn load(
@@ -578,13 +595,16 @@ fn main() -> ExitCode {
             let (Some(input), Some(output)) = (args.get(2), args.get(3)) else {
                 return usage();
             };
-            let (doc, _) = match load(input) {
+            let (doc, report) = match load(input) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("{input}: {e}");
                     return ExitCode::FAILURE;
                 }
             };
+            for line in report.as_ref().map(reader_warnings).unwrap_or_default() {
+                eprintln!("{line}");
+            }
             let res = if output.to_ascii_lowercase().ends_with(".svg") {
                 tracedraw_io::save_svg(&doc, 0, output)
             } else if output.to_ascii_lowercase().ends_with(".pdf") {
@@ -925,5 +945,23 @@ mod tests {
         assert_eq!(s.owner_password, "boss");
         assert!(!s.permissions.print && !s.permissions.copy && !s.permissions.fill_forms);
         assert!(s.permissions.modify && s.permissions.accessibility);
+    }
+
+    #[test]
+    fn reader_warnings_name_what_was_skipped_or_guessed() {
+        let clean = tracedraw_cdr::ParseReport::default();
+        assert!(reader_warnings(&clean).is_empty());
+        let report = tracedraw_cdr::ParseReport {
+            skipped_objects: 2,
+            warnings: vec!["no readable mcfg chunk; assuming A4".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reader_warnings(&report),
+            [
+                "warning: no readable mcfg chunk; assuming A4",
+                "warning: 2 object(s) skipped"
+            ]
+        );
     }
 }

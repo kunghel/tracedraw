@@ -116,6 +116,13 @@ fn image_kind(rgb: &[u8]) -> ImageKind {
     }
 }
 
+/// True when `b` and `area` share no point. Bounds that are not finite
+/// count as reaching it.
+fn misses(b: Rect, area: Rect) -> bool {
+    [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite())
+        && (b.x1 < area.x0 || b.x0 > area.x1 || b.y1 < area.y0 || b.y0 > area.y1)
+}
+
 /// `data` (`channels` bytes a pixel, `w` x `h`) resized to `nw` x `nh`.
 fn resample(data: &[u8], channels: u8, w: u32, h: u32, nw: u32, nh: u32) -> Option<Vec<u8>> {
     use image::imageops::{resize, FilterType};
@@ -472,6 +479,9 @@ struct PageWriter<'a> {
     fonts: Vec<(String, usize)>,
     /// How text is written; `None` writes it as curves.
     text: Option<TextMode>,
+    /// The page's media box (the page and its bleed) in millimetres, in
+    /// the space the shapes are written in.
+    media: Rect,
 }
 
 /// How a writer keeps text as text.
@@ -853,6 +863,13 @@ impl PageWriter<'_> {
         }
         use tracedraw_core::geometry::Shape as _;
         let bounds = path.bounding_box();
+        // A bitmap paints inside its placed rectangle only: wholly outside
+        // the media box it cannot show, so its pixels stay out of the file.
+        if let ShapeKind::Bitmap { rect, .. } = &shape.kind {
+            if misses(transform.transform_rect_bbox(*rect), self.media) {
+                return;
+            }
+        }
         self.content.push_str("q\n");
         if shape.opacity < 1.0 && self.pdf.allow_alpha {
             let name = format!("GS{}", self.gstates.len());
@@ -1737,6 +1754,12 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
             spaces: Vec::new(),
             fonts: Vec::new(),
             text: text_mode,
+            media: Rect::new(
+                0.0,
+                0.0,
+                page.size.width + 2.0 * bleed,
+                page.size.height + 2.0 * bleed,
+            ),
         };
         if let Some(bg) = &page.background {
             let mut bg_shape = Shape::new(
@@ -2221,6 +2244,55 @@ mod tests {
         );
         assert!(raw.contains("cm /Im0 Do"));
         assert!(!plain.contains("cm /Im0 Do"));
+    }
+
+    /// A picture wholly outside the page and its bleed cannot show: it
+    /// stays out of the file. One in the bleed, or partly on the page,
+    /// goes in (#642).
+    #[test]
+    fn pictures_wholly_outside_the_media_box_stay_out_of_the_file() {
+        let mut doc = Document::default();
+        let page = doc.pages[0].size;
+        let layer = doc.pages[0].layers[0].id;
+        let place = |doc: &mut Document, rect: Rect| {
+            let img = image::RgbImage::from_fn(8, 8, |x, y| {
+                image::Rgb([(x * 30) as u8, (y * 30) as u8, 128])
+            });
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png)
+                .expect("png");
+            let id = doc.ids_mut().shape();
+            let s = Shape::new(
+                id,
+                ShapeKind::Bitmap {
+                    rect,
+                    width_px: 8,
+                    height_px: 8,
+                    png: png.into_inner(),
+                    fx: Default::default(),
+                },
+            );
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+        };
+        let pictures = |doc: &Document, bleed_mm: f64| {
+            let opts = PdfOptions {
+                bleed_mm,
+                ..Default::default()
+            };
+            String::from_utf8_lossy(&document_to_pdf_with(doc, &opts))
+                .matches("/Subtype /Image")
+                .count()
+        };
+        // 2 mm right of the page.
+        place(
+            &mut doc,
+            Rect::new(page.width + 2.0, 10.0, page.width + 30.0, 40.0),
+        );
+        assert_eq!(pictures(&doc, 0.0), 0, "outside the page");
+        assert_eq!(pictures(&doc, 3.0), 1, "in the 3 mm bleed");
+        // Half on the page, across its left edge.
+        place(&mut doc, Rect::new(-10.0, 10.0, 10.0, 30.0));
+        assert_eq!(pictures(&doc, 0.0), 1, "partly on the page");
     }
 
     #[test]
@@ -3276,6 +3348,7 @@ mod text_tests {
             spaces: Vec::new(),
             fonts: Vec::new(),
             text: None,
+            media: Rect::new(0.0, 0.0, 210.0, 297.0),
         };
         let k = 25.4 / 72.0;
         let mut p = BezPath::new();

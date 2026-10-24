@@ -142,6 +142,20 @@ pub(crate) fn apply_theme(ctx: &egui::Context, id: &str) {
     }
 }
 
+/// Whether a software adapter draws the window (#616): no shadows, the
+/// system's pointers and paced frames then, as each frame is rasterized
+/// on the CPU. Never in the browser build.
+pub(crate) fn software_renderer() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::gpu::software()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
 /// Shadows under menus and dialogs on or off, as the preferences say.
 pub(crate) fn apply_shadows(ctx: &egui::Context, on: bool) {
     if on != crate::theme::shadows() {
@@ -234,7 +248,12 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     apply_ui_scale(&ctx, crate::settings::effective_ui_size(&app.settings));
     crate::theme::set_button_sizes(app.settings.button_size, app.settings.toolbox_button_size);
     apply_theme(&ctx, &crate::settings::effective_theme(&app.settings));
-    apply_shadows(&ctx, app.settings.ui_shadows);
+    apply_shadows(&ctx, app.settings.ui_shadows && !software_renderer());
+    // Said once in the status bar: a software adapter draws the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(name) = crate::gpu::take_software_note() {
+        app.status = crate::i18n::trf("status.software_renderer", &[("name", &name)]);
+    }
     crate::ui::icons::set_colored(app.settings.colored_icons);
     menus::invoke::set_bindings(&app.settings.shortcuts);
     // F1: the Help page of the open dialog, the docker or the tool.
@@ -450,9 +469,12 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             }
         };
         if show_palette {
-            side(panel("palette"), palette::ROW_H)
-                .frame(palette_frame)
-                .show(ui, |ui| palette::palette_column(app, ui));
+            side(
+                panel("palette"),
+                palette::thickness(app, palette::Row::Main),
+            )
+            .frame(palette_frame)
+            .show(ui, |ui| palette::palette_column(app, ui));
         }
     }
 
@@ -557,9 +579,12 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
                 .show(ui, |ui| palette::document_palette_row(app, ui));
         }
         if show_palette && matches!(palette_dock, Dock::Bottom | Dock::Top) {
-            side(panel("palette"), palette::ROW_H)
-                .frame(palette_frame)
-                .show(ui, |ui| palette::palette_row(app, ui));
+            side(
+                panel("palette"),
+                palette::thickness(app, palette::Row::Main),
+            )
+            .frame(palette_frame)
+            .show(ui, |ui| palette::palette_row(app, ui));
         }
     }
     // The AI prompt bar, over the palette rows, while a service is set up.

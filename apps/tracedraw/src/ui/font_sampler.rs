@@ -197,8 +197,12 @@ pub fn font_sampler(app: &mut App, ui: &mut Ui) {
                                 1.0,
                             ),
                         );
-                        ui.painter()
-                            .image(p.texture.id(), clip, uv, egui::Color32::WHITE);
+                        ui.painter().image(
+                            p.texture.id(),
+                            clip,
+                            uv,
+                            crate::ui::font_list::CARD_INK,
+                        );
                         resp
                     }
                     None => ui.label(

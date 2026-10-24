@@ -118,12 +118,26 @@ at once (#437). From top to bottom:
   that page's first unlocked layer. Only frames on the page itself (not
   inside a group) are repeated (#598,
   `print_merge_docker::tests::the_placeholder_goes_in_the_same_place_on_every_page`).
+  Without a placeholder picture and with a pictures folder, each page
+  takes its own picture of the folder instead: the folder's pictures in
+  name order (ignoring case, numbers by value: 2 before 10), the first
+  on the drawing's first page; pages past the last picture are left as
+  they are (#618,
+  `print_merge_docker::tests::on_every_page_takes_the_pictures_folder_page_by_page`).
+  With it on, Create Merged Document and Print Merged Document fill the
+  open drawing's own pages instead of making a new drawing: record 1 on
+  the first page, record 2 on the second, and so on, as one undo step
+  "Print Merge"; pages past the last record keep their fields, records
+  past the last page are left out, and a picture field whose cell is
+  empty keeps its placeholder picture (#618,
+  `print_merge_docker::tests::on_every_page_merges_onto_the_drawings_own_pages`).
 - Update Field (when a placeholder is selected: a text holding only
   `<Field>`, or an object named `<Field>`): the selected placeholders
   take the chosen column, and with Image the Align and scale shown.
 - Create Merged Document: the current page merged into a new drawing
   (one page per record, named as below); the drawing it came from stays
-  as it was. Print Merged Document... does the same, then opens Print.
+  as it was. With On every page on, the drawing's own pages are filled
+  instead (above). Print Merged Document... does the same, then opens Print.
 
 Clip frames keep the object data of the object they were made from, as
 they keep its name.
@@ -153,3 +167,5 @@ large as its box allows.
 - `ui::print_merge_docker::tests::the_docker_inserts_fields_and_makes_a_merged_document`
 - `ui::print_merge_docker::tests::update_field_changes_the_column_and_the_placement`
 - `ui::print_merge_docker::tests::the_docker_draws_with_and_without_data`
+- `ui::print_merge_docker::tests::on_every_page_takes_the_pictures_folder_page_by_page`
+- `ui::print_merge_docker::tests::on_every_page_merges_onto_the_drawings_own_pages`

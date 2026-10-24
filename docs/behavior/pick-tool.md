@@ -56,7 +56,8 @@ Ctrl or Alt during the drag changes the result at once.
 ## The handles
 
 The selection box has no frame of its own, so the objects' outlines
-stay in view. Eight solid black square handles, 10 interface points
+stay in view. Eight solid black square handles with a one-pixel white
+edge (so they show on a dark drawing, #670), 10 interface points
 across, stand just outside it: their centres 6.5 points out from the box
 (a gap of 1.5 points). A corner or side handle scales from where it was
 grabbed, so the box follows the pointer without a jump. Objects chosen
@@ -213,6 +214,7 @@ break instead.
 
 ## Checks
 
+- `pick_drag_tests::overlays_are_drawn_on_a_white_line`
 - `envelope_edit::tests::enveloped_objects_are_hit_and_boxed_as_drawn`
 
 - `ui::propbar::tests::shaping_and_grouping_show_for_several_objects_groups_and_parts`

@@ -1,6 +1,7 @@
 //! Tools > Options (the application options and the Customization, Tools,
-//! Global and Workspaces dialogs) and Layout > Document Options: a white
-//! page list on the left, the page on
+//! Global and Workspaces dialogs) and Layout > Document Options: one
+//! window with a tab for each of them along the top (#633), a white page
+//! list on the left, the page on
 //! the right, the help button at the bottom left, OK and Cancel at the
 //! bottom right. Cancel puts back what the dialog changed.
 
@@ -78,6 +79,34 @@ pub enum OptionsPage {
 }
 
 impl OptionsSet {
+    /// Every set, in the order of the dialog's tabs.
+    pub const ALL: [OptionsSet; 7] = [
+        OptionsSet::App,
+        OptionsSet::Customization,
+        OptionsSet::Tools,
+        OptionsSet::Global,
+        OptionsSet::Workspaces,
+        OptionsSet::Ai,
+        OptionsSet::Document,
+    ];
+
+    /// The set's tab: the name of the menu item that opens it.
+    fn tab_label(self) -> String {
+        let key = match self {
+            OptionsSet::App => "menu.tools.options_app",
+            OptionsSet::Customization => "menu.tools.options_customization",
+            OptionsSet::Tools => "menu.tools.options_tools",
+            OptionsSet::Global => "menu.tools.options_global",
+            OptionsSet::Workspaces => "menu.tools.options_workspaces",
+            OptionsSet::Ai => "menu.tools.options_ai",
+            OptionsSet::Document => "dialog.document_options",
+        };
+        tr(key)
+            .trim_end_matches("...")
+            .trim_end_matches('\u{2026}')
+            .to_string()
+    }
+
     pub fn pages(self) -> &'static [OptionsPage] {
         use OptionsPage::*;
         match self {
@@ -136,18 +165,10 @@ impl OptionsSet {
 
 impl OptionsPage {
     pub fn set(self) -> OptionsSet {
-        [
-            OptionsSet::App,
-            OptionsSet::Customization,
-            OptionsSet::Tools,
-            OptionsSet::Global,
-            OptionsSet::Workspaces,
-            OptionsSet::Ai,
-            OptionsSet::Document,
-        ]
-        .into_iter()
-        .find(|s| s.pages().contains(&self))
-        .unwrap_or(OptionsSet::App)
+        OptionsSet::ALL
+            .into_iter()
+            .find(|s| s.pages().contains(&self))
+            .unwrap_or(OptionsSet::App)
     }
 
     pub fn key(self) -> &'static str {
@@ -372,15 +393,21 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
         ctx,
         "options_dialog",
         &set.title(),
-        egui::vec2(887.0, 663.0),
+        egui::vec2(887.0, 663.0 + TABS_H),
         |ui| {
             let body = ui.max_rect();
+            let tabs = egui::Rect::from_min_size(
+                body.min + egui::vec2(14.0, 8.0),
+                egui::vec2(859.0, TABS_H - 6.0),
+            );
+            set_tabs(app, ui, tabs, set);
+            let top = 10.0 + TABS_H;
             let list = egui::Rect::from_min_size(
-                body.min + egui::vec2(14.0, 10.0),
+                body.min + egui::vec2(14.0, top),
                 egui::vec2(225.0, 566.0),
             );
             let page = egui::Rect::from_min_size(
-                body.min + egui::vec2(251.0, 10.0),
+                body.min + egui::vec2(251.0, top),
                 egui::vec2(622.0, 566.0),
             );
             page_list(app, ui, list, set);
@@ -406,7 +433,7 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     });
             });
             let buttons = egui::Rect::from_min_size(
-                body.min + egui::vec2(14.0, 10.0 + 566.0 + 15.0),
+                body.min + egui::vec2(14.0, top + 566.0 + 15.0),
                 egui::vec2(859.0, 27.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(buttons), |ui| {
@@ -454,6 +481,48 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
         }
         *close = true;
     }
+}
+
+/// Height of the tab row over the page list.
+const TABS_H: f32 = 32.0;
+
+/// The tabs along the top: one per set of pages (Document Options while
+/// a drawing is open), the current one selected. A tab opens the page of
+/// its set shown last, else its first page (#633).
+fn set_tabs(app: &mut App, ui: &mut Ui, rect: egui::Rect, set: OptionsSet) {
+    let last = |s: OptionsSet| egui::Id::new(("options_last_page", s as u8));
+    let page = app.options_page;
+    ui.ctx().data_mut(|d| d.insert_temp(last(set), page));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.horizontal(|ui| {
+            for s in OptionsSet::ALL {
+                if s == OptionsSet::Document && !app.has_document() {
+                    continue;
+                }
+                let tab = ui.selectable_label(s == set, s.tab_label());
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(tab_rect_id(s), tab.rect));
+                if tab.clicked() && s != set {
+                    app.options_page = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<OptionsPage>(last(s)))
+                        .filter(|p| p.set() == s)
+                        .or_else(|| s.pages().first().copied())
+                        .unwrap_or_default();
+                }
+            }
+        });
+    });
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() + 2.0,
+        egui::Stroke::new(1.0, crate::theme::Tokens::border()),
+    );
+}
+
+/// Where the tab of `set` was drawn last (for tests).
+pub(crate) fn tab_rect_id(set: OptionsSet) -> egui::Id {
+    egui::Id::new(("options_tab_rect", set as u8))
 }
 
 /// The page list: one row per page, the current one highlighted.
@@ -1910,6 +1979,20 @@ fn color_palette_page(app: &mut App, ui: &mut Ui) {
     ui.checkbox(&mut p.show_document, tr("options.palette_show_document"));
     crate::ui::chrome::section(ui, &tr("options.palette_swatches"));
     ui.checkbox(&mut p.show_no_color, tr("options.palette_no_color"));
+    // Rows of the default palette (columns docked on a side, #610).
+    p.rows = p.rows.clamp(1, 3);
+    grid("palette_rows").show(ui, |ui| {
+        row_label(ui, &tr("options.palette_rows"));
+        combo(
+            ui,
+            "opt_palette_rows",
+            &mut p.rows,
+            &[1, 2, 3],
+            |n| n.to_string(),
+            60.0,
+        );
+        ui.end_row();
+    });
     crate::ui::chrome::section(ui, &tr("options.palette_right_button"));
     ui.radio_value(
         &mut p.right_click_outline,

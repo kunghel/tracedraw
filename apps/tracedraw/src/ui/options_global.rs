@@ -162,6 +162,7 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
         );
         ui.end_row();
     });
+    ui.checkbox(&mut f.save_new_as_cdr, tr("options.save_new_as_cdr"));
     hint(ui, "options.cdr_version_hint");
 }
 

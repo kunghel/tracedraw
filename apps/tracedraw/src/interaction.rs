@@ -1918,6 +1918,29 @@ impl App {
             }
             return;
         }
+        // The Pen or Bezier tool's first press on an end node of an open
+        // curve (selected or not) goes on from it as if it had never
+        // stopped: the curve is selected, so the new line joins it, and
+        // the next segment leaves along the mirror of the end's handle,
+        // curving the preview (#630). A drag pulls a new handle instead.
+        if smooth
+            && self.curve.is_none()
+            && (response.drag_started_by(PointerButton::Primary)
+                || response.clicked_by(PointerButton::Primary))
+        {
+            if let Some((id, end, handle)) = self.open_end_at(raw) {
+                if self.selection != [id] {
+                    self.select(vec![id]);
+                }
+                self.curve = Some(CurveInProgress {
+                    nodes: vec![(end, handle)],
+                    smooth,
+                    dragging_handle: response.drag_started_by(PointerButton::Primary),
+                    ..Default::default()
+                });
+                return;
+            }
+        }
         if response.drag_started_by(PointerButton::Primary)
             || response.clicked_by(PointerButton::Primary)
         {
@@ -2443,6 +2466,7 @@ impl App {
             | Drag::RulerOrigin { .. }
             | Drag::Node { .. }
             | Drag::KindNode { .. }
+            | Drag::CornerWidget(_)
             | Drag::Handle { .. }
             | Drag::None => {}
         }

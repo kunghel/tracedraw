@@ -340,6 +340,9 @@ mod tests {
         // The selected characters' shade is a see-through grey.
         let [r, g, b, a] = crate::canvas::TEXT_SELECTION.to_array();
         assert!(r == g && g == b && a > 0 && a < 255);
+        // Plain to see on the white page: a mid grey there (#632).
+        let on_white = 255.0 * (1.0 - a as f32 / 255.0) + r as f32;
+        assert!(on_white < 170.0, "{on_white}");
     }
 
     #[test]

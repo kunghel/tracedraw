@@ -138,6 +138,10 @@ fn outline(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
         };
         labels[y as usize * w + x as usize] = idx;
     }
+    // Specks: patches of one colour smaller than the detail allows take
+    // the colour around them, so stray dots and the fringes of soft edges
+    // do not become curves of their own (#611).
+    despeckle(&mut labels, w, h, speck_area(s.detail));
     // 2. Background: the most common colour touching the border.
     let mut border_counts = vec![0usize; palette.len()];
     for x in 0..w {
@@ -185,16 +189,15 @@ fn outline(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
             if ring.len() < 3 {
                 continue;
             }
-            let simplified = tracedraw_core::geometry::simplify(&ring, tolerance);
-            if simplified.len() < 3 {
+            // Without smoothing the pixels' own edges, steps and all.
+            if s.smoothing <= 0.0 {
+                let simplified = tracedraw_core::geometry::simplify(&ring, tolerance);
+                if simplified.len() >= 3 {
+                    path.extend(polyline_closed(&simplified));
+                }
                 continue;
             }
-            let sub = if s.smoothing > 0.0 {
-                tracedraw_core::geometry::smooth_path(&simplified, true)
-            } else {
-                polyline_closed(&simplified)
-            };
-            path.extend(sub);
+            path.extend(fit_ring(&ring, s));
         }
         if path.elements().is_empty() {
             continue;
@@ -207,6 +210,345 @@ fn outline(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
         });
     }
     out
+}
+
+/// The smallest patch of one colour that is kept, in pixels: none
+/// below detail 100, a few pixels at 80, about 40 at 35.
+fn speck_area(detail: f64) -> usize {
+    let k = (100.0 - detail.clamp(0.0, 100.0)) / 100.0 * 10.0;
+    (k * k).round().max(1.0) as usize
+}
+
+/// Give every 4-connected patch of one label smaller than `min_area`
+/// pixels the label most of its neighbours outside it have (transparent
+/// pixels are left alone and never spread).
+fn despeckle(labels: &mut [usize], w: usize, h: usize, min_area: usize) {
+    if min_area <= 1 || labels.len() != w * h {
+        return;
+    }
+    let mut seen = vec![false; w * h];
+    let mut patch: Vec<usize> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for start in 0..w * h {
+        if seen[start] || labels[start] == usize::MAX {
+            continue;
+        }
+        let l = labels[start];
+        patch.clear();
+        counts.clear();
+        stack.push(start);
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            patch.push(i);
+            let (x, y) = (i % w, i / w);
+            let mut near = [usize::MAX; 4];
+            if x > 0 {
+                near[0] = i - 1;
+            }
+            if x + 1 < w {
+                near[1] = i + 1;
+            }
+            if y > 0 {
+                near[2] = i - w;
+            }
+            if y + 1 < h {
+                near[3] = i + w;
+            }
+            for j in near.into_iter().filter(|j| *j != usize::MAX) {
+                if labels[j] == l {
+                    if !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                } else if labels[j] != usize::MAX && patch.len() < min_area {
+                    *counts.entry(labels[j]).or_default() += 1;
+                }
+            }
+        }
+        if patch.len() < min_area {
+            if let Some((&to, _)) = counts.iter().max_by_key(|(k, c)| (**c, usize::MAX - **k)) {
+                for &i in &patch {
+                    labels[i] = to;
+                }
+            }
+        }
+    }
+}
+
+/// A pixel-edge ring as smooth curves (#611): the ring through the
+/// middles of the pixel edges, so stair steps become slopes; its corners
+/// found where it turns sharply (fewer with more corner smoothness);
+/// the stretches between them smoothed (more with more smoothing) and
+/// fitted with as few cubic Beziers as stay within the detail's
+/// tolerance of them. Corners stay sharp, a ring without corners closes
+/// smoothly.
+fn fit_ring(ring: &[Point], s: &Settings) -> BezPath {
+    // One point per pixel edge: the middle of each unit step, with the
+    // pixel corner the step starts at.
+    let mut pts: Vec<Point> = Vec::new();
+    let mut starts: Vec<Point> = Vec::new();
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let steps = (b - a).hypot().round().max(1.0) as usize;
+        for k in 0..steps {
+            starts.push(a.lerp(b, k as f64 / steps as f64));
+            pts.push(a.lerp(b, (k as f64 + 0.5) / steps as f64));
+        }
+    }
+    let n = pts.len();
+    if n < 4 {
+        return polyline_closed(&pts);
+    }
+    // Corners: where the ring turns by more than the threshold over a
+    // few pixels, the sharpest of each run.
+    let reach = 3usize.min(n / 4).max(1);
+    let threshold = (60.0 + s.corner_smoothness.clamp(0.0, 100.0) * 0.8).to_radians();
+    let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
+    let turn: Vec<f64> = (0..n as isize)
+        .map(|i| {
+            let (a, b, c) = (at(i - reach as isize), at(i), at(i + reach as isize));
+            let (u, v) = (b - a, c - b);
+            u.cross(v).atan2(u.dot(v)).abs()
+        })
+        .collect();
+    let mut corners: Vec<usize> = (0..n)
+        .filter(|&i| {
+            turn[i] > threshold
+                && (1..=reach as isize).all(|d| {
+                    let before = turn[(i as isize - d).rem_euclid(n as isize) as usize];
+                    let after = turn[(i as isize + d).rem_euclid(n as isize) as usize];
+                    turn[i] >= before && turn[i] > after
+                })
+        })
+        .collect();
+    // A corner sits on the pixel corner at one end of its edge: the one
+    // standing further out from its neighbours, so a square stays square.
+    let mut is_corner = vec![false; n];
+    for &c in &corners {
+        is_corner[c] = true;
+        let mid = pts[(c + n - 1) % n].midpoint(pts[(c + 1) % n]);
+        let (a, b) = (starts[c], starts[(c + 1) % n]);
+        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
+            a
+        } else {
+            b
+        };
+    }
+    // Smooth the stretches between corners.
+    let passes = (1.0 + s.smoothing.clamp(0.0, 100.0) / 100.0 * 12.0).round() as usize;
+    for _ in 0..passes {
+        let prev = pts.clone();
+        for i in 0..n {
+            if is_corner[i] {
+                continue;
+            }
+            let a = prev[(i + n - 1) % n];
+            let c = prev[(i + 1) % n];
+            pts[i] = Point::new(
+                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
+                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
+            );
+        }
+    }
+    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0;
+    let mut out = BezPath::new();
+    if corners.is_empty() {
+        // No corner: quarters meeting smoothly (a cubic bends through a
+        // quarter turn well, a half turn only roughly).
+        let tangent = |i: usize| unit(pts[(i + reach) % n] - pts[(i + n - reach) % n]);
+        let cuts: Vec<usize> = (0..4).map(|k| k * n / 4).collect();
+        out.move_to(pts[0]);
+        for k in 0..4 {
+            let (a, b) = (cuts[k], cuts[(k + 1) % 4]);
+            let mut piece: Vec<Point> = if b > a {
+                pts[a..=b].to_vec()
+            } else {
+                pts[a..].to_vec()
+            };
+            if b <= a {
+                piece.push(pts[0]);
+            }
+            fit_cubics(&piece, tangent(a), -tangent(b), tolerance, &mut out);
+        }
+        out.close_path();
+        return out;
+    }
+    corners.sort_unstable();
+    out.move_to(pts[corners[0]]);
+    for k in 0..corners.len() {
+        let a = corners[k];
+        let b = corners[(k + 1) % corners.len()];
+        let mut piece: Vec<Point> = Vec::new();
+        let mut i = a;
+        loop {
+            piece.push(pts[i]);
+            if i == b && piece.len() > 1 {
+                break;
+            }
+            i = (i + 1) % n;
+            if piece.len() > n + 1 {
+                break;
+            }
+        }
+        if piece.len() < 2 {
+            continue;
+        }
+        // The directions the sides leave and reach the corners in, over a
+        // few pixels so a stair step does not tilt them.
+        let m = piece.len();
+        let far = TANGENT_REACH.min(m - 1);
+        let t1 = unit(piece[far] - piece[0]);
+        let t2 = unit(piece[m - 1 - far] - piece[m - 1]);
+        fit_cubics(&piece, t1, t2, tolerance, &mut out);
+    }
+    out.close_path();
+    out
+}
+
+/// How many points away a fitted curve's end direction is taken from.
+const TANGENT_REACH: usize = 4;
+
+fn unit(v: tracedraw_core::geometry::Vec2) -> tracedraw_core::geometry::Vec2 {
+    let l = v.hypot();
+    if l > 1e-12 && l.is_finite() {
+        v / l
+    } else {
+        tracedraw_core::geometry::Vec2::ZERO
+    }
+}
+
+/// Fit cubic Beziers to `pts` (from the first point to the last), the
+/// first leaving along `t1` and the last arriving back along `t2` (unit
+/// vectors pointing into the curve from its ends), no point further than
+/// `tolerance` from them, and append them to `out`: least squares on the
+/// chord-length parameters, improved by Newton steps, split at the worst
+/// point when it still does not fit (P. J. Schneider, "An Algorithm for
+/// Automatically Fitting Digitized Curves", Graphics Gems, 1990).
+fn fit_cubics(
+    pts: &[Point],
+    t1: tracedraw_core::geometry::Vec2,
+    t2: tracedraw_core::geometry::Vec2,
+    tolerance: f64,
+    out: &mut BezPath,
+) {
+    fit_cubics_depth(pts, t1, t2, tolerance, out, 0);
+}
+
+fn fit_cubics_depth(
+    pts: &[Point],
+    t1: tracedraw_core::geometry::Vec2,
+    t2: tracedraw_core::geometry::Vec2,
+    tolerance: f64,
+    out: &mut BezPath,
+    depth: usize,
+) {
+    use tracedraw_core::geometry::{CubicBez, ParamCurve, ParamCurveDeriv};
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
+    let (p0, p3) = (pts[0], pts[n - 1]);
+    let dist = (p3 - p0).hypot();
+    if n == 2 || depth > 24 {
+        let h = dist / 3.0;
+        out.curve_to(p0 + t1 * h, p3 + t2 * h, p3);
+        return;
+    }
+    // Chord-length parameters.
+    let mut u = vec![0.0; n];
+    for i in 1..n {
+        u[i] = u[i - 1] + (pts[i] - pts[i - 1]).hypot();
+    }
+    let total = u[n - 1];
+    if total < 1e-12 {
+        return;
+    }
+    for v in u.iter_mut() {
+        *v /= total;
+    }
+    let generate = |u: &[f64]| -> CubicBez {
+        // The handle lengths minimising the squared distances.
+        let (mut c00, mut c01, mut c11, mut x0, mut x1) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for (p, &t) in pts.iter().zip(u) {
+            let mt = 1.0 - t;
+            let b0 = mt * mt * mt;
+            let b1 = 3.0 * t * mt * mt;
+            let b2 = 3.0 * t * t * mt;
+            let b3 = t * t * t;
+            let a1 = t1 * b1;
+            let a2 = t2 * b2;
+            c00 += a1.dot(a1);
+            c01 += a1.dot(a2);
+            c11 += a2.dot(a2);
+            let tmp = p.to_vec2() - (p0.to_vec2() * (b0 + b1) + p3.to_vec2() * (b2 + b3));
+            x0 += a1.dot(tmp);
+            x1 += a2.dot(tmp);
+        }
+        let det = c00 * c11 - c01 * c01;
+        let (mut l1, mut l2) = if det.abs() > 1e-12 {
+            ((x0 * c11 - x1 * c01) / det, (c00 * x1 - c01 * x0) / det)
+        } else {
+            (0.0, 0.0)
+        };
+        let eps = 1e-6 * dist;
+        if !(l1.is_finite() && l2.is_finite()) || l1 < eps || l2 < eps {
+            l1 = dist / 3.0;
+            l2 = dist / 3.0;
+        }
+        CubicBez::new(p0, p0 + t1 * l1, p3 + t2 * l2, p3)
+    };
+    let worst = |c: &CubicBez, u: &[f64]| -> (f64, usize) {
+        let mut best = (0.0, n / 2);
+        for i in 1..n - 1 {
+            let d = (c.eval(u[i]) - pts[i]).hypot2();
+            if d > best.0 {
+                best = (d, i);
+            }
+        }
+        best
+    };
+    let mut curve = generate(&u);
+    let (mut err, mut split) = worst(&curve, &u);
+    let tol2 = tolerance * tolerance;
+    if err <= tol2 {
+        out.curve_to(curve.p1, curve.p2, curve.p3);
+        return;
+    }
+    if err < tol2 * 4.0 {
+        for _ in 0..4 {
+            // Newton steps towards each point's nearest parameter.
+            let d1 = curve.deriv();
+            let d2 = d1.deriv();
+            for i in 0..n {
+                let t = u[i];
+                let diff = curve.eval(t) - pts[i];
+                let q1 = d1.eval(t).to_vec2();
+                let q2 = d2.eval(t).to_vec2();
+                let den = q1.dot(q1) + diff.dot(q2);
+                if den.abs() > 1e-12 {
+                    u[i] = (t - diff.dot(q1) / den).clamp(0.0, 1.0);
+                }
+            }
+            curve = generate(&u);
+            (err, split) = worst(&curve, &u);
+            if err <= tol2 {
+                out.curve_to(curve.p1, curve.p2, curve.p3);
+                return;
+            }
+        }
+    }
+    let split = split.clamp(1, n - 2);
+    let reach = TANGENT_REACH.min(split).min(n - 1 - split).max(1);
+    let centre = unit(pts[split - reach] - pts[split + reach]);
+    let centre = if centre == tracedraw_core::geometry::Vec2::ZERO {
+        unit(pts[split - 1] - pts[split])
+    } else {
+        centre
+    };
+    fit_cubics_depth(&pts[..=split], t1, centre, tolerance, out, depth + 1);
+    fit_cubics_depth(&pts[split..], -centre, t2, tolerance, out, depth + 1);
 }
 
 fn polyline_closed(pts: &[Point]) -> BezPath {
@@ -744,6 +1086,99 @@ mod tests {
         let b = t[0].path.bounding_box();
         assert!(b.width() > 80.0 && b.height() < 3.0, "{b:?}");
         assert!((last_stroke_width_px() - 5.0).abs() < 1.5);
+    }
+
+    /// Smooth outlines from pixels (#611): a circle becomes a few curves,
+    /// no stair steps, at the right size; a square keeps four sharp
+    /// corners on its pixel corners; stray specks make no curves.
+    #[test]
+    fn traces_are_smooth_curves_with_sharp_corners_and_no_specks() {
+        use tracedraw_core::geometry::PathEl;
+        let s = Preset::LineArt.settings();
+        let t = trace(&circle_image(), &s);
+        assert_eq!(t.len(), 1);
+        let els = t[0].path.elements();
+        let curves = els
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..)))
+            .count();
+        assert!(
+            els.iter().all(|e| !matches!(e, PathEl::LineTo(..))),
+            "no steps"
+        );
+        assert!((2..=12).contains(&curves), "{curves} curves");
+        let area = t[0].path.area().abs();
+        let expect = std::f64::consts::PI * 30.0 * 30.0;
+        assert!((area - expect).abs() / expect < 0.02, "{area} vs {expect}");
+        // No point of the curves strays from the circle by more than the
+        // fitting tolerance (1.2 px at detail 40).
+        for (p, _) in t[0].path.segments().flat_map(|seg| {
+            (0..=8).map(move |k| {
+                (
+                    tracedraw_core::geometry::ParamCurve::eval(&seg, k as f64 / 8.0),
+                    (),
+                )
+            })
+        }) {
+            let r = (p - Point::new(50.5, 50.5)).hypot();
+            assert!((r - 30.0).abs() < 1.25, "{r}");
+        }
+
+        // A square with specks around it.
+        let img: RgbaImage = ImageBuffer::from_fn(100, 100, |x, y| {
+            let square = (20..80).contains(&x) && (20..80).contains(&y);
+            let speck = (x % 13 == 3 && y % 17 == 5) && !square;
+            if square || speck {
+                Rgba([0, 0, 0, 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
+        });
+        let t = trace(&img, &s);
+        assert_eq!(t.len(), 1, "the specks are gone");
+        let path = &t[0].path;
+        let subpaths = path
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(subpaths, 1, "the square alone");
+        let b = path.bounding_box();
+        assert!(
+            (b.x0 - 20.0).abs() < 0.01 && (b.x1 - 80.0).abs() < 0.01,
+            "sharp corners on the pixel corners: {b:?}"
+        );
+        assert!((path.area().abs() - 3600.0).abs() < 1.0, "{}", path.area());
+        // With all the detail, a speck of one pixel stays.
+        let mut keep = s.clone();
+        keep.detail = 100.0;
+        assert!(
+            trace(&img, &keep)[0]
+                .path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count()
+                > 1
+        );
+    }
+
+    /// Patches smaller than the detail allows take the colour around them.
+    #[test]
+    fn despeckle_fills_small_patches_with_their_surroundings() {
+        let (w, h) = (6, 5);
+        let mut labels = vec![0usize; w * h];
+        labels[2 * w + 2] = 1; // a one-pixel speck
+        for x in 0..w {
+            labels[4 * w + x] = 2; // a row of six
+        }
+        labels[0] = usize::MAX; // transparent stays
+        despeckle(&mut labels, w, h, 3);
+        assert_eq!(labels[2 * w + 2], 0);
+        assert!(labels[4 * w..].iter().all(|l| *l == 2));
+        assert_eq!(labels[0], usize::MAX);
+        assert_eq!(speck_area(100.0), 1);
+        assert!(speck_area(35.0) > speck_area(80.0));
     }
 
     #[test]

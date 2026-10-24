@@ -120,7 +120,10 @@ impl Bar {
     pub fn floating_size(self, app: &App) -> Vec2 {
         match self {
             Bar::Toolbox => vec2(crate::ui::toolbox::floating_width(app) + 8.0, 400.0),
-            Bar::Palette => vec2(460.0, crate::ui::palette::ROW_H + TITLE_H + 4.0),
+            Bar::Palette => vec2(
+                460.0,
+                crate::ui::palette::thickness(app, crate::ui::palette::Row::Main) + TITLE_H + 4.0,
+            ),
             Bar::Standard => vec2(940.0, 36.0 + TITLE_H + 4.0),
             Bar::Property => vec2(1100.0, 53.0 + TITLE_H + 4.0),
             Bar::Status => vec2(900.0, 40.0),
@@ -482,7 +485,7 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context, menu_h: f32) {
 fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p: Pos2) -> Rect {
     let thick = match drag.bar {
         Bar::Toolbox => crate::ui::toolbox::column_width(app),
-        Bar::Palette => crate::ui::palette::ROW_H,
+        Bar::Palette => crate::ui::palette::thickness(app, crate::ui::palette::Row::Main),
         Bar::Standard => 36.0,
         Bar::Property => 53.0,
         Bar::Status => crate::ui::status::BAR_H,

@@ -2557,23 +2557,69 @@ impl Shape {
             ShapeKind::Path { .. } => self.spline.is_some(),
             ShapeKind::Group { .. } | ShapeKind::Bitmap { .. } => false,
             // A clip frame changes only when its frame or something it
-            // holds (inside groups too) is not a curve yet.
+            // holds (inside groups too) is not a curve yet, or something it
+            // holds has a warp to bake. The frame's own warp stays: the
+            // contents are clipped to its outline without it.
             ShapeKind::ClipFrame { frame, contents } => {
-                frame.converts_to_curves_deep(0)
-                    || contents.iter().any(|c| c.converts_to_curves_deep(0))
+                let warps = !self.outline_stays_live();
+                frame.converts_to_curves_deep(0, false)
+                    || contents.iter().any(|c| c.converts_to_curves_deep(0, warps))
             }
             _ => true,
         }
     }
 
-    /// [`Shape::converts_to_curves`], looking inside groups.
-    fn converts_to_curves_deep(&self, depth: usize) -> bool {
+    /// [`Shape::converts_to_curves`], looking inside groups; `warps` when
+    /// an outline warp would be baked too.
+    fn converts_to_curves_deep(&self, depth: usize, warps: bool) -> bool {
+        let warp = warps && self.has_outline_warp();
         match &self.kind {
-            ShapeKind::Group { children } if depth < 16 => children
-                .iter()
-                .any(|c| c.converts_to_curves_deep(depth + 1)),
-            _ => self.converts_to_curves(),
+            ShapeKind::Group { children } if depth < 16 => {
+                let inner = warps && !self.outline_stays_live();
+                warp || children
+                    .iter()
+                    .any(|c| c.converts_to_curves_deep(depth + 1, inner))
+            }
+            _ => warp || self.converts_to_curves(),
         }
+    }
+
+    /// The object converted to curves (Convert to Curves): its kind as
+    /// [`Shape::curves_kind`] makes it, then its envelope, perspective and
+    /// distortion made part of the curves, the other effects kept (#647).
+    /// `None` when it stays as it is.
+    pub fn converted_to_curves(
+        &self,
+        symbols: &[Symbol],
+        next_id: &mut dyn FnMut() -> ShapeId,
+    ) -> Option<Shape> {
+        let mut out = self.clone();
+        let mut changed = false;
+        // A group's or clip frame's warps go first, then those of what it
+        // holds, as they are drawn; an object's own after its conversion.
+        let container = matches!(
+            self.kind,
+            ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+        );
+        if container {
+            if let Some(baked) = crate::live::bake_outline_warps(&out) {
+                out = baked;
+                changed = true;
+            }
+        }
+        if let Some(kind) = out.curves_kind_depth(symbols, next_id, 0, true) {
+            out.kind = kind;
+            out.node_types.clear();
+            out.spline = None;
+            changed = true;
+        }
+        if !container {
+            if let Some(baked) = crate::live::bake_outline_warps(&out) {
+                out = baked;
+                changed = true;
+            }
+        }
+        changed.then_some(out)
     }
 
     /// The kind this object takes when converted to curves, or `None` when
@@ -2586,14 +2632,18 @@ impl Shape {
         symbols: &[Symbol],
         next_id: &mut dyn FnMut() -> ShapeId,
     ) -> Option<ShapeKind> {
-        self.curves_kind_depth(symbols, next_id, 0)
+        self.curves_kind_depth(symbols, next_id, 0, false)
     }
 
+    /// [`Shape::curves_kind`]; `bake` makes the outline warps of the
+    /// objects inside part of their curves too (see
+    /// [`Shape::converted_to_curves`]).
     fn curves_kind_depth(
         &self,
         symbols: &[Symbol],
         next_id: &mut dyn FnMut() -> ShapeId,
         depth: usize,
+        bake: bool,
     ) -> Option<ShapeKind> {
         // A symbol that holds itself would never end.
         const MAX_DEPTH: usize = 16;
@@ -2607,18 +2657,21 @@ impl Shape {
                     return None;
                 }
                 for c in &mut children {
-                    c.curves_deep(symbols, next_id, depth + 1);
+                    c.curves_deep(symbols, next_id, depth + 1, bake);
                 }
                 Some(ShapeKind::Group { children })
             }
             // A clip frame stays a clip frame: its frame and what it holds
-            // become curves (keeping their ids) and stay clipped.
+            // become curves (keeping their ids) and stay clipped. The
+            // frame keeps its own warps: the contents are clipped to its
+            // outline without them.
             ShapeKind::ClipFrame { frame, contents } => {
                 let mut frame = frame.clone();
                 let mut contents = contents.clone();
-                frame.curves_in_place(symbols, next_id, depth + 1);
+                let inner = bake && !self.outline_stays_live();
+                frame.curves_in_place(symbols, next_id, depth + 1, false);
                 for c in &mut contents {
-                    c.curves_in_place(symbols, next_id, depth + 1);
+                    c.curves_in_place(symbols, next_id, depth + 1, inner);
                 }
                 let kind = ShapeKind::ClipFrame { frame, contents };
                 (kind != self.kind).then_some(kind)
@@ -2634,30 +2687,55 @@ impl Shape {
 
     /// Turn this object, and everything inside a group or clip frame, into
     /// curves, keeping the ids of the objects that were there (new pieces
-    /// of tables and symbols get new ones).
+    /// of tables and symbols get new ones); `bake` makes their outline
+    /// warps part of the curves too.
     fn curves_in_place(
         &mut self,
         symbols: &[Symbol],
         next_id: &mut dyn FnMut() -> ShapeId,
         depth: usize,
+        bake: bool,
     ) {
         if depth > 16 {
             return;
         }
+        let container = self.bake_container_warps(bake);
+        let inner = bake && !self.outline_stays_live();
         match &mut self.kind {
             ShapeKind::Group { children } => {
                 for c in children {
-                    c.curves_in_place(symbols, next_id, depth + 1);
+                    c.curves_in_place(symbols, next_id, depth + 1, inner);
                 }
             }
             _ => {
-                if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth) {
+                if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth, bake) {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
                 }
+                if bake && !container {
+                    if let Some(b) = crate::live::bake_outline_warps(self) {
+                        *self = b;
+                    }
+                }
             }
         }
+    }
+
+    /// With `bake`, a group's or clip frame's outline warps made part of
+    /// what it holds, before the warps of those objects, as they are
+    /// drawn. Whether this is such a container.
+    fn bake_container_warps(&mut self, bake: bool) -> bool {
+        let container = matches!(
+            self.kind,
+            ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+        );
+        if bake && container {
+            if let Some(b) = crate::live::bake_outline_warps(self) {
+                *self = b;
+            }
+        }
+        container
     }
 
     /// Give this object and everything inside it new ids, and turn every
@@ -2667,27 +2745,36 @@ impl Shape {
         symbols: &[Symbol],
         next_id: &mut dyn FnMut() -> ShapeId,
         depth: usize,
+        bake: bool,
     ) {
         self.id = next_id();
+        let container = self.bake_container_warps(bake);
+        let inner = bake && !self.outline_stays_live();
         match &mut self.kind {
             ShapeKind::Group { children } => {
                 for c in children {
-                    c.curves_deep(symbols, next_id, depth + 1);
+                    c.curves_deep(symbols, next_id, depth + 1, inner);
                 }
             }
-            // A frame keeps what it holds; both become curves.
+            // A frame keeps what it holds; both become curves, the frame
+            // keeping its own warps (the contents are clipped without).
             ShapeKind::ClipFrame { frame, contents } => {
-                frame.curves_deep(symbols, next_id, depth + 1);
+                frame.curves_deep(symbols, next_id, depth + 1, false);
                 for c in contents {
-                    c.curves_deep(symbols, next_id, depth + 1);
+                    c.curves_deep(symbols, next_id, depth + 1, inner);
                 }
             }
             _ => {
                 // The pieces of a converted table or symbol get their ids there.
-                if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth) {
+                if let Some(kind) = self.curves_kind_depth(symbols, next_id, depth, bake) {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
+                }
+                if bake && !container {
+                    if let Some(b) = crate::live::bake_outline_warps(self) {
+                        *self = b;
+                    }
                 }
             }
         }
@@ -4141,6 +4228,34 @@ impl Document {
     /// for a newer number), for an older TraceDraw: the current layout is
     /// taken down one step at a time ([`DOWN_STEPS`]).
     pub fn to_json_version(&self, version: u32) -> Result<String> {
+        let mut out = Vec::new();
+        self.write_json_version(&mut out, version)?;
+        // serde_json writes UTF-8 only.
+        Ok(String::from_utf8(out)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+    }
+
+    /// Write the `.tdraw` JSON of format `version` to `w` as it is made.
+    /// The current format goes straight to the writer; only an older one
+    /// builds the whole tree in memory first (many times the drawing's
+    /// size), to take it down.
+    pub fn write_json_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
+        if (version as usize) >= DOWN_STEPS.len() {
+            #[derive(Serialize)]
+            struct Versioned<'a> {
+                #[serde(flatten)]
+                doc: &'a Document,
+                format_version: u32,
+            }
+            serde_json::to_writer_pretty(
+                w,
+                &Versioned {
+                    doc: self,
+                    format_version: TDRAW_FORMAT_VERSION,
+                },
+            )?;
+            return Ok(());
+        }
         let mut v = serde_json::to_value(self)?;
         if let serde_json::Value::Object(m) = &mut v {
             m.insert(
@@ -4151,7 +4266,8 @@ impl Document {
         for step in DOWN_STEPS.iter().skip(version as usize).rev() {
             step(&mut v);
         }
-        Ok(serde_json::to_string_pretty(&v)?)
+        serde_json::to_writer_pretty(w, &v)?;
+        Ok(())
     }
 
     /// Read a `.tdraw` file of any version: older ones are brought up to
@@ -4324,6 +4440,148 @@ mod tests {
 
     use super::*;
 
+    /// A clip frame's warp is baked before the warps of what it holds, as
+    /// they are drawn, and its frame keeps its own envelope: the contents
+    /// are clipped to the frame's outline without it (#647).
+    #[test]
+    fn a_clip_frame_bakes_its_warp_before_the_warps_inside() {
+        use crate::live::{evaluate, Effect};
+        let b = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let arch = |b: Rect| {
+            let mut nodes = crate::envelope::default_nodes(b);
+            nodes[5].y += 10.0;
+            let f = crate::envelope::Frame::from_parts(&nodes, &[], &[]).expect("frame");
+            Effect::from_envelope(&f, false, crate::envelope::Mapping::Putty)
+        };
+        let mut inner = Shape::new(
+            ShapeId(2),
+            ShapeKind::Rect {
+                rect: b,
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        inner.effects = vec![arch(b)];
+        let mut content = Shape::new(
+            ShapeId(3),
+            ShapeKind::Rect {
+                rect: Rect::new(5.0, 2.0, 35.0, 18.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        content.effects = vec![Effect::Perspective {
+            corners: [
+                Point::new(5.0, 2.0),
+                Point::new(35.0, 2.0),
+                Point::new(28.0, 18.0),
+                Point::new(12.0, 18.0),
+            ],
+        }];
+        let mut clip = Shape::new(
+            ShapeId(1),
+            ShapeKind::ClipFrame {
+                frame: Box::new(inner),
+                contents: vec![content],
+            },
+        );
+        clip.effects = vec![arch(b)];
+        let drawn = evaluate(&clip).main;
+        let ShapeKind::ClipFrame {
+            frame: drawn_frame,
+            contents: drawn_contents,
+        } = &drawn.kind
+        else {
+            panic!("a clip frame");
+        };
+        let want = evaluate(&drawn_contents[0]).main.local_path();
+        let mut n = 10;
+        let got = clip
+            .converted_to_curves(&[], &mut || {
+                n += 1;
+                ShapeId(n)
+            })
+            .expect("converted");
+        assert!(got.effects.is_empty());
+        let ShapeKind::ClipFrame { frame, contents } = &got.kind else {
+            panic!("still a clip frame: {:?}", got.kind);
+        };
+        assert!(contents[0].effects.is_empty());
+        assert!(matches!(contents[0].kind, ShapeKind::Path { .. }));
+        assert_eq!(contents[0].local_path().elements(), want.elements());
+        assert_eq!(frame.effects.len(), 1, "the frame keeps its envelope");
+        assert_eq!(
+            frame.local_path().elements(),
+            drawn_frame.local_path().elements()
+        );
+        // A clip frame whose only warp is its frame's has nothing to convert.
+        let mut only_frame = got.clone();
+        if let ShapeKind::ClipFrame { contents, .. } = &mut only_frame.kind {
+            contents[0].effects.clear();
+        }
+        assert!(!only_frame.converts_to_curves());
+        assert!(!only_frame.has_outline_warp());
+    }
+
+    /// The objects in a group whose contour stays live keep their warps:
+    /// baking them would change the contour drawn around them.
+    #[test]
+    fn warps_under_a_live_contour_stay() {
+        use crate::live::Effect;
+        let mut child = Shape::new(
+            ShapeId(2),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        child.effects = vec![Effect::Distort(crate::effects::Distort::Twister {
+            angle_deg: 40.0,
+            center: None,
+        })];
+        let mut g = Shape::new(
+            ShapeId(1),
+            ShapeKind::Group {
+                children: vec![child],
+            },
+        );
+        g.effects = vec![Effect::BlockShadow {
+            offset: crate::geometry::Vec2::new(2.0, -2.0),
+            color: crate::Color::BLACK,
+            gap: 0.0,
+        }];
+        let clip = Shape::new(
+            ShapeId(5),
+            ShapeKind::ClipFrame {
+                frame: Box::new(Shape::new(
+                    ShapeId(6),
+                    ShapeKind::Rect {
+                        rect: Rect::new(0.0, 0.0, 30.0, 30.0),
+                        radius: 0.0,
+                        corners: None,
+                    },
+                )),
+                contents: vec![g],
+            },
+        );
+        let mut n = 10;
+        let got = clip
+            .converted_to_curves(&[], &mut || {
+                n += 1;
+                ShapeId(n)
+            })
+            .expect("the frame becomes a curve");
+        let ShapeKind::ClipFrame { contents, .. } = &got.kind else {
+            panic!("a clip frame");
+        };
+        let ShapeKind::Group { children } = &contents[0].kind else {
+            panic!("a group");
+        };
+        assert_eq!(children[0].effects.len(), 1, "the twister stays live");
+        assert!(matches!(children[0].kind, ShapeKind::Path { .. }));
+    }
+
     #[test]
     fn further_fills_and_outlines_draw_in_layers() {
         use crate::{Color, Stroke};
@@ -4414,6 +4672,64 @@ mod tests {
         }
         p.close_path();
         p
+    }
+
+    /// The file is written as it is made, and reads as the same JSON the
+    /// tree built in memory gave.
+    #[test]
+    fn tdraw_json_streams_to_the_writer() {
+        let mut doc = Document::new("Streamed", crate::geometry::Size::new(100.0, 50.0));
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 5.0),
+                radius: 1.0,
+                corners: None,
+            },
+        );
+        s.fill = crate::Fill::Solid(crate::Color::rgb8(10, 20, 30));
+        doc.layer_mut(layer).expect("layer").shapes.push(s);
+        // A writer that sees the text in pieces, never all at once.
+        struct Pieces {
+            text: Vec<u8>,
+            writes: usize,
+        }
+        impl std::io::Write for Pieces {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.text.extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = Pieces {
+            text: Vec::new(),
+            writes: 0,
+        };
+        doc.write_json_version(&mut w, TDRAW_FORMAT_VERSION)
+            .expect("written");
+        assert!(w.writes > 10, "{} writes", w.writes);
+        // The tree printed f32 values through f64 (0.6000000238418579
+        // for 0.6); both read back as the same drawing.
+        let mut tree = serde_json::to_value(&doc).expect("value");
+        tree.as_object_mut().expect("object").insert(
+            FORMAT_VERSION_KEY.into(),
+            serde_json::Value::from(TDRAW_FORMAT_VERSION),
+        );
+        let streamed = std::str::from_utf8(&w.text).expect("utf-8");
+        let a = Document::from_json(streamed).expect("streamed");
+        let b = Document::from_json(&tree.to_string()).expect("tree");
+        assert_eq!(
+            serde_json::to_value(&a).expect("a"),
+            serde_json::to_value(&b).expect("b")
+        );
+        assert_eq!(doc.to_json().expect("json").as_bytes(), &w.text[..]);
+        let back = a;
+        assert_eq!(back.pages, doc.pages);
     }
 
     #[test]

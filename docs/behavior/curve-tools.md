@@ -171,6 +171,15 @@ end nodes becomes part of that curve (code: `curve_join.rs`):
 Otherwise the line is a curve of its own. Closed curves, several
 selected objects and objects inside groups are never continued.
 
+The Pen and Bezier tools also go on from an open curve that is not
+selected: a first press on an end node of the topmost visible, unlocked
+open curve there (the selected curve's ends come first) selects that
+curve and starts the new line on the end node, as if drawing had never
+stopped. The next segment leaves along the mirror of the handle the
+curve arrives at that end with, so the dashed preview curves and the
+join is smooth; after a straight segment it leaves straight. A drag
+from the end node pulls a new handle instead (#630).
+
 The pointer shows a node with a line going on from it over such an end
 node, and a ring over the first node of a curve being drawn when a
 click would close it.
@@ -251,6 +260,8 @@ Medium (first), High, Highest; kept in the preferences
 - `pen_look::tests` (preview geometry, colours and node marks, the
   closing preview, splitting and deleting nodes of the curve being
   drawn, the defaults)
+- `pick_drag_tests::the_pen_continues_an_unselected_curve_with_the_mirrored_handle`
+  (#630)
 - `curve_join::tests` (from either end, closing, two subpaths made one,
   reversing curves, in the curve's own space with one undo step)
 - `ui::cursors::tests::tools_get_their_cursors` (join and close signs)

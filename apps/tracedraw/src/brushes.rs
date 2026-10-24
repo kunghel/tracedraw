@@ -23,8 +23,19 @@ impl App {
                 self.select(vec![id]);
             }
         }
-        // Brushes work on curves.
-        self.convert_to_curves();
+        // Brushes work on curves. A group or clip frame is never brushed,
+        // so it keeps its envelope and objects as they are.
+        let shapes = self
+            .selected_shapes()
+            .into_iter()
+            .filter(|s| {
+                !matches!(
+                    s.kind,
+                    ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+                )
+            })
+            .collect();
+        self.convert_shapes_to_curves(shapes, true);
         self.drag = Drag::Node { last: p };
         self.brush_stepped = false;
     }

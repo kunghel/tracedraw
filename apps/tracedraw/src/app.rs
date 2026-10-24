@@ -452,6 +452,9 @@ pub enum Drag {
     Node {
         last: Point,
     },
+    /// Dragging a corner widget (Shape tool): the corners round as it
+    /// moves (#635).
+    CornerWidget(Box<crate::corner_widgets::CornerDrag>),
     /// Dragging a control handle (Shape tool).
     Handle {
         shape: ShapeId,
@@ -466,6 +469,9 @@ pub enum Drag {
         node: crate::kind_nodes::KindNode,
         start: Box<tracedraw_core::Shape>,
         single: bool,
+        /// The rectangle corners the drag changes along with the one
+        /// dragged (the chosen ones, when it is among them).
+        chosen: [bool; 4],
         begun: bool,
         /// Degrees an ellipse's node has turned through.
         turn: f64,
@@ -807,6 +813,13 @@ pub const IMPORT_EXTENSIONS: &[&str] = &[
     "gif", "webp", "tif", "tiff",
 ];
 
+/// Auto-backups being written on a thread: the folder, and each file's
+/// name with how its write went.
+struct AutoBackupJob {
+    dir: PathBuf,
+    thread: std::thread::JoinHandle<Vec<(String, Result<(), String>)>>,
+}
+
 pub struct App {
     pub engine: Engine,
     pub page: PageId,
@@ -931,9 +944,10 @@ pub struct App {
     pub rect_corners: tracedraw_core::Corners,
     /// The property bar's lock: one corner size edits them all.
     pub corners_together: bool,
-    /// The Shape tool's chosen rectangle corner: dragging it changes that
-    /// corner only.
-    pub rect_corner_selected: Option<(tracedraw_core::ShapeId, usize)>,
+    /// The Shape tool's chosen rectangle corners (a click, Shift or Ctrl
+    /// click, or a marquee): dragging one of them changes those corners
+    /// only.
+    pub rect_corners_selected: Vec<(tracedraw_core::ShapeId, usize)>,
     /// The selection as a marquee (or freehand region) left it. While the
     /// selection still equals it, shaping and joining take the bottom-most
     /// object as their target instead of the one selected last.
@@ -1044,6 +1058,8 @@ pub struct App {
     /// Whether each paragraph text overflows its frame, by document
     /// revision (laying text out every frame would be slow).
     pub overflow_cache: std::cell::RefCell<(u64, std::collections::HashMap<ShapeId, bool>)>,
+    /// The corners the Shape tool's corner widgets stand on.
+    pub corner_cache: std::cell::RefCell<crate::corner_widgets::CornerCache>,
     pub wireframe: bool,
     /// Families the font lists show: installed, carried by drawings, and
     /// (browser build) offered by the page's font folder.
@@ -1171,6 +1187,11 @@ pub struct App {
     pub rasterize_complex_effects: bool,
     pub show_bleed: bool,
     pub show_printable_area: bool,
+    /// View > Page > Mask Outside Page: the desktop is drawn over what
+    /// lies outside the page, with the page border over the objects, so
+    /// the page shows as it will print while every object stays editable
+    /// (#615).
+    pub mask_outside_page: bool,
     pub show_pixel_grid: bool,
     pub show_baseline_grid: bool,
     pub options_page: crate::ui::dialogs::OptionsPage,
@@ -1187,6 +1208,8 @@ pub struct App {
     pub pending_command: Option<String>,
     /// When the last auto-backup ran (set on the first frame).
     pub last_auto_backup: Option<web_time::Instant>,
+    /// The auto-backup being written on a thread of its own.
+    auto_backup_job: Option<AutoBackupJob>,
     /// Linked bitmaps' files as last seen (`watch_linked_bitmaps`): the
     /// modification time of each, and when they were last looked at.
     pub linked_mtimes: std::collections::HashMap<ShapeId, std::time::SystemTime>,
@@ -1253,7 +1276,9 @@ pub struct App {
     /// preferences as last saved or looked at (JSON), to save them only
     /// when they changed.
     pub settings_written: Option<web_time::Instant>,
-    pub settings_saved: Option<String>,
+    pub settings_saved: Option<Vec<u8>>,
+    /// When `autosave_settings` last looked at the preferences (#616).
+    pub settings_looked: Option<web_time::Instant>,
     /// A change waits to be written (see `autosave_settings`).
     pub settings_pending: bool,
     /// The layer made active in the Objects docker: new objects go there
@@ -1900,6 +1925,36 @@ pub enum TransformTab {
     Skew,
 }
 
+/// The preferences' JSON, into a buffer of `hint` bytes so that it is
+/// not grown on the way (#616).
+fn settings_json(s: &crate::settings::Settings, hint: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(hint);
+    serde_json::to_writer(&mut out, s).ok()?;
+    Some(out)
+}
+
+/// Whether this frame's input could have changed a preference: a key,
+/// text, a click or a release, the clipboard or a dropped file. Pointer
+/// moves, held buttons and the wheel cannot by themselves (a drag ends in
+/// a release).
+fn input_may_change_settings(i: &egui::InputState) -> bool {
+    use egui::Event;
+    !i.raw.dropped_files.is_empty()
+        || i.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key { .. }
+                    | Event::Text(_)
+                    | Event::Paste(_)
+                    | Event::Copy
+                    | Event::Cut
+                    | Event::Ime(_)
+                    | Event::PointerButton { .. }
+                    | Event::WindowFocused(_)
+            )
+        })
+}
+
 impl App {
     /// The editor in the window of `ctx`, whose fonts are already
     /// installed (see `theme::install_fonts` and the splash screen).
@@ -2040,7 +2095,7 @@ impl App {
             complex_sharpness: 2,
             rect_corners: tracedraw_core::Corners::tool_default(),
             corners_together: true,
-            rect_corner_selected: None,
+            rect_corners_selected: Vec::new(),
             marquee_selection: None,
             clone_sync_revision: 0,
             ellipse_arc: None,
@@ -2105,6 +2160,7 @@ impl App {
             window_layout: Default::default(),
             window_layout_seen: None,
             overflow_cache: Default::default(),
+            corner_cache: Default::default(),
             wireframe: false,
             font_families: tracedraw_text::fonts().available_families(),
             font_catalog: Default::default(),
@@ -2169,6 +2225,7 @@ impl App {
             rasterize_complex_effects: true,
             show_bleed: false,
             show_printable_area: false,
+            mask_outside_page: false,
             show_pixel_grid: true,
             show_baseline_grid: false,
             options_page: crate::ui::dialogs::OptionsPage::General,
@@ -2177,6 +2234,7 @@ impl App {
             shortcut_editor: Default::default(),
             pending_command: None,
             last_auto_backup: None,
+            auto_backup_job: None,
             linked_mtimes: Default::default(),
             linked_checked: None,
             session: None,
@@ -2213,6 +2271,7 @@ impl App {
             objects_open_groups: Default::default(),
             settings_written: None,
             settings_saved: None,
+            settings_looked: None,
             settings_pending: false,
             objects_page_closed: false,
             objects_master_closed: false,
@@ -2769,7 +2828,8 @@ impl App {
     pub fn save_settings(&mut self) {
         self.sync_settings();
         self.settings.save();
-        self.settings_saved = serde_json::to_string(&self.settings).ok();
+        let hint = self.settings_saved.as_ref().map_or(0, Vec::len);
+        self.settings_saved = settings_json(&self.settings, hint);
         self.settings_pending = false;
     }
 
@@ -2934,6 +2994,7 @@ impl App {
             page_border: self.show_page_border,
             bleed: self.show_bleed,
             printable_area: self.show_printable_area,
+            mask_outside_page: self.mask_outside_page,
             pixel_grid: self.show_pixel_grid,
             baseline_grid: self.show_baseline_grid,
             non_printing: self.show_non_printing,
@@ -2951,6 +3012,7 @@ impl App {
         self.show_page_border = v.page_border;
         self.show_bleed = v.bleed;
         self.show_printable_area = v.printable_area;
+        self.mask_outside_page = v.mask_outside_page;
         self.show_pixel_grid = v.pixel_grid;
         self.show_baseline_grid = v.baseline_grid;
         self.show_non_printing = v.non_printing;
@@ -3002,18 +3064,33 @@ impl App {
     /// closing the tab saves nothing); written at most once a second (a
     /// window being resized changes them every frame), with a frame asked
     /// for when a write has to wait. Not while Options is open: its Cancel
-    /// puts them back.
+    /// puts them back. Looked at on the frames whose input could change
+    /// them (a key, a click, text, a dropped file) and at most once a
+    /// second otherwise, not on every pointer move or animation frame,
+    /// which cost a full serialization each on slow computers (#616); a
+    /// frame that does not look asks for one when the second is up.
     pub fn autosave_settings(&mut self, ctx: Option<&egui::Context>) {
         if self.options_snapshot.is_some() {
             return;
         }
-        if self.settings_changed() {
-            self.settings_pending = true;
+        let now = web_time::Instant::now();
+        let input = ctx.is_none_or(|c| c.input(input_may_change_settings));
+        let second = std::time::Duration::from_secs(1);
+        let since = self.settings_looked.map(|t| now.duration_since(t));
+        if input || since.is_none_or(|d| d >= second) {
+            self.settings_looked = Some(now);
+            if self.settings_changed() {
+                self.settings_pending = true;
+            }
+        } else if let (Some(ctx), Some(d)) = (ctx, since) {
+            // A change this frame made (a maximized window, a worker's
+            // result) is looked at when the second is up, even if no
+            // frame comes by itself: one frame after a burst, none idle.
+            ctx.request_repaint_after(second.saturating_sub(d));
         }
         if !self.settings_pending {
             return;
         }
-        let now = web_time::Instant::now();
         let gap = std::time::Duration::from_secs(1);
         let wait = self
             .settings_written
@@ -3032,10 +3109,11 @@ impl App {
     /// from the ones last saved or looked at, which are then remembered.
     pub fn settings_changed(&mut self) -> bool {
         self.sync_settings();
-        let Ok(now) = serde_json::to_string(&self.settings) else {
+        let hint = self.settings_saved.as_ref().map_or(0, Vec::len);
+        let Some(now) = settings_json(&self.settings, hint + 64) else {
             return false;
         };
-        if self.settings_saved.as_deref() == Some(now.as_str()) {
+        if self.settings_saved.as_ref() == Some(&now) {
             return false;
         }
         self.settings_saved = Some(now);
@@ -3969,7 +4047,7 @@ impl App {
         self.rotate_mode = false;
         self.node_selection.clear();
         self.segment_spot = None;
-        self.rect_corner_selected = None;
+        self.rect_corners_selected.clear();
     }
 
     // ----- object creation ---------------------------------------------------
@@ -4639,18 +4717,55 @@ impl App {
     }
 
     /// Convert to Curves: shapes and text become curves; a table becomes a
-    /// group of curves (cell fills, borders, text) and a symbol instance
-    /// a group of its symbol's objects as curves. Bitmaps are left as they
-    /// are, with a note in the status bar.
+    /// group of curves (cell fills, borders, text), a dimension a group of
+    /// its lines, arrowheads and label as curves, and a symbol instance
+    /// a group of its symbol's objects as curves. An envelope, perspective
+    /// or distortion becomes part of the curves (#647). Bitmaps are left as
+    /// they are, with a note in the status bar.
     pub fn convert_to_curves(&mut self) {
+        self.convert_selection_to_curves(true);
+    }
+
+    /// [`App::convert_to_curves`]; `bake` false keeps the outline warps
+    /// live (the Shape tool converting an object to edit its nodes).
+    pub(crate) fn convert_selection_to_curves(&mut self, bake: bool) {
         let shapes = self.selected_shapes();
+        self.convert_shapes_to_curves(shapes, bake);
+    }
+
+    /// [`App::convert_selection_to_curves`] for `shapes`, one undo step.
+    pub(crate) fn convert_shapes_to_curves(&mut self, shapes: Vec<Shape>, bake: bool) {
         let symbols = self.doc().symbols.clone();
         let mut cmds = Vec::new();
         for s in &shapes {
+            // A dimension becomes a group of plain curves (#640).
+            if bake {
+                if let Some(mut c) = self.dimension_curves_commands(s) {
+                    cmds.append(&mut c);
+                    continue;
+                }
+            }
             let engine = &mut self.engine;
             let mut next_id = || engine.new_shape_id();
-            if let Some(kind) = s.curves_kind(&symbols, &mut next_id) {
-                cmds.push(Command::SetShapeKind { shape: s.id, kind });
+            let c = if bake {
+                s.converted_to_curves(&symbols, &mut next_id)
+            } else {
+                s.curves_kind(&symbols, &mut next_id)
+                    .map(|kind| Shape { kind, ..s.clone() })
+            };
+            let Some(c) = c else {
+                continue;
+            };
+            cmds.push(Command::SetShapeKind {
+                shape: s.id,
+                kind: c.kind,
+            });
+            if c.effects != s.effects || c.parked_effects != s.parked_effects {
+                cmds.push(Command::SetEffectStack {
+                    shape: s.id,
+                    effects: c.effects,
+                    parked: c.parked_effects,
+                });
             }
         }
         if shapes
@@ -4668,7 +4783,9 @@ impl App {
 
     /// Something selected that Convert to Curves would change.
     pub fn can_convert_to_curves(&self) -> bool {
-        self.selected_shapes().iter().any(Shape::converts_to_curves)
+        self.selected_shapes().iter().any(|s| {
+            s.converts_to_curves() || s.has_outline_warp() || crate::dimensions::is_dimension(s)
+        })
     }
 
     /// Order: 0 = to front, 1 = forward one, 2 = back one, 3 = to back.
@@ -5652,6 +5769,7 @@ impl App {
             // Fonts that came with other drawings go along (text imported
             // or pasted from them), and, with Embed fonts on, the
             // installed fonts the text uses whose licence allows it.
+            self.backup_before_save(&path);
             let version = self
                 .tdraw_version
                 .unwrap_or(tracedraw_core::document::TDRAW_FORMAT_VERSION);
@@ -5662,12 +5780,23 @@ impl App {
             } else {
                 std::borrow::Cow::Borrowed(&*carried)
             };
-            doc.to_json_version(version)
-                .map(String::into_bytes)
-                .map_err(|e| e.to_string())
+            // Written to the file as it is made: the JSON of a large
+            // drawing is several times its size.
+            let result = crate::files::write_with(&path, |w| {
+                doc.write_json_version(w, version)
+                    .map_err(std::io::Error::other)
+            })
+            .map_err(|e| e.to_string());
+            return self.saved_to(path, result);
         };
         self.backup_before_save(&path);
         let result = bytes.and_then(|b| crate::files::write(&path, b).map_err(|e| e.to_string()));
+        self.saved_to(path, result);
+    }
+
+    /// After writing the drawing to `path`: its state, the status line and
+    /// the recent files.
+    fn saved_to(&mut self, path: PathBuf, result: Result<(), String>) {
         match result {
             Ok(()) => {
                 self.engine.mark_saved();
@@ -5716,6 +5845,9 @@ impl App {
         if !b.auto || crate::files::WEB {
             return false;
         }
+        if self.auto_backup_job.is_some() {
+            return self.finish_auto_backup(false);
+        }
         let due = std::time::Duration::from_secs(u64::from(b.minutes.max(1)) * 60);
         let last = *self.last_auto_backup.get_or_insert(now);
         if now.duration_since(last) < due {
@@ -5725,26 +5857,75 @@ impl App {
         let Some(dir) = b.auto_dir.clone().or_else(App::auto_backup_dir_default) else {
             return false;
         };
-        let mut saved = false;
-        let mut jobs: Vec<(String, String)> = Vec::new();
+        // Copies of the drawings (pictures are shared, not copied) go to
+        // a thread that writes them as they are made, so the window does
+        // not stop while a large drawing is written.
+        let mut jobs: Vec<(String, tracedraw_core::Document)> = Vec::new();
         let fonts = tracedraw_text::fonts();
         if self.has_document() && self.engine.is_dirty() {
-            if let Ok(json) = fonts.with_carried_fonts(self.doc()).to_json() {
-                jobs.push((self.backup_name(None), json));
-            }
+            let doc = fonts.with_carried_fonts(self.doc()).into_owned();
+            jobs.push((self.backup_name(None), doc));
         }
         for (i, slot) in self.docs.iter().enumerate() {
             if i != self.active_doc && slot.engine.is_dirty() {
-                if let Ok(json) = fonts.with_carried_fonts(slot.engine.document()).to_json() {
-                    jobs.push((self.backup_name(Some(i)), json));
-                }
+                let doc = fonts
+                    .with_carried_fonts(slot.engine.document())
+                    .into_owned();
+                jobs.push((self.backup_name(Some(i)), doc));
             }
         }
-        for (name, json) in jobs {
-            match crate::files::write_creating(dir.join(&name), json) {
+        if jobs.is_empty() {
+            return false;
+        }
+        let to = dir.clone();
+        let thread = std::thread::Builder::new()
+            .name("auto-backup".into())
+            .spawn(move || {
+                jobs.into_iter()
+                    .map(|(name, doc)| {
+                        let written = crate::files::write_creating_with(to.join(&name), |w| {
+                            doc.write_json_version(
+                                w,
+                                tracedraw_core::document::TDRAW_FORMAT_VERSION,
+                            )
+                            .map_err(std::io::Error::other)
+                        });
+                        (name, written.map_err(|e| e.to_string()))
+                    })
+                    .collect()
+            });
+        match thread {
+            Ok(thread) => self.auto_backup_job = Some(AutoBackupJob { dir, thread }),
+            Err(e) => log::warn!("auto-backup not started: {e}"),
+        }
+        false
+    }
+
+    /// The auto-backup being written, when it is done (or at once with
+    /// `wait`): its files go into this session's records. True when one
+    /// was saved.
+    fn finish_auto_backup(&mut self, wait: bool) -> bool {
+        if !wait
+            && !self
+                .auto_backup_job
+                .as_ref()
+                .is_some_and(|j| j.thread.is_finished())
+        {
+            return false;
+        }
+        let Some(job) = self.auto_backup_job.take() else {
+            return false;
+        };
+        let Ok(results) = job.thread.join() else {
+            log::warn!("auto-backup stopped");
+            return false;
+        };
+        let mut saved = false;
+        for (name, result) in results {
+            match result {
                 Ok(()) => {
                     saved = true;
-                    if let Some(s) = self.session.as_mut().filter(|s| s.dir() == dir) {
+                    if let Some(s) = self.session.as_mut().filter(|s| s.dir() == job.dir) {
                         s.wrote(&name, crate::recovery::now_secs());
                     }
                 }
@@ -5881,6 +6062,9 @@ impl App {
 
     /// A clean exit: this session's marker and auto-backups go.
     pub fn end_session(&mut self) {
+        // A backup still being written finishes first, so the clean exit
+        // removes it with the others.
+        self.finish_auto_backup(true);
         if let Some(s) = self.session.take() {
             s.end();
         }
@@ -7452,6 +7636,7 @@ mod tests {
         // it, which it asks for.
         app.polygon_points = 10;
         let ctx = egui::Context::default();
+        app.settings_looked = None;
         app.autosave_settings(Some(&ctx));
         assert!(app.settings_pending);
         app.settings_written = app
@@ -7459,6 +7644,133 @@ mod tests {
             .and_then(|t| t.checked_sub(std::time::Duration::from_secs(2)));
         app.autosave_settings(Some(&ctx));
         assert!(!app.settings_pending);
+    }
+
+    /// A frame of `events` through `app`'s autosave, as the window runs
+    /// it after the interface.
+    /// The frame it asks for next.
+    fn autosave_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> std::time::Duration {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.autosave_settings(Some(ui.ctx())));
+        out.textures_delta.clear();
+        out.viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|v| v.repaint_delay)
+            .unwrap_or(std::time::Duration::MAX)
+    }
+
+    /// The preferences are looked at on the frames whose input could
+    /// change them and at most once a second otherwise: a pointer move
+    /// or an animation frame does not serialize them all (#616).
+    #[test]
+    fn preferences_are_looked_at_only_when_they_could_have_changed() {
+        let mut app = App::headless();
+        let ctx = egui::Context::default();
+        autosave_frame(&mut app, &ctx, Vec::new());
+        let looked = app.settings_looked.expect("the first frame looks");
+        let seen = app.settings_saved.clone();
+        // Within the second, pointer moves alone look at nothing; the
+        // frame asks for one when the second is up.
+        app.polygon_points = 7;
+        let moved = egui::Event::PointerMoved(egui::pos2(10.0, 10.0));
+        let next = autosave_frame(&mut app, &ctx, vec![moved.clone()]);
+        assert_eq!(app.settings_looked, Some(looked));
+        assert_eq!(app.settings_saved, seen);
+        assert!(next <= std::time::Duration::from_secs(1), "{next:?}");
+        // A click is looked at at once.
+        let click = egui::Event::PointerButton {
+            pos: egui::pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        autosave_frame(&mut app, &ctx, vec![click]);
+        assert_ne!(app.settings_saved, seen);
+        assert!(app.settings_pending || app.settings_written.is_some());
+        // A second later any frame looks again (a change from a worker or
+        // a resized window).
+        app.polygon_points = 8;
+        let before = app.settings_saved.clone();
+        app.settings_looked = app
+            .settings_looked
+            .and_then(|t| t.checked_sub(std::time::Duration::from_secs(2)));
+        autosave_frame(&mut app, &ctx, vec![moved]);
+        assert_ne!(app.settings_saved, before);
+        // Only discrete input counts.
+        let key = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let i = |events| {
+            let c = egui::Context::default();
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            c.run_ui(input, |_| {}).textures_delta.clear();
+            c.input(input_may_change_settings)
+        };
+        assert!(i(vec![key]));
+        assert!(i(vec![egui::Event::Text("a".into())]));
+        assert!(!i(vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))]));
+        assert!(!i(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 1.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        }]));
+        assert!(!i(Vec::new()));
+    }
+
+    /// What the preferences check costs a frame, before (the whole JSON
+    /// text built and compared on every frame) and now: run with
+    /// `cargo test --release -p tracedraw -- --ignored
+    /// settings_check_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn settings_check_cost() {
+        let mut app = App::headless();
+        app.settings.recent_files = (0..20)
+            .map(|i| format!("/some/folder/drawing {i}.cdr").into())
+            .collect();
+        let n = 2000;
+        let mut last = None;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            app.sync_settings();
+            let now = serde_json::to_string(&app.settings).ok();
+            if now != last {
+                last = now;
+            }
+        }
+        eprintln!("before, JSON text every frame: {:?}", t.elapsed() / n);
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            app.settings_changed();
+        }
+        eprintln!("a full look now: {:?}", t.elapsed() / n);
+        let ctx = egui::Context::default();
+        let moved = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(10.0, 10.0))],
+            ..Default::default()
+        };
+        ctx.run_ui(moved, |_| {}).textures_delta.clear();
+        app.settings_looked = Some(web_time::Instant::now());
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            app.autosave_settings(Some(&ctx));
+        }
+        eprintln!("a pointer-move frame now: {:?}", t.elapsed() / n);
     }
 
     #[test]
@@ -7624,7 +7936,9 @@ mod tests {
         let t0 = web_time::Instant::now();
         assert!(!first.auto_backup_tick(t0));
         rect_shape(&mut first, Rect::new(0.0, 0.0, 10.0, 10.0), true);
-        assert!(first.auto_backup_tick(t0 + std::time::Duration::from_secs(61)));
+        // Written on a thread of its own: not saved on the frame it starts.
+        assert!(!first.auto_backup_tick(t0 + std::time::Duration::from_secs(61)));
+        assert!(first.finish_auto_backup(true));
         // A second session while the first still checks in: nothing.
         let mut second = App::headless();
         second.settings.backup.auto_dir = Some(dir.clone());
@@ -7685,9 +7999,25 @@ mod tests {
         assert!(!app.auto_backup_tick(t0));
         rect_shape(&mut app, Rect::new(0.0, 0.0, 20.0, 10.0), true);
         assert!(!app.auto_backup_tick(t0 + std::time::Duration::from_secs(30)));
-        assert!(app.auto_backup_tick(t0 + std::time::Duration::from_secs(61)));
-        let saved: Vec<_> = std::fs::read_dir(dir.join("auto")).unwrap().collect();
-        assert_eq!(saved.len(), 1);
+        let due = t0 + std::time::Duration::from_secs(61);
+        assert!(!app.auto_backup_tick(due));
+        // A later frame reports it once the thread has written it.
+        let waited = web_time::Instant::now();
+        while !app.auto_backup_tick(due) {
+            assert!(
+                waited.elapsed().as_secs() < 60,
+                "auto-backup never finished"
+            );
+            std::thread::yield_now();
+        }
+        let saved: Vec<_> = std::fs::read_dir(dir.join("auto"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(saved, ["AutoBackup_of_art.tdraw"], "no .part left");
+        let back = std::fs::read_to_string(dir.join("auto").join(&saved[0])).unwrap();
+        assert!(tracedraw_core::Document::from_json(&back).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2,63 +2,95 @@
 //! longer than drawing it, and a page draws its pictures again on every
 //! change of the view. Pictures are found by a fingerprint of their PNG
 //! bytes; past a memory budget the least recently drawn go first.
+//!
+//! One cache serves every thread: the canvas draws in bands on threads
+//! of their own, and a cache per thread made every band decode every
+//! picture it crosses again, on every render. A picture being decoded
+//! is decoded once; other threads that need it wait for that result.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tiny_skia::Pixmap;
 
-/// Bytes of decoded pixels kept per drawing thread.
+/// Bytes of decoded pixels kept for the whole program.
 #[cfg(target_arch = "wasm32")]
 const BUDGET: usize = 256 << 20;
 #[cfg(not(target_arch = "wasm32"))]
-const BUDGET: usize = 1024 << 20;
+const BUDGET: usize = 512 << 20;
+
+/// A picture, or why there is none, once decoded.
+type Slot = Arc<OnceLock<Option<Arc<Pixmap>>>>;
+
+struct Entry {
+    slot: Slot,
+    /// Decoded bytes counted in the budget; 0 while being decoded.
+    size: usize,
+    last_use: u64,
+}
 
 #[derive(Default)]
 struct Cache {
-    /// Fingerprint to (picture, last use).
-    map: HashMap<u64, (Arc<Pixmap>, u64)>,
+    map: HashMap<u64, Entry>,
     bytes: usize,
     tick: u64,
 }
 
 impl Cache {
-    fn get(&mut self, key: u64) -> Option<Arc<Pixmap>> {
+    /// The slot of `key`, a new empty one when it has none.
+    fn slot(&mut self, key: u64) -> Slot {
         self.tick += 1;
         let tick = self.tick;
-        self.map.get_mut(&key).map(|e| {
-            e.1 = tick;
-            e.0.clone()
-        })
+        let e = self.map.entry(key).or_insert_with(|| Entry {
+            slot: Slot::default(),
+            size: 0,
+            last_use: tick,
+        });
+        e.last_use = tick;
+        e.slot.clone()
     }
 
-    /// Keep `img` under `key`, dropping the least recently used pictures
-    /// until the cache fits `budget`; a picture larger than half the
-    /// budget is not kept.
-    fn insert(&mut self, key: u64, img: Arc<Pixmap>, budget: usize) {
-        let size = img.data().len();
-        if size > budget / 2 {
+    /// Count the decoded picture of `slot` under `key`, dropping the least
+    /// recently used pictures until the cache fits `budget`; a picture
+    /// larger than half the budget is not kept.
+    fn decoded(&mut self, key: u64, slot: &Slot, budget: usize) {
+        let Some(e) = self.map.get_mut(&key) else {
+            return;
+        };
+        if !Arc::ptr_eq(&e.slot, slot) || e.size != 0 {
             return;
         }
-        self.tick += 1;
-        if let Some((old, _)) = self.map.insert(key, (img, self.tick)) {
-            self.bytes -= old.data().len();
+        let size = match slot.get() {
+            Some(Some(img)) => img.data().len(),
+            _ => return,
+        };
+        if size > budget / 2 {
+            self.map.remove(&key);
+            return;
         }
+        e.size = size;
         self.bytes += size;
         while self.bytes > budget {
-            let Some((&oldest, _)) = self.map.iter().min_by_key(|(_, (_, t))| *t) else {
+            let oldest = self
+                .map
+                .iter()
+                .filter(|(_, e)| e.size > 0)
+                .min_by_key(|(_, e)| e.last_use)
+                .map(|(&k, _)| k);
+            let Some(gone) = oldest.and_then(|k| self.map.remove(&k)) else {
                 break;
             };
-            if let Some((gone, _)) = self.map.remove(&oldest) {
-                self.bytes -= gone.data().len();
-            }
+            self.bytes -= gone.size;
         }
     }
 }
 
-thread_local! {
-    static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+fn cache() -> std::sync::MutexGuard<'static, Cache> {
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| Mutex::new(Cache::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// A fingerprint of `png`: its length and bytes taken from its start, its
@@ -81,13 +113,45 @@ fn fingerprint(png: &[u8]) -> u64 {
 
 /// The picture of `png`, decoded once and then kept.
 pub(crate) fn decode(png: &[u8]) -> Option<Arc<Pixmap>> {
+    decode_in(png, BUDGET)
+}
+
+fn decode_in(png: &[u8], budget: usize) -> Option<Arc<Pixmap>> {
     let key = fingerprint(png);
-    if let Some(hit) = CACHE.with(|c| c.borrow_mut().get(key)) {
-        return Some(hit);
+    let slot = cache().slot(key);
+    if let Some(done) = slot.get() {
+        return done.clone();
     }
-    let img = Arc::new(Pixmap::decode_png(png).ok()?);
-    CACHE.with(|c| c.borrow_mut().insert(key, img.clone(), BUDGET));
-    Some(img)
+    // Decoded outside the lock; a thread that asks meanwhile waits here.
+    let img = slot
+        .get_or_init(|| {
+            #[cfg(test)]
+            count_decode(key);
+            Pixmap::decode_png(png).ok().map(Arc::new)
+        })
+        .clone();
+    cache().decoded(key, &slot, budget);
+    img
+}
+
+#[cfg(test)]
+static DECODES: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn count_decode(key: u64) {
+    if let Ok(mut d) = DECODES.lock() {
+        *d.get_or_insert_with(HashMap::new).entry(key).or_default() += 1;
+    }
+}
+
+/// How often the picture of `png` was decoded, for tests.
+#[cfg(test)]
+pub(crate) fn decodes_of(png: &[u8]) -> usize {
+    DECODES
+        .lock()
+        .ok()
+        .and_then(|d| d.as_ref()?.get(&fingerprint(png)).copied())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -111,24 +175,55 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &other));
         assert_eq!(other.pixel(0, 0).map(|p| p.red()), Some(200));
         assert!(decode(b"not a png").is_none());
+        assert!(decode(b"not a png").is_none());
         assert_ne!(fingerprint(&a), fingerprint(&b));
         assert_ne!(fingerprint(&[]), fingerprint(&[0]));
+    }
+
+    /// Threads asking for one picture at once share a single decode.
+    #[test]
+    fn threads_share_one_decode() {
+        let a = png(64, 64, 77);
+        let all: Vec<Arc<Pixmap>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..8).map(|_| sc.spawn(|| decode(&a))).collect();
+            hs.into_iter()
+                .filter_map(|h| h.join().ok().flatten())
+                .collect()
+        });
+        assert_eq!(all.len(), 8);
+        assert_eq!(decodes_of(&a), 1);
+        assert!(all.iter().all(|p| Arc::ptr_eq(p, &all[0])));
     }
 
     #[test]
     fn the_oldest_pictures_go_past_the_budget() {
         let mut c = Cache::default();
-        let img = |shade| Arc::new(Pixmap::decode_png(&png(8, 8, shade)).expect("png"));
+        let put = |c: &mut Cache, key, shade| {
+            let slot = c.slot(key);
+            let img = Pixmap::decode_png(&png(8, 8, shade)).expect("png");
+            let _ = slot.set(Some(Arc::new(img)));
+            c.decoded(key, &slot, 600);
+        };
+        let has = |c: &mut Cache, key| c.map.get(&key).is_some_and(|e| e.size > 0);
         // 256 bytes each, a budget of 600: two fit.
-        c.insert(1, img(1), 600);
-        c.insert(2, img(2), 600);
-        assert!(c.get(1).is_some()); // 1 is now newer than 2
-        c.insert(3, img(3), 600);
-        assert!(c.get(2).is_none());
-        assert!(c.get(1).is_some() && c.get(3).is_some());
+        put(&mut c, 1, 1);
+        put(&mut c, 2, 2);
+        c.slot(1); // 1 is now newer than 2
+        put(&mut c, 3, 3);
+        assert!(!has(&mut c, 2));
+        assert!(has(&mut c, 1) && has(&mut c, 3));
+        assert_eq!(c.bytes, 512);
+        // Counted once however often it is reported.
+        let slot = c.slot(3);
+        c.decoded(3, &slot, 600);
         assert_eq!(c.bytes, 512);
         // Too large for the budget: not kept.
-        c.insert(4, img(4), 300);
-        assert!(c.get(4).is_none());
+        let slot = c.slot(4);
+        let _ = slot.set(Some(Arc::new(
+            Pixmap::decode_png(&png(16, 16, 4)).expect("png"),
+        )));
+        c.decoded(4, &slot, 600);
+        assert!(!c.map.contains_key(&4));
+        assert_eq!(c.bytes, 512);
     }
 }

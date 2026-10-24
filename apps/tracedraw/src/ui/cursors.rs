@@ -442,6 +442,12 @@ pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
         ctx.set_cursor_icon(icon);
         return;
     }
+    // On a software adapter a drawn pointer trails the real one by a slow
+    // frame: the system's nearest instead (#616).
+    if crate::ui::software_renderer() {
+        ctx.set_cursor_icon(system_icon(cursor));
+        return;
+    }
     ctx.set_cursor_icon(egui::CursorIcon::None);
     if let Some(p) = pos {
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -449,6 +455,34 @@ pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
             egui::Id::new("tool_cursor"),
         ));
         paint(&painter, cursor, p);
+    }
+}
+
+/// The system pointer nearest to a drawn one.
+pub fn system_icon(cursor: ToolCursor) -> egui::CursorIcon {
+    use egui::CursorIcon as C;
+    match cursor {
+        ToolCursor::System(icon) => icon,
+        ToolCursor::ZoomIn => C::ZoomIn,
+        ToolCursor::ZoomOut => C::ZoomOut,
+        ToolCursor::Hand { closed: true } => C::Grabbing,
+        ToolCursor::Hand { closed: false } => C::Grab,
+        ToolCursor::Rotate => C::AllScroll,
+        ToolCursor::Skew { horizontal: true } => C::ResizeHorizontal,
+        ToolCursor::Skew { horizontal: false } => C::ResizeVertical,
+        ToolCursor::DragMove { copy: true } => C::Copy,
+        ToolCursor::DragMove { copy: false } => C::Move,
+        ToolCursor::IBeam => C::Text,
+        ToolCursor::ShapeArrow(_) | ToolCursor::TargetArrow | ToolCursor::TableArrow { .. } => {
+            C::Default
+        }
+        ToolCursor::Pipette
+        | ToolCursor::Bucket
+        | ToolCursor::Badge(_)
+        | ToolCursor::CurveBadge(..)
+        | ToolCursor::Cross
+        | ToolCursor::PenNib(_)
+        | ToolCursor::Nib { .. } => C::Crosshair,
     }
 }
 
@@ -1015,6 +1049,35 @@ fn bucket(painter: &Painter, spot: Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a software adapter the drawn pointers give way to the system's
+    /// nearest (#616): the cross hair for the drawing tools, the I-beam
+    /// for text, the hands and magnifiers as the system has them.
+    #[test]
+    fn a_software_adapter_shows_the_system_pointers() {
+        use egui::CursorIcon as C;
+        assert_eq!(system_icon(ToolCursor::Cross), C::Crosshair);
+        assert_eq!(
+            system_icon(ToolCursor::Badge(Tool::Rectangle)),
+            C::Crosshair
+        );
+        assert_eq!(system_icon(ToolCursor::IBeam), C::Text);
+        assert_eq!(system_icon(ToolCursor::Hand { closed: true }), C::Grabbing);
+        assert_eq!(system_icon(ToolCursor::ZoomOut), C::ZoomOut);
+        assert_eq!(system_icon(ToolCursor::DragMove { copy: true }), C::Copy);
+        assert_eq!(system_icon(ToolCursor::System(C::Move)), C::Move);
+        // Nothing maps to a hidden pointer.
+        for c in [
+            ToolCursor::Pipette,
+            ToolCursor::Bucket,
+            ToolCursor::Rotate,
+            ToolCursor::Skew { horizontal: false },
+            ToolCursor::TargetArrow,
+            ToolCursor::TableArrow { down: true },
+        ] {
+            assert_ne!(system_icon(c), C::None);
+        }
+    }
 
     /// The cross hair (alone, with a tool's badge, with a nib) and the
     /// I-beam are drawn black on a white halo with the system pointer

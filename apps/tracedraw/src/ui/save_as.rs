@@ -69,8 +69,8 @@ pub struct SaveAsState {
 impl SaveAsState {
     /// Start in the drawing's folder (else the last one used, else the
     /// documents folder) with its name, its type (`.cdr` for a drawing
-    /// that came from or went to one), the newest version and its
-    /// properties.
+    /// that came from or went to one, or a new one when the options say
+    /// so), the version the options set and its properties.
     pub fn new(app: &App) -> Self {
         let doc = app.doc();
         let file = app.file.as_ref();
@@ -99,13 +99,21 @@ impl SaveAsState {
                     t.to_string()
                 }
             });
-        let cdr = file.is_some_and(|f| crate::app::is_cdr_path(f)) || app.cdr_version.is_some();
+        // A drawing without a file of its own starts at the type Options >
+        // Global > File Formats chooses for new drawings (#613).
+        let cdr = file.is_some_and(|f| crate::app::is_cdr_path(f))
+            || app.cdr_version.is_some()
+            || (file.is_none() && app.settings.formats.save_new_as_cdr);
         let mut st = SaveAsState {
             dir_text: dir.display().to_string(),
             dir: dir.clone(),
             name: String::new(),
             cdr,
-            version: tracedraw_cdr::write::NEWEST_VERSION,
+            // The version Options > Global > File Formats sets (#613).
+            version: app.settings.formats.cdr_version.clamp(
+                tracedraw_cdr::write::CHECKED_SINCE,
+                tracedraw_cdr::write::NEWEST_VERSION,
+            ),
             tdraw_version: TDRAW_FORMAT_VERSION,
             // The drawing's CMYK profile, else the one Colour Management
             // loaded (it goes into the file when the drawing has none).

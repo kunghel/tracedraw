@@ -19,8 +19,19 @@ name", or what `lp` complained about. The dialog starts on the printer
 printed to last when the system still has it, else on the default
 printer, else on the PDF viewer (`starting_printer`); the printer is
 remembered with the other print choices (Options > Global > Printing).
-On Windows and in the browser the list has no printers and the print
-goes through the PDF viewer.
+On Windows the printers are every printer Windows has, the ones
+installed on the computer and the network printers connected for the
+user alike: PowerShell lists `Win32_Printer` when the dialog opens
+(`WINDOWS_LIST`, `parse_windows_list`; the default one first, #614). A
+print on one of them draws each sheet at 300 dpi and hands the pictures
+to the printer through PowerShell's printing classes
+(`windows_print_script`), so no PDF program is needed: each sheet takes
+the printer's paper of its size when the printer has one (either way
+round, within 2 mm), a wide sheet turns the paper, and the sheet is
+drawn at its size from the paper's corner; the copies and their
+collation go to the printer, the drawing's name is the job title. In the
+browser the list has no printers and the print goes through the PDF
+viewer.
 
 ## Print dialog
 
@@ -171,6 +182,7 @@ With any mark on, a 12 mm margin (plus the bleed) surrounds the pages.
 ## Checks
 
 - `printers::tests::the_printer_list_is_read_from_lpstat`, `printers::tests::the_dialog_starts_on_the_remembered_printer_else_the_default`, `printers::tests::lp_is_told_the_printer_copies_and_title`
+- `printers::tests::the_windows_printer_list_holds_network_printers`, `printers::tests::the_windows_print_script_names_the_printer_copies_and_sheets`
 - `export::tests::page_lists_and_ranges_pick_pages`
 - `export::tests::print_colour_options_change_the_sheets_objects`
 - `export::tests::copies_repeat_sheets_collated_or_not_and_ps_gets_its_level`

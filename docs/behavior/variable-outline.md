@@ -54,6 +54,12 @@ length with width nodes.
   the nodes; corners get round joins, ends are butt.
 - With "Scale with object", the reach scales with the object like the
   width.
+- On screen the page is drawn in strips on several threads, each
+  leaving out the objects that cannot reach it. A band counts as
+  reaching as far as its widest node, however thin the outline's own
+  width, so no strip leaves part of it out (#626,
+  `tracedraw_render::band_tests::a_variable_outline_is_drawn_whole_across_the_strips`,
+  `tracedraw_render::culling_tests::objects_out_of_sight_are_skipped`).
 - The outline's colour, or its gradient, pattern or texture fill, paints
   the band. Convert Outline to Object (Ctrl+Shift+Q) gives the band as an
   object. SVG and PDF exports write the band as a filled path; `.cdr`

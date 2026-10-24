@@ -1961,6 +1961,9 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         if check(ui, "menu.view.printable_area", "", app.show_printable_area) {
             app.show_printable_area = !app.show_printable_area;
         }
+        if check(ui, "menu.view.mask_outside_page", "", app.mask_outside_page) {
+            app.mask_outside_page = !app.mask_outside_page;
+        }
     });
     sub(ui, "menu.view.grid", |ui| {
         if check(ui, "menu.view.document_grid", "", app.show_grid) {

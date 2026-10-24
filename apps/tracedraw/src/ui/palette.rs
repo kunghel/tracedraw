@@ -120,10 +120,18 @@ fn rgb_drawing(app: &App) -> bool {
         && app.doc().metadata.primary_color_mode == tracedraw_core::document::PrimaryColorMode::Rgb
 }
 
-/// `c` as an RGB colour, a spot ink or registration as it is.
+/// `c` as an RGB colour, a spot ink or registration as it is. A CMYK
+/// colour takes the plain RGB of its inks, not the press simulation, so
+/// the palette's black is 0 0 0, its red 255 0 0 and its tints the
+/// matching RGB tints (#620).
 fn in_rgb(c: Color) -> Color {
     match c {
         Color::Spot { .. } | Color::Registration => c,
+        Color::Cmyk { c, m, y, k } => {
+            let ink = |v: f32| (1.0 - v.clamp(0.0, 1.0)) * (1.0 - k.clamp(0.0, 1.0));
+            let byte = |v: f32| (ink(v) * 255.0).round() as u8;
+            Color::rgb8(byte(c), byte(m), byte(y))
+        }
         _ => c.convert_to("RGB"),
     }
 }
@@ -168,6 +176,20 @@ fn scroll_of(app: &mut App, which: Row) -> &mut usize {
     }
 }
 
+/// How thick the strip of `which` is: one row of swatches, and for the
+/// default palette one more swatch for each further row (#610).
+pub fn thickness(app: &App, which: Row) -> f32 {
+    ROW_H + (lines_of(app, which) - 1) as f32 * STRIDE
+}
+
+/// Rows of swatches in the strip of `which` (the document palette has one).
+fn lines_of(app: &App, which: Row) -> usize {
+    match which {
+        Row::Main => app.settings.palette.rows(),
+        Row::Document => 1,
+    }
+}
+
 /// How many swatches fit in a row of this width (the No Color well
 /// counts as one).
 pub fn visible_slots(width: f32) -> usize {
@@ -181,10 +203,12 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         ui.disable();
         ui.multiply_opacity(0.4);
     }
+    let lines = lines_of(app, which);
+    let thick = thickness(app, which);
     let size = if vertical {
-        vec2(ROW_H, ui.available_height())
+        vec2(thick, ui.available_height())
     } else {
-        vec2(ui.available_width(), ROW_H)
+        vec2(ui.available_width(), thick)
     };
     let (rect, bg) = ui.allocate_exact_size(size, Sense::click());
     if which == Row::Document {
@@ -225,16 +249,18 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         app,
         ui,
         crate::ui::bars::Bar::Palette,
-        ax.rect(0.0, 0.0, 11.0, ROW_H),
+        ax.rect(0.0, 0.0, 11.0, thick),
         which as u8,
     );
 
     let colors = colors_of(app, which);
     let no_color = app.settings.palette.show_no_color;
     let count = colors.len() + usize::from(no_color);
-    let slots = visible_slots(len);
-    let max_scroll = count.saturating_sub(slots);
-    let scroll = (*scroll_of(app, which)).min(max_scroll);
+    // Several rows fill column by column and scroll a column at a time.
+    let cols = visible_slots(len);
+    let slots = cols * lines;
+    let max_scroll = count.div_ceil(lines).saturating_sub(cols) * lines;
+    let scroll = (*scroll_of(app, which)).min(max_scroll) / lines * lines;
     *scroll_of(app, which) = scroll;
 
     // The palette menu button.
@@ -314,11 +340,11 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     // Scroll arrows.
     let left = ax.rect(58.0, EDGE, 16.0, 22.0);
     if chevron(app, ui, left, -1, scroll > 0, which, vertical) {
-        *scroll_of(app, which) = scroll.saturating_sub(1);
+        *scroll_of(app, which) = scroll.saturating_sub(lines);
     }
     let right = ax.rect(len - 49.0, EDGE, 16.0, 22.0);
     if chevron(app, ui, right, 1, scroll < max_scroll, which, vertical) {
-        *scroll_of(app, which) = (scroll + 1).min(max_scroll);
+        *scroll_of(app, which) = (scroll + lines).min(max_scroll);
     }
     let expand = ax.rect(len - 29.0, EDGE, 18.0, 22.0);
     let expand_resp = ui
@@ -371,10 +397,19 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         return;
     }
     let mut px = Pixels::default();
-    px.rect(
-        ax.rect(LEAD, EDGE, shown as f32 * STRIDE + 1.0, 22.0),
-        FRAME,
-    );
+    // One frame per column, as long as the swatches it holds.
+    for col in 0..shown.div_ceil(lines) {
+        let n = lines.min(shown - col * lines);
+        px.rect(
+            ax.rect(
+                LEAD + col as f32 * STRIDE,
+                EDGE,
+                STRIDE + 1.0,
+                n as f32 * STRIDE + 1.0,
+            ),
+            FRAME,
+        );
+    }
     px.paint(&painter);
     let notch: f32 = if ui.rect_contains_pointer(rect) {
         ui.input(|i| {
@@ -397,15 +432,15 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         0.0
     };
     if notch < -0.5 {
-        *scroll_of(app, which) = (scroll + 1).min(max_scroll);
+        *scroll_of(app, which) = (scroll + lines).min(max_scroll);
     } else if notch > 0.5 {
-        *scroll_of(app, which) = scroll.saturating_sub(1);
+        *scroll_of(app, which) = scroll.saturating_sub(lines);
     }
     for slot in 0..shown {
         let index = scroll + slot;
         let cell = ax.rect(
-            LEAD + 1.0 + slot as f32 * STRIDE,
-            EDGE + 1.0,
+            LEAD + 1.0 + (slot / lines) as f32 * STRIDE,
+            EDGE + 1.0 + (slot % lines) as f32 * STRIDE,
             SWATCH,
             SWATCH,
         );
@@ -1199,6 +1234,84 @@ mod tests {
         assert_ne!(fill(&app), before);
     }
 
+    /// With two rows the default palette is twice as thick and fills
+    /// column by column: under the No Color well sits Black, then the next
+    /// column starts with 90% Black; scrolling moves a column (#610).
+    #[test]
+    fn the_default_palette_can_show_several_rows() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let height = std::cell::Cell::new(0.0);
+        let click = |app: &mut App, p: egui::Pos2| {
+            clock.set(clock.get() + 1.0);
+            for (i, pressed) in [(0, false), (1, true), (2, false), (3, false)] {
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if i == 1 || i == 2 {
+                    events.push(egui::Event::PointerButton {
+                        pos: p,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 100.0),
+                    )),
+                    events,
+                    time: Some({
+                        clock.set(clock.get() + 0.05);
+                        clock.get()
+                    }),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    let top = ui.cursor().top();
+                    palette_row(app, ui);
+                    height.set(ui.cursor().top() - top);
+                });
+                out.textures_delta.clear();
+            }
+        };
+        let fill = |app: &App| app.doc().find_shape(id).expect("shape").fill.clone();
+        let before = fill(&app);
+        // The first column, one swatch down.
+        let x = LEAD + 1.0 + SWATCH / 2.0;
+        let second_line = egui::pos2(x, 3.0 + STRIDE + SWATCH / 2.0);
+        click(&mut app, second_line);
+        assert_eq!(fill(&app), before, "one row: nothing there");
+        assert_eq!(thickness(&app, Row::Main), ROW_H);
+        app.settings.palette.rows = 2;
+        assert_eq!(thickness(&app, Row::Main), ROW_H + STRIDE);
+        assert_eq!(thickness(&app, Row::Document), ROW_H);
+        click(&mut app, second_line);
+        let solid = |app: &App| match fill(app) {
+            Fill::Solid(c) => c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
+        assert!(height.get() >= ROW_H + STRIDE, "{}", height.get());
+        click(&mut app, egui::pos2(x + STRIDE, 3.0 + SWATCH / 2.0));
+        assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 90.0));
+        // The scroll arrow moves a whole column.
+        click(&mut app, egui::pos2(800.0 - 49.0 + 8.0, 12.0));
+        assert_eq!(app.palette_scroll, 2);
+        // More than three rows is not kept.
+        app.settings.palette.rows = 9;
+        assert_eq!(thickness(&app, Row::Main), ROW_H + 2.0 * STRIDE);
+    }
+
     /// An RGB drawing's palette holds the palette's colours as RGB (named
     /// as before); a CMYK drawing's keeps them CMYK (#483).
     #[test]
@@ -1217,8 +1330,37 @@ mod tests {
         assert_eq!(rgb.len(), 2);
         assert!(rgb.iter().all(|(_, c)| c.model_name() == "RGB"), "{rgb:?}");
         assert_eq!(rgb[0].0, "Cyan");
-        assert_eq!(rgb[0].1.to_rgb8(), cmyk[0].1.to_rgb8());
+        assert_eq!(rgb[0].1, Color::rgb8(0, 255, 255));
         assert_eq!(rgb[1].1, Color::rgb8(10, 20, 30));
+    }
+
+    /// The default palette in an RGB drawing holds clean RGB values: black
+    /// 0 0 0, white 255 255 255, the primaries at full, the tints as RGB
+    /// tints (#620).
+    #[test]
+    fn the_default_palette_of_an_rgb_drawing_is_clean_rgb() {
+        let mut app = App::headless();
+        let mut metadata = app.doc().metadata.clone();
+        metadata.primary_color_mode = tracedraw_core::document::PrimaryColorMode::Rgb;
+        app.run(tracedraw_core::Command::SetMetadata { metadata });
+        let rgb = colors_of(&app, Row::Main);
+        let of = |name: &str| {
+            rgb.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, c)| *c)
+                .expect(name)
+        };
+        assert_eq!(rgb.len(), 99);
+        assert_eq!(of("Black"), Color::rgb8(0, 0, 0));
+        assert_eq!(of("White"), Color::rgb8(255, 255, 255));
+        assert_eq!(of("50% Black"), Color::rgb8(128, 128, 128));
+        assert_eq!(of("Red"), Color::rgb8(255, 0, 0));
+        assert_eq!(of("Green"), Color::rgb8(0, 255, 0));
+        assert_eq!(of("Blue"), Color::rgb8(0, 0, 255));
+        assert_eq!(of("Yellow"), Color::rgb8(255, 255, 0));
+        assert_eq!(of("Magenta"), Color::rgb8(255, 0, 255));
+        assert_eq!(of("Orange"), Color::rgb8(255, 102, 0));
+        assert!(rgb.iter().all(|(_, c)| c.model_name() == "RGB"));
     }
 
     #[test]

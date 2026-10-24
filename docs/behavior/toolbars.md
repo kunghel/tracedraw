@@ -150,7 +150,11 @@ clicked into (the one that took the focus from it) and then none
   complex star's sharpness counts steps (1 up to what its points allow).
 - Then the outline: width (Hairline, None, preset widths in the ruler
   unit), line style, start and end arrowheads; then To Front, To Back and
-  Convert to Curves.
+  Convert to Curves. The mouse wheel over the closed width box steps the
+  selection's outline to the next width of the list up (wheel up) or
+  down, one undo step a notch, stopping at None and at the widest; a
+  width between two of the list goes to the one above or below. With
+  nothing selected the wheel does nothing (#663).
 - Zoom and Pan tools: the zoom box, Zoom In, Zoom Out, Zoom to Selected,
   to All Objects, to Page, to Page Width, to Page Height.
 - Shape tool on curves: the Selection mode list, then picture buttons in
@@ -271,6 +275,8 @@ and the status bar move (`ui/bars.rs`).
 - `ui::propbar::tests::the_object_origin_picks_corners_edges_and_centre`
 - `ui::propbar::tests::page_size_changes_one_page_or_all_in_one_step`
 - `ui::propbar::tests::outline_widths_read_in_the_ruler_unit`
+- `ui::propbar::tests::the_wheel_steps_through_the_outline_widths`,
+  `ui::propbar::tests::the_wheel_over_the_outline_width_changes_it` (#663)
 - `ui::propbar::tests::corner_edits_change_the_selection_in_one_step_or_the_defaults`
 - `ui::mod::tests::window_draws_with_every_docker_tool_and_selection`
 - `ui::toolbox::tests::buttons_follow_the_sizes_and_the_captions`

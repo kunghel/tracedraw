@@ -2,16 +2,18 @@
 //! with wgpu on the graphics card chosen there (the fastest one when none
 //! is), or with the system's software adapter when it is off. A start
 //! whose renderer cannot open the window starts TraceDraw again with the
-//! next one, hardware, then software, then OpenGL, so a virtual machine
-//! without a usable graphics card still opens (#439). See
+//! next one, hardware, then OpenGL, then software, so a virtual machine
+//! without a usable graphics card still opens (#439), and a computer
+//! whose card only OpenGL can drive is not drawn on the CPU (#616). See
 //! docs/behavior/about-and-startup.md.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// How a start draws the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// wgpu on a graphics card (a software adapter when there is none).
+    /// wgpu on a graphics card, never on a software adapter (#616).
     Hardware,
     /// wgpu on the software adapter (WARP on Windows, a CPU Vulkan
     /// driver elsewhere).
@@ -34,7 +36,6 @@ impl Mode {
             .find_map(|a| a.strip_prefix(ARG).and_then(Mode::from_name))
     }
 
-    /// The renderer to try when this one cannot open the window.
     /// How the settings remember it.
     pub fn name(self) -> &'static str {
         match self {
@@ -55,26 +56,106 @@ impl Mode {
     /// last time when the first choice did not, else the graphics card or,
     /// with hardware acceleration off, the software adapter.
     pub fn for_start(args: &[String], s: &crate::settings::Settings) -> Mode {
-        let first = if s.hardware_acceleration {
-            Mode::Hardware
-        } else {
-            Mode::Software
-        };
+        let first = Mode::first(s);
         Mode::from_args(args)
             .or_else(|| Mode::from_name(&s.working_renderer).filter(|m| *m != first))
             .unwrap_or(first)
     }
 
-    pub fn next(self) -> Option<Mode> {
-        match self {
-            Mode::Hardware => Some(Mode::Software),
-            Mode::Software => Some(Mode::Gl),
-            Mode::Gl => None,
+    /// The renderer Options asks for: the graphics card, or the software
+    /// adapter with hardware acceleration off.
+    pub fn first(s: &crate::settings::Settings) -> Mode {
+        if s.hardware_acceleration {
+            Mode::Hardware
+        } else {
+            Mode::Software
         }
+    }
+
+    /// The renderers tried in turn when `first` is the choice: OpenGL
+    /// before the software adapter, which draws every frame on the CPU,
+    /// and the software adapter last because it always opens (#616).
+    pub fn chain(first: Mode) -> &'static [Mode] {
+        match first {
+            Mode::Hardware => &[Mode::Hardware, Mode::Gl, Mode::Software],
+            Mode::Software => &[Mode::Software, Mode::Gl],
+            Mode::Gl => &[Mode::Gl, Mode::Software],
+        }
+    }
+
+    /// The renderer to try when this one cannot open the window.
+    pub fn next(self, first: Mode) -> Option<Mode> {
+        let chain = Mode::chain(first);
+        let at = chain.iter().position(|m| *m == self)?;
+        chain.get(at + 1).copied()
     }
 }
 
+/// What the adapter choice knows of one adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub name: String,
+    pub kind: eframe::wgpu::DeviceType,
+    /// Whether it can draw on the window.
+    pub surface: bool,
+}
+
+/// The adapter a start in `mode` draws with (an index into `list`), and
+/// for each adapter why it was taken or left, for the log. `wanted` names
+/// the graphics card chosen in Options (empty: the fastest). Hardware
+/// mode never takes a software adapter: the start fails instead and the
+/// next renderer is tried (#616).
+pub fn choose(mode: Mode, wanted: &str, list: &[Candidate]) -> (Option<usize>, Vec<&'static str>) {
+    let software = |c: &Candidate| c.kind == eframe::wgpu::DeviceType::Cpu;
+    let fits = |c: &Candidate| {
+        c.surface
+            && match mode {
+                Mode::Software => software(c),
+                _ => !software(c),
+            }
+    };
+    let named = (!wanted.is_empty())
+        .then(|| list.iter().position(|c| fits(c) && c.name == wanted))
+        .flatten();
+    let pick = named.or_else(|| {
+        list.iter()
+            .enumerate()
+            .filter(|(_, c)| fits(c))
+            .min_by_key(|(_, c)| rank(c.kind))
+            .map(|(i, _)| i)
+    });
+    let notes = list
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if !c.surface {
+                "rejected: cannot draw on the window"
+            } else if mode == Mode::Software && !software(c) {
+                "rejected: not a software adapter (hardware acceleration is off)"
+            } else if mode != Mode::Software && software(c) {
+                "rejected: software adapter (hardware acceleration wants a graphics card)"
+            } else if Some(i) == pick && named.is_some() {
+                "picked: the card chosen in Options"
+            } else if Some(i) == pick {
+                "picked: the fastest usable"
+            } else {
+                "usable, not picked"
+            }
+        })
+        .collect();
+    (pick, notes)
+}
+
 static IN_USE: OnceLock<String> = OnceLock::new();
+
+/// Whether the window of this run opened (the app is being built): a
+/// panic before that is a renderer that failed to start, after it one of
+/// the app.
+static OPENED: AtomicBool = AtomicBool::new(false);
+
+pub fn window_opened() -> bool {
+    OPENED.load(Ordering::SeqCst)
+}
 
 /// What draws the window in this run, as Options shows it.
 pub fn in_use() -> Option<&'static str> {
@@ -84,12 +165,10 @@ pub fn in_use() -> Option<&'static str> {
 /// Note what the window was opened with; a renderer other than the
 /// first choice is remembered, so the next start goes straight to it.
 pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
+    OPENED.store(true, Ordering::SeqCst);
+    crate::startup_log::quiet_panics(false);
     let mut s = crate::settings::Settings::load();
-    let first = if s.hardware_acceleration {
-        Mode::Hardware
-    } else {
-        Mode::Software
-    };
+    let first = Mode::first(&s);
     let remember = if mode == first { "" } else { mode.name() };
     if s.working_renderer != remember {
         s.working_renderer = remember.to_string();
@@ -102,6 +181,19 @@ pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
         }
         None => "OpenGL".to_string(),
     };
+    if let Some(gl) = cc.gl.as_ref() {
+        use eframe::glow::HasContext;
+        // SAFETY: plain queries on the current context eframe just made.
+        let [vendor, renderer, version, glsl] = [
+            eframe::glow::VENDOR,
+            eframe::glow::RENDERER,
+            eframe::glow::VERSION,
+            eframe::glow::SHADING_LANGUAGE_VERSION,
+        ]
+        .map(|p| unsafe { gl.get_parameter_string(p) });
+        log::info!("OpenGL: {vendor}, {renderer}, version {version}, GLSL {glsl}");
+    }
+    log::info!("the window opened with {mode:?}: {what}");
     let _ = IN_USE.set(what);
 }
 
@@ -149,6 +241,179 @@ fn rank(t: eframe::wgpu::DeviceType) -> u8 {
     }
 }
 
+/// Whether a software adapter draws the window of this run (#616): every
+/// frame is then rasterized on the CPU, so the window paces its frames,
+/// casts no shadows and shows the system's pointers.
+static SOFTWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The software adapter's name, until the status bar has said it once.
+static SOFTWARE_NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn software() -> bool {
+    SOFTWARE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The name of the software adapter drawing the window, once: the first
+/// call after the window opened on one, then never again.
+pub fn take_software_note() -> Option<String> {
+    if !software() {
+        return None;
+    }
+    SOFTWARE_NOTE.lock().ok().and_then(|mut n| n.take())
+}
+
+/// Whether an adapter or OpenGL renderer `name` rasterizes on the CPU:
+/// WARP, the GDI OpenGL 1.1 of a Windows without a card driver, Mesa's
+/// llvmpipe, softpipe and lavapipe, SwiftShader.
+pub fn is_software_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [
+        "basic render",
+        "gdi generic",
+        "llvmpipe",
+        "softpipe",
+        "lavapipe",
+        "swiftshader",
+    ]
+    .iter()
+    .any(|s| n.contains(s))
+}
+
+/// Note whether the window opened on a software adapter.
+fn note_software(cc: &eframe::CreationContext<'_>) {
+    let found = if let Some(rs) = cc.wgpu_render_state.as_ref() {
+        let i = rs.adapter.get_info();
+        (i.device_type == eframe::wgpu::DeviceType::Cpu || is_software_name(&i.name))
+            .then_some(i.name)
+    } else if let Some(gl) = cc.gl.as_ref() {
+        use eframe::glow::HasContext;
+        // SAFETY: a plain query on the current context eframe just made.
+        let name = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
+        is_software_name(&name).then_some(name)
+    } else {
+        None
+    };
+    if let Some(name) = found {
+        log::warn!("a software adapter draws the window ({name}): frames paced to {FRAME_CAP} a second, no shadows, system pointers");
+        SOFTWARE.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut n) = SOFTWARE_NOTE.lock() {
+            *n = Some(name);
+        }
+    }
+}
+
+/// Frames a second on a software adapter (#616).
+pub const FRAME_CAP: u32 = 30;
+
+/// How long a frame that begins at `now` waits so that frames begin at
+/// least `gap` apart, the last one having begun at `last`.
+pub fn frame_wait(
+    last: Option<web_time::Instant>,
+    now: web_time::Instant,
+    gap: std::time::Duration,
+) -> std::time::Duration {
+    last.map(|l| gap.saturating_sub(now.saturating_duration_since(l)))
+        .unwrap_or_default()
+}
+
+/// Keeps a software adapter to [`FRAME_CAP`] frames a second: every
+/// pointer move is a frame, and each costs a full-window rasterization on
+/// the CPU, so without a cap the window takes every core and input queues
+/// up. The pointer moves in between are merged into the next frame.
+#[derive(Default)]
+pub struct Pacer {
+    last: Option<web_time::Instant>,
+}
+
+impl Pacer {
+    /// The pacer of a window just opened, noting whether a software
+    /// adapter draws it.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        note_software(cc);
+        Pacer::default()
+    }
+
+    /// At the start of a frame: wait as long as the cap asks (never on a
+    /// graphics card).
+    pub fn pace(&mut self) {
+        if !software() {
+            return;
+        }
+        let gap = std::time::Duration::from_secs(1) / FRAME_CAP;
+        let wait = frame_wait(self.last, web_time::Instant::now(), gap);
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
+        self.last = Some(web_time::Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod software_tests {
+    use super::*;
+
+    /// The renderers that draw on the CPU are known by name, whatever
+    /// the case (#616).
+    #[test]
+    fn software_renderers_are_recognised() {
+        for n in [
+            "Microsoft Basic Render Driver",
+            "GDI Generic",
+            "llvmpipe (LLVM 15.0.7, 256 bits)",
+            "softpipe",
+            "Google SwiftShader",
+            "lavapipe",
+        ] {
+            assert!(is_software_name(n), "{n}");
+        }
+        for n in [
+            "Intel(R) HD Graphics 4000",
+            "NVIDIA GeForce GT 730",
+            "AMD Radeon HD 6450",
+        ] {
+            assert!(!is_software_name(n), "{n}");
+        }
+    }
+
+    /// Frames begin at least the gap apart: one that comes sooner waits
+    /// the rest, a later one waits nothing (#616).
+    #[test]
+    fn frames_are_paced_to_the_cap() {
+        let gap = std::time::Duration::from_secs(1) / FRAME_CAP;
+        let t0 = web_time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(frame_wait(None, t0, gap), std::time::Duration::ZERO);
+        assert_eq!(frame_wait(Some(t0), t0, gap), gap);
+        assert_eq!(frame_wait(Some(t0), t0 + ms(10), gap), gap - ms(10));
+        assert_eq!(
+            frame_wait(Some(t0), t0 + gap, gap),
+            std::time::Duration::ZERO
+        );
+        assert_eq!(
+            frame_wait(Some(t0), t0 + ms(500), gap),
+            std::time::Duration::ZERO
+        );
+        // A clock that went back waits at most one gap.
+        assert_eq!(frame_wait(Some(t0 + ms(5)), t0, gap), gap);
+        // The cap holds over a run of frames that come at once: 30
+        // frames a second take at least a second.
+        let mut last = None;
+        let mut now = t0;
+        for _ in 0..FRAME_CAP {
+            now += frame_wait(last, now, gap);
+            last = Some(now);
+        }
+        assert!(now - t0 >= gap * (FRAME_CAP - 1));
+        // A graphics card is never paced.
+        assert!(!software());
+        let before = web_time::Instant::now();
+        let mut p = Pacer::default();
+        p.pace();
+        p.pace();
+        assert!(before.elapsed() < gap);
+    }
+}
+
 /// The renderer and the wgpu set-up of a start in `mode`; `wanted` names
 /// the graphics card chosen (empty: the fastest).
 pub fn options(
@@ -162,26 +427,42 @@ pub fn options(
     let wanted = wanted.to_string();
     let mut setup = WgpuSetupCreateNew::without_display_handle();
     setup.native_adapter_selector = Some(Arc::new(move |list, surface| {
-        let usable: Vec<&eframe::wgpu::Adapter> = list
+        let candidates: Vec<Candidate> = list
             .iter()
-            .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+            .map(|a| {
+                let i = a.get_info();
+                Candidate {
+                    name: i.name,
+                    kind: i.device_type,
+                    surface: surface.is_none_or(|s| a.is_surface_supported(s)),
+                }
+            })
             .collect();
-        let pick = |want: &dyn Fn(&eframe::wgpu::AdapterInfo) -> bool| {
-            usable
-                .iter()
-                .filter(|a| want(&a.get_info()))
-                .min_by_key(|a| rank(a.get_info().device_type))
-                .map(|a| (*a).clone())
-        };
-        let software =
-            |i: &eframe::wgpu::AdapterInfo| i.device_type == eframe::wgpu::DeviceType::Cpu;
-        let found = match mode {
-            Mode::Software => pick(&software),
-            _ => pick(&|i| !wanted.is_empty() && i.name == wanted)
-                .or_else(|| pick(&|i| !software(i)))
-                .or_else(|| pick(&software)),
-        };
-        found.ok_or_else(|| "no graphics adapter can draw the window".to_string())
+        let (pick, notes) = choose(mode, &wanted, &candidates);
+        log::info!("{} graphics adapter(s) for {mode:?}:", list.len());
+        for (a, note) in list.iter().zip(&notes) {
+            let i = a.get_info();
+            log::info!(
+                "  {} ({:?}, {:?}, {:04x}:{:04x}, driver {} {}): {note}",
+                i.name,
+                i.backend,
+                i.device_type,
+                i.vendor,
+                i.device,
+                i.driver,
+                i.driver_info
+            );
+        }
+        match pick.and_then(|i| list.get(i)) {
+            Some(a) => Ok(a.clone()),
+            None if mode == Mode::Software => {
+                Err("no software adapter can draw the window".to_string())
+            }
+            None => Err(
+                "no graphics card can draw the window (a software adapter is left to the last renderer)"
+                    .to_string(),
+            ),
+        }
     }));
     let config = WgpuConfiguration {
         // One frame queued, not two: what is drawn under the pointer (a
@@ -194,13 +475,9 @@ pub fn options(
     (eframe::Renderer::Wgpu, config)
 }
 
-/// Run TraceDraw again with the renderer after `mode`, the other
-/// arguments kept, until it ends; false when there is none left or it did
-/// not start.
-pub fn restart_with_next(mode: Mode, args: &[String]) -> bool {
-    let Some(next) = mode.next() else {
-        return false;
-    };
+/// Run TraceDraw again with `next`, the other arguments kept, until it
+/// ends; false when it did not start.
+pub fn restart_with(next: Mode, args: &[String]) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
@@ -223,14 +500,22 @@ mod tests {
         assert_eq!(Mode::from_args(&args), None);
         let mut m = Mode::Hardware;
         let mut seen = vec![m];
-        while let Some(n) = m.next() {
+        while let Some(n) = m.next(Mode::Hardware) {
             let mut with = args.clone();
             with.push(n.arg());
             assert_eq!(Mode::from_args(&with), Some(n));
             seen.push(n);
             m = n;
         }
-        assert_eq!(seen, vec![Mode::Hardware, Mode::Software, Mode::Gl]);
+        // OpenGL before the software adapter, which draws on the CPU and
+        // always opens, so it comes last (#616).
+        assert_eq!(seen, vec![Mode::Hardware, Mode::Gl, Mode::Software]);
+        // Hardware acceleration off: the software adapter, then OpenGL.
+        assert_eq!(Mode::Software.next(Mode::Software), Some(Mode::Gl));
+        assert_eq!(Mode::Gl.next(Mode::Software), None);
+        // Remembered OpenGL that fails falls to the software adapter.
+        assert_eq!(Mode::Gl.next(Mode::Gl), Some(Mode::Software));
+        assert_eq!(Mode::Software.next(Mode::Gl), None);
         // The renderer that opened the window last time, unless it is the
         // first choice anyway; hardware acceleration off starts in software.
         let mut s = crate::settings::Settings::default();
@@ -243,5 +528,52 @@ mod tests {
         assert_eq!(Mode::for_start(&[Mode::Gl.arg()], &s), Mode::Gl);
         assert_eq!(options(Mode::Gl, "").0, eframe::Renderer::Glow);
         assert_eq!(options(Mode::Hardware, "").0, eframe::Renderer::Wgpu);
+    }
+
+    fn adapter(name: &str, kind: eframe::wgpu::DeviceType, surface: bool) -> Candidate {
+        Candidate {
+            name: name.into(),
+            kind,
+            surface,
+        }
+    }
+
+    /// Hardware mode takes the card named in Options, else the fastest
+    /// card, and never the software adapter, which only a start with
+    /// hardware acceleration off (or the last renderer) uses (#616).
+    #[test]
+    fn hardware_mode_never_draws_on_the_software_adapter() {
+        use eframe::wgpu::DeviceType::*;
+        let warp = adapter("Microsoft Basic Render Driver", Cpu, true);
+        // Only the software adapter: hardware mode fails, so the start
+        // goes on to OpenGL.
+        let only = [warp.clone()];
+        let (pick, notes) = choose(Mode::Hardware, "", &only);
+        assert_eq!(pick, None);
+        assert!(notes[0].starts_with("rejected: software adapter"));
+        assert_eq!(choose(Mode::Software, "", &only).0, Some(0));
+        let list = [
+            warp.clone(),
+            adapter("Built-in", IntegratedGpu, true),
+            adapter("Card", DiscreteGpu, true),
+            adapter("Elsewhere", DiscreteGpu, false),
+        ];
+        let (pick, notes) = choose(Mode::Hardware, "", &list);
+        assert_eq!(pick, Some(2));
+        assert_eq!(notes[2], "picked: the fastest usable");
+        assert_eq!(notes[1], "usable, not picked");
+        assert_eq!(notes[3], "rejected: cannot draw on the window");
+        let (pick, notes) = choose(Mode::Hardware, "Built-in", &list);
+        assert_eq!(pick, Some(1));
+        assert_eq!(notes[1], "picked: the card chosen in Options");
+        // A chosen card that is gone or cannot draw: the fastest.
+        assert_eq!(choose(Mode::Hardware, "Elsewhere", &list).0, Some(2));
+        // Naming the software adapter does not let hardware mode use it.
+        let named = choose(Mode::Hardware, "Microsoft Basic Render Driver", &only);
+        assert_eq!(named.0, None);
+        let (pick, notes) = choose(Mode::Software, "", &list);
+        assert_eq!(pick, Some(0));
+        assert!(notes[2].starts_with("rejected: not a software adapter"));
+        assert_eq!(choose(Mode::Hardware, "", &[]).0, None);
     }
 }

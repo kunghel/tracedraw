@@ -191,9 +191,34 @@ impl App {
             self.status = tr("merge.place_inside_none");
             return;
         }
-        let picture = (!d.placeholder.trim().is_empty())
+        let placeholder = (!d.placeholder.trim().is_empty())
             .then(|| crate::print_merge::picture(&d.placeholder, None))
             .flatten();
+        // With On every page and no placeholder picture, the pictures of
+        // the pictures folder in name order, one per page from the
+        // drawing's first (#618).
+        let folder: Vec<std::path::PathBuf> = match (&placeholder, d.all_pages) {
+            (None, true) => self
+                .merge_state
+                .as_ref()
+                .and_then(|st| st.pictures.as_deref())
+                .map(crate::print_merge::folder_pictures)
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let picture_of_page = |k: usize| match &placeholder {
+            Some(p) => Some(p.clone()),
+            None => folder
+                .get(k)
+                .and_then(|f| crate::print_merge::picture_in(&f.display().to_string(), &[])),
+        };
+        let current = self
+            .doc()
+            .pages
+            .iter()
+            .position(|p| p.id == self.page)
+            .unwrap_or(0);
+        let picture = picture_of_page(current);
         let layer = self.active_layer();
         let mut cmds = Vec::new();
         for s in &frames {
@@ -243,10 +268,11 @@ impl App {
                 });
             }
         }
-        // The same picture in the same place on the other pages: in the
-        // matching shape there, else in a copy of the frame (#598).
-        if let (true, Some(p)) = (d.all_pages, &picture) {
-            cmds.extend(self.frames_on_other_pages(&frames, &field, p, &d));
+        // The same picture (or the page's own from the folder) in the
+        // same place on the other pages: in the matching shape there, else
+        // in a copy of the frame (#598).
+        if d.all_pages {
+            cmds.extend(self.frames_on_other_pages(&frames, &field, &picture_of_page, &d));
         }
         let ids: Vec<ShapeId> = frames.iter().map(|s| s.id).collect();
         match self.engine.run_batch("Place Inside Frame", &cmds) {
@@ -260,22 +286,25 @@ impl App {
 
     /// Place Inside Frame on every other page (#598): for each frame on
     /// the page, the shape of the same kind and place on another page
-    /// takes the field and the picture; a page without one gets a copy of
-    /// the frame with the picture inside.
+    /// takes the field and the picture `pictures` gives for that page (by
+    /// its index in the drawing); a page without one gets a copy of the
+    /// frame with the picture inside. Pages without a picture are left
+    /// as they are.
     fn frames_on_other_pages(
         &mut self,
         frames: &[Shape],
         field: &str,
-        p: &crate::print_merge::Picture,
+        pictures: &dyn Fn(usize) -> Option<crate::print_merge::Picture>,
         d: &MergeDocker,
     ) -> Vec<Command> {
         let current = self.page;
-        let pages: Vec<(Option<tracedraw_core::LayerId>, Vec<Shape>)> = self
+        let pages: Vec<(usize, Option<tracedraw_core::LayerId>, Vec<Shape>)> = self
             .doc()
             .pages
             .iter()
-            .filter(|pg| pg.id != current)
-            .map(|pg| {
+            .enumerate()
+            .filter(|(_, pg)| pg.id != current)
+            .map(|(k, pg)| {
                 let layer = pg
                     .layers
                     .iter()
@@ -286,7 +315,7 @@ impl App {
                     .iter()
                     .flat_map(|l| l.shapes.iter().cloned())
                     .collect();
-                (layer, shapes)
+                (k, layer, shapes)
             })
             .collect();
         let same_place = |a: &Shape, b: &Shape| {
@@ -303,8 +332,8 @@ impl App {
             .filter(|s| self.doc().top_level_of(s.id) == Some(s.id))
             .collect();
         let mut cmds = Vec::new();
-        for (layer, shapes) in pages {
-            let Some(layer) = layer else {
+        for (k, layer, shapes) in pages {
+            let (Some(layer), Some(p)) = (layer, pictures(k)) else {
                 continue;
             };
             for s in on_page.iter().copied() {
@@ -444,11 +473,26 @@ impl App {
     }
 
     /// Create Merged Document: the current page filled once per record,
-    /// in a new drawing; `print` then opens Print for it.
+    /// in a new drawing, or with On every page the drawing's own pages
+    /// filled one record each; `print` then opens Print for it.
     pub fn create_merged_document(&mut self, print: bool) {
         let Some(st) = self.merge_state.clone() else {
             return;
         };
+        // With On every page the records go onto the drawing's own pages,
+        // one per page, rather than into a new drawing (#618).
+        if self.merge_docker.all_pages {
+            match crate::print_merge::merge_onto_pages(&mut self.engine, &st) {
+                Ok(n) => {
+                    self.status = crate::i18n::trf("status.merge_done", &[("n", &n.to_string())]);
+                    if print {
+                        self.print();
+                    }
+                }
+                Err(e) => self.status = e,
+            }
+            return;
+        }
         match crate::print_merge::merged_document(self, &st) {
             Ok(doc) => {
                 let n = doc.pages.len();
@@ -784,6 +828,110 @@ mod tests {
         // One step undoes it all.
         app.undo();
         assert!(!framed(&app, second));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With On every page and no placeholder picture, Place Inside Frame
+    /// gives each page the next picture of the pictures folder, in name
+    /// order (numbers by value), in the drawing that is open (#618).
+    #[test]
+    fn on_every_page_takes_the_pictures_folder_page_by_page() {
+        let dir = std::env::temp_dir().join(format!("td_merge_folder_{}", std::process::id()));
+        let pics = dir.join("pics");
+        std::fs::create_dir_all(&pics).unwrap();
+        for (name, side) in [("10.png", 30), ("2.png", 20), ("1.png", 10)] {
+            image::RgbaImage::from_pixel(side, side, image::Rgba([0, 120, 0, 255]))
+                .save(pics.join(name))
+                .unwrap();
+        }
+        std::fs::write(pics.join("notes.txt"), "not a picture").unwrap();
+        let mut app = App::headless();
+        let mut st = data(&dir);
+        st.pictures = Some(pics.clone());
+        app.merge_state = Some(st);
+        let oval = |app: &mut App| {
+            app.new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 10.0, 50.0, 40.0),
+                arc: None,
+            })
+            .expect("ellipse")
+        };
+        let first_page = app.page;
+        let first = oval(&mut app);
+        app.add_page();
+        let second = oval(&mut app);
+        app.add_page();
+        app.add_page();
+        app.page = first_page;
+        app.merge_docker.kind = 1;
+        app.merge_docker.column = 1;
+        app.merge_docker.all_pages = true;
+        app.select(vec![first]);
+        app.place_merge_field_inside();
+        assert_eq!(app.active_doc, 0, "no new drawing");
+        let width_in = |s: &Shape| match &s.kind {
+            ShapeKind::ClipFrame { contents, .. } => contents.iter().find_map(|c| match c.kind {
+                ShapeKind::Bitmap { width_px, .. } => Some(width_px),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let on_page = |app: &App, k: usize| -> Vec<Shape> {
+            app.doc().pages[k]
+                .layers
+                .iter()
+                .flat_map(|l| l.shapes.iter().cloned())
+                .collect()
+        };
+        assert_eq!(width_in(app.doc().find_shape(first).unwrap()), Some(10));
+        assert_eq!(width_in(app.doc().find_shape(second).unwrap()), Some(20));
+        let third = on_page(&app, 2);
+        assert_eq!(third.len(), 1, "a copy of the frame on page 3");
+        assert_eq!(width_in(&third[0]), Some(30));
+        // Three pictures for four pages: the last page is left as it was.
+        assert!(on_page(&app, 3).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With On every page, Create Merged Document fills the open
+    /// drawing's own pages, one record each, rather than making a new
+    /// drawing (#618).
+    #[test]
+    fn on_every_page_merges_onto_the_drawings_own_pages() {
+        let dir = std::env::temp_dir().join(format!("td_merge_inplace_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::headless();
+        app.merge_state = Some(data(&dir));
+        app.merge_docker.kind = 0;
+        app.merge_docker.column = 0;
+        app.insert_merge_field();
+        app.add_page();
+        app.insert_merge_field();
+        app.add_page();
+        app.insert_merge_field();
+        app.merge_docker.all_pages = true;
+        app.create_merged_document(false);
+        assert_eq!(app.active_doc, 0, "no new drawing");
+        assert_eq!(app.doc().pages.len(), 3);
+        let text_on = |app: &App, k: usize| -> String {
+            all_of(&app.doc().pages[k])
+                .iter()
+                .find_map(|s| match &s.kind {
+                    ShapeKind::Text { spans, .. } => {
+                        Some(spans.iter().map(|sp| sp.text.as_str()).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(text_on(&app, 0), "Ana");
+        assert_eq!(text_on(&app, 1), "Bob");
+        // Two records for three pages: the third keeps its field.
+        assert_eq!(text_on(&app, 2), "<Name>");
+        // One undo step.
+        app.undo();
+        assert_eq!(text_on(&app, 0), "<Name>");
+        assert_eq!(text_on(&app, 1), "<Name>");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

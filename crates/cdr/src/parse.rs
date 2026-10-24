@@ -48,6 +48,10 @@ impl ParseReport {
 /// Farther than this from (0, 0), the coordinates of artistic text are
 /// not a place (see `build_text`).
 const MAX_TEXT_ORIGIN_MM: f64 = 10_000.0;
+/// Longest page side read, mm: large format work (banners, wraps) has
+/// pages of 20 m and more, and a larger value means a misread record. The
+/// CMX reader takes the same bound.
+const MAX_PAGE_MM: f64 = 100_000.0;
 /// CDR coordinate unit (version 6 and later) to millimetres.
 const UNIT_MM: f64 = 25.4 / 254000.0;
 /// Coordinate unit of versions before 6 (1/1000 inch) to millimetres.
@@ -683,7 +687,7 @@ impl<'a> Ctx<'a> {
         let mut r = self.reader_at(d, arg.off);
         let w = r.coord()?;
         let h = r.coord()?;
-        if w > 1.0 && h > 1.0 && w < 10_000.0 && h < 10_000.0 {
+        if w > 1.0 && h > 1.0 && w < MAX_PAGE_MM && h < MAX_PAGE_MM {
             Some(Size::new(w, h))
         } else {
             None
@@ -741,7 +745,7 @@ impl<'a> Ctx<'a> {
         } else {
             (r.coord()?, r.coord()?)
         };
-        if w > 1.0 && h > 1.0 && w < 10_000.0 && h < 10_000.0 {
+        if w > 1.0 && h > 1.0 && w < MAX_PAGE_MM && h < MAX_PAGE_MM {
             Some(Size::new(w, h))
         } else {
             self.report.warn(format!(

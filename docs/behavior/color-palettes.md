@@ -22,6 +22,12 @@ downwards.
   on the document palette), the left scroll arrow, then the swatches from
   77 px. At the right: the right scroll arrow and the button that shows
   every colour at once. Arrows are light grey when they cannot scroll.
+- Rows (Options > Customization > Color Palette, 1 at first, up to 3):
+  the default palette shows that many rows of swatches (columns when
+  docked on a side), each further row making it 21 px thicker. The
+  swatches fill column by column, the arrows and the wheel scroll a
+  whole column, and the buttons stay on the first row. The document
+  palette keeps one row (#610).
 - The No Color well comes first: white with a red diagonal.
 - The swatch under the pointer gets a white frame; the document palette's
   current swatch (the one clicked last) keeps it.
@@ -38,9 +44,14 @@ to Deep Blue 60 60 0 60).
 
 In a drawing whose primary colour mode is RGB (New Document's colour
 mode, Document Properties) the default palette shows and applies its
-colours as RGB, converted as the colour management converts (names kept;
-spot inks and registration stay as they are); a CMYK drawing keeps them
-CMYK (#483, `ui::palette::tests::an_rgb_drawing_gets_an_rgb_palette`).
+colours as clean RGB values (names kept; spot inks and registration stay
+as they are): each CMYK colour takes the plain RGB of its inks,
+R = 255 (1 - C)(1 - K) and so on, not the press simulation, so Black is
+0 0 0, White 255 255 255, Red 255 0 0, 50% Black 128 128 128 and
+Orange 255 102 0; other colours are converted as the colour management
+converts. A CMYK drawing keeps them CMYK (#483, #620,
+`ui::palette::tests::an_rgb_drawing_gets_an_rgb_palette`,
+`ui::palette::tests::the_default_palette_of_an_rgb_drawing_is_clean_rgb`).
 
 ## Using a palette
 
@@ -90,7 +101,8 @@ same menu.
 
 ## Options > Customization > Color Palette
 
-Show "No Color" well (on); right mouse button: Context menu or Set
+Show "No Color" well (on); Rows of the default palette (1, 2 or 3;
+`palette.rows`, 1 at first); right mouse button: Context menu or Set
 outline color (default); Show the document palette (on); Automatically
 update the document palette (on).
 
@@ -102,6 +114,8 @@ update the document palette (on).
 - `ui::palette::tests::mixing_moves_a_tenth_of_the_way`
 - `ui::palette::tests::applying_a_colour_adds_it_to_the_document_palette_in_the_same_step`
 - `ui::palette::tests::rows_fit_whole_swatches`
+- `ui::palette::tests::the_default_palette_of_an_rgb_drawing_is_clean_rgb`
+- `ui::palette::tests::the_default_palette_can_show_several_rows`
 - `ui::dockers::tests::a_fill_dragged_in_the_picker_is_one_step_and_one_palette_colour`
 - `color_drop::tests` (fill inside, outline on the edge, No Color, an
   object without a fill, the document palette)

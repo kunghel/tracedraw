@@ -156,8 +156,13 @@ impl FontPreviews {
     }
 }
 
+/// The colour of text pictures shown on a white card (the preview, the
+/// font sampler), as the text would print.
+pub const CARD_INK: Color32 = Color32::from_gray(0x20);
+
 /// `text` set in `family` (bold and italic as `style`) with `em_px`
-/// pixels to the em, black on transparent, and its baseline's distance
+/// pixels to the em, a white mask on transparent (tinted where it is
+/// painted: the theme's text colour in lists, #660), and its baseline's distance
 /// from the top in pixels. `None` when the family is not installed (its
 /// stand-in would show instead) or the text draws nothing.
 pub fn render_text(
@@ -191,7 +196,7 @@ pub fn render_text(
     let path = tracedraw_render::to_sk_path(&layout.path)?;
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
     let mut paint = tiny_skia::Paint::default();
-    paint.set_color_rgba8(0x20, 0x20, 0x20, 0xff);
+    paint.set_color_rgba8(0xff, 0xff, 0xff, 0xff);
     paint.anti_alias = true;
     let baseline = (ascent * scale) as f32 + pad as f32;
     let t = tiny_skia::Transform::from_row(
@@ -287,6 +292,19 @@ pub fn font_list_live(
     id_salt: &str,
     current: &str,
     width: f32,
+) -> (Option<FontPick>, Option<FontPick>) {
+    font_list_with(app, ui, id_salt, current, width, true)
+}
+
+/// [`font_list_live`]; `wheel` lets the mouse wheel over the closed list
+/// pick the family before or after the current one (#665).
+fn font_list_with(
+    app: &mut App,
+    ui: &mut Ui,
+    id_salt: &str,
+    current: &str,
+    width: f32,
+    wheel: bool,
 ) -> (Option<FontPick>, Option<FontPick>) {
     let id = ui.make_persistent_id(("font_list", id_salt));
     let popup_id = id.with("popup");
@@ -415,8 +433,37 @@ pub fn font_list_live(
             .position(|r| matches!(r, Row::Family(f) if f == current));
     }
 
-    // Keys while the field has the focus.
+    // The wheel over the closed list: the family after (down) or before
+    // (up) the current one, as the list orders them (#665).
     let open = egui::Popup::is_id_open(&ctx, popup_id);
+    let mut wheeled = false;
+    if wheel && !open && ui.rect_contains_pointer(anchor) {
+        let step = ui.input(|i| {
+            i.raw.events.iter().rev().find_map(|e| match e {
+                egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => Some(delta.y),
+                _ => None,
+            })
+        });
+        if let Some(dy) = step {
+            // The bar under the list does not scroll as well.
+            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            let at = families.iter().position(|f| f == current);
+            let next = match (at, dy < 0.0) {
+                (Some(i), true) => (i + 1).min(families.len().saturating_sub(1)),
+                (Some(i), false) => i.saturating_sub(1),
+                (None, _) => 0,
+            };
+            if let Some(f) = families.get(next).filter(|f| *f != current) {
+                pick = Some(FontPick {
+                    family: f.clone(),
+                    style: None,
+                });
+                wheeled = true;
+            }
+        }
+    }
+
+    // Keys while the field has the focus.
     if open && field.has_focus() {
         let (down, up, enter, escape) = ctx.input_mut(|i| {
             (
@@ -489,7 +536,7 @@ pub fn font_list_live(
         })
     };
 
-    if let Some(p) = &pick {
+    if let Some(p) = pick.as_ref().filter(|_| !wheeled) {
         crate::ui::font_list::remember(&mut app.settings.recent_fonts, &p.family);
         egui::Popup::close_id(&ctx, popup_id);
         st.typed = None;
@@ -505,7 +552,10 @@ pub fn font_list_live(
 /// shows the family under the pointer (#370).
 pub fn text_font_list(app: &mut App, ui: &mut Ui, id_salt: &str, width: f32) -> bool {
     let current = app.text_settings_shown().0;
-    let (pick, live) = font_list_live(app, ui, id_salt, &current, width);
+    // The wheel changes the text's font, never asks for the font of new
+    // text (a dialog at every turn of the wheel).
+    let wheel = app.has_text_target() || id_salt == "options_default_font";
+    let (pick, live) = font_list_with(app, ui, id_salt, &current, width, wheel);
     // Only the lists that set the text's font preview it; the one that
     // owns the preview ends it when it closes.
     let owner = id_salt.to_string();
@@ -900,7 +950,7 @@ fn draw_row(
                     (clip.bottom() - shown.top()) / size.y.max(1.0),
                 ),
             );
-            painter.image(p.texture.id(), clip, uv, Color32::WHITE);
+            painter.image(p.texture.id(), clip, uv, Tokens::text());
         }
         None => {
             let font = egui::FontId::proportional((sample * 0.8).clamp(12.0, 22.0));
@@ -1014,7 +1064,7 @@ fn preview(app: &mut App, ui: &mut Ui, family: &str, style: (bool, bool), ppp: f
                 p.texture.id(),
                 shown,
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
+                CARD_INK,
             );
         }
         None => {
@@ -1023,7 +1073,7 @@ fn preview(app: &mut App, ui: &mut Ui, family: &str, style: (bool, bool), ppp: f
                 egui::Align2::CENTER_CENTER,
                 tr("font_list.no_preview"),
                 egui::FontId::proportional(12.0),
-                Tokens::text_dim(),
+                Color32::from_gray(0x80),
             );
         }
     }
@@ -1038,7 +1088,7 @@ fn preview(app: &mut App, ui: &mut Ui, family: &str, style: (bool, bool), ppp: f
         egui::Align2::LEFT_BOTTOM,
         format!("{family} ({style_name})"),
         egui::FontId::proportional(11.5),
-        Tokens::text(),
+        CARD_INK,
     );
 }
 
@@ -1108,13 +1158,72 @@ mod tests {
             image.size
         );
         assert!(baseline > 10.0 && baseline < image.size[1] as f32);
-        // Ink, and transparent paper.
+        // Ink, and transparent paper. The ink is a white mask, tinted
+        // where it is painted (#660).
         assert!(image.pixels.iter().any(|p| p.a() > 200));
+        assert!(image.pixels.iter().any(|p| p.r() == 255 && p.a() == 255));
         assert!(image.pixels.iter().any(|p| p.a() == 0));
         // A family that is not installed draws nothing (its stand-in would
         // be a lie), and so does no text.
         assert!(render_text("No Such Family 12345", "Abc", (false, false), 24.0).is_none());
         assert!(render_text(&family, "", (false, false), 24.0).is_none());
+    }
+
+    /// The names in the list are drawn in the theme's text colour, light
+    /// on the dark themes, not dark on the dark popup (#660).
+    #[test]
+    fn names_take_the_theme_text_colour() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let fonts = tracedraw_text::fonts();
+        let Some(family) = app
+            .font_families
+            .iter()
+            .find(|f| fonts.family_info(f).is_some_and(|i| !i.symbol))
+            .cloned()
+        else {
+            return;
+        };
+        let mut st = ListState::default();
+        let rows = vec![Row::Family(family.clone())];
+        let families = vec![family.clone()];
+        let mut tints = Vec::new();
+        // Twice: the picture is made on the first frame.
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let (mut pick, mut hovered) = (None, None);
+            let mut out = ctx.run_ui(input, |ui| {
+                list_body(
+                    &mut app,
+                    ui,
+                    &mut st,
+                    &rows,
+                    &families,
+                    &family,
+                    false,
+                    &mut pick,
+                    &mut hovered,
+                );
+            });
+            out.textures_delta.clear();
+            tints.clear();
+            for s in &out.shapes {
+                if let egui::Shape::Mesh(m) = &s.shape {
+                    if m.texture_id != egui::TextureId::default() {
+                        tints.extend(m.vertices.iter().map(|v| v.color));
+                    }
+                }
+            }
+        }
+        assert!(!tints.is_empty());
+        assert!(tints.iter().all(|c| *c != Color32::WHITE), "{tints:?}");
+        assert!(tints.iter().all(|c| c.r() == c.g() && c.g() == c.b()));
     }
 
     /// The list draws open, with every filter, styles shown, a long list
@@ -1377,6 +1486,93 @@ mod live_tests {
         let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
         out.textures_delta.clear();
         assert_eq!((app.text_font.as_str(), app.text_size_pt), ("Arial", 48.0));
+    }
+
+    /// The wheel over the closed font list of the bar picks the family
+    /// after (down) or before (up) the current one, for the selected text;
+    /// it does not open the list, keep the families as used last, or ask
+    /// for the font of new text when nothing is selected (#665).
+    #[test]
+    fn the_wheel_over_the_font_list_steps_the_font() {
+        let mut app = App::headless();
+        let families = app.font_families.clone();
+        if families.len() < 3 {
+            return;
+        }
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new("Text", &families[1], 24.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.sync_text_defaults_from(id);
+        let recent = app.settings.recent_fonts.clone();
+        let ctx = crate::theme::ui_context();
+        let origin = egui::pos2(100.0, 100.0);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Area::new(egui::Id::new("font_bar"))
+                        .fixed_pos(origin)
+                        .show(ui.ctx(), |ui| {
+                            changed = text_font_list(app, ui, "propbar_font", 180.0);
+                        });
+                },
+            );
+            out.textures_delta.clear();
+            changed
+        };
+        let wheel = |app: &mut App, dy: f32| {
+            run(
+                app,
+                vec![egui::Event::PointerMoved(origin + egui::vec2(40.0, 8.0))],
+            );
+            run(
+                app,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            )
+        };
+        run(&mut app, Vec::new());
+        // Down: the next family; up twice: back past it to the first.
+        assert!(wheel(&mut app, -1.0));
+        assert_eq!(app.text_font, families[2]);
+        assert!(wheel(&mut app, 1.0));
+        assert_eq!(app.text_font, families[1]);
+        assert!(wheel(&mut app, 1.0));
+        assert_eq!(app.text_font, families[0]);
+        // At the top it stays.
+        assert!(!wheel(&mut app, 1.0));
+        assert_eq!(app.text_font, families[0]);
+        assert_eq!(app.settings.recent_fonts, recent);
+        let popup = egui::Id::new("font_bar")
+            .with(("font_list", "propbar_font"))
+            .with("popup");
+        assert!(!egui::Popup::is_id_open(&ctx, popup));
+        // Nothing selected: the wheel leaves the font of new text alone
+        // and asks nothing.
+        app.select(Vec::new());
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        assert!(!wheel(&mut app, -1.0));
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
     }
 
     fn text_of(app: &App, id: tracedraw_core::ShapeId) -> (String, f64) {

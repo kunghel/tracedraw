@@ -25,7 +25,9 @@ One window, 760 px wide, the same on every system:
   extension, or none, gets the chosen type's.
 - **Save as type**: TraceDraw (`*.tdraw`, the native JSON format, which
   keeps everything) or CDR files (`*.cdr`). It starts at `.cdr` for a
-  drawing that came from or was saved to a `.cdr` file.
+  drawing that came from or was saved to a `.cdr` file, and for a
+  drawing without a file when Options > Global > File Formats > Save
+  new drawings as .cdr files is on.
 - **Version**: for TraceDraw files the `.tdraw` format version, shown
   as "v0" with nothing to choose while it is the only one
   (`docs/tdraw-format.md`); for `.cdr` 27 down to 14, each with its
@@ -67,8 +69,8 @@ One window, 760 px wide, the same on every system:
 A program opens `.cdr` files of its own version and older ones, so the
 version decides who can open a file:
 
-- Save As starts at the newest version, 27, whatever the drawing came
-  from.
+- Save As starts at the version set in Options > Global > File
+  Formats (27 at first), whatever the drawing came from (#613).
 - The version chosen stays with the drawing: Save writes the same
   version again without asking. Each open drawing keeps its own.
 - TraceDraw saves only the versions checked in other programs, 14 to 27.
@@ -112,6 +114,10 @@ What each version's file holds is in `docs/cdr-format.md`, Writing.
   14, after which Ctrl+S saves without asking; versions 3 and 99 are
   saved as 14 and 27
   (`ui::save_as::tests::a_drawing_opened_from_a_cdr_file_keeps_its_version`).
+- Options set to version 15 and `.cdr` for new drawings: Ctrl+Shift+S on
+  a new drawing opens Save As at CDR version 15; with the defaults it
+  opens at TraceDraw, version 27 for `.cdr`
+  (`pick_drag_tests::save_as_starts_at_the_cdr_type_and_version_the_options_set`).
 - A drawing with a CMYK profile offers it by name and size; saved with
   the box on, the version 27 file holds the profile, with the box off it
   does not, and the next Save As keeps the box off

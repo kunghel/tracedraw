@@ -9,6 +9,15 @@
   drawn behind the page, so a 6 px band shows on the right and a 4 px
   band at the bottom. The page rectangle is snapped to whole pixels.
   View > Page > Page Border hides the border and the shadow.
+- View > Page > Mask Outside Page (off by default, kept with the other
+  view settings): the desktop colour, at 85 % over the objects, covers
+  everything outside the page (outside every page in Multipage View),
+  and the page border is drawn over the objects, so the page shows as it
+  will print or export. Objects outside still show faintly, and every
+  tool works as usual; the selection handles, guidelines and previews
+  stay on top (#615,
+  `pick_drag_tests::mask_outside_page_covers_the_desktop_and_keeps_objects_editable`,
+  `canvas::tests::the_mask_covers_everything_outside_the_pages`).
 - Double-clicking the page border (within 3 px) or its shadow with the
   Pick tool, where no object is hit, opens the page size options
   (Layout > Document Options at Page Size).
@@ -164,3 +173,5 @@ window shows.
 - `ui::menus::tests::window_new_window_opens_a_second_window`
 - `ui::window_bars::tests::insert_page_before_and_after_the_current_one`
 - `ui::window_bars::tests::the_page_border_and_shadow_are_hit_but_not_the_page_inside`
+- `pick_drag_tests::mask_outside_page_covers_the_desktop_and_keeps_objects_editable`
+- `canvas::tests::the_mask_covers_everything_outside_the_pages`

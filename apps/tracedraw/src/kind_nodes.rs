@@ -1,7 +1,8 @@
 //! The nodes the Shape tool shows on rectangles, ellipses and polygons,
 //! and what dragging them does: a rectangle's
 //! corner nodes round, scallop or chamfer its corners (every corner by the
-//! same amount, or one corner with Ctrl or once its node is selected); an
+//! same amount, one corner with Ctrl, or the chosen corners when the node
+//! dragged is one of them); an
 //! ellipse's node opens a pie when the pointer is inside the ellipse and
 //! an arc outside it; a polygon's nodes move with all their mirrored
 //! counterparts (vertices together, the points between them together).
@@ -179,7 +180,9 @@ fn wrap(deg: f64) -> f64 {
 }
 
 /// The kind of `start` after dragging `node` to `p` (page space). `single`
-/// changes one rectangle corner only. `turn` carries the angle (degrees)
+/// changes one rectangle corner only; otherwise, when the corner dragged
+/// is one of `chosen`, the chosen corners change by the same amount, else
+/// all four do. `turn` carries the angle (degrees)
 /// a whole ellipse's node has turned through since the drag began, which
 /// tells clockwise from counter-clockwise.
 pub fn drag(
@@ -187,6 +190,7 @@ pub fn drag(
     node: KindNode,
     p: Point,
     single: bool,
+    chosen: [bool; 4],
     turn: &mut f64,
 ) -> Option<ShapeKind> {
     let inv = start.transform.inverse();
@@ -222,7 +226,12 @@ pub fn drag(
                 next.radii[corner] = value;
             } else {
                 let delta = value - page.radii[corner];
-                next.radii = page.radii.map(|r| (r + delta).max(0.0));
+                let all = !chosen.get(corner).copied().unwrap_or(false);
+                for (i, r) in next.radii.iter_mut().enumerate() {
+                    if all || chosen[i] {
+                        *r = (page.radii[i] + delta).max(0.0);
+                    }
+                }
             }
             start.with_page_corners(next)
         }
@@ -379,18 +388,54 @@ pub fn label(s: &Shape) -> &'static str {
     }
 }
 
-/// The node whose drag changes one corner only: Ctrl, or the corner node
-/// the Shape tool selected with a click.
-pub fn single_corner(
-    selected: Option<(tracedraw_core::ShapeId, usize)>,
+/// The node whose drag changes one corner only: a corner node with Ctrl.
+pub fn single_corner(node: KindNode, ctrl: bool) -> bool {
+    matches!(node, KindNode::Corner { .. }) && ctrl
+}
+
+/// The corners of the rectangle `s` a drag of `node` changes together:
+/// the corners chosen in the Shape tool (`selected`) when the corner
+/// dragged is one of them, else none (all four then change).
+pub fn chosen_corners(
+    selected: &[(tracedraw_core::ShapeId, usize)],
     s: &Shape,
     node: KindNode,
-    ctrl: bool,
-) -> bool {
-    match node {
-        KindNode::Corner { corner, .. } => ctrl || selected == Some((s.id, corner)),
-        _ => false,
+) -> [bool; 4] {
+    let mut out = [false; 4];
+    let KindNode::Corner { corner, .. } = node else {
+        return out;
+    };
+    if !selected.contains(&(s.id, corner)) {
+        return out;
     }
+    for &(id, c) in selected {
+        if id == s.id && c < 4 {
+            out[c] = true;
+        }
+    }
+    out
+}
+
+/// The corners of the rectangles among `shapes` with a corner node for
+/// which `inside` holds (page space), as the Shape tool chooses them.
+pub fn corners_where(
+    shapes: &[Shape],
+    inside: impl Fn(Point) -> bool,
+) -> Vec<(tracedraw_core::ShapeId, usize)> {
+    let mut out = Vec::new();
+    for s in shapes {
+        if !matches!(s.kind, ShapeKind::Rect { .. }) || s.spline.is_some() {
+            continue;
+        }
+        for (node, q) in nodes(s) {
+            if let KindNode::Corner { corner, .. } = node {
+                if inside(q) && !out.contains(&(s.id, corner)) {
+                    out.push((s.id, corner));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The page size of corner `corner` of the rectangle `s`.
@@ -547,22 +592,54 @@ mod tests {
         );
         let mut turn = 0.0;
         // Along the top edge towards the middle: 6 mm.
-        let k = drag(&s, node, Point::new(34.0, 20.0), false, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            node,
+            Point::new(34.0, 20.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         let mut moved = s.clone();
         moved.kind = k;
         for i in 0..4 {
             assert!((page_radius(&moved, i) - 6.0).abs() < 1e-9);
         }
         // Ctrl: that corner only; others keep theirs.
-        let k = drag(&s, node, Point::new(40.0, 13.0), true, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            node,
+            Point::new(40.0, 13.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         moved.kind = k;
         assert!((page_radius(&moved, Corners::TOP_RIGHT) - 7.0).abs() < 1e-9);
         assert_eq!(page_radius(&moved, Corners::BOTTOM_LEFT), 0.0);
         // Never past half the shorter side, never below zero.
-        let k = drag(&s, node, Point::new(0.0, 20.0), false, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            node,
+            Point::new(0.0, 20.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         moved.kind = k;
         assert!((page_radius(&moved, 0) - 10.0).abs() < 1e-9);
-        let k = drag(&s, node, Point::new(60.0, 30.0), false, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            node,
+            Point::new(60.0, 30.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         moved.kind = k;
         assert_eq!(page_radius(&moved, 0), 0.0);
     }
@@ -578,7 +655,15 @@ mod tests {
         };
         let mut turn = 0.0;
         // The top left end on the top edge moves from x = 2 to x = 5.
-        let k = drag(&s, node, Point::new(5.0, 21.0), false, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            node,
+            Point::new(5.0, 21.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         let (_, got) = k.rect_corners().unwrap();
         assert_eq!(got.kind, CornerKind::Scallop);
         assert_eq!(got.radii, [5.0, 5.0, 5.0, 7.0]);
@@ -594,7 +679,7 @@ mod tests {
         };
         let mut turn = 0.0;
         // 8 mm up the left edge on the page.
-        let k = drag(&s, node, Point::new(0.0, 8.0), false, &mut turn).unwrap();
+        let k = drag(&s, node, Point::new(0.0, 8.0), false, [false; 4], &mut turn).unwrap();
         s.kind = k;
         assert!((page_radius(&s, Corners::BOTTOM_LEFT) - 8.0).abs() < 1e-9);
         assert!(
@@ -619,7 +704,7 @@ mod tests {
         let mut turn = 0.0;
         for deg in [80.0f64, 45.0, 0.0] {
             let p = Point::new(5.0 * deg.to_radians().cos(), 5.0 * deg.to_radians().sin());
-            let k = drag(&s, KindNode::EllipseStart, p, false, &mut turn).unwrap();
+            let k = drag(&s, KindNode::EllipseStart, p, false, [false; 4], &mut turn).unwrap();
             if deg == 0.0 {
                 assert_eq!(
                     k,
@@ -638,7 +723,7 @@ mod tests {
         let mut turn = 0.0;
         for deg in [120.0f64, 160.0, 200.0] {
             let p = Point::new(15.0 * deg.to_radians().cos(), 15.0 * deg.to_radians().sin());
-            let k = drag(&s, KindNode::EllipseStart, p, false, &mut turn).unwrap();
+            let k = drag(&s, KindNode::EllipseStart, p, false, [false; 4], &mut turn).unwrap();
             if deg == 200.0 {
                 let ShapeKind::Ellipse { arc: Some(a), .. } = k else {
                     panic!("{k:?}");
@@ -666,6 +751,7 @@ mod tests {
             KindNode::EllipseEnd,
             Point::new(0.0, 3.0),
             false,
+            [false; 4],
             &mut turn,
         )
         .unwrap();
@@ -702,7 +788,15 @@ mod tests {
             outer: false,
             index: 2,
         };
-        let k = drag(&s, between, Point::new(0.0, -5.0), false, &mut turn).unwrap();
+        let k = drag(
+            &s,
+            between,
+            Point::new(0.0, -5.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
         assert!(
             matches!(k, ShapeKind::Polygon { points: 5, sharpness, .. } if (sharpness - 0.5).abs() < 1e-9)
         );
@@ -711,7 +805,7 @@ mod tests {
             outer: true,
             index: 0,
         };
-        let k = drag(&s, top, Point::new(0.0, 20.0), false, &mut turn).unwrap();
+        let k = drag(&s, top, Point::new(0.0, 20.0), false, [false; 4], &mut turn).unwrap();
         let ShapeKind::Polygon {
             rect, sharpness, ..
         } = k
@@ -745,7 +839,7 @@ mod tests {
         let untwisted = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI / 5.0;
         let at = std::f64::consts::FRAC_PI_2 - 20f64.to_radians();
         let p = Point::new(5.0 * at.cos(), 5.0 * at.sin());
-        let k = drag(&s, between, p, false, &mut turn).expect("dragged");
+        let k = drag(&s, between, p, false, [false; 4], &mut turn).expect("dragged");
         let ShapeKind::Polygon {
             sharpness, twist, ..
         } = k
@@ -766,40 +860,91 @@ mod tests {
             .expect("node");
         assert!((shown - p).hypot() < 1e-9);
         // Ctrl keeps the turn; straight in or out stays untwisted.
-        let k = drag(&twisted, between, Point::new(0.0, 3.0), true, &mut turn).expect("ctrl");
+        let k = drag(
+            &twisted,
+            between,
+            Point::new(0.0, 3.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .expect("ctrl");
         assert!(
             matches!(k, ShapeKind::Polygon { twist, .. } if (twist - (at - untwisted)).abs() < 1e-9)
         );
         let radial = Point::new(4.0 * untwisted.cos(), 4.0 * untwisted.sin());
-        let k = drag(&s, between, radial, false, &mut turn).expect("radial");
+        let k = drag(&s, between, radial, false, [false; 4], &mut turn).expect("radial");
         assert!(matches!(k, ShapeKind::Polygon { twist, .. } if twist == 0.0));
         // A vertex pulled out keeps the twist.
         let top = KindNode::Polygon {
             outer: true,
             index: 0,
         };
-        let k = drag(&twisted, top, Point::new(0.0, 15.0), false, &mut turn).expect("vertex");
+        let k = drag(
+            &twisted,
+            top,
+            Point::new(0.0, 15.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .expect("vertex");
         assert!(
             matches!(k, ShapeKind::Polygon { twist, .. } if (twist - (at - untwisted)).abs() < 1e-9)
         );
     }
 
     #[test]
-    fn single_corner_needs_ctrl_or_the_selected_node() {
+    fn single_corner_needs_ctrl_and_chosen_corners_go_together() {
         let s = rect(Corners::default());
         let node = KindNode::Corner {
             corner: 1,
             vertical: true,
         };
-        assert!(single_corner(None, &s, node, true));
-        assert!(!single_corner(None, &s, node, false));
-        assert!(single_corner(Some((s.id, 1)), &s, node, false));
-        assert!(!single_corner(Some((s.id, 2)), &s, node, false));
-        assert!(!single_corner(
-            Some((s.id, 1)),
-            &s,
-            KindNode::EllipseStart,
-            false
-        ));
+        assert!(single_corner(node, true));
+        assert!(!single_corner(node, false));
+        assert!(!single_corner(KindNode::EllipseStart, true));
+        // The chosen corners, when the corner dragged is one of them.
+        let chosen = [(s.id, 0), (s.id, 1), (ShapeId(999), 2)];
+        assert_eq!(
+            chosen_corners(&chosen, &s, node),
+            [true, true, false, false]
+        );
+        let other = KindNode::Corner {
+            corner: 3,
+            vertical: false,
+        };
+        assert_eq!(chosen_corners(&chosen, &s, other), [false; 4]);
+    }
+
+    /// Two chosen corners round together by the same amount and the
+    /// others stay square (#671).
+    #[test]
+    fn chosen_corners_round_together() {
+        let s = rect(Corners::default());
+        let node = node_at(&s, Point::new(40.3, 19.8), 1.0).expect("top right node");
+        let KindNode::Corner { corner, .. } = node else {
+            panic!("a corner");
+        };
+        let mut chosen = [false; 4];
+        chosen[corner] = true;
+        chosen[Corners::TOP_LEFT] = true;
+        let mut turn = 0.0;
+        let k = drag(&s, node, Point::new(34.0, 20.0), false, chosen, &mut turn).unwrap();
+        let mut moved = s.clone();
+        moved.kind = k;
+        for i in 0..4 {
+            let want = if chosen[i] { 6.0 } else { 0.0 };
+            assert!((page_radius(&moved, i) - want).abs() < 1e-9, "{i}");
+        }
+        // Corners found inside a region.
+        let all = corners_where(std::slice::from_ref(&s), |_| true);
+        assert_eq!(all.len(), 4);
+        let top = corners_where(std::slice::from_ref(&s), |q| q.y > 10.0);
+        let mut got: Vec<usize> = top.iter().map(|k| k.1).collect();
+        got.sort();
+        let mut want = vec![Corners::TOP_LEFT, Corners::TOP_RIGHT];
+        want.sort();
+        assert_eq!(got, want);
     }
 }

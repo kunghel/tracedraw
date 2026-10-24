@@ -78,6 +78,17 @@ into its measured points and it is drawn again in the same undo step: a
 dimension scaled by 2 reads twice the length, its label stays upright,
 undistorted text of its size, and the group keeps no transform.
 
+## Convert to Curves
+
+Convert to Curves (Ctrl+Q) on a dimension makes it a group of plain
+curves (#640): its lines (one open curve, the outline kept), its filled
+arrowheads (none for open, tick or no arrowheads) and its label as
+closed curves with its fill. The group is no longer a dimension: it is
+not drawn again when moved or scaled, and each curve can be edited with
+the Shape tool. One undo step. An angle's arc is drawn as a few clean
+curves (at most one per quarter turn), not as many short lines
+(`dimensions::tests::convert_to_curves_makes_a_dimension_plain_curves`).
+
 ## 3-point callout
 
 A callout is a group of its leader (an open path from the tip through
@@ -144,6 +155,7 @@ ones made next; the style is kept in the preferences
   `25` bare; a right angle `90.0°`)
 - `dimensions::tests::dimensions_redraw_for_their_style_and_their_size`
 - `dimensions::tests::previews_and_segments`
+- `dimensions::tests::convert_to_curves_makes_a_dimension_plain_curves`
 - `ui::dimension_bar::tests::the_bar_and_the_preview_draw`
 - `callouts::tests::a_callout_ends_at_its_text_and_follows_it`
 - `callouts::tests::a_tip_moved_with_the_shape_tool_stays`

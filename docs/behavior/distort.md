@@ -69,8 +69,11 @@ curve stays open.
 - The bar shows the selected object's distortion (its kind and values)
   and edits the selected distortions; each change is one undo step.
 - Center Distortion: the selected distortions about their objects'
-  middles again. Clear Distortion removes them. Convert to Curves makes
-  the distorted outline the object's own (the object becomes a curve).
+  middles again. Clear Distortion removes them. Convert to Curves
+  (Ctrl+Q) makes the distorted outline the object's own (the object
+  becomes a curve, also when it already was one), and Break Apart breaks
+  the distorted curve, or a distorted text into one curve per letter,
+  each distorted as the whole text was.
 - Apply (shown when a selected object has no distortion): the bar's
   distortion on those objects, about their middles.
 - The values are kept in the preferences (`tools.distort`).

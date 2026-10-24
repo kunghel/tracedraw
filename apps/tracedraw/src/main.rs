@@ -34,6 +34,7 @@ mod connectors;
 mod contour_tool;
 mod coords;
 mod copy_effect;
+mod corner_widgets;
 mod corners;
 mod crop_tool;
 mod curve_join;
@@ -59,6 +60,8 @@ mod fill_tool;
 mod focus;
 #[cfg(any(target_arch = "wasm32", test))]
 mod font_folder;
+#[cfg(not(target_arch = "wasm32"))]
+mod frame_stats;
 mod frame_type;
 mod fx;
 mod github;
@@ -245,6 +248,9 @@ fn main() -> eframe::Result<()> {
     // acceleration off; `--renderer=` when a start before could not open
     // the window (#445, #439).
     let mode = gpu::Mode::for_start(&args, &settings);
+    let first = gpu::Mode::first(&settings);
+    let next = mode.next(first);
+    log::info!("opening the window with {mode:?} (Options asks for {first:?})");
     let (renderer, wgpu_options) = gpu::options(mode, &settings.gpu_adapter);
     let options = eframe::NativeOptions {
         viewport,
@@ -253,34 +259,62 @@ fn main() -> eframe::Result<()> {
         wgpu_options,
         ..Default::default()
     };
-    let result = eframe::run_native(
-        "TraceDraw",
-        options,
-        Box::new(move |cc| {
-            gpu::note_renderer(cc, mode);
-            if let Some(w) = &wake {
-                let _ = w.set(cc.egui_ctx.clone());
-            }
-            let mut shell = if splash {
-                Shell::with_splash(cc, open_path)
-            } else {
-                Shell::new(cc, open_path)
-            };
-            shell.handed_over = Some(handed_over);
-            Ok(Box::new(shell))
-        }),
-    );
+    // A panic before the window opens is this renderer failing (eframe's
+    // OpenGL set-up panics when the driver offers no matching format):
+    // caught, so the next renderer is still tried (#616).
+    startup_log::quiet_panics(next.is_some());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "TraceDraw",
+            options,
+            Box::new(move |cc| {
+                gpu::note_renderer(cc, mode);
+                if let Some(w) = &wake {
+                    let _ = w.set(cc.egui_ctx.clone());
+                }
+                let mut shell = if splash {
+                    Shell::with_splash(cc, open_path)
+                } else {
+                    Shell::new(cc, open_path)
+                };
+                shell.handed_over = Some(handed_over);
+                Ok(Box::new(shell))
+            }),
+        )
+    }));
+    startup_log::quiet_panics(false);
+    // A panic of the last renderer was reported as a crash already.
+    let reported = result.is_err() && next.is_none();
+    let result = match result {
+        Ok(r) => r,
+        Err(panic) if gpu::window_opened() => std::panic::resume_unwind(panic),
+        Err(panic) => {
+            let what = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic".into());
+            Err(eframe::Error::AppCreation(what.into()))
+        }
+    };
     // A start with the next renderer must be able to take the place.
     drop(primary);
-    match result {
-        // The window could not be opened this way: the next renderer, in a
-        // new start (a window system cannot be set up twice in one).
-        Err(e) if gpu::restart_with_next(mode, &args) => {
-            log::warn!("the window did not open with {mode:?} ({e}); trying the next renderer");
-            Ok(())
+    let Err(e) = result else {
+        return Ok(());
+    };
+    // The window could not be opened this way: the next renderer, in a
+    // new start (a window system cannot be set up twice in one).
+    if let Some(next) = next {
+        log::warn!("the window did not open with {mode:?} ({e}); trying {next:?}");
+        if gpu::restart_with(next, &args) {
+            return Ok(());
         }
-        r => r,
     }
+    log::error!("the window could not be opened with {mode:?}: {e}");
+    if !reported {
+        startup_log::no_window(&e.to_string());
+    }
+    Err(e)
 }
 
 /// The browser build starts from `web::start` (the page loads the module,
@@ -301,6 +335,9 @@ struct Shell {
     /// Files later starts handed over (see instance.rs).
     #[cfg(not(target_arch = "wasm32"))]
     handed_over: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    /// Frames paced on a software adapter (#616).
+    #[cfg(not(target_arch = "wasm32"))]
+    pacer: gpu::Pacer,
 }
 
 impl Shell {
@@ -315,6 +352,8 @@ impl Shell {
             open: None,
             #[cfg(not(target_arch = "wasm32"))]
             handed_over: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pacer: gpu::Pacer::new(cc),
         }
     }
 
@@ -326,12 +365,15 @@ impl Shell {
             splash: Some(splash::Splash::start(&cc.egui_ctx, open.as_deref())),
             open,
             handed_over: None,
+            pacer: gpu::Pacer::new(cc),
         }
     }
 }
 
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pacer.pace();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(splash) = self.splash.as_mut() {
             if splash.update(ui) == splash::Step::Wait {
@@ -352,6 +394,10 @@ impl eframe::App for Shell {
         let Some(app) = self.app.as_mut() else {
             return;
         };
+        // The first frame's window size, and frame statistics at debug
+        // level (#616).
+        #[cfg(not(target_arch = "wasm32"))]
+        let began = frame_stats::begin(ui.ctx());
         // Fonts text asked for (browser build), and fonts that arrived.
         #[cfg(target_arch = "wasm32")]
         web::sync_ui_fonts(ui.ctx());
@@ -411,6 +457,8 @@ impl eframe::App for Shell {
         app.autosave_settings(Some(ui.ctx()));
         // Bitmaps edited outside follow their files.
         app.watch_linked_bitmaps(Some(ui.ctx()), web_time::Instant::now());
+        #[cfg(not(target_arch = "wasm32"))]
+        frame_stats::end(ui.ctx(), began);
     }
 
     /// Keep the toolbox, dockers and other preferences for the next session.

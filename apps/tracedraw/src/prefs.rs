@@ -199,8 +199,11 @@ pub struct FormatPrefs {
     /// Exporting keeps the dialog's choices here for the next time.
     pub remember_last: bool,
     pub import_place: ImportPlace,
-    /// The `.cdr` version new drawings are saved in (Save As changes it).
+    /// The `.cdr` version Save As starts at (#613).
     pub cdr_version: u16,
+    /// Save As starts at `.cdr` rather than TraceDraw for a drawing
+    /// without a file (#613).
+    pub save_new_as_cdr: bool,
     /// File > Export goes straight to the file with the last choices
     /// ("Do not show filter dialog").
     pub skip_export_dialog: bool,
@@ -225,6 +228,7 @@ impl Default for FormatPrefs {
             remember_last: false,
             import_place: ImportPlace::AsInFile,
             cdr_version: tracedraw_cdr::write::NEWEST_VERSION,
+            save_new_as_cdr: false,
             skip_export_dialog: false,
             pdf_text_as_curves: false,
             pdf_ask_text: true,

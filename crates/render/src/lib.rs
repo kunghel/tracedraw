@@ -378,8 +378,8 @@ fn visible_page_rect(opts: &RenderOptions) -> Rect {
 }
 
 /// How far an outline may reach past the path it follows, in widths:
-/// mitres, arrowheads, variable widths and calligraphic nibs all stay
-/// within this.
+/// mitres, arrowheads and calligraphic nibs all stay within this (the
+/// nodes of a variable width are counted on their own).
 const OUTLINE_REACH: f64 = 12.0;
 
 struct Renderer<'a> {
@@ -439,7 +439,17 @@ impl Renderer<'_> {
                 .max(1.0)
         };
         let width = shape.stroke.as_ref().map_or(0.0, |s| s.width.abs()) * scale;
-        let margin = width * OUTLINE_REACH + 1.0;
+        // A Variable Length node may reach any distance from the path,
+        // past what a width covers: counted on its own, or the band was
+        // left out of the strips of the page it reaches into (#626).
+        let reach = shape.stroke.as_ref().map_or(0.0, |s| {
+            s.widths
+                .iter()
+                .map(|n| n.left.abs().max(n.right.abs()))
+                .filter(|r| r.is_finite())
+                .fold(0.0, f64::max)
+        }) * scale;
+        let margin = (width * OUTLINE_REACH).max(reach) + 1.0;
         let b = b.inflate(margin, margin);
         b.x1 < visible.x0 || b.x0 > visible.x1 || b.y1 < visible.y0 || b.y0 > visible.y1
     }
@@ -4016,6 +4026,24 @@ mod culling_tests {
         let mut shadowed = rect_shape(6, Rect::new(0.0, 0.0, 10.0, 10.0));
         shadowed.shadow = Some(tracedraw_core::document::Shadow::default());
         assert!(!r.out_of_sight(&shadowed, &visible));
+        // A thin outline with a Variable Length node reaching 8 mm: the
+        // band reaches the view from 5 mm away, so it is drawn (#626).
+        let mut path = BezPath::new();
+        path.move_to((120.0, 95.0));
+        path.line_to((150.0, 95.0));
+        let mut thin = Shape::new(
+            tracedraw_core::ShapeId(7),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        let mut st = tracedraw_core::Stroke::new(tracedraw_core::Color::BLACK, 0.2);
+        thin.stroke = Some(st.clone());
+        assert!(r.out_of_sight(&thin, &visible));
+        st.widths = vec![tracedraw_core::WidthNode::symmetric(0.5, 16.0)];
+        thin.stroke = Some(st);
+        assert!(!r.out_of_sight(&thin, &visible));
         // Hidden objects never draw.
         let mut hidden = inside.clone();
         hidden.visible = false;
@@ -4038,6 +4066,56 @@ mod band_tests {
     use super::*;
     use tracedraw_core::document::{Shape, ShapeKind};
     use tracedraw_core::geometry::BezPath;
+
+    /// A thin outline whose Variable Length node reaches far past its
+    /// width is drawn whole when the page is drawn in strips: the part
+    /// in the strips above and below the path is not left out (#626).
+    #[test]
+    fn a_variable_outline_is_drawn_whole_across_the_strips() {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(200.0, 120.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut path = BezPath::new();
+        path.move_to((20.0, 45.0));
+        path.line_to((180.0, 45.0));
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        let mut st = tracedraw_core::Stroke::new(tracedraw_core::Color::BLACK, 0.2);
+        // 40 mm across in the middle: 20 mm above and below the path.
+        st.widths = vec![tracedraw_core::WidthNode::symmetric(0.5, 40.0)];
+        s.stroke = Some(st);
+        if let Ok(l) = doc.layer_mut(layer) {
+            l.shapes.push(s);
+        }
+        // 5 px per mm: 1000 x 600 px, enough to be drawn in strips.
+        let opts = RenderOptions {
+            width: 1000,
+            height: 600,
+            view: ViewTransform {
+                zoom: 5.0,
+                origin_x: 0.0,
+                origin_y: 600.0,
+            },
+            ..RenderOptions::default()
+        };
+        let px = render_page(&doc, page, &opts).expect("render");
+        let dark = |x: f64, y: f64| {
+            let (col, row) = ((x * 5.0) as u32, (600.0 - y * 5.0) as u32);
+            px.pixel(col, row).is_some_and(|p| p.alpha() > 200)
+        };
+        // At the middle, every row from 19 mm below the path to 19 mm
+        // above it is inside the band, whichever strip it fell in.
+        for k in 0..=38 {
+            let y = 26.0 + k as f64;
+            assert!(dark(100.0, y), "{y} mm");
+        }
+        assert!(!dark(100.0, 66.0) && !dark(100.0, 24.0));
+    }
 
     /// A heavy page: `n` filled and stroked curves spread over A4.
     fn heavy(n: usize) -> (Document, PageId) {
@@ -4135,6 +4213,50 @@ mod band_tests {
             (c.red() as i32 - 128).abs() <= 3 && c.green() <= 3,
             "red times grey: {c:?}"
         );
+    }
+
+    /// One picture cache serves every band: a picture across all bands of
+    /// a render is decoded once, and the next render decodes nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn bands_share_one_decode_of_a_picture() {
+        let mut pm = Pixmap::new(37, 23).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(12, 200, 99, 255));
+        let png = pm.encode_png().unwrap();
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+                width_px: 37,
+                height_px: 23,
+                png: png.clone(),
+                fx: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = None;
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        let page = doc.pages[0].id;
+        doc.pages[0].layers[0].shapes.push(s);
+        let opts = RenderOptions {
+            width: 800,
+            height: 800,
+            view: ViewTransform {
+                zoom: 8.0,
+                origin_x: 0.0,
+                origin_y: 800.0,
+            },
+            ..RenderOptions::default()
+        };
+        let Some(first) = render_page_in_bands(&doc, page, &opts) else {
+            // One core: no bands.
+            return;
+        };
+        let green = |y| first.pixel(400, y).map(|p| p.green());
+        assert_eq!(green(30), Some(200));
+        assert_eq!(green(770), Some(200));
+        render_page_in_bands(&doc, page, &opts).unwrap();
+        assert_eq!(image_cache::decodes_of(&png), 1);
     }
 
     /// A page drawn in bands on several threads matches the page drawn

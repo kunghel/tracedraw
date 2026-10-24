@@ -166,6 +166,12 @@ const ARROW_HALF: f64 = 1.0;
 const GAP: f64 = 1.0;
 const OVERSHOOT: f64 = 2.0;
 
+/// Whether a shape is a dimension group, without reading its data (cheap
+/// enough for every frame).
+pub fn is_dimension(shape: &Shape) -> bool {
+    matches!(shape.kind, ShapeKind::Group { .. }) && shape.data.iter().any(|(k, _)| k == DATA_KEY)
+}
+
 fn finite(p: Point) -> bool {
     p.x.is_finite() && p.y.is_finite()
 }
@@ -378,21 +384,28 @@ impl Dimension {
                 } else {
                     0.0
                 };
-                let steps = 48;
-                let mut drawing = false;
-                for i in 0..=steps {
-                    let t = a0 + sw * i as f64 / steps as f64;
-                    let q = center + ray(t) * r;
-                    if gap > 0.0 && (t - mid).abs() < gap {
-                        drawing = false;
-                        continue;
+                // The arc as a few clean curves (#640), broken for a
+                // centred label.
+                let mut arc = |from: f64, to: f64| {
+                    if to - from <= 1e-9 {
+                        return;
                     }
-                    if drawing {
-                        lines.line_to(q);
-                    } else {
-                        lines.move_to(q);
-                        drawing = true;
+                    lines.move_to(center + ray(from) * r);
+                    kurbo::Arc {
+                        center,
+                        radii: Vec2::new(r, r),
+                        start_angle: from,
+                        sweep_angle: to - from,
+                        x_rotation: 0.0,
                     }
+                    .append_iter(0.01)
+                    .for_each(|el| lines.push(el));
+                };
+                if gap > 0.0 {
+                    arc(a0, mid - gap);
+                    arc(mid + gap, a0 + sw);
+                } else {
+                    arc(a0, a0 + sw);
                 }
                 // Arrowheads along the arc at both ends.
                 if sw > 1e-6 {
@@ -807,6 +820,48 @@ impl App {
     }
 }
 
+impl App {
+    /// The commands that convert the dimension `shape` to curves (`None`
+    /// when it is not one): a group of plain curves, its lines, its
+    /// arrowheads (when there are filled ones) and its label as curves,
+    /// no longer a dimension (#640).
+    pub(crate) fn dimension_curves_commands(&mut self, shape: &Shape) -> Option<Vec<Command>> {
+        if !is_dimension(shape) {
+            return None;
+        }
+        let ShapeKind::Group { children } = &shape.kind else {
+            return None;
+        };
+        let symbols = self.doc().symbols.clone();
+        let mut curves = Vec::new();
+        for c in children {
+            match &c.kind {
+                ShapeKind::Path { path, .. } if path.elements().is_empty() => {}
+                _ => {
+                    let engine = &mut self.engine;
+                    let mut next_id = || engine.new_shape_id();
+                    curves.push(
+                        c.converted_to_curves(&symbols, &mut next_id)
+                            .unwrap_or_else(|| c.clone()),
+                    );
+                }
+            }
+        }
+        let mut data = shape.data.clone();
+        data.retain(|(k, _)| k != DATA_KEY);
+        Some(vec![
+            Command::SetShapeKind {
+                shape: shape.id,
+                kind: ShapeKind::Group { children: curves },
+            },
+            Command::SetObjectData {
+                shape: shape.id,
+                data,
+            },
+        ])
+    }
+}
+
 /// The units list of the dimension bar: the drawing's units first.
 pub fn units_choices() -> Vec<(String, String)> {
     let mut out = vec![(String::new(), tr("dimension.drawing_units"))];
@@ -1047,5 +1102,69 @@ mod tests {
             ShapeKind::Group { children: vec![] }
         ))
         .is_none());
+    }
+
+    /// Convert to Curves makes a dimension a group of plain curves: its
+    /// lines, its filled arrowheads and its label as curves, no longer a
+    /// dimension, in one undo step; an angle's arc is a few clean curves
+    /// (#640).
+    #[test]
+    fn convert_to_curves_makes_a_dimension_plain_curves() {
+        let mut app = App::headless();
+        app.create_angular_dimension(
+            Point::new(0.0, 0.0),
+            Point::new(30.0, 0.0),
+            Point::new(0.0, 30.0),
+            Point::new(20.0, 20.0),
+        );
+        let id = app.selection[0];
+        let g = app.doc().find_shape(id).cloned().expect("group");
+        let ShapeKind::Group { children } = &g.kind else {
+            panic!("group");
+        };
+        // Two sides and one arc of a few curves.
+        let els = match &children[0].kind {
+            ShapeKind::Path { path, .. } => path.elements().len(),
+            _ => 0,
+        };
+        assert!(els <= 12, "{els} elements");
+        assert!(app.can_convert_to_curves());
+        let depth = app.engine.history_labels().0.len();
+        app.convert_to_curves();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let g = app.doc().find_shape(id).cloned().expect("group");
+        assert!(Dimension::of(&g).is_none() && !is_dimension(&g));
+        let ShapeKind::Group { children } = &g.kind else {
+            panic!("group");
+        };
+        assert_eq!(children.len(), 3);
+        assert!(children
+            .iter()
+            .all(|c| matches!(c.kind, ShapeKind::Path { .. })));
+        assert!(matches!(children[2].fill, Fill::Solid(_)));
+        assert!(!app.can_convert_to_curves());
+        // Not redrawn as a dimension again.
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::scale(2.0),
+        });
+        app.bake_dimensions();
+        let g = app.doc().find_shape(id).cloned().expect("group");
+        assert_ne!(g.transform, Affine::IDENTITY);
+        // Open arrowheads leave no empty curve.
+        app.dimension_style.arrows = ArrowStyle::Open;
+        app.create_dimension(
+            Point::new(0.0, 50.0),
+            Point::new(40.0, 50.0),
+            Point::new(20.0, 60.0),
+        );
+        let open = app.selection[0];
+        app.convert_to_curves();
+        match &app.doc().find_shape(open).expect("group").kind {
+            ShapeKind::Group { children } => assert_eq!(children.len(), 2),
+            other => panic!("{other:?}"),
+        }
+        app.undo();
+        assert!(Dimension::of(app.doc().find_shape(open).expect("back")).is_some());
     }
 }

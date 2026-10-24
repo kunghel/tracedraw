@@ -169,6 +169,10 @@ pub struct Settings {
     /// drawing when the page is fitted to it.
     #[serde(default)]
     pub fit_page_margin: f64,
+    /// Autofit Page's popup shows the page it would make while open
+    /// (#659).
+    #[serde(default = "default_true")]
+    pub fit_page_preview: bool,
     /// The toolbox's own button size, when it does not follow the default.
     #[serde(default)]
     pub toolbox_button_size: Option<ButtonSize>,
@@ -776,6 +780,16 @@ pub struct PalettePrefs {
     pub show_document: bool,
     /// The default palette itself (Window > Toolbars, the bars' menu).
     pub show_palette: bool,
+    /// Rows of swatches the default palette shows (columns docked on a
+    /// side), 1 to 3 (#610).
+    pub rows: u8,
+}
+
+impl PalettePrefs {
+    /// [`Self::rows`] brought into 1 to 3.
+    pub fn rows(&self) -> usize {
+        self.rows.clamp(1, 3) as usize
+    }
 }
 
 impl Default for PalettePrefs {
@@ -786,6 +800,7 @@ impl Default for PalettePrefs {
             show_no_color: true,
             show_document: true,
             show_palette: true,
+            rows: 1,
         }
     }
 }
@@ -1084,6 +1099,8 @@ pub struct ViewPrefs {
     pub page_border: bool,
     pub bleed: bool,
     pub printable_area: bool,
+    /// View > Page > Mask Outside Page (#615).
+    pub mask_outside_page: bool,
     pub pixel_grid: bool,
     pub baseline_grid: bool,
     pub non_printing: bool,
@@ -1104,6 +1121,7 @@ impl Default for ViewPrefs {
             page_border: true,
             bleed: false,
             printable_area: false,
+            mask_outside_page: false,
             pixel_grid: true,
             baseline_grid: false,
             non_printing: false,
@@ -1351,6 +1369,7 @@ impl Default for Settings {
             toolbox_hidden: Vec::new(),
             button_size: ButtonSize::Small,
             fit_page_margin: 0.0,
+            fit_page_preview: true,
             toolbox_button_size: None,
             toolbox_captions: Captions::ImageOnly,
             ui_size: 0.0,

@@ -196,7 +196,113 @@ fn turn(a: Vec2, b: Vec2) -> f64 {
     a.cross(b).atan2(a.dot(b))
 }
 
-/// `path` with its corners cut. With `only`, just the corners at those
+/// A corner of a curve, for the Shape tool's corner widgets: the node
+/// (element index, as the Shape tool counts nodes), where it is, the
+/// unit direction from it into the corner (halfway between its two
+/// sides) and the angle between the sides (radians).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Corner {
+    pub node: usize,
+    pub at: Point,
+    pub inside: Vec2,
+    pub theta: f64,
+}
+
+/// The corners of `path` that [`cut_corners`] would cut, in path order.
+/// Cheap: no lengths are measured.
+pub fn corners(path: &BezPath) -> Vec<Corner> {
+    let mut out = Vec::new();
+    for sub in subpaths(path) {
+        let n = sub.segs.len();
+        if n == 0 {
+            continue;
+        }
+        let count = if sub.closed { n } else { n - 1 };
+        for k in 0..count {
+            let (seg_in, index) = &sub.segs[k];
+            let (seg_out, _) = &sub.segs[(k + 1) % n];
+            let (Some(u_in), Some(u_out)) = (end_dir(seg_in), start_dir(seg_out)) else {
+                continue;
+            };
+            let theta = (-u_in).dot(u_out).clamp(-1.0, 1.0).acos();
+            if !(1e-3..=std::f64::consts::PI - 1e-3).contains(&theta) {
+                continue;
+            }
+            let Some(inside) = unit(u_out - u_in) else {
+                continue;
+            };
+            let at_start = sub.closed && k == n - 1;
+            out.push(Corner {
+                node: if at_start { sub.start_index } else { *index },
+                at: seg_in.eval(1.0),
+                inside,
+                theta,
+            });
+        }
+    }
+    out
+}
+
+/// The largest fillet radius every chosen corner of `path` takes (every
+/// corner without `only`), the sides two chosen corners share split
+/// between them; `None` when no corner is chosen.
+pub fn max_fillet(path: &BezPath, only: Option<&[usize]>) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for sub in subpaths(path) {
+        let n = sub.segs.len();
+        if n == 0 {
+            continue;
+        }
+        let count = if sub.closed { n } else { n - 1 };
+        let lens: Vec<f64> = sub.segs.iter().map(|(s, _)| s.arclen(ACCURACY)).collect();
+        // Corner k sits after segment k: its angle when it is a chosen
+        // corner.
+        let angle: Vec<Option<f64>> = (0..n)
+            .map(|k| {
+                if k >= count {
+                    return None;
+                }
+                let (seg_in, index) = &sub.segs[k];
+                let at_start = sub.closed && k == n - 1;
+                if let Some(only) = only {
+                    if !(only.contains(index) || (at_start && only.contains(&sub.start_index))) {
+                        return None;
+                    }
+                }
+                let (seg_out, _) = &sub.segs[(k + 1) % n];
+                let (u_in, u_out) = (end_dir(seg_in)?, start_dir(seg_out)?);
+                let theta = (-u_in).dot(u_out).clamp(-1.0, 1.0).acos();
+                (1e-3..=std::f64::consts::PI - 1e-3)
+                    .contains(&theta)
+                    .then_some(theta)
+            })
+            .collect();
+        for k in 0..count {
+            let Some(theta) = angle[k] else {
+                continue;
+            };
+            let out_k = (k + 1) % n;
+            // The corner before segment k and the one after segment out_k.
+            let before = if k > 0 {
+                angle[k - 1].is_some()
+            } else {
+                sub.closed && angle[n - 1].is_some()
+            };
+            let after = angle[out_k].is_some() && (out_k < count);
+            let room_in = if before { lens[k] / 2.0 } else { lens[k] };
+            let room_out = if after {
+                lens[out_k] / 2.0
+            } else {
+                lens[out_k]
+            };
+            let r = room_in.min(room_out) * (theta / 2.0).tan();
+            best = Some(best.map_or(r, |b: f64| b.min(r)));
+        }
+    }
+    best
+}
+
+/// `path` with its corners cut. With `only`, just the corners at those/// `path` with its corners cut. With `only`, just the corners at those
 /// nodes (element indices, as the Shape tool counts them); otherwise every
 /// corner. Returns the new path and the number of corners cut.
 pub fn cut_corners(path: &BezPath, cut: CornerCut, only: Option<&[usize]>) -> (BezPath, usize) {
@@ -327,6 +433,38 @@ pub fn cut_corners(path: &BezPath, cut: CornerCut, only: Option<&[usize]>) -> (B
 mod tests {
     use super::*;
     use crate::geometry::{Rect, Shape as _};
+
+    /// A square's four corners point inwards at right angles; an open
+    /// zigzag has corners at its middle nodes only; the largest fillet
+    /// fits the shared sides.
+    #[test]
+    fn corners_and_the_largest_fillet_they_take() {
+        let sq = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1);
+        let c = corners(&sq);
+        assert_eq!(c.len(), 4, "{c:?}");
+        for k in &c {
+            assert!((k.theta - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+            // Into the square, towards its centre.
+            let to_centre = Point::new(5.0, 5.0) - k.at;
+            assert!(k.inside.dot(to_centre) > 0.0, "{k:?}");
+        }
+        // Every corner: half of each 10 mm side, at 90 degrees.
+        assert!((max_fillet(&sq, None).unwrap() - 5.0).abs() < 1e-6);
+        // One corner alone takes the whole side.
+        let one = [c[1].node];
+        assert!((max_fillet(&sq, Some(&one)).unwrap() - 10.0).abs() < 1e-6);
+        let mut zig = BezPath::new();
+        zig.move_to((0.0, 0.0));
+        zig.line_to((10.0, 0.0));
+        zig.line_to((10.0, 10.0));
+        zig.line_to((20.0, 10.0));
+        let c = corners(&zig);
+        assert_eq!(c.iter().map(|k| k.node).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(max_fillet(&zig, Some(&[])), None);
+        // The fillet at that radius cuts every corner.
+        let r = max_fillet(&sq, None).unwrap();
+        assert_eq!(cut_corners(&sq, CornerCut::Fillet(r * 0.999), None).1, 4);
+    }
 
     fn square() -> BezPath {
         Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01)

@@ -13,7 +13,10 @@ with the current property bar settings (corner radius, arc angles,
 points and sharpness, revolutions, rows and columns, the chosen common
 shape, action lines): the same geometry the release creates. It is drawn
 in the colour and width of the default outline, at least one pixel wide
-(the selection colour when new objects get no outline). Crop, zoom and
+(the selection colour when new objects get no outline), and over it a
+black hairline on a white line twice as wide, so its edge shows on any
+outline colour and any drawing under it (#670; the 3-point tools'
+preview too). Crop, zoom and
 text frame drags keep a plain rectangle. After the release the new
 object is selected and shows the eight handles and the centre marker
 whatever tool is active.
@@ -153,6 +156,7 @@ terminator's ends, a rounded callout) keep their size in long boxes.
 
 ## Checks
 
+- `pick_drag_tests::overlays_are_drawn_on_a_white_line`
 - `common_shapes::tests::every_shape_fills_its_box`: every shape stays in
   its box and fills at least 80 % of it both ways, and is named.
 - `common_shapes::tests::rounded_corners_keep_their_size_in_long_boxes`:

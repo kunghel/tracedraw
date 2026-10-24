@@ -113,6 +113,7 @@ pub fn place(area: Rect, w: f64, h: f64, scale: Scale, anchor: u8) -> Rect {
 }
 
 /// A picture field's picture: the PNG, its size in pixels and in mm.
+#[derive(Clone)]
 pub struct Picture {
     pub png: Vec<u8>,
     pub px: (u32, u32),
@@ -172,6 +173,44 @@ fn picture_bytes(value: &str, dirs: &[std::path::PathBuf]) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// The pictures directly inside `dir` (by their extension), in name
+/// order ignoring case, numbers by their value ("2" before "10").
+pub fn folder_pictures(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = crate::files::list_dir(dir)
+        .into_iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| PICTURE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        })
+        .collect();
+    out.sort_by_cached_key(|p| natural_key(&p.file_name().unwrap_or_default().to_string_lossy()));
+    out
+}
+
+/// A sort key reading runs of digits as numbers and letters without case.
+fn natural_key(name: &str) -> Vec<(u8, u128, String)> {
+    let mut key = Vec::new();
+    let mut chars = name.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        let digit = c.is_ascii_digit();
+        let mut run = String::new();
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() != digit {
+                break;
+            }
+            run.push(c);
+            chars.next();
+        }
+        if digit {
+            key.push((0, run.parse().unwrap_or(u128::MAX), String::new()));
+        } else {
+            key.push((1, 0, run.to_lowercase()));
+        }
+    }
+    key
 }
 
 /// [`picture`] looked for in `dirs`.
@@ -811,6 +850,38 @@ pub fn perform(app: &mut App, st: &PrintMergeState) {
         Ok(_) => {}
         Err(e) => app.status = e,
     }
+}
+
+/// Fill the drawing's own pages instead of copies (the docker's merge
+/// with On every page, #618): record k goes on the k-th page from the
+/// first, as one undo step; pages past the last record, and records past
+/// the last page, are left out. Returns the pages filled.
+pub fn merge_onto_pages(
+    engine: &mut tracedraw_core::Engine,
+    st: &PrintMergeState,
+) -> Result<usize, String> {
+    let rows = values(st);
+    let pages: Vec<tracedraw_core::document::Page> = engine
+        .document()
+        .pages
+        .iter()
+        .take(rows.len())
+        .cloned()
+        .collect();
+    if pages.is_empty() {
+        return Err(crate::i18n::tr("merge.no_records"));
+    }
+    let mut cmds = Vec::new();
+    for (p, row) in pages.iter().zip(&rows) {
+        let mut new_id = || engine.new_shape_id();
+        cmds.extend(fill_page(st, p, row, &mut new_id));
+    }
+    if !cmds.is_empty() {
+        engine
+            .run_batch("Print Merge", &cmds)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(pages.len())
 }
 
 /// The merged pages as a drawing of their own (the docker's Create

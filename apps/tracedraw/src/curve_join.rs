@@ -196,7 +196,61 @@ fn joined(curve: &BezPath, line: &BezPath, tol: f64) -> Option<BezPath> {
     Some(to_path(&subs))
 }
 
+/// The handle a new segment from the open end of `sub` (its end when
+/// `at_end`, else its start) leaves along, so it goes on smoothly from the
+/// segment arriving there: the mirror of that segment's handle at the end
+/// node, `None` after a straight segment.
+fn mirrored_handle(sub: &Sub, at_end: bool) -> Option<Point> {
+    let (node, h) = if at_end {
+        let e = sub.end();
+        match *sub.segs.last()? {
+            Seg::Cubic(_, b, _) => (e, b),
+            Seg::Quad(c, _) => (e, e + (c - e) * (2.0 / 3.0)),
+            Seg::Line(_) => return None,
+        }
+    } else {
+        let s = sub.start;
+        match *sub.segs.first()? {
+            Seg::Cubic(a, _, _) => (s, a),
+            Seg::Quad(c, _) => (s, s + (c - s) * (2.0 / 3.0)),
+            Seg::Line(_) => return None,
+        }
+    };
+    let d = node - h;
+    (d.hypot() > 1e-9).then_some(node + d)
+}
+
 impl App {
+    /// The end node of an open curve under `p` (page) that a new Pen or
+    /// Bezier curve starts from to continue that curve: one of the
+    /// selected curve's, else one of the topmost visible, unlocked open
+    /// curve on the page that has one there. The curve, the end node
+    /// (page) and the handle the next segment leaves along, the mirror of
+    /// the end's own (#630).
+    pub(crate) fn open_end_at(&self, p: Point) -> Option<(ShapeId, Point, Option<Point>)> {
+        let tol = self.join_tolerance();
+        let selected = self.join_candidate();
+        let layers = self.page_layers();
+        let others = layers
+            .iter()
+            .rev()
+            .filter(|l| l.visible && !l.locked)
+            .flat_map(|l| l.shapes.iter().rev())
+            .filter(|s| s.visible && !s.locked && Some(s.id) != selected.as_ref().map(|c| c.id));
+        selected
+            .iter()
+            .chain(others)
+            .filter(|s| matches!(s.kind, ShapeKind::Path { .. }))
+            .filter(|s| s.transform.determinant().abs() > 1e-12)
+            .find_map(|s| {
+                let subs = subpaths(&s.page_path());
+                let (i, at_end) = end_near(&subs, p, tol)?;
+                let sub = subs.get(i)?;
+                let node = if at_end { sub.end() } else { sub.start };
+                Some((s.id, node, mirrored_handle(sub, at_end)))
+            })
+    }
+
     /// The selected curve a new line may join: one open curve lying on a
     /// layer.
     pub(crate) fn join_candidate(&self) -> Option<tracedraw_core::Shape> {

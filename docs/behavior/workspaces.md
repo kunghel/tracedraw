@@ -42,11 +42,16 @@ pixel and baseline grids, objects that will not print, proof colours,
 overprints, the view mode) and the dockers' own choices (`panels`: the
 Color docker's model and views, Align To, Use Outline, Distribute To).
 
-The preferences are saved whenever they change, looked at once a second
-(so a change lasts even when TraceDraw does not close normally, and in
-the browser, where closing the tab saves nothing), on Options' OK, and
-when TraceDraw closes; not while Options is open, whose Cancel puts them
-back. Values out of range in a file edited by hand are brought into
+The preferences are saved whenever they change, written at most once a
+second (so a change lasts even when TraceDraw does not close normally,
+and in the browser, where closing the tab saves nothing), on Options' OK,
+and when TraceDraw closes. They are looked at on a frame whose input
+could change them (a key, text, a click or release, the clipboard, a
+dropped file) and at most once a second otherwise (a frame that does
+not look asks for one when the second is up): pointer moves, drags in
+progress, the wheel and animation frames do not serialize them all,
+which cost every frame on slow computers (#616). Not while Options is open, whose Cancel puts
+them back. Values out of range in a file edited by hand are brought into
 range, and names TraceDraw does not know fall back to the defaults.
 Preferences written before the bars shown were kept have no
 `shown_bars`: the built-in workspace's bars show, as before; without
@@ -54,7 +59,9 @@ Preferences written before the bars shown were kept have no
 `tools`, `view` or `panels` they start as on a first start. Picking a
 built-in workspace sets its own bars, as it always did.
 Checks: `app::tests::tools_view_snapping_and_dockers_survive_a_restart`,
-`app::tests::preferences_are_saved_when_they_change`.
+`app::tests::preferences_are_saved_when_they_change`,
+`app::tests::preferences_are_looked_at_only_when_they_could_have_changed`,
+`pick_drag_tests::an_idle_window_asks_for_no_frame`.
 
 ## Dockers
 

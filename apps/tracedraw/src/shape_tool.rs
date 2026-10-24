@@ -380,7 +380,8 @@ impl App {
                     .map(|s| curves_on_double_click(&s.kind));
                 self.select(vec![id]);
                 if shape == Some(true) {
-                    self.convert_to_curves();
+                    // The nodes to edit; an envelope being edited stays.
+                    self.convert_selection_to_curves(false);
                 }
             }
             return;
@@ -452,17 +453,15 @@ impl App {
                     }
                     self.segment_spot = None;
                 }
-                let single = crate::kind_nodes::single_corner(
-                    self.rect_corner_selected,
-                    &s,
-                    node,
-                    mods.ctrl,
-                );
+                let single = crate::kind_nodes::single_corner(node, mods.ctrl);
+                let chosen =
+                    crate::kind_nodes::chosen_corners(&self.rect_corners_selected, &s, node);
                 self.drag = Drag::KindNode {
                     shape: s.id,
                     node,
                     start: Box::new(s),
                     single,
+                    chosen,
                     begun: false,
                     turn: 0.0,
                 };
@@ -478,6 +477,12 @@ impl App {
                         from: p,
                         begun: false,
                     };
+                    return;
+                }
+            }
+            // A corner widget rounds the corners (#635).
+            if let Some(w) = self.corner_widget_at(p) {
+                if self.start_corner_drag(w, p) {
                     return;
                 }
             }
@@ -584,6 +589,7 @@ impl App {
                     };
                 }
                 Drag::NodeMove { .. } => self.node_move_to(p, mods),
+                Drag::CornerWidget(d) => self.corner_drag_to(*d, p),
                 Drag::NodeTransform {
                     handle,
                     start,
@@ -689,6 +695,7 @@ impl App {
                     node,
                     start,
                     single,
+                    chosen,
                     begun,
                     mut turn,
                 } => {
@@ -708,7 +715,7 @@ impl App {
                             }
                             .map(|points| Command::SetSpline { shape, points })
                         }
-                        _ => crate::kind_nodes::drag(&start, node, q, single, &mut turn)
+                        _ => crate::kind_nodes::drag(&start, node, q, single, chosen, &mut turn)
                             .map(|kind| Command::SetShapeKind { shape, kind }),
                     };
                     if let Some(cmd) = cmd {
@@ -725,6 +732,7 @@ impl App {
                         node,
                         start,
                         single,
+                        chosen,
                         begun: true,
                         turn,
                     };
@@ -739,12 +747,26 @@ impl App {
                 return;
             }
             if let Some((s, node)) = self.kind_node_at(p) {
-                // A click on a rectangle corner chooses it: dragging it
-                // then changes that corner only.
-                self.rect_corner_selected = match node {
-                    crate::kind_nodes::KindNode::Corner { corner, .. } => Some((s.id, corner)),
-                    _ => None,
-                };
+                // A click on a rectangle corner chooses it alone, Shift or
+                // Ctrl adds or removes it: dragging a chosen corner then
+                // changes the chosen corners only (#671).
+                match node {
+                    crate::kind_nodes::KindNode::Corner { corner, .. } => {
+                        let key = (s.id, corner);
+                        if mods.shift || mods.ctrl || mods.command {
+                            if let Some(i) =
+                                self.rect_corners_selected.iter().position(|k| *k == key)
+                            {
+                                self.rect_corners_selected.remove(i);
+                            } else {
+                                self.rect_corners_selected.push(key);
+                            }
+                        } else {
+                            self.rect_corners_selected = vec![key];
+                        }
+                    }
+                    _ => self.rect_corners_selected.clear(),
+                }
                 // A B-spline's control point: chosen alone, Shift adds or
                 // removes it.
                 if let crate::kind_nodes::KindNode::Spline { index } = node {
@@ -755,6 +777,10 @@ impl App {
             if let Some(hit) = self.node_at(p) {
                 self.segment_spot = None;
                 self.click_node((hit.shape, hit.index), mods);
+                return;
+            }
+            // A click on a corner widget keeps the selection.
+            if self.corner_widget_at(p).is_some() {
                 return;
             }
             // A click on a segment chooses the segment: it is drawn
@@ -813,6 +839,9 @@ impl App {
         // B-splines: their control points inside.
         sel.extend(self.spline_points_where(|q| r.contains(q)));
         self.node_selection = sel;
+        // Rectangles: the corners whose nodes are inside (#671).
+        self.rect_corners_selected =
+            crate::kind_nodes::corners_where(&self.shape_tool_shapes(), |q| r.contains(q));
         self.segment_spot = None;
         // Character nodes of selected texts too.
         self.choose_chars_in(|q| r.contains(q));

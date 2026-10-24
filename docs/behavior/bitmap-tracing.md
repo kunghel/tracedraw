@@ -36,21 +36,47 @@ full trace.
 
 ## Algorithm (outline mode)
 
-1. Quantise colours with median cut to `n` colours, after a 3x3 median
-   filter when detail < 50.
-2. For each colour, build the binary mask and extract contours with the
-   Potrace path decomposition (turn policy: minority) and corner
-   detection (alphamax `= 1 - smoothing/100 * 0.66`).
-3. Fit each contour with cubic Beziers (Potrace's optimal curve fitting,
-   tolerance `0.2 + (100 - detail)/100 * 1.5` px).
-4. Stack regions dark to light, largest first; remove the region
-   matching the background colour when requested.
+1. Blur a little when detail < 50, then quantise the colours with median
+   cut to the number of colours (black and white: by brightness).
+2. Specks (#611): every 4-connected patch of one colour smaller than
+   `round(((100 - detail) / 10)^2)` pixels (none at detail 100, 4 at 80,
+   16 at 60, 42 at 35) takes the colour most of its neighbours have, so
+   stray dots and the fringes of soft edges make no curves of their own.
+   Transparent pixels are left alone.
+3. For each colour, the boundary rings of its mask along the pixel
+   edges.
+4. Smoothing 0: each ring as straight lines along the pixel edges
+   (Douglas-Peucker, tolerance `0.3 + (100 - detail) / 100 * 2.5` px).
+   Otherwise each ring is fitted (#611):
+   - one point in the middle of every pixel edge, so stair steps become
+     slopes;
+   - corners where the ring turns by more than `60 + corner smoothness *
+     0.8` degrees over 3 pixels (the sharpest point of each run), moved
+     onto the pixel corner standing out, so a square keeps its corners;
+   - the points between corners smoothed `round(1 + smoothing * 0.12)`
+     times with weights 1, 2, 1;
+   - each stretch between corners (a ring without corners in quarters
+     meeting smoothly) fitted with as few cubic Beziers as keep every
+     point within `0.2 + (100 - detail) / 100` px: least squares on
+     chord-length parameters with Newton steps, split at the worst point
+     (P. J. Schneider, "An Algorithm for Automatically Fitting Digitized
+     Curves", Graphics Gems, 1990). Ends take the direction over 4
+     points.
+5. Stack regions dark to light; remove the region of the background
+   colour (the most common colour on the border) when requested.
 
 Centreline mode: Zhang-Suen thinning, then the skeleton is traced into
 polylines, smoothed (Catmull-Rom) and output as curves with a stroke
 width equal to the mean local thickness.
 
 ## Checks
+
+- `trace::tests::traces_are_smooth_curves_with_sharp_corners_and_no_specks`:
+  a 30 px circle is 2 to 12 curves, no straight steps, within the
+  fitting tolerance of the circle and 2 % of its area; a square with
+  specks around it is one square with corners on its pixel corners; at
+  detail 100 the specks stay.
+- `trace::tests::despeckle_fills_small_patches_with_their_surroundings`.
 
 - Given a 200x200 image of a black circle on white, outline mode, 2
   colours, then one closed curve with area within 2% of the circle.

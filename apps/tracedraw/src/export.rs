@@ -410,37 +410,66 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
             Ok(String::new())
         }
         _ => {
-            let pdf = tracedraw_io::pdf::document_to_pdf(&doc);
             let name = format!("{stem}.pdf");
+            if let (Some(printer), false) = (&st.printer, crate::files::WEB) {
+                return print_on(printer, &name, &doc, st.copies, st.collate, &stem);
+            }
+            let pdf = tracedraw_io::pdf::document_to_pdf(&doc);
             if crate::files::WEB {
                 // In a browser the PDF is downloaded; its viewer prints it.
                 let path = std::path::PathBuf::from("/download").join(&name);
                 crate::files::write(&path, pdf).map_err(|e| e.to_string())?;
                 return Ok(trf("status.print_sent", &[("path", &name)]));
             }
-            match &st.printer {
-                Some(printer) => print_on(printer, &name, pdf, st.copies, st.collate, &stem),
-                None => print_through_viewer(&name, pdf),
-            }
+            print_through_viewer(&name, pdf)
         }
     }
 }
 
 /// The print PDF sent to the system printer `printer` (`lp`), with the
 /// copies the dialog asked for.
+#[cfg(not(target_os = "windows"))]
 fn print_on(
     printer: &str,
     name: &str,
-    pdf: Vec<u8>,
+    doc: &Document,
     copies: u32,
     collate: bool,
     title: &str,
 ) -> Result<String, String> {
+    let pdf = tracedraw_io::pdf::document_to_pdf(doc);
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(name);
     crate::files::write(&path, pdf).map_err(|e| e.to_string())?;
     crate::printers::print_pdf(printer, &path, copies, collate, title)?;
+    Ok(trf("status.print_sent_printer", &[("name", printer)]))
+}
+
+/// The resolution sheets are drawn at for a Windows printer.
+#[cfg(target_os = "windows")]
+const WINDOWS_PRINT_DPI: f64 = 300.0;
+
+/// The sheets drawn as pictures and sent to the Windows printer
+/// `printer`, local or on the network (#614), with the copies the dialog
+/// asked for.
+#[cfg(target_os = "windows")]
+fn print_on(
+    printer: &str,
+    _name: &str,
+    doc: &Document,
+    copies: u32,
+    collate: bool,
+    title: &str,
+) -> Result<String, String> {
+    let sheets: Vec<(Vec<u8>, f64, f64)> = doc
+        .pages
+        .iter()
+        .filter_map(|p| {
+            sheet_png(doc, p.id, WINDOWS_PRINT_DPI).map(|png| (png, p.size.width, p.size.height))
+        })
+        .collect();
+    crate::printers::print_sheets_windows(printer, &sheets, copies, collate, title)?;
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
 }
 
@@ -703,27 +732,38 @@ fn overprint_black(s: &mut tracedraw_core::Shape) {
     }
 }
 
+/// A sheet drawn on white at `dpi`: its PNG and size in pixels.
+fn sheet_pixels(
+    doc: &Document,
+    id: tracedraw_core::PageId,
+    dpi: f64,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let pm = tracedraw_render::render_page_image(doc, id, dpi)?;
+    let mut white = tiny_skia::Pixmap::new(pm.width(), pm.height())?;
+    white.fill(tiny_skia::Color::WHITE);
+    white.draw_pixmap(
+        0,
+        0,
+        pm.as_ref(),
+        &Default::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    let png = white.encode_png().ok()?;
+    Some((png, white.width(), white.height()))
+}
+
+/// [`sheet_pixels`]'s PNG.
+#[cfg(target_os = "windows")]
+fn sheet_png(doc: &Document, id: tracedraw_core::PageId, dpi: f64) -> Option<Vec<u8>> {
+    sheet_pixels(doc, id, dpi).map(|(png, _, _)| png)
+}
+
 /// General > Print as bitmap: each sheet becomes one picture of itself.
 fn sheets_as_bitmaps(doc: &mut Document, dpi: f64) {
     let pages: Vec<_> = doc.pages.iter().map(|p| (p.id, p.size)).collect();
     for (id, size) in pages {
-        let Some(pm) = tracedraw_render::render_page_image(doc, id, dpi) else {
-            continue;
-        };
-        let mut white = match tiny_skia::Pixmap::new(pm.width(), pm.height()) {
-            Some(w) => w,
-            None => continue,
-        };
-        white.fill(tiny_skia::Color::WHITE);
-        white.draw_pixmap(
-            0,
-            0,
-            pm.as_ref(),
-            &Default::default(),
-            tiny_skia::Transform::identity(),
-            None,
-        );
-        let Ok(png) = white.encode_png() else {
+        let Some((png, w, h)) = sheet_pixels(doc, id, dpi) else {
             continue;
         };
         let shape_id = doc.ids_mut().shape();
@@ -731,8 +771,8 @@ fn sheets_as_bitmaps(doc: &mut Document, dpi: f64) {
             shape_id,
             ShapeKind::Bitmap {
                 rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, size.width, size.height),
-                width_px: white.width(),
-                height_px: white.height(),
+                width_px: w,
+                height_px: h,
                 png,
                 fx: None,
             },

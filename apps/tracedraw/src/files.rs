@@ -97,6 +97,55 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
     std::fs::write(path, bytes)
 }
 
+/// Write a file as `fill` makes it, without holding the whole file in
+/// memory; in a browser, the bytes are gathered and downloaded.
+pub fn write_with(
+    path: impl AsRef<Path>,
+    fill: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let path = path.as_ref();
+    if WEB {
+        let mut bytes = Vec::new();
+        fill(&mut bytes)?;
+        return write(path, bytes);
+    }
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    fill(&mut w)?;
+    std::io::Write::flush(&mut w)
+}
+
+/// Write a file as `fill` makes it, creating its folder first
+/// (auto-backups). It is written under a `.part` name and renamed when
+/// complete, so a write cut short never leaves half a file under the
+/// real name. Nothing happens in a browser.
+pub fn write_creating_with(
+    path: impl AsRef<Path>,
+    fill: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if WEB {
+        return Ok(());
+    }
+    let path = path.as_ref();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let written = std::fs::File::create(&part).and_then(|f| {
+        let mut w = std::io::BufWriter::new(f);
+        fill(&mut w)?;
+        std::io::Write::flush(&mut w)
+    });
+    match written.and_then(|()| std::fs::rename(&part, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
 /// Copy a file, creating the target folder (backups). Nothing happens in
 /// a browser, which has no files to copy.
 pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {

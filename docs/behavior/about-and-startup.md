@@ -98,27 +98,71 @@ and `--reset-settings` starts open windows of their own.
 - The desktop window is drawn with wgpu (Direct3D 12, Vulkan or Metal).
   Options > General > Use hardware acceleration (on) picks the graphics
   card named beside it, or with Fastest available a separate card before
-  a built-in one, a virtual one, others, and a software adapter last.
-  Off, the software adapter (WARP on Windows, a CPU Vulkan driver
+  a built-in one, a virtual one, then others; never a software adapter
+  (#616). Off, the software adapter (WARP on Windows, a CPU Vulkan driver
   elsewhere). Options shows what draws the window in this run; the
   choice takes effect at the next start.
-- A start that cannot open the window that way runs TraceDraw again
-  with `--renderer=software`, and if that fails too with `--renderer=gl`
-  (OpenGL, as earlier versions drew), the other arguments kept; the
-  first process waits for it. The renderer that opened the window when
-  the first choice did not is kept in the settings (`working_renderer`)
-  and used straight away next time; changing the choice in Options
-  clears it (`gpu::tests::a_renderer_that_fails_hands_over_to_the_next`).
+- A start that cannot open the window that way runs TraceDraw again with
+  the next renderer, the other arguments kept; the first process waits
+  for it. With hardware acceleration on the order is the graphics card,
+  then `--renderer=gl` (OpenGL, as earlier versions drew), then
+  `--renderer=software`: the software adapter draws every frame on the
+  CPU and always opens, so it is the last resort. With it off: the
+  software adapter, then OpenGL. A computer whose card no wgpu backend
+  accepts (an old driver, no Direct3D 12) thus draws with OpenGL instead
+  of on the CPU (#616). The renderer that opened the window when the
+  first choice did not is kept in the settings (`working_renderer`) and
+  used straight away next time (and OpenGL from there falls back to the
+  software adapter); changing the choice in Options clears it
+  (`gpu::tests::a_renderer_that_fails_hands_over_to_the_next`,
+  `gpu::tests::hardware_mode_never_draws_on_the_software_adapter`).
   So a virtual machine without a usable graphics card opens.
+- A panic while a renderer starts (eframe's OpenGL set-up panics when
+  the driver offers no matching pixel format) is caught and logged, and
+  the next renderer is tried; it is not written to `crash.log` or shown.
+  When no renderer is left, the reason is logged and shown in a message
+  box naming the log (a panic of the last one is shown as a crash, with
+  `crash.log`), and TraceDraw ends with an error.
+- The log names every graphics adapter wgpu offers (backend, type,
+  vendor and device ids, driver) with why it was taken or left, the
+  renderer each start tries and the one that opened the window; an
+  OpenGL start adds the driver's vendor, renderer and versions.
 - The log goes to `tracedraw.log` in the settings folder as well as to
   the console (written afresh each start; a start handed over to the
   next renderer adds to it). A panic is written to `crash.log` there and
   shown in a message box naming that file, once; the Windows build has
   no console, so a start that failed showed nothing (#570,
   `startup_log::tests::the_log_and_the_crash_report_go_in_the_settings_folder`).
+- At start the log names the processor and its threads (and on Windows
+  the version and build, from `RtlGetVersion`), and wgpu's own lines on
+  which backends started and which adapters it left out
+  (`wgpu_core::instance` at debug; the default filter is
+  `info,wgpu_core::instance=debug`, `RUST_LOG` replaces it). The first
+  frame logs how long the start took, the window's size in pixels, the
+  pixels per point and the monitor's size. With `RUST_LOG=debug` (or
+  `info,tracedraw=debug`) a line every 10 s while frames happen gives
+  their count, how many had input, the mean and longest time to build
+  one, the mean and longest gap between them, and the five most frequent
+  reasons a frame was asked for; an idle window logs nothing, and with
+  debug off nothing is measured (#616,
+  `frame_stats::tests::frames_are_summed_up_every_ten_seconds`,
+  `startup_log::tests::the_log_names_the_computer`).
 - The Windows builds link the C runtime statically (`.cargo/config.toml`,
   `+crt-static`): they do not need `vcruntime140.dll` (#570).
 - The browser build draws with WebGL.
+- A software adapter drawing the window (wgpu's CPU adapter, WARP on
+  Windows, or an OpenGL renderer named GDI Generic, llvmpipe, softpipe,
+  lavapipe or SwiftShader) rasterizes every frame on the CPU, and every
+  pointer move is a frame, so the window then keeps lighter (#616):
+  frames begin at least 1/30 s apart (the pointer moves in between are
+  merged into the next frame), menus, dialogs and dockers cast no
+  shadows, and the drawn pointers (cross hair, I-beam, hands, magnifiers
+  and the others) give way to the system's nearest, as a drawn one
+  trails the real pointer by a slow frame. The status bar says it once,
+  naming the adapter, and the log says it at start. A graphics card is
+  never paced (`gpu::tests::frames_are_paced_to_the_cap`,
+  `gpu::tests::software_renderers_are_recognised`,
+  `ui::cursors::tests::a_software_adapter_shows_the_system_pointers`).
 
 ## Back to the defaults
 

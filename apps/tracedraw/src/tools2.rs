@@ -415,6 +415,11 @@ impl App {
             if out.elements().is_empty() {
                 continue;
             }
+            // The stroke comes back as many short lines: fit it to lines
+            // and curves with as few nodes as keep its shape (#622).
+            if band.is_none() {
+                out = tracedraw_core::fit::fit_path(&out, OUTLINE_FIT_TOLERANCE);
+            }
             let id = self.engine.new_shape_id();
             let mut o = Shape::new(
                 id,
@@ -440,19 +445,38 @@ impl App {
     }
 }
 
+/// How far (mm) the curves of a converted outline may stray from the
+/// flattened stroke they are fitted to.
+const OUTLINE_FIT_TOLERANCE: f64 = 0.01;
+
 /// Flattened subpaths of a page path as point lists with a closed flag.
+/// A subpath that ends where it starts (an ellipse) is closed, its
+/// closing point not repeated: stroked open, its ends made a notch there
+/// (#622).
 fn polylines(path: &BezPath) -> Vec<(Vec<[f64; 2]>, bool)> {
     use tracedraw_core::geometry::PathEl;
+    fn finish(cur: &mut Vec<[f64; 2]>, closed: bool, out: &mut Vec<(Vec<[f64; 2]>, bool)>) {
+        let meets = cur.len() > 2
+            && cur
+                .first()
+                .zip(cur.last())
+                .is_some_and(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6);
+        if meets {
+            cur.pop();
+        }
+        if cur.len() >= 2 {
+            out.push((std::mem::take(cur), closed || meets));
+        }
+        cur.clear();
+    }
     let mut out: Vec<(Vec<[f64; 2]>, bool)> = Vec::new();
     let mut cur: Vec<[f64; 2]> = Vec::new();
     let mut closed = false;
-    kurbo::flatten(path.elements().iter().copied(), 0.05, &mut |el| match el {
+    // Fine enough that the stroke's corners at the joins of the short
+    // lines stay well inside the tolerance the outline is fitted to.
+    kurbo::flatten(path.elements().iter().copied(), 0.005, &mut |el| match el {
         PathEl::MoveTo(p) => {
-            if cur.len() >= 2 {
-                out.push((std::mem::take(&mut cur), closed));
-            } else {
-                cur.clear();
-            }
+            finish(&mut cur, closed, &mut out);
             closed = false;
             cur.push([p.x, p.y]);
         }
@@ -460,9 +484,7 @@ fn polylines(path: &BezPath) -> Vec<(Vec<[f64; 2]>, bool)> {
         PathEl::ClosePath => closed = true,
         _ => {}
     });
-    if cur.len() >= 2 {
-        out.push((cur, closed));
-    }
+    finish(&mut cur, closed, &mut out);
     out
 }
 
@@ -566,6 +588,81 @@ mod tests {
         let pp = out.page_path();
         assert!(!kurbo::Shape::contains(&pp, Point::new(15.0, 10.0)));
         assert!(kurbo::Shape::contains(&pp, Point::new(12.0, 10.0)));
+    }
+
+    /// Ctrl+Shift+Q on an object of `kind` with a `width` mm black
+    /// outline set up by `style`: the new object's path.
+    fn outline_object(kind: ShapeKind, width: f64, style: impl Fn(&mut Stroke)) -> (App, BezPath) {
+        let mut app = App::headless();
+        let id = app.new_shape(kind).expect("shape");
+        let mut st = Stroke::new(tracedraw_core::Color::BLACK, width);
+        style(&mut st);
+        app.select(vec![id]);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st),
+        });
+        app.convert_outline_to_object();
+        let out = app
+            .doc()
+            .find_shape(app.selection[0])
+            .map(|s| s.page_path())
+            .expect("object");
+        (app, out)
+    }
+
+    /// Lines and curves of a path.
+    fn segments(path: &BezPath) -> (usize, usize) {
+        let els = path.elements();
+        let lines = els
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::LineTo(_)))
+            .count();
+        let curves = els
+            .iter()
+            .filter(|e| matches!(e, kurbo::PathEl::CurveTo(..)))
+            .count();
+        (lines, curves)
+    }
+
+    /// Convert Outline to Object on an ellipse keeps it round: two rings
+    /// of a few curves each, not hundreds of short lines (#622).
+    #[test]
+    fn an_ellipse_outline_becomes_a_few_curves() {
+        let ring = ShapeKind::Ellipse {
+            rect: Rect::new(10.0, 10.0, 70.0, 50.0),
+            arc: None,
+        };
+        let (_, out) = outline_object(ring, 4.0, |_| {});
+        let (lines, curves) = segments(&out);
+        assert_eq!(lines, 0, "{:?}", out.elements());
+        assert!((8..=16).contains(&curves), "{curves} curves");
+        // The ring is 4 mm wide around the ellipse.
+        assert!(kurbo::Shape::contains(&out, Point::new(11.0, 30.0)));
+        assert!(!kurbo::Shape::contains(&out, Point::new(13.5, 30.0)));
+        assert!(!kurbo::Shape::contains(&out, Point::new(7.5, 30.0)));
+        let b = out.bounding_box();
+        assert!(
+            (b.width() - 64.0).abs() < 0.05 && (b.height() - 44.0).abs() < 0.05,
+            "{b:?}"
+        );
+    }
+
+    /// A straight line with butt ends becomes the rectangle of its
+    /// outline: four straight sides, four nodes (#622).
+    #[test]
+    fn a_straight_outline_becomes_a_rectangle() {
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((70.0, 10.0));
+        let line = ShapeKind::Path {
+            path: line,
+            closed: false,
+        };
+        let (_, out) = outline_object(line, 2.0, |st| {
+            st.cap = tracedraw_core::LineCap::Butt;
+        });
+        assert_eq!(segments(&out), (4, 0), "{:?}", out.elements());
     }
 
     /// Every shape tool previews the object it is about to create, sized

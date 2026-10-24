@@ -22,14 +22,35 @@ pub fn rect_path(rect: Rect, radius: f64) -> BezPath {
     }
 }
 
-/// Build a closed ellipse path inscribed in `rect`.
+/// Build a closed ellipse path inscribed in `rect`: four curves between
+/// nodes at the right, bottom, left and top (in that order, starting at
+/// the right), each node with equal handles along the tangent, and the
+/// last curve ending on the start, so it is one closed curve of four
+/// nodes when converted to curves (#625).
 pub fn ellipse_path(rect: Rect) -> BezPath {
-    Ellipse::new(
-        rect.center(),
-        (rect.width() / 2.0, rect.height() / 2.0),
-        0.0,
-    )
-    .to_path(0.01)
+    // Handle length of a quarter circle as a cubic, as a share of the
+    // radius: 4/3 (sqrt 2 - 1).
+    const K: f64 = 0.552_284_749_830_793_4;
+    let c = rect.center();
+    let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+    let (kx, ky) = (rx * K, ry * K);
+    let right = Point::new(c.x + rx, c.y);
+    let bottom = Point::new(c.x, c.y + ry);
+    let left = Point::new(c.x - rx, c.y);
+    let top = Point::new(c.x, c.y - ry);
+    let mut path = BezPath::new();
+    path.move_to(right);
+    let at = |x: f64, y: f64| Point::new(x, y);
+    path.curve_to(
+        at(right.x, right.y + ky),
+        at(bottom.x + kx, bottom.y),
+        bottom,
+    );
+    path.curve_to(at(bottom.x - kx, bottom.y), at(left.x, left.y + ky), left);
+    path.curve_to(at(left.x, left.y - ky), at(top.x - kx, top.y), top);
+    path.curve_to(at(top.x + kx, top.y), at(right.x, right.y - ky), right);
+    path.close_path();
+    path
 }
 
 /// Arc or pie of the ellipse inscribed in `rect`, angles in degrees CCW from +x.
@@ -408,6 +429,46 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// An ellipse is one closed curve of four nodes at the right, bottom,
+    /// left and top, each with equal handles, whatever its size (#625).
+    #[test]
+    fn an_ellipse_is_closed_with_four_nodes_on_its_axes() {
+        for rect in [
+            Rect::new(10.0, 20.0, 70.0, 50.0),
+            Rect::new(0.0, 0.0, 400.0, 900.0),
+            Rect::new(-3.0, -3.0, 3.0, 3.0),
+        ] {
+            let p = ellipse_path(rect);
+            assert_eq!(p.elements().last(), Some(&PathEl::ClosePath), "{p:?}");
+            let nodes = crate::nodes::nodes(&p);
+            assert_eq!(nodes.len(), 4, "{p:?}");
+            let c = rect.center();
+            let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+            let at: Vec<Point> = nodes.iter().map(|n| n.pos).collect();
+            assert_eq!(
+                at,
+                vec![
+                    Point::new(c.x + rx, c.y),
+                    Point::new(c.x, c.y + ry),
+                    Point::new(c.x - rx, c.y),
+                    Point::new(c.x, c.y - ry),
+                ]
+            );
+            for n in &nodes {
+                let (i, o) = (n.ctrl_in.expect("in"), n.ctrl_out.expect("out"));
+                assert!(((i - n.pos) + (o - n.pos)).hypot() < 1e-9, "{n:?}");
+            }
+            // On the ellipse within a hair everywhere.
+            for seg in p.segments() {
+                for k in 0..=10 {
+                    let q = seg.eval(k as f64 / 10.0);
+                    let r = ((q.x - c.x) / rx).powi(2) + ((q.y - c.y) / ry).powi(2);
+                    assert!((r.sqrt() - 1.0).abs() < 3e-4, "{q:?}");
+                }
+            }
+        }
     }
 
     #[test]
