@@ -184,6 +184,10 @@ pub fn options(
         found.ok_or_else(|| "no graphics adapter can draw the window".to_string())
     }));
     let config = WgpuConfiguration {
+        // One frame queued, not two: what is drawn under the pointer (a
+        // shape being drawn, a drawn pointer) trails it by a frame less
+        // (#655).
+        surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
         wgpu_setup: WgpuSetup::CreateNew(setup),
         ..Default::default()
     };

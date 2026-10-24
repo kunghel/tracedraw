@@ -1,7 +1,9 @@
 //! The pointer over the drawing window shows the active tool and what a
-//! press would do. Tools with a system cursor on every platform use it
-//! (the arrow, the crosshair, the text I-beam, the resize and move
-//! arrows); the others draw their own: a magnifier with a plus or a minus
+//! press would do. The arrow and the resize and move arrows are the
+//! system's own; the cross hair and the text I-beam are drawn, black on a
+//! white halo, because the system's invert what is under them and can
+//! show white on a white page (#655). The others are drawn too: a
+//! magnifier with a plus or a minus
 //! for Zoom, an open or closed hand for Pan and middle-button panning, a
 //! pipette for the eyedroppers and palette sampling, a paint bucket for
 //! Area Fill, turning and slanting arrows for the rotate and skew
@@ -46,9 +48,15 @@ pub enum ToolCursor {
     DragMove {
         copy: bool,
     },
-    /// The system cross hair with the tool's icon at its lower right (the
+    /// The cross hair with the tool's icon at its lower right (the
     /// drawing, effect and fill tools).
     Badge(Tool),
+    /// The cross hair alone (the Pick tool with the cross hair option, the
+    /// ruler origin dragged out).
+    Cross,
+    /// The text I-beam, its middle the hot spot (where a click edits
+    /// text).
+    IBeam,
     /// A curve tool's badge with what a press there would do: continue
     /// the selected curve from its end node, or close the curve being
     /// drawn on its first node.
@@ -195,14 +203,14 @@ fn across_guide(line: &tracedraw_core::document::GuideLine) -> ToolCursor {
 /// The pointer while a guideline or the ruler origin is dragged out of
 /// the rulers (with any tool): the arrows across the new guideline, the
 /// cross hair for the origin.
-pub fn ruler_drag_cursor(app: &App) -> Option<egui::CursorIcon> {
+pub fn ruler_drag_cursor(app: &App) -> Option<ToolCursor> {
     match &app.drag {
-        Drag::NewGuide { horizontal, .. } => Some(if *horizontal {
+        Drag::NewGuide { horizontal, .. } => Some(ToolCursor::System(if *horizontal {
             egui::CursorIcon::ResizeVertical
         } else {
             egui::CursorIcon::ResizeHorizontal
-        }),
-        Drag::RulerOrigin { .. } => Some(egui::CursorIcon::Crosshair),
+        })),
+        Drag::RulerOrigin { .. } => Some(ToolCursor::Cross),
         _ => None,
     }
 }
@@ -316,11 +324,9 @@ pub fn for_tool(
         Tool::AreaFill => ToolCursor::Bucket,
         // The I-beam where a click edits text, else the cross hair with the
         // tool's sign (a click starts a new text, a drag a frame).
-        Tool::Text if over_text(app, pos) => ToolCursor::System(egui::CursorIcon::Text),
+        Tool::Text if over_text(app, pos) => ToolCursor::IBeam,
         Tool::Text => ToolCursor::Badge(Tool::Text),
-        Tool::Pick | Tool::FreeformPick if app.settings.crosshair_cursor => {
-            ToolCursor::System(egui::CursorIcon::Crosshair)
-        }
+        Tool::Pick | Tool::FreeformPick if app.settings.crosshair_cursor => ToolCursor::Cross,
         Tool::Pick | Tool::FreeformPick => ToolCursor::System(egui::CursorIcon::Default),
         Tool::Shape => shape_cursor(app, pos),
         Tool::Table => app.table_cursor(pos),
@@ -432,34 +438,18 @@ fn nib_px(mm: f64, zoom: f32) -> f32 {
 /// Show `cursor` at `pos` (the pointer): set the system cursor, or hide it
 /// and paint the drawn one on top of everything.
 pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
-    // The system cross hair stays sharp; the badge or the nib is painted
-    // next to it.
-    if matches!(
-        cursor,
-        ToolCursor::Badge(_) | ToolCursor::CurveBadge(..) | ToolCursor::Nib { .. }
-    ) {
-        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-        if let Some(p) = pos {
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Tooltip,
-                egui::Id::new("tool_cursor"),
-            ));
-            paint(&painter, cursor, p);
-        }
+    if let ToolCursor::System(icon) = cursor {
+        ctx.set_cursor_icon(icon);
         return;
     }
-    let ToolCursor::System(icon) = cursor else {
-        ctx.set_cursor_icon(egui::CursorIcon::None);
-        if let Some(p) = pos {
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Tooltip,
-                egui::Id::new("tool_cursor"),
-            ));
-            paint(&painter, cursor, p);
-        }
-        return;
-    };
-    ctx.set_cursor_icon(icon);
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    if let Some(p) = pos {
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::new("tool_cursor"),
+        ));
+        paint(&painter, cursor, p);
+    }
 }
 
 const INK: Color32 = Color32::BLACK;
@@ -479,11 +469,17 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
         ToolCursor::Skew { horizontal } => skew_arrows(painter, p, horizontal),
         ToolCursor::ShapeArrow(mark) => shape_arrow(painter, p, mark),
         ToolCursor::DragMove { copy } => drag_move(painter, p, copy),
-        ToolCursor::Badge(tool) => badge(painter, p, tool),
+        ToolCursor::Badge(tool) => {
+            cross_hair(painter, p);
+            badge(painter, p, tool);
+        }
         ToolCursor::CurveBadge(tool, mark) => {
+            cross_hair(painter, p);
             badge(painter, p, tool);
             curve_mark_sign(painter, p, mark);
         }
+        ToolCursor::Cross => cross_hair(painter, p),
+        ToolCursor::IBeam => i_beam(painter, p),
         ToolCursor::TargetArrow => target_arrow(painter, p),
         ToolCursor::PenNib(mark) => {
             pen_nib(painter, p);
@@ -491,8 +487,53 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
                 curve_mark_at(painter, p + Vec2::new(4.0, 14.0), m);
             }
         }
-        ToolCursor::Nib { radius, square } => nib(painter, p, radius, square),
+        ToolCursor::Nib { radius, square } => {
+            nib(painter, p, radius, square);
+            cross_hair(painter, p);
+        }
         ToolCursor::TableArrow { down } => table_arrow(painter, p, down),
+    }
+}
+
+/// How far each arm of the cross hair reaches from its middle, points.
+const CROSS_ARM: f32 = 10.0;
+
+/// The cross hair's two lines, crossing on the middle of the pixel under
+/// the hot spot `p` (`ppp` pixels a point), so they stay sharp.
+pub fn cross_hair_lines(p: Pos2, ppp: f32) -> [[Pos2; 2]; 2] {
+    use egui::emath::GuiRounding as _;
+    let c = p.round_to_pixel_center(ppp);
+    [
+        [c - Vec2::new(CROSS_ARM, 0.0), c + Vec2::new(CROSS_ARM, 0.0)],
+        [c - Vec2::new(0.0, CROSS_ARM), c + Vec2::new(0.0, CROSS_ARM)],
+    ]
+}
+
+/// The cross hair, black on a white halo: seen on any page colour (the
+/// system's inverts what is under it and can show white, #655).
+fn cross_hair(painter: &Painter, p: Pos2) {
+    let lines = cross_hair_lines(p, painter.pixels_per_point());
+    for (w, color) in [(3.0, HALO), (1.0, INK)] {
+        for l in lines {
+            painter.line_segment(l, Stroke::new(w, color));
+        }
+    }
+}
+
+/// The text I-beam, black on a white halo, its middle at `p`.
+fn i_beam(painter: &Painter, p: Pos2) {
+    use egui::emath::GuiRounding as _;
+    let c = p.round_to_pixel_center(painter.pixels_per_point());
+    let (h, s) = (8.0, 3.0);
+    let lines = [
+        [c - Vec2::new(0.0, h), c + Vec2::new(0.0, h)],
+        [c + Vec2::new(-s, -h), c + Vec2::new(s, -h)],
+        [c + Vec2::new(-s, h), c + Vec2::new(s, h)],
+    ];
+    for (w, color) in [(3.0, HALO), (1.0, INK)] {
+        for l in lines {
+            painter.line_segment(l, Stroke::new(w, color));
+        }
     }
 }
 
@@ -834,24 +875,40 @@ fn drag_move(painter: &Painter, tip: Pos2, copy: bool) {
         ));
     }
     if copy {
-        let s = Rect::from_min_size(at(15.0, 17.0), Vec2::splat(9.0));
-        painter.rect(
-            s,
-            CornerRadius::ZERO,
-            HALO,
-            Stroke::new(1.0, INK),
-            egui::StrokeKind::Inside,
-        );
-        let c = s.center();
-        painter.line_segment(
-            [c - Vec2::new(2.5, 0.0), c + Vec2::new(2.5, 0.0)],
-            Stroke::new(1.2, INK),
-        );
-        painter.line_segment(
-            [c - Vec2::new(0.0, 2.5), c + Vec2::new(0.0, 2.5)],
-            Stroke::new(1.2, INK),
-        );
+        copy_plus(painter, at(15.0, 17.0));
     }
+}
+
+/// The plus in a square that says a drag leaves the original, at the
+/// lower right of the pointer `p` (a scale, turn or slant after a right
+/// click; a move's own pointer draws it beside its box).
+pub fn paint_copy_plus(ctx: &egui::Context, p: Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("tool_cursor_copy"),
+    ));
+    copy_plus(&painter, p + Vec2::new(14.0, 16.0));
+}
+
+/// A 9-point square with a plus, its top left at `at`.
+fn copy_plus(painter: &Painter, at: Pos2) {
+    let s = Rect::from_min_size(at, Vec2::splat(9.0));
+    painter.rect(
+        s,
+        CornerRadius::ZERO,
+        HALO,
+        Stroke::new(1.0, INK),
+        egui::StrokeKind::Inside,
+    );
+    let c = s.center();
+    painter.line_segment(
+        [c - Vec2::new(2.5, 0.0), c + Vec2::new(2.5, 0.0)],
+        Stroke::new(1.2, INK),
+    );
+    painter.line_segment(
+        [c - Vec2::new(0.0, 2.5), c + Vec2::new(0.0, 2.5)],
+        Stroke::new(1.2, INK),
+    );
 }
 
 /// A lens centred on the hot spot with a handle to the lower right and a
@@ -959,6 +1016,78 @@ fn bucket(painter: &Painter, spot: Pos2) {
 mod tests {
     use super::*;
 
+    /// The cross hair (alone, with a tool's badge, with a nib) and the
+    /// I-beam are drawn black on a white halo with the system pointer
+    /// hidden, so they show on a page of any colour: the system's invert
+    /// what is under them and could show white on a white page (#655). The
+    /// cross hair's lines cross on the hot spot; the system's arrows stay.
+    #[test]
+    fn the_cross_hair_and_the_i_beam_are_drawn_black_on_white() {
+        let ctx = crate::theme::ui_context();
+        let at = Pos2::new(200.0, 150.0);
+        for c in [
+            ToolCursor::Badge(Tool::Rectangle),
+            ToolCursor::CurveBadge(Tool::Bezier, CurveMark::Join),
+            ToolCursor::Nib {
+                radius: 8.0,
+                square: false,
+            },
+            ToolCursor::Cross,
+            ToolCursor::IBeam,
+        ] {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show(ui.ctx(), c, Some(at)));
+            out.textures_delta.clear();
+            assert_eq!(
+                out.platform_output.cursor_icon,
+                egui::CursorIcon::None,
+                "{c:?}"
+            );
+            let mut ink = Vec::new();
+            let mut halo = 0;
+            for clipped in &out.shapes {
+                if let egui::Shape::LineSegment { points, stroke } = &clipped.shape {
+                    if stroke.color == INK && (stroke.width - 1.0).abs() < 1e-3 {
+                        ink.push(*points);
+                    } else if stroke.color == HALO && stroke.width > 2.0 {
+                        halo += 1;
+                    }
+                }
+            }
+            let through = |p: &[Pos2; 2]| {
+                let (a, b) = (p[0], p[1]);
+                let d = b - a;
+                let t = ((at - a).dot(d) / d.length_sq()).clamp(0.0, 1.0);
+                (a + d * t - at).length() < 0.75
+            };
+            if c != ToolCursor::IBeam {
+                let level = ink
+                    .iter()
+                    .filter(|p| through(p) && (p[0].y - p[1].y).abs() < 1e-3)
+                    .count();
+                let upright = ink
+                    .iter()
+                    .filter(|p| through(p) && (p[0].x - p[1].x).abs() < 1e-3)
+                    .count();
+                assert!(level >= 1 && upright >= 1, "{c:?}: {ink:?}");
+            } else {
+                assert!(ink.iter().any(through), "{c:?}");
+            }
+            assert!(halo >= ink.len().min(2), "a halo under the ink: {c:?}");
+        }
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            show(
+                ui.ctx(),
+                ToolCursor::System(egui::CursorIcon::Move),
+                Some(at),
+            )
+        });
+        assert_eq!(out.platform_output.cursor_icon, egui::CursorIcon::Move);
+        // The lines cross on the middle of the pixel under the hot spot.
+        let [h, v] = cross_hair_lines(Pos2::new(10.2, 20.7), 1.0);
+        assert_eq!((h[0].y, v[0].x), (20.5, 10.5));
+        assert_eq!(h[1].x - 10.5, 10.5 - h[0].x);
+    }
+
     /// The badge's icon reads on its light patch under every theme: the
     /// theme's icon colour is light on the dark ones.
     #[test]
@@ -1035,7 +1164,7 @@ mod tests {
             .to_screen(tracedraw_core::geometry::Point::new(52.0, 51.0));
         assert_eq!(
             for_tool(&app, false, false, false, Some(on)),
-            ToolCursor::System(egui::CursorIcon::Text)
+            ToolCursor::IBeam
         );
         app.tool = Tool::Rectangle;
         assert_eq!(

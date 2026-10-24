@@ -126,7 +126,7 @@ impl Drop for Link {
 
 /// A token nobody else can guess: random bytes from the time, the process
 /// and the address of a fresh allocation, hashed twice.
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     use std::hash::{BuildHasher, Hasher};
     let mut out = String::new();
     for round in 0..2u64 {

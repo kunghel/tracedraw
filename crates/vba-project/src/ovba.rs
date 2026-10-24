@@ -106,7 +106,7 @@ fn longest_match(chunk: &[u8], pos: usize) -> Option<(usize, usize)> {
         {
             length += 1;
         }
-        if length >= 3 && best.map_or(true, |(_, l)| length > l) {
+        if length >= 3 && best.is_none_or(|(_, l)| length > l) {
             best = Some((pos - candidate, length));
         }
     }

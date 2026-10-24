@@ -45,6 +45,7 @@ pub struct DocSlot {
     pub view: View,
     pub selection: Vec<ShapeId>,
     pub file: Option<PathBuf>,
+    pub opened_from: Option<PathBuf>,
     pub remote: Option<crate::github::Remote>,
     pub cdr_version: Option<u16>,
     pub cdr_unsaved_version: Option<u16>,
@@ -78,6 +79,7 @@ impl Default for DocSlot {
             view: View::default(),
             selection: Vec::new(),
             file: None,
+            opened_from: None,
             remote: None,
             cdr_version: None,
             cdr_unsaved_version: None,
@@ -125,6 +127,7 @@ impl App {
         };
         std::mem::swap(&mut self.engine, &mut slot.engine);
         std::mem::swap(&mut self.file, &mut slot.file);
+        std::mem::swap(&mut self.opened_from, &mut slot.opened_from);
         std::mem::swap(&mut self.remote, &mut slot.remote);
         std::mem::swap(&mut self.cdr_version, &mut slot.cdr_version);
         std::mem::swap(&mut self.cdr_unsaved_version, &mut slot.cdr_unsaved_version);
@@ -281,6 +284,7 @@ impl App {
             .set_max_history(self.settings.undo_levels.max(1));
         self.selection.clear();
         self.file = file;
+        self.opened_from = None;
         self.remote = None;
         self.cdr_version = None;
         self.cdr_unsaved_version = None;
@@ -330,6 +334,33 @@ impl App {
             let families = &self.font_families;
             self.missing_fonts.retain(|f| !families.contains(f));
         }
+    }
+
+    /// The tab to show for `path` when an open drawing was read from it or
+    /// saved to it (#645): the active window when it shows that drawing,
+    /// else the drawing's first window. None in a browser (uploads of one
+    /// name are different files).
+    pub fn tab_with_file(&self, path: &std::path::Path) -> Option<usize> {
+        if crate::files::WEB || !self.has_document() {
+            return None;
+        }
+        let want = crate::files::canonical(path);
+        let is = |file: &Option<PathBuf>, from: &Option<PathBuf>| {
+            from.iter().any(|p| crate::files::same_path(p, &want))
+                || file
+                    .iter()
+                    .any(|p| crate::files::same_path(&crate::files::canonical(p), &want))
+        };
+        let active = self.docs.get(self.active_doc)?.drawing;
+        if is(&self.file, &self.opened_from) {
+            return Some(self.active_doc);
+        }
+        let d = self
+            .docs
+            .iter()
+            .find(|d| d.holds && d.drawing != active && is(&d.file, &d.opened_from))?
+            .drawing;
+        self.docs.iter().position(|s| s.drawing == d)
     }
 
     /// Bring tab `i` to the front.
@@ -420,6 +451,7 @@ impl App {
         self.page = self.engine.document().pages[0].id;
         self.selection.clear();
         self.file = None;
+        self.opened_from = None;
         self.cdr_version = None;
         self.cdr_unsaved_version = None;
         self.tdraw_version = None;
@@ -556,6 +588,102 @@ mod tests {
             corners: None,
         })
         .expect("a layer")
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tracedraw-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("temp dir");
+        d
+    }
+
+    /// Opening a file that is open already shows its tab instead of a
+    /// second copy (#645): from another tab and from the Welcome Screen,
+    /// by another spelling of its path, unsaved changes kept; a `.cdr`
+    /// read once too, until the drawing is saved under another name.
+    #[test]
+    fn opening_an_open_file_again_shows_its_tab() {
+        let dir = temp_dir("open-again");
+        let mut app = App::headless();
+        app.open_document(
+            tracedraw_core::Document::new("Art", Size::new(100.0, 100.0)),
+            None,
+        );
+        add_rect(&mut app);
+        let path = dir.join("art.tdraw");
+        app.save_to(path.clone());
+        app.open_document(
+            tracedraw_core::Document::new("Other", Size::new(50.0, 50.0)),
+            None,
+        );
+        let tabs = app.docs.len();
+        let art = tabs - 2;
+        app.show_welcome = true;
+        app.open_path(path.clone());
+        assert_eq!(app.docs.len(), tabs, "no second copy");
+        assert_eq!(app.active_doc, art);
+        assert!(!app.show_welcome);
+        assert!(app.status.contains("art.tdraw"), "{}", app.status);
+        // Unsaved changes stay; another spelling of the path finds it.
+        add_rect(&mut app);
+        app.switch_document(tabs - 1);
+        app.open_path(dir.join(".").join("art.tdraw"));
+        assert_eq!(app.docs.len(), tabs);
+        assert_eq!(app.active_doc, art);
+        assert!(app.engine.is_dirty());
+        assert_eq!(shapes(&app), 2, "not read again");
+        // A .cdr file: read once, then shown.
+        let cdr = dir.join("plan.cdr");
+        let doc = tracedraw_core::Document::new("Plan", Size::new(80.0, 60.0));
+        std::fs::write(
+            &cdr,
+            tracedraw_cdr::write::document_to_cdr_version(&doc, 21),
+        )
+        .expect("cdr");
+        app.open_path(cdr.clone());
+        assert_eq!(app.docs.len(), tabs + 1);
+        let plan = app.active_doc;
+        assert!(app.file.is_none() && app.opened_from.is_some());
+        app.switch_document(art);
+        app.open_path(cdr.clone());
+        assert_eq!(
+            app.docs.len(),
+            tabs + 1,
+            "the .cdr is shown, not read again"
+        );
+        assert_eq!(app.active_doc, plan);
+        // Saved under another name, it is that file's: the .cdr opens anew.
+        app.save_to(dir.join("plan.tdraw"));
+        app.open_path(cdr);
+        assert_eq!(app.docs.len(), tabs + 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A template makes a new untitled drawing every time, even of a file
+    /// that is open; the open drawing keeps its file.
+    #[test]
+    fn templates_always_open_a_new_drawing() {
+        let dir = temp_dir("template-again");
+        let mut app = App::headless();
+        app.open_document(
+            tracedraw_core::Document::new("Art", Size::new(100.0, 100.0)),
+            None,
+        );
+        add_rect(&mut app);
+        let path = dir.join("art.tdraw");
+        app.save_to(path.clone());
+        let tabs = app.docs.len();
+        app.open_as_template(path.clone());
+        assert_eq!(app.docs.len(), tabs + 1);
+        assert!(app.file.is_none() && app.opened_from.is_none());
+        app.switch_document(tabs - 1);
+        assert_eq!(app.file.as_deref(), Some(path.as_path()));
+        let tdt = dir.join("card.tdt");
+        app.save_to(tdt.clone());
+        app.open_path(tdt.clone());
+        app.open_path(tdt);
+        assert_eq!(app.docs.len(), tabs + 3, "a template opens anew each time");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 Type=Application
 Name=TraceDraw
 Comment=Vector illustration editor
-Exec=tracedraw %f
+Exec=tracedraw %F
 Icon=tracedraw
 Terminal=false
 Categories=Graphics;2DGraphics;VectorGraphics;

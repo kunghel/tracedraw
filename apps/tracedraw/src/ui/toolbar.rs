@@ -1022,10 +1022,13 @@ fn unit_value(ui: &mut Ui, app: &App, label: &str, mm: &mut f64, speed: f64) -> 
             .fixed_decimals(app.settings.precision.min(10) as usize)
             .suffix(format!(" {}", app.units.short())),
     );
+    // A value typed and applied, or a step of the arrows or the wheel:
+    // the field reports each as a change (a step does not take the focus
+    // away, so waiting for that applied the first step only).
     if r.changed() {
         *mm = app.units.world_to_mm(v);
     }
-    r.drag_stopped() || r.lost_focus()
+    r.changed()
 }
 
 pub fn property_bar(app: &mut App, ui: &mut Ui) {

@@ -27,7 +27,23 @@ Each drawing keeps its own pages, objects, undo history, selection, view
 Switching tabs ends the interaction in progress (a drag, text or table
 cell editing, a curve being drawn, clip frame editing).
 
-New and opened drawings get a tab after the last one. Closing a tab
+New and opened drawings get a tab after the last one. A file that is
+open already is not read into a second tab (#645): opening it again (the
+Welcome Screen's recent drawings, File > Open and Open Recent, the
+toolbar's Open, a file dropped on the Welcome Screen, the command line)
+shows the tab of the drawing read from it or saved to it, its unsaved
+changes kept, and the status bar says "<name> is already open". The same
+file is found by another spelling of its path (links, `.` and `..`, the
+letter case on Windows); a drawing read from a `.cdr`, `.svg`, `.pdf` or
+other format counts as that file until it is saved under a name of its
+own. Templates (`.tdt`, `.cdt`, `.cdrt`) always make a new untitled
+drawing, File > Revert reads the file again, Import is not an open, and
+the browser build does not look (uploads of one name are different
+files). Window > New Window gives a second window on an open drawing
+(`documents::tests::opening_an_open_file_again_shows_its_tab`,
+`templates_always_open_a_new_drawing`).
+
+Closing a tab
 (File > Close, Ctrl+F4, the tab's close button) asks to save unsaved
 changes, then shows the tab to its right, else the one to its left, else
 the Welcome Screen. Window > Close All closes every drawing, asking about

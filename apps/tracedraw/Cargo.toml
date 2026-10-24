@@ -54,6 +54,9 @@ pollster = "0.4"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 # AI Drawing: HTTPS requests to the AI service the user sets up.
 ureq = { version = "3", features = ["platform-verifier"] }
+# Lossy WebP export (libwebp, BSD licence): the pure-Rust encoder writes
+# lossless files only (#592).
+webp = { version = "0.3", default-features = false }
 
 # The browser build: WebGL canvas, file pickers and downloads through the
 # DOM, randomness and time from JavaScript.

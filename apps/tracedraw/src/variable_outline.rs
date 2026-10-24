@@ -46,7 +46,7 @@ struct NodeDrag {
 }
 
 /// Sorted nodes, with the index the node at `keep` ends up at.
-fn sorted(mut nodes: Vec<WidthNode>, keep: usize) -> (Vec<WidthNode>, usize) {
+pub(crate) fn sorted(mut nodes: Vec<WidthNode>, keep: usize) -> (Vec<WidthNode>, usize) {
     let marked: Vec<(usize, WidthNode)> = nodes.drain(..).enumerate().collect();
     let mut marked = marked;
     marked.sort_by(|a, b| a.1.at.total_cmp(&b.1.at));

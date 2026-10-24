@@ -38,6 +38,10 @@ has one.
     browser the PDF is downloaded), a PDF file or a PostScript file (saved
     where chosen). Orientation: Match orientation (the Layout tab's
     Landscape box), Portrait or Landscape, for fixed sheets.
+  - Sheet: the page's own size, the standard sizes, Smart Board 16:9
+    (1354.582 x 762 mm) and Custom (width and height typed; the last one
+    is kept). A Custom size saved with a name joins the list for the next
+    time (Options keeps them, #591).
   - Print range: Current document, Current page, Pages (a list such as
     `1-3, 5, 8-`; an empty or unusable list prints them all), Selection
     (the selected objects of the current page).
@@ -100,9 +104,18 @@ same function (`export::print_sheets`).
 - A drag on the sheet moves the artwork on its page (the move cursor and
   a tip say so), clear of the margins a printer leaves blank; Artwork
   position on the left shows and takes the move in millimetres (x right,
-  y up) with Reset. Print prints it so: `export::print_sheets` moves
-  every object of the printed pages by it before the imposition (#536,
+  y up) with Reset. Print prints it so: the imposition moves every page
+  of the sheet by it, its clip and marks with it (#536,
   `export::tests::the_artwork_moved_in_print_preview_prints_moved`).
+- Transform (left panel, off at first) draws eight handles around the
+  artwork's cell: a corner or side handle stretches it on that axis (the
+  opposite side stays put, the resize cursor shows), a drag inside moves
+  it; the stretch shows as x and y percentages there, typed or reset to
+  100 % (#595). The handles come before the margin lines, which come
+  before moving.
+- Stretch to fill (a fixed sheet): the pages stretch on each axis on
+  their own to fill the room inside the paper margins (#591,
+  `imposition::tests::pages_stretch_to_fill_and_follow_the_preview_transform`).
   With the page information on, "Drag moves the page information" makes
   a drag move that instead (#388).
 

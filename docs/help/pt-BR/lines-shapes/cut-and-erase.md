@@ -57,8 +57,10 @@ lugares onde eles cruzam outros contornos ou a si mesmos, por exemplo os
 pedaços de linha que sobram depois de um cruzamento.
 
 - Clique em uma parte de um contorno para excluí-la.
-- Arraste um retângulo para excluir todas as partes que ficam totalmente
-  dentro dele, em todos os objetos de uma vez.
+- Arraste um retângulo por cima dos contornos para excluir todas as partes que
+  ele tocar, em todos os objetos de uma vez. Cada parte sai inteira, até os
+  cruzamentos nas pontas, mesmo onde passa do retângulo; uma forma fechada que
+  nada cruza sai inteira.
 
 Retângulos, elipses e polígonos viram curvas; uma forma fechada que perde uma
 parte se abre, e um objeto sem nada sobrando é excluído.

@@ -26,6 +26,10 @@ pub struct PrintPreview {
     pub move_info: bool,
     /// The margin line being dragged (0 left, 1 right, 2 top, 3 bottom).
     pub margin_drag: Option<usize>,
+    /// Transform: handles round the page on the sheet that stretch it
+    /// (#595), and the one being dragged (x and y sides, -1, 0 or 1).
+    pub transform: bool,
+    pub handle_drag: Option<(i8, i8)>,
     built: Option<(String, Document)>,
     texture: Option<(String, egui::TextureHandle)>,
 }
@@ -39,6 +43,8 @@ impl PrintPreview {
             zoom: 1.0,
             move_info: false,
             margin_drag: None,
+            transform: false,
+            handle_drag: None,
             built: None,
             texture: None,
         }
@@ -132,6 +138,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let Some(mut pv) = app.print_preview.take() else {
         return;
     };
+    crate::ui::dialogs::take_saved_sheet(app, &mut pv.st);
     let mut close = false;
     let mut print = false;
     let ctx = ui.ctx().clone();
@@ -244,6 +251,43 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 {
                     st.info_offset = (0.0, 0.0);
                 }
+                // Transform: the page stretched on the sheet by handles,
+                // or by these percentages (#595).
+                ui.checkbox(&mut pv.transform, tr("print.transform"))
+                    .on_hover_text(tr("print.transform_tip"));
+                let st = &mut pv.st;
+                ui.horizontal(|ui| {
+                    let mut x = st.art_stretch.0 * 100.0;
+                    let mut y = st.art_stretch.1 * 100.0;
+                    let rx = ui.add(
+                        crate::ui::field::NumField::new(&mut x)
+                            .range(1.0..=1000.0)
+                            .speed(0.5)
+                            .prefix("x ")
+                            .suffix(" %")
+                            .width(70.0),
+                    );
+                    let ry = ui.add(
+                        crate::ui::field::NumField::new(&mut y)
+                            .range(1.0..=1000.0)
+                            .speed(0.5)
+                            .prefix("y ")
+                            .suffix(" %")
+                            .width(70.0),
+                    );
+                    if rx.changed() || ry.changed() {
+                        st.art_stretch = (x / 100.0, y / 100.0);
+                    }
+                    if ui
+                        .add_enabled(
+                            st.art_stretch != (1.0, 1.0),
+                            egui::Button::new(tr("print.art_reset")).small(),
+                        )
+                        .clicked()
+                    {
+                        st.art_stretch = (1.0, 1.0);
+                    }
+                });
                 // The paper's margins kept clear: typed here, or their
                 // dashed lines dragged on the sheet (#580, #582).
                 ui.label(tr("print.margins"));
@@ -369,19 +413,100 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     .find(|(hit, _)| *hit)
                     .map(|(_, i)| i)
                 };
-                let over = resp.hover_pos().and_then(near);
+                // The page on the sheet (its clip frame), for Transform's
+                // handles: mm, y up, then on screen.
+                let cell = page.layers.first().and_then(|l| {
+                    l.shapes.iter().find_map(|s| match &s.kind {
+                        tracedraw_core::ShapeKind::ClipFrame { frame, .. } => match &frame.kind {
+                            tracedraw_core::ShapeKind::Rect { rect, .. } => {
+                                Some(s.transform.transform_rect_bbox(*rect))
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                });
+                let to_screen = |x: f64, y: f64| {
+                    egui::pos2(
+                        sheet_rect.left() + (x * zoom) as f32,
+                        sheet_rect.bottom() - (y * zoom) as f32,
+                    )
+                };
+                let handles: Vec<((i8, i8), egui::Pos2)> = match (pv.transform, cell) {
+                    (true, Some(c)) => {
+                        let mut v = Vec::new();
+                        for hy in [-1i8, 0, 1] {
+                            for hx in [-1i8, 0, 1] {
+                                if hx == 0 && hy == 0 {
+                                    continue;
+                                }
+                                let x = match hx {
+                                    -1 => c.x0,
+                                    0 => (c.x0 + c.x1) / 2.0,
+                                    _ => c.x1,
+                                };
+                                let y = match hy {
+                                    -1 => c.y0,
+                                    0 => (c.y0 + c.y1) / 2.0,
+                                    _ => c.y1,
+                                };
+                                v.push(((hx, hy), to_screen(x, y)));
+                            }
+                        }
+                        v
+                    }
+                    _ => Vec::new(),
+                };
+                let handle_at = |p: egui::Pos2| {
+                    handles
+                        .iter()
+                        .find(|(_, h)| (p - *h).length() <= 7.0)
+                        .map(|(k, _)| *k)
+                };
+                let over_handle = resp.hover_pos().and_then(handle_at);
+                let over = if over_handle.is_some() {
+                    None
+                } else {
+                    resp.hover_pos().and_then(near)
+                };
                 if resp.drag_started() {
-                    pv.margin_drag = resp.interact_pointer_pos().and_then(near);
+                    pv.handle_drag = resp.interact_pointer_pos().and_then(handle_at);
+                    pv.margin_drag = if pv.handle_drag.is_some() {
+                        None
+                    } else {
+                        resp.interact_pointer_pos().and_then(near)
+                    };
                 }
                 let edge = pv.margin_drag.or(over);
-                if resp.hovered() || pv.margin_drag.is_some() {
-                    ui.ctx().set_cursor_icon(match edge {
-                        Some(0 | 1) => egui::CursorIcon::ResizeHorizontal,
-                        Some(_) => egui::CursorIcon::ResizeVertical,
-                        None => egui::CursorIcon::Move,
+                let handle = pv.handle_drag.or(over_handle);
+                if resp.hovered() || pv.margin_drag.is_some() || pv.handle_drag.is_some() {
+                    ui.ctx().set_cursor_icon(match (handle, edge) {
+                        (Some((0, _)), _) => egui::CursorIcon::ResizeVertical,
+                        (Some((_, 0)), _) => egui::CursorIcon::ResizeHorizontal,
+                        (Some((hx, hy)), _) if hx == hy => egui::CursorIcon::ResizeNeSw,
+                        (Some(_), _) => egui::CursorIcon::ResizeNwSe,
+                        (None, Some(0 | 1)) => egui::CursorIcon::ResizeHorizontal,
+                        (None, Some(_)) => egui::CursorIcon::ResizeVertical,
+                        (None, None) => egui::CursorIcon::Move,
                     });
                 }
-                if resp.dragged() {
+                if let (true, Some((hx, hy)), Some(c)) = (resp.dragged(), pv.handle_drag, cell) {
+                    // A side follows the pointer, the opposite one stays:
+                    // the stretch grows by the move, the middle by half.
+                    let d = resp.drag_delta();
+                    let (dx, dy) = (f64::from(d.x) / zoom, -f64::from(d.y) / zoom);
+                    let st = &mut pv.st;
+                    if hx != 0 && c.width() > 1e-6 {
+                        let w = (c.width() + f64::from(hx) * dx).max(1.0);
+                        st.art_stretch.0 = (st.art_stretch.0 * w / c.width()).clamp(0.01, 10.0);
+                        st.art_offset.0 += dx / 2.0;
+                    }
+                    if hy != 0 && c.height() > 1e-6 {
+                        let h = (c.height() + f64::from(hy) * dy).max(1.0);
+                        st.art_stretch.1 = (st.art_stretch.1 * h / c.height()).clamp(0.01, 10.0);
+                        st.art_offset.1 += dy / 2.0;
+                    }
+                } else if resp.dragged() {
                     let d = resp.drag_delta();
                     match pv.margin_drag {
                         Some(i) => {
@@ -400,6 +525,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 }
                 if resp.drag_stopped() {
                     pv.margin_drag = None;
+                    pv.handle_drag = None;
                 }
                 let p = ui.painter();
                 p.rect_filled(
@@ -414,6 +540,34 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
+                }
+                // Transform's frame and handles round the page.
+                if let (true, Some(c)) = (pv.transform, cell) {
+                    let r = egui::Rect::from_two_pos(to_screen(c.x0, c.y0), to_screen(c.x1, c.y1));
+                    p.rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(1.0, Tokens::ACCENT),
+                        egui::StrokeKind::Middle,
+                    );
+                    for (k, h) in &handles {
+                        let hr = egui::Rect::from_center_size(*h, egui::vec2(8.0, 8.0));
+                        p.rect_filled(
+                            hr,
+                            0.0,
+                            if handle == Some(*k) {
+                                Tokens::ACCENT
+                            } else {
+                                egui::Color32::WHITE
+                            },
+                        );
+                        p.rect_stroke(
+                            hr,
+                            0.0,
+                            egui::Stroke::new(1.0, Tokens::ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
                 // The margins dashed in blue, the one under the pointer or
                 // dragged bolder.

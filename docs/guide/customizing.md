@@ -206,6 +206,10 @@ tracedraw-cli convert poster.cdr poster.pdf
 TRACEDRAW_DPI=300 tracedraw-cli convert poster.tdraw poster.png
 ```
 
+A file opened while TraceDraw runs (from the file manager or the command
+line) opens in a tab of the running window; `tracedraw --new-instance
+file.cdr` opens a window of its own.
+
 ### AI agents
 
 `tracedraw --mcp` serves the editor to AI agents over the Model Context

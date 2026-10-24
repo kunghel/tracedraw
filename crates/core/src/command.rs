@@ -682,8 +682,8 @@ impl Command {
                     local.push((*id, t));
                 }
                 for (id, t) in local {
-                    let s = any_mut(doc, id)?;
-                    s.transform = t * s.transform;
+                    // A symmetry's mirror lines go with the object.
+                    any_mut(doc, id)?.transform_by(t);
                 }
             }
             Command::SetFill { shapes, fill } => {

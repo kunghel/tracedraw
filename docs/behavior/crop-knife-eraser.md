@@ -73,15 +73,32 @@
   (`segment_delete::tests::a_tail_crossing_a_cut_curve_loses_only_itself`, #354).
 - Click (within 5 screen pixels; the nearest outline, the topmost of
   equals): its virtual segment under the pointer is removed. Drag: every
-  virtual segment lying wholly inside the rectangle (nine points along
-  it) is removed, on all objects at once.
+  virtual segment the rectangle touches is removed whole, on all objects
+  at once: a stretch with any part inside the rectangle (an end inside,
+  or the curve crossing one of its sides) goes as far as the crossings
+  at its ends, and a closed outline nothing crosses goes whole, though
+  it reaches past the rectangle; what it does not reach stays (#528,
+  `segment_delete::tests::a_drag_removes_every_stretch_it_touches`).
+  Earlier only the stretches lying wholly inside went, so a box drawn
+  across an ornament removed nothing. A level or upright drag (a
+  rectangle of no height or width) takes what it crosses; a curve through
+  a corner of the rectangle counts (`segment_delete::tests::what_a_box_touches`).
+  A click whose pointer slipped into a drag of under 8 pixels each way
+  and whose box reaches nothing deletes as a click at the press,
+  whichever way the pointer slipped
+  (`segment_delete::tests::a_click_that_slips_into_a_little_drag_still_deletes`).
+- Only the objects whose box meets the cut object's box are searched for
+  crossings, their outlines worked out once per click or drag: a drag
+  across 300 objects took about a third of a second in a debug build and
+  takes a tenth of that.
 - Objects inside ordinary groups are cut as objects on their own (their
   transforms composed with the groups'), for both the click and the
   drag, and cut the others; a group left empty goes. Linked groups
   (text, pictures, clip frames) are not cut (#427,
-  `segment_delete::tests::curves_inside_a_group_are_cut`). A drag takes
-  every object whose box meets the rectangle, a level or upright line
-  (a box of no height or width) included.
+  `segment_delete::tests::curves_inside_a_group_are_cut`). A drag looks
+  at every object whose box meets the rectangle, a level or upright line
+  (a box of no height or width) included, and takes the stretches of
+  theirs the rectangle touches.
 - Curves, rectangles, ellipses and polygons can lose segments; they
   become curves. A closed subpath that loses a stretch opens (what is
   left of it runs on over its start as one piece); an object with
@@ -106,7 +123,10 @@
 
 - `segment_delete::tests::a_click_removes_the_stretch_between_crossings`
 - `segment_delete::tests::closed_outlines_open_where_they_lose_a_stretch`
-- `segment_delete::tests::a_drag_removes_the_stretches_inside`
+- `segment_delete::tests::a_drag_removes_every_stretch_it_touches`
+- `segment_delete::tests::a_drag_between_crossings_takes_only_that_stretch`
+- `segment_delete::tests::what_a_box_touches`
+- `segment_delete::tests::a_click_that_slips_into_a_little_drag_still_deletes`
 - `segment_delete::tests::pieces_and_stretches`
 - `segment_delete::tests::a_curve_crossing_itself_loses_only_the_stretch_clicked`
 - `crop_tool::tests::the_area_waits_and_moves_until_it_is_applied`

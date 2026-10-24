@@ -434,8 +434,16 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
 
     // Page: a flat grey shadow offset right and down, the white page, a
-    // one-pixel grey border (pixel-aligned so it stays crisp).
-    let paper = page_screen_rect(app);
+    // one-pixel grey border (pixel-aligned so it stays crisp). While
+    // Autofit Page's popup is open the page shows at the size it would
+    // take, around the drawing (#594, #604).
+    let shown = app
+        .autofit_preview_rect(painter.ctx().cumulative_frame_nr())
+        .unwrap_or_else(|| app.page_rect());
+    let paper = {
+        let r = view.rect_to_screen(shown);
+        ERect::from_min_max(r.min.round(), r.max.round())
+    };
     if app.show_page_border {
         painter.rect_filled(
             paper.expand(1.0).translate(Tokens::PAGE_SHADOW_OFFSET),
@@ -455,7 +463,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     if app.show_bleed {
         let b = app.doc().metadata.bleed.max(0.0);
         if b > 0.0 {
-            let r = view.rect_to_screen(app.page_rect().inflate(b, b));
+            let r = view.rect_to_screen(shown.inflate(b, b));
             painter.rect_stroke(
                 r,
                 0.0,
@@ -466,7 +474,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
     if app.show_printable_area {
         // Printable area: the page minus the printer's typical 5 mm hardware margin.
-        let r = view.rect_to_screen(app.page_rect().inflate(-5.0, -5.0));
+        let r = view.rect_to_screen(shown.inflate(-5.0, -5.0));
         let dash = 4.0;
         for (a, b) in [
             (r.left_top(), r.right_top()),
@@ -1086,20 +1094,59 @@ fn draw_table_cells(app: &App, painter: &Painter) {
 
 /// The selection's outline moved by `t`: a blue line on a white halo, so it
 /// reads on any background (two light lines on a dark one).
+/// The outlines of the mirrored copies `s` (in page space) and the
+/// objects inside it draw with their symmetries, but the one `edited`.
+fn symmetry_copy_paths(
+    s: &tracedraw_core::Shape,
+    edited: Option<tracedraw_core::ShapeId>,
+    out: &mut Vec<BezPath>,
+) {
+    use tracedraw_core::live::Effect;
+    if edited != Some(s.id)
+        && s.effects
+            .iter()
+            .any(|e| matches!(e, Effect::Symmetry { .. }))
+    {
+        let mut only = s.clone();
+        only.effects
+            .retain(|e| matches!(e, Effect::Symmetry { .. }));
+        out.extend(
+            tracedraw_core::live::evaluate(&only)
+                .above
+                .iter()
+                .map(|c| c.page_path()),
+        );
+    }
+    if let ShapeKind::Group { children } = &s.kind {
+        for c in children {
+            let mut c = c.clone();
+            c.transform_by(s.transform);
+            symmetry_copy_paths(&c, edited, out);
+        }
+    }
+}
+
 pub fn draw_transform_outline(app: &App, painter: &Painter, t: Affine) {
     let halo = EStroke::new(3.0, Color32::from_white_alpha(220));
     let line = EStroke::new(1.0, Tokens::DRAG_OUTLINE);
     for s in app.selected_rc().iter() {
         // What the release will make: rounded corners keep their size.
-        let path = s.page_path_after(t);
-        for (mut pts, closed) in flatten(&path, &app.view) {
-            if closed {
-                if let Some(first) = pts.first().copied() {
-                    pts.push(first);
+        let mut paths = vec![s.page_path_after(t)];
+        // A symmetry out of edit mode goes whole: its copies too, also
+        // those of one inside a group.
+        let mut moved = s.clone();
+        moved.transform_by(t);
+        symmetry_copy_paths(&moved, app.symmetry_edit, &mut paths);
+        for path in &paths {
+            for (mut pts, closed) in flatten(path, &app.view) {
+                if closed {
+                    if let Some(first) = pts.first().copied() {
+                        pts.push(first);
+                    }
                 }
+                painter.add(egui::Shape::line(pts.clone(), halo));
+                painter.add(egui::Shape::line(pts, line));
             }
-            painter.add(egui::Shape::line(pts.clone(), halo));
-            painter.add(egui::Shape::line(pts, line));
         }
     }
 }

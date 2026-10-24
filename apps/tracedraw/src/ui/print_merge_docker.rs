@@ -28,6 +28,9 @@ pub struct MergeDocker {
     /// 8 bottom right, row by row.
     pub anchor: u8,
     pub scale: Scale,
+    /// Place Inside Frame puts the placeholder picture in the same place
+    /// on every page too (#598).
+    pub all_pages: bool,
 }
 
 impl Default for MergeDocker {
@@ -38,6 +41,7 @@ impl Default for MergeDocker {
             placeholder: String::new(),
             anchor: 4,
             scale: Scale::Fit,
+            all_pages: false,
         }
     }
 }
@@ -239,6 +243,11 @@ impl App {
                 });
             }
         }
+        // The same picture in the same place on the other pages: in the
+        // matching shape there, else in a copy of the frame (#598).
+        if let (true, Some(p)) = (d.all_pages, &picture) {
+            cmds.extend(self.frames_on_other_pages(&frames, &field, p, &d));
+        }
         let ids: Vec<ShapeId> = frames.iter().map(|s| s.id).collect();
         match self.engine.run_batch("Place Inside Frame", &cmds) {
             Ok(()) => {
@@ -247,6 +256,112 @@ impl App {
             }
             Err(e) => self.status = e.to_string(),
         }
+    }
+
+    /// Place Inside Frame on every other page (#598): for each frame on
+    /// the page, the shape of the same kind and place on another page
+    /// takes the field and the picture; a page without one gets a copy of
+    /// the frame with the picture inside.
+    fn frames_on_other_pages(
+        &mut self,
+        frames: &[Shape],
+        field: &str,
+        p: &crate::print_merge::Picture,
+        d: &MergeDocker,
+    ) -> Vec<Command> {
+        let current = self.page;
+        let pages: Vec<(Option<tracedraw_core::LayerId>, Vec<Shape>)> = self
+            .doc()
+            .pages
+            .iter()
+            .filter(|pg| pg.id != current)
+            .map(|pg| {
+                let layer = pg
+                    .layers
+                    .iter()
+                    .find(|l| l.visible && !l.locked)
+                    .map(|l| l.id);
+                let shapes = pg
+                    .layers
+                    .iter()
+                    .flat_map(|l| l.shapes.iter().cloned())
+                    .collect();
+                (layer, shapes)
+            })
+            .collect();
+        let same_place = |a: &Shape, b: &Shape| {
+            let (ra, rb) = (a.bounds(), b.bounds());
+            std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind)
+                && (ra.x0 - rb.x0).abs() < 0.01
+                && (ra.y0 - rb.y0).abs() < 0.01
+                && (ra.x1 - rb.x1).abs() < 0.01
+                && (ra.y1 - rb.y1).abs() < 0.01
+        };
+        // Frames on the page itself (not inside a group).
+        let on_page: Vec<&Shape> = frames
+            .iter()
+            .filter(|s| self.doc().top_level_of(s.id) == Some(s.id))
+            .collect();
+        let mut cmds = Vec::new();
+        for (layer, shapes) in pages {
+            let Some(layer) = layer else {
+                continue;
+            };
+            for s in on_page.iter().copied() {
+                let pid = self.engine.new_shape_id();
+                let target = match shapes.iter().find(|o| same_place(o, s)) {
+                    Some(o) => o.id,
+                    None => {
+                        let id = self.engine.new_shape_id();
+                        let mut copy = crate::app::reid_pub(s.clone(), id, &mut self.engine);
+                        if let ShapeKind::ClipFrame { contents, .. } = &mut copy.kind {
+                            contents.clear();
+                        }
+                        cmds.push(Command::AddShape { layer, shape: copy });
+                        id
+                    }
+                };
+                cmds.push(Command::SetShapeName {
+                    shape: target,
+                    name: Some(field.to_string()),
+                });
+                let mut data: Vec<(String, String)> = s
+                    .data
+                    .iter()
+                    .filter(|(k, _)| k != SCALE_DATA && k != ANCHOR_DATA)
+                    .cloned()
+                    .collect();
+                data.extend(placement_data(d.scale, d.anchor));
+                cmds.push(Command::SetObjectData {
+                    shape: target,
+                    data,
+                });
+                let mut pic = Shape::new(
+                    pid,
+                    ShapeKind::Bitmap {
+                        rect: crate::print_merge::place(
+                            s.bounds(),
+                            p.mm.0,
+                            p.mm.1,
+                            d.scale,
+                            d.anchor,
+                        ),
+                        width_px: p.px.0,
+                        height_px: p.px.1,
+                        png: p.png.clone(),
+                        fx: None,
+                    },
+                );
+                pic.stroke = None;
+                pic.fill = Fill::None;
+                cmds.push(Command::AddShape { layer, shape: pic });
+                cmds.push(Command::PlaceInside {
+                    contents: vec![pid],
+                    frame: target,
+                });
+            }
+        }
+        cmds
     }
 
     /// The selected placeholders (see [`field_of`]).
@@ -492,6 +607,8 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
                         .desired_width(ui.available_width()),
                 );
             });
+            ui.checkbox(&mut d.all_pages, tr("merge.all_pages"))
+                .on_hover_text(tr("merge.all_pages_tip"));
             ui.add_space(4.0);
             ui.label(tr("merge.align_scale"));
             ui.horizontal(|ui| {
@@ -610,6 +727,64 @@ mod tests {
             path: Some(dir.join("cards.csv")),
             ..Default::default()
         }
+    }
+
+    /// With "On every page" Place Inside Frame puts the placeholder
+    /// picture in the same place on the other pages: in the matching
+    /// shape where there is one, in a copy of the frame elsewhere (#598).
+    #[test]
+    fn the_placeholder_goes_in_the_same_place_on_every_page() {
+        let dir = std::env::temp_dir().join(format!("td_merge_all_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_pixel(40, 40, image::Rgba([200, 0, 0, 255]))
+            .save(dir.join("stand_in.png"))
+            .unwrap();
+        let mut app = App::headless();
+        app.merge_state = Some(data(&dir));
+        let oval = |app: &mut App| {
+            app.new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 10.0, 50.0, 40.0),
+                arc: None,
+            })
+            .expect("ellipse")
+        };
+        let first_page = app.page;
+        let first = oval(&mut app);
+        app.add_page();
+        let second = oval(&mut app);
+        app.add_page();
+        let third_page = app.page;
+        app.page = first_page;
+        app.merge_docker.kind = 1;
+        app.merge_docker.column = 1;
+        app.merge_docker.placeholder = dir.join("stand_in.png").display().to_string();
+        app.merge_docker.all_pages = true;
+        app.select(vec![first]);
+        app.place_merge_field_inside();
+        let framed = |app: &App, id: ShapeId| {
+            let s = app.doc().find_shape(id).expect("frame");
+            s.name.as_deref() == Some("<Photo>")
+                && matches!(&s.kind, ShapeKind::ClipFrame { contents, .. }
+                    if contents.iter().any(|c| matches!(c.kind, ShapeKind::Bitmap { .. })))
+        };
+        assert!(framed(&app, first));
+        assert!(framed(&app, second), "the matching oval on page 2");
+        let third: Vec<ShapeId> = app
+            .doc()
+            .pages
+            .iter()
+            .find(|p| p.id == third_page)
+            .expect("page 3")
+            .layers
+            .iter()
+            .flat_map(|l| l.shapes.iter().map(|s| s.id))
+            .collect();
+        assert_eq!(third.len(), 1, "a copy of the frame on page 3");
+        assert!(framed(&app, third[0]));
+        // One step undoes it all.
+        app.undo();
+        assert!(!framed(&app, second));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn walk<'a>(s: &'a Shape, out: &mut Vec<&'a Shape>) {

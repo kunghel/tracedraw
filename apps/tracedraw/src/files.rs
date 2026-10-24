@@ -35,6 +35,32 @@ thread_local! {
 /// True in the browser build: no file system, downloads instead of saves.
 pub const WEB: bool = cfg!(target_arch = "wasm32");
 
+/// The path naming the same file however it was reached (links, `.`
+/// and `..`); the absolute path when that fails (the file is gone);
+/// `path` as it is in a browser.
+pub fn canonical(path: &Path) -> PathBuf {
+    if WEB {
+        return path.to_path_buf();
+    }
+    std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Two canonical paths name one file: on Windows without regard to the
+/// letter case and to the `\\?\` prefix.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        let key = |p: &Path| {
+            let s = p.to_string_lossy().to_lowercase();
+            s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
+        };
+        key(a) == key(b)
+    } else {
+        a == b
+    }
+}
+
 /// Read a whole file (or an uploaded one in a browser).
 pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let path = path.as_ref();

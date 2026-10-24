@@ -95,6 +95,10 @@ pub struct Settings {
     pub default_dpi: f64,
     pub snap: SnapPrefs,
     pub shortcuts: Vec<(String, String)>,
+    /// The program Edit Bitmap opens pictures in (a path; empty for the
+    /// system's program for PNG files, #593).
+    #[serde(default)]
+    pub bitmap_editor: String,
     pub last_dir: Option<PathBuf>,
     pub color: ColorPrefs,
     /// Show the Outline flyout in the toolbox (hidden by default).
@@ -1295,6 +1299,7 @@ impl Default for Settings {
             default_dpi: 300.0,
             snap: SnapPrefs::default(),
             shortcuts: Vec::new(),
+            bitmap_editor: String::new(),
             last_dir: None,
             color: ColorPrefs::default(),
             show_outline_flyout: false,

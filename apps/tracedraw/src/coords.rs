@@ -737,18 +737,19 @@ impl App {
                 transform: transform * old.transform.inverse(),
             },
         ];
-        let effects: Vec<Effect> = old
-            .effects
-            .iter()
-            .filter(|e| !matches!(e, Effect::Envelope { .. } | Effect::Perspective { .. }))
+        // The effects as they were (the new transform does not carry a
+        // symmetry's lines), without envelopes and perspective.
+        let raw = self
+            .doc()
+            .find_shape(old.id)
             .cloned()
-            .collect();
-        if effects.len() != old.effects.len() {
-            cmds.push(Command::SetEffects {
-                shape: old.id,
-                effects,
-            });
-        }
+            .unwrap_or(old.clone());
+        let keep = |e: &Effect| !matches!(e, Effect::Envelope { .. } | Effect::Perspective { .. });
+        cmds.push(Command::SetEffectStack {
+            shape: old.id,
+            effects: raw.effects.iter().filter(|e| keep(e)).cloned().collect(),
+            parked: raw.parked_effects.clone(),
+        });
         if let Err(e) = self.engine.run_batch("Replace Object", &cmds) {
             self.status = e.to_string();
             return false;

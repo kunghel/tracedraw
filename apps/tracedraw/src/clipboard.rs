@@ -341,7 +341,8 @@ impl App {
         data.retain(|(k, _)| k != "bitmap.link");
         data.push(("bitmap.link".into(), path.display().to_string()));
         self.run(Command::SetObjectData { shape: id, data });
-        match crate::export::open_with_system(&path) {
+        #[cfg(not(target_arch = "wasm32"))]
+        match crate::export::open_in_editor(&self.settings.bitmap_editor, &path) {
             Ok(()) => self.status = tr("status.bitmap_sent_to_editor"),
             Err(e) => self.status = e,
         }

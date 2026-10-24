@@ -262,6 +262,21 @@ any other object; the steps and sides follow the letters' outlines
   text scales as a whole. With other objects in the selection each is
   scaled as usual, all in one undo step.
 
+### Join Lines into Paragraph
+
+Text > Join Lines into Paragraph (and the object menu, two or more
+artistic texts selected) makes the selected lines one paragraph text, for
+text that came one object per line (a PDF's): typing into it flows the
+words on to the next lines. The lines go in reading order, top to bottom,
+joined by a space; a gap between baselines more than half again the usual
+one starts a new paragraph. The frame is as wide as the widest line (and
+a little more), with room for two more lines; the first baseline stays
+where it was and the line spacing is the usual distance between the
+baselines, in points. The lines must be turned and sized alike, in the
+same group, else the status bar says so and nothing changes. One undo
+step; the first line's object keeps its fill and outline (#599,
+`ops2::tests::lines_of_text_join_into_a_paragraph_that_flows`).
+
 ## Linked frames
 
 - Text > Paragraph Text Frame > Link: with two paragraph frames
@@ -554,6 +569,15 @@ Hebrew, Thai, Devanagari and Bengali; DejaVu Sans and Noto Sans for the
 rest), then any installed face that has the letter, upright faces of the
 run's weight first. Spaces, controls and combining marks stay with the
 letter before them. A letter no face has is drawn with the run's face.
+
+Each script is shaped on its own: a run is cut where its letters change
+from one script to another (Latin, Greek, Cyrillic, Devanagari, Bengali
+and the other Indian scripts, Thai, Lao, Tibetan, Myanmar, Khmer), what
+the scripts share (spaces, digits, punctuation) going with the run
+before it. Shaped together, Hindi after a Latin word took the Latin rules
+and showed its half forms with a visible halant and its conjuncts apart
+(#599, `tests::text_is_shaped_one_script_at_a_time`). Text with Hebrew
+or Arabic letters is shaped as one run.
 
 Variable fonts draw at weight 400, or 700 for bold, on their weight
 axis (within its range), and slant on their italic or slant axis for

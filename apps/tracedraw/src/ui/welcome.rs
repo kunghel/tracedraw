@@ -365,11 +365,7 @@ fn templates(app: &mut App, ui: &mut Ui) {
             if ui.button(tr("welcome.open_template")).clicked() {
                 crate::files::Dialog::new()
                     .add_filter("TraceDraw template", &["tdt", "tdraw"])
-                    .pick_file(app, |app, p| {
-                        app.open_path(p);
-                        app.file = None;
-                        app.show_welcome = false;
-                    });
+                    .pick_file(app, |app, p| app.open_as_template(p));
             }
             let dir = crate::settings::config_dir().map(|d| d.join("templates"));
             if let Some(dir) = dir {
@@ -382,9 +378,7 @@ fn templates(app: &mut App, ui: &mut Ui) {
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_default();
                             if ui.button(name).clicked() {
-                                app.open_path(p.clone());
-                                app.file = None;
-                                app.show_welcome = false;
+                                app.open_as_template(p.clone());
                             }
                         }
                     }

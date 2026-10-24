@@ -2846,7 +2846,38 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
     }
 }
 
-fn file_locations_page(_app: &mut App, ui: &mut Ui) {
+fn file_locations_page(app: &mut App, ui: &mut Ui) {
+    // The program Edit Bitmap opens pictures in (#593).
+    if !crate::files::WEB {
+        ui.label(tr("options.bitmap_editor"));
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.settings.bitmap_editor)
+                    .desired_width(300.0)
+                    .hint_text(tr("options.bitmap_editor_system")),
+            );
+            if ui.button(tr("options.browse")).clicked() {
+                crate::files::Dialog::new().pick_file(app, |app, path| {
+                    app.settings.bitmap_editor = path.display().to_string();
+                });
+            }
+            if ui
+                .add_enabled(
+                    !app.settings.bitmap_editor.is_empty(),
+                    egui::Button::new(tr("options.clear_folder")),
+                )
+                .clicked()
+            {
+                app.settings.bitmap_editor.clear();
+            }
+        });
+        ui.label(
+            egui::RichText::new(tr("options.bitmap_editor_hint"))
+                .color(Tokens::text_dim())
+                .size(11.0),
+        );
+        ui.add_space(10.0);
+    }
     ui.label(tr("options.save_hint"));
     if let Some(p) = crate::settings::Settings::path() {
         ui.label(

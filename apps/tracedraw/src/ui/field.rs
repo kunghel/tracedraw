@@ -5,6 +5,11 @@
 //! takes a value in another unit (`1 in` in a millimetre field). The
 //! arrows and the mouse wheel over the box step the value (one unit, or
 //! the step the field was given; Ctrl a tenth, Shift ten times).
+//!
+//! `Response::changed()` is the one sign that the value was applied, typed
+//! or stepped: a step leaves the focus where it was, so a caller waiting
+//! for `lost_focus()` takes the first step only (when the step took the
+//! focus from the box) and then none.
 
 use crate::app::Units;
 use egui::{emath::Numeric, Response, TextEdit, Ui, Widget};

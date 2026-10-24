@@ -21,9 +21,15 @@ outline when nothing is selected. Groups:
   (100 %, 0), and a picture of the nib; dragging on it sets angle and
   stretch. Behind fill, Scale with object.
 - Variable Outline: the width nodes as dots along a bar; a click on the
-  bar adds a node with the width there, on a dot picks it; its position,
-  Side 1 and Side 2 widths and their Total (a new total keeps their
-  ratio); Delete Node.
+  bar adds a node with the width there, on a dot picks it (the nearest
+  within 6 points); a drag on a dot slides it along the bar, 0 to 100 %,
+  kept between its neighbours, the fields following, and a drag on bare
+  bar adds a node there and slides it (a drag there moved the dialog,
+  #652); its position (a position typed past a neighbour puts the nodes
+  in order again), Side 1 and Side 2 widths and their Total (a new total
+  keeps their ratio); Delete Node. The drawing changes on OK, one undo
+  step (`outline_pen::tests::a_width_node_drags_along_the_bar_between_its_neighbours`,
+  `a_slid_node_stops_at_its_neighbours_and_the_ends`).
 - Overprint outline, "?", OK, Cancel.
 
 OK sends only the fields that were changed (also those set to the value

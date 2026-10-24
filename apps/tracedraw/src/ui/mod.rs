@@ -776,6 +776,14 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
         });
         let cursor = cursors::for_tool(app, shift, primary, middle, pos);
         cursors::show(ui.ctx(), cursor, pos);
+        // A scale, turn or slant that leaves the original (after a right
+        // click): the plus a move's pointer carries, beside the pointer.
+        if app.drag_copy && app.transforming() && !matches!(app.drag, crate::app::Drag::Move { .. })
+        {
+            if let Some(p) = pos {
+                cursors::paint_copy_plus(ui.ctx(), p);
+            }
+        }
     }
 }
 

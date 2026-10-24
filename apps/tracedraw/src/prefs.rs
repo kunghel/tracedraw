@@ -3,7 +3,7 @@
 //! where imported objects go, what every trace starts with, and which
 //! messages show. See docs/behavior/options.md.
 
-use crate::ui::dialogs::{ExportState, PrintState, EXPORT_FORMATS, PDF_STANDARDS, SHEETS};
+use crate::ui::dialogs::{ExportState, PrintState, EXPORT_FORMATS, PDF_STANDARDS};
 use serde::{Deserialize, Serialize};
 
 fn yes() -> bool {
@@ -48,12 +48,18 @@ pub struct PrintPrefs {
     pub ps_level: u8,
     /// Pages keep their size on a fixed sheet when marks need room (#388).
     pub keep_size: bool,
+    /// Custom sheet sizes saved with a name in Print (#591), and the
+    /// Custom size last used.
+    pub sheet_presets: Vec<(String, tracedraw_core::geometry::Size)>,
+    pub custom_sheet: tracedraw_core::geometry::Size,
 }
 
 impl Default for PrintPrefs {
     fn default() -> Self {
         let st = PrintState::default();
         PrintPrefs {
+            sheet_presets: Vec::new(),
+            custom_sheet: st.custom_sheet,
             fit_to_page: st.fit_to_page,
             separations: st.separations,
             bleed: st.bleed,
@@ -95,10 +101,15 @@ impl PrintPrefs {
             color_bars: self.color_bars,
             densitometer: self.densitometer,
             page_info: self.page_info,
-            sheet: if self.sheet < SHEETS.len() {
+            sheet: if self.sheet <= crate::ui::dialogs::CUSTOM_SHEET {
                 self.sheet
             } else {
                 0
+            },
+            custom_sheet: if self.custom_sheet.width >= 10.0 && self.custom_sheet.height >= 10.0 {
+                self.custom_sheet
+            } else {
+                PrintState::default().custom_sheet
             },
             landscape: self.landscape,
             destination: self.destination.min(2),
@@ -127,6 +138,7 @@ impl PrintPrefs {
 
     /// Keep the choices of a print for the next one.
     pub fn remember(&mut self, st: &PrintState) {
+        self.custom_sheet = st.custom_sheet;
         self.fit_to_page = st.fit_to_page;
         self.separations = st.separations;
         self.bleed = st.bleed;
@@ -235,6 +247,7 @@ pub struct ExportPreset {
     pub pdf_standard: usize,
     pub bleed_mm: f64,
     pub output_condition: String,
+    pub webp_lossless: bool,
 }
 
 impl Default for ExportPreset {
@@ -258,6 +271,7 @@ impl ExportPreset {
             pdf_standard: st.pdf_standard,
             bleed_mm: st.bleed_mm,
             output_condition: st.output_condition.clone(),
+            webp_lossless: st.webp_lossless,
         }
     }
 
@@ -284,6 +298,7 @@ impl ExportPreset {
         if !self.output_condition.trim().is_empty() {
             st.output_condition = self.output_condition.chars().take(64).collect();
         }
+        st.webp_lossless = self.webp_lossless;
         st.preset = self.name.clone();
     }
 }
@@ -789,5 +804,25 @@ mod tests {
         assert_eq!(old.warnings, WarningPrefs::default());
         assert!(old.printing.preflight);
         assert_eq!(old.formats.import_place, ImportPlace::AsInFile);
+    }
+    /// The Custom sheet size and the sheet chosen last; a size too small
+    /// to print on falls back to the default (#591).
+    #[test]
+    fn the_custom_sheet_is_remembered() {
+        use crate::ui::dialogs::CUSTOM_SHEET;
+        use tracedraw_core::geometry::Size;
+        let mut p = PrintPrefs::default();
+        let mut st = p.state();
+        st.sheet = CUSTOM_SHEET;
+        st.custom_sheet = Size::new(320.0, 450.0);
+        p.remember(&st);
+        let back = p.state();
+        assert_eq!(back.custom_sheet, Size::new(320.0, 450.0));
+        assert_eq!(
+            back.sheet_size_for(Size::new(1.0, 1.0)),
+            Some(Size::new(320.0, 450.0))
+        );
+        p.custom_sheet = Size::new(0.0, 450.0);
+        assert_eq!(p.state().custom_sheet, PrintState::default().custom_sheet);
     }
 }

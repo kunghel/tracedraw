@@ -50,7 +50,7 @@ fn unquote(v: &str) -> String {
 /// Hex text as bytes (`None` when it is not hex).
 fn hex(text: &str) -> Option<Vec<u8>> {
     let t = text.trim();
-    if t.len() % 2 != 0 {
+    if !t.len().is_multiple_of(2) {
         return None;
     }
     (0..t.len())

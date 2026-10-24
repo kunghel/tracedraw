@@ -4,6 +4,16 @@ File > Import (Ctrl+I) of a PNG, JPEG, BMP, GIF, TIFF or WebP file
 embeds the image as a bitmap object centred on the page and remembers
 the file (Bitmaps > Update from Link reads it again).
 
+## The bitmap editor
+
+Edit Bitmap writes the picture to a PNG in the temporary folder, links
+the object to it and opens it in the bitmap editor set in Tools >
+Options > Global > File Locations (a program file: `gimp`, its `.exe` on
+Windows, or an application bundle on macOS, opened with `open -a`;
+Browse picks it, Clear empties it). Empty, the default, opens it with the
+system's program for PNG files (#593, `export::tests::the_bitmap_editor_gets_the_file`).
+The browser build has no outside editor.
+
 ## Linked files follow their changes
 
 A linked bitmap (an imported file, or one sent to the system image

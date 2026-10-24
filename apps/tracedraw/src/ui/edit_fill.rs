@@ -47,6 +47,12 @@ pub struct EditFillState {
 /// Width of the band of colours.
 const BAND_W: f32 = 320.0;
 
+/// The room the chosen kind's settings get under the kinds row: the same
+/// for every kind, so the window keeps its size and OK and Cancel their
+/// place as the kind changes (#654). Sized for the gradient page, the
+/// largest; a page that needs more (a long translation) scrolls in it.
+pub(crate) const PAGE: egui::Vec2 = egui::Vec2::new(724.0, 330.0);
+
 impl App {
     /// Open the Edit Fill dialog on the selection's fill (or the default
     /// fill when nothing is selected).
@@ -152,31 +158,9 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut EditFillState, close:
     let mut ok = false;
     let mut help = false;
     crate::ui::dialogs::window(ctx, tr("edit_fill.title")).show(ctx, |ui| {
-        ui.set_min_width(600.0);
         kinds(ui, st);
         ui.separator();
-        match &mut st.fill {
-            Fill::None => {
-                ui.label(egui::RichText::new(tr("edit_fill.no_fill")).color(Tokens::text_dim()));
-            }
-            Fill::Solid(_) => uniform(ui, st),
-            Fill::Fountain(_) => fountain(ui, st),
-            Fill::Pattern(p) => {
-                ui.horizontal_top(|ui| {
-                    preview(ui, &Fill::Pattern(p.clone()));
-                    ui.vertical(|ui| crate::ui::dockers::pattern_editor(ui, p));
-                });
-            }
-            Fill::Texture(t) => {
-                ui.horizontal_top(|ui| {
-                    preview(ui, &Fill::Texture(t.clone()));
-                    ui.vertical(|ui| crate::ui::dockers::texture_editor(ui, t));
-                });
-            }
-            Fill::Mesh(_) => {
-                ui.label(egui::RichText::new(tr("docker.mesh_hint")).color(Tokens::text_dim()));
-            }
-        }
+        page(ui, st);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             help = ui
@@ -208,6 +192,48 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut EditFillState, close:
         app.end_edit_fill_preview();
     } else {
         app.preview_edit_fill(st);
+    }
+}
+
+/// The chosen kind's settings in a box of [`PAGE`] size.
+fn page(ui: &mut Ui, st: &mut EditFillState) {
+    let kind = tracedraw_core::patch::fill_kind(&st.fill);
+    ui.allocate_ui_with_layout(PAGE, egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_min_size(PAGE);
+        // Both ways: a page too wide would widen a scroll area that only
+        // scrolls up and down, and the window with it.
+        egui::ScrollArea::both()
+            .id_salt(("edit_fill_page", kind))
+            .max_width(PAGE.x)
+            .max_height(PAGE.y)
+            .auto_shrink([false, false])
+            .show(ui, |ui| page_contents(ui, st));
+    });
+}
+
+/// The settings of the fill's kind (what [`page`] boxes).
+fn page_contents(ui: &mut Ui, st: &mut EditFillState) {
+    match &mut st.fill {
+        Fill::None => {
+            ui.label(egui::RichText::new(tr("edit_fill.no_fill")).color(Tokens::text_dim()));
+        }
+        Fill::Solid(_) => uniform(ui, st),
+        Fill::Fountain(_) => fountain(ui, st),
+        Fill::Pattern(p) => {
+            ui.horizontal_top(|ui| {
+                preview(ui, &Fill::Pattern(p.clone()));
+                ui.vertical(|ui| crate::ui::dockers::pattern_editor(ui, p));
+            });
+        }
+        Fill::Texture(t) => {
+            ui.horizontal_top(|ui| {
+                preview(ui, &Fill::Texture(t.clone()));
+                ui.vertical(|ui| crate::ui::dockers::texture_editor(ui, t));
+            });
+        }
+        Fill::Mesh(_) => {
+            ui.label(egui::RichText::new(tr("docker.mesh_hint")).color(Tokens::text_dim()));
+        }
     }
 }
 
@@ -568,10 +594,14 @@ fn band(ui: &mut Ui, f: &mut Fountain, node: &mut usize) {
             reverse(f);
             *node = f.stops.len().saturating_sub(1) - (*node).min(f.stops.len().saturating_sub(1));
         }
-        ui.label(
-            egui::RichText::new(tr("edit_fill.band_hint"))
-                .size(11.0)
-                .color(Tokens::text_dim()),
+        // Wrapped: a long translation must not widen the page.
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(tr("edit_fill.band_hint"))
+                    .size(11.0)
+                    .color(Tokens::text_dim()),
+            )
+            .wrap(),
         );
     });
 }
@@ -758,6 +788,7 @@ fn transform(ui: &mut Ui, f: &mut Fountain) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::dialogs::Dialog;
     use tracedraw_core::ShapeKind;
 
     fn two() -> Fountain {
@@ -899,6 +930,100 @@ mod tests {
         let all = texts(&mut app);
         for want in ["CMYK", "C", "M", "Y", "K"] {
             assert!(all.iter().any(|t| t == want), "{want} in {all:?}");
+        }
+    }
+
+    /// The dialog keeps its place and size, and OK its place, whichever
+    /// kind of fill is picked: each kind's settings get the same room
+    /// (#654). Every kind's page fits that room.
+    #[test]
+    fn the_window_keeps_its_size_for_every_kind() {
+        let ctx = crate::theme::ui_context();
+        App::setup_context(&ctx);
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Fountain(two()));
+        app.show_dockers = false;
+        app.open_edit_fill();
+        let run = |app: &mut App| -> (egui::Rect, Option<egui::Pos2>) {
+            let mut ok = None;
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+                out.textures_delta.clear();
+                fn walk(s: &egui::Shape, ok: &mut Option<egui::Pos2>) {
+                    match s {
+                        egui::Shape::Text(t) if t.galley.text() == "OK" => *ok = Some(t.pos),
+                        egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, ok)),
+                        _ => {}
+                    }
+                }
+                ok = None;
+                out.shapes.iter().for_each(|c| walk(&c.shape, &mut ok));
+            }
+            let id = egui::Id::new(("chrome_dialog", tr("edit_fill.title")));
+            let rect = ctx.memory(|m| m.area_rect(id)).expect("the dialog");
+            (rect, ok)
+        };
+        let (rect0, ok0) = run(&mut app);
+        let ok0 = ok0.expect("OK shown");
+        for i in [0, 1, 2, 3, 4, 5, 2, 0] {
+            let Dialog::EditFill(st) = &mut app.dialog else {
+                panic!("the dialog stays open");
+            };
+            st.fill = new_of_kind(&st.fill, i);
+            st.touched = vec![FillField::All];
+            st.node = 0;
+            let (rect, ok) = run(&mut app);
+            assert!(
+                (rect.min - rect0.min).length() < 0.5
+                    && (rect.size() - rect0.size()).length() < 0.5,
+                "kind {i}: {rect:?} vs {rect0:?}"
+            );
+            let ok = ok.expect("OK shown");
+            assert!(
+                (ok - ok0).length() < 0.5,
+                "kind {i}: OK at {ok:?} vs {ok0:?}"
+            );
+        }
+        // Every page fits the room (no scroll bar in English).
+        let Dialog::EditFill(st) = std::mem::replace(&mut app.dialog, Dialog::None) else {
+            panic!("the dialog");
+        };
+        let mut st = st;
+        for i in 0..6 {
+            st.fill = new_of_kind(&st.fill, i);
+            st.node = 0;
+            let mut size = egui::Vec2::ZERO;
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    crate::ui::chrome::form_style(ui);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    size = ui
+                        .allocate_ui(egui::vec2(PAGE.x, 2000.0), |ui| page_contents(ui, &mut st))
+                        .response
+                        .rect
+                        .size();
+                });
+                out.textures_delta.clear();
+            }
+            assert!(
+                size.x <= PAGE.x + 0.5 && size.y <= PAGE.y + 0.5,
+                "kind {i}: {size:?} in {PAGE:?}"
+            );
         }
     }
 

@@ -120,16 +120,29 @@ impl App {
             });
         }
         for id in &frames {
-            let kind = self
-                .doc()
-                .shape(*id)
-                .ok()
-                .and_then(|(_, s)| resized_kind(s, t));
-            if let Some(kind) = kind {
+            let Ok((_, s)) = self.doc().shape(*id) else {
+                continue;
+            };
+            if let Some(kind) = resized_kind(s, t) {
                 cmds.push(Command::SetShapeKind { shape: *id, kind });
             }
+            // A frame's symmetry goes with it, as an object's does in a
+            // transform (not the one being edited).
+            if self.symmetry_edit != Some(*id)
+                && s.effect_stack()
+                    .iter()
+                    .any(|(e, _)| matches!(e, tracedraw_core::live::Effect::Symmetry { .. }))
+            {
+                let mut moved = s.clone();
+                moved.carry_effects(t);
+                cmds.push(Command::SetEffectStack {
+                    shape: *id,
+                    effects: moved.effects,
+                    parked: moved.parked_effects,
+                });
+            }
         }
-        if let Err(e) = self.engine.run_batch("Transform", &cmds) {
+        if let Err(e) = self.run_batch_keeping_lines("Transform", &cmds) {
             self.status = e.to_string();
         }
         true

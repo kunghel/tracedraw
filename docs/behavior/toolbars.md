@@ -120,6 +120,12 @@ arrows at its right (11 px): a click on one steps the value by a unit
 (or the step the field was given), as does the mouse wheel over the
 field; Shift steps ten times as much, Ctrl a tenth; a whole-number field
 stays whole and the range holds (`ui::field::tests::arrows_and_the_wheel_step_the_value`).
+Every step applies at once, one undo step each, whether or not the box
+holds the focus: the rotation angle, the scale percentages, the arc
+angles, the dimension text size and line width, the corner radii and the
+Transform toolbar's fields took only the first click after the box was
+clicked into (the one that took the focus from it) and then none
+(`ui::propbar::tests::every_click_on_the_rotation_arrows_turns_the_selection`).
 
 - Pick tool, nothing selected (page bar): page size list; page width and
   height; fit page to drawing (Layout's command, pale on an empty page);

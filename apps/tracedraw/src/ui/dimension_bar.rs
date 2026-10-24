@@ -94,9 +94,7 @@ fn style_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
         )
         .rich_tip(tr("dimension.line_width"));
     let width_mm = u.to_mm(width);
-    if (r.drag_stopped() || r.lost_focus() || (r.changed() && !r.has_focus()))
-        && (width_mm - style.line_width).abs() > 1e-9
-    {
+    if r.changed() && (width_mm - style.line_width).abs() > 1e-9 {
         app.set_dimension_style(|s| s.line_width = width_mm);
     }
     let mut arrows = style.arrows;
@@ -193,7 +191,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
                 .suffix(" pt"),
         )
         .rich_tip(tr("dimension.text_size"));
-    if (r.drag_stopped() || r.lost_focus()) && (size - style.text_size).abs() > 1e-9 {
+    if r.changed() && (size - style.text_size).abs() > 1e-9 {
         app.set_dimension_style(|s| s.text_size = size);
     }
     style_part(app, ui, &style);

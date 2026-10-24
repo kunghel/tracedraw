@@ -864,6 +864,10 @@ pub struct App {
     /// `App::patch_selection_stroke_live`).
     pub live_stroke: Option<(u64, Option<Color>)>,
     pub file: Option<PathBuf>,
+    /// The file the drawing was read from, in any format (canonical), until
+    /// it is saved under a name of its own: opening that file again shows
+    /// this drawing instead of a second copy (#645).
+    pub opened_from: Option<PathBuf>,
     /// The drawing's file in a GitHub repository, when it came from one.
     pub remote: Option<crate::github::Remote>,
     /// The last vector object's picture without its bitmap effects, by its
@@ -1207,6 +1211,9 @@ pub struct App {
     /// The property bar keeps width and height proportional.
     pub scale_locked: bool,
     pub pending_copy_properties: bool,
+    /// Autofit Page's popup open: the margin shown and the frame it was
+    /// drawn in, for the outline of the page it would make (#594).
+    pub autofit_preview: Option<(f64, u64)>,
     /// Print Merge's Place Inside Frame waiting for a click on the shape
     /// that holds the picture (#577).
     pub pending_merge_frame: bool,
@@ -2001,6 +2008,7 @@ impl App {
             live_fill: None,
             live_stroke: None,
             file: None,
+            opened_from: None,
             remote: None,
             vector_fx_base: Default::default(),
             github: Default::default(),
@@ -2188,6 +2196,7 @@ impl App {
             pending_copy_properties: false,
             pending_shaping: None,
             pending_merge_frame: false,
+            autofit_preview: None,
             pending_copy_effect: None,
             pending_copy_envelope: false,
             pending_clone_effect: None,
@@ -3884,9 +3893,15 @@ impl App {
 
     pub fn run(&mut self, cmd: Command) {
         self.break_clone_links_for(&cmd);
+        let keep = self.edited_lines_kept(std::slice::from_ref(&cmd));
         if let Err(e) = self.engine.run(&cmd) {
             self.status = format!("{}: {e}", cmd.label());
             return;
+        }
+        if let Some(k) = keep {
+            if let Err(e) = self.engine.amend(&k) {
+                self.status = e.to_string();
+            }
         }
         self.sync_effect_clones_for(&cmd);
         self.sync_object_clones();
@@ -4552,7 +4567,7 @@ impl App {
                 Some(m) if smart => m,
                 _ => Affine::translate(self.duplicate_offset),
             };
-            shape.transform = step * shape.transform;
+            shape.transform_by(step);
             ids.push(id);
             pairs.push((s.id, id));
             copies.push(shape);
@@ -4911,6 +4926,47 @@ impl App {
         }
     }
 
+    /// The symmetry being edited, when `cmds` move or scale it: a command
+    /// that puts its effects back as they are now. While a symmetry is
+    /// edited its mirror lines stay where they are as its object is moved,
+    /// scaled or turned; out of edit mode they go with the object
+    /// (`Shape::transform_by`).
+    pub fn edited_lines_kept(&self, cmds: &[Command]) -> Option<Command> {
+        let id = self.symmetry_edit?;
+        cmds.iter()
+            .any(|c| matches!(c, Command::TransformShapes { shapes, .. } if shapes.contains(&id)))
+            .then(|| self.effects_as_now(id))
+            .flatten()
+    }
+
+    /// [`Engine::run_batch`] keeping the edited symmetry's mirror lines
+    /// in place (see [`App::edited_lines_kept`]), in the same undo step.
+    pub fn run_batch_keeping_lines(
+        &mut self,
+        label: &'static str,
+        cmds: &[Command],
+    ) -> tracedraw_core::Result<()> {
+        let keep = self.edited_lines_kept(cmds);
+        self.engine.run_batch(label, cmds)?;
+        if let Some(k) = keep {
+            self.engine.amend(&k)?;
+        }
+        Ok(())
+    }
+
+    /// Put `id`'s live effects back as they are now (those switched off
+    /// too), for a command that changes only the space an outline is
+    /// written in, not where it is: a TransformShapes doing that would
+    /// carry a symmetry's mirror lines away from the outline.
+    pub fn effects_as_now(&self, id: ShapeId) -> Option<Command> {
+        let s = self.doc().find_shape(id)?;
+        Some(Command::SetEffectStack {
+            shape: id,
+            effects: s.effects.clone(),
+            parked: s.parked_effects.clone(),
+        })
+    }
+
     pub fn transform_selection(&mut self, t: Affine) {
         if self.selection.is_empty() {
             return;
@@ -5022,8 +5078,38 @@ impl App {
             .pick_file(self, |app, p| app.open_path(p));
     }
 
+    /// Open `path`, or show the drawing already open from it (read from
+    /// it, or saved to it) instead of reading it into a second tab (#645).
+    /// Every way of opening a file comes here; templates (always a new,
+    /// untitled drawing, see [`App::open_as_template`]) and Revert read the
+    /// file again.
     pub fn open_path(&mut self, path: PathBuf) {
+        if !is_template_path(&path) {
+            if let Some(i) = self.tab_with_file(&path) {
+                self.switch_document(i);
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.status = crate::i18n::trf("status.already_open", &[("name", &name)]);
+                self.settings.touch_recent(&path);
+                self.settings.save();
+                return;
+            }
+        }
         self.open_path_with_password(path, "");
+    }
+
+    /// Open `path` as a template: a new, untitled drawing even when the file
+    /// is open already.
+    pub fn open_as_template(&mut self, path: PathBuf) {
+        let tabs = self.docs.len();
+        self.open_path_with_password(path, "");
+        if self.docs.len() > tabs {
+            self.file = None;
+            self.opened_from = None;
+            self.show_welcome = false;
+        }
     }
 
     /// The kind of file `path` holds, by its extension, except that an
@@ -5418,6 +5504,8 @@ impl App {
         match result {
             Ok((doc, msg)) => {
                 self.open_document(doc, None);
+                self.opened_from = (!crate::files::WEB && !is_template_path(&path))
+                    .then(|| crate::files::canonical(&path));
                 self.cdr_version = cdr_version;
                 self.cdr_unsaved_version =
                     opened_version.filter(|v| *v < tracedraw_cdr::write::CHECKED_SINCE);
@@ -5584,6 +5672,9 @@ impl App {
             Ok(()) => {
                 self.engine.mark_saved();
                 self.file = Some(path.clone());
+                // The drawing is the saved file's now, not the one it was
+                // read from.
+                self.opened_from = None;
                 self.status =
                     crate::i18n::trf("status.saved", &[("p", &path.display().to_string())]);
                 self.settings.touch_recent(&path);
@@ -6456,7 +6547,7 @@ impl App {
             })
             .collect();
         if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Clear Transformations", &cmds);
+            let _ = self.run_batch_keeping_lines("Clear Transformations", &cmds);
         }
     }
 
@@ -6778,6 +6869,16 @@ pub fn color_description(c: Color) -> String {
         Color::Registration => "Registration".into(),
         Color::Spot { ink, tint, .. } => format!("Spot {ink} {:.0}%", tint * 100.0),
     }
+}
+
+/// True for a template's path (`.tdt`, `.cdt`, `.cdrt`, any case): opened,
+/// it makes a new untitled drawing every time.
+pub(crate) fn is_template_path(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["tdt", "cdt", "cdrt"]
+            .iter()
+            .any(|t| e.eq_ignore_ascii_case(t))
+    })
 }
 
 /// True for a path ending in `.cdr` (any case).

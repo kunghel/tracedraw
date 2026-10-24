@@ -94,6 +94,14 @@ pub struct Options {
     /// Margins of the paper kept clear (mm: left, right, top, bottom):
     /// the pages and marks go inside them (#580).
     pub paper_margins: [f64; 4],
+    /// Every page moved on the sheet (mm, x right and y up) and stretched
+    /// about its middle (x and y factors, 1 for none), with its clip and
+    /// marks: Print Preview's artwork position and Transform (#536, #595).
+    pub page_offset: (f64, f64),
+    pub page_stretch: (f64, f64),
+    /// On a fixed sheet the pages stretch to fill the room inside the
+    /// margins, width and height each on its own (#591).
+    pub stretch_fit: bool,
     pub marks: Marks,
     /// The drawing's name and the moment, for the page information.
     pub title: String,
@@ -112,6 +120,9 @@ impl Default for Options {
             keep_size: false,
             info_offset: (0.0, 0.0),
             paper_margins: [0.0; 4],
+            page_offset: (0.0, 0.0),
+            page_stretch: (1.0, 1.0),
+            stretch_fit: false,
             marks: Marks::default(),
             title: String::new(),
             when: String::new(),
@@ -216,16 +227,20 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             let step_y = cell.height + 2.0 * inner_bleed + gutter;
             let grid_w = cols as f64 * step_x - gutter;
             let grid_h = rows as f64 * step_y - gutter;
-            let (size, scale) = match o.sheet {
+            let (size, (sx, sy)) = match o.sheet {
                 Some(sheet) => {
-                    // Kept size: the pages as they are; else the grid
-                    // shrinks to fit inside the marks.
+                    // Kept size: the pages as they are; stretched: they
+                    // fill the room each way; else the grid shrinks to fit
+                    // inside the marks.
                     let avail_w = (sheet.width - ml - mr - 2.0 * margin).max(1.0);
                     let avail_h = (sheet.height - mt - mb - 2.0 * margin).max(1.0);
                     let s = if o.keep_size {
-                        1.0
+                        (1.0, 1.0)
+                    } else if o.stretch_fit {
+                        (avail_w / grid_w, avail_h / grid_h)
                     } else {
-                        (avail_w / grid_w).min(avail_h / grid_h).min(1.0)
+                        let s = (avail_w / grid_w).min(avail_h / grid_h).min(1.0);
+                        (s, s)
                     };
                     (sheet, s)
                 }
@@ -240,14 +255,20 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                             grid_w * s + 2.0 * margin + ml + mr,
                             grid_h * s + 2.0 * margin + mt + mb,
                         ),
-                        s,
+                        (s, s),
                     )
                 }
             };
             // The grid centred in the paper's margins (the sheet when
             // there are none).
-            let x0 = ml + (size.width - ml - mr - grid_w * scale) / 2.0;
-            let y_top = size.height - mt - (size.height - mt - mb - grid_h * scale) / 2.0;
+            let x0 = ml + (size.width - ml - mr - grid_w * sx) / 2.0;
+            let y_top = size.height - mt - (size.height - mt - mb - grid_h * sy) / 2.0;
+            // Moved and stretched about its middle as Print Preview asks.
+            let (ox, oy) = o.page_offset;
+            let (kx, ky) = o.page_stretch;
+            let ok = |v: f64, d: f64| if v.is_finite() { v } else { d };
+            let (ox, oy) = (ok(ox, 0.0), ok(oy, 0.0));
+            let (kx, ky) = (ok(kx, 1.0).max(0.01), ok(ky, 1.0).max(0.01));
             let cells = cells
                 .iter()
                 .enumerate()
@@ -257,15 +278,12 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                     let row = (n as u32 / cols) as f64;
                     let ps = page.and_then(|i| sizes.get(i)).copied().unwrap_or(cell);
                     // The page centred in its cell (y up: row 0 at the top).
-                    let cx = x0 + (col * step_x + inner_bleed + cell.width / 2.0) * scale;
-                    let cy = y_top - (row * step_y + inner_bleed + cell.height / 2.0) * scale;
-                    let trim = Rect::new(
-                        cx - ps.width * scale / 2.0,
-                        cy - ps.height * scale / 2.0,
-                        cx + ps.width * scale / 2.0,
-                        cy + ps.height * scale / 2.0,
-                    );
-                    let transform = Affine::translate((trim.x0, trim.y0)) * Affine::scale(scale);
+                    let cx = x0 + (col * step_x + inner_bleed + cell.width / 2.0) * sx + ox;
+                    let cy = y_top - (row * step_y + inner_bleed + cell.height / 2.0) * sy + oy;
+                    let (w, h) = (ps.width * sx * kx, ps.height * sy * ky);
+                    let trim = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+                    let transform = Affine::translate((trim.x0, trim.y0))
+                        * Affine::scale_non_uniform(sx * kx, sy * ky);
                     Cell {
                         page: *page,
                         transform,
@@ -692,6 +710,48 @@ mod tests {
             },
         );
         assert_eq!(fitted[0].size, Size::new(110.0, 110.0));
+    }
+
+    /// Stretched to fill, the page takes the whole room inside the
+    /// margins, each way on its own (#591); moved and stretched in Print
+    /// Preview, the trim moves by the offset and grows about its middle
+    /// (#595), and the page's transform follows it.
+    #[test]
+    fn pages_stretch_to_fill_and_follow_the_preview_transform() {
+        let a4 = Size::new(210.0, 297.0);
+        let page = Size::new(100.0, 50.0);
+        let o = Options {
+            sheet: Some(a4),
+            paper_margins: [10.0, 10.0, 20.0, 20.0],
+            stretch_fit: true,
+            ..Default::default()
+        };
+        let t = plan(&[page], &o)[0].cells[0].trim;
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(near(t.x0, 10.0) && near(t.x1, 200.0), "{t:?}");
+        assert!(near(t.y0, 20.0) && near(t.y1, 277.0), "{t:?}");
+        let base = Options {
+            sheet: Some(a4),
+            ..Default::default()
+        };
+        let before = plan(&[page], &base)[0].cells[0].clone();
+        let moved = plan(
+            &[page],
+            &Options {
+                page_offset: (5.0, -3.0),
+                page_stretch: (2.0, 1.0),
+                ..base.clone()
+            },
+        )[0]
+        .cells[0]
+            .clone();
+        let (b, m) = (before.trim, moved.trim);
+        assert!(near(m.center().x, b.center().x + 5.0), "{m:?}");
+        assert!(near(m.center().y, b.center().y - 3.0), "{m:?}");
+        assert!(near(m.width(), 2.0 * b.width()) && near(m.height(), b.height()));
+        // The page's corners land on the trim's.
+        let far = moved.transform * Point::new(page.width, page.height);
+        assert!(near(far.x, m.x1) && near(far.y, m.y1), "{far:?} {m:?}");
     }
 
     const A5: Size = Size {

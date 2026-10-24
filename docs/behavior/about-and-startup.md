@@ -58,6 +58,41 @@ the version on the right).
   plain 1600 x 950 window (automation and the visual checks use this).
 - The browser build has no splash: the page shows its own loader.
 
+## One window for every start (#646)
+
+A file opened from the file manager, a shortcut or the command line while
+TraceDraw runs opens in a tab of the running window (or shows its tab
+when it is open already, see `documents.md`), which comes to the front;
+the new start ends at once, before its log would replace the running
+one's (`instance.rs`). Several files selected together all go there (the
+Linux launcher passes them to one start, `Exec=tracedraw %F`). A start
+with no file, one with `--new-instance`, and the `--mcp`, `--mcp-window`
+and `--reset-settings` starts open windows of their own.
+
+- The running window holds a lock on `instance.lock` in the settings
+  folder for as long as it runs; the system lets go of it when the
+  process ends, a crash included, so nothing stale is left in the way.
+- It listens on a port of this computer (127.0.0.1) named, with a random
+  token, in `instance.json` (readable by this user only on Linux and
+  macOS). A start sends one line `{"token":…,"files":[…]}` with absolute
+  paths and the window answers `{"ok":true}`; a wrong token or garbage
+  reaches nothing. A start waits up to three seconds for a window that is
+  just starting, then opens its own.
+- The window takes the files between frames from a channel (one
+  `try_recv` a frame when none came), waiting while a dialog or a question
+  is up or the drawings are being closed. Wayland does not let a window
+  raise itself: it asks for attention instead.
+- A start with the next renderer after a failed one (see below) takes the
+  place over. Portable copies and `TRACEDRAW_CONFIG_DIR` each have their
+  own window. The browser build has none of this.
+- Checks: `instance::tests::a_second_start_hands_its_files_to_the_first`,
+  `a_crash_leaves_nothing_in_the_way`, `strangers_are_refused`,
+  `starts_at_the_same_time_make_one_window`,
+  `a_handed_over_file_opens_in_a_tab_once_no_question_is_up`,
+  `the_linux_launcher_starts_once_for_several_files`; checked by hand on
+  X11 with two starts (the second ended in 12 ms, its file in a new tab of
+  the first window).
+
 ## The renderer (#445, #439)
 
 - The desktop window is drawn with wgpu (Direct3D 12, Vulkan or Metal).

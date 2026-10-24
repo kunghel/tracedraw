@@ -587,7 +587,7 @@ impl App {
         for mut s in shapes {
             let id = self.engine.new_shape_id();
             s.id = id;
-            s.transform = Affine::translate(self.duplicate_offset) * s.transform;
+            s.transform_by(Affine::translate(self.duplicate_offset));
             ids.push(id);
             cmds.push(Command::AddShape { layer, shape: s });
         }

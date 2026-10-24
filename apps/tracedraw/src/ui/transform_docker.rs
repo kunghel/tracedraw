@@ -311,7 +311,7 @@ pub fn apply(app: &mut App) {
         for s in &shapes {
             let id = app.engine.new_shape_id();
             let mut shape = crate::app::reid_pub(s.clone(), id, &mut app.engine);
-            shape.transform = step * shape.transform;
+            shape.transform_by(step);
             last.push(id);
             cmds.push(Command::AddShape { layer, shape });
         }

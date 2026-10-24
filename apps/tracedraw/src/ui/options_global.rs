@@ -30,8 +30,9 @@ pub fn printing_page(app: &mut App, ui: &mut Ui) {
     grid("printing_layout").show(ui, |ui| {
         row_label(ui, &tr("print.sheet"));
         ui.horizontal(|ui| {
-            let sheets: Vec<usize> = (0..SHEETS.len()).collect();
-            if p.sheet >= SHEETS.len() {
+            // The named sheets and Custom (its size is the one last used).
+            let sheets: Vec<usize> = (0..=SHEETS.len()).collect();
+            if p.sheet > SHEETS.len() {
                 p.sheet = 0;
             }
             combo(

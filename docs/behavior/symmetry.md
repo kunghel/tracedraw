@@ -74,6 +74,47 @@ recomputed from it.
   it and a drag moves it all; a double click on it (or on an object
   inside it) goes back into editing it, instead of into focus mode
   (`pick_drag_tests::a_finished_symmetry_is_picked_whole_and_a_double_click_edits_it`).
+  Moving, scaling, turning or mirroring it (a drag, the handles, the
+  bars, the Transformations docker, Align and Distribute, nudges, Repeat,
+  Clear Transformations, paragraph text resized by its frame) carries its
+  centre and mirror lines with the object (`Shape::transform_by`,
+  `live::carry_effects`), so the whole symmetry takes the change and the
+  drag's outline shows the copies too, also those of a symmetry inside a
+  selected group. So do Duplicate, copies left by a right click or by
+  Space during a drag, the Transformations docker's copies, Step and
+  Repeat, a symmetry switched off in the Effects docker, Ungroup (a
+  symmetry inside a group keeps its line in the group's space and comes
+  out onto the page with it), symbols made from it, Export of the
+  selection only, Convert to Bitmap and patterns made from it. The
+  lines used to stay where they were: the copies mirrored the move and a
+  handle rearranged them, which looked like one object still being edited
+  (`pick_drag_tests::a_finished_symmetry_moves_whole_with_its_copies`,
+  `a_finished_symmetry_scales_whole_with_its_copies`,
+  `a_duplicate_of_a_symmetry_takes_its_line_along`,
+  `a_symmetry_in_a_group_follows_the_group_and_an_ungroup`, core test
+  `a_symmetry_is_carried_with_its_object`). A move, a turn, an even scale
+  and a mirror carry the symmetry exactly; a stretch or a slant cannot
+  keep the copies mirror images of the changed whole, so the centre goes
+  with the object and the lines keep their angle (mirrored when the
+  change mirrors): the copies stay mirror images of the changed object.
+  Commands that only rewrite where an outline is stored, not where it is
+  (Join Curves, Straighten Text, the Coordinates docker's Replace), leave
+  the symmetry where it was
+  (`joining_curves_leaves_a_symmetry_where_it_was`).
+- While the symmetry is edited, moving, scaling or aligning its object
+  leaves the lines where they are, in the same undo step
+  (`editing_a_symmetry_a_drag_on_the_object_keeps_the_line`,
+  `align_keeps_the_line_while_editing_and_moves_it_after`); a copy of
+  the lone object made then (Duplicate, Paste, a right click during a
+  drag) joins the symmetry without a symmetry of its own
+  (`a_duplicate_made_while_editing_joins_without_its_own_symmetry`).
+- Finish measures the symmetry again with its copies (the boxes measured
+  while editing are the object's own, as picked), so its box and handles
+  are the whole's at once, an object with other live effects too
+  (`after_finish_the_box_is_the_whole_symmetrys_with_other_effects_too`);
+  it leaves a group of the symmetry entered while editing (not a group
+  entered before) and the Shape tool a double click on a member switched
+  to.
 - Remove Symmetry (Alt+Shift+S) drops the effect; the copies disappear.
 - Break Symmetry Link (Alt+X) bakes the copies into objects of their own.
 
@@ -89,5 +130,6 @@ symmetry is edited (unless Show symmetry lines is off).
   defaults, then the evaluated `above` contains one copy spanning x 20..30.
 - Given two lines at 0 degrees through the origin, then there are three
   copies, one per other quadrant (core test `symmetry_two_lines`).
-- Given a symmetry object, when the original is moved, then the copies
-  move with it (they are recomputed, nothing is stored).
+- Given a symmetry object out of edit mode, when it is moved, then the
+  copies and the mirror lines move with it (the copies are recomputed
+  from the carried lines, nothing else is stored).

@@ -1453,6 +1453,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2087,6 +2093,16 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.4",
+]
+
+[[package]]
+name = "libwebp-sys"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54cd30df7c7165ce74a456e4ca9732c603e8dc5e60784558c1c6dc047f876733"
+dependencies = [
+ "cc",
+ "glob",
 ]
 
 [[package]]
@@ -4083,7 +4099,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tracedraw"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -4123,12 +4139,13 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "webp",
  "winresource",
 ]
 
 [[package]]
 name = "tracedraw-cdr"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -4142,7 +4159,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "env_logger",
  "flate2",
@@ -4158,7 +4175,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "i_overlay",
@@ -4170,7 +4187,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-io"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -4195,7 +4212,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-render"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "log",
  "tiny-skia",
@@ -4204,7 +4221,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-text"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "fontdb",
  "kurbo",
@@ -4217,14 +4234,14 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-vba"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "boa_engine",
 ]
 
 [[package]]
 name = "tracedraw-vba-project"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "cfb",
  "chardetng",
@@ -4703,6 +4720,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webp"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1"
+dependencies = [
+ "libwebp-sys",
 ]
 
 [[package]]

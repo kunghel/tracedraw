@@ -368,7 +368,7 @@ impl App {
                 // What the object draws: its warped outline and the
                 // objects its effects add.
                 let mut on_page = s.clone();
-                on_page.transform = t;
+                on_page.transform_by(parent);
                 let ev = tracedraw_core::live::evaluate(&on_page);
                 for part in std::iter::once(ev.main).chain(ev.below).chain(ev.above) {
                     out.push(part.page_path());

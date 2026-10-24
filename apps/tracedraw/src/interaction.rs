@@ -275,7 +275,7 @@ impl App {
         let open = |children: &[tracedraw_core::Shape]| {
             children.iter().rev().filter(|c| c.visible).find_map(|c| {
                 let mut c = c.clone();
-                c.transform = s.transform * c.transform;
+                c.transform_by(s.transform);
                 self.leaf_at(&c, p, tol)
             })
         };
@@ -283,7 +283,7 @@ impl App {
             ShapeKind::Group { children } => open(children),
             ShapeKind::ClipFrame { frame, contents } => {
                 let mut f = (**frame).clone();
-                f.transform = s.transform * f.transform;
+                f.transform_by(s.transform);
                 if !f.page_path().contains(p) && !self.shape_hit(&f, p, tol) {
                     return None;
                 }
@@ -396,7 +396,7 @@ impl App {
             ShapeKind::Group { children } => children,
             ShapeKind::ClipFrame { frame, contents } => {
                 let mut f = (**frame).clone();
-                f.transform = g.transform * f.transform;
+                f.transform_by(g.transform);
                 if !f.page_path().contains(p) {
                     return Vec::new();
                 }
@@ -410,7 +410,7 @@ impl App {
             .filter(|c| c.visible && !c.locked)
             .map(|c| {
                 let mut c = c.clone();
-                c.transform = g.transform * c.transform;
+                c.transform_by(g.transform);
                 c
             })
             .filter(|c| {
@@ -808,7 +808,7 @@ impl App {
         for s in self.selected_shapes() {
             let id = self.engine.new_shape_id();
             let mut shape = crate::app::reid_pub(s, id, &mut self.engine);
-            shape.transform = t * shape.transform;
+            shape.transform_by(t);
             cmds.push(Command::AddShape { layer, shape });
         }
         if cmds.is_empty() {
@@ -860,7 +860,9 @@ impl App {
         // A drag starts after the pointer moved a few pixels; hit-test at the
         // press position so small targets like nodes and handles are caught.
         let mut p = p;
-        if response.drag_started() {
+        // (Not during a transform: a right press there restarts egui's drag
+        // and its origin is that press.)
+        if response.drag_started() && !self.transforming() {
             if let Some(origin) = response.ctx.input(|i| i.pointer.press_origin()) {
                 screen = origin;
                 p = self.view.to_page(origin);
@@ -886,19 +888,21 @@ impl App {
                     "status.drag_copy_off"
                 });
             }
-            // egui ends a drag when any button goes up (the right one, for
-            // a copy): the transform goes on while the left button is held
-            // and ends when it goes up.
-            if !response.dragged() && !response.drag_stopped_by(PointerButton::Primary) {
-                if response.ctx.input(|i| i.pointer.primary_down()) {
-                    self.note_drop_keys(&response.ctx);
-                    self.pick_drag_to(p, mods);
-                    self.stamp_on_space(response);
-                } else {
-                    self.end_drag();
-                }
-                return;
+            // The transform runs from the press until the left button goes
+            // up, whatever the right button does meanwhile. egui takes a
+            // press of either button for the start of a new click or drag:
+            // after a right press it reports the left release as a click
+            // (which picked, or emptied the selection on bare canvas,
+            // before the copy was made) and a held right press as a new
+            // drag. Neither reaches the tools here.
+            if response.ctx.input(|i| i.pointer.primary_down()) {
+                self.note_drop_keys(&response.ctx);
+                self.pick_drag_to(p, mods);
+                self.stamp_on_space(response);
+            } else {
+                self.end_drag();
             }
+            return;
         } else if matches!(self.tool, Tool::Pick | Tool::FreeformPick)
             && self.right_drag_input(response, p)
         {
@@ -1718,13 +1722,20 @@ impl App {
             };
         }
         if response.dragged_by(PointerButton::Primary) {
+            // The pointer now: on the frame the drag starts `p` is where
+            // the button went down, the pointer already a few pixels away,
+            // and the corner sat behind it (#655).
+            let now = response
+                .hover_pos()
+                .map(|s| self.snap_point(self.view.to_page(s)))
+                .unwrap_or(p);
             if let Drag::Box {
                 start,
                 current,
                 from_center,
             } = &mut self.drag
             {
-                let mut q = p;
+                let mut q = now;
                 if mods.ctrl {
                     // Constrain to a square/circle.
                     let d = q - *start;
@@ -2236,9 +2247,10 @@ impl App {
                 from_center,
             } => {
                 let r = App::box_rect(start, current, from_center);
-                // The knife cuts along the dragged line, in its direction;
-                // shape tools take the normalised box.
-                let (a, b) = if self.tool == Tool::Knife {
+                // The knife cuts along the dragged line, in its direction,
+                // and Segment Delete needs the press (a slipped click is
+                // taken there); shape tools take the normalised box.
+                let (a, b) = if matches!(self.tool, Tool::Knife | Tool::SegmentDelete) {
                     (start, current)
                 } else {
                     (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1))

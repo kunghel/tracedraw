@@ -207,11 +207,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
             {
                 crate::files::Dialog::new()
                     .add_filter(tr("file.template"), &["tdt", "tdraw"])
-                    .pick_file(app, |app, p| {
-                        app.open_path(p);
-                        app.file = None;
-                        app.show_welcome = false;
-                    });
+                    .pick_file(app, |app, p| app.open_as_template(p));
                 *close = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -56,8 +56,10 @@ places where they cross other outlines or themselves, for example the bits of
 lines that stick out past a crossing.
 
 - Click a part of an outline to delete it.
-- Drag a rectangle to delete every part that lies wholly inside it, on all
-  objects at once.
+- Drag a rectangle across outlines to delete every part it touches, on all
+  objects at once. Each part goes whole, up to the crossings at its ends, even
+  where it reaches past the rectangle; a closed shape that nothing crosses goes
+  whole.
 
 Rectangles, ellipses and polygons become curves; a closed shape that loses a
 part opens, and an object with nothing left is deleted.

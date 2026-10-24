@@ -57,6 +57,15 @@ condition). Presets are kept in the preferences
 (`formats.export_presets`; #547,
 `prefs::tests::export_presets_save_apply_rename_and_delete`).
 
+## WebP
+
+Lossless (off at first) and Quality (1 to 100). Off, the file is lossy
+WebP at that quality (libwebp, in the desktop builds), far smaller: a
+picture of 450 KB lossless comes to about 50 KB at quality 10. On, it is
+lossless, and below 100 the colours are first rounded to fewer levels
+(near-lossless, #544). The browser build has no lossy encoder and always
+writes the lossless way (#592, `export::tests::webp_quality_shrinks_the_file`).
+
 ## Checks
 
 - `export::tests::the_export_preview_shows_the_page_and_estimates_the_size`

@@ -547,11 +547,103 @@ pub fn nib_corners(c: Pos2, r: f32, stretch: f64, angle: f64) -> [Pos2; 4] {
     })
 }
 
-/// The Variable Outline group: the width nodes as ticks along a bar (a
-/// click on the bar adds one, on a tick picks it), the picked node's
-/// position and its width on each side and in all.
+/// The Variable Outline bar's id (tests find the bar by it).
+pub(crate) const VO_BAR: &str = "outline_pen_vo_bar";
+
+/// The node of `nodes` nearest to `x` on the bar (`x_of` placing a node),
+/// within 6 points.
+fn nearest_node(nodes: &[WidthNode], x: f32, x_of: impl Fn(f64) -> f32) -> Option<usize> {
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i, (x_of(n.at) - x).abs()))
+        .filter(|(_, d)| *d <= 6.0)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
+/// Add a node at `t` with the width the outline has there; its index.
+fn add_node(st: &mut OutlinePenState, t: f64) -> usize {
+    let (l, r) = tracedraw_core::style::width_at(st.stroke.width, &st.stroke.widths, t);
+    st.stroke.widths.push(WidthNode {
+        at: t,
+        left: l,
+        right: r,
+    });
+    let last = st.stroke.widths.len() - 1;
+    let (nodes, at) = crate::variable_outline::sorted(std::mem::take(&mut st.stroke.widths), last);
+    st.stroke.widths = nodes;
+    touch(st, StrokeField::Widths);
+    at
+}
+
+/// Slide node `i` to `t`, kept between its neighbours and within the ends,
+/// as on the canvas (#479); true when it moved.
+fn slide_node(nodes: &mut [WidthNode], i: usize, t: f64) -> bool {
+    let lo = i
+        .checked_sub(1)
+        .and_then(|k| nodes.get(k))
+        .map_or(0.0, |m| m.at + 1e-4);
+    let hi = nodes.get(i + 1).map_or(1.0, |m| m.at - 1e-4);
+    let Some(m) = nodes.get_mut(i) else {
+        return false;
+    };
+    let t = t.clamp(lo.min(hi), hi.max(lo));
+    if (m.at - t).abs() < 1e-9 {
+        return false;
+    }
+    m.at = t;
+    true
+}
+
+/// The Variable Outline group: the width nodes as dots along a bar (a
+/// click on the bar adds one, on a dot picks it, a drag slides it between
+/// its neighbours, #652), the picked node's position and its width on
+/// each side and in all.
 fn variable(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::OutlineLib) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(360.0, 34.0), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(360.0, 34.0), Sense::hover());
+    // Clicks and drags: a drag on the bar slides a node, not the dialog.
+    let id = egui::Id::new(VO_BAR);
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let x_of = |t: f64| rect.left() + rect.width() * t.clamp(0.0, 1.0) as f32;
+    let t_of = |x: f32| f64::from((x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+    if resp.clicked() {
+        if let Some(at) = resp.interact_pointer_pos() {
+            st.node = Some(match nearest_node(&st.stroke.widths, at.x, x_of) {
+                Some(i) => i,
+                None => add_node(st, t_of(at.x)),
+            });
+        }
+    }
+    let key = id.with("drag");
+    if resp.drag_started() {
+        // Where the button went down (the pointer moved on since).
+        if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+            let i = nearest_node(&st.stroke.widths, p.x, x_of)
+                .unwrap_or_else(|| add_node(st, t_of(p.x)));
+            st.node = Some(i);
+            let grab = p.x - x_of(st.stroke.widths.get(i).map_or(0.0, |n| n.at));
+            ui.data_mut(|d| d.insert_temp(key, (i, grab)));
+        }
+    }
+    if resp.dragged() {
+        let held = ui.data(|d| d.get_temp::<(usize, f32)>(key));
+        if let (Some((i, grab)), Some(p)) = (held, resp.interact_pointer_pos()) {
+            if slide_node(&mut st.stroke.widths, i, t_of(p.x - grab)) {
+                touch(st, StrokeField::Widths);
+            }
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if resp
+        .hover_pos()
+        .is_some_and(|h| nearest_node(&st.stroke.widths, h.x, x_of).is_some())
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(usize, f32)>(key));
+    }
+    // Drawn after the input, so the dots are where this frame left them.
     let p = ui.painter();
     let y = rect.center().y;
     p.line_segment(
@@ -565,7 +657,6 @@ fn variable(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::
             EStroke::new(1.0, Tokens::text_dim()),
         );
     }
-    let x_of = |t: f64| rect.left() + rect.width() * t.clamp(0.0, 1.0) as f32;
     for (i, n) in st.stroke.widths.iter().enumerate() {
         let c = Pos2::new(x_of(n.at), y);
         let picked = st.node == Some(i);
@@ -579,31 +670,6 @@ fn variable(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::
             },
         );
         p.circle_stroke(c, 5.0, EStroke::new(1.2, Tokens::ACCENT));
-    }
-    if resp.clicked() {
-        if let Some(at) = resp.interact_pointer_pos() {
-            let hit = st
-                .stroke
-                .widths
-                .iter()
-                .position(|n| (x_of(n.at) - at.x).abs() <= 6.0);
-            match hit {
-                Some(i) => st.node = Some(i),
-                None => {
-                    let t = f64::from((at.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                    let (l, r) =
-                        tracedraw_core::style::width_at(st.stroke.width, &st.stroke.widths, t);
-                    st.stroke.widths.push(WidthNode {
-                        at: t,
-                        left: l,
-                        right: r,
-                    });
-                    st.stroke.widths.sort_by(|a, b| a.at.total_cmp(&b.at));
-                    st.node = st.stroke.widths.iter().position(|n| n.at == t);
-                    touch(st, StrokeField::Widths);
-                }
-            }
-        }
     }
     let u = lib.units;
     let node = st.node.filter(|i| *i < st.stroke.widths.len());
@@ -677,6 +743,14 @@ fn variable(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::
             }
             if changed {
                 touch(st, StrokeField::Widths);
+            }
+            // A position typed past a neighbour: the nodes in order again
+            // (the outline's widths read them in order).
+            if a.changed() {
+                let (nodes, j) =
+                    crate::variable_outline::sorted(std::mem::take(&mut st.stroke.widths), i);
+                st.stroke.widths = nodes;
+                st.node = Some(j);
             }
         }
         if ui
@@ -891,6 +965,172 @@ mod tests {
             corners: None,
         })
         .expect("rect")
+    }
+
+    /// Run the dialog for one frame with `events`.
+    fn run_dialog(
+        ctx: &egui::Context,
+        app: &mut App,
+        st: &mut OutlinePenState,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1200.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut close = false;
+        let mut out = ctx.run_ui(input, |ui| {
+            let c = ui.ctx().clone();
+            dialog(app, &c, st, &mut close);
+        });
+        out.textures_delta.clear();
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// A drag on the bar from `from` to `to`, then a frame with nothing.
+    fn drag_on(
+        ctx: &egui::Context,
+        app: &mut App,
+        st: &mut OutlinePenState,
+        from: egui::Pos2,
+        to: egui::Pos2,
+    ) {
+        run_dialog(ctx, app, st, vec![egui::Event::PointerMoved(from)]);
+        run_dialog(ctx, app, st, vec![press(from, true)]);
+        for k in 1..=4 {
+            let p = from + (to - from) * (k as f32 / 4.0);
+            run_dialog(ctx, app, st, vec![egui::Event::PointerMoved(p)]);
+        }
+        run_dialog(ctx, app, st, vec![press(to, false)]);
+        run_dialog(ctx, app, st, Vec::new());
+    }
+
+    /// The Variable Outline bar's width nodes drag along it, kept between
+    /// their neighbours and the ends, the fields following; a drag there
+    /// no longer moves the dialog (#652). A click on empty bar adds a
+    /// node, on a node picks it, a drag on empty bar adds one and slides
+    /// it; the document changes only on OK, in one step.
+    #[test]
+    fn a_width_node_drags_along_the_bar_between_its_neighbours() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let a = rect(&mut app, 10.0);
+        app.select(vec![a]);
+        app.open_outline_pen();
+        let crate::ui::dialogs::Dialog::OutlinePen(mut st) =
+            std::mem::replace(&mut app.dialog, crate::ui::dialogs::Dialog::None)
+        else {
+            panic!("the dialog");
+        };
+        st.stroke.widths = vec![
+            WidthNode::symmetric(0.25, 1.0),
+            WidthNode::symmetric(0.75, 2.0),
+        ];
+        for _ in 0..4 {
+            run_dialog(&ctx, &mut app, &mut st, Vec::new());
+        }
+        let bar = ctx
+            .read_response(egui::Id::new(VO_BAR))
+            .map(|r| r.rect)
+            .expect("the bar");
+        let window_id = egui::Id::new(("chrome_dialog", tr("outline_pen.title")));
+        let window = ctx.memory(|m| m.area_rect(window_id)).expect("the window");
+        let x = |t: f32| egui::pos2(bar.left() + bar.width() * t, bar.center().y);
+        let steps = app.engine.history_labels().0.len();
+        drag_on(&ctx, &mut app, &mut st, x(0.25), x(0.5));
+        assert!(
+            (st.stroke.widths[0].at - 0.5).abs() < 0.01,
+            "{:?}",
+            st.stroke.widths
+        );
+        assert!(
+            (st.stroke.widths[0].left - 0.5).abs() < 1e-9,
+            "the width stays"
+        );
+        assert_eq!(st.node, Some(0));
+        assert!(st.touched.contains(&StrokeField::Widths));
+        let moved = ctx.memory(|m| m.area_rect(window_id)).expect("the window");
+        assert!(
+            (moved.min - window.min).length() < 0.5,
+            "the dialog stays: {moved:?}"
+        );
+        assert_eq!(
+            app.engine.history_labels().0.len(),
+            steps,
+            "nothing until OK"
+        );
+        // Not past its neighbour, nor past the start.
+        drag_on(&ctx, &mut app, &mut st, x(0.5), x(0.95));
+        let w = &st.stroke.widths;
+        assert!(w[0].at < w[1].at && w[0].at > 0.74, "{w:?}");
+        // Just left of the first node (the second sits right of it).
+        let first = x(st.stroke.widths[0].at as f32 - 0.002);
+        drag_on(
+            &ctx,
+            &mut app,
+            &mut st,
+            first,
+            egui::pos2(bar.left() - 50.0, bar.center().y),
+        );
+        assert_eq!(st.stroke.widths[0].at, 0.0);
+        // A click on empty bar adds a node there and picks it.
+        run_dialog(
+            &ctx,
+            &mut app,
+            &mut st,
+            vec![egui::Event::PointerMoved(x(0.6))],
+        );
+        run_dialog(&ctx, &mut app, &mut st, vec![press(x(0.6), true)]);
+        run_dialog(&ctx, &mut app, &mut st, vec![press(x(0.6), false)]);
+        assert_eq!(st.stroke.widths.len(), 3);
+        assert_eq!(st.node, Some(1));
+        assert!((st.stroke.widths[1].at - 0.6).abs() < 0.01);
+        // A drag on empty bar adds a node and slides it.
+        drag_on(&ctx, &mut app, &mut st, x(0.3), x(0.4));
+        assert_eq!(st.stroke.widths.len(), 4);
+        assert!(
+            (st.stroke.widths[1].at - 0.4).abs() < 0.01,
+            "{:?}",
+            st.stroke.widths
+        );
+        assert!(st.stroke.widths.windows(2).all(|p| p[0].at <= p[1].at));
+        app.apply_outline_pen(&st);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        let got = app
+            .doc()
+            .find_shape(a)
+            .and_then(|s| s.stroke.clone())
+            .expect("outline");
+        assert_eq!(got.widths, st.stroke.widths);
+    }
+
+    /// A node slides between its neighbours and the ends only.
+    #[test]
+    fn a_slid_node_stops_at_its_neighbours_and_the_ends() {
+        let mut w = vec![
+            WidthNode::symmetric(0.2, 1.0),
+            WidthNode::symmetric(0.6, 1.0),
+        ];
+        assert!(slide_node(&mut w, 0, 0.9));
+        assert!((w[0].at - (0.6 - 1e-4)).abs() < 1e-12);
+        assert!(slide_node(&mut w, 1, 2.0));
+        assert_eq!(w[1].at, 1.0);
+        assert!(slide_node(&mut w, 0, -1.0));
+        assert_eq!(w[0].at, 0.0);
+        assert!(!slide_node(&mut w, 0, 0.0), "already there");
+        assert!(!slide_node(&mut w, 5, 0.5), "no such node");
     }
 
     /// The dialog opens on the selection's outline; OK sends only what was

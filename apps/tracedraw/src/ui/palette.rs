@@ -574,7 +574,8 @@ fn swatch(
             .ctx()
             .data_mut(|d| d.remove_temp::<bool>(menu_id))
             .unwrap_or(false);
-        if resp.secondary_clicked() && !hold_open {
+        // Not a right click that makes a copy during a drag on the canvas.
+        if resp.secondary_clicked() && !hold_open && !app.transforming() {
             app.apply_outline_color(entry.map(|(_, c)| *c));
         }
         egui::Popup::menu(&resp)

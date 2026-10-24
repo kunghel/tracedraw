@@ -1579,6 +1579,14 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
                 fitted = true;
             }
         });
+    // While the popup is open the page it would make shows on the canvas,
+    // following the margin as it is typed (#594).
+    app.autofit_preview = egui::Popup::is_id_open(&ctx, popup_id).then(|| {
+        (
+            app.settings.fit_page_margin.max(0.0),
+            ctx.cumulative_frame_nr(),
+        )
+    });
     if fitted {
         app.fit_page_to_drawing_with_margin(app.settings.fit_page_margin);
         app.fit_pending = true;
@@ -1768,6 +1776,28 @@ fn selection_angle(app: &App) -> f64 {
 }
 
 /// Position, size, scale, rotation and mirroring of the selection.
+/// The rotation angle: the selection's own, turned about `refp` by what
+/// is typed or stepped, each arrow click or wheel turn on its own.
+fn rotation_field(app: &mut App, ui: &mut Ui, refp: Point) -> egui::Response {
+    let angle = selection_angle(app);
+    let mut a = angle;
+    let r = ui.add_sized(
+        [64.0, ROW + 4.0],
+        crate::ui::field::NumField::new(&mut a)
+            .speed(1.0)
+            .fixed_decimals(1)
+            .suffix(" \u{00B0}"),
+    );
+    if r.changed() && (a - angle).abs() > 1e-9 {
+        app.transform_selection(
+            Affine::translate(refp.to_vec2())
+                * Affine::rotate((a - angle).to_radians())
+                * Affine::translate(-refp.to_vec2()),
+        );
+    }
+    r
+}
+
 pub fn object_bar(app: &mut App, ui: &mut Ui) {
     let Some(b) = app.selection_bounds() else {
         return;
@@ -1826,7 +1856,7 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
                         .fixed_decimals(1)
                         .suffix(" %"),
                 );
-                if (r.lost_focus() || r.drag_stopped()) && (pct - 100.0).abs() > 1e-9 && pct > 0.0 {
+                if r.changed() && (pct - 100.0).abs() > 1e-9 && pct > 0.0 {
                     let f = pct / 100.0;
                     scale = Some(if locked {
                         (f, f)
@@ -1863,25 +1893,8 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
         );
     }
     sep(ui);
-    // Rotation angle: the object's own, about the reference point.
-    let angle = selection_angle(app);
-    let mut a = angle;
     label_pic(ui, Pic::Rotate, &tr("toolbar.rotation_angle"));
-    let r = ui.add_sized(
-        [64.0, ROW + 4.0],
-        crate::ui::field::NumField::new(&mut a)
-            .speed(1.0)
-            .fixed_decimals(1)
-            .suffix(" \u{00B0}"),
-    );
-    if (r.lost_focus() || r.drag_stopped()) && (a - angle).abs() > 1e-9 {
-        let c = refp;
-        app.transform_selection(
-            Affine::translate(c.to_vec2())
-                * Affine::rotate((a - angle).to_radians())
-                * Affine::translate(-c.to_vec2()),
-        );
-    }
+    rotation_field(app, ui, refp);
     sep(ui);
     if pic_button(ui, Pic::MirrorH, &tr("toolbar.mirror_h"), true, false).clicked() {
         app.mirror(true);
@@ -2332,7 +2345,7 @@ pub fn ellipse_part(app: &mut App, ui: &mut Ui) {
                         .fixed_decimals(1)
                         .suffix(" \u{00B0}"),
                 );
-                if angles_on && (r.lost_focus() || r.drag_stopped()) {
+                if angles_on && r.changed() {
                     if start {
                         arc.start_deg = v;
                     } else {
@@ -3073,6 +3086,103 @@ pub fn order_part(app: &mut App, ui: &mut Ui) {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect as R;
+
+    /// The rotation field's arrows turn the selection a degree at each
+    /// click, also when the box was clicked into first (its value
+    /// selected): only the first click used to turn it, the one that took
+    /// the focus from the box. The wheel over the box turns it too.
+    #[test]
+    fn every_click_on_the_rotation_arrows_turns_the_selection() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let origin = egui::pos2(100.0, 100.0);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> egui::Rect {
+            let mut rect = egui::Rect::NOTHING;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Area::new(egui::Id::new("rotation"))
+                        .fixed_pos(origin)
+                        .show(ui.ctx(), |ui| {
+                            rect = rotation_field(app, ui, Point::new(35.0, 25.0)).rect;
+                        });
+                },
+            );
+            out.textures_delta.clear();
+            rect
+        };
+        run(&mut app, Vec::new());
+        let field = run(&mut app, Vec::new());
+        let click = |app: &mut App, at: egui::Pos2| {
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                run(
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            run(app, Vec::new());
+        };
+        let up = egui::pos2(
+            field.right() + crate::ui::field::SPIN_W / 2.0,
+            field.top() + field.height() * 0.25,
+        );
+        // Into the box (its value selected), then the up arrow twice.
+        click(&mut app, field.center());
+        click(&mut app, up);
+        click(&mut app, up);
+        assert!(
+            (selection_angle(&app) - 2.0).abs() < 1e-6,
+            "{}",
+            selection_angle(&app)
+        );
+        // Once more, the box no longer holding the focus.
+        click(&mut app, up);
+        assert!(
+            (selection_angle(&app) - 3.0).abs() < 1e-6,
+            "{}",
+            selection_angle(&app)
+        );
+        // The wheel over the box: down a degree.
+        run(&mut app, vec![egui::Event::PointerMoved(field.center())]);
+        run(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            (selection_angle(&app) - 2.0).abs() < 1e-6,
+            "{}",
+            selection_angle(&app)
+        );
+        // One undo step a click.
+        app.undo();
+        assert!((selection_angle(&app) - 3.0).abs() < 1e-6);
+    }
 
     #[test]
     fn shaping_and_grouping_show_for_several_objects_groups_and_parts() {

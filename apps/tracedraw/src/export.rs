@@ -24,7 +24,7 @@ pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
         let l = tmp.pages[0].layers[0].id;
         for s in app.selected_shapes() {
             let mut c = s.clone();
-            c.transform = Affine::translate((-bounds.x0, -bounds.y0)) * c.transform;
+            c.transform_by(Affine::translate((-bounds.x0, -bounds.y0)));
             if let Ok(layer) = tmp.layer_mut(l) {
                 layer.shapes.push(c);
             }
@@ -149,7 +149,7 @@ pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, St
                 } else {
                     path.to_path_buf()
                 };
-                write_raster(&pm, &target, ext, st.quality)?;
+                write_raster(&pm, &target, ext, st.quality, st.webp_lossless)?;
             }
         }
     }
@@ -171,8 +171,14 @@ pub(crate) fn pdfx_profile(app: &App, standard: tracedraw_io::pdf::PdfStandard) 
         .flatten()
 }
 
-fn write_raster(pm: &tiny_skia::Pixmap, path: &Path, ext: &str, quality: u8) -> Result<(), String> {
-    let bytes = encode_raster(pm, ext, quality)?;
+fn write_raster(
+    pm: &tiny_skia::Pixmap,
+    path: &Path,
+    ext: &str,
+    quality: u8,
+    lossless: bool,
+) -> Result<(), String> {
+    let bytes = encode_raster_with(pm, ext, quality, lossless)?;
     crate::files::write(path, bytes).map_err(|e| e.to_string())
 }
 
@@ -238,7 +244,9 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
         "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
             let enc = if ext == "psd" { "tif" } else { ext };
-            let bytes = encode_raster(preview, enc, st.quality).ok()?.len() as f64;
+            let bytes = encode_raster_with(preview, enc, st.quality, st.webp_lossless)
+                .ok()?
+                .len() as f64;
             let full = (bounds.width() / 25.4 * st.dpi) * (bounds.height() / 25.4 * st.dpi);
             let shown = (preview.width() as f64 * preview.height() as f64).max(1.0);
             let pages = if st.all_pages && !st.selection_only {
@@ -285,8 +293,34 @@ fn near_lossless(img: &mut image::RgbaImage, quality: u8) {
     }
 }
 
-/// Encode a rendered page in the bitmap format `ext`.
+/// Encode a rendered page in the bitmap format `ext` (WebP lossless).
+#[cfg(test)]
 fn encode_raster(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u8>, String> {
+    encode_raster_with(pm, ext, quality, true)
+}
+
+/// A WebP file with lossy compression at `quality` (1 to 100), alpha
+/// kept; `None` where no lossy encoder is built in (the browser).
+#[cfg(not(target_arch = "wasm32"))]
+fn webp_lossy(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
+    let enc = webp::Encoder::from_rgba(img.as_raw(), img.width(), img.height());
+    Some(enc.encode(f32::from(quality.clamp(1, 100))).to_vec())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webp_lossy(_img: &image::RgbaImage, _quality: u8) -> Option<Vec<u8>> {
+    None
+}
+
+/// Encode a rendered page in the bitmap format `ext`; WebP lossless
+/// (`lossless`, colours rounded below quality 100) or lossy at the
+/// quality (#592).
+fn encode_raster_with(
+    pm: &tiny_skia::Pixmap,
+    ext: &str,
+    quality: u8,
+    lossless: bool,
+) -> Result<Vec<u8>, String> {
     let (w, h) = (pm.width(), pm.height());
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for p in pm.pixels() {
@@ -319,10 +353,14 @@ fn encode_raster(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u
                 .map_err(|e| e.to_string())?;
         }
         image::ImageFormat::WebP => {
-            // The WebP encoder at hand writes lossless files only; below
-            // 100 the colours are first rounded to fewer levels, WebP's
-            // near-lossless way, so quality shrinks the file (#544).
             let mut rgba = dynimg.to_rgba8();
+            // Lossy: much smaller, the quality as the encoder takes it
+            // (#592). Lossless (or no lossy encoder, in the browser): below
+            // 100 the colours are first rounded to fewer levels, WebP's
+            // near-lossless way, so quality still shrinks the file (#544).
+            if let Some(bytes) = (!lossless).then(|| webp_lossy(&rgba, quality)).flatten() {
+                return Ok(bytes);
+            }
             near_lossless(&mut rgba, quality);
             rgba.write_to(&mut out, format).map_err(|e| e.to_string())?;
         }
@@ -499,7 +537,7 @@ fn fit_contents_to_page(page: &mut tracedraw_core::document::Page, all: bool) {
     for layer in page.layers.iter_mut() {
         for s in layer.shapes.iter_mut() {
             if shows(&s.bounds()) {
-                s.transform = t * s.transform;
+                s.transform_by(t);
             }
         }
     }
@@ -528,18 +566,6 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     if st.fit_to_page {
         for page in doc.pages.iter_mut() {
             fit_contents_to_page(page, st.range == 3);
-        }
-    }
-    // Moved in Print Preview: clear of the printer's margins (#536).
-    let (dx, dy) = st.art_offset;
-    if (dx != 0.0 || dy != 0.0) && dx.is_finite() && dy.is_finite() {
-        let t = Affine::translate((dx, dy));
-        for page in doc.pages.iter_mut() {
-            for layer in page.layers.iter_mut() {
-                for s in layer.shapes.iter_mut() {
-                    s.transform = t * s.transform;
-                }
-            }
         }
     }
     for page in doc.pages.iter_mut() {
@@ -856,6 +882,11 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         keep_size: st.keep_size,
         info_offset: st.info_offset,
         paper_margins: st.margins,
+        // Moved and stretched in Print Preview, the whole page with its
+        // clip, clear of the printer's margins (#536, #595).
+        page_offset: st.art_offset,
+        page_stretch: st.art_stretch,
+        stretch_fit: st.stretch_fit,
         marks: crate::imposition::Marks {
             crop: st.crop_marks,
             registration: st.registration_marks,
@@ -964,6 +995,32 @@ pub fn open_with_system(path: &Path) -> Result<(), String> {
     let r = std::process::Command::new("xdg-open").arg(path).spawn();
     r.map(|_| ())
         .map_err(|e| format!("{}: {e}", tr("status.could_not_open_viewer")))
+}
+
+/// The program and arguments that open `path` in `editor`: the
+/// program itself, or on macOS an application bundle through `open -a`.
+pub fn editor_command(editor: &str, path: &Path) -> (String, Vec<String>) {
+    let editor = editor.trim().trim_matches('"');
+    let file = path.display().to_string();
+    if cfg!(target_os = "macos") && editor.trim_end_matches('/').ends_with(".app") {
+        return ("open".into(), vec!["-a".into(), editor.into(), file]);
+    }
+    (editor.into(), vec![file])
+}
+
+/// Open `path` in the bitmap editor of the preferences, or with the
+/// system's program when none is set (#593).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_in_editor(editor: &str, path: &Path) -> Result<(), String> {
+    if editor.trim().is_empty() {
+        return open_with_system(path);
+    }
+    let (program, args) = editor_command(editor, path);
+    std::process::Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{}: {program}: {e}", tr("status.could_not_open_viewer")))
 }
 
 impl App {
@@ -1723,7 +1780,23 @@ mod tests {
             *p = tiny_skia::PremultipliedColorU8::from_rgba(x, y.wrapping_mul(2), x ^ y ^ n, 255)
                 .expect("pixel");
         }
+        // Lossy: far smaller at a low quality, and still a WebP (#592).
+        let lossy = encode_raster_with(&pm, "webp", 10, false).expect("webp");
+        let lossy_high = encode_raster_with(&pm, "webp", 90, false).expect("webp");
+        assert!(
+            lossy.len() < lossy_high.len(),
+            "{} vs {}",
+            lossy.len(),
+            lossy_high.len()
+        );
+        assert!(image::load_from_memory(&lossy).is_ok());
         let full = encode_raster(&pm, "webp", 100).expect("webp");
+        assert!(
+            lossy.len() * 3 < full.len(),
+            "{} vs {}",
+            lossy.len(),
+            full.len()
+        );
         let low = encode_raster(&pm, "webp", 40).expect("webp");
         assert!(
             low.len() < full.len() * 3 / 4,
@@ -1784,6 +1857,24 @@ mod tests {
             "{b:?} {at_first:?}"
         );
         assert!((b.y0 - at_first.y0 + 3.0).abs() < 1e-6);
+    }
+
+    /// The bitmap editor of the preferences gets the file as its argument;
+    /// a macOS application bundle opens through `open -a` (#593).
+    #[test]
+    fn the_bitmap_editor_gets_the_file() {
+        let p = Path::new("/tmp/bitmap-7.png");
+        let (prog, args) = editor_command(" \"/usr/bin/gimp\" ", p);
+        assert_eq!(prog, "/usr/bin/gimp");
+        assert_eq!(args, vec!["/tmp/bitmap-7.png".to_string()]);
+        let (prog, args) = editor_command("/Applications/GIMP.app", p);
+        if cfg!(target_os = "macos") {
+            assert_eq!(prog, "open");
+            assert_eq!(args[0], "-a");
+        } else {
+            assert_eq!(prog, "/Applications/GIMP.app");
+            assert_eq!(args.len(), 1);
+        }
     }
 
     /// Fit to page shrinks objects running off the page to fit inside it,

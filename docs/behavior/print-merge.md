@@ -110,6 +110,14 @@ at once (#437). From top to bottom:
   (`print_merge_docker::tests::place_inside_frame_uses_the_users_shapes_also_in_a_group`,
   `pick_drag_tests::place_inside_frame_waits_for_a_click_with_its_arrow`,
   #460, #577).
+- On every page (under the placeholder picture, off at first): Place
+  Inside Frame also puts the placeholder picture in the same place on
+  every other page of the drawing, as part of the same undo step: in the
+  shape there of the same kind and bounds (within 0.01 mm), which takes
+  the field's name and placement, else in a copy of the frame added to
+  that page's first unlocked layer. Only frames on the page itself (not
+  inside a group) are repeated (#598,
+  `print_merge_docker::tests::the_placeholder_goes_in_the_same_place_on_every_page`).
 - Update Field (when a placeholder is selected: a text holding only
   `<Field>`, or an object named `<Field>`): the selected placeholders
   take the chosen column, and with Image the Align and scale shown.

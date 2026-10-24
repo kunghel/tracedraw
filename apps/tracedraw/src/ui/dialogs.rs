@@ -58,6 +58,8 @@ pub struct ExportState {
     /// The file's title and tags (keywords), for formats that keep them.
     pub title: String,
     pub tags: String,
+    /// WebP without loss (else lossy at the quality, #592).
+    pub webp_lossless: bool,
     /// The export preset chosen (its name), empty for none (#547).
     pub preset: String,
     /// A name being typed for a new preset (false) or for renaming the
@@ -82,6 +84,7 @@ impl Default for ExportState {
             script: None,
             title: String::new(),
             tags: String::new(),
+            webp_lossless: false,
             preset: String::new(),
             preset_name: None,
         }
@@ -214,6 +217,17 @@ pub struct PrintState {
     /// The paper's margins kept clear (mm: left, right, top, bottom), set
     /// in Print Preview by value or by dragging their lines (#580, #582).
     pub margins: [f64; 4],
+    /// Every page stretched on the sheet about its middle (x, y; 1 for
+    /// none) by Print Preview's Transform (#595).
+    pub art_stretch: (f64, f64),
+    /// The pages stretch to fill the sheet inside the margins (#591).
+    pub stretch_fit: bool,
+    /// The Custom sheet's size, mm (#591).
+    pub custom_sheet: Size,
+    /// The name typed to save the Custom size, and a size saved that the
+    /// preferences take (#591).
+    pub sheet_name_typed: String,
+    pub sheet_to_save: Option<(String, Size)>,
     pub invert: bool,
     pub color_bars: bool,
     pub densitometer: bool,
@@ -269,7 +283,10 @@ pub struct PrintState {
 
 /// The sheets the Print dialog offers: fitted to the pages, then paper
 /// sizes (portrait, mm).
-pub const SHEETS: [(&str, Option<Size>); 9] = [
+/// The sheet index of the Custom size (after the named ones, #591).
+pub const CUSTOM_SHEET: usize = SHEETS.len();
+
+pub const SHEETS: [(&str, Option<Size>); 10] = [
     ("print.sheet_fit", None),
     (
         "A5",
@@ -327,12 +344,23 @@ pub const SHEETS: [(&str, Option<Size>); 9] = [
             height: 431.8,
         }),
     ),
+    // 16:9, 53.33 x 30 in, wide as it comes (#591).
+    (
+        "Smart Board 16:9",
+        Some(Size {
+            width: 1354.582,
+            height: 762.0,
+        }),
+    ),
 ];
 
 /// The name of the Print dialog's sheet `i` (the first one fits the
 /// sheet to the pages).
 pub fn sheet_name(i: usize) -> String {
-    let (n, _) = SHEETS[i.min(SHEETS.len() - 1)];
+    if i >= CUSTOM_SHEET {
+        return tr("print.sheet_custom");
+    }
+    let (n, _) = SHEETS[i];
     if i == 0 {
         tr(n)
     } else {
@@ -357,7 +385,13 @@ impl PrintState {
     /// General tab's Orientation says, or as the Layout tab's Landscape box
     /// when it matches the layout.
     pub fn sheet_size_for(&self, page: Size) -> Option<Size> {
-        let s = SHEETS.get(self.sheet).and_then(|(_, s)| *s)?;
+        let s = if self.sheet >= CUSTOM_SHEET {
+            let c = self.custom_sheet;
+            (c.width.is_finite() && c.height.is_finite() && c.width >= 1.0 && c.height >= 1.0)
+                .then_some(c)?
+        } else {
+            SHEETS.get(self.sheet).and_then(|(_, s)| *s)?
+        };
         let _ = page;
         let landscape = match self.orientation {
             1 => false,
@@ -433,6 +467,11 @@ impl Default for PrintState {
             info_offset: (0.0, 0.0),
             art_offset: (0.0, 0.0),
             margins: [0.0; 4],
+            art_stretch: (1.0, 1.0),
+            stretch_fit: false,
+            custom_sheet: Size::new(210.0, 297.0),
+            sheet_name_typed: String::new(),
+            sheet_to_save: None,
             invert: false,
             color_bars: false,
             densitometer: false,
@@ -2860,6 +2899,9 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     if st.format == 2 || st.format == 6 || st.format == 7 {
                         ui.checkbox(&mut st.transparent, tr("dialog.transparent_background"));
                     }
+                    if st.format == 6 {
+                        ui.checkbox(&mut st.webp_lossless, tr("dialog.webp_lossless"));
+                    }
                     if st.format == 3 || st.format == 6 {
                         ui.add(crate::ui::Rail(
                             egui::Slider::new(&mut st.quality, 1..=100).text(tr("dialog.quality")),
@@ -3015,6 +3057,16 @@ pub(crate) fn delete_page_range(from: usize, to: usize, through: bool, n: usize)
 
 /// Print > Layout: the imposition, the sheet and the gap between pages,
 /// with a sketch of the first sheet.
+/// A Custom sheet size saved in the layout fields goes into the
+/// preferences (replacing one of that name, #591).
+pub(crate) fn take_saved_sheet(app: &mut App, st: &mut PrintState) {
+    if let Some((name, size)) = st.sheet_to_save.take() {
+        let list = &mut app.settings.printing.sheet_presets;
+        list.retain(|(n, _)| *n != name);
+        list.push((name, size));
+    }
+}
+
 pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
     ui.strong(tr("print.layout"));
     ui.vertical(|ui| {
@@ -3055,8 +3107,20 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                             .selected_text(name(st.sheet))
                             .width(120.0)
                             .show_ui(ui, |ui| {
-                                for i in 0..SHEETS.len() {
+                                for i in 0..=CUSTOM_SHEET {
                                     ui.selectable_value(&mut st.sheet, i, name(i));
+                                }
+                                // Custom sizes saved before (#591).
+                                let saved = app.settings.printing.sheet_presets.clone();
+                                if !saved.is_empty() {
+                                    ui.separator();
+                                }
+                                for (n, size) in saved {
+                                    let on = st.sheet == CUSTOM_SHEET && st.custom_sheet == size;
+                                    if ui.selectable_label(on, n).clicked() {
+                                        st.sheet = CUSTOM_SHEET;
+                                        st.custom_sheet = size;
+                                    }
                                 }
                             });
                         ui.add_enabled(
@@ -3065,6 +3129,54 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                         );
                     });
                     ui.end_row();
+                    // The Custom size, and saving it under a name (#591).
+                    if st.sheet >= CUSTOM_SHEET {
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                crate::ui::field::NumField::new(&mut st.custom_sheet.width)
+                                    .range(10.0..=5000.0)
+                                    .speed(1.0)
+                                    .suffix(" mm")
+                                    .width(80.0),
+                            );
+                            ui.label("x");
+                            ui.add(
+                                crate::ui::field::NumField::new(&mut st.custom_sheet.height)
+                                    .range(10.0..=5000.0)
+                                    .speed(1.0)
+                                    .suffix(" mm")
+                                    .width(80.0),
+                            );
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.sheet_name_typed)
+                                    .desired_width(120.0)
+                                    .hint_text(tr("print.sheet_name")),
+                            );
+                            let name = st.sheet_name_typed.trim().to_string();
+                            if ui
+                                .add_enabled(
+                                    !name.is_empty(),
+                                    egui::Button::new(tr("print.sheet_save")),
+                                )
+                                .clicked()
+                            {
+                                st.sheet_to_save = Some((name, st.custom_sheet));
+                                st.sheet_name_typed.clear();
+                            }
+                        });
+                        ui.end_row();
+                    }
+                    if st.sheet > 0 {
+                        ui.label("");
+                        ui.checkbox(&mut st.stretch_fit, tr("print.stretch_fit"))
+                            .on_hover_text(tr("print.stretch_fit_tip"));
+                        ui.end_row();
+                    }
                     if matches!(st.layout_kind, 1 | 3) {
                         ui.label(tr("print.gutter"));
                         ui.add(
@@ -3165,6 +3277,7 @@ fn print_group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut bool) {
+    take_saved_sheet(app, st);
     window(ctx, tr("dialog.print")).show(ctx, |ui| {
         let issues = if app.settings.printing.preflight {
             st.preflight

@@ -1187,7 +1187,7 @@ fn the_pointer_shows_moves_for_objects_and_guidelines() {
     };
     assert_eq!(
         crate::ui::cursors::ruler_drag_cursor(&app),
-        Some(egui::CursorIcon::ResizeVertical)
+        Some(ToolCursor::System(egui::CursorIcon::ResizeVertical))
     );
     app.drag = Drag::None;
 }
@@ -5446,4 +5446,527 @@ fn place_inside_frame_waits_for_a_click_with_its_arrow() {
     click_at(&ctx, &mut app, at, Modifiers::NONE);
     assert!(!app.pending_merge_frame);
     assert_eq!(app.selection, vec![id], "the shape clicked");
+}
+
+/// How the buttons go up after a right click during a drag, as a desktop
+/// sends them: each in a frame of its own, the left first or the right
+/// first, or both in one frame.
+#[derive(Clone, Copy, Debug)]
+enum Release {
+    RightThenLeft,
+    LeftThenRight,
+    BothRightFirst,
+    BothLeftFirst,
+}
+
+const RELEASES: [Release; 4] = [
+    Release::RightThenLeft,
+    Release::LeftThenRight,
+    Release::BothRightFirst,
+    Release::BothLeftFirst,
+];
+
+/// A primary drag from `from` to `to` with `mods` held and a right click
+/// at its end, the buttons going up as `release` says.
+fn drag_with_right_click(
+    ctx: &egui::Context,
+    app: &mut App,
+    from: Pos2,
+    to: Pos2,
+    mods: Modifiers,
+    release: Release,
+) {
+    let left = |p: Pos2, down: bool| button(p, down, PointerButton::Primary, mods);
+    let right = |p: Pos2, down: bool| button(p, down, PointerButton::Secondary, mods);
+    frame(ctx, app, vec![Event::PointerMoved(from)], mods);
+    frame(ctx, app, vec![left(from, true)], mods);
+    for i in 1..=4 {
+        let p = from + (to - from) * (i as f32 / 4.0);
+        frame(ctx, app, vec![Event::PointerMoved(p)], mods);
+    }
+    frame(ctx, app, vec![right(to, true)], mods);
+    match release {
+        Release::RightThenLeft => {
+            frame(ctx, app, vec![right(to, false)], mods);
+            frame(ctx, app, vec![left(to, false)], mods);
+        }
+        Release::LeftThenRight => {
+            frame(ctx, app, vec![left(to, false)], mods);
+            frame(ctx, app, vec![right(to, false)], mods);
+        }
+        Release::BothRightFirst => frame(ctx, app, vec![right(to, false), left(to, false)], mods),
+        Release::BothLeftFirst => frame(ctx, app, vec![left(to, false), right(to, false)], mods),
+    }
+    frame(ctx, app, Vec::new(), Modifiers::NONE);
+}
+
+/// A right click during a move leaves the original and moves a copy,
+/// whichever button goes up first: the left one first used to count as a
+/// click on the bare canvas, which emptied the selection before the copy
+/// was made, so nothing happened at all.
+#[test]
+fn a_right_click_copy_survives_any_release_order() {
+    for release in RELEASES {
+        let (ctx, mut app, id) = setup();
+        let from = app.view.to_screen(Point::new(35.0, 25.0));
+        // Dropped on bare canvas, well right of the rectangle.
+        let to = app.view.to_screen(Point::new(135.0, 25.0));
+        drag_with_right_click(&ctx, &mut app, from, to, Modifiers::NONE, release);
+        assert_eq!(shape_count(&app), 2, "{release:?}");
+        assert!(
+            close(bounds(&app, id).x0, 10.0),
+            "the original stays: {release:?}"
+        );
+        let copy = app
+            .selection
+            .first()
+            .copied()
+            .expect("the copy is selected");
+        assert_ne!(copy, id, "{release:?}");
+        assert!(
+            close(bounds(&app, copy).x0, 110.0),
+            "{release:?} {:?}",
+            bounds(&app, copy)
+        );
+        assert!(app.context_menu.is_none(), "{release:?}");
+        assert_eq!(app.tool, Tool::Pick, "{release:?}");
+        assert!(!app.rotate_mode, "{release:?}");
+        assert!(!app.transforming(), "{release:?}");
+    }
+}
+
+/// Dropped on another object, the copy is still of what was dragged; the
+/// other object stays as it was.
+#[test]
+fn a_right_click_copy_dropped_on_another_object_copies_the_dragged_one() {
+    for release in [Release::LeftThenRight, Release::BothLeftFirst] {
+        let (ctx, mut app, id) = setup();
+        let other = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(120.0, 10.0, 150.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![other]);
+        app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            30, 30, 200,
+        )));
+        app.select(vec![id]);
+        let other_before = bounds(&app, other);
+        let from = app.view.to_screen(Point::new(35.0, 25.0));
+        let to = app.view.to_screen(Point::new(135.0, 25.0));
+        drag_with_right_click(&ctx, &mut app, from, to, Modifiers::NONE, release);
+        assert_eq!(shape_count(&app), 3, "{release:?}");
+        assert_eq!(bounds(&app, other), other_before, "{release:?}");
+        assert!(close(bounds(&app, id).x0, 10.0), "{release:?}");
+        let copy = app.selection.first().copied().expect("copy");
+        assert!(copy != id && copy != other, "{release:?}");
+        assert!(close(bounds(&app, copy).x0, 110.0), "{release:?}");
+    }
+}
+
+/// Mirror duplication with the mouse alone: the left handle dragged
+/// across the right one with Ctrl (whole steps of 100 %), a right click,
+/// release: the original stays, a mirrored copy lies beside it.
+#[test]
+fn a_right_click_during_a_ctrl_mirror_leaves_a_mirrored_copy() {
+    for release in [Release::RightThenLeft, Release::LeftThenRight] {
+        let (ctx, mut app, id) = setup();
+        let w = handle(&app, Handle::W);
+        let to = egui::pos2(app.view.to_screen(Point::new(110.0, 25.0)).x, w.y);
+        drag_with_right_click(&ctx, &mut app, w, to, Modifiers::CTRL, release);
+        assert_eq!(shape_count(&app), 2, "{release:?}");
+        let original = app.doc().find_shape(id).expect("original");
+        assert!(close(original.bounds().x0, 10.0) && close(original.bounds().x1, 60.0));
+        assert!(original.transform.determinant() > 0.0);
+        let copy = app.selection.first().copied().expect("copy");
+        assert_ne!(copy, id);
+        let c = app.doc().find_shape(copy).expect("copy");
+        let b = c.bounds();
+        assert!(close(b.x0, 60.0) && close(b.x1, 110.0), "{release:?} {b:?}");
+        assert!(c.transform.determinant() < 0.0, "mirrored: {release:?}");
+    }
+}
+
+/// In rotate mode (a second click on the selection) a right click during
+/// a turn or a slant leaves the original and transforms a copy.
+#[test]
+fn a_right_click_during_a_turn_or_a_slant_leaves_the_original() {
+    for which in [Handle::NE, Handle::N] {
+        let (ctx, mut app, id) = setup();
+        app.rotate_mode = true;
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        let from = handle(&app, which);
+        let to = from + egui::vec2(-60.0, -60.0);
+        drag_with_right_click(
+            &ctx,
+            &mut app,
+            from,
+            to,
+            Modifiers::NONE,
+            Release::LeftThenRight,
+        );
+        assert_eq!(shape_count(&app), 2, "{which:?}");
+        let original = app.doc().find_shape(id).expect("original");
+        assert_eq!(original.transform, Affine::IDENTITY, "{which:?}");
+        let copy = app.selection.first().copied().expect("copy");
+        assert_ne!(copy, id);
+        let t = app.doc().find_shape(copy).expect("copy").transform;
+        assert_ne!(t, Affine::IDENTITY, "the copy turned or slanted: {which:?}");
+    }
+}
+
+/// A second right click takes the copy back even when that press is held
+/// while the pointer moves: the move goes on from where it began, it does
+/// not start again from the right press.
+#[test]
+fn a_held_second_right_press_takes_the_copy_back_and_the_move_goes_on() {
+    let (ctx, mut app, id) = setup();
+    let n = Modifiers::NONE;
+    let left = |p: Pos2, down: bool| button(p, down, PointerButton::Primary, n);
+    let right = |p: Pos2, down: bool| button(p, down, PointerButton::Secondary, n);
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], n);
+    frame(&ctx, &mut app, vec![left(from, true)], n);
+    let mut p = from;
+    for _ in 0..4 {
+        p += egui::vec2(20.0, 0.0);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(p)], n);
+    }
+    frame(&ctx, &mut app, vec![right(p, true)], n);
+    frame(&ctx, &mut app, vec![right(p, false)], n);
+    assert!(app.drag_copy);
+    // The second press, held while the pointer goes 40 px further.
+    frame(&ctx, &mut app, vec![right(p, true)], n);
+    for _ in 0..4 {
+        p += egui::vec2(10.0, 0.0);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(p)], n);
+    }
+    frame(&ctx, &mut app, vec![right(p, false)], n);
+    frame(&ctx, &mut app, vec![left(p, false)], n);
+    frame(&ctx, &mut app, Vec::new(), n);
+    assert_eq!(shape_count(&app), 1, "no copy");
+    let moved = app.view.to_page(p) - app.view.to_page(from);
+    assert!(
+        close(bounds(&app, id).x0, 10.0 + moved.x),
+        "{:?} {moved:?}",
+        bounds(&app, id)
+    );
+    assert_eq!(app.selection, vec![id]);
+}
+
+fn sym_center(app: &App, id: ShapeId) -> Point {
+    use tracedraw_core::live::Effect;
+    app.doc()
+        .find_shape(id)
+        .and_then(|s| {
+            s.effects.iter().find_map(|e| match e {
+                Effect::Symmetry { center, .. } => Some(*center),
+                _ => None,
+            })
+        })
+        .expect("a symmetry")
+}
+
+/// The rectangle with a symmetry about the upright line through its right
+/// side (60, 25), finished: the rectangle and its copy, 10..110 x 10..40.
+fn finished_symmetry() -> (egui::Context, App, ShapeId) {
+    let (ctx, mut app, id) = setup();
+    app.create_symmetry();
+    assert_eq!(app.symmetry_edit, Some(id));
+    app.finish_symmetry_edit();
+    assert_eq!(app.symmetry_edit, None);
+    assert_eq!(app.selection, vec![id]);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let vb = app.selection_bounds().expect("bounds");
+    assert!(close(vb.x0, 10.0) && close(vb.x1, 110.0), "{vb:?}");
+    (ctx, app, id)
+}
+
+/// After Finish a drag on the copy moves the whole symmetry: the copy and
+/// the mirror line go with the rectangle (the copy used to mirror the
+/// move about the line left where it was, as while editing), and the
+/// outline shown during the drag is the whole symmetry's. One Undo.
+#[test]
+fn a_finished_symmetry_moves_whole_with_its_copies() {
+    let (ctx, mut app, id) = finished_symmetry();
+    let from = app.view.to_screen(Point::new(85.0, 25.0));
+    let to = from + egui::vec2(80.0, 0.0);
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, vec![]);
+    assert_eq!(app.selection, vec![id], "the whole symmetry stays selected");
+    let d = app.view.to_page(to).x - app.view.to_page(from).x;
+    assert!(d > 5.0);
+    let vb = app.selection_bounds().expect("bounds");
+    assert!(
+        close(vb.x0, 10.0 + d) && close(vb.x1, 110.0 + d),
+        "{vb:?} {d}"
+    );
+    assert!(close(sym_center(&app, id).x, 60.0 + d));
+    assert!(close(sym_center(&app, id).y, 25.0));
+    app.undo();
+    assert!(close(sym_center(&app, id).x, 60.0), "one undo step");
+    assert!(close(bounds(&app, id).x0, 10.0));
+}
+
+/// After Finish the right handle stretches the whole symmetry: its left
+/// side stays and the copy's right side follows the handle.
+#[test]
+fn a_finished_symmetry_scales_whole_with_its_copies() {
+    let (ctx, mut app, id) = finished_symmetry();
+    let h = handle(&app, Handle::E);
+    let dx = app.view.to_screen(Point::new(160.0, 25.0)).x
+        - app.view.to_screen(Point::new(110.0, 25.0)).x;
+    drag(
+        &ctx,
+        &mut app,
+        h,
+        h + egui::vec2(dx, 0.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert_eq!(app.selection, vec![id]);
+    let vb = app.selection_bounds().expect("bounds");
+    assert!(close(vb.x0, 10.0), "{vb:?}");
+    assert!((vb.x1 - 160.0).abs() < 0.5, "{vb:?}");
+}
+
+/// While the symmetry is edited, moving its object leaves the mirror line
+/// where it is (the copy mirrors the move), as before.
+#[test]
+fn editing_a_symmetry_a_drag_on_the_object_keeps_the_line() {
+    let (ctx, mut app, id) = setup();
+    app.create_symmetry();
+    assert_eq!(app.symmetry_edit, Some(id));
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let at = app.view.to_screen(Point::new(30.0, 25.0));
+    drag(
+        &ctx,
+        &mut app,
+        at,
+        at + egui::vec2(-40.0, 0.0),
+        Modifiers::NONE,
+        vec![],
+    );
+    assert!(bounds(&app, id).x0 < 9.0, "{:?}", bounds(&app, id));
+    assert!(close(sym_center(&app, id).x, 60.0) && close(sym_center(&app, id).y, 25.0));
+    // One undo step for the move.
+    app.undo();
+    assert!(close(bounds(&app, id).x0, 10.0));
+}
+
+/// A duplicate of a finished symmetry is a whole symmetry at the offset,
+/// its line moved with it.
+#[test]
+fn a_duplicate_of_a_symmetry_takes_its_line_along() {
+    let (_ctx, mut app, id) = finished_symmetry();
+    app.duplicate();
+    let copy = app.selection[0];
+    assert_ne!(copy, id);
+    let off = bounds(&app, copy).x0 - bounds(&app, id).x0;
+    let offy = bounds(&app, copy).y0 - bounds(&app, id).y0;
+    let c = sym_center(&app, copy);
+    assert!(close(c.x, 60.0 + off) && close(c.y, 25.0 + offy), "{c:?}");
+}
+
+fn rect_at(app: &mut App, r: Rect) -> ShapeId {
+    app.new_shape(ShapeKind::Rect {
+        rect: r,
+        radius: 0.0,
+        corners: None,
+    })
+    .expect("rect")
+}
+
+/// A symmetry in a group goes with the group: its line stays put in the
+/// group (it is stored in the group's space), the group's box takes the
+/// moved copy, and ungrouping brings the line onto the page where the
+/// object now is.
+#[test]
+fn a_symmetry_in_a_group_follows_the_group_and_an_ungroup() {
+    let (_ctx, mut app, id) = finished_symmetry();
+    let other = rect_at(&mut app, Rect::new(10.0, 60.0, 20.0, 70.0));
+    app.select(vec![id, other]);
+    app.group_selection();
+    let g = app.selection[0];
+    assert!(g != id && app.doc().shape(id).is_err(), "inside a group");
+    app.run(tracedraw_core::Command::TransformShapes {
+        shapes: vec![g],
+        transform: Affine::translate((30.0, 0.0)),
+    });
+    assert!(
+        close(sym_center(&app, id).x, 60.0),
+        "stored in the group's space"
+    );
+    let group = app.doc().find_shape(g).expect("group").clone();
+    let vb = group.visual_bounds();
+    assert!(close(vb.x0, 40.0) && close(vb.x1, 140.0), "{vb:?}");
+    app.select(vec![g]);
+    app.ungroup_selection();
+    assert!(app.doc().shape(id).is_ok(), "on the layer again");
+    let c = sym_center(&app, id);
+    assert!(close(c.x, 90.0) && close(c.y, 25.0), "{c:?}");
+    let vb = app.doc().find_shape(id).expect("symmetry").visual_bounds();
+    assert!(close(vb.x0, 40.0) && close(vb.x1, 140.0), "{vb:?}");
+}
+
+/// With another live effect on the object, the box measured while the
+/// symmetry was edited (the object's own, as picked) does not outlast
+/// Finish: the whole symmetry's box and handles come back at once, and a
+/// click on the copy picks it.
+#[test]
+fn after_finish_the_box_is_the_whole_symmetrys_with_other_effects_too() {
+    let (ctx, mut app, id) = setup();
+    app.add_contour();
+    app.create_symmetry();
+    assert_eq!(app.symmetry_edit, Some(id));
+    // Hover and hit tests while editing measure the object alone.
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let _ = app.hit_test(Point::new(85.0, 25.0));
+    let _ = app.selection_bounds();
+    app.finish_symmetry_edit();
+    let vb = app.selection_bounds().expect("bounds");
+    assert!(vb.x1 > 105.0, "the copy is in the box: {vb:?}");
+    app.select(Vec::new());
+    assert_eq!(app.hit_test(Point::new(85.0, 25.0)), Some(id));
+}
+
+/// While a lone object's symmetry is edited, its duplicate joins the
+/// symmetry without a symmetry of its own (it would mirror it twice).
+#[test]
+fn a_duplicate_made_while_editing_joins_without_its_own_symmetry() {
+    use tracedraw_core::live::Effect;
+    let (_ctx, mut app, id) = setup();
+    app.create_symmetry();
+    assert_eq!(app.symmetry_edit, Some(id));
+    app.duplicate();
+    let copy = app.selection[0];
+    assert_ne!(copy, id);
+    let fx = &app.doc().find_shape(copy).expect("copy").effects;
+    assert!(
+        !fx.iter().any(|e| matches!(e, Effect::Symmetry { .. })),
+        "{fx:?}"
+    );
+    let g = app.symmetry_edit.expect("still editing");
+    assert!(app
+        .doc()
+        .find_shape(g)
+        .expect("group")
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::Symmetry { .. })));
+}
+
+/// While editing, Align leaves the mirror line where it is; out of edit
+/// mode Align moves it with the object.
+#[test]
+fn align_keeps_the_line_while_editing_and_moves_it_after() {
+    let (_ctx, mut app, id) = setup();
+    app.create_symmetry();
+    app.align(crate::ops::Align::CenterPage);
+    let moved = bounds(&app, id).x0 - 10.0;
+    assert!(moved.abs() > 1.0);
+    assert!(close(sym_center(&app, id).x, 60.0), "kept while editing");
+    app.undo();
+    assert!(close(bounds(&app, id).x0, 10.0) && close(sym_center(&app, id).x, 60.0));
+    app.finish_symmetry_edit();
+    app.align(crate::ops::Align::CenterPage);
+    let moved = bounds(&app, id).x0 - 10.0;
+    assert!(
+        close(sym_center(&app, id).x, 60.0 + moved),
+        "carried after Finish"
+    );
+}
+
+/// Joining curves rewrites the kept curve in page space without moving
+/// it: its symmetry stays where it was.
+#[test]
+fn joining_curves_leaves_a_symmetry_where_it_was() {
+    use tracedraw_core::live::Effect;
+    let (_ctx, mut app, _) = setup();
+    let line = |app: &mut App, a: (f64, f64), b: (f64, f64)| {
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: false,
+            })
+            .expect("line");
+        app.run(tracedraw_core::Command::SetEffects {
+            shape: id,
+            effects: vec![Effect::Symmetry {
+                center: Point::new(5.0, 60.0),
+                angle: 0.0,
+                lines: 1,
+            }],
+        });
+        id
+    };
+    let a = line(&mut app, (0.0, 50.0), (10.0, 50.0));
+    let b = line(&mut app, (11.0, 50.0), (20.0, 50.0));
+    app.select(vec![a, b]);
+    app.transform_selection(Affine::translate((30.0, 0.0)));
+    assert!(close(sym_center(&app, a).x, 35.0) && close(sym_center(&app, b).x, 35.0));
+    app.join_settings.gap = 5.0;
+    app.select(vec![a, b]);
+    assert!(app.join_curves() > 0);
+    let kept = if app.doc().find_shape(a).is_some() {
+        a
+    } else {
+        b
+    };
+    let c = sym_center(&app, kept);
+    assert!(close(c.x, 35.0) && close(c.y, 60.0), "{c:?}");
+}
+
+/// Drawing a rectangle, the corner being dragged is where the pointer is
+/// in the same frame (no frame behind it), and the pointer shown is the
+/// drawn cross hair, not the system's (#655).
+#[test]
+fn drawing_a_rectangle_the_corner_keeps_up_with_the_pointer() {
+    let (ctx, mut app, _) = setup();
+    app.set_tool(Tool::Rectangle);
+    app.snap.off = true;
+    let from = app.view.to_screen(Point::new(100.0, 150.0));
+    let to = app.view.to_screen(Point::new(140.0, 120.0));
+    let n = Modifiers::NONE;
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], n);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(from, true, PointerButton::Primary, n)],
+        n,
+    );
+    let mut checked = 0;
+    for i in 1..=8 {
+        let p = from + (to - from) * (i as f32 / 8.0);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(p)], n);
+        if let Drag::Box { current, .. } = app.drag {
+            let want = app.view.to_page(p);
+            assert!(
+                close(current.x, want.x) && close(current.y, want.y),
+                "{current:?} {want:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            crate::ui::cursors::for_tool(&app, false, true, false, Some(p)),
+            ToolCursor::Badge(Tool::Rectangle)
+        );
+    }
+    assert!(checked >= 6, "the drag was followed: {checked}");
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(to, false, PointerButton::Primary, n)],
+        n,
+    );
 }

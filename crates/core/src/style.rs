@@ -755,7 +755,7 @@ impl Pattern {
             .iter()
             .map(|s| {
                 let mut s = s.clone();
-                s.transform = shift * s.transform;
+                s.transform_by(shift);
                 s
             })
             .collect();

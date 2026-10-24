@@ -6,6 +6,40 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Outline Pen: the Variable Outline width nodes can be dragged along their bar, staying between their neighbours, with the fields following (a drag there moved the whole dialog). A drag on empty bar adds a node and slides it, and a typed position keeps the nodes in order (#652).
+
+- Edit Fill: the dialog keeps its size and place, and OK and Cancel stay put, when switching between no fill, uniform, gradient, pattern, texture and mesh (#654).
+
+- The drawing tools' cross hair and the text I-beam are now drawn black with a white edge, so they show on a page of any colour; on Windows the system ones could appear white on a white page. A shape being drawn now follows the pointer from the first frame of the drag, and the window keeps one frame queued instead of two, so what is drawn under the pointer trails it less (#655).
+
+- Opening a file from the file manager or the command line while TraceDraw is running now opens it in a new tab of the running window, which comes to the front, instead of starting the whole program again. `--new-instance` still opens a separate window. On Linux, selecting several files opens them all in one window (#646).
+
+- Opening a file that is already open (Welcome Screen, File > Open, Open Recent, a dropped file, the command line) now shows its tab instead of opening it again in a new one, unsaved changes kept. A .cdr or other drawing counts as that file until it is saved under another name; templates still open as new drawings (#645).
+
+- Symmetry: after Finish, a symmetry moves, scales, rotates and mirrors as one object, with its copies and mirror lines. The lines used to stay where they were, so the copies mirrored the move and a handle rearranged them, as if the symmetry were still being edited. The drag outline shows the copies too. Duplicate, Step and Repeat and copies made during a drag take the lines along, and a symmetry inside a group follows the group. While editing, moving the object still leaves the lines in place.
+
+- Property bars: the up and down arrows (and the mouse wheel) of the rotation angle, scale %, arc angles, dimension text size and line width, corner radius and Transform toolbar fields now apply at every click. After clicking into the box, only the first arrow click worked.
+
+- A right click while dragging (move, scale, rotate, skew, and mirroring with Ctrl and a side handle) now leaves the original and makes the copy whichever button you release first. Releasing the left button first, or both at once, used to count as a click: on empty canvas it emptied the selection and nothing was copied. The scale, rotate and skew pointers now also show the copy's plus (#528).
+
+- Segment Delete: dragging a box deletes every segment the box touches, whole, up to the crossings at its ends (a closed shape nothing crosses goes whole), as other programs do; it used to delete only the segments lying wholly inside, so a box across an ornament deleted nothing. A click that slips a few pixels still deletes, and a drag on a crowded page is about ten times faster (#528).
+
+## 0.16.0 (2026-10-24)
+
+- Text > Join Lines into Paragraph: the selected lines of artistic text (a PDF brings its text one object per line) become one paragraph text with the same first baseline and line spacing, so text typed into it flows on to the next lines (#599).
+
+- Text: Hindi (and the other Indian scripts) after a Latin word on the same line keeps its half letters and conjuncts; the line was shaped with the Latin rules, which showed the halant under half letters. Seen in text taken from PDFs (#599).
+
+- Print Preview: Transform shows handles around the artwork to stretch it on either axis (or the x and y percentages typed) and a drag inside moves it; Print prints it so (#595). Print: a Smart Board 16:9 sheet, Custom sheet sizes that can be saved with a name, and Stretch to fill, which fills the sheet inside the margins on each axis (#591).
+
+- Export: WebP can be lossy (Lossless off, the default): the quality then shrinks the file as other programs do, a tenth of the lossless size at low qualities. Lossless keeps the earlier behaviour. The browser version stays lossless (#592).
+
+- Autofit Page: while its popup is open, the page itself grows or shrinks live to the size it would take around the drawing, following the margin as it is typed (#594, #604).
+
+- Print Merge: "On every page" beside the placeholder picture puts it in the same shape and place on every page with Place Inside Frame, in the matching shape of each page or a copy of the frame (#598).
+
+- Edit Bitmap opens pictures in the bitmap editor of your choice (Tools > Options > Global > File Locations: GIMP or any program); empty, it uses the system's program for PNG files as before (#593).
+
 ## 0.15.0 (2026-10-24)
 
 - Windows: the program carries the C runtime it needs (no Visual C++ redistributable required). A start that fails now says so: the log is written to `tracedraw.log` in the settings folder (`%APPDATA%\TraceDraw`, or `tracedraw-settings` beside a portable copy), and a crash shows a message and writes `crash.log` there; nothing was shown before (#570).

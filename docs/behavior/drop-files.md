@@ -13,7 +13,7 @@ go together:
 |---|---|---|
 | yes | File > Import reads it (vector formats, `.psd`/`.psb`, pictures, installed script filters) | imported into the active layer, selected, as one undo step, its middle at the middle of the drawing window |
 | yes | only File > Open reads it (`.tdraw`) | opened in a tab of its own |
-| no (Welcome Screen or no drawing) | File > Open reads it | opened in a tab of its own, as File > Open |
+| no (Welcome Screen or no drawing) | File > Open reads it | opened in a tab of its own, as File > Open, or its tab shown when it is open already (#645) |
 | no | a picture (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.webp`, `.tif`, `.tiff`) or a script filter's format | a new drawing with the last used new-document settings, the file imported in the middle of its page |
 | either | anything else | nothing; the status bar says the file cannot be opened or imported |
 

@@ -153,7 +153,7 @@ fn children_on_page(g: &Shape) -> Vec<Shape> {
             .filter(|c| c.visible)
             .map(|c| {
                 let mut c = c.clone();
-                c.transform = g.transform * c.transform;
+                c.transform_by(g.transform);
                 c
             })
             .collect(),

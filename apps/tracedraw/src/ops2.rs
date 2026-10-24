@@ -115,6 +115,22 @@ impl App {
         self.fit_page_to_drawing_with_margin(0.0);
     }
 
+    /// The page Autofit Page would make while its popup is open (#594):
+    /// the drawing's bounds with the margin around them. The popup sets
+    /// it each frame; one set more than a frame before `frame` is stale.
+    pub fn autofit_preview_rect(&self, frame: u64) -> Option<tracedraw_core::geometry::Rect> {
+        let (margin, set) = self.autofit_preview?;
+        if frame.saturating_sub(set) > 1 {
+            return None;
+        }
+        let m = if margin.is_finite() {
+            margin.max(0.0)
+        } else {
+            0.0
+        };
+        self.drawing_bounds().map(|b| b.inflate(m, m))
+    }
+
     /// The property bar's Autofit Page: [`Self::fit_page_to_drawing`]
     /// with `margin` mm left free around the drawing on every side.
     pub fn fit_page_to_drawing_with_margin(&mut self, margin: f64) {
@@ -676,6 +692,26 @@ impl App {
                 });
             }
         }
+        // A copy of the lone object came with a symmetry of its own: it
+        // goes, the group's mirrors the copy (two would mirror it twice).
+        for id in &ids {
+            if let Some(n) = self.doc().find_shape(*id) {
+                if n.effects
+                    .iter()
+                    .any(|e| matches!(e, Effect::Symmetry { .. }))
+                {
+                    cmds.push(Command::SetEffects {
+                        shape: *id,
+                        effects: n
+                            .effects
+                            .iter()
+                            .filter(|e| !matches!(e, Effect::Symmetry { .. }))
+                            .cloned()
+                            .collect(),
+                    });
+                }
+            }
+        }
         members.extend(ids.iter().copied());
         cmds.push(Command::Group { shapes: members });
         for cmd in &cmds {
@@ -705,6 +741,8 @@ impl App {
     pub fn edit_symmetry(&mut self) {
         if let Some((id, ..)) = self.selected_symmetry() {
             self.symmetry_edit = Some(id);
+            // Measured from now on without the copies (as picked).
+            self.visual_cache.borrow_mut().1.clear();
             self.select(vec![id]);
             self.status = tr("status.editing_symmetry");
         }
@@ -721,6 +759,21 @@ impl App {
         if let Some(id) = self.symmetry_edit.take() {
             self.status.clear();
             self.raster.borrow_mut().invalidate();
+            // Nothing of the editing stays. The boxes measured while it was
+            // edited are the object's own (without the copies): measured
+            // again. A group of the symmetry entered by a double click on a
+            // member, or the Shape tool that switched to, would still pick
+            // a member instead of the whole.
+            self.visual_cache.borrow_mut().1.clear();
+            let inside = self
+                .focus_target()
+                .is_some_and(|f| f == id || self.doc().ancestors(f).contains(&id));
+            if inside {
+                self.exit_focus();
+            }
+            if self.tool == crate::tools::Tool::Shape {
+                self.set_tool(crate::tools::Tool::Pick);
+            }
             if self.doc().find_shape(id).is_some() {
                 self.select(vec![id]);
             }
@@ -1285,7 +1338,7 @@ impl App {
             .filter(|id| *id != keep)
             .collect();
         // The joined outline is in page space: the kept curve's transform
-        // goes back to none.
+        // goes back to none (its effects stay where they are).
         let mut cmds = vec![
             Command::TransformShapes {
                 shapes: vec![keep],
@@ -1299,6 +1352,7 @@ impl App {
                 },
             },
         ];
+        cmds.extend(self.effects_as_now(keep));
         if !others.is_empty() {
             cmds.push(Command::DeleteShapes { shapes: others });
         }
@@ -1492,7 +1546,7 @@ impl App {
         let l = tmp.pages[0].layers[0].id;
         for s in &shapes {
             let mut c = s.clone();
-            c.transform = Affine::translate((-bounds.x0, -bounds.y0)) * c.transform;
+            c.transform_by(Affine::translate((-bounds.x0, -bounds.y0)));
             if let Ok(layer) = tmp.layer_mut(l) {
                 layer.shapes.push(c);
             }
@@ -1869,6 +1923,169 @@ impl App {
         }
     }
 
+    /// The selected texts Join Lines into Paragraph takes: artistic text,
+    /// not on a path nor vertical, at least two.
+    pub fn joinable_text_lines(&self) -> Vec<Shape> {
+        let lines: Vec<Shape> = self
+            .text_shapes()
+            .into_iter()
+            .filter(|s| {
+                matches!(&s.kind, ShapeKind::Text { frame: None, on_path: None, para, .. }
+                    if !para.vertical)
+            })
+            .collect();
+        if lines.len() < 2 {
+            Vec::new()
+        } else {
+            lines
+        }
+    }
+
+    /// Text > Join Lines into Paragraph (#599): the selected lines of
+    /// artistic text (a PDF's text comes one object per line) become one
+    /// paragraph text in a frame as wide as the widest line, the lines in
+    /// reading order (top to bottom) joined by spaces, so typing flows the
+    /// words on to the next lines. The first baseline stays where it was
+    /// and the lines keep their spacing (the usual distance between their
+    /// baselines, in points); a gap of more than half again as much starts
+    /// a new paragraph. The lines must be turned and sized alike. One undo
+    /// step; the paragraph comes out selected.
+    pub fn join_text_lines(&mut self) {
+        use tracedraw_core::document::text_outline::TextRequest;
+        let lines = self.joinable_text_lines();
+        let Some(first) = lines.first() else {
+            return;
+        };
+        let doc = self.doc();
+        let parent = doc.parent_transform(first.id).unwrap_or(Affine::IDENTITY);
+        let base = first.transform;
+        let linear = |a: Affine| {
+            let c = a.as_coeffs();
+            [c[0], c[1], c[2], c[3]]
+        };
+        let alike = |a: Affine, b: Affine| {
+            let (a, b) = (linear(a), linear(b));
+            let scale = a.iter().fold(1e-9_f64, |m, v| m.max(v.abs()));
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() <= scale * 1e-6)
+        };
+        let to_base = base.inverse();
+        // Each line in the first line's own space: where its first
+        // baseline starts, its right end, and its text.
+        struct Line {
+            start: Point,
+            right: f64,
+            spans: Vec<TextSpan>,
+        }
+        let mut found: Vec<Line> = Vec::new();
+        for s in &lines {
+            let same_parent = doc
+                .parent_transform(s.id)
+                .is_some_and(|p| (p.as_coeffs()) == parent.as_coeffs());
+            if !same_parent || !alike(s.transform, base) {
+                self.status = tr("status.join_lines_unlike");
+                return;
+            }
+            let Some((layout, to_parent)) =
+                crate::text_editing::layout_of_text_shape(s, Affine::IDENTITY)
+            else {
+                continue;
+            };
+            let Some(&(bx, by)) = layout.baselines.first() else {
+                continue;
+            };
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                continue;
+            };
+            let m = to_base * to_parent;
+            found.push(Line {
+                start: m * Point::new(bx, by),
+                right: (m * Point::new(layout.bounds.x1, by)).x,
+                spans: spans.clone(),
+            });
+        }
+        if found.len() < 2 {
+            return;
+        }
+        found.sort_by(|a, b| {
+            b.start
+                .y
+                .total_cmp(&a.start.y)
+                .then(a.start.x.total_cmp(&b.start.x))
+        });
+        let gaps: Vec<f64> = found
+            .windows(2)
+            .map(|w| w[0].start.y - w[1].start.y)
+            .filter(|g| *g > 1e-6)
+            .collect();
+        let mut sorted = gaps.clone();
+        sorted.sort_by(f64::total_cmp);
+        let size_mm = found[0]
+            .spans
+            .first()
+            .map(|s| s.size_pt * tracedraw_text::PT_MM)
+            .unwrap_or(5.0);
+        let leading = sorted
+            .get(sorted.len() / 2)
+            .copied()
+            .unwrap_or(size_mm * 1.2);
+        let mut spans: Vec<TextSpan> = Vec::new();
+        for (i, line) in found.iter().enumerate() {
+            if i > 0 {
+                let gap = found[i - 1].start.y - line.start.y;
+                let sep = if gap > leading * 1.5 { "\n" } else { " " };
+                if let Some(last) = spans.last_mut() {
+                    if !last.text.ends_with(char::is_whitespace) {
+                        last.text.push_str(sep);
+                    }
+                }
+            }
+            spans.extend(line.spans.iter().cloned());
+        }
+        let left = found.iter().map(|l| l.start.x).fold(f64::MAX, f64::min);
+        let right = found.iter().map(|l| l.right).fold(f64::MIN, f64::max);
+        // A little room so the lines this program measured still fit.
+        let width = ((right - left) * 1.02 + 0.5).max(5.0);
+        let ShapeKind::Text { align, para, .. } = &first.kind else {
+            return;
+        };
+        let mut para = para.clone();
+        para.leading_unit = tracedraw_core::LeadingUnit::Points;
+        para.leading_pct = leading / tracedraw_text::PT_MM;
+        let top_base = found[0].start.y;
+        let low_base = found.iter().map(|l| l.start.y).fold(f64::MAX, f64::min);
+        // Room for the lines there are and two more as the text grows.
+        let height = (top_base - low_base) + size_mm + leading * 2.0;
+        let frame = Size::new(width, height);
+        let laid = tracedraw_text::fonts().layout(&TextRequest {
+            spans: &spans,
+            frame: Some(frame),
+            align: *align,
+            para: &para,
+            on_path: None,
+        });
+        // The first baseline where the top line's was.
+        let (bx, by) = laid.baselines.first().copied().unwrap_or((0.0, -size_mm));
+        let origin = Point::new(left - bx, top_base - by - height);
+        let kind = ShapeKind::Text {
+            spans,
+            origin,
+            frame: Some(frame),
+            align: *align,
+            para,
+            on_path: None,
+        };
+        let keep = first.id;
+        let rest: Vec<ShapeId> = lines.iter().skip(1).map(|s| s.id).collect();
+        let cmds = vec![
+            Command::SetShapeKind { shape: keep, kind },
+            Command::DeleteShapes { shapes: rest },
+        ];
+        match self.engine.run_batch("Join Lines into Paragraph", &cmds) {
+            Ok(()) => self.selection = vec![keep],
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
     pub fn fit_text_to_frame(&mut self) {
         for s in self.text_shapes() {
             if let ShapeKind::Text { frame: Some(_), .. } = &s.kind {
@@ -2234,7 +2451,7 @@ impl App {
             else {
                 continue;
             };
-            let cmds = vec![
+            let mut cmds = vec![
                 Command::SetShapeKind {
                     shape: s.id,
                     kind: ShapeKind::Text {
@@ -2252,6 +2469,7 @@ impl App {
                         * s.transform.inverse(),
                 },
             ];
+            cmds.extend(self.effects_as_now(s.id));
             if let Err(e) = self.engine.run_batch("Straighten Text", &cmds) {
                 self.status = e.to_string();
             }
@@ -2606,7 +2824,7 @@ impl App {
             for s in &shapes {
                 let mut c = s.clone();
                 c.id = self.engine.new_shape_id();
-                c.transform = Affine::translate((dx * k as f64, dy * k as f64)) * c.transform;
+                c.transform_by(Affine::translate((dx * k as f64, dy * k as f64)));
                 new_sel.push(c.id);
                 cmds.push(Command::AddShape { layer, shape: c });
             }
@@ -2900,7 +3118,7 @@ impl App {
             g
         };
         // Symbol definition is placed at the origin.
-        def.transform = Affine::translate((-b.x0, -b.y0)) * def.transform;
+        def.transform_by(Affine::translate((-b.x0, -b.y0)));
         def.id = ShapeId(0);
         let index = self.doc().symbols.len();
         let name = format!("Symbol {}", index + 1);
@@ -3001,6 +3219,113 @@ pub(crate) fn with_stand_ins(missing: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While Autofit Page's popup is open the page it would make is the
+    /// drawing's bounds and the margin; a value left from frames before
+    /// shows nothing (#594).
+    /// Lines of artistic text (as a PDF brings them, one object a line)
+    /// join into one paragraph text: in reading order, joined by spaces
+    /// and a wide gap by a new paragraph, the first baseline where it
+    /// was, the lines' spacing kept, every line fitting the frame; text
+    /// typed into it flows on to more lines (#599).
+    #[test]
+    fn lines_of_text_join_into_a_paragraph_that_flows() {
+        let mut app = App::headless();
+        let mut ids = Vec::new();
+        // Made out of order: the joined text reads top to bottom.
+        for (text, y) in [
+            ("third line", 190.0),
+            ("first line here", 200.0),
+            ("second line", 195.0),
+            ("new paragraph", 180.0),
+        ] {
+            let id = app
+                .new_shape(ShapeKind::Text {
+                    spans: vec![TextSpan::new(text, "DejaVu Sans", 10.0)],
+                    origin: Point::new(20.0, y),
+                    frame: None,
+                    align: tracedraw_core::TextAlign::Left,
+                    para: tracedraw_core::ParagraphStyle::default(),
+                    on_path: None,
+                })
+                .expect("text");
+            ids.push(id);
+        }
+        app.select(ids.clone());
+        app.join_text_lines();
+        assert_eq!(app.selection.len(), 1);
+        let id = app.selection[0];
+        let left = ids
+            .iter()
+            .filter(|i| app.doc().find_shape(**i).is_some())
+            .count();
+        assert_eq!(left, 1, "the other lines are gone");
+        let s = app.doc().find_shape(id).expect("paragraph").clone();
+        let ShapeKind::Text {
+            spans, frame, para, ..
+        } = &s.kind
+        else {
+            panic!("{:?}", s.kind);
+        };
+        assert!(frame.is_some(), "paragraph text");
+        assert_eq!(
+            tracedraw_core::document::spans_text(spans),
+            "first line here second line third line\nnew paragraph"
+        );
+        assert_eq!(para.leading_unit, tracedraw_core::LeadingUnit::Points);
+        assert!((para.leading_pct - 5.0 / tracedraw_text::PT_MM).abs() < 1e-6);
+        let (layout, to_page) =
+            crate::text_editing::layout_of_text_shape(&s, Affine::IDENTITY).expect("layout");
+        assert!(!layout.overflow);
+        assert_eq!(
+            layout.lines.len(),
+            4,
+            "each line fits: {:?}",
+            layout.baselines
+        );
+        let (bx, by) = layout.baselines[0];
+        let first = to_page * Point::new(bx, by);
+        assert!(
+            (first.x - 20.0).abs() < 1e-6 && (first.y - 200.0).abs() < 1e-6,
+            "{first:?}"
+        );
+        let second = to_page * Point::new(layout.baselines[1].0, layout.baselines[1].1);
+        assert!((first.y - second.y - 5.0).abs() < 1e-6, "{second:?}");
+        // More words in the first line push the rest down a line.
+        let mut kind = s.kind.clone();
+        if let ShapeKind::Text { spans, .. } = &mut kind {
+            spans[0]
+                .text
+                .insert_str(0, "a few more words at the start of ");
+        }
+        app.run(Command::SetShapeKind { shape: id, kind });
+        let s = app.doc().find_shape(id).expect("paragraph").clone();
+        let (layout, _) =
+            crate::text_editing::layout_of_text_shape(&s, Affine::IDENTITY).expect("layout");
+        assert!(layout.lines.len() > 4, "{:?}", layout.baselines);
+        // A line on its own does not join.
+        app.select(vec![id]);
+        assert!(app.joinable_text_lines().is_empty());
+    }
+
+    #[test]
+    fn the_autofit_preview_is_the_drawing_and_its_margin() {
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(10.0, 20.0, 60.0, 50.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+        assert!(app.autofit_preview_rect(5).is_none());
+        app.autofit_preview = Some((5.0, 5));
+        let r = app.autofit_preview_rect(6).expect("page");
+        assert!(
+            (r.width() - 60.0).abs() < 1e-6 && (r.height() - 40.0).abs() < 1e-6,
+            "{r:?}"
+        );
+        assert!(app.autofit_preview_rect(8).is_none(), "stale");
+    }
 
     /// Repeat Last Trace and Open Last Trace Settings follow the last
     /// trace, whichever way it was made (#452).

@@ -483,7 +483,7 @@ pub fn thumbnail(item: &ShelfItem, px: u32) -> Option<(Vec<u8>, u32, u32)> {
     let page = tmp.pages.first()?.id;
     for s in &item.shapes {
         let mut c = s.clone();
-        c.transform = Affine::translate((-b.x0, -b.y0)) * c.transform;
+        c.transform_by(Affine::translate((-b.x0, -b.y0)));
         if let Ok(l) = tmp.layer_mut(layer) {
             l.shapes.push(c);
         }
@@ -587,7 +587,7 @@ impl App {
             let id = self.engine.new_shape_id();
             let mut shape = crate::app::reid_pub(s, id, &mut self.engine);
             crate::styles::keep_links_to(&mut shape, &item.styles, &here);
-            shape.transform = Affine::translate(d) * shape.transform;
+            shape.transform_by(Affine::translate(d));
             ids.push(id);
             cmds.push(Command::AddShape { layer, shape });
         }

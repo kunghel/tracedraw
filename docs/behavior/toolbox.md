@@ -69,9 +69,19 @@ Each tool's pointer says which tool is active (code: `ui/cursors.rs`):
 | Interactive Fill | the move arrows over a handle of the selected object's fountain fill (and while one is dragged), else the cross hair with the tool's icon |
 | Every other tool (shapes, dimensions, connectors, effects, fills, Crop, Knife, Table, ...) | the cross hair with the tool's icon at its lower right on a light patch |
 
-The cross hair, the arrows and the I-beam are the system's own; the
-icons, nibs and drawn pointers are painted by TraceDraw above the
-drawing. The icon on the light patch is painted in the pointers' own
+The arrows (pointing, moving, resizing) are the system's own. The cross
+hair and the text I-beam are painted by TraceDraw, black on a white
+halo, with the system pointer hidden, so they show on a page of any
+colour: the system's invert what is under them, and on Windows they can
+show white on a white page (#655,
+`cursors::tests::the_cross_hair_and_the_i_beam_are_drawn_black_on_white`).
+The cross hair's lines cross on the middle of the pixel under the hot
+spot; the icons, nibs and drawn pointers are painted beside it, above
+the drawing. The window keeps one frame queued, not two, so what is
+drawn under the pointer trails it as little as the screen allows, and a
+shape being drawn has its corner where the pointer is from the first
+frame of the drag (it waited at the press point for one frame,
+`pick_drag_tests::drawing_a_rectangle_the_corner_keeps_up_with_the_pointer`). The icon on the light patch is painted in the pointers' own
 black under every theme, not in the theme's icon colour, which is light
 on the dark themes (`cursors::tests::the_badge_icon_is_dark_under_every_theme`).
 Nib outlines stay between 2 and 400 points on screen.

@@ -1325,9 +1325,7 @@ fn rectangle_section(app: &mut App, ui: &mut Ui, c: tracedraw_core::Corners) {
                                     .speed(0.1)
                                     .suffix(format!(" {}", u.short())),
                             );
-                            if (r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()))
-                                && (u.world_to_mm(v) - c.radii[i]).abs() > 1e-12
-                            {
+                            if r.changed() && (u.world_to_mm(v) - c.radii[i]).abs() > 1e-12 {
                                 edit = Some(CornerEdit::Size(i, u.world_to_mm(v)));
                             }
                         }

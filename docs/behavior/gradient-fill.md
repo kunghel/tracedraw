@@ -24,7 +24,13 @@ Shortcut: F11 opens the Edit Fill dialog; G is the Interactive Fill tool.
 
 Edit Fill dialog (#361, `ui/edit_fill.rs`): the fill kinds as pictures
 across the top (none, uniform, gradient, pattern, texture, mesh), then
-the kind's settings. Uniform: the colour viewer and the colour picker's swatch, then the
+the kind's settings in a box of the same size for every kind
+(`edit_fill::PAGE`, 724 x 330 points, the gradient page's room), so the
+window keeps its size and place and OK and Cancel theirs as the kind
+changes; it used to resize and move with each kind (#654). A page that
+needs more room (a long translation) scrolls inside the box, and the
+gradient band's hint wraps (`edit_fill::tests::the_window_keeps_its_size_for_every_kind`).
+Uniform: the colour viewer and the colour picker's swatch, then the
 colour's model (RGB, CMYK, HSB, HSL, Lab, Grayscale, YIQ; a choice converts
 the colour) and a slider with a field for each of its values, and the hex
 code (#468, `edit_fill::tests::a_uniform_fill_shows_its_model_and_values`).

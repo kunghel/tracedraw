@@ -149,7 +149,7 @@ impl App {
             }
         }
         if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Align", &cmds);
+            let _ = self.run_batch_keeping_lines("Align", &cmds);
         }
     }
 
@@ -255,7 +255,7 @@ impl App {
             }
         }
         if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Distribute", &cmds);
+            let _ = self.run_batch_keeping_lines("Distribute", &cmds);
         }
     }
 

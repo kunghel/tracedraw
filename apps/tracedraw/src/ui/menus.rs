@@ -1698,7 +1698,8 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
         app.file.is_some() && app.engine.is_dirty(),
     ) {
         if let Some(p) = app.file.clone() {
-            app.open_path(p);
+            // Read again (not the open drawing shown, see `open_path`).
+            app.open_path_with_password(p, "");
         }
     }
     sep(ui);
@@ -2852,6 +2853,10 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     if item(ui, "menu.text.convert", "Ctrl+F8", is_text) {
         app.toggle_text_kind();
+    }
+    let joinable = !app.joinable_text_lines().is_empty();
+    if item(ui, "menu.text.join_lines", "", joinable) {
+        app.join_text_lines();
     }
     if check(ui, "menu.text.show_non_printing", "", app.show_non_printing) {
         app.show_non_printing = !app.show_non_printing;

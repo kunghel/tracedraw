@@ -74,6 +74,8 @@ mod hunspell;
 mod i18n;
 mod image_dpi;
 mod imposition;
+#[cfg(not(target_arch = "wasm32"))]
+mod instance;
 mod interaction;
 mod interaction2;
 mod kind_nodes;
@@ -167,11 +169,24 @@ mod workspace_file;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // One window for every start (#646): files given to a start while
+    // TraceDraw runs go to its window, in tabs of their own, and this
+    // start ends (before its log would replace the running one's).
+    let files = instance::file_args(&args);
+    let (inbox, handed_over) = std::sync::mpsc::channel();
+    let mut primary = None;
+    if instance::hands_over(&args) {
+        match instance::claim(settings::config_dir().as_deref(), &files, inbox.clone()) {
+            instance::Claim::HandedOver => return Ok(()),
+            instance::Claim::Primary(p) => primary = Some(p),
+            instance::Claim::Alone => {}
+        }
+    }
     // The log in a file too and panics reported: the Windows build has no
     // console to show them (#570).
     startup_log::init();
     tracedraw_text::install();
-    let args: Vec<String> = std::env::args().skip(1).collect();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
     // stdin/stdout (see mcp.rs and docs/behavior/mcp.md).
     if args.iter().any(|a| a == "--mcp") {
@@ -188,10 +203,14 @@ fn main() -> eframe::Result<()> {
     // checks): straight into a plain window at the default size.
     let plain = args.iter().any(|a| a == "--no-splash")
         || std::env::var("TRACEDRAW_NO_SPLASH").is_ok_and(|v| !v.is_empty() && v != "0");
-    let open_path = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(std::path::PathBuf::from);
+    // The first file opens as the window starts, the others after it.
+    let mut files = files.into_iter();
+    let open_path = files.next();
+    let rest: Vec<std::path::PathBuf> = files.collect();
+    if !rest.is_empty() {
+        let _ = inbox.send(rest);
+    }
+    let wake = primary.as_ref().map(|p| p.wake.clone());
     let mut settings = settings::Settings::load();
     // `--reset-settings`: every preference back to how TraceDraw comes
     // (the recent drawings and the window's size are kept).
@@ -239,13 +258,20 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             gpu::note_renderer(cc, mode);
-            Ok(Box::new(if splash {
+            if let Some(w) = &wake {
+                let _ = w.set(cc.egui_ctx.clone());
+            }
+            let mut shell = if splash {
                 Shell::with_splash(cc, open_path)
             } else {
                 Shell::new(cc, open_path)
-            }))
+            };
+            shell.handed_over = Some(handed_over);
+            Ok(Box::new(shell))
         }),
     );
+    // A start with the next renderer must be able to take the place.
+    drop(primary);
     match result {
         // The window could not be opened this way: the next renderer, in a
         // new start (a window system cannot be set up twice in one).
@@ -272,6 +298,9 @@ struct Shell {
     /// The file to open once the splash is done.
     #[cfg(not(target_arch = "wasm32"))]
     open: Option<std::path::PathBuf>,
+    /// Files later starts handed over (see instance.rs).
+    #[cfg(not(target_arch = "wasm32"))]
+    handed_over: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
 }
 
 impl Shell {
@@ -284,6 +313,8 @@ impl Shell {
             splash: None,
             #[cfg(not(target_arch = "wasm32"))]
             open: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            handed_over: None,
         }
     }
 
@@ -294,6 +325,7 @@ impl Shell {
             app: None,
             splash: Some(splash::Splash::start(&cc.egui_ctx, open.as_deref())),
             open,
+            handed_over: None,
         }
     }
 }
@@ -329,6 +361,13 @@ impl eframe::App for Shell {
         app.sync_document_colors();
         // File dialogs that finished in the background (browser build).
         files::run_finished(app);
+        // Files a later start handed over (one try_recv when none came).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rx) = &self.handed_over {
+            if instance::open_handed_over(app, ui.ctx(), rx) {
+                ui.ctx().request_repaint();
+            }
+        }
         // Requests of AI agents for the open drawing (MCP).
         #[cfg(not(target_arch = "wasm32"))]
         if app.sync_mcp_link(ui.ctx()) {

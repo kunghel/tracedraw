@@ -186,8 +186,8 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
     }
     // While a guideline or the origin is dragged out, wherever the pointer
     // is.
-    if let Some(icon) = crate::ui::cursors::ruler_drag_cursor(app) {
-        ui.ctx().set_cursor_icon(icon);
+    if let Some(c) = crate::ui::cursors::ruler_drag_cursor(app) {
+        crate::ui::cursors::show(ui.ctx(), c, ui.input(|i| i.pointer.latest_pos()));
     }
 }
 

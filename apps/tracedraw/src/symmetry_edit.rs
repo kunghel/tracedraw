@@ -214,7 +214,7 @@ impl App {
                     .filter(|c| c.visible && !c.locked)
                     .map(|c| {
                         let mut c = c.clone();
-                        c.transform = g.transform * c.transform;
+                        c.transform_by(g.transform);
                         c
                     })
                     .collect(),

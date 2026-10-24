@@ -181,7 +181,7 @@ of each object should stay together.
 
 **Segment Delete** removes the stretch of an outline between two places
 where it crosses another outline (or itself). Click a stretch to remove
-it, or drag a rectangle to remove every stretch inside it.
+it, or drag a rectangle to remove every stretch it touches, whole.
 
 ### Eraser (`X`)
 

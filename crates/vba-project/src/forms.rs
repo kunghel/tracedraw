@@ -347,7 +347,7 @@ impl<'a> R<'a> {
 
     fn align(&mut self, n: usize) {
         let off = self.pos - self.base;
-        if off % n != 0 {
+        if !off.is_multiple_of(n) {
             self.pos += n - off % n;
         }
     }
@@ -1392,7 +1392,7 @@ impl W {
         }
     }
     fn align(&mut self, n: usize) {
-        while (self.out.len() - self.base) % n != 0 {
+        while !(self.out.len() - self.base).is_multiple_of(n) {
             self.out.push(0);
         }
     }

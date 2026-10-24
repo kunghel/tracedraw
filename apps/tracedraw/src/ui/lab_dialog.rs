@@ -618,7 +618,11 @@ fn preview(
         }
         LabTool::WhitePoint | LabTool::BlackPoint => {
             if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                crate::ui::cursors::show(
+                    ui.ctx(),
+                    crate::ui::cursors::ToolCursor::Cross,
+                    resp.hover_pos(),
+                );
             }
             if resp.clicked() {
                 if let Some(pos) = resp.interact_pointer_pos() {

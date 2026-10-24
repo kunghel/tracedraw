@@ -510,7 +510,7 @@ impl App {
             .and_then(|id| self.doc().find_shape(id))
             .is_some_and(|s| matches!(s.kind, ShapeKind::Table(_)));
         if over {
-            ToolCursor::System(egui::CursorIcon::Text)
+            ToolCursor::IBeam
         } else {
             ToolCursor::Badge(Tool::Table)
         }

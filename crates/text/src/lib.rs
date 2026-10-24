@@ -511,6 +511,68 @@ pub fn symbol_to_unicode(c: char) -> char {
 
 /// Characters drawn with the face of the letter before them: spaces,
 /// controls, joiners, variation selectors and combining marks.
+/// The script a letter is written in, for cutting text into runs one
+/// shaper takes: `None` for what every script shares (spaces, digits,
+/// punctuation, marks), which stays with the letters around it. Only the
+/// scripts whose shaping depends on it are told apart.
+fn script_of(c: char) -> Option<u8> {
+    Some(match c as u32 {
+        0x0041..=0x005A | 0x0061..=0x007A | 0x00C0..=0x024F | 0x1E00..=0x1EFF => 1,
+        0x0370..=0x03FF | 0x1F00..=0x1FFF => 2,
+        0x0400..=0x052F => 3,
+        0x0900..=0x0963 | 0x0966..=0x097F | 0xA8E0..=0xA8FF => 10,
+        0x0980..=0x09FF => 11,
+        0x0A00..=0x0A7F => 12,
+        0x0A80..=0x0AFF => 13,
+        0x0B00..=0x0B7F => 14,
+        0x0B80..=0x0BFF => 15,
+        0x0C00..=0x0C7F => 16,
+        0x0C80..=0x0CFF => 17,
+        0x0D00..=0x0D7F => 18,
+        0x0D80..=0x0DFF => 19,
+        0x0E00..=0x0E7F => 20,
+        0x0E80..=0x0EFF => 21,
+        0x0F00..=0x0FFF => 22,
+        0x1000..=0x109F => 23,
+        0x1780..=0x17FF => 24,
+        _ => return None,
+    })
+}
+
+/// A right-to-left letter (Hebrew, Arabic and their forms).
+fn right_to_left(c: char) -> bool {
+    matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
+}
+
+/// `text` cut where its script changes (see [`script_of`]); what the
+/// scripts share goes with the run before it, or the first one at the
+/// start. Text with right-to-left letters stays whole: it is shaped as
+/// one run as before.
+fn script_runs(text: &str) -> Vec<Range<usize>> {
+    let whole = || std::iter::once(0..text.len()).collect::<Vec<_>>();
+    if text.is_ascii() || text.chars().any(right_to_left) {
+        return whole();
+    }
+    let mut runs: Vec<(Range<usize>, Option<u8>)> = Vec::new();
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        let sc = script_of(c);
+        match runs.last_mut() {
+            Some(last) if sc.is_none() || last.1.is_none() || last.1 == sc => {
+                last.0.end = end;
+                if last.1.is_none() {
+                    last.1 = sc;
+                }
+            }
+            _ => runs.push((i..end, sc)),
+        }
+    }
+    if runs.len() < 2 {
+        return whole();
+    }
+    runs.into_iter().map(|r| r.0).collect()
+}
+
 fn inherits_face(c: char) -> bool {
     c.is_whitespace()
         || c.is_control()
@@ -1744,16 +1806,22 @@ impl FontSystem {
             text
         };
         for (range, face) in self.coverage_runs(id, text, span.bold, span.italic) {
-            let before = text[..range.start].chars().count();
-            out.extend(self.shape_with(
-                face,
-                span,
-                span_idx,
-                &text[range],
-                size_scale,
-                char_base + before,
-                para,
-            ));
+            // Each script on its own: one buffer takes the script of its
+            // first letter, so Hindi after a Latin word lost its half
+            // forms and conjuncts (#599).
+            for part in script_runs(&text[range.clone()]) {
+                let part = range.start + part.start..range.start + part.end;
+                let before = text[..part.start].chars().count();
+                out.extend(self.shape_with(
+                    face,
+                    span,
+                    span_idx,
+                    &text[part],
+                    size_scale,
+                    char_base + before,
+                    para,
+                ));
+            }
         }
         out
     }
@@ -3232,6 +3300,24 @@ impl ttf_parser::OutlineBuilder for OutlineSink {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Size;
+
+    /// Hindi after a Latin word is shaped as Hindi: the run is cut where
+    /// the script changes, the space and digits going with the run before
+    /// them, so its half forms and conjuncts are made (#599). One script,
+    /// plain ASCII and right-to-left text stay whole.
+    #[test]
+    fn text_is_shaped_one_script_at_a_time() {
+        let t = "PDF में स्थिति 12.";
+        let parts: Vec<&str> = script_runs(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(parts, ["PDF ", "में स्थिति 12."]);
+        let t = "1. स्थिति and more";
+        let parts: Vec<&str> = script_runs(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(parts, ["1. स्थिति ", "and more"]);
+        for whole in ["स्थिति क्षमता", "plain text", "مرحبا PDF", "Ünïcödé"]
+        {
+            assert_eq!(script_runs(whole), vec![0..whole.len()], "{whole}");
+        }
+    }
 
     fn span(text: &str) -> TextSpan {
         TextSpan {

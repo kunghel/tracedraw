@@ -154,6 +154,12 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
         if ci(ui, close, "menu.text.convert", "Ctrl+F8", true) {
             app.toggle_text_kind();
         }
+        if many
+            && !app.joinable_text_lines().is_empty()
+            && ci(ui, close, "menu.text.join_lines", "", true)
+        {
+            app.join_text_lines();
+        }
         sep(ui);
     }
     if is_bitmap {

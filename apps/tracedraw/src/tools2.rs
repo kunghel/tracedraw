@@ -305,7 +305,14 @@ impl App {
                 true
             }
             Tool::SegmentDelete => {
-                self.delete_virtual_segments_in(rect);
+                // A click whose pointer slipped a few pixels is still a
+                // click: when its little box reaches nothing, the outline
+                // near the press goes as a click would take it.
+                let zoom = self.view.zoom.max(1e-6) as f64;
+                let small = rect.width() * zoom < 8.0 && rect.height() * zoom < 8.0;
+                if !self.delete_virtual_segments_in(rect) && small {
+                    self.delete_virtual_segment_at(start);
+                }
                 true
             }
             _ => false,
