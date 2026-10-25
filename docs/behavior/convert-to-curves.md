@@ -12,7 +12,7 @@ switched off. One undo step.
 | Object | Becomes |
 |---|---|
 | Rectangle, ellipse, polygon, star, other shapes | a curve with the same outline (corners, arcs and points included) |
-| Ellipse (whole, not a pie or arc) | one closed curve of four smooth nodes with equal handles, at the right, bottom, left and top, starting at the right |
+| Ellipse (whole, not a pie or arc) | one closed curve of four symmetrical nodes (equal handles along the axes), at the right, top, left and bottom, starting at the right |
 | Artistic and paragraph text | a curve made of the letter outlines |
 | Clip frame | still a clip frame: its frame becomes a curve and its contents are converted by these same rules (a group inside stays a group with its objects converted), keeping their ids, and stay clipped inside it |
 | Table | a group of curves: one filled rectangle per cell (merged cells as one), the cell text as curves, and one curve holding every cell border with the table's outline |
@@ -47,7 +47,7 @@ it but keeps an envelope live, so the frame being edited stays.
   nothing
   (`ops::curves_and_target_tests::a_clip_frame_keeps_its_contents_as_curves`).
 - Given an ellipse, when it is converted, then it is one closed curve
-  of four symmetrical nodes at its right, bottom, left and top, at any
+  of four symmetrical nodes at its right, top, left and bottom, at any
   size
   (`ops::curves_and_target_tests::an_ellipse_becomes_a_closed_curve_of_four_nodes`,
   `geometry::tests::an_ellipse_is_closed_with_four_nodes_on_its_axes`).

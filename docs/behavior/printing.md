@@ -8,21 +8,32 @@ downloaded). `export::print` builds it; the sheets come from
 
 ## Printers
 
-The Printer list holds the system's printers, the default one first,
-then "System printer (through the PDF viewer)", "PDF file" and
-"PostScript file". The printers come from CUPS (Linux and macOS):
-`lpstat -p -d` lists them when the dialog opens (`printers.rs`,
+The Printer list holds the system's printers in name order (ignoring
+case; the default stays where its name puts it), then "System printer
+(through the PDF viewer)", "PDF file" and "PostScript file". The list
+is read off the interface's thread when the dialog opens, so a print
+server that is slow to answer never holds the window: until it comes,
+the list read last shows (or "Looking for printers..." the first
+time, when Print waits for the list if a printer is the destination),
+and the dialog takes the new list as soon as it is read, keeping a
+destination picked meanwhile unless it names a printer the system does
+not have (#614).
+The printers come from CUPS (Linux and macOS): `lpstat -l -p -d` lists
+them with their state, description and location (`printers.rs`,
 `parse_lpstat`), and a print on one of them hands the PDF to `lp -d`
 with the number of copies and their collation (`lp_args`) and the
 drawing's name as the job title; the status bar says "Sent to printer
 name", or what `lp` complained about. The dialog starts on the printer
 printed to last when the system still has it, else on the default
-printer, else on the PDF viewer (`starting_printer`); the printer is
+printer, selected where it stands in the list, else on the PDF viewer
+(`starting_printer`); the printer is
 remembered with the other print choices (Options > Global > Printing).
 On Windows the printers are every printer Windows has, the ones
 installed on the computer and the network printers connected for the
 user alike: PowerShell lists `Win32_Printer` when the dialog opens
-(`WINDOWS_LIST`, `parse_windows_list`; the default one first, #614). A
+(`WINDOWS_LIST`, `parse_windows_list`, #614) with each printer's
+PrinterStatus and WorkOffline (Ready, Printing, Warming up, Stopped,
+Offline, else Unknown), Location and Comment. A
 print on one of them draws each sheet at 300 dpi and hands the pictures
 to the printer through PowerShell's printing classes
 (`windows_print_script`), so no PDF program is needed: each sheet takes
@@ -32,6 +43,16 @@ drawn at its size from the paper's corner; the copies and their
 collation go to the printer, the drawing's name is the job title. In the
 browser the list has no printers and the print goes through the PDF
 viewer.
+
+Next to the list a Properties button (a gear, available when a system
+printer is chosen) opens the printer's own settings: on Windows its
+printing preferences (`rundll32 printui.dll,PrintUIEntry /e /n name`),
+on macOS the system's Printers & Scanners settings, on Linux and other
+CUPS systems the printer's page of the CUPS web interface in the browser
+(`http://localhost:631/printers/name`, a web page, not a system dialog;
+`properties_command`). Under
+Orientation, Status, Location and Comment show what the system says of
+the printer chosen (empty for the PDF viewer and the files, #614).
 
 ## Print dialog
 
@@ -62,7 +83,11 @@ has one.
     given (36 to 1200 dpi).
 - Color: Composite or Separations (one grey page per ink and sheet: C, M,
   Y, K, then the spot inks; black = full ink); Convert spot colors to
-  CMYK prints spot inks as their CMYK mix at their tint.
+  CMYK prints spot inks as their CMYK mix at their tint. The printed
+  sheets keep the drawing's list of spot inks, so each spot ink gets its
+  plate and its box in the print preview; before, the sheets lost the
+  list and only the four process plates printed (#779,
+  `export::tests::separations_print_a_plate_for_each_spot_ink`).
 - Composite: Print text in black (fills, outlines and character colours
   of every text); Always overprint black (100 % black fills and outlines
   overprint).
@@ -92,16 +117,18 @@ over its settings), fills the window with the sheets exactly as Print
 sends them: the imposition, the marks, Mirror and Invert, built by the
 same function (`export::print_sheets`).
 
-- Top bar: Print (prints these settings and closes), the sheet shown with previous and next (Page Up, Page Down), the Inks
-  while Print separations is on: a box for cyan, magenta, yellow, black
-  and each spot ink, all ticked at first (#571). Every ink ticked shows
-  the sheet as it is; one alone shows its plate in grey; some show the
-  colours those inks print together (process colours keep the channels
-  ticked, a spot colour shows when its ink is ticked and is paper
-  otherwise; `print_preview::tests::plates_split_the_sheet_by_ink`), Zoom from 25 to 400 % of the fitted size
+- Top bar: Print (prints these settings and closes), the sheet shown with previous and next (Page Up, Page Down), Zoom from 25 to 400 % of the fitted size
   with Fit, and Close (Esc) at the right end (#534).
 - Left: the Print dialog's options (all pages, fit, scale, prepress and
   layout with its sketch); every change rebuilds the sheets at once.
+  While Print separations is on, a box for cyan, magenta, yellow, black
+  and each spot ink stands indented under it, all ticked at first
+  (#571; `print_preview::tests::the_ink_boxes_stand_under_print_separations`).
+  Every ink ticked shows the sheet as it is; one alone shows its plate
+  in grey; some show the colours those inks print together (process
+  colours keep the channels ticked, a spot colour shows when its ink is
+  ticked and is paper otherwise;
+  `print_preview::tests::plates_split_the_sheet_by_ink`).
 - A plate shows the ink's coverage in grey, black = full ink, as the
   separations print; registration colour shows on every plate.
 - Paper margins (left, right, top, bottom, mm, 0 at first) keep the
@@ -183,6 +210,7 @@ With any mark on, a 12 mm margin (plus the bleed) surrounds the pages.
 
 - `printers::tests::the_printer_list_is_read_from_lpstat`, `printers::tests::the_dialog_starts_on_the_remembered_printer_else_the_default`, `printers::tests::lp_is_told_the_printer_copies_and_title`
 - `printers::tests::the_windows_printer_list_holds_network_printers`, `printers::tests::the_windows_print_script_names_the_printer_copies_and_sheets`
+- `printers::tests::properties_open_the_printers_own_settings`, `pick_drag_tests::the_print_dialog_reads_the_printers_off_the_interface_thread`, `pick_drag_tests::a_destination_picked_while_the_printers_are_read_stays`
 - `export::tests::page_lists_and_ranges_pick_pages`
 - `export::tests::print_colour_options_change_the_sheets_objects`
 - `export::tests::copies_repeat_sheets_collated_or_not_and_ps_gets_its_level`

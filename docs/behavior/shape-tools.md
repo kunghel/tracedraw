@@ -54,7 +54,15 @@ whatever tool is active.
   look.
   Drawings saved before this default changed keep what they store: a
   rectangle without the setting in the file scales its corners as it
-  did. Preferences saved by older versions, which could not store the
+  did. Rounded rectangles opened from `.cdr` files keep their corner
+  size, at the size the corners measure on the page (a corner larger
+  than half the shorter side stays so); one the file stretches gets
+  round corners of its shorter scale, the stretch going into its size
+  unless its outline scales with the object (a skewed one keeps
+  corners that follow it)
+  (`document::tests::keep_corner_size_leaves_the_outline_and_takes_the_stretch`)
+  (`parse::tests::rounded_rectangles_keep_their_corner_size` in the
+  .cdr reader). Preferences saved by older versions, which could not store the
   choice, start with it off once.
   Checked by `pick_drag_tests::rounded_corners_keep_their_size_when_relative_scaling_is_off`,
   `pick_drag_tests::new_rounded_rectangles_keep_circular_corners_when_stretched`
@@ -156,6 +164,10 @@ terminator's ends, a rounded callout) keep their size in long boxes.
 
 ## Checks
 
+- Given a 3 mm black default outline, while a rectangle or an ellipse is
+  dragged out, the outline is painted at its width and the edge line is
+  painted after it, on top (#621,
+  `pick_drag_tests::the_edge_of_the_shape_being_drawn_shows_over_a_wide_outline`).
 - `pick_drag_tests::overlays_are_drawn_on_a_white_line`
 - `common_shapes::tests::every_shape_fills_its_box`: every shape stays in
   its box and fills at least 80 % of it both ways, and is named.

@@ -692,7 +692,7 @@ mod tests {
                 rect: Rect::new(0.0, 0.0, 25.4, 25.4),
                 width_px: 100,
                 height_px: 100,
-                png: Vec::new(),
+                png: Vec::new().into(),
                 fx: None,
             },
         );

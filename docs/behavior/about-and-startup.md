@@ -117,12 +117,40 @@ and `--reset-settings` starts open windows of their own.
   (`gpu::tests::a_renderer_that_fails_hands_over_to_the_next`,
   `gpu::tests::hardware_mode_never_draws_on_the_software_adapter`).
   So a virtual machine without a usable graphics card opens.
+- The OpenGL renderer asks the driver for OpenGL 3.3 core, then OpenGL
+  ES, then a compatibility context of any version. A card whose driver
+  offers OpenGL 2.1 only (Intel HD Graphics of the Ironlake generation,
+  which has no Direct3D 12 and which wgpu's OpenGL backend refuses below
+  3.3) gets the last one and draws on the card through `--renderer=gl`
+  with GLSL 1.20 shaders, instead of on the CPU (#616). eframe 0.36
+  stopped after OpenGL ES; the likely reason the reporter's
+  `--renderer=gl` did not start is that Windows drivers of that age
+  cannot make an OpenGL ES context (WGL needs an extension they do not
+  offer), which the log of a build with this fallback will confirm.
+  TraceDraw carries eframe 0.36.2 with the fallback of eframe 0.37
+  (`vendor/README.md`,
+  `gpu::tests::opengl_falls_back_to_a_compatibility_context`,
+  `gpu::eframe_context_fallback::tests`). Checked
+  under Mesa forced to OpenGL 2.1 and GLSL 1.20: the window, the page,
+  gradients and text draw as on the other renderers.
 - A panic while a renderer starts (eframe's OpenGL set-up panics when
   the driver offers no matching pixel format) is caught and logged, and
   the next renderer is tried; it is not written to `crash.log` or shown.
   When no renderer is left, the reason is logged and shown in a message
   box naming the log (a panic of the last one is shown as a crash, with
   `crash.log`), and TraceDraw ends with an error.
+- A renderer can also end the program without an error to hand on: a
+  graphics driver that crashes the process, or hangs it until it is
+  closed, inside wgpu's set-up. So before the window is opened the start
+  writes the renderer it tries to `renderer-attempt` in the settings
+  folder, and removes the file as soon as the window is open. A start
+  that finds the file logs "the last start did not open the window with
+  ..." and begins with the renderer after that one (after the last one,
+  the first choice again); `--renderer=` from a hand-over still wins.
+  The renderer that then opens the window is remembered as above, so a
+  computer whose card crashes in wgpu opens with OpenGL from the second
+  start on, without `--renderer=gl` typed (#570,
+  `gpu::tests::a_start_that_never_opened_its_window_is_followed_by_the_next_renderer`).
 - The log names every graphics adapter wgpu offers (backend, type,
   vendor and device ids, driver) with why it was taken or left, the
   renderer each start tries and the one that opened the window; an
@@ -159,7 +187,15 @@ and `--reset-settings` starts open windows of their own.
   shadows, and the drawn pointers (cross hair, I-beam, hands, magnifiers
   and the others) give way to the system's nearest, as a drawn one
   trails the real pointer by a slow frame. The status bar says it once,
-  naming the adapter, and the log says it at start. A graphics card is
+  naming the adapter, and the log says it at start. With Use hardware
+  acceleration off in Options that is the reason, so the note says so
+  ("Drawn on the CPU (...): hardware acceleration is off. Click to turn
+  it on in Options > General.") and a click on it opens Options at the
+  General page; with it on, the note says the card's own driver makes it
+  faster, and is not a link. Nothing is turned on by itself: some cards
+  draw wrongly with acceleration
+  (`pick_drag_tests::the_software_renderer_note_says_hardware_acceleration_is_off`).
+  A graphics card is
   never paced (`gpu::tests::frames_are_paced_to_the_cap`,
   `gpu::tests::software_renderers_are_recognised`,
   `ui::cursors::tests::a_software_adapter_shows_the_system_pointers`).

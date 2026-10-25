@@ -418,6 +418,11 @@ impl App {
         let mut order = ids.clone();
         order.sort_by_key(|id| std::cmp::Reverse(self.doc().locate(*id).map_or(0, |(_, i)| i)));
         for id in &order {
+            // A dimension frees its lines, arrowheads and label (#644).
+            if let Some(mut c) = self.dimension_break_commands(*id) {
+                cmds.append(&mut c);
+                continue;
+            }
             // An envelope, perspective or distortion first becomes part of
             // the curves (#647).
             if let Some(mut c) = self.warp_break_commands(*id) {
@@ -684,7 +689,7 @@ impl App {
             page,
             background: Some(tracedraw_core::Fill::Pattern(
                 tracedraw_core::Pattern::Bitmap {
-                    png,
+                    png: png.into(),
                     width_px: img.width(),
                     height_px: img.height(),
                     size_mm: size.width.max(size.height),
@@ -739,7 +744,7 @@ impl App {
                 rect,
                 width_px: w,
                 height_px: h,
-                png,
+                png: png.into(),
                 fx: None,
             },
         );
@@ -1297,12 +1302,12 @@ mod smoke_tests {
                 rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
                 width_px: 1,
                 height_px: 1,
-                png: png.clone(),
+                png: png.clone().into(),
                 fx: None,
             })
             .expect("bitmap");
         app.select(vec![id]);
-        assert_eq!(app.selected_bitmap_png(), Some(png));
+        assert_eq!(app.selected_bitmap_png().as_deref(), Some(&png[..]));
         let other = app
             .new_shape(tracedraw_core::ShapeKind::Ellipse {
                 rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 5.0, 5.0),
@@ -1552,7 +1557,7 @@ mod curves_and_target_tests {
                 rect: Rect::new(20.0, 20.0, 40.0, 30.0),
                 width_px: 1,
                 height_px: 1,
-                png: Vec::new(),
+                png: Vec::new().into(),
                 fx: None,
             },
         );
@@ -1585,7 +1590,7 @@ mod curves_and_target_tests {
     }
 
     /// An ellipse converts to one closed curve of four nodes, at its
-    /// right, bottom, left and top, each smooth (#625).
+    /// right, top, left and bottom, each smooth (#625).
     #[test]
     fn an_ellipse_becomes_a_closed_curve_of_four_nodes() {
         let mut app = App::headless();

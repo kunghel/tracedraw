@@ -315,6 +315,19 @@ jobs:
         with:
           tool: wasm-bindgen@0.2.129
 
+      # binaryen's wasm-opt shrinks the module (Page step), from a pinned
+      # release checked against its SHA-256.
+      - name: Binaryen
+        env:
+          BINARYEN: version_133
+          BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+        run: |
+          file="binaryen-${BINARYEN}-x86_64-linux.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$file" "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN}/$file"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/$file" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$file" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-${BINARYEN}/bin" >> "$GITHUB_PATH"
+
       - name: Build
         run: cargo build --target wasm32-unknown-unknown --profile web -p tracedraw
 
@@ -322,6 +335,9 @@ jobs:
         run: |
           mkdir -p site dist
           wasm-bindgen --target web --no-typescript --out-dir site target/wasm32-unknown-unknown/web/tracedraw.wasm
+          # Optimise for size and drop the name, debug and producer
+          # sections before the size is measured.
+          wasm-opt -Oz --strip-debug --strip-producers -o site/tracedraw_bg.wasm site/tracedraw_bg.wasm
           cp web/FONTS.md site/
           # The page with the module's size (the download shows its progress)
           # and the version.

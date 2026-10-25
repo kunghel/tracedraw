@@ -13,6 +13,8 @@ grayscale stops where white = opaque and black = transparent. The
 object is rendered to a scratch layer, multiplied by the transparency
 mask, then composited with the merge mode. A shaped gradient follows
 the object's outline (`tests::shaped_transparency_follows_the_object`).
+A gradient mask turns, mirrors and skews with its object as a gradient
+fill does (see `gradient-fill.md`, #775).
 
 The Transparency tool shows a gradient mask's nodes as Interactive Fill
 shows a fill's (`fill_tool.rs`, #448): start, end and skew handle, the

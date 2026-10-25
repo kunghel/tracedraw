@@ -120,6 +120,23 @@ angle and offset as below; the first move stores the three nodes
 follow when the object is moved or scaled) and later moves keep them.
 A drag on a node is one undo step.
 
+## Turning and mirroring with the object
+
+The fill is placed on the object's box, so a move or a scale carries it
+along by itself. A turn, a mirror or a skew of the object (by the Pick
+tool's handles, the property bar's angle and mirror buttons, the
+Transformations docker, a group around it) carries the fill too, in the
+same step: its three nodes are moved by the same transformation and
+placed on the object's new box. When the angle and the offset place the
+moved fill exactly as well (a quarter or half turn, a mirror of a
+linear or radial fill) it stays placed by them, with the angle turned,
+so the angle field of Edit Fill still turns it; otherwise its nodes are
+stored as free nodes. A gradient transparency is carried the same way,
+and a shaped fill follows the outline anyway. Before this the gradient
+kept running the same way on the page whatever the object did (#775,
+`command::tests::gradients_turn_and_mirror_with_their_object`,
+`tests::a_gradient_is_drawn_turned_and_mirrored_with_its_object`).
+
 ## Formulas
 
 Bounding box `b` of the object in page space, centre `c`.
@@ -166,6 +183,10 @@ Bounding box `b` of the object in page space, centre `c`.
   a sawtooth's jumps as hard edges (two stops at one position).
 
 ## Checks
+
+- `command::tests::gradients_turn_and_mirror_with_their_object` (core)
+  and `tests::a_gradient_is_drawn_turned_and_mirrored_with_its_object`
+  (render): turns, mirrors and moves carry the fill (#775).
 
 - Given a 100x10 mm rectangle with stops black 0%, red 50%, white 100%
   and angle 0, when rendered at 1 px/mm, then pixel (50, 5) is red

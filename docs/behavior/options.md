@@ -100,10 +100,18 @@ What File > Export (Ctrl+E) starts with (`formats`): the format (SVG),
 the resolution of bitmap formats (300 dpi, 1 to 2400), the JPEG and
 WebP quality (90, 1 to 100), Transparent background (on), the PDF
 standard (PDF 1.4), the PDF/X output condition (FOGRA39, at most 64
-characters) and the PDF bleed (0 mm, 0 to 50). Remember the settings of
-the last export (off): exporting keeps the dialog's choices for the next
-time. Export for Web and Export for Office keep their own presets and
-never change these.
+characters) and the PDF bleed (0 mm, 0 to 50). Within a session File >
+Export always starts with the choices of the last export (format,
+resolution, quality, transparency, WebP lossless, all pages, PDF choices
+and preset; not Selected only, which starts off again, nor the file's
+title and tags), which then take the place of the ones set here until
+the program is closed. Remember the
+settings of the last export (on in new preferences; preferences saved
+before keep their own value): exporting also keeps the format,
+resolution, quality, transparency, WebP lossless and PDF choices here
+for the next session (#617). Export for Web and Export for Office keep
+their own presets and never change these
+(`pick_drag_tests::the_export_dialog_starts_with_the_last_exports_choices`).
 
 Imported objects go (File > Import, Ctrl+I): where the file has them
 (the default), or centred in the middle of the view; the move is part of
@@ -111,8 +119,10 @@ the import's undo step.
 
 Saving .cdr files: the Version Save As starts at and new drawings are
 saved in (`cdr_version`, 27 by default, 14 to 27; a value out of range
-from a file is brought into it); a drawing opened from a `.cdr` file
-keeps its own for Save when TraceDraw saves that version (`files.md`).
+from a file is brought into it); a drawing opened from (or saved to) a
+`.cdr` file keeps its own version for Save and Save As when TraceDraw
+saves that version, and a drawing started from a template takes this one
+(`files.md`, #613).
 Save new drawings as .cdr files (`save_new_as_cdr`, off): Save As
 starts at the CDR type for a drawing without a file (#613).
 

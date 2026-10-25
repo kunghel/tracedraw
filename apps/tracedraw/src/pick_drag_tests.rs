@@ -6063,6 +6063,126 @@ fn save_as_starts_at_the_cdr_type_and_version_the_options_set() {
     assert_eq!(save_as(&ctx, &mut app), (true, 15));
 }
 
+/// One frame; the texts drawn and where.
+fn texts_drawn(
+    ctx: &egui::Context,
+    app: &mut App,
+    events: Vec<Event>,
+) -> Vec<(String, egui::Rect)> {
+    frame_shapes(ctx, app, events)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Text(t) => Some((
+                t.galley.text().to_string(),
+                t.galley.rect.translate(t.pos.to_vec2()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The centre of the last text `label` drawn in a frame, if any.
+fn text_at(texts: &[(String, egui::Rect)], label: &str) -> Option<Pos2> {
+    texts
+        .iter()
+        .rev()
+        .find(|(t, _)| t == label)
+        .map(|(_, r)| r.center())
+}
+
+/// The steps of the report's recording (#613): Options > Global > File
+/// Formats, the version list set to v15, OK; the preferences written and
+/// read back as at the next start; Save As then offers v15 for a new
+/// drawing, and a drawing opened from a v20 file starts at v20.
+#[test]
+fn the_cdr_version_chosen_in_options_survives_a_restart_and_starts_save_as() {
+    use crate::ui::dialogs::Dialog;
+    use crate::ui::options::OptionsPage;
+    let (ctx, mut app, _) = setup();
+    app.dialog = Dialog::Options;
+    app.options_page = OptionsPage::FileFormats;
+    let newest = crate::ui::save_as::version_label(tracedraw_cdr::write::NEWEST_VERSION);
+    let wanted = crate::ui::save_as::version_label(15);
+    let mut texts = Vec::new();
+    for _ in 0..4 {
+        texts = texts_drawn(&ctx, &mut app, Vec::new());
+    }
+    let combo = text_at(&texts, &newest).expect("the version list shows v27");
+    click_at(&ctx, &mut app, combo, Modifiers::NONE);
+    // The list opens; scroll it down until v15 shows.
+    let mut item = None;
+    for _ in 0..20 {
+        texts = texts_drawn(&ctx, &mut app, Vec::new());
+        item = text_at(&texts, &wanted);
+        if item.is_some() {
+            break;
+        }
+        let over = text_at(&texts, &newest).unwrap_or(combo) + egui::vec2(0.0, 60.0);
+        texts_drawn(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(over),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, -3.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
+    }
+    let item = item.expect("v15 in the list");
+    click_at(&ctx, &mut app, item, Modifiers::NONE);
+    assert_eq!(app.settings.formats.cdr_version, 15);
+    texts = texts_drawn(&ctx, &mut app, Vec::new());
+    assert!(
+        texts
+            .iter()
+            .any(|(t, _)| t == &crate::i18n::tr("options.cdr_version_hint")),
+        "the hint under the list"
+    );
+    let ok = text_at(&texts, &crate::i18n::tr("dialog.ok")).expect("OK");
+    click_at(&ctx, &mut app, ok, Modifiers::NONE);
+    assert!(matches!(app.dialog, Dialog::None), "{:?}", app.dialog);
+    // The preferences as the next start reads them.
+    let saved = serde_json::to_string(&app.settings).expect("saved");
+    app.settings = serde_json::from_str::<crate::settings::Settings>(&saved)
+        .expect("read back")
+        .upgrade();
+    let save_as = |ctx: &egui::Context, app: &mut App| {
+        frame(
+            ctx,
+            app,
+            vec![key(egui::Key::S, Modifiers::COMMAND | Modifiers::SHIFT)],
+            Modifiers::COMMAND | Modifiers::SHIFT,
+        );
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+        let v = match &app.dialog {
+            Dialog::SaveAs(st) => st.version,
+            other => panic!("no Save Drawing dialog: {other:?}"),
+        };
+        app.dialog = Dialog::None;
+        v
+    };
+    assert_eq!(save_as(&ctx, &mut app), 15);
+    // A drawing opened from a version 20 file keeps its version.
+    let dir = std::env::temp_dir().join(format!("td_613_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("folder");
+    let v20 = dir.join("v20.cdr");
+    let doc = app.doc().clone();
+    std::fs::write(
+        &v20,
+        tracedraw_cdr::write::document_to_cdr_version(&doc, 20),
+    )
+    .expect("written");
+    app.open_path(v20);
+    assert_eq!(app.cdr_version, Some(20));
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(save_as(&ctx, &mut app), 20);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_options_dialogs_are_tabs_of_one_window() {
     use crate::ui::dialogs::{Dialog, OptionsPage};
@@ -6270,20 +6390,25 @@ fn painted(
     (rects, texts)
 }
 
-/// View > Page > Mask Outside Page covers what lies outside the page
-/// with the desktop colour, over the objects, and leaves the page clear;
-/// the objects stay editable, and the menu turns it off again (#615).
+/// View > Mask Outside Page (#615), as the reference program shows it:
+/// an opaque near-black over everything outside the page when the
+/// desktop is white (the desktop colour otherwise), the page clear, the
+/// selected object's outline drawn in blue over the mask so its part off
+/// the page can still be found, the objects editable; the item sits
+/// right after Pixels in the View menu and turns the mask off again.
 #[test]
 fn mask_outside_page_covers_the_desktop_and_keeps_objects_editable() {
     let (ctx, mut app, id) = setup();
     // The rectangle reaches past the page's left edge.
     app.select(vec![id]);
     app.nudge(Vec2::new(-30.0, 0.0));
-    let mask = app
-        .desktop_color()
-        .gamma_multiply(crate::canvas::OUTSIDE_PAGE_MASK);
+    let mask = crate::canvas::OUTSIDE_PAGE_DARK;
+    assert_eq!(crate::canvas::outside_page_mask_color(&app), mask);
+    assert_eq!(mask.a(), 255, "opaque: nothing outside shows through");
     let page = app.view.rect_to_screen(app.page_rect());
-    let left_of_page = Pos2::new(page.left() - 5.0, page.center().y);
+    let shape = app.view.rect_to_screen(bounds(&app, id));
+    let left_of_page = Pos2::new(page.left() - 5.0, shape.center().y);
+    assert!(shape.contains(left_of_page), "the object lies there");
     let masked_at = |rects: &[(egui::Rect, egui::Color32)], p: Pos2| {
         rects.iter().any(|(r, c)| *c == mask && r.contains(p))
     };
@@ -6299,22 +6424,53 @@ fn mask_outside_page_covers_the_desktop_and_keeps_objects_editable() {
     };
     let view = menu_item(&ctx, &mut app, "View");
     click_at(&ctx, &mut app, view, Modifiers::NONE);
-    let page_menu = menu_item(&ctx, &mut app, "Page");
-    frame(
-        &ctx,
-        &mut app,
-        vec![Event::PointerMoved(page_menu)],
-        Modifiers::NONE,
-    );
-    for _ in 0..10 {
-        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
-    }
+    // Right below Pixels, before Full-Screen Preview.
+    let pixels = menu_item(&ctx, &mut app, "Pixels");
     let item = menu_item(&ctx, &mut app, "Mask Outside Page");
+    let full = menu_item(&ctx, &mut app, "Full-screen Preview");
+    assert!(
+        item.y > pixels.y && item.y < full.y && item.y - pixels.y < 40.0,
+        "{pixels:?} {item:?} {full:?}"
+    );
     click_at(&ctx, &mut app, item, Modifiers::NONE);
     assert!(app.mask_outside_page);
     let (rects, _) = painted(&ctx, &mut app);
     assert!(masked_at(&rects, left_of_page), "the desktop is covered");
     assert!(!masked_at(&rects, page.center()), "the page is not");
+    // The selected object's outline over the mask: its top edge off the
+    // page in the selection blue.
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        ..Default::default()
+    };
+    let out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+    let mut outline = false;
+    let mut after_mask = false;
+    let mut seen_mask = false;
+    fn flat(s: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| flat(s, f)),
+            s => f(s),
+        }
+    }
+    for c in &out.shapes {
+        flat(&c.shape, &mut |s| match s {
+            egui::Shape::Rect(r) if r.fill == mask => seen_mask = true,
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == crate::theme::Tokens::SELECTION
+                    && points.iter().all(|p| (p.y - shape.top()).abs() < 1.5)
+                    && points.iter().any(|p| p.x < page.left() - 1.0) =>
+            {
+                outline = true;
+                after_mask |= seen_mask;
+            }
+            _ => {}
+        });
+    }
+    assert!(outline && after_mask, "the outline over the mask");
     // Still a live drawing: the rectangle moves with a drag.
     let x0 = bounds(&app, id).x0;
     let c = app.view.to_screen(bounds(&app, id).center());
@@ -6329,9 +6485,75 @@ fn mask_outside_page_covers_the_desktop_and_keeps_objects_editable() {
     assert!(bounds(&app, id).x0 > x0 + 1.0, "moved");
     // The preference keeps it.
     assert!(app.view_prefs().mask_outside_page);
+    // A desktop colour of the user's own is the mask's colour.
+    app.settings.desktop_custom = true;
+    app.settings.desktop_rgb = [90, 100, 110];
+    let own = egui::Color32::from_rgb(90, 100, 110);
+    assert_eq!(crate::canvas::outside_page_mask_color(&app), own);
+    let (rects, _) = painted(&ctx, &mut app);
+    assert!(rects
+        .iter()
+        .any(|(r, c)| *c == own && r.contains(left_of_page)));
     app.mask_outside_page = false;
     let (rects, _) = painted(&ctx, &mut app);
     assert!(!masked_at(&rects, left_of_page));
+}
+
+/// The Autofit Page popup stays open when its Live preview box or its
+/// margin field is clicked, so the preview can be switched and watched
+/// (#659): real clicks, the preview following the box; a click outside
+/// closes it.
+#[test]
+fn the_autofit_popup_stays_open_when_its_box_is_clicked() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    let popup = crate::ui::propbar::autofit_popup_id();
+    egui::Popup::open_id(&ctx, popup);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert!(egui::Popup::is_id_open(&ctx, popup));
+    assert!(app.settings.fit_page_preview && app.autofit_preview.is_some());
+    let text_at = |ctx: &egui::Context, app: &mut App, name: &str| {
+        let (_, texts) = painted(ctx, app);
+        texts
+            .into_iter()
+            .find(|(t, _)| t.trim() == name)
+            .map(|(_, p)| p)
+            .unwrap_or_else(|| panic!("{name} in the popup"))
+    };
+    let live = text_at(&ctx, &mut app, "Live preview");
+    let margin = text_at(&ctx, &mut app, "Margin:");
+    assert!((live.y - margin.y).abs() < 4.0, "on the margin's row");
+    click_at(&ctx, &mut app, live, Modifiers::NONE);
+    assert!(egui::Popup::is_id_open(&ctx, popup), "still open");
+    assert!(!app.settings.fit_page_preview, "the box turned off");
+    assert!(app.autofit_preview.is_none(), "no preview");
+    click_at(&ctx, &mut app, live, Modifiers::NONE);
+    assert!(egui::Popup::is_id_open(&ctx, popup), "still open");
+    assert!(app.settings.fit_page_preview && app.autofit_preview.is_some());
+    // The margin field, right of its label.
+    click_at(
+        &ctx,
+        &mut app,
+        margin + egui::vec2(60.0, 0.0),
+        Modifiers::NONE,
+    );
+    assert!(egui::Popup::is_id_open(&ctx, popup), "open after the field");
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Escape, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    // A click on the canvas closes it.
+    let page = app.view.rect_to_screen(app.page_rect());
+    click_at(&ctx, &mut app, page.center(), Modifiers::NONE);
+    assert!(
+        !egui::Popup::is_id_open(&ctx, popup),
+        "closed by a click outside"
+    );
+    assert!(app.autofit_preview.is_none());
 }
 
 /// The Shape tool's corner widgets (#635): with no node chosen, dragging
@@ -6603,7 +6825,7 @@ fn an_idle_window_asks_for_no_frame() {
             let mut out = ctx.run_ui(input, |ui| {
                 crate::ui::root(&mut app, ui);
                 app.autosave_settings(Some(ui.ctx()));
-                app.watch_linked_bitmaps(Some(ui.ctx()), web_time::Instant::now());
+                app.watch_linked_bitmaps(Some(ui.ctx()), std::time::Instant::now());
             });
             out.textures_delta.clear();
             let delay = out
@@ -6620,4 +6842,1102 @@ fn an_idle_window_asks_for_no_frame() {
             ctx.repaint_causes()
         );
     }
+}
+
+/// What a frame costs with the Text tool's font list on the property
+/// bar, closed, on a computer with many fonts (#616: 1332 families):
+/// `cargo test --release -p tracedraw -- --ignored frame_times_with_many_fonts --nocapture`.
+#[test]
+#[ignore]
+fn frame_times_with_many_fonts() {
+    for count in [1332, 10, 1332, 10] {
+        let (ctx, mut app, _) = setup();
+        app.font_families = (0..count).map(|i| format!("Font Family {i:04}")).collect();
+        app.set_tool(Tool::Text);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        let n = 200;
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            let p = Pos2::new(600.0 + (i % 50) as f32 * 4.0, 500.0);
+            frame(
+                &ctx,
+                &mut app,
+                vec![Event::PointerMoved(p)],
+                Modifiers::NONE,
+            );
+        }
+        eprintln!(
+            "{count} families, hover with the font list on the bar: {:?} per frame",
+            t.elapsed() / n
+        );
+    }
+}
+
+/// The Welcome Screen tab closes to its house while a drawing is open;
+/// the house shows the Welcome Screen again with its whole tab (#677).
+#[test]
+fn the_welcome_tab_closes_to_its_house() {
+    use crate::ui::tabs::{WELCOME_CLOSE, WELCOME_TAB};
+    let (ctx, mut app, _) = setup();
+    let rect_of =
+        |ctx: &egui::Context, id: &str| ctx.read_response(egui::Id::new(id)).map(|r| r.rect);
+    let press = |ctx: &egui::Context, app: &mut App, at: Pos2| {
+        frame(ctx, app, vec![Event::PointerMoved(at)], Modifiers::NONE);
+        click_at(ctx, app, at, Modifiers::NONE);
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    app.show_welcome = true;
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let wide = rect_of(&ctx, WELCOME_TAB).expect("welcome tab");
+    let close = rect_of(&ctx, WELCOME_CLOSE).expect("close button");
+    press(&ctx, &mut app, close.center());
+    assert!(!app.show_welcome, "the drawing shows");
+    assert!(app.settings.welcome_tab_closed);
+    let house = rect_of(&ctx, WELCOME_TAB).expect("house");
+    assert!(house.width() < wide.width() / 2.0, "{house:?} {wide:?}");
+    assert!(rect_of(&ctx, WELCOME_CLOSE).is_none());
+    press(&ctx, &mut app, house.center());
+    assert!(app.show_welcome);
+    assert!(!app.settings.welcome_tab_closed);
+    let back = rect_of(&ctx, WELCOME_TAB).expect("welcome tab");
+    assert!(
+        (back.width() - wide.width()).abs() < 0.5,
+        "{back:?} {wide:?}"
+    );
+    // With no drawing open there is nothing else to show: no close button.
+    let ctx = crate::theme::ui_context();
+    let mut app = App::headless();
+    app.close_active_document();
+    assert!(!app.has_document());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(rect_of(&ctx, WELCOME_TAB).is_some());
+    assert!(rect_of(&ctx, WELCOME_CLOSE).is_none());
+}
+
+#[test]
+fn the_export_dialog_starts_with_the_last_exports_choices() {
+    use crate::ui::dialogs::Dialog;
+    let (ctx, mut app, _) = setup();
+    let ctrl_e = |ctx: &egui::Context, app: &mut App| {
+        app.dialog = Dialog::None;
+        frame(
+            ctx,
+            app,
+            vec![key(egui::Key::E, Modifiers::COMMAND)],
+            Modifiers::COMMAND,
+        );
+        match &app.dialog {
+            Dialog::Export(st) => st.clone(),
+            other => panic!("no Export dialog: {other:?}"),
+        }
+    };
+    let first = ctrl_e(&ctx, &mut app);
+    assert!(first.remember);
+    assert!(app.settings.formats.remember_last, "on at first");
+    // A JPEG at quality 100 and 150 dpi exported...
+    let mut st = first.clone();
+    st.format = 3;
+    st.quality = 100;
+    st.dpi = 150.0;
+    st.title = "Poster".into();
+    st.selection_only = true;
+    st.all_pages = true;
+    app.settings.formats.remember_last = false;
+    app.keep_export_choices(&st);
+    // ...is what the next export starts with, the file's title and
+    // Selected only left out.
+    let next = ctrl_e(&ctx, &mut app);
+    assert_eq!((next.format, next.quality, next.dpi), (3, 100, 150.0));
+    assert!(next.title.is_empty());
+    assert!(!next.selection_only, "Selected only is for one export");
+    assert!(next.all_pages);
+    // "Do not show filter dialog" goes straight to the file with the same
+    // starting choices, so it never exports a selection that is gone.
+    assert_eq!(
+        app.last_export.as_ref().map(|e| e.selection_only),
+        Some(false)
+    );
+    // With Remember off the next session still starts as the options say.
+    assert_ne!(app.settings.formats.export_quality, 100);
+    app.settings.formats.remember_last = true;
+    app.keep_export_choices(&next);
+    assert_eq!(app.settings.formats.export_quality, 100);
+    assert_eq!(app.settings.formats.state().format, 3);
+    // Export for Web keeps nothing.
+    let mut web = crate::ui::dialogs::ExportState::web();
+    web.quality = 10;
+    app.keep_export_choices(&web);
+    assert_eq!(ctrl_e(&ctx, &mut app).quality, 100);
+    app.dialog = Dialog::None;
+}
+
+/// Drawing a rectangle or an ellipse with a wide black default outline:
+/// the outline is previewed at its width and the edge line (white with
+/// a black core) is drawn after it, on top, so the preview is not lost
+/// under the outline (#621).
+#[test]
+fn the_edge_of_the_shape_being_drawn_shows_over_a_wide_outline() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| {
+        p.stroke = Some(tracedraw_core::Stroke::new(
+            tracedraw_core::Color::BLACK,
+            3.0,
+        ));
+    });
+    let wide = 3.0 * app.view.zoom;
+    for (tool, y) in [(Tool::Rectangle, 80.0), (Tool::Ellipse, 140.0)] {
+        let a = app.view.to_screen(Point::new(80.0, y));
+        let b = app.view.to_screen(Point::new(140.0, y + 40.0));
+        app.set_tool(tool);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(a)],
+            Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(a, true, PointerButton::Primary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(a + (b - a) * 0.5)],
+            Modifiers::NONE,
+        );
+        let shapes = frame_shapes(&ctx, &mut app, vec![Event::PointerMoved(b)]);
+        let outline = shapes.iter().position(|s| {
+            matches!(s, egui::Shape::Path(p) if p.stroke.width >= wide - 0.01
+                && p.stroke.color == egui::epaint::ColorMode::Solid(egui::Color32::BLACK))
+        });
+        let edge = shapes.iter().rposition(|s| {
+            matches!(s, egui::Shape::LineSegment { stroke, .. }
+                if stroke.color == egui::Color32::WHITE
+                    && (stroke.width - crate::canvas::HALO_WIDTH).abs() < 1e-3)
+        });
+        assert!(
+            matches!((outline, edge), (Some(o), Some(e)) if e > o),
+            "{tool:?}: outline {outline:?}, edge {edge:?}"
+        );
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(b, false, PointerButton::Primary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+}
+
+#[test]
+fn the_export_dialog_lists_only_the_presets_of_its_format() {
+    use crate::ui::dialogs::{presets_for, Dialog, ExportState};
+    let (ctx, mut app, _) = setup();
+    let f = &mut app.settings.formats;
+    for (name, format) in [("Web PNG", 2), ("Print JPG", 3), ("Big PNG", 2)] {
+        let st = ExportState {
+            format,
+            ..ExportState::default()
+        };
+        assert!(f.save_preset(name, &st));
+    }
+    let names = |st: &ExportState, app: &App| {
+        presets_for(&app.settings.formats.export_presets, st)
+            .into_iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+    };
+    app.export();
+    // A PNG preset chosen, then the format changed to JPEG: the list holds
+    // only the JPEG preset and the PNG one is no longer chosen.
+    let Dialog::Export(st) = &mut app.dialog else {
+        panic!("no Export dialog");
+    };
+    st.format = 2;
+    st.preset = "Web PNG".into();
+    let png = st.clone();
+    assert_eq!(names(&png, &app), vec!["Web PNG", "Big PNG"]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let Dialog::Export(st) = &mut app.dialog else {
+        panic!("no Export dialog");
+    };
+    assert_eq!(st.preset, "Web PNG", "a preset of the format stays chosen");
+    st.format = 3;
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("no Export dialog");
+    };
+    assert!(st.preset.is_empty(), "{:?}", st.preset);
+    let jpg = st.clone();
+    assert_eq!(names(&jpg, &app), vec!["Print JPG"]);
+    // Saving a PNG preset under the hidden JPEG preset's name keeps the
+    // JPEG one: each format has its own names.
+    assert!(app.settings.formats.save_preset("Print JPG", &png));
+    assert_eq!(names(&jpg, &app), vec!["Print JPG"]);
+    assert_eq!(names(&png, &app), vec!["Web PNG", "Big PNG", "Print JPG"]);
+    assert_eq!(app.settings.formats.export_presets.len(), 4);
+    // An installed script filter chosen: no presets, and nothing typed
+    // for "+" is saved under the last built-in format, out of sight.
+    app.settings
+        .script_filters
+        .push(crate::scripting::ScriptFilter {
+            name: "Plotter".into(),
+            extensions: vec!["plt".into()],
+            import: false,
+            export: true,
+            source: String::new(),
+        });
+    let before = app.settings.formats.export_presets.clone();
+    let Dialog::Export(st) = &mut app.dialog else {
+        panic!("no Export dialog");
+    };
+    st.format = 2;
+    st.script = Some("Plotter".into());
+    st.preset_name = Some(("Web PNG".into(), false));
+    let scripted = st.clone();
+    assert!(names(&scripted, &app).is_empty());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("no Export dialog");
+    };
+    assert_eq!(st.script.as_deref(), Some("Plotter"));
+    assert!(st.preset_name.is_none());
+    assert_eq!(app.settings.formats.export_presets, before);
+}
+
+/// A double click on a dimension's label with the Pick tool edits it in
+/// place; what is typed stays, and the dimension stays a dimension with
+/// the typed text as its suffix (#644).
+#[test]
+fn a_double_click_edits_a_dimension_label_in_place() {
+    let (ctx, mut app, rect) = setup();
+    app.run(tracedraw_core::Command::DeleteShapes { shapes: vec![rect] });
+    app.create_dimension(
+        Point::new(20.0, 60.0),
+        Point::new(80.0, 60.0),
+        Point::new(50.0, 80.0),
+    );
+    let g = app.selection[0];
+    let label = match &app.doc().find_shape(g).expect("dimension").kind {
+        ShapeKind::Group { children } => children[2].clone(),
+        other => panic!("{other:?}"),
+    };
+    app.set_tool(Tool::Pick);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let at = app.view.to_screen(label.bounds().center());
+    double_click_at(&ctx, &mut app, at);
+    assert_eq!(app.tool, Tool::Text);
+    assert_eq!(app.text_edit.as_ref().map(|te| te.shape), Some(label.id));
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::End, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text(" max".into())],
+        Modifiers::NONE,
+    );
+    app.bake_dimensions();
+    let d = crate::dimensions::Dimension::of(app.doc().find_shape(g).expect("dimension"))
+        .expect("still a dimension");
+    assert_eq!(d.style.suffix, " max");
+    assert_eq!(d.text, None);
+    match &app.doc().find_shape(label.id).expect("label").kind {
+        ShapeKind::Text { spans, .. } => {
+            assert_eq!(tracedraw_core::document::spans_text(spans), "60.00 mm max")
+        }
+        other => panic!("{other:?}"),
+    }
+    // A Text tool click on the label edits it too, no new text made.
+    app.finish_text();
+    let count = shape_count(&app);
+    let at = app.view.to_screen(
+        app.doc()
+            .find_shape(label.id)
+            .expect("label")
+            .bounds()
+            .center(),
+    );
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.text_edit.as_ref().map(|te| te.shape), Some(label.id));
+    assert_eq!(shape_count(&app), count);
+}
+
+/// The dimension bar's Options menu stays open while a field in it is
+/// clicked, typed in and confirmed with Enter, and the value applies to
+/// the selected dimension (#644).
+#[test]
+fn the_dimension_options_stay_open_while_typed_in() {
+    let (ctx, mut app, rect) = setup();
+    app.run(tracedraw_core::Command::DeleteShapes { shapes: vec![rect] });
+    app.create_dimension(
+        Point::new(20.0, 60.0),
+        Point::new(80.0, 60.0),
+        Point::new(50.0, 80.0),
+    );
+    let g = app.selection[0];
+    app.set_tool(Tool::Pick);
+    let menu = egui::Id::new("dimension_options_menu");
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    egui::Popup::open_id(&ctx, menu);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let area = ctx
+        .memory(|m| m.area_rect(menu))
+        .expect("the menu is shown");
+    // The second row's field, Extension past the line, the widest row:
+    // its text, left of the spin arrows.
+    let at = Pos2::new(area.max.x - 50.0, area.min.y + 34.0);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(egui::Popup::is_id_open(&ctx, menu), "open after the click");
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            key(egui::Key::A, Modifiers::COMMAND),
+            Event::Text("3".into()),
+            key(egui::Key::Enter, Modifiers::NONE),
+        ],
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(egui::Popup::is_id_open(&ctx, menu), "open after typing");
+    let d = crate::dimensions::Dimension::of(app.doc().find_shape(g).expect("dimension"))
+        .expect("dimension");
+    assert!(
+        (d.style.extension_overshoot - 3.0).abs() < 1e-9,
+        "{}",
+        d.style.extension_overshoot
+    );
+}
+
+/// A curve whose second segment runs straight along the middle node's
+/// outgoing handle, so that handle lies on the segment, selected for the
+/// Shape tool.
+fn curve_with_handle_on_segment() -> (egui::Context, App, ShapeId) {
+    use tracedraw_core::geometry::BezPath;
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    let mut path = BezPath::new();
+    path.move_to((100.0, 150.0));
+    path.curve_to((110.0, 150.0), (130.0, 170.0), (140.0, 170.0));
+    path.curve_to((150.0, 170.0), (170.0, 170.0), (180.0, 170.0));
+    let id = app
+        .new_shape(ShapeKind::Path {
+            path,
+            closed: false,
+        })
+        .expect("curve");
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    (ctx, app, id)
+}
+
+/// Each node of curve `id` with its handles.
+fn node_spots(app: &App, id: ShapeId) -> Vec<(Point, Option<Point>, Option<Point>)> {
+    let ShapeKind::Path { path, .. } = &app.doc().find_shape(id).expect("curve").kind else {
+        panic!("a curve");
+    };
+    tracedraw_core::nodes::nodes(path)
+        .iter()
+        .map(|n| (n.pos, n.ctrl_in, n.ctrl_out))
+        .collect()
+}
+
+/// Shape tool: a click on a chosen node's handle keeps the node chosen
+/// (it chose the segment under the handle), and dragging the handle then
+/// changes the handle, the node staying where it is (#639).
+#[test]
+fn a_handle_clicked_then_dragged_leaves_its_node_in_place() {
+    let (ctx, mut app, id) = curve_with_handle_on_segment();
+    click_page(&ctx, &mut app, Point::new(140.0, 170.0));
+    assert_eq!(app.node_selection, vec![(id, 1)]);
+    let handle = Point::new(150.0, 170.0);
+    click_page(&ctx, &mut app, handle);
+    assert_eq!(app.node_selection, vec![(id, 1)], "the node stays chosen");
+    pull(&ctx, &mut app, handle, Point::new(154.0, 180.0));
+    let n = node_spots(&app, id);
+    assert!(
+        near(n[1].0, Point::new(140.0, 170.0)),
+        "the node stays: {n:?}"
+    );
+    assert!(near(n[2].0, Point::new(180.0, 170.0)), "{n:?}");
+    assert!(
+        near(n[1].2.expect("out"), Point::new(154.0, 180.0)),
+        "{n:?}"
+    );
+    // A smooth node's other handle follows, on the far side.
+    let back = n[1].1.expect("in") - n[1].0;
+    assert!(back.x < 0.0 && back.y < 0.0, "{n:?}");
+}
+
+/// Shape tool: a node whose handle is retracted onto it still takes
+/// clicks once chosen: Ctrl+click drops it from the chosen nodes and a
+/// plain click chooses it alone; the handle never swallows them (#639).
+#[test]
+fn a_click_on_a_chosen_node_with_a_retracted_handle_takes_the_node() {
+    use tracedraw_core::geometry::BezPath;
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    let mut path = BezPath::new();
+    path.move_to((100.0, 150.0));
+    path.curve_to((110.0, 150.0), (130.0, 170.0), (140.0, 170.0));
+    path.curve_to((140.0, 170.0), (170.0, 160.0), (180.0, 150.0));
+    let id = app
+        .new_shape(ShapeKind::Path {
+            path,
+            closed: false,
+        })
+        .expect("curve");
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    app.node_selection = vec![(id, 0), (id, 1), (id, 2)];
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let at = app.view.to_screen(Point::new(140.0, 170.0));
+    click_at(&ctx, &mut app, at, Modifiers::COMMAND | Modifiers::CTRL);
+    assert_eq!(app.node_selection, vec![(id, 0), (id, 2)], "dropped");
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.node_selection, vec![(id, 1)], "chosen alone");
+}
+
+/// Shape tool: the two handles a chosen segment shows can be dragged;
+/// they change the segment's curve and no node moves (#639).
+#[test]
+fn a_chosen_segments_handles_drag() {
+    let (ctx, mut app, id) = curve_with_handle_on_segment();
+    // The first segment, chosen by a click on it.
+    let on = tracedraw_core::geometry::CubicBez::new(
+        (100.0, 150.0),
+        (110.0, 150.0),
+        (130.0, 170.0),
+        (140.0, 170.0),
+    );
+    use tracedraw_core::geometry::ParamCurve;
+    click_page(&ctx, &mut app, on.eval(0.5));
+    assert_eq!(app.chosen_segment(), Some((id, 1)));
+    pull(
+        &ctx,
+        &mut app,
+        Point::new(110.0, 150.0),
+        Point::new(112.0, 140.0),
+    );
+    let n = node_spots(&app, id);
+    assert!(
+        near(n[0].2.expect("out"), Point::new(112.0, 140.0)),
+        "{n:?}"
+    );
+    pull(
+        &ctx,
+        &mut app,
+        Point::new(130.0, 170.0),
+        Point::new(128.0, 180.0),
+    );
+    let n = node_spots(&app, id);
+    assert!(near(n[1].1.expect("in"), Point::new(128.0, 180.0)), "{n:?}");
+    let at: Vec<Point> = n.iter().map(|s| s.0).collect();
+    assert!(near(at[0], Point::new(100.0, 150.0)), "{at:?}");
+    assert!(near(at[1], Point::new(140.0, 170.0)), "{at:?}");
+    assert!(near(at[2], Point::new(180.0, 170.0)), "{at:?}");
+}
+
+/// The property bar's wrap style list starts with None, as the reference
+/// program's does: it is marked while the selection does not wrap text,
+/// and a click on it stops the selection wrapping (#661).
+#[test]
+fn the_wrap_style_list_starts_with_none() {
+    let (ctx, mut app, id) = setup();
+    app.set_wrap_style(
+        tracedraw_core::WrapMode::Square,
+        tracedraw_core::WrapSide::Left,
+    );
+    assert!(app.wrap_state().0);
+    let texts = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        let mut all: Vec<(String, Pos2)> = Vec::new();
+        fn walk(s: &egui::Shape, all: &mut Vec<(String, Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => all.push((
+                    t.galley.text().to_string(),
+                    t.pos + t.galley.rect.center().to_vec2(),
+                )),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, all)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut all));
+        all
+    };
+    // The small arrows of the property bar: the one that opens the wrap
+    // styles.
+    let arrows: Vec<Pos2> = texts(&mut app)
+        .into_iter()
+        .filter(|(t, p)| t == "\u{25BE}" && p.y < 140.0)
+        .map(|(_, p)| p)
+        .collect();
+    let mut opened = None;
+    for a in arrows {
+        click_at(&ctx, &mut app, a, Modifiers::NONE);
+        let now = texts(&mut app);
+        if now.iter().any(|(t, _)| t == "Text flows left") {
+            opened = now.into_iter().find(|(t, _)| t == "None").map(|(_, p)| p);
+            break;
+        }
+        frame(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+    }
+    let none = opened.expect("the wrap style list with None");
+    let shown: Vec<String> = texts(&mut app).into_iter().map(|(t, _)| t).collect();
+    for heading in ["Wrap style", "Contour", "Square", "Above/below"] {
+        assert!(shown.iter().any(|t| t == heading), "{heading}: {shown:?}");
+    }
+    click_at(&ctx, &mut app, none, Modifiers::NONE);
+    assert!(!app.wrap_state().0, "wrapping is off");
+    assert!(!app.doc().find_shape(id).expect("rect").wrap_text);
+    // The offset is greyed out under None: typing there does not turn
+    // wrapping back on.
+    let label = texts(&mut app)
+        .into_iter()
+        .find(|(t, _)| t == "Text wrap offset:")
+        .map(|(_, p)| p)
+        .expect("the offset field, still in the open list");
+    let field = label + egui::vec2(90.0, 0.0);
+    click_at(&ctx, &mut app, field, Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            Event::Text("7".into()),
+            key(egui::Key::Enter, Modifiers::NONE),
+        ],
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(!app.wrap_state().0, "still off");
+}
+
+/// File > Print reads the printers off the interface's thread (#614): the
+/// dialog opens at once and says it is looking; then the list comes in
+/// name order with the default chosen where it stands, and the General
+/// tab shows the chosen printer's status, location and comment, next to a
+/// Properties button.
+#[test]
+fn the_print_dialog_reads_the_printers_off_the_interface_thread() {
+    use crate::printers::{Printer, PrinterState};
+    use crate::ui::dialogs::Dialog;
+    fn slow_list() -> Vec<Printer> {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        vec![
+            Printer {
+                name: "Oce TDS600".into(),
+                ..Default::default()
+            },
+            Printer {
+                name: "3-102. KONICA MINOLTA C220".into(),
+                default: true,
+                state: PrinterState::Ready,
+                location: "Room 3-102".into(),
+                comment: "Colour, A3".into(),
+            },
+            Printer {
+                name: "Generic PDF".into(),
+                ..Default::default()
+            },
+        ]
+    }
+    fn texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        fn walk(s: &egui::Shape, texts: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+        texts
+    }
+    let (ctx, mut app, _) = setup();
+    app.printers_seen.clear();
+    app.print();
+    app.fetch_printers(slow_list);
+    texts(&ctx, &mut app);
+    let state = |app: &App| match &app.dialog {
+        Dialog::Print(st) => st.clone(),
+        other => panic!("no Print dialog: {other:?}"),
+    };
+    assert!(state(&app).looking_for_printers, "the dialog does not wait");
+    let mut shown = Vec::new();
+    for _ in 0..300 {
+        shown = texts(&ctx, &mut app);
+        if !state(&app).looking_for_printers {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let st = state(&app);
+    assert!(!st.looking_for_printers);
+    let names: Vec<&str> = st.printers.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["3-102. KONICA MINOLTA C220", "Generic PDF", "Oce TDS600"]
+    );
+    assert_eq!(st.printer.as_deref(), Some("3-102. KONICA MINOLTA C220"));
+    shown.extend(texts(&ctx, &mut app));
+    for t in [
+        crate::i18n::tr("print.status"),
+        crate::i18n::tr("print.status_ready"),
+        crate::i18n::tr("print.location"),
+        "Room 3-102".to_string(),
+        crate::i18n::tr("print.comment"),
+        "Colour, A3".to_string(),
+    ] {
+        assert!(shown.contains(&t), "{t} not shown: {shown:?}");
+    }
+    // The next Print starts from the list read last.
+    app.dialog = Dialog::None;
+    app.print();
+    assert_eq!(state(&app).printers.len(), 3);
+    assert_eq!(
+        state(&app).printer.as_deref(),
+        Some("3-102. KONICA MINOLTA C220")
+    );
+}
+
+/// A destination chosen in the Print dialog while the printer list is
+/// still being read stays when the list comes (#614): the PDF viewer
+/// picked before the list stays the PDF viewer, and a printer picked from
+/// the list read last stays chosen though the system's default differs.
+#[test]
+fn a_destination_picked_while_the_printers_are_read_stays() {
+    use crate::printers::Printer;
+    use crate::ui::dialogs::Dialog;
+    fn slow_list() -> Vec<Printer> {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        ["Office", "Plotter", "Studio"]
+            .iter()
+            .map(|n| Printer {
+                name: n.to_string(),
+                default: *n == "Studio",
+                ..Default::default()
+            })
+            .collect()
+    }
+    /// The centre of the last text `label` drawn in one frame.
+    fn last_text(ctx: &egui::Context, app: &mut App, label: &str) -> Option<Pos2> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        fn walk(s: &egui::Shape, label: &str, at: &mut Option<Pos2>) {
+            match s {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    *at = Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, label, at)),
+                _ => {}
+            }
+        }
+        let mut at = None;
+        out.shapes
+            .iter()
+            .for_each(|c| walk(&c.shape, label, &mut at));
+        at
+    }
+    let state = |app: &App| match &app.dialog {
+        Dialog::Print(st) => st.clone(),
+        other => panic!("no Print dialog: {other:?}"),
+    };
+    let wait = |ctx: &egui::Context, app: &mut App| {
+        for _ in 0..400 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+            if !state(app).looking_for_printers {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the list never came");
+    };
+    // The first time: nothing listed yet, the viewer picked.
+    let (ctx, mut app, _) = setup();
+    app.printers_seen.clear();
+    app.print();
+    app.fetch_printers(slow_list);
+    // The dialog takes its place over the first frames.
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let viewer = crate::i18n::tr("print.dest_viewer");
+    let combo = last_text(&ctx, &mut app, &viewer).expect("the destination list");
+    click_at(&ctx, &mut app, combo, Modifiers::NONE);
+    let item = last_text(&ctx, &mut app, &viewer).expect("the viewer in the list");
+    assert!(
+        state(&app).looking_for_printers,
+        "picked before the list came"
+    );
+    click_at(&ctx, &mut app, item, Modifiers::NONE);
+    wait(&ctx, &mut app);
+    let st = state(&app);
+    assert_eq!((st.printer.as_deref(), st.destination), (None, 0));
+    assert_eq!(st.printers.len(), 3);
+    // Again, a printer of the list read last picked before the new one
+    // comes: it stays, not the system's default.
+    app.dialog = Dialog::None;
+    app.print();
+    app.fetch_printers(slow_list);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert_eq!(state(&app).printer.as_deref(), Some("Studio"));
+    let combo = last_text(&ctx, &mut app, "Studio").expect("the destination list");
+    click_at(&ctx, &mut app, combo, Modifiers::NONE);
+    let item = last_text(&ctx, &mut app, "Office").expect("Office in the list");
+    click_at(&ctx, &mut app, item, Modifiers::NONE);
+    wait(&ctx, &mut app);
+    assert_eq!(state(&app).printer.as_deref(), Some("Office"));
+}
+
+/// 204 wavy rings of `nodes` nodes each, combined into one curve and
+/// selected, as the ornamental frame of #764.
+fn combined_ornament(nodes: usize) -> (egui::Context, App, ShapeId) {
+    let (ctx, mut app, id) = setup();
+    app.select(vec![id]);
+    app.delete_selection();
+    let mut ids = Vec::new();
+    for i in 0..204 {
+        let a = i as f64 / 204.0 * std::f64::consts::TAU;
+        let c = Point::new(100.0 + 60.0 * a.cos(), 150.0 + 60.0 * a.sin());
+        let mut path = tracedraw_core::geometry::BezPath::new();
+        for k in 0..nodes {
+            let b = k as f64 / nodes as f64 * std::f64::consts::TAU;
+            let r = 12.0 + 2.0 * (b * 12.0).sin();
+            let q = Point::new(c.x + r * b.cos(), c.y + r * b.sin());
+            if k == 0 {
+                path.move_to(q);
+            } else {
+                path.line_to(q);
+            }
+        }
+        path.close_path();
+        ids.push(
+            app.new_shape(ShapeKind::Path { path, closed: true })
+                .expect("ring"),
+        );
+    }
+    app.select(ids);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        40, 40, 40,
+    )));
+    app.combine();
+    assert_eq!(app.selection.len(), 1);
+    let c = app.selection[0];
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    (ctx, app, c)
+}
+
+/// A combined curve of thousands of nodes moves with a drag, and the
+/// node under the pointer is still marked for snapping: the snap points
+/// near the pointer no longer compare every node with every other, which
+/// took seconds a frame and looked as if the curve would not move (#764).
+#[test]
+fn a_combined_curve_of_many_nodes_moves_and_snaps_to_its_nodes() {
+    let (ctx, mut app, c) = combined_ornament(60);
+    let before = app.doc().find_shape(c).map(|s| s.bounds()).expect("curve");
+    // The first ring's rightmost node, at (100 + 60 + 12, 150).
+    let node = Point::new(172.0, 150.0);
+    let hover = app.selection_hover_target(node).expect("a snap point");
+    assert_eq!(hover.mode, crate::snap_points::SnapMode::Node);
+    assert!((hover.point - node).hypot() < 1e-9, "{:?}", hover.point);
+    let from = app.view.to_screen(node);
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(40.0, 0.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let after = app.doc().find_shape(c).map(|s| s.bounds()).expect("curve");
+    let moved = after.x0 - before.x0;
+    let want = 40.0 / app.view.zoom as f64;
+    assert!((moved - want).abs() < want * 0.2, "{moved} {want}");
+}
+
+/// Frame times over a combined curve of about 40,000 nodes (#764):
+/// hovering it and dragging it.
+/// `cargo test --release -- --ignored frame_times_over_a_combined_curve --nocapture`.
+#[test]
+#[ignore]
+fn frame_times_over_a_combined_curve() {
+    let (ctx, mut app, _) = combined_ornament(200);
+    let p0 = app.view.to_screen(Point::new(160.0, 150.0));
+    let n = 20;
+    let t = std::time::Instant::now();
+    for k in 0..n {
+        let p = p0 + egui::vec2((k % 5) as f32, 0.0);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(p)],
+            Modifiers::NONE,
+        );
+    }
+    println!(
+        "combined curve, hover: {:?} per frame",
+        t.elapsed() / n as u32
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(p0, true, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let t = std::time::Instant::now();
+    for k in 1..=n {
+        let p = p0 + egui::vec2(2.0 * k as f32, 0.0);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(p)],
+            Modifiers::NONE,
+        );
+    }
+    println!(
+        "combined curve, drag: {:?} per frame",
+        t.elapsed() / n as u32
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(p0, false, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+}
+
+/// With hardware acceleration off, the status bar says that this is why
+/// a software adapter draws the window, and a click on the note opens
+/// Options at its General page; with it on, the note names the missing
+/// card driver instead and opens nothing.
+#[test]
+fn the_software_renderer_note_says_hardware_acceleration_is_off() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.settings.hardware_acceleration = false;
+    crate::ui::note_software_renderer(&mut app, "Microsoft Basic Render Driver");
+    let off = crate::i18n::trf(
+        "status.software_renderer_off",
+        &[("name", "Microsoft Basic Render Driver")],
+    );
+    assert_eq!(app.status, off);
+    let (_, texts) = painted(&ctx, &mut app);
+    let at = texts
+        .iter()
+        .find(|(t, _)| t.starts_with(&off))
+        .map(|(_, p)| *p)
+        .expect("the note on the status bar");
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
+    assert!(matches!(
+        app.options_page,
+        crate::ui::dialogs::OptionsPage::General
+    ));
+    assert!(app.status.is_empty());
+    // Hardware acceleration on: the driver note, not a link.
+    app.dialog = crate::ui::dialogs::Dialog::None;
+    app.settings.hardware_acceleration = true;
+    app.status_opens_options = None;
+    crate::ui::note_software_renderer(&mut app, "Microsoft Basic Render Driver");
+    assert!(app.status_opens_options.is_none());
+    assert_ne!(app.status, off);
+}
+
+/// The arrow keys nudge the selected guidelines when no object is
+/// selected: plain by the nudge distance, Shift by the super nudge, Ctrl
+/// by the micro nudge, one undo step per press; locked ones stay (#781).
+#[test]
+fn arrow_keys_nudge_the_selected_guidelines() {
+    use tracedraw_core::document::{Guide, GuideLine};
+    let (ctx, mut app, _id) = setup();
+    app.add_guide(Guide::horizontal(150.0));
+    app.add_guide(Guide::vertical(120.0));
+    app.add_guide(Guide::vertical(140.0));
+    app.set_guides_locked(&[2], true);
+    // A click on the horizontal guideline, away from the rectangle.
+    let on_h = app.view.to_screen(Point::new(100.0, 150.0));
+    click_at(&ctx, &mut app, on_h, Modifiers::NONE);
+    assert!(app.selection.is_empty());
+    assert_eq!(app.selected_guides, vec![0]);
+    let y = |app: &App| match app.page_guides()[0].line {
+        GuideLine::Horizontal { y } => y,
+        other => panic!("{other:?}"),
+    };
+    let press = |app: &mut App, k: egui::Key, mods: Modifiers| {
+        frame(&ctx, app, vec![key(k, mods)], mods);
+        frame(&ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    let (step, sup, micro) = (
+        app.nudge_mm,
+        app.settings.super_nudge_mm,
+        app.settings.micro_nudge_mm,
+    );
+    press(&mut app, egui::Key::ArrowUp, Modifiers::NONE);
+    assert!(close(y(&app), 150.0 + step), "{}", y(&app));
+    press(&mut app, egui::Key::ArrowDown, Modifiers::SHIFT);
+    assert!(close(y(&app), 150.0 + step - sup), "{}", y(&app));
+    press(&mut app, egui::Key::ArrowUp, Modifiers::COMMAND);
+    assert!(close(y(&app), 150.0 + step - sup + micro), "{}", y(&app));
+    // A sideways nudge leaves a horizontal guideline where it is.
+    press(&mut app, egui::Key::ArrowRight, Modifiers::NONE);
+    assert!(close(y(&app), 150.0 + step - sup + micro), "{}", y(&app));
+    // All of them: the unlocked vertical one moves, the locked one stays.
+    app.select_all_guides();
+    press(&mut app, egui::Key::ArrowLeft, Modifiers::NONE);
+    let g = app.page_guides();
+    assert_eq!(g[1].line, GuideLine::Vertical { x: 120.0 - step });
+    assert_eq!(g[2].line, GuideLine::Vertical { x: 140.0 });
+    // Each press is one undo step; the sideways one made none.
+    let steps = app.engine.history_labels().0;
+    assert_eq!(steps.last(), Some(&"Nudge Guidelines"));
+    let n = steps.iter().filter(|l| **l == "Nudge Guidelines").count();
+    assert_eq!(n, 4, "{steps:?}");
+    app.undo();
+    assert_eq!(app.page_guides()[1].line, GuideLine::Vertical { x: 120.0 });
+    assert!(close(y(&app), 150.0 + step - sup + micro));
+    app.undo();
+    assert!(close(y(&app), 150.0 + step - sup), "{}", y(&app));
+}
+
+/// A drawing of 30 pages (a merged document): the page tabs that fit are
+/// shown, a click on one goes to its page, Page Down and Page Up go to the
+/// next and previous page, and the tabs slide so the current page's tab
+/// shows; the mouse wheel over them slides them without changing the page.
+/// Before, the tabs past the row's end were never shown, so their pages
+/// could only be reached with Go To Page (#794).
+#[test]
+fn page_tabs_slide_to_the_current_page_of_a_long_drawing() {
+    let (ctx, mut app, _) = setup();
+    let rows: Vec<Vec<String>> = (1..=30).map(|i| vec![format!("N{i}")]).collect();
+    app.merge_state = Some(crate::ui::dialogs::PrintMergeState {
+        headers: vec!["Name".into()],
+        rows,
+        kinds: vec![crate::print_merge::FieldKind::Text],
+        ..Default::default()
+    });
+    app.create_merged_document(false);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert_eq!(app.doc().pages.len(), 30);
+    let names: Vec<String> = app.doc().pages.iter().map(|p| p.name.clone()).collect();
+    let tabs = |ctx: &egui::Context, app: &mut App| -> Vec<(String, Pos2)> {
+        let (_, texts) = painted(ctx, app);
+        texts
+            .into_iter()
+            .filter(|(t, _)| names.contains(t))
+            .collect()
+    };
+    let shown = tabs(&ctx, &mut app);
+    assert!(shown.len() < 30, "the row holds only some: {}", shown.len());
+    // A click on the third tab.
+    let third = shown
+        .iter()
+        .find(|(t, _)| *t == names[2])
+        .map(|(_, p)| *p)
+        .expect("third tab");
+    click_at(&ctx, &mut app, third, Modifiers::NONE);
+    assert_eq!(app.page_index(), 2);
+    // Page Down twenty times: page 23, and its tab shows.
+    for _ in 0..20 {
+        frame(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::PageDown, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+    }
+    assert_eq!(app.page_index(), 22);
+    let shown = tabs(&ctx, &mut app);
+    let at = shown
+        .iter()
+        .find(|(t, _)| *t == names[22])
+        .map(|(_, p)| *p)
+        .expect("the current page's tab shows");
+    // A click on a tab after it, now in view.
+    if let Some(p) = shown.iter().find(|(t, _)| *t == names[23]).map(|(_, p)| *p) {
+        click_at(&ctx, &mut app, p, Modifiers::NONE);
+        assert_eq!(app.page_index(), 23);
+    }
+    // Page Up: back one, still in view.
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::PageUp, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let now = app.page_index();
+    assert!(tabs(&ctx, &mut app).iter().any(|(t, _)| *t == names[now]));
+    // The wheel over the tabs slides them back to the first, the page
+    // staying.
+    for _ in 0..40 {
+        frame(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(at),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, 1.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+            Modifiers::NONE,
+        );
+    }
+    assert_eq!(app.page_index(), now);
+    assert_eq!(app.page_tabs_first, 0);
+    assert!(tabs(&ctx, &mut app).iter().any(|(t, _)| *t == names[0]));
 }

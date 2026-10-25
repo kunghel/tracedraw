@@ -586,7 +586,7 @@ impl crate::app::App {
                     rect,
                     width_px: w,
                     height_px: h,
-                    png,
+                    png: png.into(),
                     fx: None,
                 },
             );

@@ -28,18 +28,14 @@ impl ClipboardContent {
         self.text.is_none() && self.image.is_none() && self.files.is_empty()
     }
 
-    /// A summary of the content, to tell whether the clipboard changed
-    /// since TraceDraw copied.
-    pub fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.text.hash(&mut h);
-        self.image
-            .as_ref()
-            .map(|i| (i.width(), i.height(), i.as_raw()))
-            .hash(&mut h);
-        self.files.hash(&mut h);
-        h.finish()
+    /// What a [`Mark`] keeps of this content.
+    pub fn mark(&self, seq: Option<u32>) -> Mark {
+        Mark {
+            seq,
+            text: hash_of(&self.text),
+            files: hash_of(&self.files),
+            image: self.image.as_ref().map(image_sample),
+        }
     }
 
     pub fn is_svg(&self) -> bool {
@@ -50,6 +46,106 @@ impl ClipboardContent {
     }
 }
 
+/// What the system clipboard held when TraceDraw copied, so that a paste
+/// can tell whether something was copied elsewhere since (#183). Where
+/// the system counts clipboard changes (Windows) the count decides and
+/// nothing is read; elsewhere the text and the files decide, and a
+/// picture is decoded and sampled only when there is neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mark {
+    /// The system's change count (Windows), `None` where there is none.
+    pub seq: Option<u32>,
+    text: u64,
+    files: u64,
+    image: Option<u64>,
+}
+
+impl Mark {
+    /// Whether the clipboard, now at change count `seq` with `text` and
+    /// `files`, still holds what was marked; `image` decodes and samples
+    /// its picture, called only when the rest cannot tell.
+    pub fn still_holds(
+        &self,
+        seq: Option<u32>,
+        text: &Option<String>,
+        files: &[std::path::PathBuf],
+        image: impl FnOnce() -> Option<u64>,
+    ) -> bool {
+        if let (Some(then), Some(now)) = (self.seq, seq) {
+            return then == now;
+        }
+        if hash_of(text) != self.text || hash_of(&files) != self.files {
+            return false;
+        }
+        // Equal text or files: the same copy (a picture copied elsewhere
+        // replaces them).
+        if text.is_some() || !files.is_empty() {
+            return true;
+        }
+        image() == self.image
+    }
+}
+
+fn hash_of<T: std::hash::Hash + ?Sized>(v: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish()
+}
+
+/// A picture's size and about 4096 of its bytes spread over it: enough to
+/// tell two copied pictures apart without hashing 48 MB.
+fn image_sample(img: &image::RgbaImage) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let raw = img.as_raw();
+    let step = (raw.len() / 4096).max(1);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (img.width(), img.height()).hash(&mut h);
+    for b in raw.iter().step_by(step) {
+        b.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The system's clipboard change count: Windows counts every change, so
+/// a paste can tell nothing changed without reading the clipboard.
+#[cfg(windows)]
+pub fn change_count() -> Option<u32> {
+    #[link(name = "user32", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn GetClipboardSequenceNumber() -> u32;
+    }
+    // SAFETY: no arguments, it only returns a number (0 without access to
+    // the window station).
+    let n = unsafe { GetClipboardSequenceNumber() };
+    (n != 0).then_some(n)
+}
+
+#[cfg(not(windows))]
+pub fn change_count() -> Option<u32> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_system_text_and_files() -> ClipboardContent {
+    read_text_and_files()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_system_text_and_files() -> ClipboardContent {
+    ClipboardContent::default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_system_image() -> Option<image::RgbaImage> {
+    read_image()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_system_image() -> Option<image::RgbaImage> {
+    None
+}
+
 /// The system clipboard as seen by the browser build: empty, because
 /// browsers only hand clipboard contents to paste events.
 #[cfg(target_arch = "wasm32")]
@@ -57,17 +153,23 @@ pub fn read_system() -> ClipboardContent {
     ClipboardContent::default()
 }
 
-/// Read text and image from the system clipboard; failures yield `None`
-/// fields (headless sessions have no clipboard).
+/// Read text, files and image from the system clipboard; failures yield
+/// `None` fields (headless sessions have no clipboard).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_system() -> ClipboardContent {
+    let mut content = read_text_and_files();
+    content.image = read_image();
+    content
+}
+
+/// The clipboard's text and files, not its picture (decoding one costs
+/// far more).
+#[cfg(not(target_arch = "wasm32"))]
+fn read_text_and_files() -> ClipboardContent {
     let Ok(mut cb) = arboard::Clipboard::new() else {
         return ClipboardContent::default();
     };
     let text = cb.get_text().ok().filter(|t| !t.is_empty());
-    let image = cb.get_image().ok().and_then(|img| {
-        image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
-    });
     let files = cb
         .get()
         .file_list()
@@ -75,7 +177,19 @@ pub fn read_system() -> ClipboardContent {
         .into_iter()
         .map(without_line_end)
         .collect();
-    ClipboardContent { text, image, files }
+    ClipboardContent {
+        text,
+        image: None,
+        files,
+    }
+}
+
+/// The clipboard's picture, decoded.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_image() -> Option<image::RgbaImage> {
+    let mut cb = arboard::Clipboard::new().ok()?;
+    let img = cb.get_image().ok()?;
+    image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
 }
 
 /// A path from a copied file list without the carriage return its line
@@ -89,18 +203,17 @@ fn without_line_end(path: std::path::PathBuf) -> std::path::PathBuf {
     }
 }
 
-/// Put text on the system clipboard (best effort).
+/// Put text on the system clipboard (best effort); whether it went there.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn write_text(text: &str) {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(text.to_string());
-    }
+pub fn write_text(text: &str) -> bool {
+    arboard::Clipboard::new().is_ok_and(|mut cb| cb.set_text(text.to_string()).is_ok())
 }
 
 /// Put text on the system clipboard through egui (browser build).
 #[cfg(target_arch = "wasm32")]
-pub fn write_text(text: &str) {
+pub fn write_text(text: &str) -> bool {
     crate::web::copy_text(text);
+    true
 }
 
 impl App {
@@ -131,25 +244,39 @@ impl App {
             return;
         };
         self.copy();
-        write_text(&svg);
-        self.mark_system_clipboard(Some(&svg));
+        let written = write_text(&svg);
+        self.mark_system_clipboard(written.then_some(svg.as_str()));
     }
 
     /// Remember what the system clipboard holds right after a copy here
     /// (`written`: the text the copy put there), so that a paste can tell
-    /// whether something was copied elsewhere since.
+    /// whether something was copied elsewhere since. What was written is
+    /// what the clipboard holds (writing text replaces everything there),
+    /// so it is not read back; a copy that wrote nothing (nodes, guides)
+    /// reads it, its picture only where the system keeps no change count
+    /// and there is no text or file (#183).
     pub fn mark_system_clipboard(&mut self, written: Option<&str>) {
-        // A browser hands the clipboard only to paste events: what was
-        // written is what a paste event brings back.
-        let now = match written {
-            Some(text) if crate::files::WEB => ClipboardContent {
+        let seq = change_count();
+        let mark = match written {
+            Some(text) => ClipboardContent {
                 text: Some(text.to_string()),
                 ..Default::default()
+            }
+            .mark(seq),
+            None if seq.is_some() => Mark {
+                seq,
+                ..Default::default()
             },
-            _ => read_system(),
+            None => {
+                let mut now = read_system_text_and_files();
+                if now.text.is_none() && now.files.is_empty() {
+                    now.image = read_system_image();
+                }
+                now.mark(seq)
+            }
         };
         if let Some(cb) = self.clipboard.as_mut() {
-            cb.system = now.fingerprint();
+            cb.system = mark;
         }
     }
 
@@ -222,23 +349,82 @@ impl App {
     /// Ctrl+V, with the text of the paste event when there was one (a
     /// browser offers the clipboard's text only that way).
     pub fn paste_with_event_text(&mut self, text: Option<String>) {
-        let mut content = read_system();
         if crate::files::WEB {
-            content.text = text.filter(|t| !t.is_empty());
+            let content = ClipboardContent {
+                text: text.filter(|t| !t.is_empty()),
+                ..Default::default()
+            };
+            self.paste_with(None, || content, || None);
+        } else {
+            self.paste_with(
+                change_count(),
+                read_system_text_and_files,
+                read_system_image,
+            );
         }
-        self.paste_from(content);
     }
 
-    /// Paste the objects copied here while the system clipboard still
-    /// holds what that copy left there; otherwise what the system offers:
-    /// files are imported, SVG becomes objects, an image a bitmap, text
-    /// artistic text.
-    pub fn paste_from(&mut self, content: ClipboardContent) {
+    /// Paste with the clipboard at change count `seq`: `read` gives its
+    /// text and files, `read_image` decodes its picture, called only when
+    /// the change check needs it or it is what gets pasted (no files, no
+    /// SVG), and at most once (#183).
+    fn paste_with(
+        &mut self,
+        seq: Option<u32>,
+        read: impl FnOnce() -> ClipboardContent,
+        read_image: impl FnOnce() -> Option<image::RgbaImage>,
+    ) {
+        // Nothing copied anywhere since the copy here: nothing to read.
+        if self
+            .clipboard
+            .as_ref()
+            .is_some_and(|cb| seq.is_some() && cb.system.seq == seq)
+        {
+            self.paste();
+            return;
+        }
+        let mut content = read();
+        let mut read_image = Some(read_image);
+        let mut take_image = || read_image.take().and_then(|f| f());
         if let Some(cb) = &self.clipboard {
-            if content.is_empty() || cb.system == content.fingerprint() {
+            let held = cb
+                .system
+                .still_holds(seq, &content.text, &content.files, || {
+                    content.image = take_image();
+                    content.image.as_ref().map(image_sample)
+                });
+            if held {
                 self.paste();
                 return;
             }
+        }
+        if content.image.is_none() && content.files.is_empty() && !content.is_svg() {
+            content.image = take_image();
+        }
+        self.paste_from_unmarked(content);
+    }
+
+    /// [`App::paste_with`] on `content` (the tests' clipboard).
+    #[cfg(test)]
+    pub fn paste_from(&mut self, content: ClipboardContent) {
+        let ClipboardContent { text, image, files } = content;
+        self.paste_with(
+            None,
+            || ClipboardContent {
+                text,
+                image: None,
+                files,
+            },
+            || image,
+        );
+    }
+
+    /// What the system clipboard offers, or the copy here when it offers
+    /// nothing.
+    fn paste_from_unmarked(&mut self, content: ClipboardContent) {
+        if content.is_empty() && self.clipboard.is_some() {
+            self.paste();
+            return;
         }
         if !content.files.is_empty() {
             for path in &content.files {
@@ -281,7 +467,7 @@ impl App {
     }
 
     /// The selected bitmap's PNG, its effects included.
-    pub fn selected_bitmap_png(&self) -> Option<Vec<u8>> {
+    pub fn selected_bitmap_png(&self) -> Option<tracedraw_core::SharedBytes> {
         let id = self.selected_bitmap()?;
         match &self.doc().find_shape(id)?.kind {
             ShapeKind::Bitmap { png, .. } => Some(png.clone()),
@@ -393,7 +579,7 @@ impl App {
                 rect,
                 width_px: w,
                 height_px: h,
-                png,
+                png: png.into(),
                 fx: None,
             },
         });
@@ -491,7 +677,7 @@ mod tests {
         app.select(vec![id]);
         app.copy();
         if let Some(cb) = app.clipboard.as_mut() {
-            cb.system = system.fingerprint();
+            cb.system = system.mark(None);
         }
         app
     }
@@ -583,16 +769,159 @@ mod tests {
     }
 
     #[test]
-    fn the_fingerprint_follows_the_content() {
+    fn the_mark_follows_the_content() {
         let empty = ClipboardContent::default();
         assert!(empty.is_empty());
-        assert_eq!(
-            empty.fingerprint(),
-            ClipboardContent::default().fingerprint()
-        );
-        assert_ne!(empty.fingerprint(), svg_text().fingerprint());
-        assert_ne!(svg_text().fingerprint(), picture().fingerprint());
+        assert_eq!(empty.mark(None), ClipboardContent::default().mark(None));
+        assert_ne!(empty.mark(None), svg_text().mark(None));
+        assert_ne!(svg_text().mark(None), picture().mark(None));
         assert!(!picture().is_empty());
+        // Pictures of one size told apart by their pixels.
+        let mut other = picture();
+        if let Some(img) = other.image.as_mut() {
+            img.put_pixel(2, 1, image::Rgba([9, 9, 9, 255]));
+        }
+        assert_ne!(picture().mark(None), other.mark(None));
+    }
+
+    /// The change check reads as little as it can (#183): the system's
+    /// change count decides alone; else equal text or files say the same
+    /// copy without looking at the picture, and the picture is sampled
+    /// only on a clipboard with neither.
+    #[test]
+    fn the_change_check_decodes_a_picture_only_when_it_must() {
+        let no_image = || -> Option<u64> { panic!("the picture was decoded") };
+        let counted = svg_text().mark(Some(7));
+        assert!(counted.still_holds(Some(7), &None, &[], no_image));
+        assert!(!counted.still_holds(Some(8), &svg_text().text, &[], no_image));
+        let text = svg_text().mark(None);
+        assert!(text.still_holds(None, &svg_text().text, &[], no_image));
+        assert!(!text.still_holds(None, &Some("other".into()), &[], no_image));
+        assert!(!text.still_holds(None, &None, &[], no_image));
+        let pic = picture().mark(None);
+        let sample = picture().image.as_ref().map(image_sample);
+        let mut decoded = 0;
+        assert!(pic.still_holds(None, &None, &[], || {
+            decoded += 1;
+            sample
+        }));
+        assert!(!pic.still_holds(None, &None, &[], || {
+            decoded += 1;
+            None
+        }));
+        assert_eq!(decoded, 2);
+    }
+
+    /// Pasting the copy here never decodes the picture of a clipboard that
+    /// still holds the copy's text; a picture copied elsewhere is decoded
+    /// once and pasted, files are imported without decoding one (#183).
+    #[test]
+    fn a_paste_decodes_the_picture_only_when_it_needs_it() {
+        let mut app = copied(&svg_text());
+        let no_image = || -> Option<image::RgbaImage> { panic!("the picture was decoded") };
+        app.paste_with(None, svg_text, no_image);
+        assert_eq!(shape_count(&app), 2);
+        // The system's change count unchanged: nothing is read at all.
+        if let Some(cb) = app.clipboard.as_mut() {
+            cb.system.seq = Some(3);
+        }
+        app.paste_with(Some(3), || panic!("the clipboard was read"), no_image);
+        assert_eq!(shape_count(&app), 3);
+        // A picture copied elsewhere since: decoded once, pasted.
+        let mut decoded = 0;
+        app.paste_with(Some(4), ClipboardContent::default, || {
+            decoded += 1;
+            picture().image
+        });
+        assert_eq!(decoded, 1);
+        assert!(is_bitmap(&app));
+        // Text written by the copy here is what a paste reads back.
+        let mut app = copied(&ClipboardContent::default());
+        app.mark_system_clipboard(svg_text().text.as_deref());
+        app.paste_with(None, svg_text, no_image);
+        assert!(matches!(
+            app.selected_shapes().first().map(|s| &s.kind),
+            Some(ShapeKind::Rect { .. })
+        ));
+    }
+}
+
+/// What copy and paste cost with a 4000 x 3000 picture on the system
+/// clipboard: run in a session with a clipboard (on Linux an X server,
+/// such as `Xvfb :99` with `DISPLAY=:99`) with
+/// `cargo test --release -p tracedraw -- --ignored clipboard_costs --nocapture`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod clipboard_bench {
+    use super::*;
+
+    fn picture_elsewhere(cb: &mut arboard::Clipboard, shade: u8) {
+        let (w, h) = (4000usize, 3000usize);
+        let bytes: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8 ^ shade).collect();
+        cb.set_image(arboard::ImageData {
+            width: w,
+            height: h,
+            bytes: bytes.into(),
+        })
+        .expect("a clipboard");
+    }
+
+    fn time(label: &str, f: impl FnOnce()) {
+        let t = std::time::Instant::now();
+        f();
+        eprintln!("{label}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn clipboard_costs() {
+        let Ok(mut cb) = arboard::Clipboard::new() else {
+            eprintln!("no clipboard");
+            return;
+        };
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        picture_elsewhere(&mut cb, 0);
+        time("Ctrl+C over a picture copied elsewhere", || {
+            app.copy_with_system()
+        });
+        time("Ctrl+V of that copy", || app.paste_with_event_text(None));
+        picture_elsewhere(&mut cb, 1);
+        app.select(vec![id]);
+        app.copy();
+        time("a copy of nodes or guides (mark, picture kept)", || {
+            app.mark_system_clipboard(None)
+        });
+        time("Ctrl+V of that copy, picture still there", || {
+            app.paste_with_event_text(None)
+        });
+        time("reading and decoding the picture alone", || {
+            let _ = read_system_image();
+        });
+        time("the change count (Windows; none elsewhere)", || {
+            let _ = change_count();
+        });
+        picture_elsewhere(&mut cb, 2);
+        let before = app
+            .doc()
+            .all_layers()
+            .map(|l| l.shapes.len())
+            .sum::<usize>();
+        time("Ctrl+V of a picture copied elsewhere since", || {
+            app.paste_with_event_text(None)
+        });
+        let after = app
+            .doc()
+            .all_layers()
+            .map(|l| l.shapes.len())
+            .sum::<usize>();
+        assert_eq!(after, before + 1);
     }
 }
 
@@ -626,7 +955,7 @@ mod linked_watch_tests {
                 rect: Rect::new(10.0, 10.0, 30.0, 30.0),
                 width_px: 2,
                 height_px: 2,
-                png: png(2, 2),
+                png: png(2, 2).into(),
                 fx: None,
             })
             .expect("bitmap");

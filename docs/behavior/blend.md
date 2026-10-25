@@ -4,7 +4,7 @@ Intermediate objects between a start and an end object.
 
 | Control | Default | Range |
 |---|---|---|
-| Steps | 5 | 1..999 |
+| Steps | 20 | 1..999 |
 | Rotation | 0 degrees | -3600..3600 (the panel: -360..360) |
 | Acceleration (objects, colours) | 0 (linear) | -1..1 (the bar: -100..100 %) |
 | Path | none | any curve (the panel's New path), "rotate all objects" |

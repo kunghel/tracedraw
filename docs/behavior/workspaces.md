@@ -94,7 +94,12 @@ that keep to the docker's width: the kind and what it applies to, then
 the amount (or the gradient's angle and kind), then the merge mode. The
 Rectangle section lists the corner kinds (round, scalloped, chamfered)
 one under the other and the four radii two by two as the corners lie,
-each named above its field. The docker keeps the width it has (340
+each named above its field; the two columns share the docker's width
+and a name too long for its column goes on to a second line, never cut
+short (#487). With nothing selected the docker shows the defaults for
+new objects under the same Outline and Fill header bars, in the same
+order, so each row of paint kinds is named and the docker keeps its
+layout when an object is selected (#487). The docker keeps the width it has (340
 points by default, or what the edge was dragged to): selecting an
 object never widens it, and its contents are laid out within it and
 clipped to it. Every section of every kind of object (rectangle,
@@ -102,7 +107,8 @@ ellipse, polygon, artistic and paragraph text, bitmap) with each fill
 and transparency kind fits the default width, in English, German,
 Russian and Brazilian Portuguese.
 Checks: `ui::dockers::tests::properties_sections_open_close_and_jump`,
-`ui::dockers::tests::properties_sections_fit_the_default_docker_width`;
+`ui::dockers::tests::properties_sections_fit_the_default_docker_width`,
+`ui::dockers::tests::properties_sections_are_titled_and_add_buttons_need_a_paint`;
 every kind's sections draw in
 `ui::mod::tests::window_draws_with_every_docker_tool_and_selection`.
 

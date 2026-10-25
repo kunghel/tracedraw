@@ -801,6 +801,38 @@ fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
 mod theme_tests {
     use super::*;
 
+    /// WCAG contrast ratio of two opaque colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let lum = |c: Color32| {
+            let ch = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Text drawn in a field (a list, the Glyphs panel's recent glyphs)
+    /// reads in every theme (#660).
+    #[test]
+    fn text_contrasts_with_fields_in_every_theme() {
+        for t in Theme::ALL {
+            let p = t.palette();
+            assert!(
+                contrast(p.field, p.text) >= 4.5,
+                "{t:?}: {:?} on {:?}",
+                p.text,
+                p.field
+            );
+        }
+    }
+
     #[test]
     fn themes_have_their_names_and_dark_ones_light_text() {
         let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;

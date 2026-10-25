@@ -18,12 +18,19 @@ baselines can sit on the page's baseline grid. Code: `crates/core/src/text_flow.
 - The context menu's Wrap Paragraph Text submenu holds the same toggle
   ("Text flows around it"), the seven wrap styles (the one in use marked
   while the object wraps) and the text wrap offset field; a style or an
-  offset turns wrapping on, as on the property bar.
-- The arrow beside the button lists the seven wrap styles and the text
-  wrap offset (in the ruler unit). Picking a style, or changing the
-  offset, turns wrapping on for the selection with that style
-  (`Command::SetWrapStyle`, "Wrap Style"); the list marks the style of
-  the first selected object while it wraps.
+  offset turns wrapping on.
+- The arrow beside the button lists the styles as the reference
+  program's list does (#661): the title Wrap style, None, then under a
+  Contour heading and a Square heading their sides (text flows left,
+  text flows right, straddle text; and above/below for Square), then the
+  text wrap offset (in the ruler unit). None is marked while no selected
+  object wraps text, and picking it turns wrapping off for the selection
+  (the style and offset are kept). Picking a style turns wrapping on for
+  the selection with that style (`Command::SetWrapStyle`, "Wrap Style");
+  the list marks the style of the first selected object while any
+  wraps. The offset field is greyed out while no selected object wraps,
+  so it cannot turn wrapping back on; while one wraps, changing it sets
+  the offset for the selection.
 
 ## Which objects push which text
 
@@ -96,6 +103,7 @@ band's height:
 - `tracedraw_text::tests::paragraph_text_flows_around_a_wrap_object`,
   `wrap_sides_keep_the_text_left_right_or_above_and_below`,
   `the_page_baseline_grid_lines_up_frames_at_different_heights`.
+- `pick_drag_tests::the_wrap_style_list_starts_with_none`.
 - `text_wrap_tests::paragraph_text_wraps_around_an_object_above_it_and_undo_takes_it_back`,
   `objects_below_the_frame_do_not_push_its_text`,
   `wrap_styles_and_offset_set_from_the_menus_turn_wrapping_on`,

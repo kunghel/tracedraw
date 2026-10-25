@@ -52,6 +52,22 @@ unclear, are not merged.
 - A new tool or effect gets a page in `docs/behavior/` and a row in
   `docs/features.md`.
 
+## Review and credit
+
+- Every pull request from outside the project is read in full for
+  security before it is merged: network access, running programs, file
+  and secret access, new dependencies, build scripts and CI changes,
+  obfuscated or binary content. Keep pull requests small and focused so
+  this stays quick.
+- Commit with your own name and an email that belongs to your GitHub
+  account (if a coding assistant makes the commits, set
+  `git config user.name` and `user.email` to yours first); GitHub's
+  contributor list goes by the commit's author email. A pull request that
+  needs a conflict resolved is merged keeping your commits as you wrote
+  them.
+- Once merged, you are listed in [`CONTRIBUTORS.md`](CONTRIBUTORS.md)
+  with what you contributed.
+
 ## License
 
 Contributions are licensed under MIT OR Apache-2.0, like the rest of the

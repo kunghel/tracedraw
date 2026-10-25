@@ -1888,6 +1888,10 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
             app.wireframe = mode == crate::app::ViewMode::Wireframe;
         }
     }
+    // Right after the view modes, where the report asks for it (#615).
+    if check(ui, "menu.view.mask_outside_page", "", app.mask_outside_page) {
+        app.mask_outside_page = !app.mask_outside_page;
+    }
     sep(ui);
     if item(ui, "menu.view.fullscreen_preview", "F9", true) {
         app.fullscreen_preview = true;
@@ -1960,9 +1964,6 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         }
         if check(ui, "menu.view.printable_area", "", app.show_printable_area) {
             app.show_printable_area = !app.show_printable_area;
-        }
-        if check(ui, "menu.view.mask_outside_page", "", app.mask_outside_page) {
-            app.mask_outside_page = !app.mask_outside_page;
         }
     });
     sub(ui, "menu.view.grid", |ui| {

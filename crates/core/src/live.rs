@@ -2090,7 +2090,7 @@ mod tests {
                 rect: Rect::new(0.0, 0.0, 20.0, 20.0),
                 width_px: 1,
                 height_px: 1,
-                png: Vec::new(),
+                png: Default::default(),
                 fx: None,
             },
         );

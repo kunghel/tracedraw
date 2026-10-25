@@ -369,10 +369,18 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
         Stroke::new(1.0, Tokens::border()),
     );
 
+    // The status message can be a link to Options > General (the note
+    // that hardware acceleration is off), while it is the one shown.
+    let drag = if doc { drag_info(app) } else { None };
+    let linked = doc
+        && drag.is_none()
+        && app.settings.status_info == StatusInfo::ToolHints
+        && !app.status.is_empty()
+        && app.status_opens_options.as_deref() == Some(app.status.as_str());
     // Left field and object information.
     let (left, info) = if !doc {
         (tr("status.tool_hints"), tr("status.object_information"))
-    } else if let Some(drag) = drag_info(app) {
+    } else if let Some(drag) = drag {
         (drag, object_info(app))
     } else {
         let left = match app.settings.status_info {
@@ -409,6 +417,20 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
         left_galley,
         Tokens::text(),
     );
+    if linked {
+        let r = Rect::from_min_max(
+            Pos2::new(text_x, row.min.y),
+            Pos2::new(text_x + left_w, row.max.y),
+        );
+        let resp = ui
+            .interact(r, egui::Id::new("status_opens_options"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            app.status_opens_options = None;
+            app.status.clear();
+            app.open_general_options();
+        }
+    }
     if info_w > 0.0 {
         // After the left field, never closer than a placeholder's width.
         let x = (text_x + left_w + 24.0)

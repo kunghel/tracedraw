@@ -756,7 +756,19 @@ pub fn point_on_path(path: &BezPath, t: f64) -> Option<(Point, [f64; 2])> {
 /// path widened by the reach `width_at` gives at its ends (left and right
 /// separately), joined with wedges at the corners; butt ends.
 pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode]) -> BezPath {
-    let lines = polylines(path, 0.05);
+    variable_band_within(path, base, nodes, 0.05)
+}
+
+/// [`variable_band`] with the path flattened to `tol` (mm): finer for a
+/// band that is kept as an object and fitted to curves, so the corners
+/// at the joins of the short lines stay small (#627).
+pub fn variable_band_within(
+    path: &BezPath,
+    base: f64,
+    nodes: &[crate::style::WidthNode],
+    tol: f64,
+) -> BezPath {
+    let lines = polylines(path, tol.max(1e-4));
     let total: f64 = lines
         .iter()
         .map(|(l, _)| l.windows(2).map(|w| (w[1] - w[0]).hypot()).sum::<f64>())
@@ -790,8 +802,13 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
     let mut polys: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut run = 0.0;
     for (line, closed) in &lines {
-        // Resampled points with their length along the whole path.
+        // Resampled points with their length along the whole path, and
+        // the unit normal (to the left) of each piece. The pieces of one
+        // segment share its normal: computed piece by piece, rounding
+        // tilted them apart, and the union left cracks between them that
+        // showed as spikes and holes (#627).
         let mut pts: Vec<(Point, f64)> = Vec::new();
+        let mut normals: Vec<Option<[f64; 2]>> = Vec::new();
         for w in line.windows(2) {
             let (a, b) = (w[0], w[1]);
             let len = (b - a).hypot();
@@ -801,6 +818,8 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
             if len <= 1e-12 {
                 continue;
             }
+            let d = b - a;
+            let n = Some([-d.y / len, d.x / len]);
             let k = ((len / step).ceil() as usize).clamp(1, 4096);
             let mut cuts: Vec<f64> = (1..k).map(|i| i as f64 / k as f64).collect();
             cuts.extend(
@@ -812,19 +831,12 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
             cuts.sort_by(|x, y| x.total_cmp(y));
             for u in cuts {
                 pts.push((a + (b - a) * u, run + u * len));
+                normals.push(n);
             }
             run += len;
             pts.push((b, run));
+            normals.push(n);
         }
-        // Unit normals (to the left) of each piece.
-        let normals: Vec<Option<[f64; 2]>> = pts
-            .windows(2)
-            .map(|w| {
-                let d = w[1].0 - w[0].0;
-                let len = d.hypot();
-                (len > 1e-12).then(|| [-d.y / len, d.x / len])
-            })
-            .collect();
         for (i, w) in pts.windows(2).enumerate() {
             let Some(n) = normals.get(i).copied().flatten() else {
                 continue;
@@ -832,12 +844,23 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
             let ((p, s0), (q, s1)) = (w[0], w[1]);
             let (l0, r0) = reach(s0);
             let (l1, r1) = reach(s1);
-            polys.push(vec![
+            // The ends of the piece on the path are corners too: a join's
+            // fan starts there, and a point of it in the middle of an edge
+            // left a crack after rounding.
+            let mut poly = vec![
                 [p.x + n[0] * l0, p.y + n[1] * l0],
                 [q.x + n[0] * l1, q.y + n[1] * l1],
+                [q.x, q.y],
                 [q.x - n[0] * r1, q.y - n[1] * r1],
                 [p.x - n[0] * r0, p.y - n[1] * r0],
-            ]);
+                [p.x, p.y],
+            ];
+            // A side of no reach repeats the point on the path.
+            poly.dedup();
+            if poly.first() == poly.last() {
+                poly.pop();
+            }
+            polys.push(poly);
         }
         // Round joins between consecutive pieces (and around the seam of
         // a closed subpath): a fan from one normal to the next on each
@@ -872,10 +895,19 @@ pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode
                 if len <= 0.0 {
                     continue;
                 }
+                // The first and last points exactly the corners of the
+                // pieces, so no crack opens between them and the fan.
                 let mut fan = vec![[c.x, c.y]];
                 for j in 0..=steps {
-                    let ang = a0 + turn * j as f64 / steps as f64;
-                    fan.push([c.x + sign * ang.cos() * len, c.y + sign * ang.sin() * len]);
+                    let (cos, sin) = if j == 0 {
+                        (a[0], a[1])
+                    } else if j == steps {
+                        (b[0], b[1])
+                    } else {
+                        let ang = a0 + turn * j as f64 / steps as f64;
+                        (ang.cos(), ang.sin())
+                    };
+                    fan.push([c.x + sign * cos * len, c.y + sign * sin * len]);
                 }
                 polys.push(fan);
             }
@@ -1312,6 +1344,42 @@ mod tests {
         // Three quarters: 1 + 4 * 0.84375 = 4.375.
         assert!(band.contains(Point::new(507.5, 4.33)));
         assert!(!band.contains(Point::new(507.5, 4.42)));
+    }
+
+    /// Along a curve the pieces of the band meet without cracks: one
+    /// outline, no slivers or spikes into it (#627).
+    #[test]
+    fn a_variable_band_along_a_curve_has_no_cracks() {
+        use super::variable_band;
+        use crate::geometry::{BezPath, PathEl, Point};
+        use crate::style::WidthNode;
+        let mut arch = BezPath::new();
+        arch.move_to(Point::new(10.0, 10.0));
+        arch.curve_to(
+            Point::new(30.0, 60.0),
+            Point::new(80.0, 60.0),
+            Point::new(110.0, 10.0),
+        );
+        let band = variable_band(&arch, 2.0, &[WidthNode::symmetric(0.5, 10.0)]);
+        let moves = band
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(moves, 1);
+        // No vertex of the outline comes near the path itself, but for
+        // the middle of each butt end.
+        let ends = [Point::new(10.0, 10.0), Point::new(110.0, 10.0)];
+        let mut near = 0;
+        crate::geometry::flatten(&band, 0.05, &mut |el| {
+            if let PathEl::LineTo(p) | PathEl::MoveTo(p) = el {
+                let (_, d, _) = super::locate_on_path(&arch, p).unwrap_or((0.0, 9.0, true));
+                if d < 0.5 && ends.iter().all(|e| (*e - p).hypot() > 1e-6) {
+                    near += 1;
+                }
+            }
+        });
+        assert_eq!(near, 0);
     }
 
     #[test]

@@ -15,6 +15,13 @@ rulers:
   drawing to use this docker." instead of showing the hidden drawing's
   selection; Hints still shows (#482,
   `ui::palette::tests::the_palette_rests_on_the_welcome_screen`).
+- With a drawing open, the Welcome Screen tab has a close button on
+  hover (a middle click also closes it): the tab shrinks to its house
+  alone (a 26 px square, the title as its tip) and the active drawing
+  shows. A click on the house, Window > Welcome Screen or Help > Welcome
+  Screen shows the Welcome Screen again with its whole tab. The closed
+  tab is remembered with the settings; with no drawing open it cannot
+  be closed (#677).
 - Each drawing's tab (at least 116 px wide) shows its file name, or its
   document name when it has never been saved, followed by `*` while it has
   unsaved changes. A close button shows on the hovered tab; a middle click
@@ -25,7 +32,7 @@ rulers:
 Each drawing keeps its own pages, objects, undo history, selection, view
 (zoom and scroll), file, page number settings and drawing units.
 Switching tabs ends the interaction in progress (a drag, text or table
-cell editing, a curve being drawn, clip frame editing).
+cell editing, a curve being drawn, clip frame editing, symmetry editing).
 
 New and opened drawings get a tab after the last one. A file that is
 open already is not read into a second tab (#645): opening it again (the
@@ -58,3 +65,8 @@ active one.
 - `documents::tests::each_drawing_keeps_its_objects_history_and_selection`
 - `documents::tests::closing_moves_to_a_neighbour_then_to_the_welcome_screen`
 - `documents::tests::exit_asks_about_each_unsaved_drawing_then_quits`
+- Given a drawing open and the Welcome Screen shown, when its tab's
+  close button is clicked, then the drawing shows and the tab is a house
+  half as wide or less; a click on the house shows the Welcome Screen
+  with its whole tab; with no drawing open the tab has no close button
+  (`pick_drag_tests::the_welcome_tab_closes_to_its_house`).

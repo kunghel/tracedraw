@@ -158,6 +158,14 @@ fn is_one_u32(v: &u32) -> bool {
     *v == 1
 }
 
+/// `t` only moves and scales along the page axes, without a mirror: a box
+/// stays a box with its sides in the same order.
+fn keeps_box_axes(t: Affine) -> bool {
+    let [a, b, c, d, _, _] = t.as_coeffs();
+    let scale = a.abs().max(d.abs()).max(1e-12);
+    b.abs() <= 1e-12 * scale && c.abs() <= 1e-12 * scale && a > 0.0 && d > 0.0
+}
+
 impl Default for Fountain {
     /// Black to white, left to right, running once.
     fn default() -> Self {
@@ -317,6 +325,53 @@ impl Fountain {
             self.offset = Point::new(h.start.x.clamp(-1.0, 1.0), h.start.y.clamp(-1.0, 1.0));
         }
         self.handles = Some(h);
+    }
+
+    /// Carry the fill along with `t`, a page-space transformation of its
+    /// object whose page box goes from `before` to `after` (#775): a turn,
+    /// a mirror or a skew turns, mirrors or skews the fill with the object,
+    /// its nodes then placed freely unless its angle and centre place it
+    /// the same (a quarter or half turn, a mirror). A move or a scale without a mirror
+    /// changes nothing, the fill being placed relative to the box anyway;
+    /// a shaped fill follows the outline by itself.
+    pub fn carry(&mut self, t: Affine, before: Rect, after: Rect) {
+        if self.kind == FountainKind::Shaped || keeps_box_axes(t) {
+            return;
+        }
+        let flat = |b: Rect| !(b.width() > 1e-9 && b.height() > 1e-9);
+        if flat(before) || flat(after) {
+            return;
+        }
+        let h = self.handles.unwrap_or_else(|| self.default_handles(before));
+        let moved = |p: Point| Self::page_to_rel(after, t * Self::rel_to_page(before, p));
+        let h = FountainHandles {
+            start: moved(h.start),
+            end: moved(h.end),
+            skew: moved(h.skew),
+        };
+        if ![h.start, h.end, h.skew]
+            .iter()
+            .all(|p| p.x.is_finite() && p.y.is_finite())
+        {
+            return;
+        }
+        // A quarter or half turn, or a mirror, often gives a fill its angle
+        // and centre can place exactly as well: it stays one placed that
+        // way, so the angle field still turns it.
+        let mut placed = self.clone();
+        placed.set_handles(after, h);
+        placed.handles = None;
+        let d = placed.default_handles(after);
+        let near = |a: Point, b: Point| (a - b).hypot() <= 1e-9;
+        if self.handles.is_none()
+            && near(d.start, h.start)
+            && near(d.end, h.end)
+            && near(d.skew, h.skew)
+        {
+            *self = placed;
+        } else {
+            self.set_handles(after, h);
+        }
     }
 
     pub fn first_color(&self) -> Color {
@@ -712,8 +767,7 @@ pub enum Pattern {
     },
     /// Tiled PNG, `size_mm` is the tile width; height follows the aspect ratio.
     Bitmap {
-        #[serde(with = "crate::document::png_bytes")]
-        png: Vec<u8>,
+        png: crate::SharedBytes,
         width_px: u32,
         height_px: u32,
         size_mm: f64,
@@ -1021,6 +1075,14 @@ impl Mesh {
 }
 
 impl Fill {
+    /// Carry a fountain fill along with a turn, mirror or skew of its
+    /// object (see [`Fountain::carry`]); other fills need nothing.
+    pub fn carry(&mut self, t: Affine, before: Rect, after: Rect) {
+        if let Fill::Fountain(f) = self {
+            f.carry(t, before, after);
+        }
+    }
+
     pub fn linear(from: Color, to: Color, angle: f64) -> Self {
         Fill::Fountain(Fountain::two(FountainKind::Linear, from, to, angle))
     }

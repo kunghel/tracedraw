@@ -1087,7 +1087,7 @@ impl crate::app::App {
                     rect: *rect,
                     width_px: *width_px,
                     height_px: *height_px,
-                    png,
+                    png: png.into(),
                     fx: None,
                 },
             });
@@ -1131,7 +1131,7 @@ impl crate::app::App {
                     rect: *rect,
                     width_px: out.width(),
                     height_px: out.height(),
-                    png,
+                    png: png.into(),
                     fx: None,
                 },
             });
@@ -1174,7 +1174,7 @@ mod tests {
                 rect: tracedraw_core::Rect::new(0.0, 0.0, 8.0, 4.0),
                 width_px: 8,
                 height_px: 4,
-                png,
+                png: png.into(),
                 fx: None,
             })
             .expect("bitmap");
@@ -1337,7 +1337,7 @@ mod tests {
                 rect: Rect::new(0.0, 0.0, 256.0 / 300.0 * 25.4, 8.0 / 300.0 * 25.4),
                 width_px: 256,
                 height_px: 8,
-                png: png.clone(),
+                png: png.clone().into(),
                 fx: None,
             })
             .expect("bitmap")

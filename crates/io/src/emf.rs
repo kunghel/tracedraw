@@ -744,7 +744,7 @@ impl<'a> Player<'a> {
             rect,
             width_px: pw,
             height_px: ph,
-            png,
+            png: png.into(),
             fx: None,
         });
         let c = rect.center();
@@ -2808,7 +2808,7 @@ mod export_tests {
                 rect: Rect::new(10.0, 20.0, 50.0, 40.0),
                 width_px: 2,
                 height_px: 2,
-                png,
+                png: png.into(),
                 fx: None,
             },
         );
@@ -3444,7 +3444,7 @@ mod wmf_export_tests {
                 rect: Rect::new(60.0, 5.0, 90.0, 25.0),
                 width_px: 2,
                 height_px: 1,
-                png,
+                png: png.into(),
                 fx: None,
             },
         );

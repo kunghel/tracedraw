@@ -454,6 +454,7 @@ pages) in your browser only when you choose to. The full policy is in
 | [`docs/code-signing.md`](docs/code-signing.md) | signing the Windows downloads and the Microsoft Store package |
 | [`CLEANROOM.md`](CLEANROOM.md) | where the knowledge of every file format comes from |
 | [`ATTRIBUTION.md`](ATTRIBUTION.md) | bundled assets and their licenses |
+| [`CONTRIBUTORS.md`](CONTRIBUTORS.md) | the people who contributed code |
 
 ---
 
@@ -466,6 +467,11 @@ Copyright &copy; 2026 Ighor Toth and the TraceDraw contributors.
 Written by Ighor Toth with Claude Code, Anthropic's AI coding assistant,
 as co-author: commits it helped write carry a `Co-Authored-By` line, and
 the About box says so too.
+
+Code contributed by others is listed, person by person, in
+[CONTRIBUTORS.md](CONTRIBUTORS.md): thanks to
+[@belchiordameao-cmd](https://github.com/belchiordameao-cmd) and
+[@LaMka21](https://github.com/LaMka21).
 
 Bundled fonts, icons and other assets keep their own open licenses; each
 is listed with its author, source and license in

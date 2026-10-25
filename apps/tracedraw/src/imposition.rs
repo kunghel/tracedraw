@@ -572,6 +572,9 @@ pub fn impose(doc: &Document, o: &Options) -> Document {
     out.metadata = doc.metadata.clone();
     out.metadata.bleed = 0.0;
     out.symbols = doc.symbols.clone();
+    // The spot inks: separations make a plate for each, and the print
+    // preview a box (#779).
+    out.inks = doc.inks.clone();
     out.pages.clear();
     out.master.clear();
     let bleed = o.bleed.max(0.0);

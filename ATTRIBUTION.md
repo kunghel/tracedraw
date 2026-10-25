@@ -18,9 +18,11 @@ libwebp (Copyright Google Inc., BSD 3-Clause licence, through the
 | Microsoft Store tiles | `packaging/windows/msix/Assets/` | Made for TraceDraw from the application icon | MIT OR Apache-2.0 |
 | Tool, toolbar and panel icons | painted in code, `apps/tracedraw/src/ui/icons.rs` | Made for TraceDraw | MIT OR Apache-2.0 |
 | Default colour palette (colour names and values) | `apps/tracedraw/src/palette.rs` | TraceDraw contributors; common process colour tints with descriptive names | MIT OR Apache-2.0 |
+| RGB default palette (`default_rgb`, the same names as RGB values: 10% greys and multiples of 51) | `apps/tracedraw/src/palette.rs` | TraceDraw contributors; plain RGB values read from a screenshot attached to issue #620 | MIT OR Apache-2.0 |
 | Spell-check core word list | `apps/tracedraw/lang/core-words.txt` | Made for TraceDraw | MIT OR Apache-2.0 |
 | Hyphenation patterns | `crates/text/src/hyphen.rs` | Made for TraceDraw (a small Liang-style set) | MIT OR Apache-2.0 |
 | Interface translations | `apps/tracedraw/lang/*.toml` | Made for TraceDraw | MIT OR Apache-2.0 |
+| eframe 0.36.2 (patched copy of the crate, its OpenGL context fallback backported from 0.37.0, #616) | `vendor/eframe/` | Copyright Emil Ernerfeldt and the egui contributors, from crates.io; the change is listed in `vendor/README.md` | MIT OR Apache-2.0 |
 | Sample drawing | `sample.tdraw` | Made for TraceDraw | MIT OR Apache-2.0 |
 | Screenshots | `docs/images/` | TraceDraw itself, captured with `scripts/visual/readme_shots.sh` from drawings made for TraceDraw by `apps/tracedraw-cli/examples/showcase.rs`; their text is set in Inter and Lora (SIL Open Font License 1.1), fonts installed on the capture machine and not bundled | MIT OR Apache-2.0 |
 

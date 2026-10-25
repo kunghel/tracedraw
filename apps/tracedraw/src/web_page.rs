@@ -120,4 +120,19 @@ mod tests {
             );
         }
     }
+
+    /// Both builds shrink the module with wasm-opt before its size goes
+    /// into the page, so the progress bar counts the file served.
+    #[test]
+    fn the_builds_shrink_the_module_before_measuring_it() {
+        for (name, text) in [("scripts/web/build.sh", BUILD_SCRIPT), ("build.yml", CI)] {
+            let opt = text.find("wasm-opt -Oz --strip-debug --strip-producers");
+            let size = text.find("size=$(wc -c < site/tracedraw_bg.wasm");
+            assert!(
+                matches!((opt, size), (Some(o), Some(s)) if o < s),
+                "{name} does not run wasm-opt before measuring the module"
+            );
+        }
+        assert!(CI.contains("BINARYEN: version_133") && CI.contains("sha256sum -c"));
+    }
 }

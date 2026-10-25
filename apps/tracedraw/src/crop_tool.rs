@@ -479,7 +479,7 @@ mod tests {
                 rect: Rect::new(10.0, -10.0, 30.0, 10.0),
                 width_px: 2,
                 height_px: 2,
-                png: Vec::new(),
+                png: Vec::new().into(),
                 fx: None,
             })
             .expect("bitmap");

@@ -1078,7 +1078,7 @@ impl HostInner {
                         rect: *rect,
                         width_px: out.width(),
                         height_px: out.height(),
-                        png: encoded,
+                        png: encoded.into(),
                         fx: None,
                     },
                 })?;
@@ -1185,7 +1185,7 @@ impl HostInner {
                         rect: bounds,
                         width_px: w,
                         height_px: h,
-                        png,
+                        png: png.into(),
                         fx: None,
                     },
                 );

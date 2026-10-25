@@ -119,7 +119,7 @@ fn main() {
             rect: Rect::new(130.0, 20.0, 190.0, 65.0),
             width_px: 64,
             height_px: 48,
-            png,
+            png: png.into(),
             fx: None,
         },
         Fill::None,

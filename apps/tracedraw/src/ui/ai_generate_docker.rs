@@ -372,7 +372,7 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
             .and_then(|(id, png)| {
                 let img = crate::bitmap_fx::decode(&png)?;
                 Some(crate::ai_image::SourceImage {
-                    png,
+                    png: png.to_vec(),
                     width: img.width(),
                     height: img.height(),
                     shape: Some(id),

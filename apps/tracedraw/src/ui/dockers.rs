@@ -646,8 +646,10 @@ fn set_extra_paint(app: &mut App, fills: Vec<Fill>, strokes: Vec<tracedraw_core:
 }
 
 /// The further fills of the selection (the first object's): each with
-/// its editor and a cross; Add Fill puts a copy of the fill on top.
-fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape) {
+/// its editor and a cross; Add Fill puts a copy of the fill on top. It
+/// shows only while the object has a fill (`has_fill`): the first fill
+/// comes from the kinds above it, not from this button (#487).
+fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape, has_fill: bool) {
     let mut fills = first.extra_fills.clone();
     let mut changed = false;
     let mut remove = None;
@@ -671,11 +673,14 @@ fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape) {
         fills.remove(i);
         changed = true;
     }
-    ui.add_space(4.0);
-    if ui
-        .button(tr("docker.add_fill"))
-        .on_hover_text(tr("docker.add_fill_tip"))
-        .clicked()
+    if has_fill {
+        ui.add_space(4.0);
+    }
+    if has_fill
+        && ui
+            .button(tr("docker.add_fill"))
+            .on_hover_text(tr("docker.add_fill_tip"))
+            .clicked()
     {
         fills.push(first.fill.clone());
         changed = true;
@@ -685,8 +690,10 @@ fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape) {
     }
 }
 
-/// The further outlines of the selection, as [`extra_fills`].
-fn extra_strokes(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape) {
+/// The further outlines of the selection, as [`extra_fills`]: Add Outline
+/// shows only while the object has an outline (`has_outline`); the
+/// Outline box gives it its first one (#487).
+fn extra_strokes(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape, has_outline: bool) {
     let mut strokes = first.extra_strokes.clone();
     let custom = crate::ui::line_style::OutlineLib::of(app);
     let mut changed = false;
@@ -717,11 +724,14 @@ fn extra_strokes(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape) {
         strokes.remove(i);
         changed = true;
     }
-    ui.add_space(4.0);
-    if ui
-        .button(tr("docker.add_outline"))
-        .on_hover_text(tr("docker.add_outline_tip"))
-        .clicked()
+    if has_outline {
+        ui.add_space(4.0);
+    }
+    if has_outline
+        && ui
+            .button(tr("docker.add_outline"))
+            .on_hover_text(tr("docker.add_outline_tip"))
+            .clicked()
     {
         let base = first
             .stroke
@@ -749,15 +759,27 @@ fn properties(app: &mut App, ui: &mut Ui) {
         ui.label(egui::RichText::new(tr("docker.no_objects_selected")).color(Tokens::text_dim()));
         ui.add_space(6.0);
         ui.strong(tr("docker.default_properties"));
-        let mut fill = app.default_fill();
-        if fill_editor(ui, &mut fill) {
-            app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| p.fill = fill);
+        ui.add_space(4.0);
+        // The same sections, in the same order, as with an object
+        // selected, so each row of paint kinds sits under its own title
+        // (#487).
+        if section_header(app, ui, "outline", &tr("docker.outline")) {
+            ui.add_space(2.0);
+            let mut stroke = app.default_stroke();
+            let custom = crate::ui::line_style::OutlineLib::of(app);
+            if outline_editor(ui, &mut stroke, &custom) {
+                app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| {
+                    p.stroke = stroke
+                });
+            }
+            ui.add_space(6.0);
         }
-        ui.separator();
-        let mut stroke = app.default_stroke();
-        let custom = crate::ui::line_style::OutlineLib::of(app);
-        if outline_editor(ui, &mut stroke, &custom) {
-            app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| p.stroke = stroke);
+        if section_header(app, ui, "fill", &tr("docker.fill")) {
+            ui.add_space(2.0);
+            let mut fill = app.default_fill();
+            if fill_editor(ui, &mut fill) {
+                app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| p.fill = fill);
+            }
         }
         return;
     }
@@ -906,7 +928,8 @@ fn properties(app: &mut App, ui: &mut Ui) {
                         app.patch_selection_stroke(&old, &stroke, &touched);
                     }
                 }
-                extra_strokes(app, ui, first);
+                let has = stroke.is_some() || mix.presence;
+                extra_strokes(app, ui, first, has);
             }
             "fill" if app.text_selection_active() => {
                 // Characters selected in the text being edited: their own
@@ -923,7 +946,9 @@ fn properties(app: &mut App, ui: &mut Ui) {
                 let mix = app.selection_fill_mix();
                 let mut fill = old.clone();
                 let mut touched = Vec::new();
-                if fill_editor_mixed(ui, &mut fill, &mix, &mut touched) {
+                let edited = fill_editor_mixed(ui, &mut fill, &mix, &mut touched);
+                let has = !matches!(fill, Fill::None) || mix.kind;
+                if edited {
                     // Dragging in the picker: one step, and the colour
                     // joins the document palette on release.
                     let live = app.live_fill.is_some() || ui.input(|i| i.pointer.any_down());
@@ -933,7 +958,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                         app.patch_selection_fill(&old, &fill, &touched);
                     }
                 }
-                extra_fills(app, ui, first);
+                extra_fills(app, ui, first, has);
             }
             "transparency" => {
                 crate::ui::toolbar::transparency_section(app, ui);
@@ -1278,10 +1303,16 @@ fn rectangle_section(app: &mut App, ui: &mut Ui, c: tracedraw_core::Corners) {
     }
     let u = app.units;
     // The four radii as the corners lie, two by two, each named above
-    // its field.
+    // its field. Both columns take half the docker, and a name that does
+    // not fit goes on to a second line rather than being cut (#487).
+    let gap = 10.0;
+    let column = ((ui.available_width() - gap) / 2.0).max(60.0);
+    let field_w = column.min(96.0);
     egui::Grid::new("docker_corners")
         .num_columns(2)
-        .spacing([10.0, 4.0])
+        .spacing([gap, 4.0])
+        .min_col_width(column)
+        .max_col_width(column)
         .show(ui, |ui| {
             for pair in [
                 [
@@ -1295,13 +1326,14 @@ fn rectangle_section(app: &mut App, ui: &mut Ui, c: tracedraw_core::Corners) {
             ] {
                 for (i, key) in pair {
                     ui.vertical(|ui| {
+                        ui.set_width(column);
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(tr(key))
                                     .color(Tokens::text_dim())
                                     .size(11.0),
                             )
-                            .truncate(),
+                            .wrap(),
                         );
                         let mut v = u.world_from_mm(c.radii[i]);
                         if mix.get(i + 1).copied().unwrap_or(false) {
@@ -1311,7 +1343,7 @@ fn rectangle_section(app: &mut App, ui: &mut Ui, c: tracedraw_core::Corners) {
                                     crate::ui::field::NumField::new(&mut v)
                                         .range(0.0..=10_000.0)
                                         .suffix(format!(" {}", u.short()))
-                                        .width(72.0)
+                                        .width(field_w)
                                         .mixed(true),
                                 )
                                 .changed()
@@ -1323,7 +1355,8 @@ fn rectangle_section(app: &mut App, ui: &mut Ui, c: tracedraw_core::Corners) {
                                 crate::ui::field::NumField::new(&mut v)
                                     .range(0.0..=10_000.0)
                                     .speed(0.1)
-                                    .suffix(format!(" {}", u.short())),
+                                    .suffix(format!(" {}", u.short()))
+                                    .width(field_w),
                             );
                             if r.changed() && (u.world_to_mm(v) - c.radii[i]).abs() > 1e-12 {
                                 edit = Some(CornerEdit::Size(i, u.world_to_mm(v)));
@@ -2922,6 +2955,78 @@ mod tests {
         assert_eq!(outline_paint_of(&s), Fill::Solid(blue));
         assert_eq!(fountain_kind_key(FountainKind::Shaped), "fill.shaped");
         assert_ne!(tr("fill.shaped"), "fill.shaped");
+    }
+
+    /// The Properties docker has the same titled sections with and without
+    /// a selection, so each row of paint kinds is named; Add Outline and
+    /// Add Fill show only once there is an outline or a fill to add to;
+    /// the corner names are never cut short (#487).
+    #[test]
+    fn properties_sections_are_titled_and_add_buttons_need_a_paint() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.settings.autocorrect.enabled = false;
+        app.settings.properties_closed.clear();
+        app.show_dockers = true;
+        app.docker_tab = DockerTab::Properties;
+        let count = |texts: &[String], key: &str| texts.iter().filter(|t| **t == tr(key)).count();
+        // Nothing selected: an Outline title over the outline's kinds and
+        // a Fill title over the fill's.
+        draw(&ctx, &mut app);
+        let texts = painted_texts(&ctx, &mut app);
+        assert_eq!(count(&texts, "docker.fill"), 1, "{texts:?}");
+        assert!(
+            count(&texts, "docker.outline") >= 2,
+            "title and box: {texts:?}"
+        );
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 2.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: None,
+        });
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::None,
+        });
+        app.select(vec![id]);
+        draw(&ctx, &mut app);
+        let texts = painted_texts(&ctx, &mut app);
+        assert_eq!(count(&texts, "docker.add_outline"), 0, "{texts:?}");
+        assert_eq!(count(&texts, "docker.add_fill"), 0, "{texts:?}");
+        // Every corner named in full.
+        for key in [
+            "toolbar.corner_top_left",
+            "toolbar.corner_top_right",
+            "toolbar.corner_bottom_left",
+            "toolbar.corner_bottom_right",
+        ] {
+            let name = tr(key);
+            assert!(
+                texts.iter().any(|t| t.replace('\n', " ") == name),
+                "{name} cut short: {texts:?}"
+            );
+        }
+        assert!(!texts.iter().any(|t| t.ends_with('\u{2026}')), "{texts:?}");
+        // With an outline and a fill, a further one can be added.
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(Stroke::new(tracedraw_core::Color::BLACK, 1.0)),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(tracedraw_core::Color::BLACK),
+        });
+        draw(&ctx, &mut app);
+        let texts = painted_texts(&ctx, &mut app);
+        assert_eq!(count(&texts, "docker.add_outline"), 1, "{texts:?}");
+        assert_eq!(count(&texts, "docker.add_fill"), 1, "{texts:?}");
     }
 
     /// The Properties docker keeps its default width with every section

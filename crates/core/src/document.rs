@@ -36,6 +36,22 @@ pub mod text_outline {
         OUTLINER.get().map(|f| f(req))
     }
 
+    type Bounder = fn(&TextRequest) -> Option<crate::geometry::Rect>;
+    static BOUNDER: OnceLock<Bounder> = OnceLock::new();
+
+    /// Register the text engine's box of an outline, kept with the
+    /// outline it caches, so the box of a text object costs no copy of
+    /// its outline (#802).
+    pub fn set_bounds(f: Bounder) {
+        let _ = BOUNDER.set(f);
+    }
+
+    /// The box of [`outline`]'s result, `None` without a text engine or
+    /// for an empty outline.
+    pub fn bounds(req: &TextRequest) -> Option<crate::geometry::Rect> {
+        BOUNDER.get().and_then(|f| f(req))
+    }
+
     /// One laid-out line: the characters it holds (indexes in the
     /// concatenated span text, the newline ending a paragraph left out)
     /// and where it starts (x and baseline, mm, frame top at y = 0, y up).
@@ -643,8 +659,7 @@ pub enum ShapeKind {
         rect: Rect,
         width_px: u32,
         height_px: u32,
-        #[serde(with = "png_bytes")]
-        png: Vec<u8>,
+        png: crate::SharedBytes,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fx: Option<Box<BitmapFxStack>>,
     },
@@ -674,8 +689,7 @@ pub struct BitmapFxStack {
     pub rect: Rect,
     pub width_px: u32,
     pub height_px: u32,
-    #[serde(with = "png_bytes")]
-    pub png: Vec<u8>,
+    pub png: crate::SharedBytes,
     pub effects: Vec<BitmapEffect>,
 }
 
@@ -1906,8 +1920,7 @@ pub struct RasterFx {
     pub width_px: u32,
     pub height_px: u32,
     /// The object with its visible effects; empty until made.
-    #[serde(with = "png_bytes")]
-    pub png: Vec<u8>,
+    pub png: crate::SharedBytes,
     /// A fingerprint of what the picture was made from (see
     /// [`Shape::raster_source`]); another one means it is out of date.
     #[serde(default)]
@@ -2145,7 +2158,7 @@ impl Shape {
         let (sx, sy) = transform_scale(c.transform);
         c.transform = Affine::IDENTITY;
         if let Some(fx) = c.raster_fx.as_mut() {
-            fx.png.clear();
+            fx.png = Default::default();
             fx.source = 0;
             fx.rect = Rect::ZERO;
             fx.width_px = 0;
@@ -2266,6 +2279,51 @@ impl Shape {
             radii: c.radii.map(|r| r * k),
             ..c
         })
+    }
+
+    /// Make a rectangle's rounded corners keep their size when it is
+    /// resized (Relative corner scaling off), at the size they measure on
+    /// the page now; a rectangle whose axes scale differently gets round
+    /// corners of the smaller scale, and when its axes stay square the
+    /// stretch goes into its size, so its transform scales evenly and
+    /// later stretches keep it a rectangle (not when its outline scales
+    /// with it, and a skewed rectangle is left as it is). Corners keep their size even
+    /// past half the shorter side (one corner may take a whole side; the
+    /// drawing fits corners too big for it). Other shapes, square corners
+    /// and corners that already keep their size are left as they are.
+    pub fn keep_corner_size(&mut self) {
+        let Some(page) = self.page_corners() else {
+            return;
+        };
+        if page.fixed || page.max() <= 0.0 {
+            return;
+        }
+        let Some((mut rect, _)) = self.kind.rect_corners() else {
+            return;
+        };
+        let [a, b, c, d, _, _] = self.transform.as_coeffs();
+        let (sx, sy) = axis_scale(self.transform);
+        // A skewed rectangle keeps corners that follow it: fixed ones
+        // could not be written to the files that keep rectangles plain.
+        let square = (a * c + b * d).abs() <= 1e-9 * sx * sy;
+        if !square {
+            return;
+        }
+        // An outline that scales with the object would thin out if the
+        // stretch left the transform; fixed corners draw round under the
+        // stretch anyway.
+        let widens_outline = self.stroke.as_ref().is_some_and(|s| s.scale_with_object);
+        if sx > 1e-12 && sy > 1e-12 && !widens_outline && (sx - sy).abs() > 1e-9 * sx.max(sy) {
+            rect = Rect::new(rect.x0 * sx, rect.y0 * sy, rect.x1 * sx, rect.y1 * sy);
+            self.transform *= Affine::scale_non_uniform(1.0 / sx, 1.0 / sy);
+        }
+        self.kind = ShapeKind::rect_with_corners(
+            rect,
+            Corners {
+                fixed: true,
+                ..page
+            },
+        );
     }
 
     /// This rectangle with corners measured on the page (as
@@ -2807,6 +2865,44 @@ impl Shape {
         self.carry_effects(t);
     }
 
+    /// The fountain fills and gradient transparencies of the object and of
+    /// the objects inside it carried along with `t`, a page-space
+    /// transformation about to be applied to it; `parent` maps its space
+    /// to the page. The fills are placed on the page box of each object,
+    /// so without this a turned or mirrored object kept its gradient
+    /// running the old way (#775).
+    pub fn carry_fills(&mut self, t: Affine, parent: Affine) {
+        let to_page = parent * self.transform;
+        match &mut self.kind {
+            ShapeKind::Group { children } => {
+                for c in children {
+                    c.carry_fills(t, to_page);
+                }
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                frame.carry_fills(t, to_page);
+                for c in contents {
+                    c.carry_fills(t, to_page);
+                }
+            }
+            _ => {}
+        }
+        let gradient = |f: &Fill| matches!(f, Fill::Fountain(_));
+        let masks = |e: &crate::live::Effect| matches!(e, crate::live::Effect::Transparency { mask, .. } if gradient(mask));
+        if !gradient(&self.fill) && !self.effects.iter().any(masks) {
+            return;
+        }
+        let path = to_page * self.local_path();
+        let before = path.bounding_box();
+        let after = (t * path).bounding_box();
+        self.fill.carry(t, before, after);
+        for e in &mut self.effects {
+            if let crate::live::Effect::Transparency { mask, .. } = e {
+                mask.carry(t, before, after);
+            }
+        }
+    }
+
     /// The places the object's live effects hold, those switched off too,
     /// moved by `t` (see [`crate::live::carry_effects`]).
     pub fn carry_effects(&mut self, t: Affine) {
@@ -2840,6 +2936,49 @@ impl Shape {
     /// Axis-aligned bounds in page coordinates, ignoring outline width.
     /// Paragraph text counts its whole frame (empty or not), and a group
     /// the bounds of its objects.
+    /// The page box of a text object from the box the text engine keeps
+    /// with its outline, when the object is neither turned nor skewed
+    /// (the box then maps onto the page box exactly); `None` otherwise or
+    /// for other objects. Asking for the outline itself copies all of its
+    /// points, which in a drawing of long, large text took most of every
+    /// frame: the box is asked for many times a frame (#802).
+    fn text_bounds(&self) -> Option<Rect> {
+        let ShapeKind::Text {
+            spans,
+            origin,
+            frame,
+            align,
+            para,
+            on_path,
+        } = &self.kind
+        else {
+            return None;
+        };
+        let req = text_outline::TextRequest {
+            spans,
+            frame: *frame,
+            align: *align,
+            para,
+            on_path: on_path.as_ref(),
+        };
+        let local = if on_path.is_some() {
+            Affine::translate(origin.to_vec2())
+        } else {
+            text_layout_shift(*origin, *frame, false, para.vertical)
+        };
+        let m = self.transform * local;
+        let [a, b, c, d, _, _] = m.as_coeffs();
+        let scale = a.abs().max(d.abs()).max(1e-12);
+        if b.abs() > 1e-12 * scale || c.abs() > 1e-12 * scale {
+            return None;
+        }
+        let r = text_outline::bounds(&req)?;
+        let (p, q) = (m * Point::new(r.x0, r.y0), m * Point::new(r.x1, r.y1));
+        let out = Rect::from_points(p, q);
+        (out.x0.is_finite() && out.y0.is_finite() && out.x1.is_finite() && out.y1.is_finite())
+            .then_some(out)
+    }
+
     pub fn bounds(&self) -> Rect {
         match &self.kind {
             ShapeKind::Text {
@@ -2855,6 +2994,9 @@ impl Shape {
                     origin.y + f.height.max(0.0),
                 );
                 let fb = (self.transform * frame.to_path(0.01)).bounding_box();
+                if let Some(tb) = self.text_bounds() {
+                    return tb.union(fb);
+                }
                 let path = self.page_path();
                 if path.elements().is_empty() {
                     fb
@@ -2862,6 +3004,9 @@ impl Shape {
                     path.bounding_box().union(fb)
                 }
             }
+            ShapeKind::Text { .. } => self
+                .text_bounds()
+                .unwrap_or_else(|| self.page_path().bounding_box()),
             ShapeKind::Group { children } => children
                 .iter()
                 .map(|c| {
@@ -4440,6 +4585,80 @@ mod tests {
 
     use super::*;
 
+    /// Imported rounded corners keep their size (#619): a corner larger
+    /// than the shorter side stays as it was, and a stretched rectangle
+    /// takes the stretch into its size, its corners round at the smaller
+    /// scale.
+    #[test]
+    fn keep_corner_size_leaves_the_outline_and_takes_the_stretch() {
+        let mut ids = IdSource::default();
+        let corners = Corners {
+            radii: [30.0, 30.0, 0.0, 0.0],
+            kind: CornerKind::Round,
+            fixed: false,
+        };
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 100.0, 40.0), corners),
+        );
+        s.transform = Affine::translate((5.0, 5.0));
+        let before = s.page_path().area();
+        s.keep_corner_size();
+        let page = s.page_corners().expect("corners");
+        assert!(page.fixed);
+        assert_eq!(page.radii, [30.0, 30.0, 0.0, 0.0]);
+        assert!((s.page_path().area() - before).abs() < 1e-6);
+        // Stretched 2 x 1: the size takes it, the corners 2 mm round.
+        let mut t = Shape::new(
+            ids.shape(),
+            ShapeKind::rect_with_corners(
+                Rect::new(0.0, 0.0, 20.0, 10.0),
+                Corners::uniform(2.0, CornerKind::Round),
+            ),
+        );
+        t.transform = Affine::translate((5.0, 5.0)) * Affine::scale_non_uniform(2.0, 1.0);
+        let bounds = t.bounds();
+        t.keep_corner_size();
+        let (sx, sy) = axis_scale(t.transform);
+        assert!((sx - 1.0).abs() < 1e-9 && (sy - 1.0).abs() < 1e-9);
+        assert!(
+            matches!(t.kind, ShapeKind::Rect { rect, .. } if (rect.width() - 40.0).abs() < 1e-9)
+        );
+        let b = t.bounds();
+        assert!((b.x0 - bounds.x0).abs() < 1e-9 && (b.x1 - bounds.x1).abs() < 1e-9);
+        assert_eq!(t.page_corners().expect("corners").radii, [2.0; 4]);
+        // An outline that scales with the object keeps its width: the
+        // stretch stays in the transform.
+        let mut u = Shape::new(
+            ids.shape(),
+            ShapeKind::rect_with_corners(
+                Rect::new(0.0, 0.0, 20.0, 10.0),
+                Corners::uniform(2.0, CornerKind::Round),
+            ),
+        );
+        u.transform = Affine::scale_non_uniform(2.0, 1.0);
+        let mut stroke = Stroke::default();
+        stroke.scale_with_object = true;
+        u.stroke = Some(stroke);
+        let before = u.transform;
+        u.keep_corner_size();
+        assert_eq!(u.transform, before);
+        assert!(u.page_corners().expect("corners").fixed);
+        assert_eq!(u.page_corners().expect("corners").radii, [2.0; 4]);
+        // A skewed one is left as it was.
+        let mut k = Shape::new(
+            ids.shape(),
+            ShapeKind::rect_with_corners(
+                Rect::new(0.0, 0.0, 20.0, 10.0),
+                Corners::uniform(2.0, CornerKind::Round),
+            ),
+        );
+        k.transform = Affine::new([1.0, 0.0, 0.5, 1.0, 0.0, 0.0]);
+        let kind = k.kind.clone();
+        k.keep_corner_size();
+        assert_eq!(k.kind, kind);
+    }
+
     /// A clip frame's warp is baked before the warps of what it holds, as
     /// they are drawn, and its frame keeps its own envelope: the contents
     /// are clipped to the frame's outline without it (#647).
@@ -4936,7 +5155,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
             width_px: 4,
             height_px: 2,
-            png: vec![1, 2, 3, 4],
+            png: vec![1, 2, 3, 4].into(),
             fx,
         };
         let mut params = std::collections::BTreeMap::new();
@@ -4945,7 +5164,7 @@ mod tests {
             rect: Rect::new(1.0, 1.0, 19.0, 9.0),
             width_px: 3,
             height_px: 1,
-            png: vec![9, 8, 7],
+            png: vec![9, 8, 7].into(),
             effects: vec![
                 BitmapEffect {
                     id: "gaussian_blur".into(),

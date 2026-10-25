@@ -6,6 +6,11 @@ cargo build --target wasm32-unknown-unknown --profile web -p tracedraw
 rm -rf site && mkdir -p site
 wasm-bindgen --target web --no-typescript --out-dir site \
     target/wasm32-unknown-unknown/web/tracedraw.wasm
+# Shrink the module for download with binaryen's wasm-opt (version 133,
+# as in CI): optimise for size and drop the name, debug and producer
+# sections, which the page does not use.
+wasm-opt -Oz --strip-debug --strip-producers \
+    -o site/tracedraw_bg.wasm site/tracedraw_bg.wasm
 cp web/FONTS.md site/
 # The page with the module's size (the download shows its progress) and
 # the version.

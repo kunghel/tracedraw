@@ -115,7 +115,7 @@ pub fn place(area: Rect, w: f64, h: f64, scale: Scale, anchor: u8) -> Rect {
 /// A picture field's picture: the PNG, its size in pixels and in mm.
 #[derive(Clone)]
 pub struct Picture {
-    pub png: Vec<u8>,
+    pub png: tracedraw_core::SharedBytes,
     pub px: (u32, u32),
     pub mm: (f64, f64),
 }
@@ -225,7 +225,7 @@ pub fn picture_in(value: &str, dirs: &[std::path::PathBuf]) -> Option<Picture> {
     let png = crate::bitmap_fx::encode(&img)?;
     let (w, h) = img.dimensions();
     Some(Picture {
-        png,
+        png: png.into(),
         px: (w, h),
         mm: (w as f64 * 25.4 / dx, h as f64 * 25.4 / dy),
     })
@@ -526,17 +526,31 @@ fn whole_field(st: &PrintMergeState, text: &str) -> Option<usize> {
 
 /// The commands that fill one page's field objects with one record:
 /// objects anywhere in groups and in clip frames too. `new_id` gives the
-/// ids of pictures put inside frames.
+/// ids of pictures put inside frames. With `keep_when_missing` a picture
+/// frame whose picture does not load keeps what it holds (a merge onto
+/// the drawing's own pages, #618); without it the frame is emptied, so a
+/// copy never shows the template's stand-in for a record without one.
 fn fill_page(
     st: &PrintMergeState,
     page: &tracedraw_core::document::Page,
     row: &[String],
+    keep_when_missing: bool,
     new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
 ) -> Vec<Command> {
     let mut cmds = Vec::new();
     for l in &page.layers {
         for s in &l.shapes {
-            fill_shape(st, l.id, s, row, None, true, new_id, &mut cmds);
+            fill_shape(
+                st,
+                l.id,
+                s,
+                row,
+                None,
+                true,
+                keep_when_missing,
+                new_id,
+                &mut cmds,
+            );
         }
     }
     cmds
@@ -552,6 +566,7 @@ fn fill_shape(
     row: &[String],
     frame: Option<Rect>,
     top: bool,
+    keep: bool,
     new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
     cmds: &mut Vec<Command>,
 ) {
@@ -562,11 +577,11 @@ fn fill_shape(
     if text_of(s).is_none() && (top || !matches!(s.kind, ShapeKind::Group { .. })) {
         if let Some(i) = s.name.as_deref().and_then(|n| whole_field(st, n)) {
             if top {
-                named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+                named_placeholder(st, layer, s, i, value_of(i), keep, new_id, cmds);
             } else if kind_of(st, i) == FieldKind::Image {
-                nested_picture_frame(st, s, value_of(i), new_id, cmds);
+                nested_picture_frame(st, s, value_of(i), keep, new_id, cmds);
             } else {
-                named_placeholder(st, layer, s, i, value_of(i), new_id, cmds);
+                named_placeholder(st, layer, s, i, value_of(i), keep, new_id, cmds);
             }
             return;
         }
@@ -574,14 +589,14 @@ fn fill_shape(
     match &s.kind {
         ShapeKind::Group { children } => {
             for c in children {
-                fill_shape(st, layer, c, row, None, false, new_id, cmds);
+                fill_shape(st, layer, c, row, None, false, keep, new_id, cmds);
             }
             return;
         }
         ShapeKind::ClipFrame { frame: f, contents } => {
             let area = f.bounds();
             for c in contents {
-                fill_shape(st, layer, c, row, Some(area), false, new_id, cmds);
+                fill_shape(st, layer, c, row, Some(area), false, keep, new_id, cmds);
             }
             return;
         }
@@ -668,7 +683,8 @@ fn fill_shape(
 /// for a picture field the picture goes inside it (a clip frame's old
 /// contents, such as the placeholder picture, give way), placed by its
 /// Align and scale; for a QR field the object becomes the code, as large
-/// as its box allows. Nothing happens for a picture that does not load.
+/// as its box allows. For a picture that does not load the frame is
+/// emptied, or with `keep` keeps what it holds.
 #[allow(clippy::too_many_arguments)]
 fn named_placeholder(
     st: &PrintMergeState,
@@ -676,11 +692,18 @@ fn named_placeholder(
     s: &Shape,
     i: usize,
     value: &str,
+    keep: bool,
     new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
     cmds: &mut Vec<Command>,
 ) {
     match kind_of(st, i) {
         FieldKind::Image => {
+            // On the drawing's own pages an empty cell or a picture that
+            // does not load keeps the frame's current picture (#618).
+            let pic = picture_in(value, &picture_dirs(st));
+            if pic.is_none() && keep {
+                return;
+            }
             if let ShapeKind::ClipFrame { contents, .. } = &s.kind {
                 if !contents.is_empty() {
                     cmds.push(Command::ExtractContents { clip: s.id });
@@ -689,7 +712,7 @@ fn named_placeholder(
                     });
                 }
             }
-            let Some(pic) = picture_in(value, &picture_dirs(st)) else {
+            let Some(pic) = pic else {
                 return;
             };
             let (scale, anchor) = placement_of(s);
@@ -740,6 +763,7 @@ fn nested_picture_frame(
     st: &PrintMergeState,
     s: &Shape,
     value: &str,
+    keep: bool,
     new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
     cmds: &mut Vec<Command>,
 ) {
@@ -771,7 +795,9 @@ fn nested_picture_frame(
         shape.stroke = None;
         shape.fill = Fill::None;
         contents.push(shape);
-    } else if !matches!(s.kind, ShapeKind::ClipFrame { .. }) {
+    } else if keep || !matches!(s.kind, ShapeKind::ClipFrame { .. }) {
+        // No picture: a frame on the drawing's own pages keeps its
+        // contents (#618); a plain object stays as it is.
         return;
     }
     cmds.push(Command::SetShapeKind {
@@ -827,7 +853,7 @@ fn merge_with(
         };
         let p = p.clone();
         let mut new_id = || engine.new_shape_id();
-        cmds.extend(fill_page(st, &p, row, &mut new_id));
+        cmds.extend(fill_page(st, &p, row, false, &mut new_id));
         cmds.push(Command::RenamePage {
             page: *pid,
             name: format!("{} {}", template.name, k + 1),
@@ -852,14 +878,47 @@ pub fn perform(app: &mut App, st: &PrintMergeState) {
     }
 }
 
+/// What [`merge_onto_pages`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InPlaceMerge {
+    /// Pages that had fields to fill; 0 when everything was already filled.
+    pub filled: usize,
+    /// Records past the drawing's last page, left out.
+    pub left_out: usize,
+    /// The pages merged hold merge fields at all.
+    pub fields: bool,
+}
+
+/// Whether `s`, or an object in it, is a merge field: a text holding a
+/// field's `<Name>`, or an object named after a picture or QR field.
+fn holds_field(st: &PrintMergeState, s: &Shape) -> bool {
+    if s.name
+        .as_deref()
+        .is_some_and(|n| whole_field(st, n).is_some())
+    {
+        return true;
+    }
+    if let Some(t) = text_of(s) {
+        if st.headers.iter().any(|h| t.contains(&format!("<{h}>"))) {
+            return true;
+        }
+    }
+    match &s.kind {
+        ShapeKind::Group { children } => children.iter().any(|c| holds_field(st, c)),
+        ShapeKind::ClipFrame { contents, .. } => contents.iter().any(|c| holds_field(st, c)),
+        _ => false,
+    }
+}
+
 /// Fill the drawing's own pages instead of copies (the docker's merge
 /// with On every page, #618): record k goes on the k-th page from the
 /// first, as one undo step; pages past the last record, and records past
-/// the last page, are left out. Returns the pages filled.
+/// the last page, are left out. A picture field whose picture does not
+/// load keeps what it shows, so a drawing already filled is left as it is.
 pub fn merge_onto_pages(
     engine: &mut tracedraw_core::Engine,
     st: &PrintMergeState,
-) -> Result<usize, String> {
+) -> Result<InPlaceMerge, String> {
     let rows = values(st);
     let pages: Vec<tracedraw_core::document::Page> = engine
         .document()
@@ -872,16 +931,27 @@ pub fn merge_onto_pages(
         return Err(crate::i18n::tr("merge.no_records"));
     }
     let mut cmds = Vec::new();
+    let mut filled = 0;
     for (p, row) in pages.iter().zip(&rows) {
         let mut new_id = || engine.new_shape_id();
-        cmds.extend(fill_page(st, p, row, &mut new_id));
+        let page_cmds = fill_page(st, p, row, true, &mut new_id);
+        filled += usize::from(!page_cmds.is_empty());
+        cmds.extend(page_cmds);
     }
     if !cmds.is_empty() {
         engine
             .run_batch("Print Merge", &cmds)
             .map_err(|e| e.to_string())?;
     }
-    Ok(pages.len())
+    let fields = pages
+        .iter()
+        .flat_map(|p| p.layers.iter().flat_map(|l| l.shapes.iter()))
+        .any(|s| holds_field(st, s));
+    Ok(InPlaceMerge {
+        filled,
+        left_out: rows.len() - pages.len(),
+        fields,
+    })
 }
 
 /// The merged pages as a drawing of their own (the docker's Create

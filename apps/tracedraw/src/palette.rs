@@ -141,6 +141,125 @@ pub fn default_cmyk() -> Vec<(String, Color)> {
     v
 }
 
+/// The default palette of an RGB drawing: the same colours as
+/// [`default_cmyk`], in the same order and with the same names, as clean
+/// RGB values defined directly (multiples of 51 and 10% greys), not
+/// converted from the inks (#620).
+pub fn default_rgb() -> Vec<(String, Color)> {
+    DEFAULT_RGB
+        .iter()
+        .map(|&(n, v)| {
+            (
+                n.to_string(),
+                Color::rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8),
+            )
+        })
+        .collect()
+}
+
+/// [`default_rgb`]'s names and 0xRRGGBB values.
+const DEFAULT_RGB: [(&str, u32); 99] = [
+    ("Black", 0x000000),
+    ("90% Black", 0x1A1A1A),
+    ("80% Black", 0x333333),
+    ("70% Black", 0x4D4D4D),
+    ("60% Black", 0x666666),
+    ("50% Black", 0x808080),
+    ("40% Black", 0x999999),
+    ("30% Black", 0xB3B3B3),
+    ("20% Black", 0xCCCCCC),
+    ("10% Black", 0xE6E6E6),
+    ("White", 0xFFFFFF),
+    ("Blue", 0x0000FF),
+    ("Cyan", 0x00FFFF),
+    ("Green", 0x00FF00),
+    ("Yellow", 0xFFFF00),
+    ("Red", 0xFF0000),
+    ("Magenta", 0xFF00FF),
+    ("Purple", 0x9900CC),
+    ("Orange", 0xFF6600),
+    ("Pink", 0xFF99CC),
+    ("Dark Brown", 0x663333),
+    ("Powder Blue", 0xCCCCFF),
+    ("Pastel Blue", 0x9999FF),
+    ("Baby Blue", 0x6699FF),
+    ("Electric Blue", 0x6666FF),
+    ("Twilight Blue", 0x6666CC),
+    ("Navy Blue", 0x003399),
+    ("Deep Navy Blue", 0x000066),
+    ("Desert Blue", 0x336699),
+    ("Sky Blue", 0x00CCFF),
+    ("Ice Blue", 0x99FFFF),
+    ("Light BlueGreen", 0x99CCCC),
+    ("Ocean Green", 0x669999),
+    ("Moss Green", 0x336666),
+    ("Dark Green", 0x003333),
+    ("Forest Green", 0x006633),
+    ("Grass Green", 0x009933),
+    ("Kentucky Green", 0x339966),
+    ("Light Green", 0x33CC66),
+    ("Spring Green", 0x33CC33),
+    ("Turquoise", 0x66FFCC),
+    ("Sea Green", 0x33CC99),
+    ("Faded Green", 0x99CC99),
+    ("Ghost Green", 0xCCFFCC),
+    ("Mint Green", 0x99FF99),
+    ("Army Green", 0x669966),
+    ("Avocado Green", 0x669933),
+    ("Martian Green", 0x99CC33),
+    ("Dull Green", 0x99CC66),
+    ("Chartreuse", 0x99FF00),
+    ("Moon Green", 0xCCFF66),
+    ("Murky Green", 0x333300),
+    ("Olive Drab", 0x666633),
+    ("Khaki", 0x999966),
+    ("Olive", 0x999933),
+    ("Banana Yellow", 0xCCCC33),
+    ("Light Yellow", 0xFFFF66),
+    ("Chalk", 0xFFFF99),
+    ("Pale Yellow", 0xFFFFCC),
+    ("Brown", 0x996633),
+    ("Red Brown", 0xCC6633),
+    ("Gold", 0xCC9933),
+    ("Autumn Orange", 0xFF6633),
+    ("Light Orange", 0xFF9933),
+    ("Peach", 0xFF9966),
+    ("Deep Yellow", 0xFFCC00),
+    ("Sand", 0xFFCC99),
+    ("Walnut", 0x663300),
+    ("Ruby Red", 0x990000),
+    ("Brick Red", 0xCC3300),
+    ("Tropical Pink", 0xFF6666),
+    ("Soft Pink", 0xFF9999),
+    ("Faded Pink", 0xFFCCCC),
+    ("Crimson", 0x993366),
+    ("Regal Red", 0xCC3366),
+    ("Deep Rose", 0xCC3399),
+    ("Neon Red", 0xFF0066),
+    ("Deep Pink", 0xFF6699),
+    ("Hot Pink", 0xFF3399),
+    ("Dusty Rose", 0xCC6699),
+    ("Plum", 0x660066),
+    ("Deep Violet", 0x990099),
+    ("Light Violet", 0xFF99FF),
+    ("Violet", 0xCC66CC),
+    ("Dusty Plum", 0x996699),
+    ("Pale Purple", 0xCC99CC),
+    ("Majestic Purple", 0x9933CC),
+    ("Neon Purple", 0xCC33FF),
+    ("Light Purple", 0xCC66FF),
+    ("Twilight Violet", 0x9966CC),
+    ("Easter Purple", 0xCC99FF),
+    ("Deep Purple", 0x330066),
+    ("Grape", 0x663399),
+    ("Blue Violet", 0x9966FF),
+    ("Blue Purple", 0x9900FF),
+    ("Deep River", 0x6600CC),
+    ("Deep Azure", 0x6633FF),
+    ("Storm Blue", 0x330099),
+    ("Deep Blue", 0x3300CC),
+];
+
 /// Process colours in 10% steps of C, M, Y and K combinations (a subset).
 pub fn process_palette() -> Vec<(String, Color)> {
     let mut v = Vec::new();
@@ -151,19 +270,6 @@ pub fn process_palette() -> Vec<(String, Color)> {
                     format!("C{c:.0} M{m:.0} Y{y:.0} K0"),
                     Color::cmyk_pct(c, m, y, 0.0),
                 ));
-            }
-        }
-    }
-    v
-}
-
-pub fn rgb_palette() -> Vec<(String, Color)> {
-    let mut v = Vec::new();
-    let steps = [0u8, 51, 102, 153, 204, 255];
-    for &r in &steps {
-        for &g in &steps {
-            for &b in &steps {
-                v.push((format!("R{r} G{g} B{b}"), Color::rgb8(r, g, b)));
             }
         }
     }
@@ -191,7 +297,7 @@ pub fn builtin_palettes() -> Vec<Palette> {
         Palette {
             name: "Default RGB".into(),
             key: "palette.default_rgb",
-            colors: rgb_palette(),
+            colors: default_rgb(),
             builtin: true,
             path: None,
         },

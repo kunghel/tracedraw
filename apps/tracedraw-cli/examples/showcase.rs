@@ -423,7 +423,7 @@ fn photo(dir: &Path, poster: &Document) {
         rect: Rect::new(20.0, y0, 20.0 + width, y0 + height),
         width_px: w,
         height_px: h,
-        png,
+        png: png.into(),
         fx: None,
     });
     b.add(s, "Quiet Lake (bitmap)");

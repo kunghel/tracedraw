@@ -80,6 +80,9 @@ pub struct Settings {
     pub recent_files: Vec<PathBuf>,
     pub workspace: String,
     pub show_welcome_on_start: bool,
+    /// The Welcome Screen tab was closed: it shows as its house alone
+    /// until the Welcome Screen is shown again (#677).
+    pub welcome_tab_closed: bool,
     /// Options > Tools > Table: what Tab does in a cell.
     #[serde(default)]
     pub table: crate::table_tool::TablePrefs,
@@ -1057,7 +1060,7 @@ impl Default for ToolPrefs {
             table_cols: 4,
             graph_rows: 4,
             graph_cols: 3,
-            blend_steps: 5,
+            blend_steps: 20,
             contour: Default::default(),
             eraser_width: 6.35,
             eraser_square: false,
@@ -1099,7 +1102,7 @@ pub struct ViewPrefs {
     pub page_border: bool,
     pub bleed: bool,
     pub printable_area: bool,
-    /// View > Page > Mask Outside Page (#615).
+    /// View > Mask Outside Page (#615).
     pub mask_outside_page: bool,
     pub pixel_grid: bool,
     pub baseline_grid: bool,
@@ -1308,6 +1311,7 @@ impl Default for Settings {
             recent_files: Vec::new(),
             workspace: "default".into(),
             show_welcome_on_start: true,
+            welcome_tab_closed: false,
             table: Default::default(),
             units: "mm".into(),
             nudge_mm: 2.54,

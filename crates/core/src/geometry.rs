@@ -23,7 +23,7 @@ pub fn rect_path(rect: Rect, radius: f64) -> BezPath {
 }
 
 /// Build a closed ellipse path inscribed in `rect`: four curves between
-/// nodes at the right, bottom, left and top (in that order, starting at
+/// nodes at the right, top, left and bottom (in that order, starting at
 /// the right), each node with equal handles along the tangent, and the
 /// last curve ending on the start, so it is one closed curve of four
 /// nodes when converted to curves (#625).
@@ -35,20 +35,20 @@ pub fn ellipse_path(rect: Rect) -> BezPath {
     let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
     let (kx, ky) = (rx * K, ry * K);
     let right = Point::new(c.x + rx, c.y);
-    let bottom = Point::new(c.x, c.y + ry);
+    let top = Point::new(c.x, c.y + ry);
     let left = Point::new(c.x - rx, c.y);
-    let top = Point::new(c.x, c.y - ry);
+    let bottom = Point::new(c.x, c.y - ry);
     let mut path = BezPath::new();
     path.move_to(right);
     let at = |x: f64, y: f64| Point::new(x, y);
+    path.curve_to(at(right.x, right.y + ky), at(top.x + kx, top.y), top);
+    path.curve_to(at(top.x - kx, top.y), at(left.x, left.y + ky), left);
+    path.curve_to(at(left.x, left.y - ky), at(bottom.x - kx, bottom.y), bottom);
     path.curve_to(
-        at(right.x, right.y + ky),
         at(bottom.x + kx, bottom.y),
-        bottom,
+        at(right.x, right.y - ky),
+        right,
     );
-    path.curve_to(at(bottom.x - kx, bottom.y), at(left.x, left.y + ky), left);
-    path.curve_to(at(left.x, left.y - ky), at(top.x - kx, top.y), top);
-    path.curve_to(at(top.x + kx, top.y), at(right.x, right.y - ky), right);
     path.close_path();
     path
 }
@@ -431,8 +431,8 @@ mod tests {
             .collect()
     }
 
-    /// An ellipse is one closed curve of four nodes at the right, bottom,
-    /// left and top, each with equal handles, whatever its size (#625).
+    /// An ellipse is one closed curve of four nodes at the right, top,
+    /// left and bottom, each with equal handles, whatever its size (#625).
     #[test]
     fn an_ellipse_is_closed_with_four_nodes_on_its_axes() {
         for rect in [

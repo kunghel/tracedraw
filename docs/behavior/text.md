@@ -430,7 +430,10 @@ Window > Panels > Glyphs. From the top:
 
 - Recent glyphs: the glyphs inserted last, newest first (up to 24, kept
   in the preferences as font and glyph); empty, it says "Shows the most
-  recently used glyphs". A click inserts one again in its own font.
+  recently used glyphs". A click inserts one again in its own font. The
+  box takes the theme's field colour (white in the light themes, dark in
+  the dark ones), so the glyphs, drawn in the theme's text colour, stay
+  readable (#660).
 - The font list (every family installed or carried by a drawing): the
   property bar's list, with its search as you type and font previews
   (#447).
@@ -557,7 +560,28 @@ family, "Arial") and by its legacy family name when that differs
 ("Arial Narrow", "Arial Black", "Segoe UI Semibold", the name a drawing
 from another program usually gives); the font lists show both. A
 legacy name picks the face of that name nearest the text's weight and
-style.
+style. A family name ending in a weight ("Titillium Web SemiBold",
+"Lato Light", "Semi Bold" written apart too) that no font lists is
+drawn with the family's face nearest that weight, and is not reported
+missing. Drawn that way, through the family without the weight or a
+stand-in, the weight in the name carries on everywhere: a variable font
+draws at it on its weight axis ("Quicksand SemiBold" at 600), a family
+with only a regular face draws a weight from 600 up thickened as bold
+text is, a missing family's stand-in is the one for the family without
+the weight at that weight ("Segoe UI SemiBold" in Selawik Bold), and in
+the browser the family is fetched when no font of the whole name is
+offered. A face a font lists under the whole name (family or legacy
+name, in any case: "Archivo Black", "Quicksand Light") draws as that
+face, at 400 or 700 for bold, as before.
+
+A .cdr run set in a face between or beyond regular and bold (thin,
+extra light, light, medium, semibold, extra bold, black) opens as that
+face: the family takes the weight's name ("Titillium Web" at 600 opens
+as "Titillium Web SemiBold", not bold), so editing, the PDF and the
+saved file keep the face. A family already named with a weight keeps
+its name, and is not bold when its name gives the run's weight
+("Segoe UI Semibold" at 600). The saved file names the family as it is
+shown, at regular or bold weight, and opens the same.
 
 A drawing that carries several faces of one family (regular and bold)
 has each face serve its text; an installed face of the same family,
@@ -604,7 +628,7 @@ and showed its half forms with a visible halant and its conjuncts apart
 (#599, `tests::text_is_shaped_one_script_at_a_time`). Text with Hebrew
 or Arabic letters is shaped as one run.
 
-Variable fonts draw at weight 400, or 700 for bold, on their weight
+Variable fonts draw at weight 400, 700 for bold or the weight a family name ends in, on their weight
 axis (within its range), and slant on their italic or slant axis for
 italic when the face is upright; only what no axis gives is made
 synthetically (bold by drawing the letters twice, italic by slanting
@@ -704,8 +728,19 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   `tests::a_text_refitted_to_another_path_of_the_same_kind_is_laid_out_again`
   (text crate: the outline cache keys a fitted text on its whole path,
   not on the path's number of elements).
+- The text engine keeps each outline's box with the outline it caches;
+  the box of a text object that is not turned or skewed comes from it,
+  without copying the outline, which hovering, snapping and the Pen
+  preview ask for many times a frame (#802,
+  `tests::text_bounds_come_from_the_cached_box_and_match_the_outline`).
 - `tests::fonts_are_found_by_their_legacy_family_names`,
-  `tests::a_drawing_brings_every_face_of_a_family`,
+  `tests::family_names_ending_in_a_weight_split`,
+  `tests::a_family_named_with_its_weight_draws_with_the_nearest_face`,
+  `tests::a_weight_in_the_family_name_reaches_every_way_of_drawing`,
+  the .cdr writer's `write::tests::faces_named_with_their_weight_round_trip`,
+  `tests::a_drawing_brings_every_face_of_a_family`, the .cdr reader's
+  `parse::tests::semibold_runs_keep_their_face` and
+  `text::tests::style_string_weights_are_style_codes`,
 - `tests::missing_fonts_get_stand_ins_with_the_same_widths_or_style`,
   `tests::letters_a_font_lacks_are_drawn_with_a_font_that_has_them`,
   `tests::variable_fonts_draw_bold_with_their_weight_axis` and

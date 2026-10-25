@@ -561,14 +561,28 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     draw_empty_clip_frames(app, painter);
 }
 
-/// How much of the desktop colour covers what lies outside the pages
-/// when Mask Outside Page is on: objects there still show faintly, so
-/// they can be found and picked.
-pub(crate) const OUTSIDE_PAGE_MASK: f32 = 0.85;
+/// The colour Mask Outside Page paints when the desktop is white or
+/// nearly (the default in the light theme): a near-black that makes the
+/// page stand out, as the reference program shows it (#615).
+pub(crate) const OUTSIDE_PAGE_DARK: Color32 = Color32::from_gray(0x22);
 
-/// Mask Outside Page (#615): the desktop colour, nearly opaque, over the
-/// window outside the page (every page in Multipage View), and the page
-/// border over the objects. A few rectangles a frame.
+/// The colour of Mask Outside Page: the desktop colour, or
+/// [`OUTSIDE_PAGE_DARK`] when the desktop is as light as the paper, so
+/// the page never melts into what surrounds it.
+pub(crate) fn outside_page_mask_color(app: &App) -> Color32 {
+    let d = app.desktop_color();
+    if d.r() >= 0xE0 && d.g() >= 0xE0 && d.b() >= 0xE0 {
+        OUTSIDE_PAGE_DARK
+    } else {
+        d.to_opaque()
+    }
+}
+
+/// Mask Outside Page (#615): an opaque colour over the window outside
+/// the page (every page in Multipage View), the page border over the
+/// objects, and the selected objects' outlines in the selection blue over
+/// the mask, so parts off the page can still be found and picked. A few
+/// rectangles a frame and the outlines flattened once per change.
 fn mask_outside_pages(app: &App, painter: &Painter, rect: ERect, paper: ERect) {
     let mut pages = vec![paper];
     if app.multipage {
@@ -583,7 +597,7 @@ fn mask_outside_pages(app: &App, painter: &Painter, rect: ERect, paper: ERect) {
                 .filter(|r| r.intersects(rect)),
         );
     }
-    let mask = app.desktop_color().gamma_multiply(OUTSIDE_PAGE_MASK);
+    let mask = outside_page_mask_color(app);
     for r in outside(rect, &pages) {
         painter.rect_filled(r, 0.0, mask);
     }
@@ -594,6 +608,17 @@ fn mask_outside_pages(app: &App, painter: &Painter, rect: ERect, paper: ERect) {
             EStroke::new(1.0, Tokens::page_border()),
             epaint::StrokeKind::Outside,
         );
+    }
+    let stroke = EStroke::new(1.0, Tokens::SELECTION);
+    let view = &app.view;
+    let seen = rect.expand(2.0);
+    for line in app.selected_outlines().iter() {
+        let pts: Vec<Pos2> = line.iter().map(|p| view.to_screen(*p)).collect();
+        for w in pts.windows(2) {
+            if seen.contains(w[0]) || seen.contains(w[1]) {
+                painter.line_segment([w[0], w[1]], stroke);
+            }
+        }
     }
 }
 

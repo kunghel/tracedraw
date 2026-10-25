@@ -8,6 +8,7 @@
 //! bottom-left corner of the page and the Y axis pointing up. Renderers flip to screen space as needed.
 
 #![allow(clippy::should_implement_trait)]
+pub mod bytes;
 pub mod color;
 pub mod command;
 pub mod corner_cut;
@@ -35,6 +36,7 @@ pub mod style;
 pub mod table;
 pub mod text_flow;
 
+pub use bytes::SharedBytes;
 pub use color::Color;
 pub use command::Command;
 pub use document::{

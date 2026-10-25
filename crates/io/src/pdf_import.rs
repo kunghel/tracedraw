@@ -1528,7 +1528,7 @@ impl<'a> Importer<'a> {
             rect: unit,
             width_px: w,
             height_px: h,
-            png,
+            png: png.into(),
             fx: None,
         });
         shape.transform = gs.ctm;

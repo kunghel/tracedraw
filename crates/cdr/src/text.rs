@@ -144,6 +144,12 @@ impl StyleFlags {
     pub fn italic(self) -> bool {
         self.0 & 0x3ffff & Self::ITALIC_BITS != 0
     }
+    /// The weight of the face the flags name (100 thin .. 900 heavy);
+    /// `None` when no face bit is set.
+    pub fn weight(self) -> Option<u16> {
+        let face = self.0 & 0x3ffff;
+        (face != 0).then(|| (face.trailing_zeros() as u16 / 2 + 1) * 100)
+    }
     pub fn underline(self) -> bool {
         (self.0 >> 18) & 0x7 != 0
     }
@@ -195,6 +201,9 @@ pub(crate) struct RunStyle {
     pub size_pt: Option<f64>,
     pub flags: Option<StyleFlags>,
     pub bold: Option<bool>,
+    /// The face's weight (400 regular, 600 semibold, 700 bold), set with
+    /// `bold` when the file gives it.
+    pub weight: Option<u16>,
     pub italic: Option<bool>,
     pub fill_id: Option<u32>,
     pub outl_id: Option<u32>,
@@ -236,6 +245,12 @@ impl RunStyle {
             size_pt: self.size_pt.or(base.size_pt),
             flags: self.flags.or(base.flags),
             bold: self.bold.or(base.bold),
+            // The weight belongs to the bold setting it came with.
+            weight: if self.bold.is_some() {
+                self.weight
+            } else {
+                base.weight
+            },
             italic: self.italic.or(base.italic),
             fill_id: self.fill_id.or(base.fill_id),
             outl_id: self.outl_id.or(base.outl_id),
@@ -1427,11 +1442,13 @@ fn apply_style_key(s: &mut RunStyle, key: &str, value: &Json) {
             if n >= 1.0 && n.fract() == 0.0 && code.is_power_of_two() && code < 1 << 18 {
                 let f = StyleFlags(code as u32);
                 s.bold = Some(f.bold());
+                s.weight = f.weight();
                 if f.italic() {
                     s.italic = Some(true);
                 }
             } else if (100.0..=1000.0).contains(&n) {
                 s.bold = Some(n >= 600.0);
+                s.weight = Some((n / 100.0).round() as u16 * 100);
             }
             return;
         }
@@ -1449,6 +1466,9 @@ fn apply_style_key(s: &mut RunStyle, key: &str, value: &Json) {
             other => {
                 if let Some(n) = other.num() {
                     s.bold = Some(n >= 600.0 || (n > 0.0 && n <= 1.0));
+                    s.weight = (100.0..=1000.0)
+                        .contains(&n)
+                        .then(|| (n / 100.0).round() as u16 * 100);
                 }
             }
         }
@@ -2101,6 +2121,14 @@ mod tests {
         // 1024 is a 600 weight (a semibold face), 4096 a 700 one.
         assert_eq!(latin(r#""weight":"1024""#).bold, Some(true));
         assert_eq!(latin(r#""weight":"4096""#).bold, Some(true));
+        // The weights the codes stand for.
+        assert_eq!(latin(r#""weight":"64""#).weight, Some(400));
+        assert_eq!(latin(r#""weight":"1024""#).weight, Some(600));
+        assert_eq!(latin(r#""weight":"4096""#).weight, Some(700));
+        assert_eq!(latin(r#""weight":"8192""#).weight, Some(700));
+        assert_eq!(StyleFlags(0x10).weight(), Some(300));
+        assert_eq!(StyleFlags(0x2_0000).weight(), Some(900));
+        assert_eq!(StyleFlags(1 << 18).weight(), None);
         // An odd exponent is the italic of a weight.
         let s = latin(r#""weight":"8192""#);
         assert_eq!((s.bold, s.italic), (Some(true), Some(true)));

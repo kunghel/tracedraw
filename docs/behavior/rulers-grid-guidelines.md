@@ -157,6 +157,12 @@ stand for a distance in the world (`drawing_scale.rs`):
   dragged out of a ruler or moved it keeps those arrows; dragging the
   ruler origin shows the cross hair.
 - Delete removes the selected guidelines that are not locked.
+- With guidelines selected and no object, the arrow keys move the ones
+  that are not locked by the nudge distance (Shift: super nudge, Ctrl:
+  micro nudge), one undo step "Nudge Guidelines" per press; a horizontal
+  guideline only follows up and down, a vertical one only sideways, and a
+  press that moves none of them adds no step (#781,
+  `pick_drag_tests::arrow_keys_nudge_the_selected_guidelines`).
 - Right-click on a guideline: Undo, Delete, Lock or Unlock, Properties
   (opens the Guidelines panel with the guideline's values). A double
   click on a guideline (where no object is) does the same: the panel
@@ -212,6 +218,7 @@ properties for new objects (see `object-styles.md`), for new drawings.
 - `guides::tests::dragging_a_guide_is_one_undo_step_and_leaves_other_guides_alone`
 - `guides::tests::dropping_a_guide_outside_the_window_deletes_it`
 - `guides::tests::locked_guides_select_but_do_not_move_or_delete`
+- `pick_drag_tests::arrow_keys_nudge_the_selected_guidelines`
 - `guides::tests::second_click_rotates_a_guide_about_the_clicked_point`
 - `ui::layout_options::tests::*` (form origin, presets)
 - `canvas::tests::grid_lines_thin_out_and_follow_the_origin`

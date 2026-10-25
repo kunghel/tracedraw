@@ -212,6 +212,53 @@ pub fn render_text(
     Some((image, baseline))
 }
 
+/// Whether the list's families are needed this frame: while it is open,
+/// its field has the focus or just lost it (Enter picks), or the wheel
+/// turns over it (#665). Closed on a bar it needs none (#616).
+fn list_needed(open: bool, focused: bool, lost_focus: bool, wheeling: bool) -> bool {
+    open || focused || lost_focus || wheeling
+}
+
+/// The families the list holds for `show`; none when they are not
+/// `needed`, so that a closed list on a bar clones no name a frame
+/// (#616: 1332 families on the reporter's PC).
+fn listed_families(app: &App, show: Show, needed: bool) -> Vec<String> {
+    if !needed {
+        return Vec::new();
+    }
+    match show {
+        Show::All => app.font_families.clone(),
+        Show::Installed => {
+            let fonts = tracedraw_text::fonts();
+            app.font_families
+                .iter()
+                .filter(|f| fonts.has_family(f))
+                .cloned()
+                .collect()
+        }
+        Show::Drawing => {
+            let used = if app.has_document() {
+                app.doc().font_families_used()
+            } else {
+                Vec::new()
+            };
+            app.font_families
+                .iter()
+                .filter(|f| used.contains(f))
+                .cloned()
+                .collect()
+        }
+        Show::Download => {
+            let fonts = tracedraw_text::fonts();
+            app.font_families
+                .iter()
+                .filter(|f| !fonts.has_family(f))
+                .cloned()
+                .collect()
+        }
+    }
+}
+
 /// The families a list shows for what was typed: all of them when
 /// nothing was (or the field still holds the current family), else those
 /// holding the typed letters, ignoring case: the name itself first, then
@@ -377,38 +424,24 @@ fn font_list_with(
         }
     }
 
-    // What the list holds.
-    let all: Vec<String> = match st.show {
-        Show::All => app.font_families.clone(),
-        Show::Installed => {
-            let fonts = tracedraw_text::fonts();
-            app.font_families
+    // What the list holds: built only while it is open, typed in or
+    // turned with the wheel. Closed on a bar it costs nothing a frame,
+    // where it cloned every family name (#616: 1332 of them).
+    let wheeling = wheel
+        && ui.rect_contains_pointer(anchor)
+        && ui.input(|i| {
+            i.raw
+                .events
                 .iter()
-                .filter(|f| fonts.has_family(f))
-                .cloned()
-                .collect()
-        }
-        Show::Drawing => {
-            let used = if app.has_document() {
-                app.doc().font_families_used()
-            } else {
-                Vec::new()
-            };
-            app.font_families
-                .iter()
-                .filter(|f| used.contains(f))
-                .cloned()
-                .collect()
-        }
-        Show::Download => {
-            let fonts = tracedraw_text::fonts();
-            app.font_families
-                .iter()
-                .filter(|f| !fonts.has_family(f))
-                .cloned()
-                .collect()
-        }
-    };
+                .any(|e| matches!(e, egui::Event::MouseWheel { .. }))
+        });
+    let needed = list_needed(
+        egui::Popup::is_id_open(&ctx, popup_id),
+        field.has_focus(),
+        field.lost_focus(),
+        wheeling,
+    );
+    let all = listed_families(app, st.show, needed);
     let families = matching(&all, st.typed.as_deref(), current);
     let mut rows: Vec<Row> = Vec::with_capacity(families.len());
     for f in &families {
@@ -1123,6 +1156,26 @@ mod tests {
         );
         assert!(matching(&all, Some("zzz"), "Arial").is_empty());
         assert_eq!(matching(&all, Some("  "), "Arial"), all);
+    }
+
+    /// A closed list on a bar clones no family name a frame; open, typed
+    /// in, just left with Enter or turned with the wheel it holds them
+    /// all (#616, #665).
+    #[test]
+    fn a_closed_list_builds_no_family_list() {
+        let mut app = App::headless();
+        app.font_families = (0..1332).map(|i| format!("Family {i}")).collect();
+        let closed = list_needed(false, false, false, false);
+        assert!(listed_families(&app, Show::All, closed).is_empty());
+        for (open, focused, lost, wheel) in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ] {
+            let needed = list_needed(open, focused, lost, wheel);
+            assert_eq!(listed_families(&app, Show::All, needed).len(), 1332);
+        }
     }
 
     #[test]

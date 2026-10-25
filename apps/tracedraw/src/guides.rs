@@ -255,7 +255,7 @@ impl App {
         self.clipboard = Some(crate::app::Clipboard {
             shapes: Vec::new(),
             styles: Vec::new(),
-            system: 0,
+            system: Default::default(),
             guides: copied,
         });
         self.mark_system_clipboard(None);
@@ -296,7 +296,8 @@ impl App {
     /// selected ones moved, turned, scaled or skewed by `t` (page space),
     /// or with `copies` that many copies, each the one before transformed
     /// again, the last ones selected. Locked guidelines stay. One undo
-    /// step named `label`; false when nothing changed (#376).
+    /// step named `label`; false when nothing changed (#376), as for a
+    /// horizontal guideline moved sideways (no undo step then).
     pub fn transform_selected_guides(
         &mut self,
         t: Affine,
@@ -315,8 +316,12 @@ impl App {
             return false;
         }
         if copies == 0 {
+            let before = guides.clone();
             for &i in &picked {
                 guides[i].line = transformed_line(guides[i].line, t, mid);
+            }
+            if guides == before {
+                return false;
             }
             self.set_guides(guides, label);
             return true;

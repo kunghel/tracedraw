@@ -418,7 +418,7 @@ fn bitmap(app: &mut App) -> ShapeId {
         rect: Rect::new(0.0, 0.0, 25.4, 12.7),
         width_px: 20,
         height_px: 10,
-        png: png(20, 10, [200, 30, 30]),
+        png: png(20, 10, [200, 30, 30]).into(),
         fx: None,
     })
     .expect("bitmap")

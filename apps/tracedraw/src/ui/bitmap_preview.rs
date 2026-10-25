@@ -39,7 +39,7 @@ fn color_image(img: &RgbaImage) -> ColorImage {
 /// The first selected bitmap: its id, pixels per inch and PNG bytes; else
 /// the first selected object as a picture (what bitmap effects start
 /// from: its picture with its effects when it has some, else itself).
-pub fn selected_bitmap(app: &App) -> Option<(ShapeId, f32, Vec<u8>)> {
+pub fn selected_bitmap(app: &App) -> Option<(ShapeId, f32, tracedraw_core::SharedBytes)> {
     let shapes = app.selected_shapes();
     let bitmap = shapes.iter().find_map(|s| match &s.kind {
         ShapeKind::Bitmap {
@@ -108,22 +108,23 @@ fn thumb(app: &App, ctx: &egui::Context, src: &Source) -> Option<Thumb> {
 /// source and size.
 pub fn copy_of(app: &App, ctx: &egui::Context, src: &Source, side: u32) -> Option<Thumb> {
     let cache = egui::Id::new(("bitmap_preview_thumb", side));
-    let (shape, key, png, before): (ShapeId, u64, Vec<u8>, &[BitmapEffect]) = match src {
-        Source::Shown => {
-            let (id, _, png) = selected_bitmap(app)?;
-            let key = settings_key(&("shown", png.len(), side));
-            (id, key, png, &[])
-        }
-        Source::Stack {
-            shape,
-            stack,
-            index,
-        } => {
-            let before = &stack.effects[..(*index).min(stack.effects.len())];
-            let key = settings_key(&("stack", stack.png.len(), before, side));
-            (*shape, key, stack.png.clone(), before)
-        }
-    };
+    let (shape, key, png, before): (ShapeId, u64, tracedraw_core::SharedBytes, &[BitmapEffect]) =
+        match src {
+            Source::Shown => {
+                let (id, _, png) = selected_bitmap(app)?;
+                let key = settings_key(&("shown", png.len(), side));
+                (id, key, png, &[])
+            }
+            Source::Stack {
+                shape,
+                stack,
+                index,
+            } => {
+                let before = &stack.effects[..(*index).min(stack.effects.len())];
+                let key = settings_key(&("stack", stack.png.len(), before, side));
+                (*shape, key, stack.png.clone(), before)
+            }
+        };
     if let Some(t) = ctx.data(|d| d.get_temp::<Thumb>(cache)) {
         if t.shape == shape && t.key == key {
             return Some(t);

@@ -233,10 +233,16 @@ impl App {
         if self.clip_frame_edit.is_some() {
             self.finish_clip_frame_edit();
         }
+        // Editing a symmetry ends with the drawing it is in; it stayed on,
+        // its message in the status bar over the next drawing (#442).
+        if self.symmetry_edit.is_some() {
+            self.finish_symmetry_edit();
+        }
         self.drag = Drag::None;
         self.curve = None;
         self.curve_steps.clear();
         self.text_edit = None;
+        self.dimension_labels_seen.clear();
         self.table_edit = None;
         self.three_point_base = None;
         self.dimension_points.clear();
@@ -578,6 +584,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::tr;
     use tracedraw_core::document::ShapeKind;
     use tracedraw_core::geometry::{Rect, Size};
 
@@ -684,6 +691,30 @@ mod tests {
         app.open_path(tdt);
         assert_eq!(app.docs.len(), tabs + 3, "a template opens anew each time");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Editing a symmetry ends when another drawing comes to the front
+    /// or a new one opens: its message stayed in the status bar and the
+    /// mode stayed on for the next drawing (#442).
+    #[test]
+    fn another_drawing_ends_the_symmetry_editing() {
+        let mut app = App::headless();
+        let a = add_rect(&mut app);
+        app.select(vec![a]);
+        app.create_symmetry();
+        app.edit_symmetry();
+        assert!(app.symmetry_edit.is_some());
+        assert_eq!(app.status, tr("status.editing_symmetry"));
+        app.open_document(Document::new("Second", Size::new(100.0, 50.0)), None);
+        assert!(app.symmetry_edit.is_none());
+        assert_ne!(app.status, tr("status.editing_symmetry"));
+        // Back in the first drawing, editing again, then another tab.
+        app.switch_document(0);
+        app.edit_symmetry();
+        assert!(app.symmetry_edit.is_some());
+        app.switch_document(1);
+        assert!(app.symmetry_edit.is_none());
+        assert_ne!(app.status, tr("status.editing_symmetry"));
     }
 
     #[test]

@@ -89,6 +89,9 @@ cargo install wasm-bindgen-cli --version 0.2.129   # must match Cargo.lock
 cargo build --target wasm32-unknown-unknown --profile web -p tracedraw
 wasm-bindgen --target web --no-typescript --out-dir site \
     target/wasm32-unknown-unknown/web/tracedraw.wasm
+# binaryen 133 (https://github.com/WebAssembly/binaryen/releases)
+wasm-opt -Oz --strip-debug --strip-producers \
+    -o site/tracedraw_bg.wasm site/tracedraw_bg.wasm
 cp web/FONTS.md site/
 size=$(wc -c < site/tracedraw_bg.wasm | tr -d ' ')
 sed -e "s/data-wasm-size=\"0\"/data-wasm-size=\"$size\"/" -e "s/@VERSION@/0.4.0/" \
@@ -101,7 +104,11 @@ Checks: the page keeps the splash, what it says, its links and the
 elements the module uses, and never says "demo"
 (`web_page::tests::the_loading_page_shows_the_splash_and_says_what_it_is`);
 both builds fill in the module's size and the version
-(`web_page::tests::the_builds_fill_in_the_modules_size_and_the_version`).
+(`web_page::tests::the_builds_fill_in_the_modules_size_and_the_version`), after
+binaryen's `wasm-opt` has optimised the module for size and dropped its
+name, debug and producer sections (version 133 in CI, from the release
+checked against its SHA-256;
+`web_page::tests::the_builds_shrink_the_module_before_measuring_it`).
 Checked in a browser with a stand-in module: the progress, the start, an
 error with the links kept, on a desktop and a phone-sized window.
 

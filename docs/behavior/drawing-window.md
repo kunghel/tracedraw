@@ -9,13 +9,19 @@
   drawn behind the page, so a 6 px band shows on the right and a 4 px
   band at the bottom. The page rectangle is snapped to whole pixels.
   View > Page > Page Border hides the border and the shadow.
-- View > Page > Mask Outside Page (off by default, kept with the other
-  view settings): the desktop colour, at 85 % over the objects, covers
-  everything outside the page (outside every page in Multipage View),
-  and the page border is drawn over the objects, so the page shows as it
-  will print or export. Objects outside still show faintly, and every
-  tool works as usual; the selection handles, guidelines and previews
-  stay on top (#615,
+- View > Mask Outside Page, right after the view modes (Pixels), as in
+  the reference program (off by default, kept with the other view
+  settings): an opaque colour covers everything outside the page
+  (outside every page in Multipage View) over the objects, and the page
+  border is drawn over the objects, so the page shows as it will print
+  or export. The colour is the desktop colour, or a near-black `#222222`
+  when the desktop is as light as the paper (every channel at least
+  `#E0`, as the default white desktop), so the page stands out. The
+  selected objects' outlines are drawn over the mask as a 1 px line in
+  the selection blue, so a part off the page can still be found and
+  picked (flattened once per change of the selection or the zoom, at
+  most 200,000 points); every tool works as usual, and the selection
+  handles, guidelines and previews stay on top (#615,
   `pick_drag_tests::mask_outside_page_covers_the_desktop_and_keeps_objects_editable`,
   `canvas::tests::the_mask_covers_everything_outside_the_pages`).
 - Double-clicking the page border (within 3 px) or its shadow with the
@@ -42,7 +48,14 @@ From the left, after the ruler's width:
    buttons add a page of the current size next to the current page and
    make it current.
 2. The page tabs: one slanted tab per page, the current one white; a click
-   goes to the page, a double click renames it. A right click makes the
+   goes to the page, a double click renames it. The tabs that fit in the
+   row are shown; when the current page changes (a tab, the navigator,
+   PgUp and PgDn, Go To Page) they slide just enough for its tab to show
+   whole, and the mouse wheel over them slides them one tab a notch
+   without changing the page. Before, the tabs past the row's end never
+   showed, so in a long drawing (a merged document) their pages could be
+   reached only with Go To Page (#794,
+   `pick_drag_tests::page_tabs_slide_to_the_current_page_of_a_long_drawing`). A right click makes the
    page current and opens its menu, six rows with a picture each and no
    separators: Rename Page... (a page with a text cursor), Insert Page
    After and Insert Page Before (two pages side by side, the new one with

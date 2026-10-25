@@ -340,7 +340,7 @@ fn bitmap_shape(app: &mut App, rect: Rect, img: &image::RgbaImage, name: &str) -
             rect,
             width_px: img.width(),
             height_px: img.height(),
-            png,
+            png: png.into(),
             fx: None,
         },
     );

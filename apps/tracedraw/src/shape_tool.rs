@@ -309,26 +309,44 @@ impl App {
             .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s.id, pts)))
     }
 
-    /// Control handle under the pointer, for selected nodes only.
+    /// Control handle under the pointer, for selected nodes only, or one
+    /// of the two handles a chosen segment shows (its start node's
+    /// outgoing handle and its end node's incoming one).
     pub(crate) fn ctrl_handle_at(&self, p: Point) -> Option<(ShapeId, usize, Which)> {
         // The nearest handle within the pick distance, on the page.
         let tol = self.settings.nodes.pick_px() / self.view.zoom as f64;
         let mut best: Option<((ShapeId, usize, Which), f64)> = None;
-        for (id, index) in &self.node_selection {
-            let Some((path, _, t)) = self.path_of(*id) else {
+        let mut take = |key: (ShapeId, usize, Which), c: Option<Point>| {
+            let Some(c) = c else { return };
+            let d = (c - p).hypot();
+            if d <= tol && best.as_ref().is_none_or(|b| d < b.1) {
+                best = Some((key, d));
+            }
+        };
+        if let Some((id, index)) = self.chosen_segment().filter(|s| s.1 > 0) {
+            if let Some((path, _, t)) = self.path_of(id) {
+                for n in nodes::nodes(&(t * path)) {
+                    if n.index + 1 == index {
+                        take((id, n.index, Which::Out), n.ctrl_out);
+                    } else if n.index == index {
+                        take((id, n.index, Which::In), n.ctrl_in);
+                    }
+                }
+            }
+            return best.map(|b| b.0);
+        }
+        // The nodes of each curve with chosen nodes, worked out once.
+        for (k, &(id, _)) in self.node_selection.iter().enumerate() {
+            if self.node_selection[..k].iter().any(|s| s.0 == id) {
+                continue;
+            }
+            let Some((path, _, t)) = self.path_of(id) else {
                 continue;
             };
-            let Some(n) = nodes::nodes(&(t * path))
-                .into_iter()
-                .find(|n| n.index == *index)
-            else {
-                continue;
-            };
-            for (c, which) in [(n.ctrl_in, Which::In), (n.ctrl_out, Which::Out)] {
-                let Some(c) = c else { continue };
-                let d = (c - p).hypot();
-                if d <= tol && best.as_ref().is_none_or(|b| d < b.1) {
-                    best = Some(((*id, *index, which), d));
+            for n in nodes::nodes(&(t * path)) {
+                if self.node_selection.contains(&(id, n.index)) {
+                    take((id, n.index, Which::In), n.ctrl_in);
+                    take((id, n.index, Which::Out), n.ctrl_out);
                 }
             }
         }
@@ -779,6 +797,13 @@ impl App {
                 self.click_node((hit.shape, hit.index), mods);
                 return;
             }
+            // A click on a control handle keeps the nodes chosen, so the
+            // handle can be dragged next; the segment under it is not
+            // taken instead (#639). A node comes first, so a handle lying
+            // on its node never swallows a click on the node.
+            if self.ctrl_handle_at(p).is_some() {
+                return;
+            }
             // A click on a corner widget keeps the selection.
             if self.corner_widget_at(p).is_some() {
                 return;
@@ -793,13 +818,10 @@ impl App {
                 return;
             }
             self.segment_spot = None;
-            // A press on a control handle, or a near miss of a node or a
-            // handle of the selected curves, keeps the selection: only a
-            // click clearly on empty canvas deselects.
-            if self.ctrl_handle_at(p).is_some()
-                || self.near_selected_nodes(p)
-                || self.spline_polygon_at(p).is_some()
-            {
+            // A near miss of a node or a handle of the selected curves
+            // keeps the selection: only a click clearly on empty canvas
+            // deselects.
+            if self.near_selected_nodes(p) || self.spline_polygon_at(p).is_some() {
                 return;
             }
             match self.hit_test(p) {
@@ -1693,7 +1715,7 @@ mod bitmap_node_tests {
             rect: Rect::new(10.0, 10.0, 50.0, 40.0),
             width_px: 2,
             height_px: 2,
-            png,
+            png: png.into(),
             fx: None,
         })
         .expect("picture")

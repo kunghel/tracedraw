@@ -1098,9 +1098,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 crate::ui::callout_bar::callout_bar(app, ui);
             }
             Tool::Pick | Tool::FreeformPick
-                if shapes
-                    .iter()
-                    .all(|s| crate::dimensions::Dimension::of(s).is_some()) =>
+                if shapes.iter().all(crate::dimensions::is_dimension) =>
             {
                 // Dimensions selected with the Pick tool: the object
                 // fields, then the dimension style.

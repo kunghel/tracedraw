@@ -773,7 +773,7 @@ fn sheets_as_bitmaps(doc: &mut Document, dpi: f64) {
                 rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, size.width, size.height),
                 width_px: w,
                 height_px: h,
-                png,
+                png: png.into(),
                 fx: None,
             },
         );
@@ -1423,6 +1423,71 @@ fn replace_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spot colour on a rectangle: printed with separations, the sheets
+    /// give the four process plates and one for the spot ink, where the
+    /// rectangle is full ink; the print preview offers its box (#779).
+    #[test]
+    fn separations_print_a_plate_for_each_spot_ink() {
+        use tracedraw_core::Fill;
+        let mut app = App::headless();
+        app.run(tracedraw_core::Command::SetInks {
+            inks: vec![tracedraw_core::document::Ink {
+                id: 7,
+                name: "Spot Red".into(),
+                cmyk: [0.0, 1.0, 0.8, 0.0],
+            }],
+        });
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(20.0, 20.0, 80.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.run(tracedraw_core::Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(tracedraw_core::Color::Spot {
+                ink: 7,
+                tint: 1.0,
+                c: 0.0,
+                m: 1.0,
+                y: 0.8,
+                k: 0.0,
+            }),
+        });
+        let st = PrintState {
+            separations: true,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        let names: Vec<String> = plates(&sheets).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["Cyan", "Magenta", "Yellow", "Black", "Spot Red"]);
+        let seps = separations_doc(&sheets);
+        assert_eq!(seps.pages.len(), 5);
+        let spot = &seps.pages[4];
+        assert!(spot.name.ends_with("Spot Red"), "{}", spot.name);
+        // The rectangle is full ink on its plate and absent on cyan.
+        let fills = |page: &tracedraw_core::document::Page| -> Vec<Fill> {
+            let mut out = Vec::new();
+            fn walk(s: &tracedraw_core::Shape, out: &mut Vec<Fill>) {
+                if let ShapeKind::Group { children } = &s.kind {
+                    children.iter().for_each(|c| walk(c, out));
+                } else if let ShapeKind::ClipFrame { contents, .. } = &s.kind {
+                    contents.iter().for_each(|c| walk(c, out));
+                } else {
+                    out.push(s.fill.clone());
+                }
+            }
+            for l in &page.layers {
+                l.shapes.iter().for_each(|s| walk(s, &mut out));
+            }
+            out
+        };
+        let full = Fill::Solid(tracedraw_core::Color::Gray { v: 0.0 });
+        assert!(fills(spot).contains(&full), "{:?}", fills(spot));
+        assert!(!fills(&seps.pages[0]).contains(&full));
+    }
 
     #[test]
     fn spot_inks_get_plates_of_their_own() {

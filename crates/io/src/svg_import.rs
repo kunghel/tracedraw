@@ -331,7 +331,7 @@ fn convert_image(img: &usvg::Image, to_page: Affine, ids: &mut IdSource) -> Opti
             rect,
             width_px,
             height_px,
-            png,
+            png: png.into(),
             fx: None,
         },
     );

@@ -10,7 +10,14 @@
 //! angle at a centre between two points. The label is the value in the
 //! style's units through the drawing scale (degrees for angles), with the
 //! chosen decimals, the units' sign when shown, a prefix and a suffix; it
-//! sits above the dimension line, in a gap in it, or below.
+//! sits above the dimension line, in a gap in it, or below; a linear
+//! one's runs along its line or stays horizontal.
+//!
+//! The label can be edited in place like any text (#644): typed text that
+//! still holds the measured value keeps it live, what is around it
+//! becoming the prefix and suffix; text without it stays as typed. Its
+//! font, size and colour become the style's. Break Apart frees the lines,
+//! the arrowheads and the label as objects of their own.
 
 use crate::app::{App, Units};
 use crate::i18n::tr;
@@ -112,6 +119,13 @@ pub struct DimensionStyle {
     pub arrows: ArrowStyle,
     /// The lines' ends and corners rounded.
     pub round_ends: bool,
+    /// How far the extension lines stay from the measured points, and
+    /// how far they run past the dimension line, mm (#644).
+    pub extension_gap: f64,
+    pub extension_overshoot: f64,
+    /// A linear dimension's label stays horizontal instead of running
+    /// along its line.
+    pub horizontal_text: bool,
 }
 
 impl Default for DimensionStyle {
@@ -130,7 +144,27 @@ impl Default for DimensionStyle {
             line_width: 0.0,
             arrows: ArrowStyle::Filled,
             round_ends: false,
+            extension_gap: 0.0,
+            extension_overshoot: OVERSHOOT,
+            horizontal_text: false,
         }
+    }
+}
+
+impl DimensionStyle {
+    /// The extension gap and overshoot, kept finite and in range.
+    fn lengths(&self) -> (f64, f64) {
+        let ok = |v: f64, d: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 100.0)
+            } else {
+                d
+            }
+        };
+        (
+            ok(self.extension_gap, 0.0),
+            ok(self.extension_overshoot, OVERSHOOT),
+        )
     }
 }
 
@@ -156,6 +190,42 @@ pub struct Dimension {
     pub measure: Measure,
     #[serde(default)]
     pub style: DimensionStyle,
+    /// A label typed in place that no longer holds the measured value: it
+    /// shows as typed (#644).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// How the label was last drawn, to tell an edit made to it in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawn: Option<DrawnLabel>,
+}
+
+/// A dimension's label as it was drawn: its text, the measured value as it
+/// read in it, and its font.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DrawnLabel {
+    pub text: String,
+    pub value: String,
+    pub font: String,
+}
+
+/// Where `value` stands in `text` as a whole number (no digit or decimal
+/// sign right before it, no digit or decimal part right after): its byte
+/// offset.
+fn find_value(text: &str, value: &str) -> Option<usize> {
+    if value.is_empty() {
+        return None;
+    }
+    text.match_indices(value).map(|(i, _)| i).find(|&i| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + value.len()..].chars().next();
+        let mut rest = text[i + value.len()..].chars();
+        let decimals = matches!(rest.next(), Some('.' | ','))
+            && rest.next().is_some_and(|c| c.is_ascii_digit());
+        !before.is_some_and(|c| c.is_ascii_digit() || c == '.' || c == ',')
+            && !after.is_some_and(|c| c.is_ascii_digit())
+            && !decimals
+    })
 }
 
 /// Arrowheads: length and half width, mm.
@@ -177,6 +247,16 @@ fn finite(p: Point) -> bool {
 }
 
 impl Dimension {
+    /// A dimension of `measure` in `style`, its label the measured one.
+    pub fn new(measure: Measure, style: DimensionStyle) -> Dimension {
+        Dimension {
+            measure,
+            style,
+            text: None,
+            drawn: None,
+        }
+    }
+
     /// The dimension a shape holds (a group made by the dimension tools).
     pub fn of(shape: &Shape) -> Option<Dimension> {
         if !matches!(shape.kind, ShapeKind::Group { .. }) {
@@ -210,7 +290,7 @@ impl Dimension {
         };
         Dimension {
             measure,
-            style: self.style.clone(),
+            ..self.clone()
         }
     }
 
@@ -223,11 +303,12 @@ impl Dimension {
         }
     }
 
-    /// The label: prefix, value, units, suffix.
-    pub fn label(&self, drawing_units: Units) -> String {
+    /// The measured value as the label shows it: the number with the
+    /// style's decimals and the units' sign when shown.
+    pub fn value_text(&self, drawing_units: Units) -> String {
         let s = &self.style;
         let decimals = s.precision.min(6) as usize;
-        let number = match self.measure {
+        match self.measure {
             Measure::Linear { .. } => {
                 let units = if s.units.is_empty() {
                     drawing_units
@@ -246,18 +327,124 @@ impl Dimension {
                 let unit = if s.show_units { "\u{b0}" } else { "" };
                 format!("{:.decimals$}{unit}", self.value())
             }
+        }
+    }
+
+    /// The label: the text typed for it, else prefix, value, units,
+    /// suffix.
+    pub fn label(&self, drawing_units: Units) -> String {
+        match &self.text {
+            Some(t) => t.clone(),
+            None => format!(
+                "{}{}{}",
+                self.style.prefix,
+                self.value_text(drawing_units),
+                self.style.suffix
+            ),
+        }
+    }
+
+    /// The label's font: the style's, else `font` (that of new text).
+    fn font<'a>(&'a self, font: &'a str) -> &'a str {
+        if self.style.font.trim().is_empty() {
+            font
+        } else {
+            self.style.font.as_str()
+        }
+    }
+
+    /// The same dimension, noting how its label is drawn now.
+    pub fn noting_drawn(mut self, font: &str, drawing_units: Units) -> Dimension {
+        self.drawn = Some(self.drawn_label(font, drawing_units));
+        self
+    }
+
+    fn drawn_label(&self, font: &str, drawing_units: Units) -> DrawnLabel {
+        DrawnLabel {
+            text: self.label(drawing_units),
+            value: self.value_text(drawing_units),
+            font: self.font(font).to_string(),
+        }
+    }
+
+    /// The dimension with what was done to the children of its group `g`
+    /// read back (`None` when nothing was): a label edited in place, its
+    /// font, size and colour; a label deleted brings the measured one
+    /// back, as does a part missing; an empty label changes nothing while
+    /// it is being typed (`editing`; when its editing ends it is
+    /// deleted), else it brings the measured one back. Compared with
+    /// how the label was last drawn, so new units or a new default font
+    /// leave it as it is; `seen` stands for that for a dimension saved
+    /// before labels were noted, from when an edit of it began. Only the
+    /// first span's font and size are read; bold, italic and the looks of
+    /// other spans go.
+    pub fn read_back(
+        &self,
+        g: &Shape,
+        seen: Option<&DrawnLabel>,
+        editing: Option<ShapeId>,
+    ) -> Option<Dimension> {
+        let ShapeKind::Group { children } = &g.kind else {
+            return None;
         };
-        format!("{}{}{}", s.prefix, number, s.suffix)
+        // A dimension saved before labels were noted has nothing to compare
+        // with: its label reads as drawn (new units or a new default font
+        // since would look like an edit).
+        let Some(drawn) = self.drawn.clone().or_else(|| seen.cloned()) else {
+            return (children.len() != 3).then(|| self.clone());
+        };
+        let mut next = self.clone();
+        let mut redraw = children.len() != 3;
+        let label = children
+            .iter()
+            .find(|c| matches!(c.kind, ShapeKind::Text { .. }));
+        match label.map(|l| (l, &l.kind)) {
+            Some((l, ShapeKind::Text { spans, .. })) => {
+                let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                let blank = text.trim().is_empty();
+                if blank && editing != Some(l.id) {
+                    next.text = None;
+                    redraw = true;
+                } else if text != drawn.text && !blank {
+                    if let Some(i) = find_value(&text, &drawn.value) {
+                        next.text = None;
+                        next.style.prefix = text[..i].to_string();
+                        next.style.suffix = text[i + drawn.value.len()..].to_string();
+                    } else {
+                        next.text = Some(text);
+                    }
+                }
+                if let Some(sp) = spans.first() {
+                    if sp.font_family != drawn.font && !sp.font_family.trim().is_empty() {
+                        next.style.font = sp.font_family.clone();
+                    }
+                    let size = self.style.text_size.clamp(1.0, 500.0);
+                    if sp.size_pt.is_finite() && (sp.size_pt - size).abs() > 1e-9 {
+                        next.style.text_size = sp.size_pt.clamp(1.0, 500.0);
+                    }
+                }
+                if let Fill::Solid(c) = l.fill {
+                    next.style.text_color = c;
+                }
+                // The lines' outline colour (an outline colour picked for
+                // the dimension).
+                let lines = children
+                    .iter()
+                    .find(|c| matches!(c.kind, ShapeKind::Path { .. }));
+                if let Some(st) = lines.and_then(|c| c.stroke.as_ref()) {
+                    next.style.line_color = st.color;
+                }
+            }
+            _ => next.text = None,
+        }
+        (next != *self || redraw).then_some(next)
     }
 
     /// The group's children: lines, arrowheads, label (ids from `ids`).
     pub fn shapes(&self, ids: [ShapeId; 3], font: &str, drawing_units: Units) -> [Shape; 3] {
         let text = self.label(drawing_units);
-        let font = if self.style.font.trim().is_empty() {
-            font
-        } else {
-            self.style.font.as_str()
-        };
+        let font = self.font(font);
+        let (ext_gap, overshoot) = self.style.lengths();
         let mut label = Shape::new(
             ids[2],
             ShapeKind::Text {
@@ -306,8 +493,7 @@ impl Dimension {
                     marks.line_to(back - n * ARROW_HALF);
                 }
                 ArrowStyle::Dot => {
-                    let r = ARROW_HALF;
-                    arrows.extend(kurbo::Circle::new(tip, r).path_elements(0.01));
+                    arrows.extend(kurbo::Circle::new(tip, ARROW_HALF).path_elements(0.01));
                 }
                 ArrowStyle::Tick => {
                     // At 45 degrees across the line.
@@ -331,10 +517,12 @@ impl Dimension {
                 let off = (at - a).dot(n);
                 let side = if off < 0.0 { -n } else { n };
                 let (a2, b2) = (a + n * off, b + n * off);
-                // Extension lines, past the dimension line.
+                // Extension lines, from a gap off the measured points to
+                // past the dimension line.
+                let gap = ext_gap.min(off.abs());
                 for (p, q) in [(a, a2), (b, b2)] {
-                    lines.move_to(p);
-                    lines.line_to(q + side * OVERSHOOT);
+                    lines.move_to(p + side * gap);
+                    lines.line_to(q + side * overshoot);
                 }
                 // The label reads left to right, upright.
                 let read = if dir.x < -1e-9 || (dir.x.abs() <= 1e-9 && dir.y < 0.0) {
@@ -344,11 +532,12 @@ impl Dimension {
                 };
                 let up = Vec2::new(-read.y, read.x);
                 let mid = a2.midpoint(b2);
-                let half = tb.width() / 2.0;
-                let baseline = match pos {
-                    TextPosition::Above => mid + up * (GAP - tb.y0),
-                    TextPosition::Below => mid - up * (GAP + tb.y1),
-                    TextPosition::Centered => mid - up * ((tb.y0 + tb.y1) / 2.0),
+                let horizontal = self.style.horizontal_text;
+                // How far the label reaches along the line from its middle.
+                let half = if horizontal {
+                    (tb.width() * dir.x.abs() + tb.height() * dir.y.abs()) / 2.0
+                } else {
+                    tb.width() / 2.0
                 };
                 // The dimension line, with a gap for a centred label.
                 if pos == TextPosition::Centered && len > 2.0 * (half + GAP) {
@@ -363,9 +552,27 @@ impl Dimension {
                 }
                 arrow(a2, dir);
                 arrow(b2, -dir);
-                let origin = baseline - read * (tb.x0 + half);
-                label.transform =
-                    Affine::translate(origin.to_vec2()) * Affine::rotate(read.atan2());
+                if horizontal {
+                    // Upright, its middle off the line's middle by its
+                    // reach across the line.
+                    let reach = (tb.width() * up.x.abs() + tb.height() * up.y.abs()) / 2.0;
+                    let c = match pos {
+                        TextPosition::Above => mid + up * (GAP + reach),
+                        TextPosition::Below => mid - up * (GAP + reach),
+                        TextPosition::Centered => mid,
+                    };
+                    let origin = c - Vec2::new(tb.x0 + tb.width() / 2.0, (tb.y0 + tb.y1) / 2.0);
+                    label.transform = Affine::translate(origin.to_vec2());
+                } else {
+                    let baseline = match pos {
+                        TextPosition::Above => mid + up * (GAP - tb.y0),
+                        TextPosition::Below => mid - up * (GAP + tb.y1),
+                        TextPosition::Centered => mid - up * ((tb.y0 + tb.y1) / 2.0),
+                    };
+                    let origin = baseline - read * (tb.x0 + half);
+                    label.transform =
+                        Affine::translate(origin.to_vec2()) * Affine::rotate(read.atan2());
+                }
             }
             Measure::Angular { center, a, b, at } => {
                 let a0 = (a - center).atan2();
@@ -373,8 +580,8 @@ impl Dimension {
                 let r = (at - center).hypot().max(1.0);
                 let ray = |t: f64| Vec2::new(t.cos(), t.sin());
                 for t in [a0, a0 + sw] {
-                    lines.move_to(center);
-                    lines.line_to(center + ray(t) * (r + OVERSHOOT));
+                    lines.move_to(center + ray(t) * ext_gap.min(r));
+                    lines.line_to(center + ray(t) * (r + overshoot));
                 }
                 let mid = a0 + sw / 2.0;
                 let (w, h) = (tb.width(), tb.height());
@@ -482,10 +689,8 @@ impl App {
         let Some(layer) = self.active_layer() else {
             return;
         };
-        let d = Dimension {
-            measure,
-            style: self.dimension_style.clone(),
-        };
+        let d = Dimension::new(measure, self.dimension_style.clone())
+            .noting_drawn(&self.text_font, self.units);
         let ids = [
             self.engine.new_shape_id(),
             self.engine.new_shape_id(),
@@ -567,6 +772,7 @@ impl App {
         } else {
             d.clone()
         };
+        let d = d.noting_drawn(&self.text_font, self.units);
         let children = d.shapes(ids, &self.text_font, self.units);
         cmds.push(Command::SetShapeKind {
             shape: g.id,
@@ -616,54 +822,195 @@ impl App {
         }
     }
 
-    /// The style the bar shows: the first selected dimension's, else the
-    /// one new dimensions take.
-    pub fn dimension_style_shown(&self) -> DimensionStyle {
-        self.selected_dimensions()
-            .into_iter()
-            .next()
-            .map(|(_, d)| d.style)
-            .unwrap_or_else(|| self.dimension_style.clone())
+    /// The first selected dimension (its data read once).
+    pub fn first_selected_dimension(&self) -> Option<Dimension> {
+        self.selection
+            .iter()
+            .find_map(|id| self.doc().find_shape(*id).and_then(Dimension::of))
+    }
+
+    /// The label of the dimension at `p` (page space), when the pointer is
+    /// on it: the text to edit in place (#644).
+    pub fn dimension_label_at(&self, p: Point) -> Option<ShapeId> {
+        self.dimension_and_label_at(p).map(|(_, label)| label)
+    }
+
+    /// [`App::dimension_label_at`], with the dimension's group.
+    fn dimension_and_label_at(&self, p: Point) -> Option<(ShapeId, ShapeId)> {
+        let id = self.hit_test(p)?;
+        let doc = self.doc();
+        // In focus mode on a dimension the label itself is hit.
+        fn holding(shapes: &[Shape], id: ShapeId) -> Option<&Shape> {
+            shapes.iter().find_map(|s| match &s.kind {
+                ShapeKind::Group { children } => {
+                    if children.iter().any(|c| c.id == id) {
+                        Some(s)
+                    } else {
+                        holding(children, id)
+                    }
+                }
+                _ => None,
+            })
+        }
+        let g = match doc.find_shape(id) {
+            Some(s) if matches!(s.kind, ShapeKind::Text { .. }) => {
+                doc.all_layers().find_map(|l| holding(&l.shapes, id))?
+            }
+            s => s?,
+        };
+        Dimension::of(g)?;
+        let ShapeKind::Group { children } = &g.kind else {
+            return None;
+        };
+        let label = children
+            .iter()
+            .find(|c| matches!(c.kind, ShapeKind::Text { .. }))?;
+        let to_page = doc.parent_transform(label.id).unwrap_or(Affine::IDENTITY) * label.transform;
+        let tol = 3.0 / self.view.zoom as f64;
+        let b = (to_page * label.local_path()).bounding_box();
+        (b.is_finite() && b.inflate(tol, tol).contains(p)).then_some((g.id, label.id))
+    }
+
+    /// Edit the label of the dimension at `p` in place with the Text tool,
+    /// the caret where the pointer is. False when no label is there.
+    pub fn edit_dimension_label_at(&mut self, p: Point) -> bool {
+        let Some((group, label)) = self.dimension_and_label_at(p) else {
+            return false;
+        };
+        if self.tool != crate::tools::Tool::Text {
+            self.set_tool(crate::tools::Tool::Text);
+        }
+        self.begin_dimension_label_edit(group, label);
+        if let Some(idx) = self.text_hit_char(p) {
+            self.text_set_caret_at(idx, false);
+        }
+        true
+    }
+
+    /// Edit the label `label` of dimension `group` in place. A dimension
+    /// saved before labels were noted gets its label noted as it is now
+    /// (in memory, see [`Dimension::read_back`]), so the edit is read back.
+    pub fn begin_dimension_label_edit(&mut self, group: ShapeId, label: ShapeId) {
+        let doc = self.doc();
+        let d = doc.find_shape(group).and_then(Dimension::of);
+        let spans = match doc.find_shape(label).map(|s| &s.kind) {
+            Some(ShapeKind::Text { spans, .. }) => Some(spans),
+            _ => None,
+        };
+        if let (Some(d), Some(spans)) = (d, spans) {
+            if d.drawn.is_none() {
+                let seen = DrawnLabel {
+                    text: spans.iter().map(|s| s.text.as_str()).collect(),
+                    value: d.value_text(self.units),
+                    font: spans
+                        .first()
+                        .map(|s| s.font_family.clone())
+                        .unwrap_or_default(),
+                };
+                self.dimension_labels_seen.insert(group, seen);
+            }
+        }
+        self.begin_text_edit(label);
+    }
+
+    /// The commands that break the dimension `id` apart (`None` when it
+    /// is not one on a layer of its own): its lines, arrowheads and label
+    /// become objects of their own, arrowheads drawn with the lines
+    /// leaving nothing behind (#644).
+    pub(crate) fn dimension_break_commands(&self, id: ShapeId) -> Option<Vec<Command>> {
+        let doc = self.doc();
+        let g = doc.find_shape(id)?;
+        Dimension::of(g)?;
+        doc.locate(id).ok()?;
+        let ShapeKind::Group { children } = &g.kind else {
+            return None;
+        };
+        let empty: Vec<ShapeId> = children
+            .iter()
+            .filter(|c| match &c.kind {
+                ShapeKind::Path { path, .. } => path.elements().is_empty(),
+                _ => false,
+            })
+            .map(|c| c.id)
+            .collect();
+        let mut cmds = vec![Command::Ungroup { group: id }];
+        if !empty.is_empty() {
+            cmds.push(Command::DeleteShapes { shapes: empty });
+        }
+        Some(cmds)
     }
 
     /// Dynamic dimensioning: dimensions moved, scaled, turned or skewed
     /// since the last look are drawn again with the transform in their
-    /// points, as part of the step that moved them. Runs once per change
-    /// of the drawing.
+    /// points, and those whose label was edited in place with the edit
+    /// read back (see [`Dimension::read_back`]), as part of the step that
+    /// changed them. Runs once per change of the drawing.
     pub fn bake_dimensions(&mut self) {
         let revision = self.engine.revision();
         if revision == self.dimensions_checked {
             return;
         }
-        fn walk(s: &Shape, out: &mut Vec<Shape>) {
-            if Dimension::of(s).is_some() {
-                if s.transform != Affine::IDENTITY {
-                    out.push(s.clone());
+        // Only a step just recorded is followed up, never an undo, a redo
+        // or a drawing just opened: those states are as they were left (a
+        // step of its own here would lose the redo and keep undo there).
+        if !self.engine.at_recorded_step() {
+            self.dimensions_checked = revision;
+            return;
+        }
+        type Seen = std::collections::HashMap<ShapeId, DrawnLabel>;
+        let editing = self.text_edit.as_ref().map(|te| te.shape);
+        fn walk(
+            s: &Shape,
+            out: &mut Vec<(Shape, Dimension)>,
+            seen: &Seen,
+            editing: Option<ShapeId>,
+        ) {
+            if let Some(d) = Dimension::of(s) {
+                match d.read_back(s, seen.get(&s.id), editing) {
+                    Some(next) => out.push((s.clone(), next)),
+                    None if s.transform != Affine::IDENTITY => out.push((s.clone(), d)),
+                    None => {}
                 }
                 return;
             }
             match &s.kind {
-                ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, out)),
+                ShapeKind::Group { children } => {
+                    children.iter().for_each(|c| walk(c, out, seen, editing))
+                }
                 ShapeKind::ClipFrame { frame, contents } => {
-                    walk(frame, out);
-                    contents.iter().for_each(|c| walk(c, out));
+                    walk(frame, out, seen, editing);
+                    contents.iter().for_each(|c| walk(c, out, seen, editing));
                 }
                 _ => {}
             }
         }
-        let mut moved = Vec::new();
+        let mut changed = Vec::new();
         for layer in self.doc().all_layers() {
             for s in &layer.shapes {
-                walk(s, &mut moved);
+                walk(s, &mut changed, &self.dimension_labels_seen, editing);
             }
         }
-        for g in moved {
-            if let Some(d) = Dimension::of(&g) {
-                for cmd in self.redraw_commands(&g, &d) {
-                    if let Err(e) = self.engine.amend(&cmd) {
-                        self.status = e.to_string();
-                        break;
-                    }
+        // One amend for all of them: a keystroke in a label costs one copy
+        // of the drawing.
+        let mut cmds = Vec::new();
+        for (g, d) in changed {
+            // Drawn again, it notes its label itself.
+            self.dimension_labels_seen.remove(&g.id);
+            cmds.extend(self.redraw_commands(&g, &d));
+        }
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.amend_batch("Dimension", &cmds) {
+                self.status = e.to_string();
+            }
+            // A colour being dragged goes on in the step it made (it is
+            // that step, one revision on).
+            let now = self.engine.revision();
+            for (rev, _) in [&mut self.live_fill, &mut self.live_stroke]
+                .into_iter()
+                .flatten()
+            {
+                if *rev == revision {
+                    *rev = now;
                 }
             }
         }
@@ -750,10 +1097,7 @@ impl App {
             },
             _ => return None,
         };
-        Some(Dimension {
-            measure,
-            style: self.dimension_style.clone(),
-        })
+        Some(Dimension::new(measure, self.dimension_style.clone()))
     }
 
     /// The dimension tools' clicks and drags. Linear tools: a drag from
@@ -928,6 +1272,8 @@ mod tests {
                 at: Point::new(0.0, 10.0),
             },
             style: DimensionStyle::default(),
+            text: None,
+            drawn: None,
         };
         assert_eq!(d.label(Units::Millimeters), "25.40 mm");
         let inches = Dimension {
@@ -961,6 +1307,8 @@ mod tests {
                 precision: 1,
                 ..Default::default()
             },
+            text: None,
+            drawn: None,
         };
         assert_eq!(angle.label(Units::Millimeters), "90.0\u{b0}");
     }
@@ -988,6 +1336,8 @@ mod tests {
                 round_ends: true,
                 ..Default::default()
             },
+            text: None,
+            drawn: None,
         };
         let ids = [ShapeId(1), ShapeId(2), ShapeId(3)];
         let [line, heads, label] = d.shapes(ids, "Arial", Units::Millimeters);
@@ -1104,6 +1454,247 @@ mod tests {
         .is_none());
     }
 
+    fn label_id(app: &App, id: ShapeId) -> ShapeId {
+        match &app.doc().find_shape(id).expect("group").kind {
+            ShapeKind::Group { children } => children[2].id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Edit the label of dimension `id` as the Text tool would, then let
+    /// the frame read it back.
+    fn type_label(app: &mut App, id: ShapeId, text: &str) {
+        let lid = label_id(app, id);
+        let mut t = app.doc().find_shape(lid).cloned().expect("label");
+        if let ShapeKind::Text { spans, .. } = &mut t.kind {
+            spans.truncate(1);
+            spans[0].text = text.into();
+        }
+        app.run(Command::SetShapeKind {
+            shape: lid,
+            kind: t.kind,
+        });
+        app.bake_dimensions();
+    }
+
+    fn dimension(app: &App, id: ShapeId) -> Dimension {
+        Dimension::of(app.doc().find_shape(id).expect("group")).expect("dimension")
+    }
+
+    fn forty(app: &mut App) -> ShapeId {
+        app.create_dimension(
+            Point::new(0.0, 0.0),
+            Point::new(40.0, 0.0),
+            Point::new(20.0, 10.0),
+        );
+        app.selection[0]
+    }
+
+    /// Break Apart frees a dimension's lines, arrowheads and label as
+    /// objects of their own, selected, in one undo step; arrowheads drawn
+    /// with the lines leave no empty object (#644).
+    #[test]
+    fn break_apart_frees_the_lines_heads_and_label() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let depth = app.engine.history_labels().0.len();
+        app.break_apart();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        assert!(app.doc().find_shape(id).is_none(), "no dimension left");
+        let top: Vec<Shape> = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.clone())
+            .collect();
+        assert_eq!(top.len(), 3);
+        assert_eq!(app.selection.len(), 3);
+        assert!(top.iter().all(|s| Dimension::of(s).is_none()));
+        assert!(top.iter().any(
+            |s| matches!(&s.kind, ShapeKind::Text { spans, .. } if spans[0].text == "40.00 mm")
+        ));
+        app.undo();
+        assert!(Dimension::of(app.doc().find_shape(id).expect("back")).is_some());
+        // Open heads: the lines and the label.
+        app.dimension_style.arrows = ArrowStyle::Open;
+        let open = forty(&mut app);
+        app.select(vec![open]);
+        app.break_apart();
+        assert_eq!(app.selection.len(), 2);
+    }
+
+    /// A label edited in place stays live while it holds the measured
+    /// value (the text around it becomes the prefix and suffix, scaling
+    /// changes the number); without it, it stays as typed until the
+    /// measured value is asked back; a deleted label comes back measured;
+    /// its font, size and colour become the style's (#644).
+    #[test]
+    fn a_label_edited_in_place_stays_linked() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let depth = app.engine.history_labels().0.len();
+        type_label(&mut app, id, "W 40.00 mm max");
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let d = dimension(&app, id);
+        assert_eq!(
+            (d.style.prefix.as_str(), d.style.suffix.as_str()),
+            ("W ", " max")
+        );
+        assert_eq!(d.text, None);
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::scale(2.0),
+        });
+        app.bake_dimensions();
+        assert_eq!(label_of(&app, id), "W 80.00 mm max");
+        // Without the number: as typed, whatever the size.
+        type_label(&mut app, id, "About eighty");
+        assert_eq!(dimension(&app, id).text.as_deref(), Some("About eighty"));
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::scale(0.5),
+        });
+        app.bake_dimensions();
+        assert_eq!(label_of(&app, id), "About eighty");
+        assert!(app
+            .first_selected_dimension()
+            .is_some_and(|d| d.text.is_some()));
+        // The label's text deleted (its editing ended), the measured value
+        // comes back.
+        let lid = label_id(&app, id);
+        app.run(Command::DeleteShapes { shapes: vec![lid] });
+        app.bake_dimensions();
+        assert_eq!(label_of(&app, id), "W 40.00 mm max");
+        assert!(app
+            .first_selected_dimension()
+            .is_some_and(|d| d.text.is_none()));
+        // A longer number is not the value with a prefix.
+        let plain = forty(&mut app);
+        type_label(&mut app, plain, "140.00 mm");
+        let d = dimension(&app, plain);
+        assert_eq!(d.text.as_deref(), Some("140.00 mm"));
+        assert!(d.style.prefix.is_empty());
+        // Deleted, the measured label comes back.
+        let lid = label_id(&app, plain);
+        app.run(Command::DeleteShapes { shapes: vec![lid] });
+        app.bake_dimensions();
+        assert_eq!(label_of(&app, plain), "40.00 mm");
+        // Font, size and colour of the label become the style's.
+        let lid = label_id(&app, plain);
+        let mut t = app.doc().find_shape(lid).cloned().expect("label");
+        if let ShapeKind::Text { spans, .. } = &mut t.kind {
+            spans[0].font_family = "Other Font".into();
+            spans[0].size_pt = 14.0;
+        }
+        let red = Color::rgb8(200, 0, 0);
+        app.engine
+            .run_batch(
+                "Edit",
+                &[
+                    Command::SetShapeKind {
+                        shape: lid,
+                        kind: t.kind,
+                    },
+                    Command::SetFill {
+                        shapes: vec![lid],
+                        fill: Fill::Solid(red),
+                    },
+                ],
+            )
+            .expect("edit");
+        app.bake_dimensions();
+        let st = dimension(&app, plain).style;
+        assert_eq!(
+            (st.font.as_str(), st.text_size, st.text_color),
+            ("Other Font", 14.0, red)
+        );
+        // Undo takes the edit and what was read back together.
+        app.undo();
+        app.bake_dimensions();
+        assert_eq!(dimension(&app, plain).style.text_size, 10.0);
+    }
+
+    /// New units or a new font for new text do not make a measured label
+    /// a typed one; a dimension saved before labels were noted reads its
+    /// label as measured.
+    #[test]
+    fn new_units_or_default_font_keep_labels_measured() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        app.units = Units::Inches;
+        app.text_font = "Another Font".into();
+        app.run(Command::SetObjectData {
+            shape: id,
+            data: app.doc().find_shape(id).expect("g").data.clone(),
+        });
+        app.bake_dimensions();
+        let d = dimension(&app, id);
+        assert_eq!(d.text, None);
+        assert!(d.style.font.is_empty() && d.style.prefix.is_empty());
+        let mut old = d.clone();
+        old.drawn = None;
+        let json = serde_json::to_string(&old).expect("json");
+        assert!(!json.contains("drawn") && !json.contains("\"text\""));
+        let g = app.doc().find_shape(id).cloned().expect("g");
+        assert_eq!(old.read_back(&g, None, None), None);
+    }
+
+    /// The extension lines' gap and overshoot, the arrowheads' size and a
+    /// horizontal label; a style saved before them reads as before.
+    #[test]
+    fn more_options_shape_the_dimension() {
+        let measure = Measure::Linear {
+            a: Point::new(0.0, 0.0),
+            b: Point::new(30.0, 30.0),
+            at: Point::new(0.0, 20.0),
+        };
+        let ids = [ShapeId(1), ShapeId(2), ShapeId(3)];
+        let plain = Dimension::new(measure, DimensionStyle::default());
+        let [pl, _, plabel] = plain.shapes(ids, "Arial", Units::Millimeters);
+        let styled = Dimension::new(
+            measure,
+            DimensionStyle {
+                extension_gap: 2.0,
+                extension_overshoot: 5.0,
+                horizontal_text: true,
+                ..Default::default()
+            },
+        );
+        let [l, _, label] = styled.shapes(ids, "Arial", Units::Millimeters);
+        let first = |s: &Shape| match &s.kind {
+            ShapeKind::Path { path, .. } => match (path.elements()[0], path.elements()[1]) {
+                (
+                    tracedraw_core::geometry::PathEl::MoveTo(a),
+                    tracedraw_core::geometry::PathEl::LineTo(b),
+                ) => (a, b),
+                other => panic!("{other:?}"),
+            },
+            _ => panic!("path"),
+        };
+        let (a0, b0) = first(&pl);
+        let (a1, b1) = first(&l);
+        assert!(a0.distance(Point::ZERO) < 1e-9);
+        assert!((a1.distance(Point::ZERO) - 2.0).abs() < 1e-9, "{a1:?}");
+        assert!((b1.distance(a1) - (b0.distance(a0) + 3.0 - 2.0)).abs() < 1e-9);
+        // The slanted label turns with its line, the horizontal one not.
+        assert!(plabel.transform.as_coeffs()[1].abs() > 0.1);
+        assert_eq!(label.transform.as_coeffs()[1], 0.0);
+        let old: DimensionStyle = serde_json::from_str(r#"{"precision":1}"#).expect("old");
+        assert_eq!(
+            (
+                old.extension_gap,
+                old.extension_overshoot,
+                old.horizontal_text
+            ),
+            (0.0, OVERSHOOT, false)
+        );
+        let odd = DimensionStyle {
+            extension_overshoot: f64::NAN,
+            extension_gap: f64::INFINITY,
+            ..Default::default()
+        };
+        assert_eq!(odd.lengths(), (0.0, OVERSHOOT));
+    }
+
     /// Convert to Curves makes a dimension a group of plain curves: its
     /// lines, its filled arrowheads and its label as curves, no longer a
     /// dimension, in one undo step; an angle's arc is a few clean curves
@@ -1166,5 +1757,223 @@ mod tests {
         }
         app.undo();
         assert!(Dimension::of(app.doc().find_shape(open).expect("back")).is_some());
+    }
+
+    /// The label emptied while it is typed, then a click elsewhere with
+    /// the Text tool (the empty label deleted and a new text started in
+    /// the same frame): every step undoes and redoes, and a step undone
+    /// is never followed up with a step of its own (#644).
+    #[test]
+    fn undo_after_an_emptied_label_goes_all_the_way_back() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let made = app.engine.history_labels().0.len();
+        let lid = label_id(&app, id);
+        app.set_tool(crate::tools::Tool::Text);
+        app.begin_dimension_label_edit(id, lid);
+        let mut spans = app.edit_spans().expect("spans");
+        spans.truncate(1);
+        spans[0].text.clear();
+        app.set_edit_spans(spans);
+        app.bake_dimensions();
+        // Empty while typed: the measured value does not come back yet.
+        assert_eq!(label_of(&app, id), "");
+        let before_click = app.engine.history_labels().0.len();
+        app.start_text(Point::new(100.0, 100.0), None);
+        // finish_text read the deleted label back in its own step: the
+        // drawing right after it already shows the measured label.
+        assert_eq!(app.engine.history_labels().0.len(), before_click + 2);
+        assert_eq!(label_of(&app, id), "40.00 mm", "measured again");
+        app.text_insert("x");
+        app.bake_dimensions();
+        app.finish_text();
+        app.bake_dimensions();
+        let top = app.engine.history_labels().0.len();
+        // Undone, the new text's step leaves the delete's step consistent,
+        // and the look after an undo records no step of its own.
+        app.undo();
+        let depth = app.engine.history_labels().0.len();
+        assert_eq!(label_of(&app, id), "40.00 mm");
+        app.bake_dimensions();
+        assert_eq!(
+            app.engine.history_labels().0.len(),
+            depth,
+            "no step after undo"
+        );
+        assert_eq!(app.engine.history_labels().1.len(), 1, "redo kept");
+        app.redo();
+        app.bake_dimensions();
+        assert_eq!(app.engine.history_labels().0.len(), top);
+        for _ in made..top {
+            app.undo();
+            app.bake_dimensions();
+        }
+        assert_eq!(app.engine.history_labels().0.len(), made);
+        assert_eq!(label_of(&app, id), "40.00 mm");
+        assert_eq!(app.engine.history_labels().1.len(), top - made, "redo kept");
+        for _ in made..top {
+            app.redo();
+            app.bake_dimensions();
+        }
+        assert_eq!(app.engine.history_labels().0.len(), top);
+        assert_eq!(label_of(&app, id), "40.00 mm");
+    }
+
+    /// A decimal typed after the value makes another number, not a
+    /// suffix; a dimension saved before labels were noted reads an edit
+    /// begun in place; a fill picked for a selected dimension colours its
+    /// label only, the lines and arrowheads keeping the line colour.
+    #[test]
+    fn decimals_older_dimensions_and_fills_read_back() {
+        let mut app = App::headless();
+        app.dimension_style.precision = 0;
+        app.dimension_style.show_units = false;
+        let id = forty(&mut app);
+        assert_eq!(label_of(&app, id), "40");
+        type_label(&mut app, id, "40.5");
+        let d = dimension(&app, id);
+        assert_eq!(d.text.as_deref(), Some("40.5"));
+        assert!(d.style.suffix.is_empty());
+        assert_eq!(find_value("40,5 x", "40"), None);
+        assert_eq!(find_value("40. x", "40"), Some(0));
+        // Older: no note of how the label was drawn.
+        app.dimension_style = DimensionStyle::default();
+        let old = forty(&mut app);
+        let mut d = dimension(&app, old);
+        d.drawn = None;
+        let g = app.doc().find_shape(old).cloned().expect("g");
+        app.run(Command::SetObjectData {
+            shape: old,
+            data: with_data(g.data, &d),
+        });
+        app.bake_dimensions();
+        let lid = label_id(&app, old);
+        app.begin_dimension_label_edit(old, lid);
+        type_label(&mut app, old, "W 40.00 mm");
+        let d = dimension(&app, old);
+        assert_eq!(d.style.prefix, "W ");
+        assert!(d.drawn.is_some() && app.dimension_labels_seen.is_empty());
+        // A palette colour on the selected dimension.
+        app.finish_text();
+        app.select(vec![old]);
+        let red = Color::rgb8(200, 0, 0);
+        app.apply_fill(Fill::Solid(red));
+        app.bake_dimensions();
+        assert_eq!(dimension(&app, old).style.text_color, red);
+        let ShapeKind::Group { children } = &app.doc().find_shape(old).expect("g").kind else {
+            panic!("group");
+        };
+        assert_eq!(children[2].fill, Fill::Solid(red));
+        assert_eq!(children[1].fill, Fill::Solid(Color::BLACK));
+        assert_eq!(children[0].fill, Fill::None);
+        let partial: DrawnLabel = serde_json::from_str(r#"{"text":"a"}"#).expect("drawn");
+        assert_eq!(partial.value, "");
+    }
+
+    /// A colour dragged in a picker over a selected dimension stays one
+    /// undo step while the label's colour is read back each frame; an
+    /// outline colour picked for it becomes the line colour.
+    #[test]
+    fn a_dragged_fill_on_a_dimension_is_one_step() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let depth = app.engine.history_labels().0.len();
+        for c in [10, 80, 160] {
+            app.apply_fill_live(Fill::Solid(Color::rgb8(c, 0, 0)));
+            app.bake_dimensions();
+        }
+        app.end_live_fill();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        assert_eq!(dimension(&app, id).style.text_color, Color::rgb8(160, 0, 0));
+        let blue = Color::rgb8(0, 0, 200);
+        let lines = match &app.doc().find_shape(id).expect("g").kind {
+            ShapeKind::Group { children } => children[0].id,
+            other => panic!("{other:?}"),
+        };
+        let mut st = app
+            .doc()
+            .find_shape(lines)
+            .and_then(|s| s.stroke.clone())
+            .expect("stroke");
+        st.color = blue;
+        app.run(Command::SetStroke {
+            shapes: vec![lines],
+            stroke: Some(st),
+        });
+        app.bake_dimensions();
+        assert_eq!(dimension(&app, id).style.line_color, blue);
+        // An empty label not being typed is the measured one.
+        type_label(&mut app, id, " ");
+        assert_eq!(label_of(&app, id), "40.00 mm");
+    }
+
+    /// The label noted when an edit of an older dimension began is for
+    /// that edit only: it goes when the editing ends and with the drawing
+    /// left for another tab.
+    #[test]
+    fn noted_labels_go_with_the_edit() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let mut d = dimension(&app, id);
+        d.drawn = None;
+        let g = app.doc().find_shape(id).cloned().expect("g");
+        app.run(Command::SetObjectData {
+            shape: id,
+            data: with_data(g.data, &d),
+        });
+        let lid = label_id(&app, id);
+        app.begin_dimension_label_edit(id, lid);
+        assert_eq!(app.dimension_labels_seen.len(), 1);
+        app.finish_text();
+        assert!(app.dimension_labels_seen.is_empty());
+        app.begin_dimension_label_edit(id, lid);
+        app.new_document();
+        assert!(app.dimension_labels_seen.is_empty());
+    }
+
+    /// What a keystroke costs in a dimension's label (with its read-back
+    /// and redraw) against one in a plain text, on a page of 400 objects
+    /// and 50 dimensions:
+    /// `cargo test --release -- --ignored frame_times_typing_in_a_dimension_label --nocapture`.
+    #[test]
+    #[ignore]
+    fn frame_times_typing_in_a_dimension_label() {
+        let mut app = App::headless();
+        for i in 0..400 {
+            let x = (i % 20) as f64 * 10.0;
+            let y = (i / 20) as f64 * 10.0;
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, y, x + 8.0, y + 8.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        }
+        let mut dims = Vec::new();
+        for i in 0..50 {
+            let y = 250.0 + i as f64 * 5.0;
+            app.create_dimension(
+                Point::new(0.0, y),
+                Point::new(40.0, y),
+                Point::new(20.0, y + 3.0),
+            );
+            dims.push(app.selection[0]);
+        }
+        app.bake_dimensions();
+        let mut time = |app: &mut App| {
+            let start = web_time::Instant::now();
+            for _ in 0..100 {
+                app.text_insert("x");
+                app.bake_dimensions();
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / 100.0
+        };
+        let lid = label_id(&app, dims[0]);
+        app.begin_dimension_label_edit(dims[0], lid);
+        let label = time(&mut app);
+        app.finish_text();
+        app.start_text(Point::new(300.0, 300.0), None);
+        let plain = time(&mut app);
+        println!("keystroke: dimension label {label:.3} ms, plain text {plain:.3} ms");
     }
 }

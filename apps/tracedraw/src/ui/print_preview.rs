@@ -179,18 +179,6 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     pv.sheet += 1;
                 }
                 ui.separator();
-                if pv.st.separations {
-                    // Each ink with a box, always in view: one alone shows
-                    // its plate, several print together (#571).
-                    let names = plate_names(sheets(app, &mut pv));
-                    let inks = names.len().saturating_sub(1);
-                    pv.inks.resize(inks, true);
-                    ui.label(tr("print.inks"));
-                    for (i, name) in names.iter().skip(1).enumerate() {
-                        ui.checkbox(&mut pv.inks[i], name.clone());
-                    }
-                    ui.separator();
-                }
                 ui.label(tr("print.zoom"));
                 ui.add(
                     egui::Slider::new(&mut pv.zoom, 0.25..=4.0)
@@ -209,6 +197,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 });
             });
         });
+
+    // The inks while Print separations is on (built sheets are kept, so
+    // this is a lookup on most frames).
+    let ink_names = if pv.st.separations {
+        plate_names(sheets(app, &mut pv))
+    } else {
+        Vec::new()
+    };
+    pv.inks.resize(ink_names.len().saturating_sub(1), true);
 
     egui::Panel::left("print_preview_options")
         .resizable(false)
@@ -230,6 +227,16 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.separator();
                 ui.strong(tr("dialog.prepress"));
                 ui.checkbox(&mut st.separations, tr("dialog.separations"));
+                if st.separations {
+                    // Each ink with a box under it, always in view: one
+                    // alone shows its plate, several print together
+                    // (#571).
+                    ui.indent("print_preview_inks", |ui| {
+                        for (on, name) in pv.inks.iter_mut().zip(ink_names.iter().skip(1)) {
+                            ui.checkbox(on, name.clone());
+                        }
+                    });
+                }
                 ui.checkbox(&mut st.bleed, tr("dialog.print_bleed"));
                 ui.checkbox(&mut st.crop_marks, tr("dialog.crop_marks"));
                 ui.checkbox(&mut st.registration_marks, tr("dialog.registration_marks"));
@@ -766,6 +773,49 @@ mod tests {
             }),
             "all at first"
         );
+    }
+
+    /// With Print separations on, a box for each ink stands under that
+    /// option in the left panel, as the request's sketch has them; they
+    /// were in the top bar, where many spot inks ran past the window
+    /// (#571).
+    #[test]
+    fn the_ink_boxes_stand_under_print_separations() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let st = PrintState {
+            separations: true,
+            ..PrintState::default()
+        };
+        app.print_preview = Some(PrintPreview::new(st));
+        let find = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+            shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == text => Some(t.pos),
+                _ => None,
+            })
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| show(&mut app, ui),
+            );
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        assert_eq!(app.print_preview.as_ref().map(|p| p.inks.len()), Some(4));
+        let option = find(&shapes, &tr("dialog.separations")).expect("the option");
+        for ink in ["fxp.cyan", "fxp.magenta", "fxp.yellow", "fxp.black"] {
+            let at = find(&shapes, &tr(ink)).expect(ink);
+            assert!(at.x < 330.0, "{ink} in the left panel: {at:?}");
+            assert!(at.y > option.y && at.x > option.x, "{ink} under it: {at:?}");
+        }
     }
 
     #[test]

@@ -202,7 +202,7 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
                             rect,
                             width_px: w,
                             height_px: h,
-                            png,
+                            png: png.into(),
                             fx: None,
                         },
                     );
@@ -248,7 +248,7 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
                         rect: Rect::new(0.0, 0.0, size.width, size.height),
                         width_px: width,
                         height_px: height,
-                        png,
+                        png: png.into(),
                         fx: None,
                     },
                 );

@@ -1,8 +1,9 @@
 //! The dimension tools' property bar (also shown when dimensions are
 //! selected with the Pick tool) and the preview of the dimension being
 //! placed. Bar: Precision, Units, Show units, Prefix, Suffix, Text
-//! position, Text size; then what to click next. Changes apply to the
-//! selected dimensions and to the ones made next.
+//! position, Text size; the look; more options (extension lines,
+//! horizontal text); then what to click next. Changes
+//! apply to the selected dimensions and to the ones made next.
 
 use crate::app::App;
 use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, TextPosition};
@@ -120,9 +121,81 @@ fn style_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
     }
 }
 
+/// A length as printed, mm, in the drawing's units; applied when it
+/// changes.
+fn length_field(
+    app: &mut App,
+    ui: &mut Ui,
+    key: &str,
+    mm: f64,
+    max: f64,
+    apply: impl Fn(&mut DimensionStyle, f64),
+) {
+    let u = app.units;
+    ui.horizontal(|ui| {
+        ui.label(tr(key));
+        let mut v = u.from_mm(mm);
+        let r = ui.add(
+            NumField::new(&mut v)
+                .speed(u.from_mm(0.1))
+                .range(0.0..=u.from_mm(max))
+                .max_decimals(3)
+                .unit_mm(u.mm())
+                .suffix(format!(" {}", u.short()))
+                .width(64.0),
+        );
+        let next = u.to_mm(v);
+        if r.changed() && next.is_finite() && (next - mm).abs() > 1e-9 {
+            app.set_dimension_style(|s| apply(s, next));
+        }
+    });
+}
+
+/// More options (#644): the extension lines' gap from the object and how
+/// far they run past the dimension line, and a horizontal label.
+fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
+    let button = ui
+        .button(format!("{} \u{25BE}", tr("dimension.options")))
+        .rich_tip(tr("dimension.options"));
+    // The menu stays open while its fields are typed in and stepped; a
+    // click outside closes it.
+    egui::Popup::menu(&button)
+        .id(egui::Id::new("dimension_options_menu"))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            length_field(
+                app,
+                ui,
+                "dimension.extension_gap",
+                style.extension_gap,
+                100.0,
+                |s, v| s.extension_gap = v,
+            );
+            length_field(
+                app,
+                ui,
+                "dimension.extension_overshoot",
+                style.extension_overshoot,
+                100.0,
+                |s, v| s.extension_overshoot = v,
+            );
+            let mut horizontal = style.horizontal_text;
+            if ui
+                .checkbox(&mut horizontal, tr("dimension.horizontal_text"))
+                .changed()
+            {
+                app.set_dimension_style(|s| s.horizontal_text = horizontal);
+            }
+        });
+}
+
 /// The bar.
 pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
-    let style = app.dimension_style_shown();
+    // The first selected dimension, read once a frame.
+    let first = app.first_selected_dimension();
+    let style = first
+        .map(|d| d.style)
+        .unwrap_or_else(|| app.dimension_style.clone());
     dim(ui, tr("dimension.precision"));
     let mut precision = style.precision.min(6);
     egui::ComboBox::from_id_salt("dimension_precision")
@@ -195,6 +268,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         app.set_dimension_style(|s| s.text_size = size);
     }
     style_part(app, ui, &style);
+    options_part(app, ui, &style);
     if matches!(
         app.tool,
         Tool::ParallelDimension

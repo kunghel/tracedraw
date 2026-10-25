@@ -39,8 +39,8 @@ pub fn dpi_for_pixels(mm: f64, px: u32) -> Option<f64> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportState {
-    /// File > Export opened it and Options > Global > File Formats keeps
-    /// the last export's choices: exporting stores them.
+    /// File > Export opened it: exporting keeps the choices for the next
+    /// export (`App::keep_export_choices`).
     pub remember: bool,
     pub format: usize,
     pub dpi: f64,
@@ -254,6 +254,11 @@ pub struct PrintState {
     pub printer: Option<String>,
     /// The printers the system has, as the dialog opened.
     pub printers: Vec<crate::printers::Printer>,
+    /// The printer list is still being read (#614).
+    pub looking_for_printers: bool,
+    /// A destination was chosen in the dialog: the list read later keeps
+    /// it (#614).
+    pub printer_picked: bool,
     /// 0 as the pages are, 1 portrait, 2 landscape (fixed sheets).
     pub orientation: usize,
     /// 0 the whole drawing, 1 the current page, 2 the pages in `pages`,
@@ -487,6 +492,8 @@ impl Default for PrintState {
             destination: 0,
             printer: None,
             printers: Vec::new(),
+            looking_for_printers: false,
+            printer_picked: false,
             orientation: 0,
             range: 0,
             pages: String::new(),
@@ -2720,17 +2727,26 @@ pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
         });
 }
 
-/// The Export dialog's presets (#547): a list of the saved ones (each
-/// with its format), "+" to save the choices under a name, rename and
+/// The Export dialog's presets (#547): a list of the saved ones of the
+/// chosen format (#612), "+" to save the choices under a name, rename and
 /// delete for the chosen one.
 fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
+    // A preset of another format no longer describes the choices.
+    if !st.preset.is_empty()
+        && !app
+            .settings
+            .formats
+            .export_presets
+            .iter()
+            .any(|p| p.name == st.preset && preset_fits(p, st))
+    {
+        st.preset.clear();
+    }
     ui.horizontal(|ui| {
         ui.label(tr("dialog.export_preset"));
-        let presets = app.settings.formats.export_presets.clone();
-        let label = |p: &crate::prefs::ExportPreset| {
-            let fmt = EXPORT_FORMATS.get(p.format).map(|f| f.0).unwrap_or("?");
-            format!("{} ({fmt})", p.name)
-        };
+        let presets = presets_for(&app.settings.formats.export_presets, st);
+        // Every preset listed is of the chosen format: its name says it.
+        let label = |p: &crate::prefs::ExportPreset| p.name.clone();
         let shown = presets
             .iter()
             .find(|p| p.name == st.preset)
@@ -2752,8 +2768,10 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
                     }
                 }
             });
+        // A script filter has no presets: "+" would save under the last
+        // built-in format, out of sight.
         if ui
-            .small_button("+")
+            .add_enabled(st.script.is_none(), egui::Button::new("+").small())
             .on_hover_text(tr("dialog.export_preset_add"))
             .clicked()
         {
@@ -2772,7 +2790,7 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
             .on_hover_text(tr("dialog.export_preset_delete"))
             .clicked()
         {
-            app.settings.formats.delete_preset(&st.preset);
+            app.settings.formats.delete_preset(&st.preset, st.format);
             st.preset.clear();
         }
     });
@@ -2796,11 +2814,18 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
             }
         });
     }
+    // A script filter chosen while a name was being typed: nothing to save.
+    if st.script.is_some() {
+        st.preset_name = None;
+        done = None;
+    }
     if let Some(ok) = done {
         if let (true, Some((name, renaming))) = (ok, st.preset_name.clone()) {
             let name = name.trim().to_string();
             let saved = if renaming {
-                app.settings.formats.rename_preset(&st.preset, &name)
+                app.settings
+                    .formats
+                    .rename_preset(&st.preset, &name, st.format)
             } else {
                 app.settings.formats.save_preset(&name, st)
             };
@@ -2810,6 +2835,20 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
         }
         st.preset_name = None;
     }
+}
+
+/// Whether the Export dialog lists `p`: it was saved for the format
+/// chosen (a script filter has none).
+fn preset_fits(p: &crate::prefs::ExportPreset, st: &ExportState) -> bool {
+    st.script.is_none() && p.fits(st.format)
+}
+
+/// The presets the Export dialog lists for its chosen format.
+pub(crate) fn presets_for(
+    all: &[crate::prefs::ExportPreset],
+    st: &ExportState,
+) -> Vec<crate::prefs::ExportPreset> {
+    all.iter().filter(|p| preset_fits(p, st)).cloned().collect()
 }
 
 fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut bool) {
@@ -3034,10 +3073,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                 return;
             }
             export_with_file_dialog(app, st);
-            if st.remember {
-                app.settings.formats.remember(st);
-                app.settings.save();
-            }
+            app.keep_export_choices(st);
         }
     });
 }
@@ -3278,6 +3314,10 @@ fn print_group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
 
 fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut bool) {
     take_saved_sheet(app, st);
+    if app.poll_printers(st) {
+        // Look again shortly while the list is read.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
     window(ctx, tr("dialog.print")).show(ctx, |ui| {
         let issues = if app.settings.printing.preflight {
             st.preflight
@@ -3319,7 +3359,13 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
                 4 => print_tab_prepress(app, ui, st),
                 5 => print_tab_postscript(ui, st),
                 6 => print_tab_issues(app, ui, &issues, close),
-                _ => print_tab_general(app, ui, st),
+                _ => {
+                    if let Some(p) = print_tab_general(app, ui, st) {
+                        if let Err(e) = crate::printers::open_properties(&p) {
+                            app.status = e;
+                        }
+                    }
+                }
             }
         });
         ui.separator();
@@ -3336,7 +3382,14 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
                 if ui.button(tr("dialog.cancel")).clicked() {
                     *close = true;
                 }
-                if ui.button(tr("dialog.print")).clicked() {
+                // While the first printer list is read, a print to a
+                // printer waits for it (#614).
+                let waiting =
+                    st.destination == 0 && st.looking_for_printers && st.printers.is_empty();
+                if ui
+                    .add_enabled(!waiting, egui::Button::new(tr("dialog.print")))
+                    .clicked()
+                {
                     match crate::export::print(app, st) {
                         Ok(msg) if !msg.is_empty() => app.status = msg,
                         Ok(_) => {}
@@ -3353,42 +3406,72 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
     });
 }
 
-fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) {
+/// The General tab; the printer whose Properties button was clicked.
+fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) -> Option<String> {
+    let mut properties = None;
     print_group(ui, &tr("print.destination"), |ui| {
         egui::Grid::new("print_dest")
             .num_columns(2)
             .spacing([8.0, 6.0])
             .show(ui, |ui| {
                 ui.label(tr("print.printer"));
-                // The system's printers (the default first), then the
-                // PDF viewer and the file destinations.
+                // The system's printers (in name order), then the PDF
+                // viewer and the file destinations.
                 let dests = ["print.dest_viewer", "print.dest_pdf", "print.dest_ps"];
                 let on_printer = st.destination == 0 && st.printer.is_some();
                 let selected = match (&st.printer, st.destination) {
                     (Some(p), 0) => p.clone(),
                     _ => tr(dests[st.destination.min(2)]),
                 };
-                egui::ComboBox::from_id_salt("print_destination")
-                    .selected_text(selected)
-                    .width(300.0)
-                    .show_ui(ui, |ui| {
-                        for p in st.printers.clone() {
-                            let is = on_printer && st.printer.as_deref() == Some(p.name.as_str());
-                            if ui.selectable_label(is, &p.name).clicked() {
-                                st.destination = 0;
-                                st.printer = Some(p.name.clone());
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("print_destination")
+                        .selected_text(selected)
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            if st.looking_for_printers && st.printers.is_empty() {
+                                ui.add_enabled(false, egui::Label::new(tr("print.looking")));
                             }
-                        }
-                        for (i, d) in dests.iter().enumerate() {
-                            let is = st.destination == i && (i != 0 || !on_printer);
-                            if ui.selectable_label(is, tr(d)).clicked() {
-                                st.destination = i;
-                                if i == 0 {
-                                    st.printer = None;
+                            for p in st.printers.clone() {
+                                let is =
+                                    on_printer && st.printer.as_deref() == Some(p.name.as_str());
+                                if ui.selectable_label(is, &p.name).clicked() {
+                                    st.destination = 0;
+                                    st.printer = Some(p.name.clone());
+                                    st.printer_picked = true;
                                 }
                             }
-                        }
-                    });
+                            for (i, d) in dests.iter().enumerate() {
+                                let is = st.destination == i && (i != 0 || !on_printer);
+                                if ui.selectable_label(is, tr(d)).clicked() {
+                                    st.destination = i;
+                                    st.printer_picked = true;
+                                    if i == 0 {
+                                        st.printer = None;
+                                    }
+                                }
+                            }
+                        });
+                    // The printer's own settings (#614).
+                    let gear = ui
+                        .add_enabled(
+                            on_printer,
+                            egui::Button::new("").min_size(egui::vec2(24.0, 22.0)),
+                        )
+                        .on_hover_text(tr("print.properties"));
+                    crate::ui::icons::draw_action(
+                        ui.painter(),
+                        egui::Rect::from_center_size(gear.rect.center(), egui::vec2(16.0, 16.0)),
+                        crate::ui::icons::Action::Options,
+                        if on_printer {
+                            Tokens::icon()
+                        } else {
+                            Tokens::icon_off()
+                        },
+                    );
+                    if gear.clicked() {
+                        properties = st.printer.clone();
+                    }
+                });
                 ui.end_row();
                 ui.label(tr("print.orientation"));
                 let ors = [
@@ -3408,6 +3491,21 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) {
                         }
                     });
                 ui.end_row();
+                // What the system says of the printer chosen (#614).
+                let chosen = st
+                    .printers
+                    .iter()
+                    .find(|p| on_printer && st.printer.as_deref() == Some(p.name.as_str()));
+                let rows = [
+                    ("print.status", chosen.map(|p| tr(p.state.key()))),
+                    ("print.location", chosen.map(|p| p.location.clone())),
+                    ("print.comment", chosen.map(|p| p.comment.clone())),
+                ];
+                for (key, value) in rows {
+                    ui.label(tr(key));
+                    ui.label(value.unwrap_or_default());
+                    ui.end_row();
+                }
             });
     });
     ui.add_space(6.0);
@@ -3456,6 +3554,7 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) {
     });
     // Keep the older "all pages" choice in step with the range.
     st.all_pages = st.range != 1;
+    properties
 }
 
 fn print_tab_color(ui: &mut Ui, st: &mut PrintState) {

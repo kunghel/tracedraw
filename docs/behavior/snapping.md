@@ -51,6 +51,14 @@ looked at. An intersection is found on chords an eighth of the radius
 long, cut from the segments near the pointer, and then refined onto both
 curves, so it is exact while a page of thousands of curves still snaps
 at the screen's rate (#345, `curves_snap_to_their_exact_crossing`).
+Within one outline, only the nodes within the radius are gathered and
+told apart, and a segment is measured only when the box of its control
+points comes within the radius, so a single curve of tens of thousands
+of nodes (a combined ornament) costs a few milliseconds a frame, not the
+seconds it took when every node was compared with every other (#764,
+`snap_points::tests::nodes_near_the_pointer_are_offered_once`,
+`pick_drag_tests::a_combined_curve_of_many_nodes_moves_and_snaps_to_its_nodes`;
+`frame_times_over_a_combined_curve` measures it).
 
 Drawing tools snap the pointer. A move with the Pick tool that starts on
 one of the selection's points (a node, a midpoint, a quadrant or the

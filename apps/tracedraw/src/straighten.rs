@@ -203,7 +203,7 @@ impl crate::app::App {
                     ),
                     width_px: out.width(),
                     height_px: out.height(),
-                    png,
+                    png: png.into(),
                     fx: None,
                 },
             });
@@ -344,7 +344,7 @@ mod tests {
                 rect: tracedraw_core::Rect::new(10.0, 10.0, 70.0, 50.0),
                 width_px: 60,
                 height_px: 40,
-                png,
+                png: png.into(),
                 fx: None,
             })
             .expect("bitmap");

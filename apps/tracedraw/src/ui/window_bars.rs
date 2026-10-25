@@ -385,18 +385,73 @@ fn nav_button(ui: &mut Ui, g: Glyph, tip: &str) -> bool {
 }
 
 /// One tab per page, slanted at the sides; the current page's tab is white.
+/// The tabs that fit are shown from `App::page_tabs_first`: they slide so
+/// the current page's tab shows whenever the page changes, and the mouse
+/// wheel over them slides them one tab a notch (#794).
 fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
+    const SLANT: f32 = 5.0;
     let names: Vec<String> = app.doc().pages.iter().map(|p| p.name.clone()).collect();
     let current = app.page_index();
+    let n = names.len();
+    if n == 0 {
+        return;
+    }
+    let font = egui::FontId::proportional(12.0);
+    let width = |ui: &Ui, name: &str| {
+        ui.painter()
+            .layout_no_wrap(name.to_string(), font.clone(), Tokens::text())
+            .size()
+            .x
+            + 24.0
+    };
+    let mut first = app.page_tabs_first.min(n.saturating_sub(1));
+    // A new current page: slide just enough for its tab to show whole.
+    if app.page_tabs_followed != Some(app.page) {
+        app.page_tabs_followed = Some(app.page);
+        if current < first {
+            first = current;
+        } else {
+            let room = area.width() - 4.0;
+            let widths: Vec<f32> = names[first..=current.min(n - 1).max(first)]
+                .iter()
+                .map(|name| width(ui, name) - SLANT)
+                .collect();
+            let mut used: f32 = widths.iter().sum::<f32>() + SLANT;
+            let mut k = 0;
+            while used > room && first + k < current {
+                used -= widths[k];
+                k += 1;
+            }
+            first += k;
+        }
+    }
+    // The wheel over the tabs slides them, one tab a notch.
+    if ui.rect_contains_pointer(area) {
+        let step = ui.input(|i| {
+            i.raw.events.iter().rev().find_map(|e| match e {
+                egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => Some(delta.y),
+                egui::Event::MouseWheel { delta, .. } if delta.x != 0.0 => Some(-delta.x),
+                _ => None,
+            })
+        });
+        if let Some(d) = step {
+            // The scrollbars and the drawing do not scroll as well.
+            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            if d > 0.0 {
+                first = first.saturating_sub(1);
+            } else {
+                first = (first + 1).min(n.saturating_sub(1));
+            }
+        }
+    }
+    app.page_tabs_first = first;
     let mut x = area.min.x + 4.0;
     let mut clicked = None;
     let mut double = None;
-    for (i, name) in names.iter().enumerate() {
-        let galley = ui.painter().layout_no_wrap(
-            name.clone(),
-            egui::FontId::proportional(12.0),
-            Tokens::text(),
-        );
+    for (i, name) in names.iter().enumerate().skip(first) {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(name.clone(), font.clone(), Tokens::text());
         let w = galley.size().x + 24.0;
         let r = Rect::from_min_max(Pos2::new(x, area.min.y), Pos2::new(x + w, area.max.y - 1.0));
         if r.min.x > area.max.x {
@@ -404,7 +459,7 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         }
         let resp = ui.interact(r, egui::Id::new(("page_tab", i)), Sense::click());
         let selected = i == current;
-        let slant = 5.0;
+        let slant = SLANT;
         let shape = vec![
             Pos2::new(r.min.x, r.min.y),
             Pos2::new(r.max.x, r.min.y),

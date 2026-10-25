@@ -4,7 +4,7 @@ Two rows under the drawing window: the default palette, then the
 document palette above the status bar (Window > Color Palettes >
 Document Palette shows or hides it). The dotted grip at the start of the
 default palette moves it to another edge (on a side it is a column) or
-into a floating window with one row (see "Moving the bars" in
+into a floating window with as many rows as the Rows setting (see "Moving the bars" in
 `toolbars.md`); where it is put is kept across restarts, in the browser
 too. The document palette stays a row under the drawing window wherever
 the default palette is (over the drawing window when the default palette
@@ -22,12 +22,16 @@ downwards.
   on the document palette), the left scroll arrow, then the swatches from
   77 px. At the right: the right scroll arrow and the button that shows
   every colour at once. Arrows are light grey when they cannot scroll.
-- Rows (Options > Customization > Color Palette, 1 at first, up to 3):
-  the default palette shows that many rows of swatches (columns when
-  docked on a side), each further row making it 21 px thicker. The
-  swatches fill column by column, the arrows and the wheel scroll a
-  whole column, and the buttons stay on the first row. The document
-  palette keeps one row (#610).
+- Rows (the palette menu's Rows > 1 Row, 2 Rows, 3 Rows, and Options >
+  Customization > Color Palette; 1 at first, up to 3): the default
+  palette shows that many rows of swatches (columns when docked on a
+  side), each further row making it 21 px thicker. The swatches fill
+  line by line: each line holds as many swatches as fit and the next
+  line goes on where it ends (with 2 rows, Black and 90% Black sit side
+  by side on the first line). The arrows and the wheel scroll one swatch,
+  and the buttons stay on the first row. The document palette keeps one
+  row (#610, `ui::palette::tests::the_default_palette_can_show_several_rows`,
+  `ui::palette::tests::the_palette_menu_picks_the_rows`).
 - The No Color well comes first: white with a red diagonal.
 - The swatch under the pointer gets a white frame; the document palette's
   current swatch (the one clicked last) keeps it.
@@ -45,13 +49,23 @@ to Deep Blue 60 60 0 60).
 In a drawing whose primary colour mode is RGB (New Document's colour
 mode, Document Properties) the default palette shows and applies its
 colours as clean RGB values (names kept; spot inks and registration stay
-as they are): each CMYK colour takes the plain RGB of its inks,
-R = 255 (1 - C)(1 - K) and so on, not the press simulation, so Black is
-0 0 0, White 255 255 255, Red 255 0 0, 50% Black 128 128 128 and
-Orange 255 102 0; other colours are converted as the colour management
-converts. A CMYK drawing keeps them CMYK (#483, #620,
+as they are). The default palette's colours come from the RGB default
+palette, a table of RGB values defined directly
+(`palette::default_rgb`, the same 99 names in the same order, also the
+Palette Manager's built-in Default RGB palette), found by name and colour
+so a default palette edited in the Palette Editor keeps them, and worked
+out when the palette changes rather than every frame: 10%
+greys (90% Black 26 26 26, 50% Black 128 128 128) and multiples of 51
+otherwise (Black 0 0 0, Red 255 0 0, Orange 255 102 0, Purple 153 0 204,
+Navy Blue 0 51 153, Dark Brown 102 51 51, Ruby Red 153 0 0, Crimson
+153 51 102, Plum 102 0 102, Deep Blue 51 0 204). Any other CMYK colour
+takes the plain RGB of its inks, R = 255 (1 - min(1, C + K)) and so on,
+not the press simulation; other colours are converted as the colour
+management converts. A CMYK drawing keeps them CMYK (#483, #620,
 `ui::palette::tests::an_rgb_drawing_gets_an_rgb_palette`,
-`ui::palette::tests::the_default_palette_of_an_rgb_drawing_is_clean_rgb`).
+`ui::palette::tests::the_default_palette_of_an_rgb_drawing_is_clean_rgb`,
+`ui::palette::tests::inks_with_black_become_rgb_by_adding_the_black`,
+`ui::palette::tests::edited_default_palettes_keep_their_rgb_values`).
 
 ## Using a palette
 
@@ -65,7 +79,7 @@ converts. A CMYK drawing keeps them CMYK (#483, #620,
 | Drag a swatch onto the document palette | The colour joins it |
 | Drag objects (Pick tool) onto the document palette | Their fill and outline colours join it (as Add from Selection); the objects stay where they were; the pointer shows a copy sign there |
 | While dragging a swatch | A chip of the colour follows the pointer: filled over a fill, a ring over an outline; the pointer shows whether letting go changes anything; Esc drops nothing |
-| Scroll arrows, wheel | One swatch at a time; holding an arrow keeps scrolling |
+| Scroll arrows, wheel | One swatch at a time (every row moves by one); holding an arrow keeps scrolling |
 | The show-all button | Every colour of the row in a grid above it; click to apply, click elsewhere or Esc to close |
 | Tooltip | The colour's name, then its values: `C: 60 M: 0 Y: 40 K: 20`, `R: 255 G: 0 B: 0` |
 
@@ -95,8 +109,9 @@ converts. A CMYK drawing keeps them CMYK (#483, #620,
 
 ## Default palette menu
 
-Open Palette..., Palette Editor..., Palette Manager, and the Document
-Palette switch. A right click on a row outside the swatches opens the
+Open Palette..., Palette Editor..., Palette Manager, the Document
+Palette switch, and Rows > 1 Row, 2 Rows, 3 Rows (a radio choice, kept
+in the preferences, the same setting as in Options). A right click on a row outside the swatches opens the
 same menu.
 
 ## Options > Customization > Color Palette

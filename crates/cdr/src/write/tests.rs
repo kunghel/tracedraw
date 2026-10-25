@@ -223,7 +223,7 @@ fn groups_bitmaps_and_several_pages_round_trip() {
             rect: Rect::new(100.0, 50.0, 140.0, 90.0),
             width_px: 2,
             height_px: 2,
-            png,
+            png: png.into(),
             fx: None,
         },
     );
@@ -316,7 +316,7 @@ fn a_clipped_bitmap_round_trips_as_a_crop_path() {
             rect: Rect::new(0.0, 0.0, 100.0, 50.0),
             width_px: 4,
             height_px: 4,
-            png,
+            png: png.into(),
             fx: None,
         },
     );
@@ -459,11 +459,13 @@ fn corners_one_radius_cannot_hold_are_written_as_curves_and_stretched_fixed_ones
             let b = read[2].bounds();
             assert!((b.width() - 80.0).abs() < 0.01 && (b.height() - 20.0).abs() < 0.01);
             // A fixed radius on an evenly scaled rectangle is still a
-            // rectangle.
+            // rectangle, its corners 3 mm on the page and kept so.
             assert!(
-                matches!(read[3].kind, ShapeKind::Rect { radius, .. } if (radius - 1.5).abs() < 0.01),
+                matches!(read[3].kind, ShapeKind::Rect { corners: Some(c), .. } if c.fixed),
                 "{v}"
             );
+            let page = read[3].page_corners().expect("corners");
+            assert!(page.radii.iter().all(|r| (r - 3.0).abs() < 0.01), "{v}");
         } else {
             assert!(matches!(read[2].kind, ShapeKind::Path { closed: true, .. }));
         }
@@ -2096,7 +2098,7 @@ fn fills_not_written_yet_go_out_as_their_mean_colour() {
         ),
         (
             Fill::Pattern(Pattern::Bitmap {
-                png: tile,
+                png: tile.into(),
                 width_px: 2,
                 height_px: 1,
                 size_mm: 5.0,
@@ -2221,7 +2223,7 @@ fn bitmap_objects_carry_their_pixel_size() {
             rect: Rect::new(0.0, 0.0, 30.0, 20.0),
             width_px: 3,
             height_px: 2,
-            png,
+            png: png.into(),
             fx: None,
         },
     );
@@ -2747,4 +2749,42 @@ fn a_version_8_style_table_with_set11_is_read() {
     let eight = crate::text::read_stlt(&d, 8, &mut |w| notes.push(w));
     assert!(notes.is_empty(), "{notes:?}");
     assert_eq!(eight.len(), nine.len());
+}
+
+/// A face named by its family and weight is written under that name
+/// and reads back as it was in every version (#624).
+#[test]
+fn faces_named_with_their_weight_round_trip() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let semi = TextSpan::new("Semi", "Titillium Web SemiBold", 18.0);
+    let black = TextSpan::new("Black", "Lato Black", 18.0);
+    let shapes = vec![
+        text_shape(&mut ids, vec![semi], TextAlign::Left),
+        text_shape(&mut ids, vec![black], TextAlign::Left),
+    ];
+    doc.pages[0].layers[0].shapes = shapes;
+    doc.set_ids(ids);
+    // Written as named, regular, as before: the reader brings the face
+    // back from its name.
+    let json = character_json(&TextSpan::new("x", "Titillium Web SemiBold", 1.0), None);
+    assert!(
+        json.contains(r#""font":"Titillium Web SemiBold""#) && json.contains(r#""weight":"64""#),
+        "{json}"
+    );
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 2, "{v}: {:?}", rep.warnings);
+        for (s, family) in read.iter().zip(["Titillium Web SemiBold", "Lato Black"]) {
+            match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    assert_eq!(spans[0].font_family, family, "{v}");
+                    assert!(!spans[0].bold, "{v}");
+                }
+                k => panic!("{v}: {k:?}"),
+            }
+        }
+    }
 }

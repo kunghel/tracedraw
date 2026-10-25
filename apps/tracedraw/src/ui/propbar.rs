@@ -1479,6 +1479,42 @@ pub fn guide_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The page bar's list of sizes: the presets, then Custom (#650), which
+/// is the one ticked when the page matches no preset and opens the Page
+/// Size dialog with the page's width and height to type any size.
+fn page_size_list(
+    app: &mut App,
+    ui: &mut Ui,
+    presets: &[(&'static str, Size)],
+    current: &str,
+    size: Size,
+) {
+    for (n, s) in presets {
+        if ui.selectable_label(current == *n, *n).clicked() {
+            let landscape = size.width > size.height;
+            let s = if landscape {
+                Size::new(s.height.max(s.width), s.height.min(s.width))
+            } else {
+                Size::new(s.width.min(s.height), s.width.max(s.height))
+            };
+            resize_pages(app, s);
+            app.fit_pending = true;
+        }
+    }
+    ui.separator();
+    let custom = !presets.iter().any(|(n, _)| current == *n);
+    if ui
+        .selectable_label(custom, tr("toolbar.custom_page"))
+        .clicked()
+    {
+        app.dialog = crate::ui::dialogs::Dialog::PageSize {
+            width: size.width,
+            height: size.height,
+            all_pages: app.page_size_all,
+        };
+    }
+}
+
 /// Autofit Page's popup (there is one property bar).
 pub(crate) fn autofit_popup_id() -> egui::Id {
     egui::Id::new("autofit_page_popup")
@@ -1503,20 +1539,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
                 .selected_text(current.clone())
                 .width(192.0)
                 .height(400.0)
-                .show_ui(ui, |ui| {
-                    for (n, s) in &presets {
-                        if ui.selectable_label(current == *n, *n).clicked() {
-                            let landscape = size.width > size.height;
-                            let s = if landscape {
-                                Size::new(s.height.max(s.width), s.height.min(s.width))
-                            } else {
-                                Size::new(s.width.min(s.height), s.width.max(s.height))
-                            };
-                            resize_pages(app, s);
-                            app.fit_pending = true;
-                        }
-                    }
-                });
+                .show_ui(ui, |ui| page_size_list(app, ui, &presets, &current, size));
         },
     );
     let mut new_size = None;
@@ -1561,10 +1584,14 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
     }
     let ctx = ui.ctx().clone();
     let mut fitted = false;
+    // Clicks inside (the margin field, the Live preview box) keep it
+    // open, so the preview can be switched and watched (#659).
     egui::Popup::new(popup_id, ctx.clone(), fit.rect, ui.layer_id())
         .open_memory(None)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_min_width(190.0);
+            // The Live preview box on the margin's row, right of the field.
             ui.horizontal(|ui| {
                 ui.label(tr("toolbar.fit_margin"));
                 ui.add_space(8.0);
@@ -1572,11 +1599,12 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
                 if let Some(m) = paper_distance(ui, app, margin, 88.0, Some(1.0)) {
                     app.settings.fit_page_margin = m.max(0.0);
                 }
+                ui.add_space(6.0);
+                ui.checkbox(
+                    &mut app.settings.fit_page_preview,
+                    tr("toolbar.autofit_live_preview"),
+                );
             });
-            ui.checkbox(
-                &mut app.settings.fit_page_preview,
-                tr("toolbar.autofit_live_preview"),
-            );
             ui.add_space(4.0);
             if ui
                 .add_sized(
@@ -1915,6 +1943,9 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// Wheel movement in points that makes one notch (one line).
+const WHEEL_POINTS_PER_NOTCH: f32 = 50.0;
+
 /// Outline widths the list offers in millimetres.
 pub(crate) const OUTLINE_WIDTHS_MM: [f64; 10] =
     [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0];
@@ -2117,23 +2148,68 @@ fn outline_width_box(
         resp.rect.union(arrow_rect)
     });
     let anchor = inner.inner;
-    // The wheel over the closed list: the next width up or down (#663).
+    // The wheel over the closed list: the next width up or down, one step
+    // per notch (#663). An event of a notch or more is one step whatever
+    // its size (browsers send a notch as 100 points or 3 lines); parts of
+    // a notch from a touchpad or a fine wheel add up until they make one,
+    // and start again when the wheel turns the other way or the pointer
+    // leaves the box.
+    let acc_id = id.with("wheel");
     if wheel && !egui::Popup::is_id_open(&ctx, popup_id) && ui.rect_contains_pointer(anchor) {
-        let step = ui.input(|i| {
-            i.raw.events.iter().rev().find_map(|e| match e {
-                egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => Some(delta.y),
-                _ => None,
-            })
+        let deltas: Vec<f32> = ui.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } if delta.y != 0.0 => {
+                        Some(match unit {
+                            egui::MouseWheelUnit::Line if delta.y.abs() >= 1.0 => delta.y.signum(),
+                            egui::MouseWheelUnit::Line => delta.y,
+                            egui::MouseWheelUnit::Point
+                                if delta.y.abs() >= WHEEL_POINTS_PER_NOTCH =>
+                            {
+                                delta.y.signum()
+                            }
+                            egui::MouseWheelUnit::Point => delta.y / WHEEL_POINTS_PER_NOTCH,
+                            egui::MouseWheelUnit::Page => delta.y.signum(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect()
         });
-        if let Some(dy) = step {
+        if !deltas.is_empty() {
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            // A width being typed goes; the step counts from the one held.
-            ui.data_mut(|d| d.remove::<String>(id));
-            ui.memory_mut(|m| m.surrender_focus(id));
-            if let Some(w) = outline_width_step(width, dy > 0.0, app.outline_units()) {
-                picked = Some(w);
+            let mut acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0);
+            let mut steps = 0i32;
+            for d in deltas {
+                if acc != 0.0 && acc.signum() != d.signum() {
+                    acc = 0.0;
+                }
+                acc += d;
+                let whole = acc.trunc();
+                steps += whole as i32;
+                acc -= whole;
+            }
+            ui.data_mut(|d| d.insert_temp(acc_id, acc));
+            if steps != 0 {
+                // A width being typed goes; the step counts from the one held.
+                ui.data_mut(|d| d.remove::<String>(id));
+                ui.memory_mut(|m| m.surrender_focus(id));
+                let mut w = width;
+                for _ in 0..steps.unsigned_abs().min(64) {
+                    match outline_width_step(w, steps > 0, app.outline_units()) {
+                        Some(next) => w = next,
+                        None => break,
+                    }
+                }
+                if w != width {
+                    picked = Some(w);
+                }
             }
         }
+    } else {
+        ui.data_mut(|d| d.remove::<f32>(acc_id));
     }
     egui::Popup::new(popup_id, ctx.clone(), anchor, ui.layer_id())
         .open_memory(None)
@@ -3077,18 +3153,49 @@ fn wrap_style_list(app: &mut App, ui: &mut Ui) {
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .width(260.0)
         .show(|ui| {
-            for (mode, side) in tracedraw_core::TextWrap::STYLES {
-                let here = on && current.mode == mode && current.side == side;
-                if ui
-                    .selectable_label(here, tr(wrap_style_key(mode, side)))
-                    .clicked()
-                {
-                    app.set_wrap_style(mode, side);
+            // As the reference program lists them (#661): a title, None,
+            // the contour and the square styles under their headings, and
+            // the offset, greyed out while nothing wraps (typing one
+            // would turn wrapping back on).
+            ui.label(egui::RichText::new(tr("context.wrap_style")).strong());
+            if ui.selectable_label(!on, tr("context.wrap_none")).clicked() && on {
+                let shapes = app.selection.clone();
+                app.run(tracedraw_core::Command::SetWrapText {
+                    shapes,
+                    wrap: false,
+                });
+            }
+            use tracedraw_core::WrapMode;
+            for (heading, contour) in [
+                ("context.wrap_contour", true),
+                ("context.wrap_square", false),
+            ] {
+                ui.separator();
+                ui.label(egui::RichText::new(tr(heading)).strong());
+                for (mode, side) in tracedraw_core::TextWrap::STYLES {
+                    if (mode == WrapMode::Contour) != contour {
+                        continue;
+                    }
+                    let here = on && current.mode == mode && current.side == side;
+                    if ui.selectable_label(here, tr(wrap_side_key(side))).clicked() {
+                        app.set_wrap_style(mode, side);
+                    }
                 }
             }
             ui.separator();
-            wrap_offset_field(app, ui, current.offset);
+            ui.add_enabled_ui(on, |ui| wrap_offset_field(app, ui, current.offset));
         });
+}
+
+/// A wrap style's side under its Contour or Square heading.
+fn wrap_side_key(side: tracedraw_core::WrapSide) -> &'static str {
+    use tracedraw_core::WrapSide as S;
+    match side {
+        S::Left => "context.wrap_flows_left",
+        S::Right => "context.wrap_flows_right",
+        S::Straddle => "context.wrap_straddle",
+        S::AboveBelow => "context.wrap_above_below",
+    }
 }
 
 /// The text wrap offset field (property bar list and context menu).
@@ -3322,6 +3429,53 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// The page bar's list of sizes ends with Custom..., ticked when the
+    /// page matches no preset; clicking it opens the Page Size dialog with
+    /// the page's own width and height (#650).
+    #[test]
+    fn the_page_size_list_offers_a_custom_size() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let size = Size::new(123.0, 45.0);
+        let presets = crate::ui::dialogs::paper_presets();
+        let custom = tr("toolbar.custom_page");
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Option<egui::Rect> {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| page_size_list(app, ui, &presets, "Custom", size),
+            );
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|c| match &c.shape {
+                epaint::Shape::Text(t) if t.galley.text() == custom => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        };
+        let at = run(&mut app, Vec::new()).expect("a Custom entry").center();
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            run(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        match app.dialog {
+            crate::ui::dialogs::Dialog::PageSize { width, height, .. } => {
+                assert!((width - 123.0).abs() < 1e-9 && (height - 45.0).abs() < 1e-9);
+            }
+            _ => panic!("the Page Size dialog"),
+        }
+    }
+
     /// With Live preview on the open popup shows the page Autofit Page
     /// would make; off, the page stays as it is (#659).
     #[test]
@@ -3492,11 +3646,40 @@ mod tests {
         wheel(&mut app, -1.0);
         assert_eq!(width(&app), Some(p[1]));
         assert_eq!(app.engine.history_labels().0.len(), depth + 3);
+        // Parts of a notch (a touchpad, a fine wheel) add up: a quarter
+        // does nothing, four of them make one step.
+        for _ in 0..3 {
+            wheel(&mut app, 0.25);
+            assert_eq!(width(&app), Some(p[1]));
+        }
+        wheel(&mut app, 0.25);
+        assert_eq!(width(&app), Some(p[2]));
+        // A notch of three lines (Firefox) or 100 points (Chrome) is one
+        // step.
+        wheel(&mut app, 3.0);
+        assert_eq!(width(&app), Some(p[3]));
+        run(&mut app, vec![egui::Event::PointerMoved(field.center())]);
+        run(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 100.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(width(&app), Some(p[4]));
+        assert_eq!(app.engine.history_labels().0.len(), depth + 6);
+        // Turning back drops the part of a notch gathered so far.
+        wheel(&mut app, 0.75);
+        wheel(&mut app, -0.5);
+        wheel(&mut app, 0.5);
+        assert_eq!(width(&app), Some(p[4]));
         // Nothing selected: nothing changes, nothing is asked.
         app.select(Vec::new());
         wheel(&mut app, 1.0);
-        assert_eq!(width(&app), Some(p[1]));
-        assert_eq!(app.engine.history_labels().0.len(), depth + 3);
+        assert_eq!(width(&app), Some(p[4]));
+        assert_eq!(app.engine.history_labels().0.len(), depth + 6);
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
     }
 

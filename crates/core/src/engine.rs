@@ -51,7 +51,14 @@ pub struct Engine {
 struct PreviewMark {
     /// The step on top of the undo stack then.
     last_step: Option<u64>,
+    /// The redo stack then, moved here (not copied: each entry holds a
+    /// whole drawing) and put back when the preview ends.
     redo: Vec<HistoryEntry>,
+    /// A step recorded since cleared the redo stack.
+    redo_cleared: bool,
+    /// Steps redone from `redo` during the preview, which withdrawing it
+    /// puts back there.
+    redone: Vec<u64>,
     saved: bool,
     at_step: bool,
 }
@@ -128,6 +135,8 @@ impl Engine {
         self.doc.refresh_text_flow();
         self.undo.clear();
         self.redo.clear();
+        // A preview of the drawing that went has nothing to go back to.
+        self.preview = None;
         self.revision += 1;
         self.saved_revision = self.revision;
         self.step_revision = u64::MAX;
@@ -169,7 +178,7 @@ impl Engine {
         while self.undo.len() > self.max_history {
             self.undo.remove(0);
         }
-        self.redo.clear();
+        self.clear_redo();
         self.revision += 1;
         self.step_revision = self.revision;
     }
@@ -244,7 +253,7 @@ impl Engine {
         }
         doc.assign_uids(&mut self.uid_state);
         self.doc = doc;
-        self.redo.clear();
+        self.clear_redo();
         self.revision += 1;
         self.step_revision = self.revision;
         Ok(())
@@ -300,7 +309,16 @@ impl Engine {
     }
 
     pub fn redo(&mut self) -> Result<&'static str> {
-        let mut e = self.redo.pop().ok_or(Error::NothingToRedo)?;
+        let held = self.preview.as_mut().filter(|m| !m.redo_cleared);
+        let mut e = match self.redo.pop() {
+            Some(e) => e,
+            None => {
+                let m = held.ok_or(Error::NothingToRedo)?;
+                let e = m.redo.pop().ok_or(Error::NothingToRedo)?;
+                m.redone.push(e.id);
+                e
+            }
+        };
         let other = std::mem::take(&mut e.other);
         e.other = self.swap_in(other);
         let label = e.label;
@@ -319,7 +337,9 @@ impl Engine {
         }
         self.preview = Some(PreviewMark {
             last_step: self.last_step_id(),
-            redo: self.redo.clone(),
+            redo: std::mem::take(&mut self.redo),
+            redo_cleared: false,
+            redone: Vec::new(),
             saved: !self.is_dirty(),
             at_step: self.at_recorded_step(),
         });
@@ -333,17 +353,23 @@ impl Engine {
     /// Take back what was recorded since [`begin_preview`](Self::begin_preview)
     /// and put the history back as it was then.
     pub fn withdraw_preview(&mut self) {
-        let Some(m) = self.preview.take() else {
+        let Some(mut m) = self.preview.take() else {
             return;
         };
-        let mut first_before: Option<Document> = None;
+        // Each step goes back as Undo takes it (swaps, no copies); one
+        // redone from the held stack returns there, newest first, so the
+        // stack comes out as it was.
         while !self.undo.is_empty() && self.last_step_id() != m.last_step {
-            if let Some(e) = self.undo.pop() {
-                first_before = Some(e.other);
+            let Some(mut e) = self.undo.pop() else {
+                break;
+            };
+            if m.redone.contains(&e.id) {
+                let other = std::mem::take(&mut e.other);
+                e.other = self.swap_in(other);
+                m.redo.push(e);
+            } else {
+                self.swap_in(e.other);
             }
-        }
-        if let Some(before) = first_before {
-            self.swap_in(before);
         }
         self.redo = m.redo;
         if m.saved {
@@ -355,7 +381,22 @@ impl Engine {
     /// Keep what was recorded since [`begin_preview`](Self::begin_preview)
     /// as ordinary steps.
     pub fn keep_preview(&mut self) {
-        self.preview = None;
+        let Some(m) = self.preview.take() else {
+            return;
+        };
+        if !m.redo_cleared {
+            let mut redo = m.redo;
+            redo.append(&mut self.redo);
+            self.redo = redo;
+        }
+    }
+
+    /// Drop the steps that could be redone, those a preview holds included.
+    fn clear_redo(&mut self) {
+        self.redo.clear();
+        if let Some(m) = self.preview.as_mut() {
+            m.redo_cleared = true;
+        }
     }
 
     /// The id of the step on top of the undo stack (the last one still in
@@ -375,7 +416,11 @@ impl Engine {
     pub fn history_labels(&self) -> (Vec<&'static str>, Vec<&'static str>) {
         (
             self.undo.iter().map(|e| e.label).collect(),
-            self.redo.iter().map(|e| e.label).collect(),
+            self.held_redo()
+                .iter()
+                .chain(&self.redo)
+                .map(|e| e.label)
+                .collect(),
         )
     }
 
@@ -397,7 +442,19 @@ impl Engine {
     }
 
     pub fn redo_label(&self) -> Option<&'static str> {
-        self.redo.last().map(|e| e.label)
+        self.redo
+            .last()
+            .or_else(|| self.held_redo().last())
+            .map(|e| e.label)
+    }
+
+    /// The redo steps a preview holds while it goes on (see
+    /// [`begin_preview`](Self::begin_preview)).
+    fn held_redo(&self) -> &[HistoryEntry] {
+        match &self.preview {
+            Some(m) if !m.redo_cleared => &m.redo,
+            _ => &[],
+        }
     }
 }
 
@@ -692,5 +749,145 @@ mod tests {
         e.keep_preview();
         assert!(!e.in_preview());
         assert_eq!(e.history_labels().0.len(), undo.len() + 2);
+    }
+
+    /// An undo step shares the pictures with the drawing instead of
+    /// copying them.
+    #[test]
+    fn an_undo_step_shares_picture_bytes_with_the_drawing() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        use crate::style::{Fill, Pattern};
+        use crate::SharedBytes;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let png = SharedBytes::from(vec![7u8; 4096]);
+        let id = e.new_shape_id();
+        let mut shape = Shape::new(
+            id,
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: 8,
+                height_px: 8,
+                png: png.clone(),
+                fx: None,
+            },
+        );
+        shape.fill = Fill::Pattern(Pattern::Bitmap {
+            png: png.clone(),
+            width_px: 8,
+            height_px: 8,
+            size_mm: 5.0,
+        });
+        e.run(&Command::AddShape { layer, shape }).unwrap();
+        e.run(&Command::TransformShapes {
+            shapes: vec![id],
+            transform: crate::Affine::translate((1.0, 0.0)),
+        })
+        .unwrap();
+        let pictures = |d: &Document| {
+            let s = &d.pages[0].layers[0].shapes[0];
+            let ShapeKind::Bitmap { png: a, .. } = &s.kind else {
+                panic!("not a bitmap")
+            };
+            let Fill::Pattern(Pattern::Bitmap { png: b, .. }) = &s.fill else {
+                panic!("not a bitmap fill")
+            };
+            (a.clone(), b.clone())
+        };
+        let (now_a, now_b) = pictures(e.document());
+        let (was_a, was_b) = pictures(&e.undo[1].other);
+        assert!(SharedBytes::ptr_eq(&now_a, &png));
+        assert!(SharedBytes::ptr_eq(&now_a, &was_a));
+        assert!(SharedBytes::ptr_eq(&now_b, &was_b));
+    }
+
+    /// A step redone during a preview that recorded nothing comes back
+    /// to the redo stack when the preview is withdrawn.
+    #[test]
+    fn a_step_redone_during_a_preview_can_be_redone_after_it() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let add = |e: &mut Engine| {
+            let id = e.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            e.run(&Command::AddShape { layer, shape }).unwrap();
+        };
+        add(&mut e);
+        add(&mut e);
+        e.undo().unwrap();
+        e.undo().unwrap();
+        let labels = e.history_labels();
+        let pages = e.document().pages.clone();
+        e.begin_preview();
+        e.redo().unwrap();
+        add(&mut e);
+        e.withdraw_preview();
+        assert_eq!(e.history_labels(), labels);
+        assert_eq!(e.document().pages, pages);
+        e.redo().unwrap();
+        e.redo().unwrap();
+        assert_eq!(e.document().pages[0].layers[0].shapes.len(), 2);
+        // Redone and nothing recorded: the same.
+        e.undo().unwrap();
+        e.undo().unwrap();
+        e.begin_preview();
+        e.redo().unwrap();
+        e.withdraw_preview();
+        assert_eq!(e.history_labels(), labels);
+        e.redo().unwrap();
+        e.redo().unwrap();
+        assert!(e.redo().is_err());
+    }
+
+    /// A preview moves the redo stack aside instead of copying it, and
+    /// puts it back when nothing recorded since cleared it.
+    #[test]
+    fn a_preview_keeps_the_redo_stack_without_copying_it() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let add = |e: &mut Engine| {
+            let id = e.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            e.run(&Command::AddShape { layer, shape }).unwrap();
+        };
+        add(&mut e);
+        add(&mut e);
+        e.undo().unwrap();
+        e.undo().unwrap();
+        let labels = e.history_labels();
+        e.begin_preview();
+        // Moved, not copied; still listed and still redoable.
+        assert!(e.redo.is_empty());
+        assert_eq!(e.history_labels(), labels);
+        assert!(e.redo_label().is_some());
+        e.keep_preview();
+        assert_eq!(e.history_labels(), labels);
+        e.redo().unwrap();
+        e.redo().unwrap();
+        // A step recorded during a kept preview drops the redo stack.
+        e.undo().unwrap();
+        e.begin_preview();
+        add(&mut e);
+        e.keep_preview();
+        assert!(e.redo_label().is_none());
     }
 }

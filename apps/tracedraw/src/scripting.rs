@@ -1774,7 +1774,7 @@ impl HostInner {
                         rect: Rect::new(0.0, 0.0, mm_w, mm_h),
                         width_px: w,
                         height_px: h,
-                        png,
+                        png: png.into(),
                         fx: None,
                     },
                 );

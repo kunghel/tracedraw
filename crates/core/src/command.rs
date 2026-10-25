@@ -669,21 +669,24 @@ impl Command {
                 let mut local = Vec::with_capacity(shapes.len());
                 for id in shapes {
                     any(doc, *id)?;
-                    let t = if doc.shape(*id).is_ok() {
-                        *transform
+                    let (t, parent) = if doc.shape(*id).is_ok() {
+                        (*transform, Affine::IDENTITY)
                     } else {
                         let parent = doc.parent_transform(*id).unwrap_or(Affine::IDENTITY);
                         let det = parent.determinant();
                         if !det.is_finite() || det.abs() < 1e-12 {
                             return Err(Error::ShapeNotFound(*id));
                         }
-                        parent.inverse() * *transform * parent
+                        (parent.inverse() * *transform * parent, parent)
                     };
-                    local.push((*id, t));
+                    local.push((*id, t, parent));
                 }
-                for (id, t) in local {
+                for (id, t, parent) in local {
+                    let shape = any_mut(doc, id)?;
+                    // Gradients turn and mirror with the object (#775).
+                    shape.carry_fills(*transform, parent);
                     // A symmetry's mirror lines go with the object.
-                    any_mut(doc, id)?.transform_by(t);
+                    shape.transform_by(t);
                 }
             }
             Command::SetFill { shapes, fill } => {
@@ -2261,5 +2264,186 @@ mod tests {
             .apply(&mut doc)
             .unwrap_err();
         assert!(matches!(err, Error::LayerNotFound(_)));
+    }
+
+    /// A gradient turns and mirrors with its object, also inside a group,
+    /// and so does a gradient transparency; a move or a scale leaves the
+    /// fill as it was (#775).
+    #[test]
+    fn gradients_turn_and_mirror_with_their_object() {
+        use crate::color::Color;
+        use crate::geometry::{Point, Rect};
+        use crate::style::{Fill, Fountain, FountainKind};
+        let mut doc = Document::default();
+        let page = doc.pages[0].id;
+        let layer = doc.page(page).expect("page").layers[0].id;
+        let fountain = Fountain::two(FountainKind::Linear, Color::WHITE, Color::BLACK, 0.0);
+        let rect = |doc: &mut Document| {
+            let mut s = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Fountain(fountain.clone());
+            s
+        };
+        let a = rect(&mut doc);
+        let a_id = a.id;
+        let mut b = rect(&mut doc);
+        let b_id = b.id;
+        b.fill = Fill::None;
+        b.effects.push(crate::live::Effect::Transparency {
+            mask: Fill::Fountain(fountain.clone()),
+            merge: crate::live::MergeMode::Normal,
+            target: 2,
+        });
+        let child = rect(&mut doc);
+        let child_id = child.id;
+        let group = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Group {
+                children: vec![child],
+            },
+        );
+        let group_id = group.id;
+        let mut eng = crate::Engine::new(doc);
+        for shape in [a, b, group] {
+            eng.run(&Command::AddShape { layer, shape }).expect("added");
+        }
+        // The fill's value at the left and right middle of an object.
+        let ends = |eng: &crate::Engine, id: ShapeId, mask: bool| {
+            let s = eng.document().find_shape(id).expect("shape");
+            let f = if mask {
+                match s.effects.first() {
+                    Some(crate::live::Effect::Transparency { mask, .. }) => mask.clone(),
+                    _ => panic!("no transparency"),
+                }
+            } else {
+                s.fill.clone()
+            };
+            let Fill::Fountain(f) = f else {
+                panic!("not a fountain")
+            };
+            // A fill placed by its angle, as its nodes would place it.
+            let b = s.bounds();
+            let mut g = f.clone();
+            g.handles = Some(f.handles.unwrap_or_else(|| f.default_handles(b)));
+            let c = b.center();
+            (
+                g.param_at(b, Point::new(b.x0, c.y)).expect("left"),
+                g.param_at(b, Point::new(b.x1, c.y)).expect("right"),
+            )
+        };
+        let close =
+            |x: (f64, f64), y: (f64, f64)| (x.0 - y.0).abs() < 1e-9 && (x.1 - y.1).abs() < 1e-9;
+        let start = ends(&eng, a_id, false);
+        assert!(close(start, (0.0, 1.0)), "{start:?}");
+        // A move and a scale: nothing changes in the fill.
+        let moved = Affine::translate((5.0, 7.0)) * Affine::scale_non_uniform(2.0, 0.5);
+        let ids = vec![a_id, b_id, group_id];
+        eng.run(&Command::TransformShapes {
+            shapes: ids.clone(),
+            transform: moved,
+        })
+        .expect("moved");
+        let s = eng.document().find_shape(a_id).expect("a");
+        assert_eq!(s.fill, Fill::Fountain(fountain.clone()));
+        // Half a turn about each centre: the gradient runs right to left.
+        let turn = |eng: &crate::Engine, id: ShapeId| {
+            let c = eng
+                .document()
+                .find_shape(id)
+                .expect("shape")
+                .bounds()
+                .center();
+            Affine::translate(c.to_vec2())
+                * Affine::rotate(std::f64::consts::PI)
+                * Affine::translate(-c.to_vec2())
+        };
+        for id in [a_id, b_id, group_id] {
+            let t = turn(&eng, id);
+            eng.run(&Command::TransformShapes {
+                shapes: vec![id],
+                transform: t,
+            })
+            .expect("turned");
+        }
+        for (id, mask) in [(a_id, false), (b_id, true), (child_id, false)] {
+            let e = ends(&eng, id, mask);
+            assert!(close(e, (1.0, 0.0)), "{id:?} {e:?}");
+        }
+        // Still placed by its angle, now half a turn round, so the angle
+        // field of Edit Fill keeps turning it.
+        let Fill::Fountain(f) = &eng.document().find_shape(a_id).expect("a").fill else {
+            panic!("fountain")
+        };
+        assert!(f.handles.is_none());
+        assert!((f.angle.abs() - 180.0).abs() < 1e-9, "{}", f.angle);
+        // A mirror brings it back; undo goes back to the turned fill.
+        let c = eng
+            .document()
+            .find_shape(a_id)
+            .expect("a")
+            .bounds()
+            .center();
+        let mirror = Affine::translate((c.x, 0.0))
+            * Affine::scale_non_uniform(-1.0, 1.0)
+            * Affine::translate((-c.x, 0.0));
+        eng.run(&Command::TransformShapes {
+            shapes: vec![a_id],
+            transform: mirror,
+        })
+        .expect("mirrored");
+        assert!(close(ends(&eng, a_id, false), (0.0, 1.0)));
+        eng.undo().expect("undo");
+        assert!(close(ends(&eng, a_id, false), (1.0, 0.0)));
+        // A quarter turn: the gradient runs up or down, the same at the
+        // left and the right.
+        let c = eng
+            .document()
+            .find_shape(a_id)
+            .expect("a")
+            .bounds()
+            .center();
+        let quarter = Affine::translate(c.to_vec2())
+            * Affine::rotate(std::f64::consts::FRAC_PI_2)
+            * Affine::translate(-c.to_vec2());
+        eng.run(&Command::TransformShapes {
+            shapes: vec![a_id],
+            transform: quarter,
+        })
+        .expect("quarter");
+        let (l, r) = ends(&eng, a_id, false);
+        assert!((l - r).abs() < 1e-9, "{l} {r}");
+        // A turn of 30 degrees: the box changes shape, so the nodes are
+        // placed freely, the gradient keeping its run across the object.
+        let s = eng.document().find_shape(a_id).expect("a");
+        let c = s.bounds().center();
+        let Fill::Fountain(before) = s.fill.clone() else {
+            panic!("fountain")
+        };
+        let b0 = s.bounds();
+        let mut g = before.clone();
+        g.handles = Some(before.handles.unwrap_or_else(|| before.default_handles(b0)));
+        let p0 = Point::new(b0.x0 + 3.0, b0.y0 + 5.0);
+        let t0 = g.param_at(b0, p0).expect("before");
+        let thirty = Affine::translate(c.to_vec2())
+            * Affine::rotate(30f64.to_radians())
+            * Affine::translate(-c.to_vec2());
+        eng.run(&Command::TransformShapes {
+            shapes: vec![a_id],
+            transform: thirty,
+        })
+        .expect("thirty");
+        let s = eng.document().find_shape(a_id).expect("a");
+        let Fill::Fountain(f) = &s.fill else {
+            panic!("fountain")
+        };
+        assert!(f.handles.is_some());
+        let t1 = f.param_at(s.bounds(), thirty * p0).expect("after");
+        assert!((t0 - t1).abs() < 1e-9, "{t0} {t1}");
     }
 }

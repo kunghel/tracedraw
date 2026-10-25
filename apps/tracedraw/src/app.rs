@@ -781,8 +781,8 @@ pub struct Clipboard {
     /// objects keep their links only to the same styles.
     pub styles: Vec<tracedraw_core::ObjectStyle>,
     /// What the system clipboard held right after this copy (see
-    /// `ClipboardContent::fingerprint`).
-    pub system: u64,
+    /// `clipboard::Mark`).
+    pub system: crate::clipboard::Mark,
     /// Guidelines copied with no objects selected: pasted where they were
     /// (#376).
     pub guides: Vec<tracedraw_core::document::Guide>,
@@ -886,8 +886,12 @@ pub struct App {
     /// The last vector object's picture without its bitmap effects, by its
     /// id and state (see `App::vector_base_cached`).
     #[allow(clippy::type_complexity)]
-    pub vector_fx_base:
-        std::cell::RefCell<Option<((ShapeId, u64), (Vec<u8>, u32, u32, tracedraw_core::Rect))>>,
+    pub vector_fx_base: std::cell::RefCell<
+        Option<(
+            (ShapeId, u64),
+            (tracedraw_core::SharedBytes, u32, u32, tracedraw_core::Rect),
+        )>,
+    >,
     /// File > GitHub's session: the token, the request out, the history.
     pub github: crate::github::GithubSession,
     /// The `.cdr` version the active drawing is saved in: the version of
@@ -911,6 +915,9 @@ pub struct App {
     /// `.tdraw` files (faces whose licence allows it).
     pub tdraw_embed_fonts: bool,
     pub status: String,
+    /// The status message that opens Options > General when clicked, while
+    /// it is the one shown: the hint that hardware acceleration is off.
+    pub status_opens_options: Option<String>,
     pub fit_pending: bool,
     pub units: Units,
     pub nudge_mm: f64,
@@ -1024,6 +1031,9 @@ pub struct App {
     pub pointer_page: Option<Point>,
     /// The palette shown in the bottom strip (the first visible one).
     pub palette: Vec<(String, Color)>,
+    /// [`Self::palette`] as an RGB drawing shows it, worked out when the
+    /// palette changes (#620).
+    pub palette_rgb: Vec<(String, Color)>,
     /// First swatch shown in the bottom strip (its scroll position).
     pub palette_scroll: usize,
     /// The same for the document palette row.
@@ -1046,6 +1056,12 @@ pub struct App {
     /// and the selection they were gathered for (see
     /// [`App::selected_rc`]).
     pub selected_cache: std::cell::RefCell<Option<SelectedCache>>,
+    /// The selection's outlines flattened for Mask Outside Page, with the
+    /// gathered selection and the zoom they were made for (see
+    /// [`App::selected_outlines`]).
+    #[allow(clippy::type_complexity)]
+    pub outline_cache:
+        std::cell::RefCell<Option<(std::rc::Rc<Vec<Shape>>, u32, std::rc::Rc<Vec<Vec<Point>>>)>>,
     /// Where the canvas began on screen when it was last drawn, so the
     /// drawing stays put in its window when the window moves (see
     /// `App::anchor_view`).
@@ -1162,6 +1178,10 @@ pub struct App {
     pub fullscreen_preview: bool,
     /// File > Print Preview, while it is open.
     pub print_preview: Option<crate::ui::print_preview::PrintPreview>,
+    /// The printer list being read off the interface's thread for the
+    /// Print dialog, and the last list read (#614).
+    pub printer_fetch: Option<std::sync::mpsc::Receiver<Vec<crate::printers::Printer>>>,
+    pub printers_seen: Vec<crate::printers::Printer>,
     pub preview_selected_only: bool,
     pub page_sorter: bool,
     /// View > Multipage View: every page laid out beside the current one.
@@ -1187,7 +1207,7 @@ pub struct App {
     pub rasterize_complex_effects: bool,
     pub show_bleed: bool,
     pub show_printable_area: bool,
-    /// View > Page > Mask Outside Page: the desktop is drawn over what
+    /// View > Mask Outside Page: an opaque colour is drawn over what
     /// lies outside the page, with the page border over the objects, so
     /// the page shows as it will print while every object stays editable
     /// (#615).
@@ -1237,6 +1257,9 @@ pub struct App {
     /// Autofit Page's popup open: the margin shown and the frame it was
     /// drawn in, for the outline of the page it would make (#594).
     pub autofit_preview: Option<(f64, u64)>,
+    /// The choices of the last File > Export of this session, which the
+    /// next one starts with (#617).
+    pub last_export: Option<crate::ui::dialogs::ExportState>,
     /// Print Merge's Place Inside Frame waiting for a click on the shape
     /// that holds the picture (#577).
     pub pending_merge_frame: bool,
@@ -1439,6 +1462,10 @@ pub struct App {
     /// The document revision dimensions were last checked at for moves
     /// to bake (see [`App::bake_dimensions`]).
     pub dimensions_checked: u64,
+    /// How the labels of dimensions saved before labels were noted read
+    /// when an edit of them in place began (see
+    /// [`crate::dimensions::Dimension::read_back`]).
+    pub dimension_labels_seen: std::collections::HashMap<ShapeId, crate::dimensions::DrawnLabel>,
     /// A linear dimension's first point was given by pressing to drag.
     pub dimension_dragging: bool,
     /// The style new 3-point callouts take (the callout tool's bar).
@@ -1531,6 +1558,11 @@ pub struct App {
     /// Share of the drawing window's bottom row given to the page tabs
     /// (the rest is the horizontal scrollbar); set with the splitter.
     pub page_tabs_fraction: f32,
+    /// The first page tab shown in that row, and the page it last slid
+    /// to show: the tabs slide so the current page's tab shows, and the
+    /// mouse wheel over them slides them (#794).
+    pub page_tabs_first: usize,
+    pub page_tabs_followed: Option<tracedraw_core::PageId>,
     /// The Hints docker's page and history.
     pub hints: crate::ui::hints::HintsState,
 }
@@ -1857,6 +1889,9 @@ impl DockerTab {
     }
 }
 
+/// The most outline points Mask Outside Page draws for the selection.
+pub const SELECTED_OUTLINE_POINTS: usize = 200_000;
+
 /// The selected objects as [`App::selected_rc`] gathered them: the
 /// drawing's engine, its revision and the page, and the selection.
 #[derive(Debug, Clone)]
@@ -2074,6 +2109,7 @@ impl App {
             cdr_embed_fonts: true,
             tdraw_embed_fonts: true,
             status: String::new(),
+            status_opens_options: None,
             fit_pending: true,
             units: Units::Millimeters,
             nudge_mm: 2.54,
@@ -2119,7 +2155,7 @@ impl App {
             media_width: 3.0,
             media_angle: 45.0,
             dimension_points: Vec::new(),
-            blend_steps: 5,
+            blend_steps: 20,
             blend_options: Default::default(),
             blend_spacing_mm: 5.0,
             blend_link_accel: false,
@@ -2147,6 +2183,7 @@ impl App {
             canvas_rect: egui::Rect::NOTHING,
             pointer_page: None,
             palette: crate::palette::default_cmyk(),
+            palette_rgb: crate::ui::palette::as_rgb(&crate::palette::default_cmyk()),
             palette_scroll: 0,
             doc_palette_scroll: 0,
             doc_palette_current: None,
@@ -2156,6 +2193,7 @@ impl App {
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
             fill_preview: false,
             selected_cache: std::cell::RefCell::new(None),
+            outline_cache: std::cell::RefCell::new(None),
             view_anchor: None,
             window_layout: Default::default(),
             window_layout_seen: None,
@@ -2208,6 +2246,8 @@ impl App {
             welcome_tab: WelcomeTab::GetStarted,
             fullscreen_preview: false,
             print_preview: None,
+            printer_fetch: None,
+            printers_seen: Vec::new(),
             preview_selected_only: false,
             page_sorter: false,
             multipage: false,
@@ -2255,6 +2295,7 @@ impl App {
             pending_shaping: None,
             pending_merge_frame: false,
             autofit_preview: None,
+            last_export: None,
             pending_copy_effect: None,
             pending_copy_envelope: false,
             pending_clone_effect: None,
@@ -2363,6 +2404,7 @@ impl App {
             brush_stepped: false,
             dimension_style: Default::default(),
             dimensions_checked: u64::MAX,
+            dimension_labels_seen: Default::default(),
             dimension_dragging: false,
             callout_style: Default::default(),
             callouts_checked: 0,
@@ -2408,6 +2450,8 @@ impl App {
             quit_after_closing: false,
             quit_now: false,
             page_tabs_fraction: 0.45,
+            page_tabs_first: 0,
+            page_tabs_followed: None,
             hints: Default::default(),
         };
         app.load_settings();
@@ -2485,6 +2529,12 @@ impl App {
         } else {
             self.settings.default_dpi.max(1.0)
         }
+    }
+
+    /// The Options dialog at its General page (hardware acceleration).
+    pub fn open_general_options(&mut self) {
+        self.options_page = crate::ui::dialogs::OptionsPage::General;
+        self.dialog = crate::ui::dialogs::Dialog::Options;
     }
 
     /// Layout > Page Setup and a double click on the page border or
@@ -3943,6 +3993,67 @@ impl App {
         b
     }
 
+    /// The outlines of the selected objects in page space, flattened
+    /// finely enough for the current zoom: what Mask Outside Page draws
+    /// over the mask (#615). Kept with the gathered selection and the
+    /// zoom, so a frame only maps the points to the screen; at most
+    /// [`SELECTED_OUTLINE_POINTS`] points.
+    pub fn selected_outlines(&self) -> std::rc::Rc<Vec<Vec<Point>>> {
+        let shapes = self.selected_rc();
+        let zoom = self.view.zoom.to_bits();
+        if let Ok(cache) = self.outline_cache.try_borrow() {
+            if let Some((s, z, lines)) = cache.as_ref() {
+                if *z == zoom && std::rc::Rc::ptr_eq(s, &shapes) {
+                    return lines.clone();
+                }
+            }
+        }
+        // A quarter of a screen pixel.
+        let tolerance = 0.25 / f64::from(self.view.zoom.max(1e-6));
+        let mut lines: Vec<Vec<Point>> = Vec::new();
+        let mut count = 0usize;
+        'shapes: for s in shapes.iter() {
+            let mut line: Vec<Point> = Vec::new();
+            let mut start = None;
+            let mut done = Vec::new();
+            tracedraw_core::geometry::flatten(&s.page_path(), tolerance, &mut |el| {
+                use tracedraw_core::geometry::PathEl;
+                match el {
+                    PathEl::MoveTo(p) => {
+                        if line.len() > 1 {
+                            done.push(std::mem::take(&mut line));
+                        }
+                        line.clear();
+                        line.push(p);
+                        start = Some(p);
+                    }
+                    PathEl::LineTo(p) => line.push(p),
+                    PathEl::ClosePath => {
+                        if let Some(p) = start {
+                            line.push(p);
+                        }
+                    }
+                    _ => {}
+                }
+            });
+            if line.len() > 1 {
+                done.push(line);
+            }
+            for l in done {
+                count += l.len();
+                lines.push(l);
+                if count >= SELECTED_OUTLINE_POINTS {
+                    break 'shapes;
+                }
+            }
+        }
+        let lines = std::rc::Rc::new(lines);
+        if let Ok(mut cache) = self.outline_cache.try_borrow_mut() {
+            *cache = Some((shapes, zoom, lines.clone()));
+        }
+        lines
+    }
+
     /// The bounds of what `s` (in page space) draws, its live effects
     /// included; measured once per change of the drawing.
     pub fn visual_bounds(&self, s: &Shape) -> Rect {
@@ -4507,6 +4618,11 @@ impl App {
                 // with a defined word.
                 crate::ui::writing_tools::apply_custom_hyphens(self, &[te.shape]);
             }
+            // A dimension's label read back in this step (deleted, the
+            // measured one comes back, #644); then what was noted for its
+            // edit goes.
+            self.bake_dimensions();
+            self.dimension_labels_seen.clear();
         }
     }
 
@@ -4537,7 +4653,7 @@ impl App {
             self.clipboard = Some(Clipboard {
                 shapes,
                 styles: self.doc().object_styles.clone(),
-                system: 0,
+                system: Default::default(),
                 guides: Vec::new(),
             });
             self.status = crate::i18n::trf(
@@ -5101,7 +5217,13 @@ impl App {
         self.reflow_chains_of(&shapes);
     }
 
+    /// Move the selection by `d`; with no object selected, the selected
+    /// guidelines that are not locked (#781).
     pub fn nudge(&mut self, d: Vec2) {
+        if self.selection.is_empty() {
+            self.transform_selected_guides(Affine::translate(d), 0, "Nudge Guidelines");
+            return;
+        }
         self.transform_selection(Affine::translate(d));
     }
 
@@ -5630,6 +5752,12 @@ impl App {
                 if cdr_version.is_some() {
                     self.apply_open_policy();
                 }
+                // A template starts a new drawing: it saves in the version
+                // Options sets, not the template's own (#613).
+                if is_template_path(&path) {
+                    self.cdr_version = None;
+                    self.cdr_unsaved_version = None;
+                }
                 self.file = if matches!(
                     ext.as_str(),
                     "cdr"
@@ -6139,16 +6267,44 @@ impl App {
     }
 
     /// File > Export (Ctrl+E, the toolbar button): the Export dialog with
-    /// every format, starting with the choices of Options > Global > File
-    /// Formats.
+    /// every format, starting with the choices of the last export of this
+    /// session, else those of Options > Global > File Formats (#617).
     pub fn export(&mut self) {
-        let st = self.settings.formats.state();
+        let mut st = self
+            .last_export
+            .clone()
+            .unwrap_or_else(|| self.settings.formats.state());
+        st.remember = true;
         // "Do not show filter dialog": straight to the file.
         if self.settings.formats.skip_export_dialog {
             crate::ui::dialogs::export_with_file_dialog(self, &st);
+            self.keep_export_choices(&st);
             return;
         }
         self.dialog = crate::ui::dialogs::Dialog::Export(st);
+    }
+
+    /// A File > Export done with `st`: the next export of the session
+    /// starts with its choices, and with Options > Global > File Formats >
+    /// Remember the settings of the last export on, so does the next
+    /// session (#617). The presets for the web and office keep nothing.
+    pub fn keep_export_choices(&mut self, st: &crate::ui::dialogs::ExportState) {
+        if !st.remember {
+            return;
+        }
+        let mut kept = st.clone();
+        // The file's own title and tags are not choices, and Selected only
+        // was for that selection: the next export, which may go straight to
+        // the file, starts with the whole page again.
+        kept.title.clear();
+        kept.tags.clear();
+        kept.selection_only = false;
+        kept.preset_name = None;
+        self.last_export = Some(kept);
+        if self.settings.formats.remember_last {
+            self.settings.formats.remember(st);
+            self.settings.save();
+        }
     }
 
     /// After a drawing opened: say which objects could not be read and
@@ -6184,10 +6340,68 @@ impl App {
             st.bleed_limit = bleed;
         }
         // The system's printers, the dialog starting on the one printed
-        // to last, else the default one.
-        st.printers = crate::printers::system_printers();
-        st.printer = crate::printers::starting_printer(st.printer.as_deref(), &st.printers);
+        // to last, else the default one. Reading them can take seconds, so
+        // it happens off the interface's thread; the list read last shows
+        // meanwhile (#614).
+        st.printers = self.printers_seen.clone();
+        if !st.printers.is_empty() {
+            st.printer = crate::printers::starting_printer(st.printer.as_deref(), &st.printers);
+        }
+        st.looking_for_printers = true;
+        self.fetch_printers(crate::printers::system_printers);
         self.dialog = crate::ui::dialogs::Dialog::Print(st);
+    }
+
+    /// Read the printer list with `list` off the interface's thread (at
+    /// once in the browser, which has no threads and no printers).
+    pub fn fetch_printers(&mut self, list: fn() -> Vec<crate::printers::Printer>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let spawned = std::thread::Builder::new()
+                .name("printers".into())
+                .spawn(move || {
+                    let _ = tx.send(list());
+                });
+            if let Err(e) = spawned {
+                log::warn!("no printer list: {e}");
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = tx.send(list());
+        self.printer_fetch = Some(rx);
+    }
+
+    /// The printer list once it has been read: into the Print dialog's
+    /// state, keeping the printer chosen when the system has it, else the
+    /// default (a destination picked meanwhile stays). Returns whether the
+    /// list is still being read.
+    pub fn poll_printers(&mut self, st: &mut crate::ui::dialogs::PrintState) -> bool {
+        let Some(rx) = &self.printer_fetch else {
+            st.looking_for_printers = false;
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(list) => {
+                let list = crate::printers::by_name(list);
+                // A destination the user chose meanwhile stays, unless it
+                // names a printer the system does not have.
+                let gone = st
+                    .printer
+                    .as_ref()
+                    .is_some_and(|p| !list.iter().any(|q| &q.name == p));
+                if !st.printer_picked || gone {
+                    st.printer = crate::printers::starting_printer(st.printer.as_deref(), &list);
+                }
+                self.printers_seen = list.clone();
+                st.printers = list;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+        self.printer_fetch = None;
+        st.looking_for_printers = false;
+        false
     }
 
     /// File > Print Preview: the sheets for the given print settings, or

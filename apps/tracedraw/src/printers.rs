@@ -9,30 +9,102 @@
 
 use std::path::Path;
 
+/// What a printer is doing, as the system reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrinterState {
+    #[default]
+    Unknown,
+    Ready,
+    Printing,
+    WarmingUp,
+    Stopped,
+    Offline,
+}
+
+impl PrinterState {
+    /// The i18n key of the Print dialog's Status row.
+    pub fn key(self) -> &'static str {
+        match self {
+            PrinterState::Unknown => "print.status_unknown",
+            PrinterState::Ready => "print.status_ready",
+            PrinterState::Printing => "print.status_printing",
+            PrinterState::WarmingUp => "print.status_warming_up",
+            PrinterState::Stopped => "print.status_stopped",
+            PrinterState::Offline => "print.status_offline",
+        }
+    }
+}
+
 /// A printer the system has.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Printer {
     /// The name `lp -d` takes.
     pub name: String,
     /// The system's default destination.
     pub default: bool,
+    /// The Print dialog's Status, Location and Comment rows.
+    pub state: PrinterState,
+    pub location: String,
+    pub comment: String,
 }
 
-/// The printers `lpstat -p -d` lists ("printer NAME is idle..." lines
-/// and "system default destination: NAME"), the default one first.
+/// `printers` in name order (ignoring case); the default stays where its
+/// name puts it (#614).
+pub fn by_name(mut printers: Vec<Printer>) -> Vec<Printer> {
+    printers.sort_by_cached_key(|p| (p.name.to_lowercase(), p.name.clone()));
+    printers
+}
+
+/// The printers `lpstat -l -p -d` lists ("printer NAME is idle..." lines,
+/// each followed by indented details such as "Description:" and
+/// "Location:", and "system default destination: NAME"), in name order.
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 pub fn parse_lpstat(output: &str) -> Vec<Printer> {
     let mut out: Vec<Printer> = Vec::new();
     let mut default: Option<String> = None;
-    for line in output.lines() {
-        let line = line.trim();
+    // The printer the indented lines below belong to.
+    let mut current: Option<usize> = None;
+    for raw in output.lines() {
+        let indented = raw.starts_with([' ', '\t']);
+        let line = raw.trim();
+        if indented {
+            let Some(p) = current.and_then(|i| out.get_mut(i)) else {
+                continue;
+            };
+            if let Some(v) = line.strip_prefix("Description:") {
+                p.comment = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("Location:") {
+                p.location = v.trim().to_string();
+            }
+            continue;
+        }
+        current = None;
         if let Some(rest) = line.strip_prefix("printer ") {
-            let name = rest.split_whitespace().next().unwrap_or_default();
-            if !name.is_empty() && !out.iter().any(|p| p.name == name) {
-                out.push(Printer {
-                    name: name.to_string(),
-                    default: false,
-                });
+            let mut words = rest.splitn(2, char::is_whitespace);
+            let name = words.next().unwrap_or_default();
+            let after = words.next().unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let state = if after.contains("now printing") {
+                PrinterState::Printing
+            } else if after.contains("is idle") {
+                PrinterState::Ready
+            } else if after.contains("disabled") {
+                PrinterState::Stopped
+            } else {
+                PrinterState::Unknown
+            };
+            match out.iter().position(|p| p.name == name) {
+                Some(i) => current = Some(i),
+                None => {
+                    out.push(Printer {
+                        name: name.to_string(),
+                        state,
+                        ..Default::default()
+                    });
+                    current = Some(out.len() - 1);
+                }
             }
         } else if let Some(rest) = line.strip_prefix("system default destination:") {
             let name = rest.trim();
@@ -42,24 +114,42 @@ pub fn parse_lpstat(output: &str) -> Vec<Printer> {
         }
     }
     if let Some(name) = default {
-        if let Some(i) = out.iter().position(|p| p.name == name) {
-            out[i].default = true;
-            let p = out.remove(i);
-            out.insert(0, p);
+        if let Some(p) = out.iter_mut().find(|p| p.name == name) {
+            p.default = true;
         }
     }
-    out
+    by_name(out)
 }
 
-/// The PowerShell command that lists Windows' printers, one per line as
-/// "name<TAB>True" (the default) or "name<TAB>False". `Win32_Printer`
-/// holds the printers installed on the computer and the network printers
-/// connected for the user (#614).
+/// The PowerShell command that lists Windows' printers, one per line:
+/// name, default (True or False), PrinterStatus, WorkOffline, location
+/// and comment, separated by tabs. `Win32_Printer` holds the printers
+/// installed on the computer and the network printers connected for the
+/// user (#614).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub const WINDOWS_LIST: &str = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
-Get-CimInstance Win32_Printer | ForEach-Object { \"$($_.Name)`t$($_.Default)\" }";
+Get-CimInstance Win32_Printer | ForEach-Object { \
+\"$($_.Name)`t$($_.Default)`t$($_.PrinterStatus)`t$($_.WorkOffline)`t\
+$($_.Location -replace '\\s+', ' ')`t$($_.Comment -replace '\\s+', ' ')\" }";
 
-/// The printers [`WINDOWS_LIST`] printed, the default one first.
+/// The state of a `Win32_Printer`'s PrinterStatus (3 idle, 4 printing,
+/// 5 warming up, 6 stopped, 7 offline), offline whatever it says when
+/// WorkOffline is set.
+fn windows_state(status: &str, offline: &str) -> PrinterState {
+    if offline.trim().eq_ignore_ascii_case("true") {
+        return PrinterState::Offline;
+    }
+    match status.trim().parse::<u32>() {
+        Ok(3) => PrinterState::Ready,
+        Ok(4) => PrinterState::Printing,
+        Ok(5) => PrinterState::WarmingUp,
+        Ok(6) => PrinterState::Stopped,
+        Ok(7) => PrinterState::Offline,
+        _ => PrinterState::Unknown,
+    }
+}
+
+/// The printers [`WINDOWS_LIST`] printed, in name order.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn parse_windows_list(output: &str) -> Vec<Printer> {
     let mut out: Vec<Printer> = Vec::new();
@@ -67,31 +157,30 @@ pub fn parse_windows_list(output: &str) -> Vec<Printer> {
         let line = line
             .trim_end_matches(['\r', '\n'])
             .trim_start_matches('\u{feff}');
-        let (name, default) = match line.rsplit_once('\t') {
-            Some((n, d)) => (n.trim(), d.trim().eq_ignore_ascii_case("true")),
-            None => (line.trim(), false),
-        };
+        let fields: Vec<&str> = line.split('\t').collect();
+        let field = |i: usize| fields.get(i).map(|f| f.trim()).unwrap_or("");
+        let name = field(0);
         if name.is_empty() || out.iter().any(|p| p.name == name) {
             continue;
         }
         out.push(Printer {
             name: name.to_string(),
-            default,
+            default: field(1).eq_ignore_ascii_case("true"),
+            state: windows_state(field(2), field(3)),
+            location: field(4).to_string(),
+            comment: field(5).to_string(),
         });
     }
-    if let Some(i) = out.iter().position(|p| p.default) {
-        let p = out.remove(i);
-        out.insert(0, p);
-    }
-    out
+    by_name(out)
 }
 
-/// The printers the system has, the default one first; empty where
-/// none is set up or there is no CUPS.
+/// The printers the system has, in name order; empty where none is set
+/// up or there is no CUPS. It can take seconds (a print server that does
+/// not answer): the Print dialog calls it off the interface's thread.
 #[cfg(not(any(target_arch = "wasm32", target_os = "windows")))]
 pub fn system_printers() -> Vec<Printer> {
     let out = std::process::Command::new("lpstat")
-        .args(["-p", "-d"])
+        .args(["-l", "-p", "-d"])
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .output();
@@ -137,15 +226,74 @@ pub fn system_printers() -> Vec<Printer> {
 }
 
 /// The printer the dialog starts on: the one remembered when the system
-/// still has it, else the system's default (the first listed), else none
-/// (the print goes through the PDF viewer).
+/// still has it, else the system's default, else the first listed, else
+/// none (the print goes through the PDF viewer).
 pub fn starting_printer(remembered: Option<&str>, printers: &[Printer]) -> Option<String> {
     if let Some(r) = remembered {
         if printers.iter().any(|p| p.name == r) {
             return Some(r.to_string());
         }
     }
-    printers.first().map(|p| p.name.clone())
+    printers
+        .iter()
+        .find(|p| p.default)
+        .or_else(|| printers.first())
+        .map(|p| p.name.clone())
+}
+
+/// The program and arguments that open `printer`'s own settings (the
+/// Print dialog's Properties button): on Windows the printer's printing
+/// preferences, on macOS the system's Printers & Scanners settings, on
+/// Linux and other CUPS systems the printer's page of the CUPS web
+/// interface in the browser.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn properties_command(printer: &str) -> (String, Vec<String>) {
+    if cfg!(target_os = "windows") {
+        (
+            "rundll32.exe".into(),
+            vec![
+                "printui.dll,PrintUIEntry".into(),
+                "/e".into(),
+                "/n".into(),
+                printer.into(),
+            ],
+        )
+    } else if cfg!(target_os = "macos") {
+        (
+            "open".into(),
+            vec!["x-apple.systempreferences:com.apple.Print-Scan-Settings.extension".into()],
+        )
+    } else {
+        let mut url = String::from("http://localhost:631/printers/");
+        for b in printer.bytes() {
+            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                url.push(b as char);
+            } else {
+                url.push_str(&format!("%{b:02X}"));
+            }
+        }
+        ("xdg-open".into(), vec![url])
+    }
+}
+
+/// Open `printer`'s settings ([`properties_command`]); Err says why not.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_properties(printer: &str) -> Result<(), String> {
+    let (program, args) = properties_command(printer);
+    let mut c = std::process::Command::new(&program);
+    c.args(&args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c.spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn open_properties(printer: &str) -> Result<(), String> {
+    Err(format!("no printer {printer} here"))
 }
 
 /// The `lp` command that prints `pdf` on `printer`: `copies` copies,
@@ -351,20 +499,30 @@ pub fn print_sheets_windows(
 mod tests {
     use super::*;
 
-    /// The Printer list comes from `lpstat`: every printer, the default
-    /// first, whatever the rest of the line says (#300).
+    /// The Printer list comes from `lpstat`: every printer in name order,
+    /// the default marked where it stands, with its state, description
+    /// and location (#300, #614).
     #[test]
     fn the_printer_list_is_read_from_lpstat() {
-        let out =
-            "printer EPSON-L3250-Series is idle.  enabled since Tue 21 Oct 2026 10:00:00 AM\n\
-                   printer Office_HP disabled since Mon 20 Oct 2026 09:00:00 AM -\n\
+        let out = "printer Office_HP disabled since Mon 20 Oct 2026 09:00:00 AM -\n\
                    \tPaused\n\
-                   printer PDF is idle.  enabled since Tue 21 Oct 2026 10:00:00 AM\n\
+                   \tDescription: HP LaserJet 4250\n\
+                   \tLocation: Room 3-102\n\
+                   printer EPSON-L3250-Series is idle.  enabled since Tue 21 Oct 2026 10:00:00 AM\n\
+                   \tDescription: EPSON L3250 Series\n\
+                   \tLocation:\n\
+                   printer PDF now printing PDF-12.  enabled since Tue 21 Oct 2026 10:00:00 AM\n\
                    system default destination: Office_HP\n";
         let p = parse_lpstat(out);
         let names: Vec<&str> = p.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Office_HP", "EPSON-L3250-Series", "PDF"]);
-        assert!(p[0].default && !p[1].default && !p[2].default);
+        assert_eq!(names, ["EPSON-L3250-Series", "Office_HP", "PDF"]);
+        assert!(!p[0].default && p[1].default && !p[2].default);
+        assert_eq!(p[1].state, PrinterState::Stopped);
+        assert_eq!(p[1].comment, "HP LaserJet 4250");
+        assert_eq!(p[1].location, "Room 3-102");
+        assert_eq!(p[0].state, PrinterState::Ready);
+        assert_eq!(p[0].location, "");
+        assert_eq!(p[2].state, PrinterState::Printing);
         // No printers, or no default: the list as given.
         assert!(parse_lpstat("lpstat: No destinations added.\n").is_empty());
         assert!(parse_lpstat("no system default destination\n").is_empty());
@@ -375,12 +533,13 @@ mod tests {
     }
 
     /// Windows lists its printers through PowerShell, network ones too,
-    /// the default first (#614).
+    /// in name order with the default marked in place, their state,
+    /// location and comment (#614).
     #[test]
     fn the_windows_printer_list_holds_network_printers() {
-        let out = "\u{feff}Microsoft Print to PDF\tFalse\r\n\
-                   \\\\office-srv\\HP LaserJet 4250\tTrue\r\n\
-                   \\\\office-srv\\Canon iR-ADV C5535\tFalse\r\n\
+        let out = "\u{feff}Microsoft Print to PDF\tFalse\t3\tFalse\t\t\r\n\
+                   \\\\office-srv\\HP LaserJet 4250\tTrue\t4\tFalse\tRoom 3-102\tColour, A3\r\n\
+                   \\\\office-srv\\Canon iR-ADV C5535\tFalse\t3\tTrue\t\t\r\n\
                    \r\n\
                    Fax\tFalse\r\n";
         let p = parse_windows_list(out);
@@ -388,13 +547,20 @@ mod tests {
         assert_eq!(
             names,
             [
-                "\\\\office-srv\\HP LaserJet 4250",
-                "Microsoft Print to PDF",
                 "\\\\office-srv\\Canon iR-ADV C5535",
-                "Fax"
+                "\\\\office-srv\\HP LaserJet 4250",
+                "Fax",
+                "Microsoft Print to PDF",
             ]
         );
-        assert!(p[0].default && !p[1].default);
+        assert!(p[1].default && !p[0].default && !p[3].default);
+        assert_eq!(p[1].state, PrinterState::Printing);
+        assert_eq!(p[1].location, "Room 3-102");
+        assert_eq!(p[1].comment, "Colour, A3");
+        assert_eq!(p[0].state, PrinterState::Offline, "WorkOffline");
+        assert_eq!(p[3].state, PrinterState::Ready);
+        assert_eq!(p[2].state, PrinterState::Unknown, "an older listing");
+        assert!(WINDOWS_LIST.contains("PrinterStatus") && WINDOWS_LIST.contains("Comment"));
         assert!(parse_windows_list("").is_empty());
         // The listing command asks for every printer Windows has.
         assert!(WINDOWS_LIST.contains("Win32_Printer"));
@@ -448,6 +614,36 @@ mod tests {
         );
         assert_eq!(starting_printer(None, &printers).as_deref(), Some("B"));
         assert_eq!(starting_printer(Some("A"), &[]), None);
+        // The default is chosen where it stands, not moved first.
+        let printers = parse_lpstat(
+            "printer A is idle.\nprinter B is idle.\nprinter C is idle.\nsystem default destination: C\n",
+        );
+        assert_eq!(printers[2].name, "C");
+        assert_eq!(starting_printer(None, &printers).as_deref(), Some("C"));
+    }
+
+    /// Properties opens the printer's own settings: its printing
+    /// preferences on Windows, Printers & Scanners on macOS, its CUPS web
+    /// page elsewhere (#614).
+    #[test]
+    fn properties_open_the_printers_own_settings() {
+        let (program, args) = properties_command("Office HP/2");
+        if cfg!(target_os = "windows") {
+            assert_eq!(program, "rundll32.exe");
+            assert_eq!(
+                args,
+                ["printui.dll,PrintUIEntry", "/e", "/n", "Office HP/2"]
+            );
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(
+                args,
+                ["x-apple.systempreferences:com.apple.Print-Scan-Settings.extension"]
+            );
+        } else {
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args, ["http://localhost:631/printers/Office%20HP%2F2"]);
+        }
     }
 
     /// `lp` gets the printer, the copies with their collation, the title

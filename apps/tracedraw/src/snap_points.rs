@@ -316,21 +316,45 @@ fn segments(path: &BezPath) -> Vec<PathSeg> {
     path.segments().collect()
 }
 
-/// End points of the outline's segments, without repeats.
-fn nodes_of(path: &BezPath) -> Vec<Point> {
+/// End points of the outline's segments within `tol` of `p`, without
+/// repeats. Only the few near the pointer are compared with each other:
+/// comparing every node with every other took seconds a frame on a
+/// combined curve of tens of thousands of nodes (#764).
+fn nodes_near(path: &BezPath, p: Point, tol: f64) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::new();
     for el in path.elements() {
         use tracedraw_core::geometry::PathEl;
-        let p = match el {
-            PathEl::MoveTo(p) | PathEl::LineTo(p) => *p,
-            PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => *p,
+        let n = match el {
+            PathEl::MoveTo(n) | PathEl::LineTo(n) => *n,
+            PathEl::QuadTo(_, n) | PathEl::CurveTo(_, _, n) => *n,
             PathEl::ClosePath => continue,
         };
-        if !out.iter().any(|q| (*q - p).hypot() < 1e-9) {
-            out.push(p);
+        if (n - p).hypot() > tol {
+            continue;
+        }
+        if !out.iter().any(|q| (*q - n).hypot() < 1e-9) {
+            out.push(n);
         }
     }
     out
+}
+
+/// The segment's control points come within `tol` of `p` (the segment
+/// lies inside their box, so one that does not cannot either).
+fn may_reach(seg: &PathSeg, p: Point, tol: f64) -> bool {
+    let pts: &[Point] = match seg {
+        PathSeg::Line(l) => &[l.p0, l.p1],
+        PathSeg::Quad(q) => &[q.p0, q.p1, q.p2],
+        PathSeg::Cubic(c) => &[c.p0, c.p1, c.p2, c.p3],
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for q in pts {
+        x0 = x0.min(q.x);
+        y0 = y0.min(q.y);
+        x1 = x1.max(q.x);
+        y1 = y1.max(q.y);
+    }
+    p.x >= x0 - tol && p.x <= x1 + tol && p.y >= y0 - tol && p.y <= y1 + tol
 }
 
 /// The point halfway along a segment.
@@ -432,11 +456,14 @@ pub fn targets(
                     continue;
                 }
                 if modes.node && points {
-                    for n in nodes_of(path) {
+                    for n in nodes_near(path, p, tol) {
                         add(&mut out, p, n, SnapMode::Node, tol);
                     }
                 }
                 for (si, seg) in segments(path).into_iter().enumerate() {
+                    if !may_reach(&seg, p, tol) {
+                        continue;
+                    }
                     let nearest = seg.nearest(p, 1e-6);
                     if nearest.distance_sq.sqrt() > tol {
                         continue;
@@ -741,6 +768,26 @@ mod tests {
         assert!((t.point - Point::new(30.0, 0.0)).hypot() < 1e-6);
         // Far from everything: nothing.
         assert!(snap(&[r], Point::new(10.0, 6.0), None).is_none());
+    }
+
+    /// Only the nodes near the pointer are offered, each once (a closed
+    /// outline's last node is its first), whatever the outline's size.
+    #[test]
+    fn nodes_near_the_pointer_are_offered_once() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        for i in 1..20_000 {
+            path.line_to((i as f64, (i % 2) as f64));
+        }
+        path.line_to((0.0, 0.0));
+        path.close_path();
+        let near = nodes_near(&path, Point::new(0.0, 0.2), 0.5);
+        assert_eq!(near, vec![Point::new(0.0, 0.0)]);
+        assert!(nodes_near(&path, Point::new(500.0, 500.0), 1.0).is_empty());
+        assert_eq!(
+            nodes_near(&path, Point::new(7.0, 1.0), 0.5),
+            vec![Point::new(7.0, 1.0)]
+        );
     }
 
     #[test]

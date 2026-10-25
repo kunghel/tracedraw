@@ -156,6 +156,20 @@ pub(crate) fn software_renderer() -> bool {
     }
 }
 
+/// The status bar's note that a software adapter draws the window: with
+/// hardware acceleration off in Options that is why, and a click on the
+/// note opens Options > General to turn it on; with it on, the card's own
+/// driver is missing.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn note_software_renderer(app: &mut App, name: &str) {
+    if app.settings.hardware_acceleration {
+        app.status = crate::i18n::trf("status.software_renderer", &[("name", name)]);
+    } else {
+        app.status = crate::i18n::trf("status.software_renderer_off", &[("name", name)]);
+        app.status_opens_options = Some(app.status.clone());
+    }
+}
+
 /// Shadows under menus and dialogs on or off, as the preferences say.
 pub(crate) fn apply_shadows(ctx: &egui::Context, on: bool) {
     if on != crate::theme::shadows() {
@@ -252,7 +266,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // Said once in the status bar: a software adapter draws the window.
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(name) = crate::gpu::take_software_note() {
-        app.status = crate::i18n::trf("status.software_renderer", &[("name", &name)]);
+        note_software_renderer(app, &name);
     }
     crate::ui::icons::set_colored(app.settings.colored_icons);
     menus::invoke::set_bindings(&app.settings.shortcuts);

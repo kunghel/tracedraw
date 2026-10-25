@@ -247,10 +247,20 @@ fn main() -> eframe::Result<()> {
     // The graphics card, or its software adapter with hardware
     // acceleration off; `--renderer=` when a start before could not open
     // the window (#445, #439).
-    let mode = gpu::Mode::for_start(&args, &settings);
+    // A start before that never got its window (the driver crashed or
+    // hung it) goes on with the next renderer (#570).
+    let failed = gpu::Mode::from_args(&args)
+        .is_none()
+        .then(gpu::failed_attempt)
+        .flatten();
+    if let Some(f) = failed {
+        log::warn!("the last start did not open the window with {f:?}");
+    }
+    let mode = gpu::Mode::for_start(&args, &settings, failed);
     let first = gpu::Mode::first(&settings);
     let next = mode.next(first);
     log::info!("opening the window with {mode:?} (Options asks for {first:?})");
+    gpu::begin_attempt(mode);
     let (renderer, wgpu_options) = gpu::options(mode, &settings.gpu_adapter);
     let options = eframe::NativeOptions {
         viewport,

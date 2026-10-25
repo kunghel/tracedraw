@@ -361,8 +361,16 @@ impl App {
             };
             let pp = s.page_path();
             let mut out = BezPath::new();
-            // A variable-width or calligraphic outline becomes its band.
-            let band = tracedraw_core::shaping::outline_band(&pp, st, 1.0);
+            // A variable-width or calligraphic outline becomes its band;
+            // a variable one from a finer flattening, as it is fitted to
+            // curves below (#627).
+            let band = if st.widths.is_empty() {
+                tracedraw_core::shaping::outline_band(&pp, st, 1.0)
+            } else {
+                Some(tracedraw_core::shaping::variable_band_within(
+                    &pp, st.width, &st.widths, 0.005,
+                ))
+            };
             if let Some(b) = &band {
                 out = b.clone();
             }
@@ -378,9 +386,13 @@ impl App {
                 }
                 kurbo::dash(pp.elements().iter().copied(), 0.0, &pattern).collect()
             };
-            for contour in polylines(&pp).into_iter().filter(|_| band.is_none()) {
-                let closed = contour.1;
-                let pts = contour.0;
+            let contours = if band.is_none() {
+                polylines(&pp)
+            } else {
+                Vec::new()
+            };
+            for (pts, closed) in &contours {
+                let closed = *closed;
                 let style = StrokeStyle::new(width)
                     .line_join(match st.join {
                         tracedraw_core::LineJoin::Round => IJoin::Round(0.05),
@@ -416,9 +428,20 @@ impl App {
                 continue;
             }
             // The stroke comes back as many short lines: fit it to lines
-            // and curves with as few nodes as keep its shape (#622).
-            if band.is_none() {
+            // and curves with as few nodes as keep its shape (#622), with
+            // nodes where round ends and corners meet the sides (#623).
+            if band.is_some() {
                 out = tracedraw_core::fit::fit_path(&out, OUTLINE_FIT_TOLERANCE);
+            } else {
+                let round_cap = st.cap == tracedraw_core::LineCap::Round;
+                let round_join = st.join == tracedraw_core::LineJoin::Round;
+                let corners = if round_join {
+                    path_corners(&pp)
+                } else {
+                    Vec::new()
+                };
+                let nodes = round_nodes(&contours, &corners, width / 2.0, round_cap, round_join);
+                out = tracedraw_core::fit::fit_path_with_nodes(&out, OUTLINE_FIT_TOLERANCE, &nodes);
             }
             let id = self.engine.new_shape_id();
             let mut o = Shape::new(
@@ -448,6 +471,141 @@ impl App {
 /// How far (mm) the curves of a converted outline may stray from the
 /// flattened stroke they are fitted to.
 const OUTLINE_FIT_TOLERANCE: f64 = 0.01;
+
+/// Where the round ends and round corners of a `half` mm half-width
+/// stroke along `contours` (as [`polylines`] gives them) meet its sides,
+/// and the tip of each end, with the direction the outline runs there:
+/// the nodes its outline is fitted with, so each round end is two curves
+/// meeting at its tip (#623). `corners` are the corners of the path the
+/// contours were flattened from; the other vertices are smooth.
+fn round_nodes(
+    contours: &[(Vec<[f64; 2]>, bool)],
+    corners: &[Point],
+    half: f64,
+    caps: bool,
+    joins: bool,
+) -> Vec<(Point, Vec2)> {
+    let normal = |t: Vec2| Vec2::new(-t.y, t.x);
+    let dir = |a: Point, b: Point| {
+        let v = b - a;
+        let len = v.hypot();
+        (len > 1e-12).then(|| v / len)
+    };
+    let mut out = Vec::new();
+    let side = |p: Point, t: Vec2, out: &mut Vec<(Point, Vec2)>| {
+        out.push((p + normal(t) * half, t));
+        out.push((p - normal(t) * half, t));
+    };
+    for (pts, closed) in contours {
+        let pts: Vec<Point> = pts.iter().map(|p| Point::new(p[0], p[1])).collect();
+        let n = pts.len();
+        if n < 2 {
+            continue;
+        }
+        if caps && !closed {
+            if let Some(t) = dir(pts[0], pts[1]) {
+                side(pts[0], t, &mut out);
+                out.push((pts[0] - t * half, normal(t)));
+            }
+            if let Some(t) = dir(pts[n - 2], pts[n - 1]) {
+                side(pts[n - 1], t, &mut out);
+                out.push((pts[n - 1] + t * half, normal(t)));
+            }
+        }
+        if !joins || corners.is_empty() {
+            continue;
+        }
+        for i in 0..n {
+            let (prev, next) = match (i, closed) {
+                (0, false) => continue,
+                (0, true) => (n - 1, 1),
+                (i, false) if i + 1 == n => continue,
+                (i, _) => (i - 1, (i + 1) % n),
+            };
+            let v = pts[i];
+            if !corners.iter().any(|c| (*c - v).hypot() < 1e-6) {
+                continue;
+            }
+            if let (Some(a), Some(b)) = (dir(pts[prev], v), dir(v, pts[next])) {
+                side(v, a, &mut out);
+                side(v, b, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// The nodes of `path` where its direction turns: the end of one segment
+/// leaves at another angle than the next one starts.
+fn path_corners(path: &BezPath) -> Vec<Point> {
+    use tracedraw_core::geometry::PathEl;
+    // Each segment's start and end with the directions there.
+    let mut segs: Vec<(Point, Vec2, Point, Vec2)> = Vec::new();
+    let mut subs: Vec<(usize, usize, bool)> = Vec::new();
+    let (mut start, mut last) = (Point::ZERO, Point::ZERO);
+    let push = |segs: &mut Vec<(Point, Vec2, Point, Vec2)>, pts: &[Point]| {
+        let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else {
+            return;
+        };
+        let unit = |v: Vec2| (v.hypot() > 1e-9).then(|| v / v.hypot());
+        let first = pts.iter().skip(1).find_map(|p| unit(*p - a));
+        let end = pts.iter().rev().skip(1).find_map(|p| unit(b - *p));
+        if let (Some(f), Some(e)) = (first, end) {
+            segs.push((a, f, b, e));
+        }
+    };
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                subs.push((segs.len(), segs.len(), false));
+                (start, last) = (p, p);
+            }
+            PathEl::LineTo(p) => {
+                push(&mut segs, &[last, p]);
+                last = p;
+            }
+            PathEl::QuadTo(a, p) => {
+                push(&mut segs, &[last, a, p]);
+                last = p;
+            }
+            PathEl::CurveTo(a, b, p) => {
+                push(&mut segs, &[last, a, b, p]);
+                last = p;
+            }
+            PathEl::ClosePath => {
+                push(&mut segs, &[last, start]);
+                last = start;
+                if let Some(sub) = subs.last_mut() {
+                    sub.2 = true;
+                }
+            }
+        }
+        if let Some(sub) = subs.last_mut() {
+            sub.1 = segs.len();
+        }
+    }
+    let turns = |a: &(Point, Vec2, Point, Vec2), b: &(Point, Vec2, Point, Vec2)| {
+        a.3.cross(b.1).atan2(a.3.dot(b.1)).abs() > 0.02
+    };
+    let mut out = Vec::new();
+    for (from, to, closed) in subs {
+        let Some(sub) = segs.get(from..to) else {
+            continue;
+        };
+        out.extend(
+            sub.windows(2)
+                .filter(|w| turns(&w[0], &w[1]))
+                .map(|w| w[0].2),
+        );
+        if let (Some(first), Some(end)) = (sub.first(), sub.last()) {
+            let meets = closed || (first.0 - end.2).hypot() < 1e-6;
+            if meets && turns(end, first) {
+                out.push(first.0);
+            }
+        }
+    }
+    out
+}
 
 /// Flattened subpaths of a page path as point lists with a closed flag.
 /// A subpath that ends where it starts (an ellipse) is closed, its
@@ -663,6 +821,236 @@ mod tests {
             st.cap = tracedraw_core::LineCap::Butt;
         });
         assert_eq!(segments(&out), (4, 0), "{:?}", out.elements());
+    }
+
+    /// A curved open path with a thick butt-ended outline, as in the
+    /// report (an arc 87 mm across and 15 mm high, a 5.8 mm outline):
+    /// four cusp nodes at the butt corners, each long side one curve and
+    /// each end straight (#622).
+    #[test]
+    fn a_thick_butt_ended_arc_becomes_four_nodes_and_two_curves() {
+        let mut arc = BezPath::new();
+        arc.move_to((10.0, 30.0));
+        arc.curve_to((35.0, 10.0), (72.0, 10.0), (97.0, 30.0));
+        let arc = ShapeKind::Path {
+            path: arc,
+            closed: false,
+        };
+        let (_, out) = outline_object(arc, 5.8, |st| {
+            st.cap = tracedraw_core::LineCap::Butt;
+        });
+        let (lines, curves) = segments(&out);
+        assert_eq!(curves, 2, "{:?}", out.elements());
+        assert!(lines <= 2, "{:?}", out.elements());
+        let nodes = tracedraw_core::nodes::nodes(&out);
+        assert_eq!(nodes.len(), 4, "{nodes:?}");
+        for n in &nodes {
+            assert_eq!(
+                tracedraw_core::nodes::node_type_of_with(n, &Default::default()),
+                tracedraw_core::nodes::NodeType::Cusp,
+                "{n:?}"
+            );
+        }
+        // The butt corners: 2.9 mm either side of each end, across it.
+        for (p, t) in [
+            (Point::new(10.0, 30.0), Vec2::new(25.0, -20.0)),
+            (Point::new(97.0, 30.0), Vec2::new(25.0, 20.0)),
+        ] {
+            let t = t / t.hypot();
+            let n = Vec2::new(-t.y, t.x) * 2.9;
+            for q in [p + n, p - n] {
+                assert!(
+                    nodes.iter().any(|v| (v.pos - q).hypot() < 0.05),
+                    "no node at {q:?}: {nodes:?}"
+                );
+            }
+        }
+    }
+
+    /// Round ends and a round corner become real curves: each end two
+    /// curves with a node at its tip, the corner one curve, the sides
+    /// straight lines, eleven segments in all (#623).
+    #[test]
+    fn round_ends_and_corners_become_few_curves() {
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((40.0, 10.0));
+        line.line_to((60.0, 30.0));
+        let line = ShapeKind::Path {
+            path: line,
+            closed: false,
+        };
+        let (_, out) = outline_object(line, 4.0, |st| {
+            st.cap = tracedraw_core::LineCap::Round;
+            st.join = tracedraw_core::LineJoin::Round;
+        });
+        // Four sides, two curves per end, one round corner; the inner
+        // corner is a plain corner.
+        assert_eq!(segments(&out), (4, 5), "{:?}", out.elements());
+        let nodes: Vec<Point> = out
+            .elements()
+            .iter()
+            .filter_map(|e| e.end_point())
+            .collect();
+        let near = |q: Point| nodes.iter().any(|p| (*p - q).hypot() < 0.02);
+        // The tips of the ends and where they meet the sides.
+        let tip = Point::new(60.0, 30.0) + Vec2::new(2.0, 2.0) / 2f64.sqrt();
+        for q in [
+            Point::new(8.0, 10.0),
+            tip,
+            Point::new(10.0, 12.0),
+            Point::new(10.0, 8.0),
+        ] {
+            assert!(near(q), "no node at {q:?}: {nodes:?}");
+        }
+    }
+
+    /// On a curved path too, each round end is two curves meeting at its
+    /// tip, with nodes where it meets the sides (#623).
+    #[test]
+    fn round_ends_of_a_curve_meet_its_sides_at_nodes() {
+        let mut arc = BezPath::new();
+        arc.move_to((10.0, 10.0));
+        arc.curve_to((20.0, 40.0), (50.0, 40.0), (60.0, 10.0));
+        let arc = ShapeKind::Path {
+            path: arc,
+            closed: false,
+        };
+        let (_, out) = outline_object(arc, 4.0, |st| {
+            st.cap = tracedraw_core::LineCap::Round;
+        });
+        let (lines, curves) = segments(&out);
+        assert!(lines + curves <= 16, "{:?}", out.elements());
+        let nodes: Vec<Point> = out
+            .elements()
+            .iter()
+            .filter_map(|e| e.end_point())
+            .collect();
+        // The start runs along (1, 3): its end meets the sides 2 mm to
+        // either side and has its tip 2 mm back.
+        let t = Vec2::new(1.0, 3.0) / 10f64.sqrt();
+        let n = Vec2::new(-t.y, t.x);
+        let p = Point::new(10.0, 10.0);
+        for q in [p + n * 2.0, p - n * 2.0, p - t * 2.0] {
+            assert!(
+                nodes.iter().any(|v| (*v - q).hypot() < 0.1),
+                "no node at {q:?}: {nodes:?}"
+            );
+        }
+    }
+
+    /// Area of a closed path, by its flattened polygon.
+    fn area(path: &BezPath) -> f64 {
+        let mut pts = Vec::new();
+        let mut sum = 0.0;
+        let mut close = |pts: &mut Vec<Point>| {
+            for (a, b) in pts.iter().zip(pts.iter().cycle().skip(1)) {
+                sum += a.x * b.y - b.x * a.y;
+            }
+            pts.clear();
+        };
+        tracedraw_core::geometry::flatten(path, 0.001, &mut |el| match el {
+            kurbo::PathEl::MoveTo(p) => {
+                close(&mut pts);
+                pts.push(p);
+            }
+            kurbo::PathEl::LineTo(p) => pts.push(p),
+            _ => {}
+        });
+        close(&mut pts);
+        sum.abs() / 2.0
+    }
+
+    /// A thin outline (a hairline counts as 0.25 mm) with round ends and
+    /// a round corner keeps its whole area and reach: the fine fans of
+    /// its round parts are not merged away.
+    #[test]
+    fn a_thin_round_outline_keeps_its_shape() {
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((40.0, 10.0));
+        line.line_to((60.0, 30.0));
+        let line = ShapeKind::Path {
+            path: line,
+            closed: false,
+        };
+        let (_, out) = outline_object(line, 0.25, |st| {
+            st.cap = tracedraw_core::LineCap::Round;
+            st.join = tracedraw_core::LineJoin::Round;
+        });
+        let r = 0.125;
+        let b = out.bounding_box();
+        let want = Rect::new(10.0 - r, 10.0 - r, 60.0 + r, 30.0 + r);
+        for (got, want) in [
+            (b.x0, want.x0),
+            (b.y0, want.y0),
+            (b.x1, want.x1),
+            (b.y1, want.y1),
+        ] {
+            assert!((got - want).abs() < 0.01, "{b:?} vs {want:?}");
+        }
+        // Two strokes meeting at 45 degrees: the rectangles, less their
+        // overlap inside the corner, the round corner and the two ends.
+        let turn = std::f64::consts::FRAC_PI_4;
+        let len = 30.0 + 20.0 * 2f64.sqrt();
+        let stroke = 2.0 * r * len - r * r * (turn / 2.0).tan()
+            + r * r * turn / 2.0
+            + std::f64::consts::PI * r * r;
+        let a = area(&out);
+        assert!((a - stroke).abs() < stroke * 0.005, "{a} vs {stroke}");
+        // A straight hairline with round ends: not a flat sliver.
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((40.0, 10.0));
+        let line = ShapeKind::Path {
+            path: line,
+            closed: false,
+        };
+        let (_, out) = outline_object(line, 0.0, |st| {
+            st.cap = tracedraw_core::LineCap::Round;
+        });
+        let stroke = 2.0 * r * 30.0 + std::f64::consts::PI * r * r;
+        let a = area(&out);
+        assert!((a - stroke).abs() < stroke * 0.005, "{a} vs {stroke}");
+    }
+
+    /// A Variable Length outline converted to an object is a clean band:
+    /// the eased width runs in a few curves, the butt ends are lines, not
+    /// hundreds of short lines (#627).
+    #[test]
+    fn a_variable_outline_becomes_a_band_of_few_curves() {
+        let width = |st: &mut Stroke| {
+            st.widths = vec![tracedraw_core::WidthNode::symmetric(0.5, 10.0)];
+        };
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((110.0, 10.0));
+        let line = ShapeKind::Path {
+            path: line,
+            closed: false,
+        };
+        let (_, out) = outline_object(line, 2.0, width);
+        // Each side two curves, eased from 1 mm to 5 mm and back; the
+        // ends straight.
+        assert_eq!(segments(&out), (2, 4), "{:?}", out.elements());
+        let b = out.bounding_box();
+        assert!((b.height() - 10.0).abs() < 0.01, "{b:?}");
+        // Along an arch too, the same area as the band drawn.
+        let mut arch = BezPath::new();
+        arch.move_to((10.0, 10.0));
+        arch.curve_to((30.0, 60.0), (80.0, 60.0), (110.0, 10.0));
+        let mut st = Stroke::new(tracedraw_core::Color::BLACK, 2.0);
+        width(&mut st);
+        let drawn = tracedraw_core::shaping::outline_band(&arch, &st, 1.0).expect("band");
+        let arch = ShapeKind::Path {
+            path: arch,
+            closed: false,
+        };
+        let (_, out) = outline_object(arch, 2.0, width);
+        let (lines, curves) = segments(&out);
+        assert!(lines == 2 && curves <= 16, "{lines} lines, {curves} curves");
+        let (a, d) = (area(&out), area(&drawn));
+        assert!((a - d).abs() < d * 0.002, "{a} vs {d}");
     }
 
     /// Every shape tool previews the object it is about to create, sized

@@ -1295,7 +1295,7 @@ fn image_shape(p: Placement, (w, h, png): (u32, u32, Vec<u8>), doc: &mut Documen
             rect: p.rect,
             width_px: w,
             height_px: h,
-            png,
+            png: png.into(),
             fx: None,
         },
     );

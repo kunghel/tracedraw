@@ -1457,6 +1457,10 @@ impl App {
                         return;
                     }
                 }
+                // A dimension's label: editing it in place (#644).
+                if self.edit_dimension_label_at(p) {
+                    return;
+                }
                 // A group or clip frame: into focus mode.
                 if self.focus_on_double_click(id) {
                     self.focus_on(id);
@@ -1622,12 +1626,20 @@ impl App {
         // Inside the text being edited, the pointer places the caret and
         // drags a selection; elsewhere it starts a new text or edits
         // another one.
-        let on_edited = self
-            .text_edit
-            .as_ref()
-            .map(|te| te.shape)
-            .filter(|id| self.hit_test(p) == Some(*id))
-            .is_some();
+        // Looked up only when the button acts (a dimension's label is
+        // inside its group, #644).
+        let acts = response.drag_started_by(PointerButton::Primary)
+            || response.clicked_by(PointerButton::Primary)
+            || response.double_clicked_by(PointerButton::Primary);
+        let on_edited = acts
+            && self
+                .text_edit
+                .as_ref()
+                .map(|te| te.shape)
+                .filter(|id| {
+                    self.hit_test(p) == Some(*id) || self.dimension_label_at(p) == Some(*id)
+                })
+                .is_some();
         if response.drag_started_by(PointerButton::Primary) {
             if on_edited {
                 if let Some(idx) = self.text_hit_char(p) {
@@ -1666,6 +1678,10 @@ impl App {
                 if let Some(idx) = self.text_hit_char(p) {
                     self.text_set_caret_at(idx, mods.shift);
                 }
+                return;
+            }
+            // A dimension's label is edited in place (#644).
+            if self.edit_dimension_label_at(p) {
                 return;
             }
             match self.hit_test(p) {

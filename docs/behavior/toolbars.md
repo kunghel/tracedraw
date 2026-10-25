@@ -152,9 +152,14 @@ clicked into (the one that took the focus from it) and then none
   unit), line style, start and end arrowheads; then To Front, To Back and
   Convert to Curves. The mouse wheel over the closed width box steps the
   selection's outline to the next width of the list up (wheel up) or
-  down, one undo step a notch, stopping at None and at the widest; a
-  width between two of the list goes to the one above or below. With
-  nothing selected the wheel does nothing (#663).
+  down, stopping at None and at the widest; a width between two of the
+  list goes to the one above or below. One step per notch: a wheel event
+  of a notch or more counts as one notch whatever its size (browsers send
+  a notch as 100 points or 3 lines), parts of a notch from a touchpad or
+  a fine wheel add up until they make one (50 points make a notch), and
+  what has added up is dropped when the wheel turns the other way or the
+  pointer leaves the box. One undo step a notch. With nothing selected
+  the wheel does nothing (#663).
 - Zoom and Pan tools: the zoom box, Zoom In, Zoom Out, Zoom to Selected,
   to All Objects, to Page, to Page Width, to Page Height.
 - Shape tool on curves: the Selection mode list, then picture buttons in

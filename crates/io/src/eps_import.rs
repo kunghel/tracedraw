@@ -4232,7 +4232,7 @@ impl<'a> Interp<'a> {
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             width_px: w,
             height_px: h,
-            png,
+            png: png.into(),
             fx: None,
         });
         shape.transform = transform;

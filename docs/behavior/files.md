@@ -28,9 +28,9 @@ One window, 760 px wide, the same on every system:
   drawing that came from or was saved to a `.cdr` file, and for a
   drawing without a file when Options > Global > File Formats > Save
   new drawings as .cdr files is on.
-- **Version**: for TraceDraw files the `.tdraw` format version, shown
-  as "v0" with nothing to choose while it is the only one
-  (`docs/tdraw-format.md`); for `.cdr` 27 down to 14, each with its
+- **Version**: for TraceDraw files the `.tdraw` format version, a
+  choice once there is more than one; while there is only one the row
+  is left empty (`docs/tdraw-format.md`, #613); for `.cdr` 27 down to 14, each with its
   release name ("v14 (X4)", "v27 (2026)").
 - **Embed colour profile (size)** with "Colour profile: name" (`.cdr`
   only): on, the drawing's CMYK profile is stored in the file; off, it
@@ -69,8 +69,13 @@ One window, 760 px wide, the same on every system:
 A program opens `.cdr` files of its own version and older ones, so the
 version decides who can open a file:
 
-- Save As starts at the version set in Options > Global > File
-  Formats (27 at first), whatever the drawing came from (#613).
+- Save As starts at the drawing's own version when it was opened from
+  (or saved to) a `.cdr` file, as Save keeps it; any other drawing starts
+  at the version set in Options > Global > File Formats (27 at first),
+  a drawing started from a template (`.cdt`, `.cdrt`) too, whatever
+  version the template was written in.
+  The hint under that version says so (#613,
+  `pick_drag_tests::the_cdr_version_chosen_in_options_survives_a_restart_and_starts_save_as`).
 - The version chosen stays with the drawing: Save writes the same
   version again without asking. Each open drawing keeps its own.
 - TraceDraw saves only the versions checked in other programs, 14 to 27.

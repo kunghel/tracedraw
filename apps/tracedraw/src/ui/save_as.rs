@@ -109,11 +109,16 @@ impl SaveAsState {
             dir: dir.clone(),
             name: String::new(),
             cdr,
-            // The version Options > Global > File Formats sets (#613).
-            version: app.settings.formats.cdr_version.clamp(
-                tracedraw_cdr::write::CHECKED_SINCE,
-                tracedraw_cdr::write::NEWEST_VERSION,
-            ),
+            // A drawing opened from a .cdr file starts at its own version,
+            // as Save keeps it; any other at the version Options > Global >
+            // File Formats sets (#613).
+            version: app
+                .cdr_version
+                .unwrap_or(app.settings.formats.cdr_version)
+                .clamp(
+                    tracedraw_cdr::write::CHECKED_SINCE,
+                    tracedraw_cdr::write::NEWEST_VERSION,
+                ),
             tdraw_version: TDRAW_FORMAT_VERSION,
             // The drawing's CMYK profile, else the one Colour Management
             // loaded (it goes into the file when the drawing has none).
@@ -651,7 +656,14 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
             st.set_cdr(cdr);
         }
         ui.end_row();
-        row_label(ui, &tr("dialog.cdr_version"));
+        // With one .tdraw format version there is nothing to choose or to
+        // tell: the row stays, empty, so the dialog keeps its size.
+        let one_tdraw = !st.cdr && tdraw_version_choices().len() == 1;
+        if one_tdraw {
+            ui.label("");
+        } else {
+            row_label(ui, &tr("dialog.cdr_version"));
+        }
         ui.horizontal(|ui| {
             if st.cdr {
                 combo(
@@ -662,10 +674,7 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                     version_label,
                     260.0,
                 );
-            } else if tdraw_version_choices().len() == 1 {
-                // One format version: nothing to choose.
-                ui.label(tdraw_version_label(st.tdraw_version));
-            } else {
+            } else if !one_tdraw {
                 combo(
                     ui,
                     "save_as_tdraw_version",
@@ -877,18 +886,13 @@ mod tests {
         );
         assert_eq!(app.file.as_deref(), Some(path.as_path()));
         assert_eq!(app.settings.last_dir.as_deref(), Some(dir.as_path()));
-        // The next Save As starts there, as .cdr, offering the newest
-        // version again.
+        // The next Save As starts there, as .cdr, at the version the
+        // drawing now has, as Save keeps it (#613).
         app.save_as_dialog();
         let st = state(&mut app);
         assert_eq!(
             (st.dir.as_path(), st.name.as_str(), st.cdr, st.version),
-            (
-                dir.as_path(),
-                "poster.cdr",
-                true,
-                tracedraw_cdr::write::NEWEST_VERSION
-            )
+            (dir.as_path(), "poster.cdr", true, 15)
         );
         st.version = 15;
         // An existing file asks first; Replace writes it.
@@ -908,7 +912,6 @@ mod tests {
         assert_eq!(st.file_name(), "native.tdraw");
         assert_eq!(st.tdraw_version, TDRAW_FORMAT_VERSION);
         assert_eq!(tdraw_version_choices()[0], TDRAW_FORMAT_VERSION);
-        assert_eq!(tdraw_version_label(0), "v0");
         assert_eq!(tdraw_version_choices(), vec![0]);
         st.tdraw_version = 0;
         let mut st = st.clone();
@@ -978,6 +981,28 @@ mod tests {
         assert_eq!(size_text(10), "1 KB");
         assert_eq!(size_text(3 * 1024 * 1024 + 1), "3.0 MB");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A template written in another version starts a new drawing, which
+    /// Save As offers in the version Options sets (#613).
+    #[test]
+    fn a_drawing_from_a_template_starts_at_the_options_version() {
+        let dir = temp_dir("save-as-template");
+        let doc = drawing().engine.document().clone();
+        let template = dir.join("card.cdt");
+        std::fs::write(
+            &template,
+            tracedraw_cdr::write::document_to_cdr_version(&doc, 20),
+        )
+        .expect("written");
+        let mut app = App::headless();
+        app.settings.formats.cdr_version = 15;
+        app.open_path(template);
+        assert_eq!(app.cdr_version, None);
+        app.save_as_dialog();
+        let st = state(&mut app);
+        st.set_cdr(true);
+        assert_eq!(st.version, 15);
     }
 
     #[test]

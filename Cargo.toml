@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Patched copies of dependencies, not workspace members (vendor/README.md).
+exclude = ["vendor"]
 members = [
     "crates/core",
     "crates/cdr",
@@ -13,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 authors = ["Ighor Toth"]
 license = "MIT OR Apache-2.0"
@@ -60,3 +62,9 @@ codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# eframe 0.36.2 with the OpenGL context fallback of eframe 0.37 (an
+# OpenGL 2.1 driver gets a compatibility context, #616); see
+# vendor/README.md. Drop it when moving to egui 0.37 or later.
+[patch.crates-io]
+eframe = { path = "vendor/eframe" }

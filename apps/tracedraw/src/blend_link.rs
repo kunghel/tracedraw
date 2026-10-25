@@ -258,6 +258,38 @@ mod tests {
         assert_eq!(e.above.len(), 3);
     }
 
+    /// A blend made with the tool's defaults has 20 steps, enough for the
+    /// depth of a front object blended to a copy just behind it to read
+    /// as a smooth side rather than bands (#232).
+    #[test]
+    fn a_new_blend_takes_twenty_steps() {
+        assert_eq!(crate::settings::ToolPrefs::default().blend_steps, 20);
+        let mut app = App::headless();
+        assert_eq!(app.blend_steps, 20);
+        let end = square(&mut app, 30.0, Color::rgb8(0, 160, 80));
+        let start = square(&mut app, 0.0, Color::rgb8(250, 220, 0));
+        app.select(vec![start, end]);
+        app.tool = crate::tools::Tool::Blend;
+        let (a, b) = (
+            app.doc()
+                .find_shape(start)
+                .expect("start")
+                .bounds()
+                .center(),
+            app.doc().find_shape(end).expect("end").bounds().center(),
+        );
+        app.drag = crate::app::Drag::Connector {
+            from: app.hit_test_inside(a).expect("start is hit"),
+            start: a,
+            current: b,
+        };
+        app.end_drag();
+        app.refresh_blends();
+        let s = app.doc().find_shape(start).cloned().expect("start");
+        let e = tracedraw_core::live::evaluate(&s);
+        assert_eq!(e.below.len() + e.above.len(), 20);
+    }
+
     #[test]
     fn the_end_object_stays_and_the_steps_follow_it() {
         let mut app = App::headless();
