@@ -1448,7 +1448,7 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     let Some(page) = doc.pages.get(page_index) else {
         return String::new();
     };
-    let layers = doc.layers_for_page(page.id).unwrap_or_default();
+    let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     // HEADER
     w.pair(0, "SECTION");
     w.pair(2, "HEADER");

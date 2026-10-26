@@ -609,7 +609,8 @@ fn main() -> ExitCode {
                 tracedraw_io::save_svg(&doc, 0, output)
             } else if output.to_ascii_lowercase().ends_with(".pdf") {
                 // TRACEDRAW_PDFX=x1a|x3|x4 selects a PDF/X level; TRACEDRAW_ICC
-                // names the output profile and TRACEDRAW_BLEED the bleed in mm.
+                // names the output profile (default: the CMYK profile the
+                // drawing carries) and TRACEDRAW_BLEED the bleed in mm.
                 // TRACEDRAW_PDF_BOOKMARKS=1 adds a bookmark per page; the
                 // TRACEDRAW_PDF_*PASSWORD and _DENY variables protect it.
                 // TRACEDRAW_PDF_TEXT=curves writes text as curves, =named

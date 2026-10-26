@@ -165,10 +165,12 @@ fn jpeg_bytes(data: &[u8], channels: u8, w: u32, h: u32, quality: u8) -> Option<
 pub struct PdfOptions {
     pub standard: PdfStandard,
     /// ICC profile embedded as the output intent's destination profile
-    /// (a CMYK press profile for X-1a). Without one, a registered
+    /// (a CMYK press profile for X-1a). Without one, the CMYK profile the
+    /// drawing carries is embedded; without either, a registered
     /// characterisation name is used instead.
     pub output_profile: Option<Vec<u8>>,
     /// Output condition identifier, e.g. "FOGRA39" or "CGATS TR 001".
+    /// Empty: the embedded profile's description, else "CGATS TR 001".
     pub output_condition: String,
     /// Bleed added around every page (TrimBox = page, MediaBox = page + bleed).
     pub bleed_mm: f64,
@@ -1061,12 +1063,16 @@ impl PageWriter<'_> {
         bounds: Rect,
     ) {
         use tracedraw_core::geometry::Shape as _;
-        self.stroke_state(s);
+        let (drawn, scale) = crate::svg::drawn_stroke(s, transform);
+        self.stroke_state(&drawn);
         if let Some(brush) = &s.painterly {
             // Painterly brush: the marks, one filled path per opacity.
-            for (alpha, marks) in
-                tracedraw_core::painterly::marks_by_opacity(&shape.page_path(), s.width, brush, 12)
-            {
+            for (alpha, marks) in tracedraw_core::painterly::marks_by_opacity(
+                &shape.page_path(),
+                drawn.width,
+                brush,
+                12,
+            ) {
                 self.content.push_str("q\n");
                 if self.pdf.allow_alpha {
                     let name = format!("GS{}", self.gstates.len());
@@ -1083,7 +1089,8 @@ impl PageWriter<'_> {
                 self.path_ops(&(parent * marks));
                 self.content.push_str("f\nQ\n");
             }
-        } else if let Some(band) = tracedraw_core::shaping::outline_band(&shape.page_path(), s, 1.0)
+        } else if let Some(band) =
+            tracedraw_core::shaping::outline_band(&shape.page_path(), s, scale)
         {
             // Calligraphic nib or variable width: the band, filled.
             let band = parent * band;
@@ -1097,12 +1104,12 @@ impl PageWriter<'_> {
                 self.content.push_str("f\n");
             }
         } else if let Some((paint, area)) = outline_paint(s, transform)
-            .map(|p| (p, tracedraw_core::shaping::stroke_area(path, s)))
+            .map(|p| (p, tracedraw_core::shaping::stroke_area(path, &drawn)))
             .filter(|(_, a)| !a.elements().is_empty())
         {
             // The outline's own paint: the area it covers, painted
             // like a fill spread over the outline's bounds.
-            let half = s.width / 2.0;
+            let half = drawn.width / 2.0;
             self.paint_area(&paint, &area, bounds.inflate(half, half), true);
         } else {
             self.path_ops(path);
@@ -1206,7 +1213,7 @@ impl PageWriter<'_> {
             let _ = writeln!(self.content, "{op}");
         }
         if let Some(s) = plain_stroke {
-            self.stroke_state(s);
+            self.stroke_state(&crate::svg::drawn_stroke(s, transform).0);
         }
         self.show_text(&visible, render);
         self.show_text(&hidden, 3);
@@ -1259,6 +1266,24 @@ impl PageWriter<'_> {
             return;
         }
         let _ = writeln!(self.content, "BT\n{render} Tr");
+        // Clusters whose glyphs do not each stand for their own
+        // characters (a vowel sign drawn before its consonant, a reph
+        // after its syllable, a glyph used for other characters
+        // elsewhere): their text in typed order as marked content, so
+        // readers take the characters from it (#599). (first, last).
+        let mut clusters: Vec<(usize, usize)> = Vec::new();
+        for (i, (_, sh)) in glyphs.iter().enumerate() {
+            match clusters.last_mut() {
+                Some(c) if sh.text.is_empty() => c.1 = i,
+                _ => clusters.push((i, i)),
+            }
+        }
+        clusters.retain(|&(a, b)| {
+            b > a
+                || glyphs
+                    .get(a)
+                    .is_some_and(|(_, sh)| !sh.mapped && !sh.text.is_empty())
+        });
         let mut font: Option<usize> = None;
         // The run: its matrix (points) and the pen along it, ems.
         let mut run: Option<(Affine, f64)> = None;
@@ -1269,71 +1294,106 @@ impl PageWriter<'_> {
                 pending.clear();
             }
         };
-        for (m, sh) in glyphs {
-            let m = Affine::scale(MM_PT) * *m;
-            let c = m.as_coeffs();
-            let det = c[0] * c[3] - c[1] * c[2];
-            if !det.is_finite() || det.abs() < 1e-12 || c.iter().any(|v| !v.is_finite()) {
-                continue;
-            }
-            if font != Some(sh.slot) {
+        let mut marked = clusters.into_iter().peekable();
+        let mut open: Option<usize> = None;
+        for (i, (m, sh)) in glyphs.iter().enumerate() {
+            if let Some((_, last)) = marked.next_if(|c| c.0 == i) {
                 flush(&mut self.content, &mut pending);
-                let Some(slot) = self.pdf.fonts.get(sh.slot) else {
-                    continue;
-                };
-                let (name, id) = (slot.name.clone(), slot.id);
-                if !self.fonts.iter().any(|(n, _)| *n == name) {
-                    self.fonts.push((name.clone(), id));
-                }
-                let _ = writeln!(self.content, "/{name} 1 Tf");
-                font = Some(sh.slot);
-                run = None;
+                let _ = writeln!(
+                    self.content,
+                    "/Span << /ActualText {} >> BDC",
+                    pdf_text_any(&sh.text)
+                );
+                open = Some(last);
             }
-            // Along the run: the glyph's origin in the run's space.
-            let along = run.and_then(|(r, pen)| {
-                let rc = r.as_coeffs();
-                let same = (0..4).all(|i| (rc[i] - c[i]).abs() <= 1e-6 * (1.0 + rc[i].abs()));
-                if !same {
-                    return None;
-                }
-                let p = r.inverse() * tracedraw_core::geometry::Point::new(c[4], c[5]);
-                (p.y.abs() < 1e-3).then_some((p.x, pen))
-            });
-            let x = match along {
-                Some((x, pen)) => {
-                    let adj = (pen - x) * 1000.0;
-                    if adj.abs() > 0.01 {
-                        let _ = write!(pending, "{} ", f(adj));
-                    }
-                    x
-                }
-                None => {
-                    flush(&mut self.content, &mut pending);
-                    let _ = writeln!(
-                        self.content,
-                        "{} {} {} {} {} {} Tm",
-                        f6(c[0]),
-                        f6(c[1]),
-                        f6(c[2]),
-                        f6(c[3]),
-                        f(c[4]),
-                        f(c[5])
-                    );
-                    run = Some((m, 0.0));
-                    0.0
-                }
-            };
-            pending.push('<');
-            for b in &sh.code {
-                let _ = write!(pending, "{b:02X}");
-            }
-            pending.push_str("> ");
-            if let Some((_, pen)) = run.as_mut() {
-                *pen = x + sh.width_em;
+            self.show_one(m, sh, &mut font, &mut run, &mut pending);
+            if open == Some(i) {
+                flush(&mut self.content, &mut pending);
+                self.content.push_str("EMC\n");
+                open = None;
             }
         }
         flush(&mut self.content, &mut pending);
         self.content.push_str("ET\n");
+    }
+
+    /// Show one glyph of [`Self::show_text`]: added to the pending
+    /// adjustments of the current run, or a new run.
+    fn show_one(
+        &mut self,
+        m: &Affine,
+        sh: &fonts::Shown,
+        font: &mut Option<usize>,
+        run: &mut Option<(Affine, f64)>,
+        pending: &mut String,
+    ) {
+        let flush = |content: &mut String, pending: &mut String| {
+            if !pending.is_empty() {
+                let _ = writeln!(content, "[{}] TJ", pending.trim_end());
+                pending.clear();
+            }
+        };
+        let m = Affine::scale(MM_PT) * *m;
+        let c = m.as_coeffs();
+        let det = c[0] * c[3] - c[1] * c[2];
+        if !det.is_finite() || det.abs() < 1e-12 || c.iter().any(|v| !v.is_finite()) {
+            return;
+        }
+        if *font != Some(sh.slot) {
+            flush(&mut self.content, pending);
+            let Some(slot) = self.pdf.fonts.get(sh.slot) else {
+                return;
+            };
+            let (name, id) = (slot.name.clone(), slot.id);
+            if !self.fonts.iter().any(|(n, _)| *n == name) {
+                self.fonts.push((name.clone(), id));
+            }
+            let _ = writeln!(self.content, "/{name} 1 Tf");
+            *font = Some(sh.slot);
+            *run = None;
+        }
+        // Along the run: the glyph's origin in the run's space.
+        let along = run.and_then(|(r, pen)| {
+            let rc = r.as_coeffs();
+            let same = (0..4).all(|i| (rc[i] - c[i]).abs() <= 1e-6 * (1.0 + rc[i].abs()));
+            if !same {
+                return None;
+            }
+            let p = r.inverse() * tracedraw_core::geometry::Point::new(c[4], c[5]);
+            (p.y.abs() < 1e-3).then_some((p.x, pen))
+        });
+        let x = match along {
+            Some((x, pen)) => {
+                let adj = (pen - x) * 1000.0;
+                if adj.abs() > 0.01 {
+                    let _ = write!(pending, "{} ", f(adj));
+                }
+                x
+            }
+            None => {
+                flush(&mut self.content, pending);
+                let _ = writeln!(
+                    self.content,
+                    "{} {} {} {} {} {} Tm",
+                    f6(c[0]),
+                    f6(c[1]),
+                    f6(c[2]),
+                    f6(c[3]),
+                    f(c[4]),
+                    f(c[5])
+                );
+                *run = Some((m, 0.0));
+                0.0
+            }
+        };
+        pending.push('<');
+        for b in &sh.code {
+            let _ = write!(pending, "{b:02X}");
+        }
+        pending.push_str("> ");
+        if let Some((_, pen)) = run.as_mut() {
+            *pen = x + sh.width_em;
+        }
     }
 }
 
@@ -1554,7 +1614,7 @@ fn needs_flattening(s: &Shape) -> bool {
 /// drawn up to and including it, cropped to its bounds, so the composite
 /// is kept without transparency in the file.
 fn flatten_page(doc: &Document, page: &tracedraw_core::document::Page, dpi: f64) -> Vec<Shape> {
-    let layers = doc.layers_for_page(page.id).unwrap_or_default();
+    let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     let ordered: Vec<Shape> = layers
         .iter()
         .filter(|l| l.visible && l.printable)
@@ -1729,7 +1789,7 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
         if std_ == PdfStandard::None {
             let offset = Affine::translate((bleed, bleed));
             for layer in doc
-                .layers_for_page(page.id)
+                .layers_drawn_for_page(page.id)
                 .unwrap_or_default()
                 .iter()
                 .filter(|l| l.visible && l.printable)
@@ -1782,7 +1842,7 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
                 }
             }
             None => {
-                let layers = doc.layers_for_page(page.id).unwrap_or_default();
+                let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
                 for layer in layers.iter().filter(|l| l.visible && l.printable) {
                     for s in &layer.shapes {
                         w.shape(s, offset);
@@ -1994,21 +2054,26 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
         catalog.push_str(" /Extensions << /ADBE << /BaseVersion /1.7 /ExtensionLevel 8 >> >>");
     }
     if std_ != PdfStandard::None {
-        let condition = if opts.output_condition.trim().is_empty() {
-            "CGATS TR 001".to_string()
-        } else {
+        let profile = output_profile(opts, doc);
+        let condition = if !opts.output_condition.trim().is_empty() {
             opts.output_condition.trim().to_string()
+        } else if let Some(icc) = profile {
+            // The embedded profile is the condition: a registered name
+            // would describe another press.
+            profile_condition(icc)
+        } else {
+            "CGATS TR 001".to_string()
         };
-        let profile_ref = opts.output_profile.as_ref().map(|icc| {
+        let profile_ref = profile.map(|icc| {
             let n = icc_channels(icc);
             let id = pdf.stream(&format!("/N {n}"), icc);
             format!(" /DestOutputProfile {id} 0 R")
         });
         let intent = pdf.add_str(format!(
             "<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier {} /OutputCondition {} /RegistryName (http://www.color.org) /Info {}{} >>",
-            pdf_text(&condition),
-            pdf_text(&condition),
-            pdf_text(&condition),
+            pdf_text_any(&condition),
+            pdf_text_any(&condition),
+            pdf_text_any(&condition),
             profile_ref.unwrap_or_default()
         ));
         let _ = write!(catalog, " /OutputIntents [{intent} 0 R]");
@@ -2059,6 +2124,27 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
         None => pdf.finish_with(std_.version(), Some(info_id)),
     };
     (bytes, report)
+}
+
+/// The output intent's profile: the one given, else the CMYK profile the
+/// drawing carries, the profile its CMYK values are in.
+fn output_profile<'a>(opts: &'a PdfOptions, doc: &'a Document) -> Option<&'a [u8]> {
+    opts.output_profile.as_deref().or_else(|| {
+        doc.cmyk_profile
+            .as_ref()
+            .map(|p| p.data.as_slice())
+            .filter(|icc| icc_channels(icc) == 4)
+    })
+}
+
+/// The output condition an embedded profile stands for: its description,
+/// else "Custom".
+fn profile_condition(icc: &[u8]) -> String {
+    tracedraw_core::icc::Profile::parse(icc)
+        .ok()
+        .and_then(|p| p.description().map(|d| d.trim().to_string()))
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "Custom".to_string())
 }
 
 /// Channel count of an ICC profile from its colour space signature.
@@ -2603,6 +2689,39 @@ mod tests {
         assert!(f < s, "in front: the fill first ({s} {f})");
     }
 
+    /// An outline that scales with its object is as wide in the PDF as in
+    /// the drawing window: its width times the object's scale factor.
+    #[test]
+    fn an_outline_that_scales_with_its_object_takes_the_object_scale() {
+        let width = |scale_with_object: bool| -> String {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut sq = Shape::new(
+                tracedraw_core::ShapeId(1),
+                ShapeKind::Rect {
+                    rect: tracedraw_core::Rect::new(0.0, 0.0, 200.0, 100.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            sq.transform = Affine::translate((20.0, 20.0)) * Affine::scale(0.25);
+            sq.stroke = Some(tracedraw_core::Stroke {
+                scale_with_object,
+                ..tracedraw_core::Stroke::new(Color::rgb8(0, 0, 0), 10.0)
+            });
+            doc.layer_mut(layer).unwrap().shapes.push(sq);
+            let content = page_content(&document_to_pdf(&doc));
+            let line = content
+                .lines()
+                .find(|l| l.contains(" w "))
+                .expect("a line width");
+            let (before, _) = line.split_once(" w ").expect("the width");
+            before.rsplit(' ').next().unwrap_or_default().to_string()
+        };
+        assert_eq!(width(true), f(2.5 * MM_PT));
+        assert_eq!(width(false), f(10.0 * MM_PT));
+    }
+
     #[test]
     fn spot_colors_print_on_separation_color_spaces() {
         let mut doc = Document::default();
@@ -2807,6 +2926,110 @@ mod pdfx_tests {
         let text = String::from_utf8_lossy(&document_to_pdf_with(&doc, &opts)).into_owned();
         assert!(text.contains("/DestOutputProfile"));
         assert!(text.contains("/N 4"));
+    }
+
+    fn doc_carrying(icc: Vec<u8>) -> Document {
+        let mut doc = doc_with_transparent_rect();
+        doc.cmyk_profile = Some(tracedraw_core::DocumentProfile::new("carried", icc));
+        doc
+    }
+
+    fn pdfx(doc: &Document, opts: PdfOptions) -> String {
+        String::from_utf8_lossy(&document_to_pdf_with(doc, &opts)).into_owned()
+    }
+
+    #[test]
+    fn pdfx_output_intent_embeds_the_profile_the_drawing_carries() {
+        use tracedraw_core::icc::test_profiles as tp;
+        let doc = doc_carrying(tp::lut16_cmyk_profile());
+        for standard in [PdfStandard::X1a, PdfStandard::X3, PdfStandard::X4] {
+            let text = pdfx(
+                &doc,
+                PdfOptions {
+                    standard,
+                    ..Default::default()
+                },
+            );
+            assert!(text.contains("/DestOutputProfile"), "{standard:?}");
+            assert!(text.contains("/N 4"), "{standard:?}");
+            // The identifier names the embedded profile, not another press.
+            assert!(
+                text.contains("/OutputConditionIdentifier (Synthetic CMYK)"),
+                "{standard:?}"
+            );
+            assert!(!text.contains("CGATS TR 001"), "{standard:?}");
+        }
+        // A plain PDF still has no output intent.
+        let text = pdfx(&doc, PdfOptions::default());
+        assert!(!text.contains("/OutputIntents"));
+    }
+
+    #[test]
+    fn pdfx_given_profile_and_condition_win_over_the_carried_profile() {
+        use tracedraw_core::icc::test_profiles as tp;
+        let doc = doc_carrying(tp::lut16_cmyk_profile());
+        let given = tp::mba_cmyk_profile();
+        let text = pdfx(
+            &doc,
+            PdfOptions {
+                standard: PdfStandard::X1a,
+                output_profile: Some(given.clone()),
+                ..Default::default()
+            },
+        );
+        // The given profile has no description: the condition is custom.
+        assert!(text.contains("/OutputConditionIdentifier (Custom)"));
+        assert!(text.contains(&format!("<< /N 4 /Length {} >>", given.len())));
+        assert!(!text.contains("(Synthetic CMYK)"));
+        let text = pdfx(
+            &doc,
+            PdfOptions {
+                standard: PdfStandard::X4,
+                output_condition: "FOGRA39".into(),
+                ..Default::default()
+            },
+        );
+        assert!(text.contains("/OutputConditionIdentifier (FOGRA39)"));
+        assert!(text.contains("/DestOutputProfile"));
+    }
+
+    #[test]
+    fn pdfx_skips_a_carried_profile_that_is_not_cmyk_or_not_readable() {
+        // An RGB profile in the CMYK slot is not an output intent for CMYK
+        // values: the registered name stays.
+        let mut rgb = vec![0u8; 128];
+        rgb[16..20].copy_from_slice(b"RGB ");
+        let text = pdfx(
+            &doc_carrying(rgb),
+            PdfOptions {
+                standard: PdfStandard::X1a,
+                ..Default::default()
+            },
+        );
+        assert!(!text.contains("/DestOutputProfile"));
+        assert!(text.contains("/OutputConditionIdentifier (CGATS TR 001)"));
+        // A CMYK signature on a profile that does not parse: embedded as
+        // carried, named "Custom", no panic.
+        let mut broken = vec![0xFFu8; 64];
+        broken[16..20].copy_from_slice(b"CMYK");
+        let text = pdfx(
+            &doc_carrying(broken),
+            PdfOptions {
+                standard: PdfStandard::X4,
+                ..Default::default()
+            },
+        );
+        assert!(text.contains("/DestOutputProfile"));
+        assert!(text.contains("/OutputConditionIdentifier (Custom)"));
+        // Truncated before the signature: not used.
+        let text = pdfx(
+            &doc_carrying(vec![0u8; 10]),
+            PdfOptions {
+                standard: PdfStandard::X4,
+                ..Default::default()
+            },
+        );
+        assert!(!text.contains("/DestOutputProfile"));
     }
 
     fn two_pages() -> Document {

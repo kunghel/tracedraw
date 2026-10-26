@@ -139,7 +139,9 @@ pub fn toolbox(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock) {
             // window without scrolling (#494).
             let room = ui.available_rect_before_wrap().height();
             let side = fitted_side(Tokens::tool_button(), visible_groups(app), room);
-            crate::ui::overflow::column(ui, "toolbox_column", |ui| tools(app, ui, dock, Some(side)))
+            crate::ui::overflow::column(ui, "toolbox_column", |ui| {
+                tools(app, ui, dock, Some(side))
+            });
         }
     }
 }

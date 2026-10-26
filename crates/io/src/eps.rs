@@ -145,7 +145,7 @@ fn page_body(out: &mut String, doc: &Document, page: &tracedraw_core::Page) {
         s.stroke = None;
         w_.shape(&s, Affine::IDENTITY);
     }
-    let layers = doc.layers_for_page(page.id).unwrap_or_default();
+    let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     for layer in layers.iter().filter(|l| l.visible && l.printable) {
         for s in &layer.shapes {
             w_.shape(s, Affine::IDENTITY);

@@ -299,7 +299,7 @@ struct OutlineDef {
 struct BitmapDef {
     width_px: u32,
     height_px: u32,
-    png: Vec<u8>,
+    png: tracedraw_core::SharedBytes,
 }
 
 /// One entry of a `loda` argument table: type, payload start and end.
@@ -1292,7 +1292,7 @@ impl<'a> Ctx<'a> {
             ));
         }
         Some(Fill::Pattern(Pattern::Bitmap {
-            png: bm.png.clone().into(),
+            png: bm.png.clone(),
             width_px: bm.width_px,
             height_px: bm.height_px,
             size_mm,
@@ -2149,10 +2149,16 @@ impl<'a> Ctx<'a> {
 
     /// The object's `bbox` chunk: its box on the page (file coordinates,
     /// origin at the page centre).
-    /// Object type 0x26 (a version 22 file): a connector line. Its
-    /// `LIST npps` holds a `ppdt` record: u32 0, u32 1, then the start and
-    /// the end point (coordinates), then what the ends attach to. The
-    /// file's preview draws each as a straight line between the two points.
+    /// Object type 0x26 (version 22 files) keeps its points in the `ppdt`
+    /// record of its `LIST npps`, in one of two layouts:
+    /// - a connector line: u32 0, u32 1, then the start and the end point
+    ///   (coordinates), then what the ends attach to. The file's preview
+    ///   draws each as a straight line between the two points;
+    /// - a list of points: u16 count, u32 1, the points (coordinates), then
+    ///   a u32 for each point (0 or 1), 6 + 12 bytes a point in all. Seen
+    ///   as the frames of PowerClips, closed outlines of some hundred
+    ///   points whose last point lies a step from the first; the preview
+    ///   clips the contents to the outline through the points.
     fn read_connector(&mut self, oc: &Chunk) -> Option<ShapeKind> {
         let mut found = None;
         oc.walk(&mut |c, _| {
@@ -2161,6 +2167,24 @@ impl<'a> Ctx<'a> {
             }
         });
         let d = self.data(found?);
+        let n = u16::from_le_bytes([*d.first()?, *d.get(1)?]) as usize;
+        if n >= 2 && d.len() == 6 + 12 * n && d.get(2..6) == Some(&[1, 0, 0, 0][..]) {
+            let mut r = self.reader_at(d, 6);
+            let mut path = BezPath::new();
+            for i in 0..n {
+                let p = Point::new(r.coord()?, r.coord()?);
+                if !(p.x.is_finite() && p.y.is_finite()) {
+                    return None;
+                }
+                if i == 0 {
+                    path.move_to(p);
+                } else {
+                    path.line_to(p);
+                }
+            }
+            path.close_path();
+            return Some(ShapeKind::Path { path, closed: true });
+        }
         let mut r = self.reader_at(d, 8);
         let a = Point::new(r.coord()?, r.coord()?);
         let b = Point::new(r.coord()?, r.coord()?);
@@ -2641,6 +2665,24 @@ impl<'a> Ctx<'a> {
         })
     }
 
+    /// The step count of a blend's linked group (`LIST lnkg` whose own
+    /// `lgob` holds a `loda` of object type 7): the first u32 of its
+    /// argument of type 3000, kept to 1..=999. `None` for other linked
+    /// groups (a contour's is of type 15). Read from two files saved by
+    /// versions 9 and 13 with the default 20 steps (see CLEANROOM.md).
+    fn blend_steps(&mut self, group: &Chunk) -> Option<u32> {
+        let lgob = group.children.iter().find(|k| k.is(b"lgob"))?;
+        let loda = lgob.children.iter().find(|k| k.is(b"loda"))?;
+        let d = self.data(loda);
+        let l = self.read_loda(d)?;
+        if l.kind != 7 {
+            return None;
+        }
+        let arg = l.args.iter().find(|a| a.ty == 3000)?;
+        let steps = self.reader_at(d, arg.off).uint()?;
+        Some(steps.clamp(1, 999))
+    }
+
     /// `obj `: one object, built from its `loda` (attributes) and `trfd`.
     fn read_object(
         &mut self,
@@ -2980,6 +3022,10 @@ impl<'a> Ctx<'a> {
                 .warn("group nesting deeper than 64; inner objects skipped");
             return;
         }
+        // Blends found in this list: where their linked group stood among
+        // the objects read, and their step count (see `blend_steps`).
+        let first = out.len();
+        let mut blends: Vec<(usize, u32)> = Vec::new();
         for c in &list.children {
             if c.is(b"obj ") {
                 let id = ids.shape();
@@ -3048,8 +3094,17 @@ impl<'a> Ctx<'a> {
                     .unwrap_or(Affine::IDENTITY);
                 let saved = self.outer_transform;
                 self.outer_transform = saved * own;
+                let before = out.len();
                 self.collect_objects(c, ids, page_size, depth + 1, out);
                 self.outer_transform = saved;
+                // A blend keeps no steps of its own: an empty linked group
+                // between its two end objects, its `loda` of object type 7
+                // holding the step count (#597).
+                if out.len() == before {
+                    if let Some(steps) = self.blend_steps(c) {
+                        blends.push((before, steps));
+                    }
+                }
             } else if c.list_type.is_some() {
                 // Other lists (`lgob`, `spnd`, ...) are not objects, but
                 // older files nest the object lists one level down.
@@ -3065,6 +3120,29 @@ impl<'a> Ctx<'a> {
                     );
                 }
             }
+        }
+        for (at, steps) in blends {
+            // The objects on either side of the group are its ends.
+            if at <= first || at >= out.len() {
+                self.report
+                    .warn("a blend without both end objects; left out");
+                continue;
+            }
+            let end = out[at].clone();
+            let end_id = end.id;
+            out[at - 1]
+                .effects
+                .push(tracedraw_core::live::Effect::Blend {
+                    end: Box::new(end),
+                    steps,
+                    accel_objects: 0.0,
+                    accel_colors: 0.0,
+                    rotation: 0.0,
+                    path: None,
+                    rotate_on_path: false,
+                    end_id: Some(end_id),
+                    options: Default::default(),
+                });
         }
     }
 
@@ -3407,7 +3485,7 @@ impl<'a> Ctx<'a> {
                     rect,
                     width_px: bm.width_px,
                     height_px: bm.height_px,
-                    png: bm.png.clone().into(),
+                    png: bm.png.clone(),
                     fx: None,
                 })
             }
@@ -3459,7 +3537,7 @@ impl<'a> Ctx<'a> {
                     rect,
                     width_px: bm.width_px,
                     height_px: bm.height_px,
-                    png: bm.png.clone().into(),
+                    png: bm.png.clone(),
                     fx: None,
                 })
             }
@@ -3642,7 +3720,7 @@ fn decode_bitmap(
         BitmapDef {
             width_px: width,
             height_px: height,
-            png,
+            png: png.into(),
         },
     )))
 }
@@ -4414,10 +4492,31 @@ pub(crate) fn build_path(pts: &[Point], types: &[u8]) -> (BezPath, bool) {
     (path, closed)
 }
 
-/// Minimal PNG encoder: 8-bit RGBA, no filtering, one IDAT chunk. The
-/// rows go straight into a fast zlib stream: the PNG only carries the
-/// pixels inside the document, and the default level made opening files
-/// with large pictures several times slower.
+/// The pixels of `png` as the encoder's rows were before it filtered
+/// them: a zero byte, then the row's RGBA, top row first. For tests. The
+/// decoder premultiplies, so colours are exact only where a pixel is
+/// opaque (alpha is always exact).
+#[cfg(test)]
+pub(crate) fn raw_rows(png: &[u8]) -> Vec<u8> {
+    let pm = tiny_skia::Pixmap::decode_png(png).expect("a png");
+    let mut out = Vec::new();
+    for y in 0..pm.height() {
+        out.push(0);
+        for x in 0..pm.width() {
+            let c = pm.pixel(x, y).expect("pixel").demultiply();
+            out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+    }
+    out
+}
+
+/// Minimal PNG encoder: 8-bit RGB when every pixel is opaque, else RGBA,
+/// each row with the Sub filter, one IDAT chunk. The rows go into a fast
+/// zlib stream: the PNG only carries the pixels inside the document, and
+/// the default level made opening files with large pictures several
+/// times slower. Unfiltered RGBA came out nearly as large as the raw
+/// pixels for photos (40 MB for a 4000 x 3000 one, 22 MB like this), and
+/// every undo step and copy of the drawing used to hold it.
 pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     use std::io::Write;
     fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], body: &[u8]) {
@@ -4430,18 +4529,35 @@ pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&crc.sum().to_be_bytes());
     }
     let row = width as usize * 4;
+    let pixels = rgba.get(..row * height as usize).unwrap_or(rgba);
+    // Rows the data does not reach are blank (clear).
+    let opaque =
+        pixels.len() == row * height as usize && pixels.chunks_exact(4).all(|p| p[3] == 255);
+    let bpp = if opaque { 3 } else { 4 };
     let mut enc = flate2::write::ZlibEncoder::new(
         Vec::with_capacity(rgba.len() / 4),
         flate2::Compression::fast(),
     );
     let blank = vec![0u8; row];
+    let mut line = Vec::with_capacity(1 + width as usize * bpp);
     let mut ok = true;
     for y in 0..height as usize {
-        let line = rgba.get(y * row..(y + 1) * row).unwrap_or(&blank[..]);
-        ok &= enc
-            .write_all(&[0])
-            .and_then(|_| enc.write_all(line))
-            .is_ok();
+        let src = rgba.get(y * row..(y + 1) * row).unwrap_or(&blank[..]);
+        line.clear();
+        line.push(1);
+        if opaque {
+            src.chunks_exact(4)
+                .for_each(|p| line.extend_from_slice(&p[..3]));
+        } else {
+            line.extend_from_slice(src);
+        }
+        // Filter type 1 (Sub): each byte less the same byte of the pixel
+        // to its left (from the end, so the left ones are still raw).
+        let px = &mut line[1..];
+        for i in (bpp..px.len()).rev() {
+            px[i] = px[i].wrapping_sub(px[i - bpp]);
+        }
+        ok &= enc.write_all(&line).is_ok();
     }
     let idat = if ok {
         enc.finish().unwrap_or_default()
@@ -4453,7 +4569,7 @@ pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&height.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    ihdr.extend_from_slice(&[8, if opaque { 2 } else { 6 }, 0, 0, 0]);
     chunk(&mut out, b"IHDR", &ihdr);
     chunk(&mut out, b"IDAT", &idat);
     chunk(&mut out, b"IEND", &[]);
@@ -6138,16 +6254,56 @@ mod tests {
                 assert_eq!(&png[12..16], b"IHDR");
                 assert!((rect.width() - 25.4).abs() < 1e-9);
                 // Decode the IDAT and check the top-left pixel is blue.
-                let idat_len = u32::from_be_bytes([png[33], png[34], png[35], png[36]]) as usize;
-                let idat = &png[41..41 + idat_len];
-                let mut raw = Vec::new();
-                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(idat), &mut raw)
-                    .unwrap();
+                let raw = raw_rows(png);
                 assert_eq!(&raw[1..5], &[0, 0, 255, 255]);
                 assert_eq!(&raw[10..14], &[255, 0, 0, 255]);
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Objects naming one bitmap record share one copy of its picture.
+    #[test]
+    fn objects_naming_one_bitmap_share_its_picture() {
+        let mut bmp = u32s(&[42]);
+        bmp.extend_from_slice(&[0; 50]);
+        bmp.extend_from_slice(&u32s(&[5, 0, 2, 2, 0, 24, 0, 16]));
+        bmp.extend_from_slice(&[0; 32]);
+        bmp.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        bmp.extend_from_slice(&[255, 0, 0, 255, 255, 255, 0, 0]);
+        let mut c = i32s(&[0, 0, 254000, 254000]);
+        c.extend_from_slice(&[0; 32]);
+        c.extend_from_slice(&u32s(&[42]));
+        c.extend_from_slice(&[0; 20]);
+        c.extend_from_slice(&u32s(&[0]));
+        let obj = list(
+            b"obj ",
+            &chunk(b"loda", &loda(OBJ_BITMAP, &[(ARG_COORDS, c)])),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(13, 2_540_000, 2_540_000)),
+            chunk(b"bmp ", &bmp),
+            list(
+                b"page",
+                &list(b"layr", &[obj.clone(), obj.clone(), obj].concat()),
+            ),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRD", &body), 13);
+        assert_eq!(rep.shapes, 3, "{:?}", rep.warnings);
+        let pictures: Vec<&tracedraw_core::SharedBytes> = doc.pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Bitmap { png, .. } => Some(png),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pictures.len(), 3);
+        assert!(pictures
+            .iter()
+            .all(|p| tracedraw_core::SharedBytes::ptr_eq(p, pictures[0])));
     }
 
     #[test]
@@ -6190,13 +6346,7 @@ mod tests {
             let ShapeKind::Bitmap { png, .. } = &first_shape(&doc).kind else {
                 panic!("a bitmap");
             };
-            let idat_len = u32::from_be_bytes([png[33], png[34], png[35], png[36]]) as usize;
-            let mut raw = Vec::new();
-            std::io::Read::read_to_end(
-                &mut flate2::read::ZlibDecoder::new(&png[41..41 + idat_len]),
-                &mut raw,
-            )
-            .unwrap();
+            let raw = raw_rows(png);
             // Rows of a filter byte and two RGBA pixels, top row first.
             [raw[4], raw[8], raw[13], raw[17]]
         };
@@ -6241,13 +6391,7 @@ mod tests {
         let ShapeKind::Bitmap { png, .. } = &first_shape(&doc).kind else {
             panic!("a bitmap");
         };
-        let idat_len = u32::from_be_bytes([png[33], png[34], png[35], png[36]]) as usize;
-        let mut raw = Vec::new();
-        std::io::Read::read_to_end(
-            &mut flate2::read::ZlibDecoder::new(&png[41..41 + idat_len]),
-            &mut raw,
-        )
-        .unwrap();
+        let raw = raw_rows(png);
         // Without a profile: one minus the ink, times one minus the black.
         assert_eq!(&raw[1..5], &[0, 255, 255, 255]);
         assert_eq!(&raw[5..9], &[127, 127, 127, 255]);
@@ -6682,6 +6826,99 @@ mod tests {
         t.push(1); // path data per letter
         t.extend_from_slice(&vec![0; 24 * text.len()]);
         t
+    }
+
+    /// A blend as versions 9 and 13 store it: the two end objects with an
+    /// empty linked group between them, whose `loda` of object type 7
+    /// holds the step count in its argument of type 3000. The first end
+    /// gets a live blend to the second, which stays an object of its own;
+    /// a linked group of another type (a contour's, 15) makes none (#597).
+    #[test]
+    fn an_empty_blend_group_links_its_two_end_objects() {
+        let v = 13u16;
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let ellipse = |x: i32| {
+            let mut c = i32s(&[x, -100_000, x + 200_000, 100_000]);
+            c.extend_from_slice(&u32s(&[0]));
+            list(
+                b"obj ",
+                &[
+                    chunk(b"loda", &loda(OBJ_ELLIPSE, &[(ARG_COORDS, c)])),
+                    chunk(b"trfd", &trfd(v, identity)),
+                ]
+                .concat(),
+            )
+        };
+        let group = |kind: u32, steps: u32| {
+            let mut a = u32s(&[steps, 254_000]);
+            a.extend_from_slice(&[0; 80]);
+            list(
+                b"lnkg",
+                &list(
+                    b"lgob",
+                    &chunk(
+                        b"loda",
+                        &loda(kind, &[(12020, u32s(&[2, 0, 0])), (3000, a)]),
+                    ),
+                ),
+            )
+        };
+        let read = |kind: u32| {
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                list(
+                    b"page",
+                    &list(
+                        b"layr",
+                        &[ellipse(0), group(kind, 12), ellipse(600_000)].concat(),
+                    ),
+                ),
+            ]
+            .concat();
+            parse(&riff(b"CDRD", &body), v)
+        };
+        let (doc, rep) = read(7);
+        assert_eq!(rep.shapes, 2, "{:?}", rep.warnings);
+        let shapes = &doc.pages[0].layers[0].shapes;
+        let blends: Vec<(u32, Option<tracedraw_core::ShapeId>)> = shapes
+            .iter()
+            .flat_map(|s| &s.effects)
+            .filter_map(|e| match e {
+                tracedraw_core::live::Effect::Blend { steps, end_id, .. } => {
+                    Some((*steps, *end_id))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blends.len(), 1, "{shapes:?}");
+        assert_eq!(blends[0].0, 12);
+        let other = shapes
+            .iter()
+            .find(|s| s.effects.is_empty())
+            .expect("the other end");
+        assert_eq!(blends[0].1, Some(other.id));
+        // A blend group with no object before it: a warning, no blend.
+        let body = [
+            chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+            list(
+                b"page",
+                &list(b"layr", &[group(7, 12), ellipse(600_000)].concat()),
+            ),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRD", &body), v);
+        assert!(doc.pages[0].layers[0].shapes[0].effects.is_empty());
+        assert!(
+            rep.warnings.iter().any(|w| w.contains("blend")),
+            "{:?}",
+            rep.warnings
+        );
+        // A contour's linked group (type 15): no blend.
+        let (doc, _) = read(15);
+        assert!(doc.pages[0].layers[0]
+            .shapes
+            .iter()
+            .all(|s| s.effects.is_empty()));
     }
 
     /// Version 21 texts fitted to a circle they are not grouped with (as
@@ -7840,13 +8077,7 @@ mod tests {
                 ..
             }) => {
                 assert_eq!((*width_px, *height_px), (8, 2));
-                let idat_len = u32::from_be_bytes([png[33], png[34], png[35], png[36]]) as usize;
-                let mut raw = Vec::new();
-                std::io::Read::read_to_end(
-                    &mut flate2::read::ZlibDecoder::new(&png[41..41 + idat_len]),
-                    &mut raw,
-                )
-                .unwrap();
+                let raw = raw_rows(png);
                 // Top row: bit 1 (white) is the back colour, bit 0 the front.
                 assert_eq!(&raw[1..4], &[4, 5, 6]);
                 assert_eq!(&raw[1 + 4 * 4..1 + 4 * 4 + 3], &[1, 2, 3]);
@@ -8554,6 +8785,47 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(rep.warnings.iter().any(|w| w.contains("0x26")));
+    }
+
+    #[test]
+    fn point_lists_are_closed_outlines_through_their_points() {
+        // ppdt: u16 count, u32 1, the points, then a u32 for each point.
+        let mut ppdt = 4u16.to_le_bytes().to_vec();
+        ppdt.extend_from_slice(&u32s(&[1]));
+        ppdt.extend_from_slice(&i32s(&[0, 0, 254_000, 0, 254_000, 127_000, 0, 127_000]));
+        ppdt.extend_from_slice(&u32s(&[1, 0, 1, 0]));
+        let obj = list(
+            b"obj ",
+            &[
+                chunk(b"loda", &loda(OBJ_CONNECTOR, &[])),
+                list(
+                    b"npps",
+                    &[chunk(b"ppid", &[0; 16]), chunk(b"ppdt", &ppdt)].concat(),
+                ),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(9, 2_540_000, 2_540_000)),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDR9", &body), 9);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Path { path, closed } => {
+                use tracedraw_core::geometry::Shape as _;
+                assert!(closed);
+                // A move, three lines and the close.
+                assert_eq!(path.elements().len(), 5);
+                let b = path.bounding_box();
+                assert!(
+                    (b.width() - 25.4).abs() < 1e-9 && (b.height() - 12.7).abs() < 1e-9,
+                    "{b:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

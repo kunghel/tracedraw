@@ -131,6 +131,7 @@ pub fn parse_with_options(
             fonts: HashMap::new(),
             ops: 0,
             curves: options.text_as_curves,
+            actual: None,
         };
         let page = imp.import_page(*page_id, index);
         out.warnings.extend(imp.warnings);
@@ -511,6 +512,22 @@ struct Importer<'a> {
     ops: usize,
     /// Text as curves from the embedded fonts.
     curves: bool,
+    /// The `ActualText` of the marked content being drawn.
+    actual: Option<ActualText>,
+}
+
+/// The text marked content gives its glyphs, shown in place of their own
+/// characters while they all stay in one text run.
+struct ActualText {
+    text: String,
+    /// Shown yet (in place of its first glyph).
+    shown: bool,
+    /// Where it went in the run's text.
+    at: Option<usize>,
+    /// The glyphs' own characters so far.
+    own: String,
+    /// Its glyphs went on in another run: they keep their own characters.
+    broken: bool,
 }
 
 /// A run of text being assembled while inside BT ... ET.
@@ -525,6 +542,17 @@ struct TextRun {
     fill: Option<Color>,
     alpha: f64,
     clip: Option<BezPath>,
+    /// A gap the producer left for a space: a space goes in before the
+    /// next string unless that continues the syllable.
+    space_pending: bool,
+    /// The furthest the run has reached along its baseline: a sign drawn
+    /// back over its letter moves the pen back, not the end of the text.
+    reach: f64,
+    /// The parts of `text` (byte ranges) an `ActualText` gave, which are
+    /// in typed order.
+    typed: Vec<std::ops::Range<usize>>,
+    /// The run holds a reph glyph (one glyph for र् with no advance).
+    reph_glyph: bool,
 }
 
 /// A Devanagari consonant (with the nukta forms).
@@ -543,6 +571,78 @@ fn deva_mark(c: char) -> bool {
     matches!(c, '\u{0900}'..='\u{0903}' | '\u{093A}'..='\u{094F}' | '\u{0951}'..='\u{0957}' | '\u{0962}' | '\u{0963}')
 }
 
+/// A zero width joiner or non-joiner.
+fn is_joiner(c: char) -> bool {
+    matches!(c, '\u{200C}' | '\u{200D}')
+}
+
+/// `c` after `prev` belongs to the syllable `prev` is in: a sign on a
+/// consonant, a combining accent, a joiner, or a consonant after a
+/// virama or a zero width joiner. Strings a PDF draws apart (a vowel sign
+/// moved down or back, the second half of a conjunct) are taken into one
+/// text when they continue a syllable (#599).
+fn joins_syllable(prev: char, c: char) -> bool {
+    deva_mark(c)
+        || is_joiner(c)
+        || matches!(c, '\u{0300}'..='\u{036F}')
+        || ((prev == DEVA_VIRAMA || prev == '\u{200D}') && deva_consonant(c))
+}
+
+/// Devanagari vowels a PDF draws as two glyphs, each mapped to its own
+/// character: the pairs the Unicode Standard lists as not to be used for
+/// the vowel letters (अ + ा for आ and the like), and a vowel sign split
+/// into the aa sign and a sign on top (ा + े for ो), back to the one
+/// character (#599). Typed text never has these pairs; shaped as they
+/// are they show a dotted circle.
+pub(crate) fn devanagari_compose(text: &str) -> String {
+    if !text.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c)) {
+        return text.to_string();
+    }
+    let pair = |a: char, b: char| -> Option<char> {
+        Some(match (a, b) {
+            ('\u{0905}', '\u{093E}') => '\u{0906}',
+            ('\u{0905}', '\u{0945}') => '\u{0972}',
+            ('\u{0905}', '\u{0946}') => '\u{0904}',
+            ('\u{0905}', '\u{093A}') => '\u{0973}',
+            ('\u{0905}', '\u{093B}') => '\u{0974}',
+            ('\u{0905}', '\u{094F}') => '\u{0975}',
+            ('\u{0905}', '\u{0956}') => '\u{0976}',
+            ('\u{0905}', '\u{0957}') => '\u{0977}',
+            ('\u{0909}', '\u{0941}') => '\u{090A}',
+            ('\u{0905}', '\u{0949}') | ('\u{0906}', '\u{0945}') => '\u{0911}',
+            ('\u{0905}', '\u{094A}') | ('\u{0906}', '\u{0946}') => '\u{0912}',
+            ('\u{0905}', '\u{094B}') | ('\u{0906}', '\u{0947}') => '\u{0913}',
+            ('\u{0905}', '\u{094C}') | ('\u{0906}', '\u{0948}') => '\u{0914}',
+            ('\u{090F}', '\u{0945}') => '\u{090D}',
+            ('\u{090F}', '\u{0946}') => '\u{090E}',
+            ('\u{090F}', '\u{0947}') => '\u{0910}',
+            ('\u{093E}', '\u{0945}') | ('\u{0945}', '\u{093E}') => '\u{0949}',
+            ('\u{093E}', '\u{0946}') | ('\u{0946}', '\u{093E}') => '\u{094A}',
+            ('\u{093E}', '\u{0947}') | ('\u{0947}', '\u{093E}') => '\u{094B}',
+            ('\u{093E}', '\u{0948}') | ('\u{0948}', '\u{093E}') => '\u{094C}',
+            _ => return None,
+        })
+    };
+    let mut out: Vec<char> = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        match out.last().and_then(|&l| pair(l, c)) {
+            Some(one) => {
+                out.pop();
+                // अ + ा + े: आ, then ओ.
+                match out.last().and_then(|&l| pair(l, one)) {
+                    Some(two) => {
+                        out.pop();
+                        out.push(two);
+                    }
+                    None => out.push(one),
+                }
+            }
+            None => out.push(c),
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// Devanagari text taken from a PDF in the order its glyphs are drawn,
 /// put back in the order it is typed (#585). A PDF draws the short i sign
 /// (ि) before the consonant cluster it follows when typed, and the reph
@@ -550,12 +650,31 @@ fn deva_mark(c: char) -> bool {
 /// drawn order, so the signs went on the wrong letters. Only text that
 /// shows the drawn order is changed: an i sign at the start of a word or
 /// after another sign never happens in typed text.
-pub(crate) fn devanagari_logical_order(text: &str) -> String {
+pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
+    let at = |i: Option<usize>| i.and_then(|i| chars.get(i)).copied();
+    // A reph (र्) after a consonant or a sign at the end of a word, when
+    // the run holds a reph glyph (one glyph for र् with no advance, not a
+    // ra and a visible virama): typed text puts it before the consonant
+    // it goes on (#599). Word-final र् typed with its virama (Nepali गर्,
+    // Sanskrit पुनर्) is drawn as a ra and a virama and stays.
+    let final_reph = |i: usize| -> bool {
+        let mut j = i + 2;
+        while at(Some(j)).is_some_and(|c| matches!(c, '\u{0900}'..='\u{0902}')) {
+            j += 1;
+        }
+        let before = at(i.checked_sub(1));
+        reph_glyph
+            && at(Some(i)) == Some(DEVA_RA)
+            && at(Some(i + 1)) == Some(DEVA_VIRAMA)
+            && before.is_some_and(|b| b != DEVA_VIRAMA && (deva_consonant(b) || deva_mark(b)))
+            && !at(Some(j)).is_some_and(|n| deva_consonant(n) || deva_mark(n) || is_joiner(n))
+    };
     let visual = chars.iter().enumerate().any(|(i, &c)| {
-        c == DEVA_SIGN_I
-            && chars.get(i + 1).is_some_and(|n| deva_consonant(*n))
-            && (i == 0 || !(deva_consonant(chars[i - 1]) || chars[i - 1] == DEVA_NUKTA))
+        (c == DEVA_SIGN_I
+            && at(Some(i + 1)).is_some_and(deva_consonant)
+            && !at(i.checked_sub(1)).is_some_and(|b| deva_consonant(b) || b == DEVA_NUKTA))
+            || final_reph(i)
     });
     if !visual {
         return text.to_string();
@@ -592,13 +711,18 @@ pub(crate) fn devanagari_logical_order(text: &str) -> String {
             i = end;
             continue;
         }
-        // A reph drawn after its syllable, at the end of a word: back to
-        // the start of that syllable.
+        // A reph drawn after its syllable: back to the start of that
+        // syllable. In drawn order a र् before a consonant is that
+        // consonant's reph only in typed order, so it moves too (#599);
+        // a र् in a conjunct (after a virama) or before a joiner stays.
         if c == DEVA_RA
             && chars.get(i + 1) == Some(&DEVA_VIRAMA)
-            && !chars
-                .get(i + 2)
-                .is_some_and(|n| deva_consonant(*n) || deva_mark(*n))
+            && out.last() != Some(&DEVA_VIRAMA)
+            && !chars.get(i + 2).is_some_and(|n| {
+                *n == DEVA_VIRAMA
+                    || is_joiner(*n)
+                    || (deva_mark(*n) && !matches!(n, '\u{0900}'..='\u{0902}'))
+            })
         {
             let mut start = out.len();
             while start > 0 && deva_mark(out[start - 1]) {
@@ -876,6 +1000,8 @@ impl<'a> Importer<'a> {
         let mut line_matrix = Affine::IDENTITY;
         let mut run: Option<TextRun> = None;
         let mut compat = 0usize;
+        // Open marked content: whether each set `self.actual`.
+        let mut marked: Vec<bool> = Vec::new();
 
         for op in content.operations.iter() {
             self.ops += 1;
@@ -1187,9 +1313,13 @@ impl<'a> Importer<'a> {
                                         text_matrix *= Affine::translate((tx, 0.0));
                                         if let Some(r) = run.as_mut() {
                                             r.end_x += tx;
-                                            // A big gap is a space the producer left out.
-                                            if adj < -180.0 && !r.text.ends_with(' ') {
-                                                r.text.push(' ');
+                                            // A big gap is a space the producer left
+                                            // out, unless a sign of the syllable
+                                            // comes next. A step back for a sign
+                                            // and on again is no gap.
+                                            let em = (gs.font_size * gs.hscale).abs();
+                                            if adj < -180.0 && r.end_x - r.reach > em * 0.18 {
+                                                r.space_pending = true;
                                             }
                                         }
                                     }
@@ -1200,7 +1330,45 @@ impl<'a> Importer<'a> {
                 }
                 "BX" => compat += 1,
                 "EX" => compat = compat.saturating_sub(1),
-                "d0" | "d1" | "BMC" | "BDC" | "EMC" | "MP" | "DP" | "ri" | "i" | "M" => {}
+                // Marked content: the text an `ActualText` gives its glyphs
+                // (a word in typed order, whatever the glyphs map to).
+                "BMC" => marked.push(false),
+                "BDC" => {
+                    let actual = match operands.get(1) {
+                        Some(Object::Name(n)) => self
+                            .get(resources, b"Properties")
+                            .and_then(|p| self.dict_of(p))
+                            .and_then(|p| self.get(p, n))
+                            .and_then(|o| self.dict_of(o)),
+                        Some(o) => self.dict_of(o),
+                        None => None,
+                    }
+                    .and_then(|d| match self.get(d, b"ActualText") {
+                        Some(Object::String(t, _)) => Some(pdf_string(t)),
+                        _ => None,
+                    });
+                    // An outer ActualText covers the content inside it. An
+                    // empty one or a soft hyphen leaves the glyphs (a
+                    // hyphen drawn at a line end) their own characters.
+                    let actual = actual.filter(|t| !t.trim_matches('\u{AD}').trim().is_empty());
+                    let own = actual.is_some() && self.actual.is_none();
+                    if own {
+                        self.actual = actual.map(|text| ActualText {
+                            text,
+                            shown: false,
+                            at: None,
+                            own: String::new(),
+                            broken: false,
+                        });
+                    }
+                    marked.push(own);
+                }
+                "EMC" => {
+                    if marked.pop() == Some(true) {
+                        self.actual = None;
+                    }
+                }
+                "d0" | "d1" | "MP" | "DP" | "ri" | "i" | "M" => {}
                 other => {
                     if compat == 0 {
                         self.warn(format!("operator {other} not supported"));
@@ -1210,6 +1378,9 @@ impl<'a> Importer<'a> {
         }
         if let Some(r) = run.take() {
             self.flush_run(r);
+        }
+        if marked.contains(&true) {
+            self.actual = None;
         }
     }
 
@@ -2493,22 +2664,89 @@ impl<'a> Importer<'a> {
             }
             return;
         }
+        // The characters each glyph stands for: its own, or inside marked
+        // content with an `ActualText`, that text in place of the first
+        // glyph's and nothing for the others, as long as all its glyphs
+        // stay in one text.
+        let own_piece: String = items.iter().map(|i| i.1.as_str()).collect();
+        let mut given = self.actual.as_ref().filter(|a| !a.broken).map(|a| a.shown);
+        let piece = match given {
+            Some(false) => self
+                .actual
+                .as_ref()
+                .map(|a| a.text.clone())
+                .unwrap_or_default(),
+            Some(true) => String::new(),
+            None => own_piece.clone(),
+        };
         // Device matrix of the glyph origin: ctm * Tm * [1 0 0 1 0 rise].
         let trm = gs.ctm * *text_matrix * Affine::translate((0.0, gs.rise));
         let scale = Self::scale_of(trm);
         let size_pt = (gs.font_size * scale / PT_MM).abs();
         let size_pt = if size_pt.is_finite() { size_pt } else { 0.0 };
+        // Where this string starts along the run's baseline (text space
+        // units of the run), and whether it continues the run's last
+        // syllable: a vowel sign or the rest of a conjunct the producer
+        // placed apart (moved down, up or back) stays in the same text,
+        // with no space put in (#599).
+        let along = run.as_ref().map(|r| {
+            let a = r.matrix.as_coeffs();
+            let here = trm.as_coeffs();
+            let d = Vec2::new(here[4] - a[4], here[5] - a[5]);
+            let dir = Vec2::new(a[0], a[1]);
+            let len2 = dir.hypot2().max(1e-12);
+            ((d.x * dir.x + d.y * dir.y) / len2, len2.sqrt())
+        });
+        // A consonant after a virama joins only when it touches: a word
+        // may end in a virama (परिषद्, अर्थात्), and the next word or table
+        // cell must not join it into a conjunct.
+        let mut tight = false;
+        let joins = match (run.as_ref(), along) {
+            (Some(r), Some((at, len))) => {
+                // The further glyphs of a word an ActualText gave stay with it.
+                if given == Some(true) && !r.text.is_empty() {
+                    true
+                } else if continues_text(&r.text, &piece, at < r.end_x - 1e-9) {
+                    tight = starts_conjunct(&r.text, &piece);
+                    !tight || (!r.space_pending && (at - r.reach) * len <= 0.18 * r.size_pt * PT_MM)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
         let same_run = match run {
             Some(r) => {
                 std::rc::Rc::ptr_eq(&r.font, &font)
                     && (r.size_pt - size_pt).abs() < 1e-6
                     && r.fill == gs.fill
-                    && same_line(&r.matrix, &trm, r.end_x)
+                    && (same_line(&r.matrix, &trm, r.end_x, gs.font_size)
+                        || (joins
+                            && near_line(
+                                &r.matrix,
+                                &trm,
+                                r.end_x,
+                                gs.font_size,
+                                if tight { 0.18 } else { 3.0 },
+                            )))
             }
             None => false,
         };
         if !same_run {
-            if let Some(r) = run.take() {
+            if let Some(mut r) = run.take() {
+                // An ActualText whose glyphs go on in another text: both
+                // texts keep their glyphs' own characters.
+                if given == Some(true) {
+                    if let Some(a) = self.actual.as_mut() {
+                        a.broken = true;
+                        if let Some(at) = a.at {
+                            r.text.truncate(at);
+                            r.text.push_str(&a.own);
+                            r.typed.retain(|t| t.start < at);
+                        }
+                    }
+                    given = None;
+                }
                 self.flush_run(r);
             }
             if !invisible && size_pt > 0.0 {
@@ -2521,38 +2759,58 @@ impl<'a> Importer<'a> {
                     fill: gs.fill,
                     alpha: gs.fill_alpha,
                     clip: gs.clip.clone(),
+                    space_pending: false,
+                    reach: 0.0,
+                    typed: Vec::new(),
+                    reph_glyph: false,
                 });
             }
-        } else if let Some(r) = run.as_mut() {
-            // Continuing on the same line: measure where this string starts
-            // along the run's baseline; a gap means a space.
-            let a = r.matrix.as_coeffs();
-            let here = trm.as_coeffs();
-            let d = Vec2::new(here[4] - a[4], here[5] - a[5]);
-            let dir = Vec2::new(a[0], a[1]);
-            let len2 = dir.hypot2().max(1e-12);
-            let new_end = (d.x * dir.x + d.y * dir.y) / len2;
-            let gap = (new_end - r.end_x) * len2.sqrt();
+        } else if let (Some(r), Some((new_end, len))) = (run.as_mut(), along) {
+            // Continuing on the same line: a gap means a space, unless the
+            // string continues the syllable.
+            let gap = (new_end - r.reach) * len;
             let em = r.size_pt * PT_MM;
-            if gap > em * 0.18 && !r.text.ends_with(' ') {
+            if (gap > em * 0.18 || r.space_pending) && !joins && !r.text.ends_with(' ') {
                 r.text.push(' ');
             }
+            r.space_pending = false;
             r.end_x = new_end;
         }
         let mut advance = 0.0; // text space units (before Tm)
-        for (code, s, is_space) in items {
+        for (code, own, is_space) in items {
             let w0 = font.width(code) / 1000.0;
             let mut tx = (w0 * gs.font_size + gs.char_spacing) * gs.hscale;
             if is_space {
                 tx += gs.word_spacing * gs.hscale;
             }
             if let Some(r) = run.as_mut() {
-                r.text.push_str(&s);
+                // One glyph for र् with no advance is a reph, not a ra and
+                // a visible virama.
+                if own == "\u{0930}\u{094D}" && w0.abs() < 0.15 {
+                    r.reph_glyph = true;
+                }
+                match (given.is_some(), self.actual.as_mut()) {
+                    (true, Some(a)) => {
+                        if !a.shown {
+                            a.shown = true;
+                            a.at = Some(r.text.len());
+                            let at = r.text.len();
+                            r.text.push_str(&a.text);
+                            r.typed.push(at..r.text.len());
+                        }
+                        a.own.push_str(&own);
+                    }
+                    _ => r.text.push_str(&own),
+                }
+            } else if let Some(a) = self.actual.as_mut().filter(|_| given.is_some()) {
+                a.shown = true;
+                a.own.push_str(&own);
             }
             advance += tx;
         }
         if let Some(r) = run.as_mut() {
             r.end_x += advance;
+            r.reach = r.reach.max(r.end_x);
         }
         *text_matrix *= Affine::translate((advance, 0.0));
     }
@@ -2569,7 +2827,27 @@ impl<'a> Importer<'a> {
         let transform = r.matrix * Affine::scale(1.0 / scale);
         // Hindi and the other Devanagari languages: back from the order
         // the glyphs are drawn in to the order they are typed (#585).
-        let text = devanagari_logical_order(&r.text);
+        // Vowels drawn as two glyphs become one character again first.
+        // Text an ActualText gave is in typed order already: only the
+        // parts between change.
+        let mut text = String::with_capacity(r.text.len());
+        let mut from = 0;
+        for part in r
+            .typed
+            .iter()
+            .chain(std::iter::once(&(r.text.len()..r.text.len())))
+        {
+            if let Some(between) = r.text.get(from..part.start) {
+                text.push_str(&devanagari_logical_order(
+                    &devanagari_compose(between),
+                    r.reph_glyph,
+                ));
+            }
+            if let Some(given) = r.text.get(part.clone()) {
+                text.push_str(&devanagari_compose(given));
+            }
+            from = part.end;
+        }
         let span = TextSpan {
             bold: r.font.bold,
             italic: r.font.italic,
@@ -2596,7 +2874,42 @@ impl<'a> Importer<'a> {
 }
 
 /// Same baseline and direction, continuing after the previous advance.
-fn same_line(prev: &Affine, next: &Affine, end_x: f64) -> bool {
+/// The reach is in ems of the text (`font_size`, in text space): a PDF
+/// that sets the size with the font and draws with a plain text matrix
+/// gave ems of one point, so a vowel sign placed a fraction of a point
+/// off the baseline, or the next syllable starting a little before the
+/// sign's end, began a new text in the middle of a word (#771).
+fn same_line(prev: &Affine, next: &Affine, end_x: f64, font_size: f64) -> bool {
+    let a = prev.as_coeffs();
+    let size = if font_size.is_finite() && font_size.abs() > 1e-9 {
+        font_size.abs()
+    } else {
+        1.0
+    };
+    let em = (size * (a[0] * a[3] - a[1] * a[2]).abs().sqrt()).max(1e-9);
+    // Along the baseline: anything short of a line break; across it: tiny.
+    on_line(prev, next, end_x, em * 0.05, em * -0.2, em * 3.0)
+}
+
+/// Close to the end of the previous string: a sign drawn above, below or
+/// back over its letter, up to an em (`em`, the font size in text space)
+/// off the baseline, three back and `ahead_em` ahead.
+fn near_line(prev: &Affine, next: &Affine, end_x: f64, em: f64, ahead_em: f64) -> bool {
+    let a = prev.as_coeffs();
+    let em = (em * (a[0] * a[3] - a[1] * a[2]).abs().sqrt()).max(1e-9);
+    on_line(prev, next, end_x, em, em * -3.0, em * ahead_em)
+}
+
+/// The same direction, at most `across_max` off the baseline and from
+/// `back` to `ahead` past the end of the previous string (page units).
+fn on_line(
+    prev: &Affine,
+    next: &Affine,
+    end_x: f64,
+    across_max: f64,
+    back: f64,
+    ahead: f64,
+) -> bool {
     let a = prev.as_coeffs();
     let b = next.as_coeffs();
     let dir_same = (a[0] - b[0]).abs() < 1e-6
@@ -2609,13 +2922,41 @@ fn same_line(prev: &Affine, next: &Affine, end_x: f64) -> bool {
     let expected = *prev * Affine::translate((end_x, 0.0));
     let e = expected.as_coeffs();
     let d = Vec2::new(b[4] - e[4], b[5] - e[5]);
-    // Along the baseline: anything short of a line break; across it: tiny.
     let dir = Vec2::new(a[0], a[1]);
     let len = dir.hypot().max(1e-9);
     let along = (d.x * dir.x + d.y * dir.y) / len;
     let across = (d.x * -dir.y + d.y * dir.x).abs() / len;
-    let em = (a[0] * a[3] - a[1] * a[2]).abs().sqrt().max(1e-9);
-    across < em * 0.05 && along > -em * 0.2 && along < em * 3.0
+    across < across_max && along > back && along < ahead
+}
+
+/// `piece` starts with a consonant joined to the virama (or zero width
+/// joiner) `text` ends with.
+fn starts_conjunct(text: &str, piece: &str) -> bool {
+    text.chars()
+        .next_back()
+        .is_some_and(|p| p == DEVA_VIRAMA || p == '\u{200D}')
+        && piece.chars().next().is_some_and(deva_consonant)
+}
+
+/// The string `piece` continues the syllable `text` ends with (see
+/// [`joins_syllable`]). A reph glyph (र्) goes with the syllable before
+/// it; the short i sign, which starts a syllable when glyphs come in
+/// drawn order, continues one only when it is placed back over the
+/// letter before it (`backwards`).
+fn continues_text(text: &str, piece: &str, backwards: bool) -> bool {
+    let (Some(prev), Some(first)) = (text.chars().next_back(), piece.chars().next()) else {
+        return false;
+    };
+    if prev.is_whitespace() {
+        return false;
+    }
+    if piece == "\u{0930}\u{094D}" {
+        return deva_consonant(prev) || deva_mark(prev);
+    }
+    if first == DEVA_SIGN_I {
+        return backwards && (deva_consonant(prev) || prev == DEVA_NUKTA);
+    }
+    joins_syllable(prev, first)
 }
 
 fn dedup_stops(mut stops: Vec<Stop>) -> Vec<Stop> {
@@ -3652,29 +3993,338 @@ mod tests {
     fn devanagari_text_from_a_pdf_comes_back_in_typed_order() {
         // किताब (book): drawn ि क ता ब.
         assert_eq!(
-            devanagari_logical_order("\u{093F}\u{0915}\u{0924}\u{093E}\u{092C}"),
+            devanagari_logical_order("\u{093F}\u{0915}\u{0924}\u{093E}\u{092C}", false),
             "किताब"
         );
         // हिन्दी: drawn ि ह न ् द ी.
         assert_eq!(
-            devanagari_logical_order("\u{093F}\u{0939}\u{0928}\u{094D}\u{0926}\u{0940}"),
+            devanagari_logical_order("\u{093F}\u{0939}\u{0928}\u{094D}\u{0926}\u{0940}", false),
             "हिन्दी"
         );
         // A cluster: स्थिति drawn ि स ् थ ि त → स्थिति.
         assert_eq!(
-            devanagari_logical_order("\u{093F}\u{0938}\u{094D}\u{0925}\u{093F}\u{0924}"),
+            devanagari_logical_order("\u{093F}\u{0938}\u{094D}\u{0925}\u{093F}\u{0924}", false),
             "स्थिति"
         );
         // कर्म with its reph drawn last: क म र ् , in a run that shows the
         // drawn order (कि drawn first).
         assert_eq!(
-            devanagari_logical_order("\u{093F}\u{0915} \u{0915}\u{092E}\u{0930}\u{094D}"),
+            devanagari_logical_order("\u{093F}\u{0915} \u{0915}\u{092E}\u{0930}\u{094D}", false),
             "कि कर्म"
         );
+        // A reph glyph alone at the end of a word shows the drawn order
+        // too: कर्म drawn क म र्, and कीर्ति drawn क ी ि त र्. Without a
+        // reph glyph (र and a visible virama) a word-final र् stays:
+        // Nepali गर्, Sanskrit पुनर्.
+        assert_eq!(
+            devanagari_logical_order("\u{0915}\u{092E}\u{0930}\u{094D}", true),
+            "कर्म"
+        );
+        assert_eq!(
+            devanagari_logical_order("\u{0915}\u{0940}\u{093F}\u{0924}\u{0930}\u{094D}", true),
+            "कीर्ति"
+        );
+        for typed in ["गर्", "पुनर्", "पर् मैं"] {
+            assert_eq!(devanagari_logical_order(typed, false), typed);
+        }
+        // In drawn order a reph before a consonant goes back too:
+        // प्रार्थना drawn प ् र ा थ र् न ा after a word with ि first.
+        assert_eq!(
+            devanagari_logical_order(
+                "\u{093F}\u{0915} \u{092A}\u{094D}\u{0930}\u{093E}\u{0925}\u{0930}\u{094D}\u{0928}\u{093E}",
+                false
+            ),
+            "कि प्रार्थना"
+        );
         // Typed order stays as it is.
-        for typed in ["किताब", "समिति", "कर्म", "हिन्दी", "abc"]
-        {
-            assert_eq!(devanagari_logical_order(typed), typed);
+        for typed in [
+            "किताब",
+            "समिति",
+            "कर्म",
+            "हिन्दी",
+            "abc",
+            "प्रार्थना",
+            "धर्मों",
+            "क्र",
+            "आर्थिक",
+        ] {
+            assert_eq!(devanagari_logical_order(typed, false), typed);
+            assert_eq!(devanagari_logical_order(typed, true), typed);
+        }
+    }
+
+    /// A simple font whose codes A to O stand for Devanagari glyphs the
+    /// way real Hindi PDFs map them: some to a letter with its virama, one
+    /// to a whole conjunct.
+    fn deva_page(content: &str, properties: &str) -> Vec<String> {
+        deva_page_with(content, properties, &[])
+    }
+
+    /// [`deva_page`] with the glyphs at `zero` (indexes from code A) as
+    /// wide as nothing, as signs drawn over their letter are.
+    fn deva_page_with(content: &str, properties: &str, zero: &[usize]) -> Vec<String> {
+        let map = [
+            ("41", "0915"),
+            ("42", "093F"),
+            ("43", "0924"),
+            ("44", "093E"),
+            ("45", "092C"),
+            ("46", "0930094D"),
+            ("47", "092E"),
+            ("48", "0941"),
+            ("49", "0938094D"),
+            ("4A", "0925"),
+            ("4B", "0947"),
+            ("4C", "0902"),
+            ("4D", "0927"),
+            ("4E", "0915094D0937"),
+            ("4F", "0905"),
+            ("50", "0930094D"),
+        ];
+        let entries: String = map.iter().map(|(c, u)| format!("<{c}> <{u}> ")).collect();
+        let cmap = format!(
+            "/CIDInit /ProcSet findresource begin begincmap 1 begincodespacerange <00> <FF> endcodespacerange {} beginbfchar {entries}endbfchar endcmap",
+            map.len()
+        );
+        // F is a reph glyph (no advance), P a ra with its virama shown.
+        let mut widths = vec!["500"; 16];
+        widths[5] = "0";
+        for &z in zero {
+            if let Some(w) = widths.get_mut(z) {
+                *w = "0";
+            }
+        }
+        let widths = widths.join(" ");
+        let font = format!(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /Mangal /FirstChar 65 /LastChar 80 /Widths [{widths}] /ToUnicode 6 0 R >>"
+        );
+        let bytes = one_page(
+            content,
+            &format!("<< /Font << /F1 5 0 R >> /Properties << {properties} >> >>"),
+            &[font, stream("", &cmap)],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => Some(spans[0].text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A PDF that sets the size with the font (10 Tf) and places each
+    /// glyph with a plain text matrix, as office suites write Hindi: a
+    /// vowel sign moved a fraction of a point up and ahead of its letter,
+    /// or a kerned sign, and the next syllable starting a little before
+    /// the sign's end stay in one word. Each began a new text there, so
+    /// क्षेत्र came in as क्षे and त्र, and the words broke apart when
+    /// edited (#771).
+    #[test]
+    fn hindi_placed_glyph_by_glyph_stays_one_word() {
+        // H (the u sign), K (the e sign) and B (the i sign) draw no advance.
+        let zero = [1, 7, 10];
+        // कुति: क, then ु 0.4 pt ahead and 0.2 pt up, then ति from 0.4 pt
+        // back, each part with its ActualText.
+        assert_eq!(
+            deva_page_with(
+                "BT /F1 10 Tf \
+                 /Span << /ActualText <FEFF09150941> >> BDC 1 0 0 1 10 50 Tm (A) Tj \
+                 1 0 0 1 15.4 50.2 Tm (H) Tj EMC \
+                 /Span << /ActualText <FEFF0924093F> >> BDC 1 0 0 1 15 50 Tm (CB) Tj EMC ET",
+                "",
+                &zero
+            ),
+            ["कुति"]
+        );
+        // क्षेत: the e sign kerned 0.59 pt along, then त placed where the
+        // conjunct ends.
+        assert_eq!(
+            deva_page_with(
+                "BT /F1 10 Tf /Span << /ActualText <FEFF0915094D09370947> >> BDC \
+                 1 0 0 1 10 50 Tm [(N) -59 (K)] TJ EMC 1 0 0 1 15 50 Tm (C) Tj ET",
+                "",
+                &zero
+            ),
+            ["क्षेत"]
+        );
+        // A line below, or the next word after a gap, still starts anew
+        // or takes a space.
+        assert_eq!(
+            deva_page_with(
+                "BT /F1 10 Tf 1 0 0 1 10 50 Tm (A) Tj 1 0 0 1 10 38 Tm (C) Tj ET",
+                "",
+                &zero
+            ),
+            ["क", "त"]
+        );
+        assert_eq!(
+            deva_page_with(
+                "BT /F1 10 Tf 1 0 0 1 10 50 Tm (A) Tj 1 0 0 1 18 50 Tm (C) Tj ET",
+                "",
+                &zero
+            ),
+            ["क त"]
+        );
+    }
+
+    /// The Devanagari test corpus written to PDF by an office suite
+    /// (`testdata/devanagari-corpus.pdf`, a FreeMono subset embedded,
+    /// one word a line) comes back word for word, each line one text
+    /// (#771); 6 of its 59 words came in as two texts before.
+    #[test]
+    fn an_office_suite_hindi_pdf_comes_back_word_for_word() {
+        let bytes = include_bytes!("../testdata/devanagari-corpus.pdf");
+        let corpus = include_str!("../../text/testdata/devanagari-corpus.txt");
+        let want: Vec<&str> = corpus
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let mut ids = IdSource::default();
+        let imp = parse(bytes, &mut ids).expect("parse");
+        let got: Vec<String> = imp
+            .pages
+            .iter()
+            .flat_map(|p| p.shapes.iter())
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    Some(spans.iter().map(|s| s.text.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    /// Hindi as PDFs draw it comes in as one text in typed order (#599):
+    /// a reph at the end of a word with no short i sign around, a reph
+    /// before the next consonant, vowel signs placed apart (moved down and
+    /// back, or after a big adjustment), vowels drawn as two glyphs, and
+    /// words an ActualText gives.
+    #[test]
+    fn hindi_drawn_apart_or_with_actual_text_comes_in_as_typed_words() {
+        // कर्म drawn क म र्.
+        assert_eq!(deva_page("BT /F1 12 Tf 10 50 Td (AGF) Tj ET", ""), ["कर्म"]);
+        // आर्थिक drawn अ ा ि थ र् क.
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td (ODBJFA) Tj ET", ""),
+            ["आर्थिक"]
+        );
+        // धर्मों drawn ध म ो र् ं with the o sign as ा and े.
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td (MGDKFL) Tj ET", ""),
+            ["धर्मों"]
+        );
+        // कुत: the u sign drawn down and back under its letter, then the
+        // next letter after it.
+        assert_eq!(
+            deva_page(
+                "BT /F1 12 Tf 10 50 Td (A) Tj -1 -3 Td (H) Tj 7 3 Td (C) Tj ET",
+                ""
+            ),
+            ["कुत"]
+        );
+        // The same with the size in the text matrix.
+        assert_eq!(
+            deva_page(
+                "BT /F1 1 Tf 12 0 0 12 10 50 Tm (A) Tj 12 0 0 12 9 47 Tm (H) Tj 12 0 0 12 16 50 Tm (C) Tj ET",
+                ""
+            ),
+            ["कुत"]
+        );
+        // A word ending in a virama, then a gap: the next word does not
+        // join it into a conjunct (परिषद् द्वारा); touching, it does.
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td [(I) -300 (A)] TJ ET", ""),
+            ["स् क"]
+        );
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td (I) Tj 8.5 0 Td (A) Tj ET", ""),
+            ["स् क"]
+        );
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td (I) Tj (A) Tj ET", ""),
+            ["स्क"]
+        );
+        // A ra with its virama shown at the end of a word stays (कर्).
+        assert_eq!(deva_page("BT /F1 12 Tf 10 50 Td (AP) Tj ET", ""), ["कर्"]);
+        // An ActualText whose glyphs go on to another line: each line
+        // keeps its glyphs' own characters, none vanish.
+        assert_eq!(
+            deva_page(
+                "BT /F1 12 Tf 10 50 Td /Span << /ActualText <FEFF0915093F0924> >> BDC (BA) Tj 0 -20 Td (C) Tj EMC ET",
+                ""
+            ),
+            ["कि", "त"]
+        );
+        // A soft hyphen ActualText leaves the drawn glyph its character.
+        assert_eq!(
+            deva_page(
+                "BT /F1 12 Tf 10 50 Td (A) Tj /Span << /ActualText <FEFF00AD> >> BDC (C) Tj EMC ET",
+                ""
+            ),
+            ["कत"]
+        );
+        // A big adjustment before a sign is no space.
+        assert_eq!(
+            deva_page("BT /F1 12 Tf 10 50 Td [(A) -300 (H) -300 (C)] TJ ET", ""),
+            ["कु त"]
+        );
+        // किताब: its first glyphs (ि क) in an ActualText, inline and from
+        // the page's properties.
+        let actual = "/Span << /ActualText <FEFF0915093F> >> BDC (BA) Tj EMC (CDE) Tj";
+        assert_eq!(
+            deva_page(&format!("BT /F1 12 Tf 10 50 Td {actual} ET"), ""),
+            ["किताब"]
+        );
+        assert_eq!(
+            deva_page(
+                "BT /F1 12 Tf 10 50 Td /Span /P0 BDC (BA) Tj EMC (CDE) Tj ET",
+                "/P0 << /ActualText <FEFF0915093F> >>"
+            ),
+            ["किताब"]
+        );
+        // Only the text an ActualText gives keeps its order: कित after it
+        // is drawn ि क त.
+        assert_eq!(
+            deva_page(
+                &format!("BT /F1 12 Tf 10 50 Td {actual} [() -300] TJ (BAC) Tj ET"),
+                ""
+            ),
+            ["किताब कित"]
+        );
+        // कर्म with the reph of its ActualText cluster placed up and back:
+        // still one word, in the ActualText's order.
+        assert_eq!(
+            deva_page(
+                "BT /F1 12 Tf 10 50 Td (A) Tj /Span << /ActualText <FEFF0930094D092E> >> BDC 6 0 Td (G) Tj 3 4 Td (F) Tj EMC ET",
+                ""
+            ),
+            ["कर्म"]
+        );
+        // क्ष from one glyph, with the e sign: क्षे.
+        assert_eq!(deva_page("BT /F1 12 Tf 10 50 Td (NK) Tj ET", ""), ["क्षे"]);
+    }
+
+    #[test]
+    fn vowels_drawn_as_two_glyphs_become_one_character() {
+        for (drawn, typed) in [
+            ("\u{0905}\u{093E}", "आ"),
+            ("\u{0905}\u{093E}\u{0947}", "ओ"),
+            ("\u{0905}\u{0947}\u{093E}", "ओ"),
+            ("\u{0905}\u{094C}", "औ"),
+            ("\u{0909}\u{0941}", "ऊ"),
+            ("\u{0905}\u{0957}", "\u{0977}"),
+            ("\u{090F}\u{0947}", "ऐ"),
+            ("\u{092E}\u{093E}\u{0947}", "मो"),
+            ("\u{092E}\u{093E}\u{0948}", "मौ"),
+            ("\u{092E}\u{0947}\u{093E}", "मो"),
+            ("आम और ओस", "आम और ओस"),
+        ] {
+            assert_eq!(devanagari_compose(drawn), typed, "{drawn}");
         }
     }
 

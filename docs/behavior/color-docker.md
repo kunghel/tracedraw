@@ -58,8 +58,12 @@ colour's model. The colour is edited in its own model, a CMYK colour in
 CMYK and an RGB one in RGB; choosing another model in the list converts
 the colour and the object holds a colour of that model from then on,
 with the sliders changing to it. The list offers the docker's models
-(RGB, CMYK, HSB, HSL, Lab, Grayscale, YIQ); a spot ink or registration
-colour is edited in CMYK until another model is chosen. Esc or a click
+(RGB, CMYK, HSB, HSL, Lab, Grayscale, YIQ) and, after them, the
+registration colour (it prints on every separation; the list shows it
+as chosen for that colour, #286,
+`ui::color_picker::tests::the_model_list_offers_the_registration_colour`);
+a spot ink or registration colour is edited in CMYK until another model
+is chosen. Edit Fill's uniform page has the same list. Esc or a click
 outside closes the popup; a click on the Model list's entries that reach
 below the popup (Lab, Grayscale, YIQ) chooses them, it does not count
 as outside (#440,

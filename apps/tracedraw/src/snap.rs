@@ -59,6 +59,86 @@ pub struct AlignKey {
     options: live_guides::AlignOptions,
 }
 
+/// What stays put of the curves whose nodes are being dragged, on the
+/// page (#673): their other nodes and the segments between two of them,
+/// in pieces of at most [`STILL_PIECE`] segments (or nodes not on such a
+/// segment), each with its bounds. Built once a drag; a move looks only
+/// at the pieces near the pointer, so a long curve costs no more a frame
+/// than a short one.
+#[derive(Debug, Clone, Default)]
+pub struct StillGeometry(Vec<(Rect, Geo)>);
+
+/// Segments (or lone nodes) in one piece of [`StillGeometry`].
+const STILL_PIECE: usize = 16;
+
+impl StillGeometry {
+    pub fn of(start: &[crate::node_edit::StartCurve]) -> Self {
+        use tracedraw_core::geometry::{BezPath, PathEl, Shape as _};
+        let mut out = Vec::new();
+        for c in start {
+            let moving: std::collections::HashSet<usize> = c.indices.iter().copied().collect();
+            let path = c.transform
+                * tracedraw_core::nodes::segments_where(&c.path, |i| !moving.contains(&i));
+            // The segments in pieces, each starting where the last ended.
+            let mut ends: std::collections::HashSet<(i64, i64)> = Default::default();
+            let key = |p: Point| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64);
+            let mut piece = BezPath::new();
+            let mut count = 0;
+            let mut last = Point::ZERO;
+            let mut flush = |piece: &mut BezPath, count: &mut usize, at: Point| {
+                if *count > 0 {
+                    let done = std::mem::take(piece);
+                    out.push((
+                        done.bounding_box(),
+                        Geo::Outline {
+                            path: done,
+                            points: true,
+                        },
+                    ));
+                }
+                *count = 0;
+                piece.move_to(at);
+            };
+            for el in path.elements() {
+                match *el {
+                    PathEl::MoveTo(p) => {
+                        flush(&mut piece, &mut count, p);
+                        last = p;
+                    }
+                    PathEl::ClosePath => {}
+                    el => {
+                        if count == STILL_PIECE {
+                            flush(&mut piece, &mut count, last);
+                        }
+                        ends.insert(key(last));
+                        piece.push(el);
+                        count += 1;
+                        if let Some(p) = el.end_point() {
+                            ends.insert(key(p));
+                            last = p;
+                        }
+                    }
+                }
+            }
+            flush(&mut piece, &mut count, last);
+            // Nodes on no still segment, in pieces of their own.
+            let lone: Vec<Point> = tracedraw_core::nodes::nodes(&c.path)
+                .iter()
+                .filter(|n| !moving.contains(&n.index))
+                .map(|n| c.transform * n.pos)
+                .filter(|p| !ends.contains(&key(*p)))
+                .collect();
+            for chunk in lone.chunks(STILL_PIECE) {
+                let b = chunk
+                    .iter()
+                    .fold(Rect::from_points(chunk[0], chunk[0]), |r, q| r.union_pt(*q));
+                out.push((b, Geo::Nodes(chunk.to_vec())));
+            }
+        }
+        StillGeometry(out)
+    }
+}
+
 /// The alignment targets of the last frame and what they were built from.
 #[derive(Debug, Clone)]
 pub struct AlignCache {
@@ -70,6 +150,21 @@ impl App {
     /// The snapping radius (Options > Snapping, screen pixels) in mm.
     fn snap_tolerance(&self) -> f64 {
         self.settings.snap.threshold_px.clamp(1.0, 100.0) / self.view.zoom.max(1e-6) as f64
+    }
+
+    /// The pieces of `still` within the snapping radius of `p`: what a
+    /// node dragged there snaps to of its own curves.
+    pub(crate) fn still_near<'a>(&self, still: &'a StillGeometry, p: Point) -> Vec<&'a Geo> {
+        if self.snap.off || !self.snap.objects || !self.snap_enabled() {
+            return Vec::new();
+        }
+        let tol = self.snap_tolerance();
+        still
+            .0
+            .iter()
+            .filter(|(b, _)| b.inflate(tol, tol).contains(p))
+            .map(|(_, g)| g)
+            .collect()
     }
 
     /// Candidate x and y values to snap to; `bounds` adds the page's and
@@ -240,11 +335,15 @@ impl App {
         &self,
         p: Point,
         exclude: &[ShapeId],
+        own: &[&Geo],
         points: bool,
         lines: bool,
     ) -> Option<Target> {
         let tol = self.snap_tolerance();
-        let geo = self.snap_geometry(p, tol, exclude);
+        let mut geo = self.snap_geometry(p, tol, exclude);
+        // What stays put of the curves being edited (#673): only its few
+        // pieces near the pointer, each of at most 16 segments.
+        geo.extend(own.iter().map(|g| (*g).clone()));
         let found = snap_points::targets(&geo, p, tol, self.snap_from(), &self.settings.snap.modes);
         snap_points::best(&found, points, lines)
     }
@@ -288,12 +387,19 @@ impl App {
     /// the selection snaps to other objects, not to the selection's own
     /// points).
     pub fn snap_point_excluding(&self, p: Point, exclude: &[ShapeId]) -> Point {
+        self.snap_point_with(p, exclude, &[])
+    }
+
+    /// [`App::snap_point_excluding`], with `own` snapping geometry of the
+    /// excluded objects that stays put meanwhile (a node being dragged
+    /// snaps to the other nodes and segments of its own curve, #673).
+    pub fn snap_point_with(&self, p: Point, exclude: &[ShapeId], own: &[&Geo]) -> Point {
         if self.snap.off {
             return p;
         }
         let enabled = self.snap_enabled();
         if enabled {
-            if let Some(t) = self.object_snap(p, exclude, true, false) {
+            if let Some(t) = self.object_snap(p, exclude, own, true, false) {
                 self.acquire_anchor(t);
                 self.snap_mark.set(Some(t));
                 return t.point;
@@ -315,7 +421,7 @@ impl App {
             return axis;
         }
         if !self.snap.guides {
-            return self.edge_snap(p, exclude);
+            return self.edge_snap(p, exclude, own);
         }
         // Angled guides: project onto the nearest one within tolerance.
         let tol = self.snap_tolerance();
@@ -340,7 +446,7 @@ impl App {
                 return q;
             }
         }
-        self.edge_snap(p, exclude)
+        self.edge_snap(p, exclude, own)
     }
 
     /// The pointer at `p` snapped to `q` along the axes: mark it, with its
@@ -426,8 +532,8 @@ impl App {
     }
 
     /// An object's or the page's edge, or a text baseline, near `p`.
-    fn edge_snap(&self, p: Point, exclude: &[ShapeId]) -> Point {
-        match self.object_snap(p, exclude, false, true) {
+    fn edge_snap(&self, p: Point, exclude: &[ShapeId], own: &[&Geo]) -> Point {
+        match self.object_snap(p, exclude, own, false, true) {
             Some(t) => {
                 self.snap_mark.set(Some(t));
                 t.point
@@ -446,7 +552,7 @@ impl App {
         }
         let enabled = self.snap_enabled();
         if let (true, Some(src)) = (enabled, source) {
-            if let Some(t) = self.object_snap(src + d, &self.selection, true, true) {
+            if let Some(t) = self.object_snap(src + d, &self.selection, &[], true, true) {
                 self.acquire_anchor(t);
                 self.snap_mark.set(Some(t));
                 return t.point - src;
@@ -839,11 +945,11 @@ fn text_baselines(s: &Shape, parent: Affine) -> Vec<(Point, Point)> {
         .lines
         .iter()
         .filter_map(|l| {
-            let (a, b) = (l.edges.first()?, l.edges.last()?);
+            let (a, b) = l.x_range();
             (b > a).then(|| {
                 (
-                    to_page * Point::new(*a, l.baseline),
-                    to_page * Point::new(*b, l.baseline),
+                    to_page * Point::new(a, l.baseline),
+                    to_page * Point::new(b, l.baseline),
                 )
             })
         })

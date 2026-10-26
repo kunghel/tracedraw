@@ -120,6 +120,15 @@ arrows at its right (11 px): a click on one steps the value by a unit
 (or the step the field was given), as does the mouse wheel over the
 field; Shift steps ten times as much, Ctrl a tenth; a whole-number field
 stays whole and the range holds (`ui::field::tests::arrows_and_the_wheel_step_the_value`).
+The wheel steps once a notch; parts of a notch from a touchpad or a fine
+wheel add up to one step. The wheel over a field (or the outline width
+box, the font list, the page tabs) belongs to it: the bar or panel
+around it does not slide or scroll with that notch, on the frames the
+smoothed scroll of the notch lasts as well, so the field stays under the
+pointer and notch after notch steps it (#783,
+`ui::field::tests::the_wheel_steps_a_field_in_a_long_bar_without_sliding_the_bar`,
+`ui::field::tests::the_wheel_steps_a_field_in_a_scrolling_panel_without_scrolling_it`,
+`ui::propbar::tests::the_wheel_over_the_outline_width_in_a_long_bar_keeps_the_bar_still`).
 Every step applies at once, one undo step each, whether or not the box
 holds the focus: the rotation angle, the scale percentages, the arc
 angles, the dimension text size and line width, the corner radii and the
@@ -175,7 +184,7 @@ Time Tracker bars and the toolbox show what fits between a "«" button at
 their start and a "»" button at their end (up and down arrows for the
 toolbox on a side). "»" slides the bar so the first item not wholly in
 view comes first; "«" slides it back, cut between items, to the start;
-the mouse wheel over the bar slides it too. The items stay as they are on
+the mouse wheel over the bar (away from a number field) slides it too. The items stay as they are on
 the bar and work as there (the bar is drawn once). A bar that fits shows
 no buttons; the slide is worked out again when the window changes size
 (`ui::overflow::tests`).
@@ -186,16 +195,45 @@ before.
 
 ## Moving the bars
 
-The toolbox, the colour palette, the standard toolbar, the property bar
-and the status bar move (`ui/bars.rs`).
+The toolbox, the colour palette, the standard toolbar, the property bar,
+the Text, Zoom and Transform toolbars, the time tracker and the status
+bar move (`ui/bars.rs`).
 
 | Bar | Places | First place |
 |---|---|---|
 | Toolbox | top, bottom, left, right, floating | left |
 | Colour palette | top, bottom, left, right, floating | bottom (on a side: the outermost column, beyond the dockers) |
-| Standard toolbar | top, bottom, floating | top |
-| Property bar | top, bottom, floating | top |
+| Standard toolbar | top, bottom, floating | top, first row |
+| Property bar | top, bottom, floating | top, second row |
+| Text, Zoom, Transform toolbars, time tracker | top, bottom, floating | top, a row each under the property bar (hidden at first) |
 | Status bar | top, bottom | bottom |
+
+- Toolbars in rows (#837, #855): the toolbars docked along the top or
+  the bottom lie in rows, top to bottom; at first each has a row of its
+  own. A row is a band as high as its highest toolbar (36 px, 53 px with
+  the property bar), the toolbars side by side in it, each centred in
+  the band with its grip first. Each toolbar takes the length its
+  buttons need while the row has room, the last one the rest; when they
+  do not all fit, the first ones keep their length and the later ones
+  get what is left (at least 90 px each while the row holds that), the
+  part they cannot show sliding behind their arrows as a bar longer than
+  its room does (`ui::bars::share_row`).
+- Dragging a toolbar's grip over a row shows a blue line where it would
+  go: between the toolbars whose middles lie either side of the pointer
+  (or at the row's end). Releasing puts it there, beside the others.
+  Over the upper or lower 7 px of a row the mark is a band across the
+  window on that line, and the toolbar gets a row of its own there.
+  Away from the rows a toolbar docks at the nearest edge or floats as
+  below; one coming from elsewhere takes a row of its own at the edge
+  of the window (the topmost row along the top, the lowest along the
+  bottom). Hidden toolbars keep their places in their rows and come
+  back to them. The rows are kept in the preferences (`bars.rows`: each
+  toolbar's row and place) and Reset Bar Positions gives each toolbar
+  its first row again
+  (`ui::bars::tests::toolbars_share_rows_and_keep_their_places`,
+  `ui::bars::tests::a_toolbar_dropped_on_a_row_joins_it_or_starts_one`,
+  `ui::bars::tests::a_row_shares_its_length`,
+  `pick_drag_tests::a_toolbar_dragged_onto_another_row_shares_it`).
 
 - A docked bar starts with a grip: a column of grey dots 9 px wide (a
   row of dots 9 px high on a bar that runs down a side). The pointer

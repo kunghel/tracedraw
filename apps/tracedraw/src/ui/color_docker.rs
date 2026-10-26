@@ -198,15 +198,33 @@ fn hue_strip(p: &Painter, r: Rect) {
     p.add(Shape::mesh(mesh));
 }
 
+/// Where the viewer's ring shows `color` (saturation, brightness): at
+/// the point last `picked` while the colour is still the one it gave,
+/// else where the colour's screen look sits (#761).
+fn shown_point(picked: Option<(f32, f32, Color)>, color: Color) -> (f32, f32) {
+    match picked {
+        Some((s, b, c)) if c == color => (s, b),
+        _ => {
+            let (_, s, b) = color.to_hsb();
+            (s as f32, b as f32)
+        }
+    }
+}
+
 /// The color viewer: drag in the square for saturation and brightness,
 /// in the strip for the hue. Some((h, s, b)) when changed.
 pub(crate) fn viewer(ui: &mut Ui, hue: f32, color: Color) -> Option<(f32, f32, f32)> {
-    let (_, s, b) = color.to_hsb();
-    let (s, b) = (s as f32, b as f32);
     let side = (ui.available_width() - 34.0).clamp(80.0, 220.0);
     let mut out = None;
     ui.horizontal(|ui| {
         let (square, sq) = ui.allocate_exact_size(Vec2::splat(side), Sense::click_and_drag());
+        // The point last picked, while the colour is still the one it gave:
+        // in a model such as CMYK many points give the same colour (all
+        // the darkest ones give K 100, shown lighter than they are), and
+        // the ring stays where it was put instead of jumping to where that
+        // colour's screen look sits (#761).
+        let picked_id = sq.id.with("picked");
+        let (s, b) = shown_point(ui.data(|d| d.get_temp(picked_id)), color);
         ui.add_space(8.0);
         let (strip, st) = ui.allocate_exact_size(Vec2::new(18.0, side), Sense::click_and_drag());
         let p = ui.painter();
@@ -248,6 +266,16 @@ pub(crate) fn viewer(ui: &mut Ui, hue: f32, color: Color) -> Option<(f32, f32, f
                 let nb = 1.0 - ((pos.y - square.top()) / square.height()).clamp(0.0, 1.0);
                 out = Some((hue, ns, nb));
             }
+        }
+        if let Some((h, ns, nb)) = out {
+            // The colour this point gives, as the caller makes it.
+            let c = crate::ui::color_picker::from_viewer(
+                h,
+                ns,
+                nb,
+                crate::ui::color_picker::edit_model(color),
+            );
+            ui.data_mut(|d| d.insert_temp(picked_id, (ns, nb, c)));
         }
         if st.dragged() || st.clicked() {
             if let Some(pos) = st.interact_pointer_pos() {
@@ -633,6 +661,23 @@ fn palette_view(app: &mut App, ui: &mut Ui) -> Option<Color> {
 mod tests {
     use super::*;
     use tracedraw_core::ShapeKind;
+
+    /// In CMYK every point near the black corner gives K 100, whose
+    /// screen look is lighter: the ring stays at the point picked instead
+    /// of jumping back up to that look, so the click is seen to take
+    /// (#761). Another colour shows where it sits.
+    #[test]
+    fn the_ring_stays_where_a_dark_cmyk_colour_was_picked() {
+        let k100 = Color::cmyk_pct(0.0, 0.0, 0.0, 100.0);
+        let picked = crate::ui::color_picker::from_viewer(0.0, 0.05, 0.02, "CMYK");
+        assert_eq!(picked, k100, "the darkest points are all K 100");
+        let (_, _, look) = k100.to_hsb();
+        assert!(look > 0.1, "K 100 looks lighter than the corner: {look}");
+        assert_eq!(shown_point(Some((0.05, 0.02, picked)), k100), (0.05, 0.02));
+        let other = Color::cmyk_pct(0.0, 100.0, 100.0, 0.0);
+        let (s, b) = shown_point(Some((0.05, 0.02, picked)), other);
+        assert!(b > 0.5 && s > 0.5, "{s} {b}");
+    }
 
     #[test]
     fn spot_inks_are_added_applied_and_removed() {

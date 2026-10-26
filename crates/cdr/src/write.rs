@@ -31,7 +31,7 @@ use tracedraw_core::{
     document::{Shape, ShapeKind, Symbol, TextSpan},
     geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _},
     style::{FountainKind, LineCap, LineJoin},
-    Color, Document, Fill, Stroke, TextAlign,
+    Color, Document, Fill, Pattern, SharedBytes, Stroke, TextAlign,
 };
 
 /// The oldest version whose files written here are known to open in the
@@ -2631,6 +2631,9 @@ struct Writer<'a> {
     outline_ids: HashMap<String, u32>,
     fonts: Vec<(u16, String)>,
     bitmaps: Vec<Vec<u8>>,
+    /// Bitmap pattern fills already written, matched by their picture's
+    /// content (the pointer first, then the bytes) and size.
+    bitmap_fills: Vec<(SharedBytes, u32, u32, u64, u32)>,
     /// Static ids (`usdn`), object ids (argument 100), next fill, outline
     /// and bitmap ids.
     next_usdn: u32,
@@ -2714,6 +2717,7 @@ impl<'a> Writer<'a> {
             next_fill: 1,
             next_outline: 1,
             next_bitmap: 1,
+            bitmap_fills: Vec::new(),
             next_spnd: 1,
             text_formats: Vec::new(),
             guid_seed: seed,
@@ -2729,6 +2733,31 @@ impl<'a> Writer<'a> {
     }
 
     fn fill_id(&mut self, fill: &Fill) -> u32 {
+        // A bitmap pattern goes by its picture's content, not by its
+        // printed bytes (about five characters per byte of the PNG, kept
+        // for the whole write).
+        if let Fill::Pattern(Pattern::Bitmap {
+            png,
+            width_px,
+            height_px,
+            size_mm,
+        }) = fill
+        {
+            let key = (*width_px, *height_px, size_mm.to_bits());
+            if let Some(f) = self
+                .bitmap_fills
+                .iter()
+                .find(|f| (f.1, f.2, f.3) == key && f.0 == *png)
+            {
+                return f.4;
+            }
+            let id = self.next_fill;
+            self.next_fill += 1;
+            self.fills.push(fild(self.v, id, fill));
+            self.bitmap_fills
+                .push((png.clone(), key.0, key.1, key.2, id));
+            return id;
+        }
         let key = format!("{fill:?}");
         if let Some(id) = self.fill_ids.get(&key) {
             return *id;

@@ -605,7 +605,7 @@ pub fn impose(doc: &Document, o: &Options) -> Document {
                     None,
                 ));
             }
-            for l in doc.layers_for_page(page.id).unwrap_or_default() {
+            for l in doc.layers_drawn_for_page(page.id).unwrap_or_default() {
                 if l.visible && l.printable {
                     contents.extend(l.shapes.iter().filter(|s| s.visible).cloned());
                 }

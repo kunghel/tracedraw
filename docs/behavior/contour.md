@@ -23,6 +23,10 @@ Ctrl+F9 opens the Contour panel.
 - With `n` steps, step `i` (1 to `n`) is the object's outline offset by
   `n * offset * accelerate(i / n, objects)`: outward for Outside, inward
   for Inside. To centre: inward by `i * offset` until nothing is left.
+- Distances are measured on the page: the outline is offset with the
+  object's scale, stretch and rotation applied and the steps are taken
+  back into the object's own coordinates, so an 80 mm inside step of a
+  scaled polygon lies 80 mm from its edges (#754).
 - `accelerate(t, a) = t ^ (4 ^ a)`: 0 spaces the steps evenly, positive
   values pack them toward the object, negative ones toward the last
   step.
@@ -64,6 +68,7 @@ Ctrl+F9 opens the Contour panel.
 ## Checks
 
 - `live::tests::contour_outside_three_steps`
+- `live::tests::contour_offset_is_measured_on_the_page`
 - `shaping::tests::offset_corners_are_mitred_round_or_bevelled`
 - `contour_tool::tests::a_drag_draws_a_live_contour`
 - `contour_tool::tests::the_bar_edits_the_selected_contour`
@@ -72,3 +77,7 @@ Ctrl+F9 opens the Contour panel.
   outermost step is a 32 mm square and its fill is the end colour.
 - Given a 10 mm square offset by 2 mm, then the area is 196 mm2 mitred,
   `180 + 4 pi` round and 188 bevelled.
+- Given an octagon scaled 1.7 times with its sides level, inside, one
+  step of 20 mm, then the step lies 20 mm inside each side on the page;
+  given a 20 mm square stretched 3 times across, one 4 mm inside step,
+  then it lies 4 mm inside on all four sides.

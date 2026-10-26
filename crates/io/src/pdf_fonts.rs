@@ -184,6 +184,11 @@ pub(super) struct Shown {
     pub(super) slot: usize,
     pub(super) code: Vec<u8>,
     pub(super) width_em: f64,
+    /// The characters of the cluster the glyph starts (empty for the
+    /// further glyphs of a cluster).
+    pub(super) text: String,
+    /// The font's character map gives the code exactly `text`.
+    pub(super) mapped: bool,
 }
 
 fn same_font(a: &GlyphFont, b: &GlyphFont) -> bool {
@@ -307,14 +312,19 @@ impl Pdf {
         let slot = self.font_slot(font, SlotKind::Cid)?;
         let s = &mut self.fonts[slot];
         let cid = s.remapper.remap(gid);
-        if !text.is_empty() {
-            s.unicode.entry(cid).or_insert_with(|| text.to_string());
-        }
+        let mapped = text.is_empty()
+            || s.unicode
+                .entry(cid)
+                .or_insert_with(|| text.to_string())
+                .as_str()
+                == text;
         let w = *s.widths.entry(cid).or_insert_with(|| advance(font, gid));
         Some(Shown {
             slot,
             code: cid.to_be_bytes().to_vec(),
             width_em: w / 1000.0,
+            text: text.to_string(),
+            mapped,
         })
     }
 
@@ -343,13 +353,18 @@ impl Pdf {
             .widths
             .entry(code as u16)
             .or_insert_with(|| advance(font, gid));
-        s.unicode
+        let mapped = s
+            .unicode
             .entry(code as u16)
-            .or_insert_with(|| text.to_string());
+            .or_insert_with(|| text.to_string())
+            .as_str()
+            == text;
         Some(Shown {
             slot,
             code: vec![code],
             width_em: w / 1000.0,
+            text: text.to_string(),
+            mapped,
         })
     }
 

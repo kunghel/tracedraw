@@ -5,7 +5,7 @@
 //! line boxes.
 
 use crate::app::App;
-use tracedraw_core::document::text_outline::TextRequest;
+use tracedraw_core::document::text_outline::{merge_stretch, TextRequest};
 use tracedraw_core::geometry::{Affine, Point, Rect};
 use tracedraw_core::{
     spans_apply, spans_char_count, spans_delete, spans_insert, spans_text, Color, Command, Fill,
@@ -258,6 +258,7 @@ impl App {
             let code = std::mem::take(&mut self.alt_code);
             if let Some(ch) = alt_code_char(&code) {
                 self.text_insert(&ch.to_string());
+                self.alt_composed = Some(ch);
             }
         }
         for ev in &events {
@@ -273,7 +274,19 @@ impl App {
                         self.text_insert(&commit);
                     }
                 }
-                Event::Text(t) => self.text_insert(t),
+                // The digits of an Alt code also come as text (the keypad
+                // with Num Lock on): the code names the character. The
+                // character the system composes of the same code, should
+                // it come too, is the one typed already (#469).
+                Event::Text(t)
+                    if !self.alt_code.is_empty() && t.chars().all(|c| c.is_ascii_digit()) => {}
+                Event::Text(t) if self.alt_composed.is_some_and(|c| t.chars().eq([c])) => {
+                    self.alt_composed = None;
+                }
+                Event::Text(t) => {
+                    self.alt_composed = None;
+                    self.text_insert(t);
+                }
                 Event::Paste(t) => self.text_insert(t),
                 Event::Copy => {
                     let sel = self.text_selected();
@@ -295,6 +308,7 @@ impl App {
                     modifiers,
                     ..
                 } => {
+                    self.alt_composed = None;
                     let shift = modifiers.shift;
                     let ctrl = modifiers.command;
                     // Alt and digits: a character by its number, typed when
@@ -870,26 +884,41 @@ fn caret_geometry_sized(
     let bottom = *to_page * Point::new(x, base - desc);
     let mut quads = Vec::new();
     if a != b {
+        // The stretches the selected characters cover on a line: one for
+        // plain text, from the right for right-to-left text (#629),
+        // several where the directions mix.
+        let mut stretches: Vec<(f64, f64)> = Vec::new();
         for line in &layout.lines {
             let s = a.max(line.start_char);
             let e = b.min(line.end_char);
             if s > e || (s == e && !(a < line.start_char && b > line.end_char)) {
                 continue;
             }
-            let x0 = line.edges.get(s - line.start_char).copied().unwrap_or(0.0);
-            let x1 = line.edges.get(e - line.start_char).copied().unwrap_or(x0);
-            let r = Rect::new(
-                x0,
-                line.baseline - line.descent,
-                x1.max(x0 + 0.3),
-                line.baseline + line.ascent,
-            );
-            quads.push([
-                *to_page * Point::new(r.x0, r.y0),
-                *to_page * Point::new(r.x1, r.y0),
-                *to_page * Point::new(r.x1, r.y1),
-                *to_page * Point::new(r.x0, r.y1),
-            ]);
+            stretches.clear();
+            for i in s - line.start_char..e - line.start_char {
+                if let (Some(&x0), Some(&x1)) = (line.starts.get(i), line.ends.get(i)) {
+                    merge_stretch(&mut stretches, x0.min(x1), x0.max(x1));
+                }
+            }
+            if stretches.is_empty() {
+                // A line with nothing on it inside the selection.
+                let x0 = line.edges.get(s - line.start_char).copied().unwrap_or(0.0);
+                stretches.push((x0, x0));
+            }
+            for &(x0, x1) in &stretches {
+                let r = Rect::new(
+                    x0,
+                    line.baseline - line.descent,
+                    x1.max(x0 + 0.3),
+                    line.baseline + line.ascent,
+                );
+                quads.push([
+                    *to_page * Point::new(r.x0, r.y0),
+                    *to_page * Point::new(r.x1, r.y0),
+                    *to_page * Point::new(r.x1, r.y1),
+                    *to_page * Point::new(r.x0, r.y1),
+                ]);
+            }
         }
     }
     Some((top, bottom, quads))

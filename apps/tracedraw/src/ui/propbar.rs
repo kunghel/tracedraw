@@ -1943,9 +1943,6 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Wheel movement in points that makes one notch (one line).
-const WHEEL_POINTS_PER_NOTCH: f32 = 50.0;
-
 /// Outline widths the list offers in millimetres.
 pub(crate) const OUTLINE_WIDTHS_MM: [f64; 10] =
     [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0];
@@ -2156,42 +2153,7 @@ fn outline_width_box(
     // leaves the box.
     let acc_id = id.with("wheel");
     if wheel && !egui::Popup::is_id_open(&ctx, popup_id) && ui.rect_contains_pointer(anchor) {
-        let deltas: Vec<f32> = ui.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::MouseWheel { unit, delta, .. } if delta.y != 0.0 => {
-                        Some(match unit {
-                            egui::MouseWheelUnit::Line if delta.y.abs() >= 1.0 => delta.y.signum(),
-                            egui::MouseWheelUnit::Line => delta.y,
-                            egui::MouseWheelUnit::Point
-                                if delta.y.abs() >= WHEEL_POINTS_PER_NOTCH =>
-                            {
-                                delta.y.signum()
-                            }
-                            egui::MouseWheelUnit::Point => delta.y / WHEEL_POINTS_PER_NOTCH,
-                            egui::MouseWheelUnit::Page => delta.y.signum(),
-                        })
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
-        if !deltas.is_empty() {
-            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            let mut acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0);
-            let mut steps = 0i32;
-            for d in deltas {
-                if acc != 0.0 && acc.signum() != d.signum() {
-                    acc = 0.0;
-                }
-                acc += d;
-                let whole = acc.trunc();
-                steps += whole as i32;
-                acc -= whole;
-            }
-            ui.data_mut(|d| d.insert_temp(acc_id, acc));
+        if let Some(steps) = crate::ui::field::wheel_steps(ui, acc_id) {
             if steps != 0 {
                 // A width being typed goes; the step counts from the one held.
                 ui.data_mut(|d| d.remove::<String>(id));
@@ -3568,6 +3530,87 @@ mod tests {
                 outline_width_step(Some(last * 3.0), false, u),
                 Some(Some(last))
             );
+        }
+    }
+
+    /// The outline width box in a property bar longer than the window:
+    /// notch after notch the width steps and the bar stays where it is,
+    /// on the frames between the notches too, where the smoothed scroll
+    /// of a notch slid the bar and took the box away from under the
+    /// pointer (#783).
+    #[test]
+    fn the_wheel_over_the_outline_width_in_a_long_bar_keeps_the_bar_still() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let p = outline_width_presets(app.outline_units());
+        app.apply_outline_width(p[6]);
+        let width = |app: &App| {
+            app.doc()
+                .find_shape(id)
+                .and_then(|s| s.stroke.as_ref().map(|s| s.width))
+        };
+        let clock = std::cell::Cell::new(0.0f64);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> egui::Rect {
+            let mut box_id = egui::Id::NULL;
+            clock.set(clock.get() + 1.0 / 60.0);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(500.0, 300.0),
+                    )),
+                    events,
+                    time: Some(clock.get()),
+                    ..Default::default()
+                },
+                |ui| {
+                    crate::ui::field::hold_taken_wheel(ui.ctx());
+                    crate::ui::overflow::row(ui, "property_test", |ui| {
+                        ui.add_space(200.0);
+                        box_id = ui.make_persistent_id("outline_width_box");
+                        outline_part(app, ui);
+                        ui.add_space(900.0);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            ctx.read_response(box_id)
+                .map(|r| r.rect)
+                .unwrap_or(egui::Rect::NOTHING)
+        };
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        let start = run(&mut app, Vec::new());
+        assert!(start.is_positive(), "{start:?}");
+        run(&mut app, vec![egui::Event::PointerMoved(start.center())]);
+        for k in 1..=5 {
+            run(
+                &mut app,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    // Down: the bar slides forward with it.
+                    delta: egui::vec2(0.0, -1.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            for f in 0..5 {
+                let now = run(&mut app, Vec::new());
+                assert!(
+                    (now.left() - start.left()).abs() < 0.5,
+                    "notch {k}, frame {f}: {now:?} from {start:?}"
+                );
+            }
+            assert_eq!(width(&app), Some(p[6 - k]), "notch {k}");
         }
     }
 

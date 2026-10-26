@@ -47,7 +47,9 @@ further out on empty canvas deselects.
 
 A dragged node snaps like a point placed by a drawing tool: to the
 document grid, guidelines, the page and other objects (View > Snap To,
-Options > Snapping), never to the curves being edited. When several
+Options > Snapping), and to what stays put of the curves being edited:
+their other nodes and the segments between two of them (the nodes being
+dragged and the segments they bend are left out, #673). When several
 nodes move, the one under the pointer snaps and the move follows it;
 Ctrl keeps the move horizontal or vertical before and after
 snapping. A dragged control point, and a node of a rectangle, ellipse or
@@ -99,7 +101,7 @@ Properties.
 | Double-click node | delete |
 | Double-click a rectangle, ellipse or polygon | it becomes a curve; pictures, text, groups and clip frames stay as they are |
 | Drag a picture's corner | the picture goes into a clip frame of its rectangle (Crop Bitmap) and the corner moves as a node of that frame; a clip frame's frame shows its nodes and edits like any curve, so a cropped picture can be reshaped further |
-| Delete | with a segment chosen by a click: deletes that segment, its nodes staying (an open curve splits there or loses its end, a closed one opens there, a curve left with no segment is deleted; one undo step, Delete Segment); otherwise deletes the selected nodes; when a deleted node sat between segments and either side was a curve, one cubic is refitted from the segment before to the segment after (least squares with the old end tangents held, Graphics Gems), so the curve is kept rather than collapsing to the far handles; the first node of a closed curve too, its last and first segments refitted into one (#472, `nodes::tests::deleting_the_start_of_a_closed_curve_keeps_the_shape`); a node between two straight segments leaves a straight join |
+| Delete | with a segment chosen by a click: deletes that segment, its nodes staying (an open curve splits there or loses its end, a closed one opens there, a curve left with no segment is deleted; one undo step, Delete Segment); otherwise deletes the selected nodes; when a deleted node sat between segments and either side was a curve, one cubic is refitted from the segment before to the segment after (least squares with the old end tangents held, Graphics Gems), so the curve is kept rather than collapsing to the far handles; the first node of a closed curve too, its last and first segments refitted into one (#472, `nodes::tests::deleting_the_start_of_a_closed_curve_keeps_the_shape`); a node between two straight segments leaves a straight join; two or more neighbouring nodes deleted together become one curve between the nodes either side, fitted by least squares to the old segments, so the outline keeps its general shape even when they were all lines: at an end where the run's segment or the kept node's other segment is a curve the old tangent is held (only the handle's length is fitted, so a smooth node stays smooth), and between lines the handle is free in both directions; a closed curve left with one node is that node alone; the whole deletion is one pass over the curve, however many nodes go (#675, `nodes::tests::neighbouring_line_nodes_deleted_together_become_a_curve`, `a_run_between_curves_keeps_the_kept_nodes_smooth`, `a_run_holds_the_tangent_where_a_curve_meets_it`, `lone_nodes_go_as_delete_node_takes_them`, `deleting_many_nodes_of_a_long_curve_is_one_pass`, `pick_drag_tests::deleting_two_neighbouring_line_nodes_leaves_a_curve`) |
 | + / - | with nodes chosen: a node in the middle of each segment ending at them / delete them (without chosen nodes they zoom) |
 | C, S, Y (with nodes chosen) | C turns cusp nodes smooth and the others cusp, S symmetrical nodes smooth and the others symmetrical, Y makes them symmetrical; while nodes are chosen these letters do not align objects or pick tools. The type chosen is kept with the curve (saved in `.tdraw`), so a cusp node may keep aligned handles and its handles still move apart; nodes never given a type read as their handles do (aligned: smooth; aligned and of equal length: symmetrical), and a curve that gains or loses nodes goes back to that |
 | Home, End (with nodes chosen) | the first or last node of the curve |
@@ -235,6 +237,13 @@ Reduce Nodes, Curve smoothness.
 
 ## Checks
 
+- Given a rectangle converted to curves, when its two right corners are
+  chosen and deleted together, then two nodes are left joined by a curve
+  bulging out towards the old right side, and Undo brings the four back
+  (`pick_drag_tests::deleting_two_neighbouring_line_nodes_leaves_a_curve`,
+  `nodes::tests::neighbouring_line_nodes_deleted_together_become_a_curve`,
+  `nodes::tests::a_run_through_the_start_of_a_closed_curve_becomes_a_curve`,
+  `nodes::tests::runs_on_an_open_curve`).
 - `pick_drag_tests::corner_widgets_round_every_corner_or_the_chosen_ones`
 - `tracedraw_core` `corner_cut::tests::corners_and_the_largest_fillet_they_take`
 - `pick_drag_tests::overlays_are_drawn_on_a_white_line`

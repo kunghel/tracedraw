@@ -82,17 +82,17 @@ pub fn previous_offset(items: &[(f32, f32)], room: f32, offset: f32) -> f32 {
 }
 
 /// Draw a horizontal bar with `add`, sliding when it is longer than the
-/// room it gets.
-pub fn row(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) {
+/// room it gets; the bar's whole length.
+pub fn row(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) -> f32 {
     strip(ui, id_salt, true, add)
 }
 
 /// The vertical counterpart, for a column of tool buttons.
-pub fn column(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) {
+pub fn column(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) -> f32 {
     strip(ui, id_salt, false, add)
 }
 
-fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)) {
+fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)) -> f32 {
     let id = ui.make_persistent_id(("bar_overflow", id_salt));
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     let full = ui.available_rect_before_wrap();
@@ -297,6 +297,7 @@ fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)
             },
         )
     });
+    content
 }
 
 #[cfg(test)]

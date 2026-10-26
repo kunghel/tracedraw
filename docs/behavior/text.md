@@ -14,6 +14,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Baseline shift | 0 pt |
 | Alignment | left; justify stretches spaces only, last line left |
 | Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken. Options > Text > Paragraph Text > Hyphenation patterns picks a hyphenation dictionary instead (`hyph_*.dic`, found where the spelling dictionaries are, see `writing-tools.md`): its first line names the character set; `LEFTHYPHENMIN` and `RIGHTHYPHENMIN` set the minimums (else 2 and 3); `%` and `#` lines are comments; `NEXTLEVEL` starts a second level of patterns, a word breaking where either level allows; patterns with a replacement (`/`) are left out. With a dictionary a capital first letter no longer stops a break (nouns in some languages); other capitals still do. A dictionary that is gone at start-up leaves the built-in patterns and a status message (`hyphen::tests::pattern_files`, `spell::tests::real_hyphenation_files`, ignored, over English, Brazilian Portuguese, German and Italian files: hy-phen-ation, com-pu-ta-dor, Haus-tür, Schiff-fahrt, in-for-ma-zione). Punctuation before or after a word (a comma at a line's end, quotation marks) is left aside and the letters between break; an apostrophe inside a word (' or ’) is kept for the patterns, and without a pattern file only the part after the last apostrophe breaks (#255, `hyphen::tests::punctuation_round_a_word_and_apostrophes_inside_it`). Text > Use Hyphenation turns hyphenation on or off for the selected texts (off when they all have it); while a text is edited it is the setting of the paragraphs at the caret, its check following them; with no text selected it is the setting new text takes (`writing_tools::tests::use_hyphenation_acts_on_the_selected_text`). Typing keeps a text's own hyphenation; it took the setting for new text, so editing a text turned its hyphenation on or off (#470, `writing_tools::tests::editing_a_text_keeps_its_hyphenation`) |
+| Chinese and Japanese line breaks | text written without spaces breaks between any two characters when one of them is Chinese or Japanese (ideographs, kana, full-width forms and their punctuation), except before a character that may not start a line (，。、；：？！ and their half-width forms, closing brackets and quotes such as ）」』】”’, iteration marks, ー and small kana) and after one that may not end a line (opening brackets and quotes such as （「『【“‘, and ￥ ＄ £ before a sum); the character before goes down to the next line with it. Latin text keeps breaking at spaces and hyphenation points (#847, `tests::cjk_punctuation_never_starts_a_line`) |
 | Columns | 1, gutter 5 mm |
 | Bullets | off; indent 5 mm, bullet "*" from the paragraph font |
 | Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column |
@@ -175,6 +176,8 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Up / Down | the same x on the previous / next line (the x is remembered across moves) |
 | Home / End, Ctrl+Home / End | line start / end, text start / end |
 | Ctrl+A | select all |
+| Mixed directions (an Arabic or Hebrew word in English text, or the other way round) | the Unicode bidirectional algorithm gives each character its level, the first strong letter setting the direction; it is worked out for each run of one formatting between tabs and line ends, so a direction change across differently formatted characters keeps them in text order. Each run of one level is shaped its own way; lines break in text order and each line shows its runs in display order: Arabic typed after "Asasa " reads right to left, joined, to the right of it, and a paragraph too narrow for "Hi مرحبا بك" keeps "Hi مرحبا" on the first line; digits inside right-to-left text read left to right (#628, `tracedraw_text::tests::mixed_text_is_cut_into_runs_of_one_direction`, `tracedraw_text::tests::lines_are_seen_in_bidi_order`, `tracedraw_text::tests::mixed_directions_lay_each_run_its_own_way`, `tracedraw_text::tests::mixed_paragraph_text_breaks_in_text_order`, `pick_drag_tests::right_to_left_typed_after_english_runs_right_to_left`) |
+| Right-to-left text (Arabic, Hebrew) | the caret before a letter is at its right end and the end of the text at its left; a selection shades the letters it holds, all of them after Ctrl+A, where it used to shade only the first letter (#629, `tracedraw_text::tests::right_to_left_carets_run_from_the_right`, `pick_drag_tests::select_all_in_right_to_left_text_highlights_all_of_it`); character backgrounds and a callout's box cover such text too, mixed directions included (`callouts::tests::text_boxes_and_backgrounds_cover_mixed_direction_text`) |
 | Ctrl+B / I / U | toggle bold, italic, underline on the selection, or on the whole text without one |
 | Ctrl+C / X / V | copy, cut, paste the selected characters |
 | Click / Shift+click / drag | place the caret / extend / select |
@@ -300,7 +303,11 @@ where it was and the line spacing is the usual distance between the
 baselines, in points. The lines must be turned and sized alike, in the
 same group, else the status bar says so and nothing changes. One undo
 step; the first line's object keeps its fill and outline (#599,
-`ops2::tests::lines_of_text_join_into_a_paragraph_that_flows`).
+`ops2::tests::lines_of_text_join_into_a_paragraph_that_flows`). Hindi
+lines joined this way flow the same way, breaking only between syllables
+(`devanagari_join_tests::joined_hindi_lines_flow_and_break_between_syllables`).
+Lines kept as separate objects do not flow into each other: each grows
+on its own line, which is why the lines are joined first.
 
 ## Linked frames
 
@@ -451,8 +458,21 @@ Window > Panels > Glyphs. From the top:
   (`text_editing::alt_code_char`), on every system: on Windows the
   windowing layer drops the character the system makes of them (#469).
   The keypad digits count with Num Lock off too (the physical key).
+  The digits typed under Alt are not typed themselves (the windowing
+  layer also sends each keypad digit as text with Num Lock on), and the
+  character, should the system send it too when Alt is let go, is typed
+  once (#447, #469;
+  `pick_drag_tests::alt_codes_type_their_character_once_and_not_the_digits`).
+  The digits of the top row count as well, which Windows itself does
+  not do: there only the keypad types Alt codes.
 - A grid of large cells with the glyphs the font draws in that range
-  (from its character map), scrolled row by row. The tip names the
+  (from its character map), scrolled row by row. A font made for the
+  symbol encoding (legacy script and dingbat fonts: a Windows symbol
+  character map only, its glyphs at U+F020 to U+F0FF) lists its glyphs
+  as the codes typed for them ("A" with Alt+0065 for U+F041), and text
+  typed in it draws those glyphs instead of falling to another font
+  (#469; `tests::a_symbol_font_draws_the_codes_typed` in the text
+  crate). The tip names the
   character and its code point. A small arrow under a glyph means the
   font has alternates for it (stylistic alternate, swash, small
   capitals, capitals to small capitals, stylistic sets 1 to 5: the
@@ -618,6 +638,31 @@ Hebrew, Thai, Devanagari and Bengali; DejaVu Sans and Noto Sans for the
 rest), then any installed face that has the letter, upright faces of the
 run's weight first. Spaces, controls and combining marks stay with the
 letter before them. A letter no face has is drawn with the run's face.
+The face is chosen for each syllable, not each letter: a syllable goes to
+the span's face only when it has all of its letters, else to the face
+that has the first one it lacks, so a conjunct is never drawn half in one
+face and half in another.
+
+A syllable is a letter with the characters that continue it: combining
+marks (vowel signs, virama, nukta, anusvara, accents), joiners, and a
+consonant after a virama or a zero width joiner. Text is never cut inside
+one for shaping (by face, by script or by span) and lines never break
+inside one. A syllable that a span boundary cuts (a vowel sign or the
+second half of a conjunct in another colour or style) is shaped whole
+in the style of the span it starts in: the font draws a syllable as one
+cluster, so the whole syllable takes that span's font, size and colour.
+After a linker (the virama of Devanagari, Bengali, Gujarati, Oriya,
+Telugu and Malayalam) only a consonant of the same script continues the
+syllable. Plain ASCII text skips these checks.
+Shaped in pieces, a half form showed with a visible halant, a vowel sign
+with a dotted circle, and a line broken inside a word could start with a
+vowel sign or the rest of a conjunct (#599). The corpus in
+`crates/text/testdata/devanagari-corpus.txt` (half forms, conjuncts,
+reph, rakar, nukta, vowel signs on conjuncts) checks it against Noto
+Sans Devanagari: every word laid out in one span, after Latin text, in
+a Latin face with the Devanagari face as fallback, split between two
+spans at every character, and broken across lines, gives the glyphs of
+the word shaped in one piece (`devanagari_tests`).
 
 Each script is shaped on its own: a run is cut where its letters change
 from one script to another (Latin, Greek, Cyrillic, Devanagari, Bengali

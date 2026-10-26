@@ -18,25 +18,35 @@ any other colour. The choices are kept in the preferences
 
 ## Algorithm
 
-1. The area around the outlines (their bounds and 2 mm more, on the page
-   or off it on the desktop; #499) is drawn at 4 pixels per mm, fewer
-   for a large drawing (16 million pixels at most), as walls: every
-   outline of every visible object on the page (stroked or not, open
-   curves too, a curve crossing itself enclosing the areas between its
-   crossings), groups opened up; an object with live effects counts as
-   it is drawn (its warped outline and the objects its effects add).
-2. From the pixel under the click the region is flooded up to the walls.
-   A click on a wall makes nothing; a click outside the outlines' area,
-   or a flood that reaches its margin (nothing encloses it), makes
-   nothing and the status bar says so
-   (`fill_tool_bars::tests::smart_fill_works_off_the_page_in_a_large_drawing`).
-3. The region, with the wall pixels it touches so the new object meets
-   the outlines, is traced to rings, each simplified within a pixel; the
-   rings become one closed curve on top of the active layer, selected,
-   with the fill and outline the bar says; one undo step.
+1. The outlines: every outline of every visible object on the page
+   (stroked or not, open curves too, a curve crossing itself enclosing
+   the areas between its crossings), groups opened up; an object with
+   live effects counts as it is drawn (its warped outline and the
+   objects its effects add). The area may lie anywhere, on the page or
+   off it on the desktop, in a drawing of any size (#499).
+2. The outlines, flattened to 0.02 mm, cut a box around them all (their
+   bounds and 2 mm more) into faces (`shaping::enclosed_area`). The face
+   under the click is the area; a face that reaches the box's margin is
+   open (nothing encloses it), and a click there or outside the box
+   makes nothing and the status bar says so; a click exactly on an
+   outline makes nothing.
+3. The outlines' own curves are put back into the face's sides, as the
+   Shaping commands do: the new object follows the outlines exactly,
+   its sides the same Bezier segments, with nodes only where outlines
+   cross (#734; it was traced from pixels before, which gave jagged
+   sides with many nodes). Outlines inside the area make holes in it.
+   The object is put on top of the active layer, selected, with the
+   fill and outline the bar says; one undo step.
 
 ## Checks
 
 - `ui::fill_tool_bars::tests::smart_fill_takes_the_bars_fill_and_outline`
   (a 40 mm square's inside becomes a 40 mm object; the bar's fill and
   outline, its own colour and outline, none).
+- `ui::fill_tool_bars::tests::smart_fill_works_off_the_page_in_a_large_drawing`
+- `shaping::tests::enclosed_area_keeps_the_outlines_curves`
+- `pick_drag_tests::area_fill_keeps_the_curves_it_fills_between`
+- Given a circle 60 mm across, when the Area Fill tool clicks inside it,
+  then the new object has four curves, every point within 0.02 mm of the
+  circle; given the circle overlapping a rectangle, a click in the
+  overlap makes exactly the overlap, its round side the circle's curve.

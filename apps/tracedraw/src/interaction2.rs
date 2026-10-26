@@ -349,7 +349,7 @@ impl App {
         }
     }
 
-    /// Area Fill: flood the enclosed area under the click (all visible
+    /// Area Fill: find the enclosed area under the click (all visible
     /// outlines count as walls) and create a filled object from it. The
     /// area can be anywhere, on the page or off it on the desktop, and a
     /// drawing of any size (#499).
@@ -384,122 +384,17 @@ impl App {
         for s in &shapes {
             collect(s, Affine::IDENTITY, &mut paths);
         }
-        // The area flooded: around the outlines, with a margin an open
-        // area leaks into; a click outside them encloses nothing.
-        let domain = paths
-            .iter()
-            .map(kurbo::Shape::bounding_box)
-            .filter(|b| b.width().is_finite() && b.height().is_finite())
-            .reduce(|a, b| a.union(b))
-            .map(|b| b.inflate(2.0, 2.0));
-        let Some(domain) = domain.filter(|d| d.contains(p)) else {
-            self.status = tr("status.area_fill_open");
-            return;
+        // The area the outlines close off around the click, its sides
+        // their own curves (#734); a click in an open area or on an
+        // outline makes nothing.
+        let path = match tracedraw_core::shaping::enclosed_area(&paths, p) {
+            tracedraw_core::shaping::Enclosed::Area(path) => path,
+            tracedraw_core::shaping::Enclosed::Open => {
+                self.status = tr("status.area_fill_open");
+                return;
+            }
+            tracedraw_core::shaping::Enclosed::OnOutline => return,
         };
-        // Pixels per mm: 4, fewer for a large drawing (16 million pixels
-        // at most).
-        let res = 4.0f64.min((16.0e6 / (domain.width() * domain.height()).max(1e-9)).sqrt());
-        let w = (domain.width() * res).ceil() as usize;
-        let h = (domain.height() * res).ceil() as usize;
-        if w < 3 || h < 3 {
-            return;
-        }
-        let px = |q: Point| ((q.x - domain.x0) * res, (domain.y1 - q.y) * res);
-        // Walls: every outline (stroked or not) of every visible object.
-        let mut walls = vec![false; w * h];
-        let stamp = |a: Point, b: Point, walls: &mut Vec<bool>| {
-            let n = ((b - a).hypot() * res).ceil().max(1.0) as usize;
-            for i in 0..=n {
-                let (x, y) = px(a + (b - a) * (i as f64 / n as f64));
-                let (x, y) = (x as i64, y as i64);
-                if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
-                    walls[y as usize * w + x as usize] = true;
-                }
-            }
-        };
-        for path in paths {
-            let mut start: Option<Point> = None;
-            let mut last: Option<Point> = None;
-            kurbo::flatten(path.elements().iter().copied(), 0.05, |el| match el {
-                kurbo::PathEl::MoveTo(q) => {
-                    start = Some(q);
-                    last = Some(q);
-                }
-                kurbo::PathEl::LineTo(q) => {
-                    if let Some(l) = last {
-                        stamp(l, q, &mut walls);
-                    }
-                    last = Some(q);
-                }
-                kurbo::PathEl::ClosePath => {
-                    if let (Some(l), Some(s)) = (last, start) {
-                        stamp(l, s, &mut walls);
-                    }
-                }
-                _ => {}
-            });
-        }
-        // Flood fill from the click.
-        let (sx, sy) = px(p);
-        let (sx, sy) = (sx as usize, sy as usize);
-        if sx >= w || sy >= h || walls[sy * w + sx] {
-            return;
-        }
-        let mut filled = vec![false; w * h];
-        let mut stack = vec![(sx, sy)];
-        let mut count = 0usize;
-        let mut open = false;
-        while let Some((x, y)) = stack.pop() {
-            let i = y * w + x;
-            if filled[i] || walls[i] {
-                continue;
-            }
-            filled[i] = true;
-            count += 1;
-            // The margin reached: the area is not closed.
-            if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
-                open = true;
-                break;
-            }
-            stack.extend([(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]);
-        }
-        if count == 0 || open {
-            self.status = tr("status.area_fill_open");
-            return;
-        }
-        // Include the wall pixels touching the region so the fill meets the outlines.
-        let mut region = filled.clone();
-        for y in 0..h {
-            for x in 0..w {
-                if walls[y * w + x] {
-                    let near = [
-                        (x.wrapping_sub(1), y),
-                        (x + 1, y),
-                        (x, y.wrapping_sub(1)),
-                        (x, y + 1),
-                    ];
-                    if near
-                        .iter()
-                        .any(|(nx, ny)| *nx < w && *ny < h && filled[ny * w + nx])
-                    {
-                        region[y * w + x] = true;
-                    }
-                }
-            }
-        }
-        let rings = crate::trace::contours(&region, w, h);
-        let mut path = BezPath::new();
-        for ring in rings {
-            let simplified = tracedraw_core::geometry::simplify(&ring, 1.0);
-            if simplified.len() < 3 {
-                continue;
-            }
-            let pts: Vec<Point> = simplified
-                .iter()
-                .map(|q| Point::new(domain.x0 + q.x / res, domain.y1 - q.y / res))
-                .collect();
-            path.extend(tracedraw_core::geometry::polyline_path(&pts, true));
-        }
         if path.elements().is_empty() {
             return;
         }
@@ -555,16 +450,28 @@ impl App {
             }
         }
         if response.double_clicked() {
-            // Double-click inside a mesh adds a grid line there.
+            // Double-click inside a mesh: a node there, on new grid lines
+            // through the point (#804).
             for s in self.selected_shapes() {
                 if let Fill::Mesh(m) = &s.fill {
-                    let lp = s.transform.inverse() * p;
+                    let inv = s.transform.inverse();
+                    let lp = inv * p;
+                    // Four pixels on screen, in the mesh's own space.
+                    let tol = ((inv * Point::new(4.0 / self.view.zoom as f64, 0.0))
+                        - (inv * Point::ZERO))
+                        .hypot();
                     let mut m2 = m.clone();
-                    m2.add_line(lp);
-                    self.run(Command::SetFill {
-                        shapes: vec![s.id],
-                        fill: Fill::Mesh(m2),
-                    });
+                    if m2.add_lines_at(lp, tol) {
+                        let node = mesh_node_near(&m2, lp, tol);
+                        self.run(Command::SetFill {
+                            shapes: vec![s.id],
+                            fill: Fill::Mesh(m2),
+                        });
+                        if let Some(i) = node {
+                            self.selected_effect_node =
+                                Some((s.id, crate::mesh_tool::MESH_NODE_BASE + i));
+                        }
+                    }
                     return true;
                 }
             }
@@ -659,6 +566,15 @@ impl App {
         }
         self.context_menu = Some((screen, p));
     }
+}
+
+/// The node of `m` within `tol` of `p` (both in the mesh's space).
+fn mesh_node_near(m: &tracedraw_core::Mesh, p: Point, tol: f64) -> Option<usize> {
+    m.nearest(p).filter(|i| {
+        m.nodes
+            .get(*i)
+            .is_some_and(|n| (n.pos - p).hypot() <= tol.max(1e-6))
+    })
 }
 
 /// Page-space positions of the editable nodes of a shape's perspective

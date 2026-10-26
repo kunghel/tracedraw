@@ -436,7 +436,7 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         });
         if let Some(d) = step {
             // The scrollbars and the drawing do not scroll as well.
-            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            crate::ui::field::take_wheel(ui);
             if d > 0.0 {
                 first = first.saturating_sub(1);
             } else {

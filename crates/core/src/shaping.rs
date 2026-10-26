@@ -477,6 +477,75 @@ fn recover_curves(result: &BezPath, sources: &[&BezPath]) -> BezPath {
     out
 }
 
+/// What [`enclosed_area`] finds around a point.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Enclosed {
+    /// The area the outlines enclose, with the holes the outlines inside
+    /// it make, its sides the outlines' own curves.
+    Area(BezPath),
+    /// The point lies in an area the outlines leave open to the outside.
+    Open,
+    /// The point lies on an outline.
+    OnOutline,
+}
+
+/// The area around `p` that the outlines `paths` (page coordinates; open
+/// and closed subpaths alike, a subpath crossing itself enclosing the
+/// areas between its crossings) close off: the outlines, flattened, cut
+/// a box around them all into faces, the face holding `p` is the area,
+/// and the outlines' curves are put back into its sides
+/// ([`recover_curves`]), so the area meets them exactly and has nodes
+/// only where they cross.
+pub fn enclosed_area(paths: &[BezPath], p: Point) -> Enclosed {
+    use i_overlay::float::slice::FloatSlice as _;
+    use kurbo::Shape as _;
+    let lines: Vec<Vec<[f64; 2]>> = paths
+        .iter()
+        .flat_map(|path| polylines(path, TOL))
+        .map(|(pts, _)| pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>())
+        .filter(|l: &Vec<[f64; 2]>| l.iter().all(|q| q[0].is_finite() && q[1].is_finite()))
+        .collect();
+    let Some(bounds) = lines
+        .iter()
+        .flatten()
+        .map(|q| kurbo::Rect::from_points((q[0], q[1]), (q[0], q[1])))
+        .reduce(|a, b| a.union(b))
+    else {
+        return Enclosed::Open;
+    };
+    // A margin all round: the faces reaching it are open.
+    let margin = 2.0;
+    let domain = bounds.inflate(margin, margin);
+    if !domain.contains(p) {
+        return Enclosed::Open;
+    }
+    let frame = vec![
+        [domain.x0, domain.y0],
+        [domain.x1, domain.y0],
+        [domain.x1, domain.y1],
+        [domain.x0, domain.y1],
+    ];
+    let faces = frame.slice_by(&lines, IFill::NonZero);
+    for face in faces {
+        let area = from_shapes(vec![face.clone()]);
+        if !area.contains(p) {
+            continue;
+        }
+        let open = face.iter().flatten().any(|q| {
+            (q[0] - domain.x0).abs() < margin / 2.0
+                || (q[0] - domain.x1).abs() < margin / 2.0
+                || (q[1] - domain.y0).abs() < margin / 2.0
+                || (q[1] - domain.y1).abs() < margin / 2.0
+        });
+        if open {
+            return Enclosed::Open;
+        }
+        let sources: Vec<&BezPath> = paths.iter().collect();
+        return Enclosed::Area(recover_curves(&area, &sources));
+    }
+    Enclosed::OnOutline
+}
+
 /// How an offset outline turns its corners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -517,7 +586,151 @@ pub fn offset_with(path: &BezPath, d: f64, join: Join) -> BezPath {
         Join::Bevel => LineJoin::Bevel,
     });
     let out = clean.outline(&style);
-    from_shapes(out)
+    fit_polygon_curves(&from_shapes(out), FIT_TOL)
+}
+
+/// How far the curves an offset is fitted with may stray from it, mm:
+/// well under what shows or prints.
+const FIT_TOL: f64 = 0.05;
+
+/// A piece this many times as long as the one next to it is a straight
+/// side, not part of a curve.
+const STRAIGHT_RATIO: f64 = 4.0;
+
+/// How sharply a polygon must turn at a point, in degrees, for the point
+/// to be a corner [`fit_polygon_curves`] keeps.
+const CORNER_DEG: f64 = 35.0;
+
+/// A path of straight pieces (an offset, as the overlay library gives it)
+/// as curves: each contour split at its corners, and every smooth stretch
+/// between them fitted with as few curves as keep within `accuracy` mm
+/// (#821). A contour of fewer than four points stays as it is.
+pub fn fit_polygon_curves(path: &BezPath, accuracy: f64) -> BezPath {
+    let mut out = BezPath::new();
+    for mut pts in polygons(path) {
+        while pts.len() > 1 && (pts[0] - pts[pts.len() - 1]).hypot() < 1e-9 {
+            pts.pop();
+        }
+        // The points that matter within the tolerance: the overlay's
+        // tiny joins between pieces would read as corners and sides.
+        if pts.len() > 4 {
+            let mut ring = pts.clone();
+            ring.push(pts[0]);
+            let mut few = crate::geometry::simplify(&ring, accuracy * 0.5);
+            few.pop();
+            if few.len() >= 3 {
+                pts = few;
+            }
+        }
+        let n = pts.len();
+        if n < 4 {
+            if let Some((first, rest)) = pts.split_first() {
+                out.move_to(*first);
+                rest.iter().for_each(|p| out.line_to(*p));
+                out.close_path();
+            }
+            continue;
+        }
+        let limit = CORNER_DEG.to_radians();
+        let corner = |i: usize| {
+            let a = pts[i] - pts[(i + n - 1) % n];
+            let b = pts[(i + 1) % n] - pts[i];
+            let (la, lb) = (a.hypot(), b.hypot());
+            // Where a long straight side meets short pieces (a curve), the
+            // side stays a line.
+            let side = la > STRAIGHT_RATIO * lb || lb > STRAIGHT_RATIO * la;
+            la < 1e-12
+                || lb < 1e-12
+                || side
+                || (a.dot(b) / (la * lb)).clamp(-1.0, 1.0).acos() > limit
+        };
+        let corners: Vec<usize> = (0..n).filter(|i| corner(*i)).collect();
+        if corners.is_empty() {
+            let fitted = fit_run(&pts, true, accuracy);
+            out.extend(
+                fitted
+                    .elements()
+                    .iter()
+                    .copied()
+                    .filter(|e| !matches!(e, PathEl::ClosePath)),
+            );
+            out.close_path();
+            continue;
+        }
+        // From corner to corner, all the way round.
+        let start = corners[0];
+        out.move_to(pts[start]);
+        for (k, &c) in corners.iter().enumerate() {
+            let next = corners[(k + 1) % corners.len()];
+            let mut run = vec![pts[c]];
+            let mut i = (c + 1) % n;
+            loop {
+                run.push(pts[i]);
+                if i == next {
+                    break;
+                }
+                i = (i + 1) % n;
+            }
+            if run.len() <= 2 {
+                out.line_to(run[run.len() - 1]);
+                continue;
+            }
+            let fitted = fit_run(&run, false, accuracy);
+            out.extend(
+                fitted
+                    .elements()
+                    .iter()
+                    .copied()
+                    .filter(|e| !matches!(e, PathEl::MoveTo(_))),
+            );
+        }
+        out.close_path();
+    }
+    out
+}
+
+/// The points of each subpath of a path of straight pieces.
+fn polygons(path: &BezPath) -> Vec<Vec<Point>> {
+    let mut out: Vec<Vec<Point>> = Vec::new();
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => out.push(vec![p]),
+            PathEl::LineTo(p) | PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => {
+                if let Some(last) = out.last_mut() {
+                    last.push(p);
+                }
+            }
+            PathEl::ClosePath => {}
+        }
+    }
+    out
+}
+
+/// A run of points (a whole ring when `closed`) as a smooth curve
+/// through them, fitted with as few curves as keep within `accuracy`
+/// (kurbo's fitter merges curves, not lines); straight pieces when the
+/// fit fails.
+fn fit_run(pts: &[Point], closed: bool, accuracy: f64) -> BezPath {
+    use kurbo::simplify::{simplify_bezpath, SimplifyOptions};
+    let smooth = crate::geometry::smooth_path(pts, closed);
+    let options = SimplifyOptions::default();
+    let fitted = simplify_bezpath(smooth.elements().iter().copied(), accuracy, &options);
+    let sane = fitted.elements().len() > 1
+        && fitted.elements().iter().all(|e| match *e {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+            PathEl::QuadTo(a, p) => a.is_finite() && p.is_finite(),
+            PathEl::CurveTo(a, b, p) => a.is_finite() && b.is_finite() && p.is_finite(),
+            PathEl::ClosePath => true,
+        });
+    if sane {
+        return fitted;
+    }
+    let mut line = BezPath::new();
+    if let Some((first, rest)) = pts.split_first() {
+        line.move_to(*first);
+        rest.iter().for_each(|p| line.line_to(*p));
+    }
+    line
 }
 
 /// The area swept by a round or square nib of width `width` along a
@@ -791,11 +1004,19 @@ pub fn variable_band_within(
     let mut eased = Vec::new();
     for w in ends.windows(2) {
         let (a, b) = (w[0], w[1]);
-        if b - a <= 1e-9 || reach(a) == reach(b) {
+        let ((la, ra), (lb, rb)) = (reach(a), reach(b));
+        if b - a <= 1e-9 || (la, ra) == (lb, rb) {
             continue;
         }
-        const EASE_STEPS: usize = 48;
-        eased.extend((1..EASE_STEPS).map(|i| a + (b - a) * i as f64 / EASE_STEPS as f64));
+        // Enough samples that the straight pieces stay within
+        // `EASE_TOL` of the eased edge however far the reach changes: a
+        // smoothstep from `0` to `dw` over a span bends at most
+        // `6 dw / span^2`, and a piece `h` long strays `h^2 / 8` of that
+        // (#776).
+        const EASE_TOL: f64 = 0.005;
+        let dw = (la - lb).abs().max((ra - rb).abs());
+        let steps = ((6.0 * dw / (8.0 * EASE_TOL)).sqrt().ceil() as usize).clamp(48, 512);
+        eased.extend((1..steps).map(|i| a + (b - a) * i as f64 / steps as f64));
     }
     marks.extend(eased);
     marks.sort_by(|a, b| a.total_cmp(b));
@@ -863,8 +1084,11 @@ pub fn variable_band_within(
             polys.push(poly);
         }
         // Round joins between consecutive pieces (and around the seam of
-        // a closed subpath): a fan from one normal to the next on each
-        // side.
+        // a closed subpath): a fan from one normal to the next on the
+        // outer side of the turn. The inner side is covered by the two
+        // pieces themselves; a fan there, as wide as the reach at the
+        // corner, stood out past a reach that falls away after the
+        // corner and left a notch where it met the band (#776).
         let valid: Vec<(usize, [f64; 2])> = normals
             .iter()
             .enumerate()
@@ -890,27 +1114,31 @@ pub fn variable_band_within(
             }
             let (l, r) = reach(sc);
             let a0 = a[1].atan2(a[0]);
-            let steps = ((turn.abs() / 0.2).ceil() as usize).clamp(1, 32);
-            for (sign, len) in [(1.0, l), (-1.0, r)] {
-                if len <= 0.0 {
-                    continue;
-                }
-                // The first and last points exactly the corners of the
-                // pieces, so no crack opens between them and the fan.
-                let mut fan = vec![[c.x, c.y]];
-                for j in 0..=steps {
-                    let (cos, sin) = if j == 0 {
-                        (a[0], a[1])
-                    } else if j == steps {
-                        (b[0], b[1])
-                    } else {
-                        let ang = a0 + turn * j as f64 / steps as f64;
-                        (ang.cos(), ang.sin())
-                    };
-                    fan.push([c.x + sign * cos * len, c.y + sign * sin * len]);
-                }
-                polys.push(fan);
+            // A left turn has its outer side on the right.
+            let (sign, len) = if turn > 0.0 { (-1.0, r) } else { (1.0, l) };
+            if len <= 0.0 {
+                continue;
             }
+            // Fine enough that the fan's chords stay within `FAN_TOL` of
+            // its arc, however wide the reach (#776).
+            const FAN_TOL: f64 = 0.005;
+            let per = 2.0 * (1.0 - (FAN_TOL / len).min(1.0)).acos();
+            let steps = ((turn.abs() / per.max(1e-3)).ceil() as usize).clamp(1, 256);
+            // The first and last points exactly the corners of the
+            // pieces, so no crack opens between them and the fan.
+            let mut fan = vec![[c.x, c.y]];
+            for j in 0..=steps {
+                let (cos, sin) = if j == 0 {
+                    (a[0], a[1])
+                } else if j == steps {
+                    (b[0], b[1])
+                } else {
+                    let ang = a0 + turn * j as f64 / steps as f64;
+                    (ang.cos(), ang.sin())
+                };
+                fan.push([c.x + sign * cos * len, c.y + sign * sin * len]);
+            }
+            polys.push(fan);
         }
     }
     for poly in polys.iter_mut() {
@@ -941,6 +1169,139 @@ pub fn variable_band_within(
 /// page space and the object's scale (1 when the outline does not scale
 /// with the object). `None`: a plain stroke draws it.
 pub fn outline_band(path: &BezPath, stroke: &crate::style::Stroke, scale: f64) -> Option<BezPath> {
+    // Bands are kept: a page of brush strokes is drawn again on every
+    // zoom and scroll, and working one out takes milliseconds (#829).
+    let key = band_key(path, stroke, scale);
+    if let Some(b) = band_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return b.as_deref().cloned();
+    }
+    let band = outline_band_uncached(path, stroke, scale).map(|b| thin_polygons(&b, BAND_THIN));
+    if let Ok(mut c) = band_cache().lock() {
+        let size: usize = band.as_ref().map_or(1, |b| b.elements().len());
+        if c.size + size > BAND_CACHE_ELEMENTS {
+            c.map.clear();
+            c.size = 0;
+        }
+        c.size += size;
+        c.map.insert(key, band.clone().map(std::sync::Arc::new));
+    }
+    band
+}
+
+/// How far an outline band's points may move when it is thinned, mm:
+/// far below what shows or prints.
+const BAND_THIN: f64 = 0.0005;
+
+/// The straight-piece contours of `path` with the points that lie within
+/// `tol` of the line through their neighbours left out; curved pieces
+/// are kept as they are.
+fn thin_polygons(path: &BezPath, tol: f64) -> BezPath {
+    if path
+        .elements()
+        .iter()
+        .any(|e| matches!(e, PathEl::QuadTo(..) | PathEl::CurveTo(..)))
+    {
+        return path.clone();
+    }
+    let mut out = BezPath::new();
+    let mut ring: Vec<Point> = Vec::new();
+    let mut closed = false;
+    let flush = |ring: &mut Vec<Point>, closed: bool, out: &mut BezPath| {
+        if ring.is_empty() {
+            return;
+        }
+        let pts = if ring.len() > 3 {
+            let mut r = ring.clone();
+            if closed {
+                r.push(ring[0]);
+            }
+            let mut few = crate::geometry::simplify(&r, tol);
+            if closed {
+                few.pop();
+            }
+            if few.len() >= 3 || !closed {
+                few
+            } else {
+                ring.clone()
+            }
+        } else {
+            ring.clone()
+        };
+        if let Some((first, rest)) = pts.split_first() {
+            out.move_to(*first);
+            rest.iter().for_each(|p| out.line_to(*p));
+            if closed {
+                out.close_path();
+            }
+        }
+        ring.clear();
+    };
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                flush(&mut ring, closed, &mut out);
+                closed = false;
+                ring.push(p);
+            }
+            PathEl::LineTo(p) => ring.push(p),
+            PathEl::ClosePath => closed = true,
+            _ => {}
+        }
+    }
+    flush(&mut ring, closed, &mut out);
+    out
+}
+
+/// Path elements the outline bands kept may hold, all told, before they
+/// are let go (a few tens of megabytes at most).
+const BAND_CACHE_ELEMENTS: usize = 500_000;
+
+/// The outline bands worked out, by [`band_key`].
+#[derive(Default)]
+struct BandCache {
+    map: std::collections::HashMap<u64, Option<std::sync::Arc<BezPath>>>,
+    size: usize,
+}
+
+impl BandCache {
+    fn get(&self, key: &u64) -> Option<&Option<std::sync::Arc<BezPath>>> {
+        self.map.get(key)
+    }
+}
+
+fn band_cache() -> &'static std::sync::Mutex<BandCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BandCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// What an outline band depends on: the path, the outline and the scale.
+fn band_key(path: &BezPath, stroke: &crate::style::Stroke, scale: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for el in path.elements() {
+        let pts: &[Point] = match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => std::slice::from_ref(p),
+            PathEl::QuadTo(a, b) => &[*a, *b],
+            PathEl::CurveTo(a, b, c) => &[*a, *b, *c],
+            PathEl::ClosePath => &[],
+        };
+        std::mem::discriminant(el).hash(&mut h);
+        for p in pts {
+            p.x.to_bits().hash(&mut h);
+            p.y.to_bits().hash(&mut h);
+        }
+    }
+    format!("{stroke:?}").hash(&mut h);
+    scale.to_bits().hash(&mut h);
+    h.finish()
+}
+
+/// [`outline_band`], worked out.
+fn outline_band_uncached(
+    path: &BezPath,
+    stroke: &crate::style::Stroke,
+    scale: f64,
+) -> Option<BezPath> {
     use crate::style::{OutlinePosition, Stroke};
     if !stroke.widths.is_empty() {
         let nodes: Vec<crate::style::WidthNode> = stroke
@@ -1316,8 +1677,263 @@ pub fn simplify(path: &BezPath) -> BezPath {
     recover_curves(&from_shapes(result), &[path])
 }
 
+/// The area a path covers under the nonzero rule (how text is filled), as
+/// a path that covers the same under the even-odd rule (how curves are
+/// filled). Only contours whose boxes overlap one turning the same way
+/// (strokes of a glyph drawn as separate pieces, as many Chinese fonts do)
+/// are joined; the rest are kept as they are, so a long text stays quick
+/// and keeps its curves (#800).
+pub fn nonzero_as_even_odd(path: &BezPath) -> BezPath {
+    use kurbo::Shape as _;
+    let mut subs: Vec<BezPath> = Vec::new();
+    for el in path.elements() {
+        if matches!(el, PathEl::MoveTo(_)) || subs.is_empty() {
+            subs.push(BezPath::new());
+        }
+        if let Some(last) = subs.last_mut() {
+            last.push(*el);
+        }
+    }
+    let boxes: Vec<kurbo::Rect> = subs.iter().map(|s| s.bounding_box()).collect();
+    let turns: Vec<bool> = subs.iter().map(|s| s.area() > 0.0).collect();
+    // Union-find over contours whose boxes overlap.
+    let mut parent: Vec<usize> = (0..subs.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let mut order: Vec<usize> = (0..subs.len()).collect();
+    order.sort_by(|a, b| boxes[*a].x0.total_cmp(&boxes[*b].x0));
+    let mut same_turn = vec![false; subs.len()];
+    let mut active: Vec<usize> = Vec::new();
+    for &i in &order {
+        active.retain(|&j| boxes[j].x1 > boxes[i].x0);
+        for &j in &active {
+            let (a, b) = (boxes[i], boxes[j]);
+            if a.y0 < b.y1 && b.y0 < a.y1 {
+                let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+                let joined = same_turn[ri] || same_turn[rj] || turns[i] == turns[j];
+                parent[ri] = rj;
+                same_turn[rj] = joined;
+            }
+        }
+        active.push(i);
+    }
+    let mut clusters: Vec<Vec<usize>> = vec![Vec::new(); subs.len()];
+    for i in 0..subs.len() {
+        let r = root(&mut parent, i);
+        clusters[r].push(i);
+    }
+    let mut out = BezPath::new();
+    for (r, members) in clusters.iter().enumerate() {
+        if members.is_empty() {
+            continue;
+        }
+        let mut piece = BezPath::new();
+        for &i in members {
+            for el in subs[i].elements() {
+                piece.push(*el);
+            }
+        }
+        let piece = if same_turn[r] {
+            simplify(&piece)
+        } else {
+            piece
+        };
+        for el in piece.elements() {
+            out.push(*el);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A contour of a circle is a circle made of a few curves, not a
+    /// row of short straight pieces (#821), and stays at its distance.
+    #[test]
+    fn an_offset_circle_is_a_few_curves() {
+        use super::{offset_with, Join};
+        use crate::geometry::{BezPath, PathEl, Point, Shape as _};
+        let circle = kurbo::Circle::new(Point::new(50.0, 50.0), 20.0).to_path(0.001);
+        for d in [5.0, -5.0] {
+            let q: BezPath = offset_with(&circle, d, Join::Round);
+            let pieces = q
+                .elements()
+                .iter()
+                .filter(|e| !matches!(e, PathEl::MoveTo(_) | PathEl::ClosePath))
+                .count();
+            assert!(pieces <= 8, "{d}: {pieces} pieces");
+            assert!(q
+                .elements()
+                .iter()
+                .any(|e| matches!(e, PathEl::CurveTo(..))));
+            for t in 0..100 {
+                let a = t as f64 / 100.0 * std::f64::consts::TAU;
+                let r = 20.0 + d;
+                let on = Point::new(50.0 + r * a.cos(), 50.0 + r * a.sin());
+                let near = q
+                    .segments()
+                    .map(|s| {
+                        kurbo::ParamCurveNearest::nearest(&s, on, 1e-4)
+                            .distance_sq
+                            .sqrt()
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!(near < 0.1, "{d}: {near} off at {a}");
+            }
+        }
+    }
+
+    /// Sharp corners stay sharp: a mitred square's contour is four
+    /// straight sides.
+    #[test]
+    fn an_offset_square_keeps_its_corners() {
+        use super::{offset_with, Join};
+        use crate::geometry::{BezPath, PathEl, Point};
+        let mut sq = BezPath::new();
+        sq.move_to(Point::new(0.0, 0.0));
+        sq.line_to(Point::new(10.0, 0.0));
+        sq.line_to(Point::new(10.0, 10.0));
+        sq.line_to(Point::new(0.0, 10.0));
+        sq.close_path();
+        let q = offset_with(&sq, 2.0, Join::Miter);
+        let lines = q
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::LineTo(_)))
+            .count();
+        let curves = q
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..) | PathEl::QuadTo(..)))
+            .count();
+        assert_eq!((lines, curves), (4, 0), "{:?}", q.elements());
+        // Round corners: the four sides stay straight lines, the corners
+        // are curves.
+        let q = offset_with(&sq, 2.0, Join::Round);
+        let lines = q
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::LineTo(_)))
+            .count();
+        let curves = q
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..) | PathEl::QuadTo(..)))
+            .count();
+        assert!(
+            lines >= 4 && (4..=12).contains(&curves),
+            "{:?}",
+            q.elements()
+        );
+    }
+
+    fn glyph_square(path: &mut crate::geometry::BezPath, x: f64, y: f64, w: f64, clockwise: bool) {
+        use crate::geometry::Point;
+        let pts = [(x, y), (x + w, y), (x + w, y + w), (x, y + w)];
+        path.move_to(Point::new(pts[0].0, pts[0].1));
+        if clockwise {
+            for p in &pts[1..] {
+                path.line_to(Point::new(p.0, p.1));
+            }
+        } else {
+            for p in pts[1..].iter().rev() {
+                path.line_to(Point::new(p.0, p.1));
+            }
+        }
+        path.close_path();
+    }
+
+    /// Even-odd: inside where the winding number is odd.
+    fn even_odd_inside(path: &crate::geometry::BezPath, x: f64, y: f64) -> bool {
+        use crate::geometry::Shape as _;
+        path.winding(crate::geometry::Point::new(x, y)) % 2 != 0
+    }
+
+    #[test]
+    /// Two strokes of a glyph that cross, turning the same way, stay
+    /// filled where they cross once the text is curves (#800).
+    fn overlapping_strokes_stay_filled_as_curves() {
+        use super::nonzero_as_even_odd;
+        let mut p = crate::geometry::BezPath::new();
+        glyph_square(&mut p, 0.0, 0.0, 10.0, true);
+        glyph_square(&mut p, 5.0, 5.0, 10.0, true);
+        assert!(!even_odd_inside(&p, 7.0, 7.0), "the hole the report shows");
+        let q = nonzero_as_even_odd(&p);
+        assert!(even_odd_inside(&q, 7.0, 7.0));
+        assert!(even_odd_inside(&q, 2.0, 2.0));
+        assert!(even_odd_inside(&q, 13.0, 13.0));
+        assert!(!even_odd_inside(&q, 13.0, 2.0));
+    }
+
+    #[test]
+    /// A counter (the hole of an o) and glyphs apart from each other are
+    /// kept as they are.
+    fn counters_and_separate_glyphs_are_kept() {
+        use super::nonzero_as_even_odd;
+        let mut p = crate::geometry::BezPath::new();
+        glyph_square(&mut p, 0.0, 0.0, 10.0, true);
+        glyph_square(&mut p, 3.0, 3.0, 4.0, false);
+        glyph_square(&mut p, 20.0, 0.0, 10.0, true);
+        let q = nonzero_as_even_odd(&p);
+        assert_eq!(q.elements(), p.elements());
+        assert!(!even_odd_inside(&q, 5.0, 5.0));
+    }
+
+    /// Area Fill finds the exact area (#734): inside a circle, the circle
+    /// itself, its four curves and no more nodes; where two squares
+    /// overlap, their overlap; outside them, an open area.
+    #[test]
+    fn enclosed_area_keeps_the_outlines_curves() {
+        use super::{enclosed_area, Enclosed};
+        use crate::geometry::{BezPath, Point, Rect};
+        let circle = crate::geometry::ellipse_path(Rect::new(0.0, 0.0, 40.0, 40.0));
+        let Enclosed::Area(area) =
+            enclosed_area(std::slice::from_ref(&circle), Point::new(20.0, 20.0))
+        else {
+            panic!("no area");
+        };
+        let curves = |p: &BezPath| p.segments().count();
+        assert_eq!(curves(&area), curves(&circle), "{area:?}");
+        use kurbo::Shape as _;
+        assert!((area.area().abs() - circle.area().abs()).abs() < 1e-6);
+        // Every point of the area's outline on the circle.
+        let mut far: f64 = 0.0;
+        kurbo::flatten(area.elements().iter().copied(), 0.01, |el| {
+            if let super::PathEl::LineTo(q) | super::PathEl::MoveTo(q) = el {
+                far = far.max(((q - Point::new(20.0, 20.0)).hypot() - 20.0).abs());
+            }
+        });
+        assert!(far < 0.02, "{far}");
+        // Two squares overlapping: the overlap, exactly.
+        let a = crate::geometry::rect_path(Rect::new(0.0, 0.0, 30.0, 30.0), 0.0);
+        let b = crate::geometry::rect_path(Rect::new(17.3, 11.1, 50.0, 50.0), 0.0);
+        let Enclosed::Area(area) = enclosed_area(&[a.clone(), b.clone()], Point::new(20.0, 20.0))
+        else {
+            panic!("no overlap");
+        };
+        let r = area.bounding_box();
+        for (got, want) in [(r.x0, 17.3), (r.y0, 11.1), (r.x1, 30.0), (r.y1, 30.0)] {
+            assert!((got - want).abs() < 1e-6, "{r:?}");
+        }
+        assert_eq!(curves(&area), 4, "{area:?}");
+        // Outside both, or nowhere near: open.
+        assert_eq!(
+            enclosed_area(&[a.clone(), b.clone()], Point::new(45.0, 5.0)),
+            Enclosed::Open
+        );
+        assert_eq!(
+            enclosed_area(&[a, b], Point::new(500.0, 5.0)),
+            Enclosed::Open
+        );
+        assert_eq!(enclosed_area(&[], Point::new(5.0, 5.0)), Enclosed::Open);
+    }
+
     #[test]
     /// The width eases between nodes along a smooth curve however short
     /// the span on a long path: half-way into the ease the reach is the
@@ -1432,6 +2048,89 @@ mod tests {
         assert!(band.contains(Point::new(51.2, 51.2)));
         assert!(!band.contains(Point::new(-1.6, -1.6)));
         assert!(!band.contains(Point::new(25.0, 25.0)));
+    }
+
+    /// #776: a wide node at a rectangle's corner, its reach falling away
+    /// down the next side. The inside of the corner follows that fall
+    /// with no round bulge as wide as the corner's reach standing out
+    /// and a notch where it met the band; the outside of the corner
+    /// stays round, and its arc is drawn within a hundredth of a
+    /// millimetre.
+    #[test]
+    fn a_wide_corner_node_leaves_no_notch_inside_and_a_smooth_arc_outside() {
+        use super::variable_band;
+        use crate::geometry::{Point, Rect, Shape as _};
+        use crate::style::WidthNode;
+        // From the bottom-left corner: bottom, right side, top (leftwards)
+        // and the left side down; the top-left corner 317 mm along.
+        let path = Rect::new(0.0, 0.0, 113.0, 91.0).to_path(0.01);
+        let total = 2.0 * (113.0 + 91.0);
+        let c = (113.0 + 91.0 + 113.0) / total;
+        let nodes = [
+            WidthNode::symmetric(c - 9.0 / total, 0.2),
+            WidthNode::symmetric(c - 0.3 / total, 118.0),
+        ];
+        let band = variable_band(&path, 0.2, &nodes);
+        // 20 mm down the left side the reach has fallen to about 51.6 mm
+        // inside; the old bulge reached 55.5 mm there.
+        assert!(band.contains(Point::new(49.0, 71.0)));
+        assert!(!band.contains(Point::new(53.5, 71.0)), "a bulge inside");
+        // Outside, round about the corner with the corner's reach.
+        let r = 59.0 - 0.01;
+        for deg in [100.0f64, 135.0, 170.0] {
+            let (sin, cos) = deg.to_radians().sin_cos();
+            assert!(band.contains(Point::new(r * 0.98 * cos, 91.0 + r * 0.98 * sin)));
+            assert!(!band.contains(Point::new(r * 1.01 * cos, 91.0 + r * 1.01 * sin)));
+        }
+        // The arc's chords stay close to it: no corner of the outline
+        // between its points lies far inside the circle.
+        let corner = Point::new(0.0, 91.0);
+        let mut worst: f64 = 0.0;
+        let mut last: Option<Point> = None;
+        for el in band.elements() {
+            let p = match el {
+                crate::geometry::PathEl::MoveTo(p) | crate::geometry::PathEl::LineTo(p) => *p,
+                crate::geometry::PathEl::CurveTo(_, _, p)
+                | crate::geometry::PathEl::QuadTo(_, p) => *p,
+                crate::geometry::PathEl::ClosePath => continue,
+            };
+            if let Some(q) = last {
+                let on_arc = |p: Point| {
+                    let d = p - corner;
+                    (d.hypot() - 59.0).abs() < 0.05 && d.x < -5.0 && d.y > 5.0
+                };
+                if on_arc(p) && on_arc(q) {
+                    let mid = Point::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0);
+                    worst = worst.max(59.0 - (mid - corner).hypot());
+                }
+            }
+            last = Some(p);
+        }
+        assert!(worst < 0.01, "chords {worst} mm inside the arc");
+    }
+
+    /// A reach wider than a curve's radius fills the curve's inside
+    /// whole, with the joins on the outside only (#776).
+    #[test]
+    fn a_reach_wider_than_the_curve_fills_its_inside() {
+        use super::variable_band;
+        use crate::geometry::{Circle, Point, Shape as _};
+        use crate::style::WidthNode;
+        let circle = Circle::new((0.0, 0.0), 2.0).to_path(0.01);
+        let band = variable_band(&circle, 10.0, &[WidthNode::symmetric(0.5, 10.0)]);
+        for (x, y) in [
+            (0.0, 0.0),
+            (0.5, -0.3),
+            (-1.0, 1.0),
+            (6.5, 0.0),
+            (0.0, -6.5),
+        ] {
+            assert!(band.contains(Point::new(x, y)), "({x}, {y})");
+        }
+        assert!(!band.contains(Point::new(7.3, 0.0)));
+        let area = band.area().abs();
+        let want = std::f64::consts::PI * 49.0;
+        assert!((area - want).abs() < want * 0.02, "{area} against {want}");
     }
 
     #[test]
@@ -1839,5 +2538,33 @@ mod tests {
         let t = overlay(&square(0.0), &square(5.0), Op::Trim);
         assert!((t.area().abs() - 50.0).abs() < 1e-3);
         assert!((t.bounding_box().x1 - 5.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod contour_timing {
+    /// How long contours take on many curves (#821): `cargo test
+    /// --release -p tracedraw-core -- --ignored frame_times_of_contours
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn frame_times_of_contours() {
+        use crate::geometry::{BezPath, Point, Shape as _};
+        let mut p = BezPath::new();
+        for k in 0..40 {
+            let c = kurbo::Circle::new(
+                Point::new((k % 8) as f64 * 30.0, (k / 8) as f64 * 30.0),
+                12.0,
+            );
+            p.extend(c.to_path(0.01).elements().iter().copied());
+        }
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for i in 1..=20 {
+            n += super::offset_with(&p, i as f64 * 0.8, super::Join::Round)
+                .elements()
+                .len();
+        }
+        eprintln!("20 steps over 40 circles: {:?}, {n} elements", t.elapsed());
     }
 }

@@ -20,8 +20,10 @@
 ## Mouse wheel
 
 - Default (Options > Tools > Default action for mouse wheel: Zoom): the
-  wheel zooms by 1.15 per notch about the pointer; Ctrl+wheel scrolls
-  vertically; Alt+wheel scrolls horizontally.
+  wheel zooms by 1.15 per notch about the pointer, in a glide over a few
+  frames as a scroll moves (the smoothed wheel delta, 40 points a notch),
+  not in one jump; Ctrl+wheel scrolls vertically; Alt+wheel scrolls
+  horizontally (#766, `pick_drag_tests::a_wheel_notch_zooms_in_a_glide`).
 - With the Scroll setting: the wheel scrolls vertically; Shift+wheel
   scrolls horizontally; Ctrl+wheel zooms.
 - A trackpad pinch zooms by the gesture's factor with either setting.

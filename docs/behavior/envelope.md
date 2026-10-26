@@ -103,7 +103,16 @@ nothing selected, how to start.
   permanent: the object becomes curves drawn as the envelope drew it, and
   the envelope is gone. Break Apart then breaks the warped curve into its
   parts, and enveloped artistic text into one curve per letter, each
-  warped as the whole text was, with its holes kept (O, B, A). An
+  warped as the whole text was, with its holes kept (O, B, A). The
+  warped outline is fitted with curves (`tracedraw_core::fit::fit_path`,
+  corners kept, within a ten-thousandth of the outline's size, 0.005 to
+  0.05 mm), so the result is smooth curves with about as many nodes as
+  the outline had before, not the warp's dense lines ("ABC": 52 nodes
+  for 56 unwarped, 826 before, #647,
+  `text_effect_tests::baked_envelopes_are_fitted_with_few_curves`).
+  Break Apart is offered by the canvas context menu for a warped object
+  and for artistic text as well as by the Object menu and Ctrl+K
+  (`pick_drag_tests::the_context_menu_breaks_an_enveloped_text_apart`). An
   envelope after a contour, blend or extrusion stays live, and a bitmap
   keeps its envelope. Break Apart leaves a group, clip frame, table or
   symbol instance with its envelope (there is nothing to break; Convert to

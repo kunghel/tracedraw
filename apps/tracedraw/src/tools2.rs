@@ -9,7 +9,7 @@ use egui::{Modifiers, PointerButton, Response};
 use tracedraw_core::{
     document::{Shape, ShapeKind},
     geometry::{BezPath, Point, Rect, Shape as _, Vec2},
-    shaping, Command, Fill, ShapeId, Stroke,
+    Command, Fill, ShapeId, Stroke,
 };
 
 pub use crate::common_shapes::CommonShape;
@@ -86,21 +86,6 @@ pub fn action_lines_path(rect: Rect, lines: u32, radial: bool) -> BezPath {
         }
     }
     path
-}
-
-/// Calligraphic stroke: the outline swept by a flat nib along the points.
-pub fn calligraphic_path(points: &[Point], width: f64, angle_deg: f64) -> BezPath {
-    if points.len() < 2 {
-        return BezPath::new();
-    }
-    let a = angle_deg.to_radians();
-    let nib = Vec2::new(a.cos(), a.sin()) * (width / 2.0);
-    let mut left: Vec<Point> = points.iter().map(|p| *p + nib).collect();
-    let mut right: Vec<Point> = points.iter().map(|p| *p - nib).collect();
-    right.reverse();
-    left.append(&mut right);
-    let p = tracedraw_core::geometry::smooth_path(&left, true);
-    shaping::simplify(&p)
 }
 
 impl App {

@@ -2788,3 +2788,59 @@ fn faces_named_with_their_weight_round_trip() {
         }
     }
 }
+
+/// Bitmap pattern fills with the same picture are one fill record, even
+/// when each holds its own copy of the bytes (as a reopened file does);
+/// another picture is another record.
+#[test]
+fn bitmap_pattern_fills_are_matched_by_content() {
+    use tracedraw_core::style::Pattern;
+    let mut pm = tiny_skia::Pixmap::new(8, 8).expect("pixmap");
+    pm.fill(tiny_skia::Color::from_rgba8(10, 200, 30, 255));
+    let bytes = pm.encode_png().expect("png");
+    let fill = |png: SharedBytes| {
+        Fill::Pattern(Pattern::Bitmap {
+            png,
+            width_px: 8,
+            height_px: 8,
+            size_mm: 5.0,
+        })
+    };
+    let doc = doc_with(Vec::new());
+    let mut w = Writer::new(Ver(NEWEST_VERSION), &doc.symbols, &doc.title);
+    let a = w.fill_id(&fill(bytes.clone().into()));
+    let b = w.fill_id(&fill(bytes.clone().into()));
+    assert_eq!(a, b);
+    pm.fill(tiny_skia::Color::from_rgba8(10, 200, 31, 255));
+    let other = w.fill_id(&fill(pm.encode_png().expect("png").into()));
+    assert_ne!(other, a);
+    assert_eq!(w.fills.len(), 2);
+}
+
+/// The reader's pictures: RGB when opaque, RGBA otherwise, rows filtered
+/// so a photo-like picture packs well; the pixels come back exact.
+#[test]
+fn reader_pictures_are_filtered_and_exact() {
+    let (w, h) = (64u32, 48u32);
+    let mut rgba = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            rgba.extend_from_slice(&[(x * 3) as u8, (y * 5) as u8, ((x + y) * 2) as u8, 255]);
+        }
+    }
+    let png = crate::parse::encode_png(w, h, &rgba);
+    assert_eq!(png[25], 2, "opaque: RGB");
+    let pm = tiny_skia::Pixmap::decode_png(&png).expect("decodes");
+    assert_eq!(pm.data(), &rgba[..]);
+    // A gradient packs far better filtered than as plain rows.
+    assert!(png.len() * 4 < rgba.len() / 4, "{} bytes", png.len());
+    rgba[3] = 0;
+    let png = crate::parse::encode_png(w, h, &rgba);
+    assert_eq!(png[25], 6, "see-through: RGBA");
+    let back = crate::parse::raw_rows(&png);
+    assert_eq!(back[4], 0);
+    assert_eq!(&back[5..9], &rgba[4..8]);
+    // Short data: the missing rows are clear.
+    let png = crate::parse::encode_png(w, h, &rgba[..rgba.len() / 2]);
+    assert!(tiny_skia::Pixmap::decode_png(&png).is_ok());
+}

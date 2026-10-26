@@ -71,7 +71,9 @@ builds a `Document` best effort. Every assumption is recorded in
 delivers glyph outlines. The crate installs itself into `core` through a
 function pointer (`document::text_outline::set`) so `core` can compute
 text bounds without depending on fonts. Paragraph text is wrapped to its
-frame width; alignment is applied per line.
+frame width; alignment is applied per line. Text holding right-to-left
+letters gets its bidirectional levels from `unicode-bidi`; lines are
+broken in text order and each is placed in display order.
 
 ## render
 

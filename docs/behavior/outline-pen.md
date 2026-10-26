@@ -27,8 +27,8 @@ outline when nothing is selected. Groups:
   bar adds a node there and slides it (a drag there moved the dialog,
   #652); its position (a position typed past a neighbour puts the nodes
   in order again), Side 1 and Side 2 widths and their Total (a new total
-  keeps their ratio); Delete Node. The drawing changes on OK, one undo
-  step (`outline_pen::tests::a_width_node_drags_along_the_bar_between_its_neighbours`,
+  keeps their ratio); Delete Node
+  (`outline_pen::tests::a_width_node_drags_along_the_bar_between_its_neighbours`,
   `a_slid_node_stops_at_its_neighbours_and_the_ends`).
 - Overprint outline, "?", OK, Cancel.
 
@@ -37,6 +37,15 @@ shown) to every selected object, with Overprint in the same undo step
 (`App::apply_outline_pen`, `the_outline_pen_applies_what_was_changed`);
 with nothing selected it changes the default outline (asking which
 kinds when Options say so).
+
+While the dialog is open the selected objects show what it holds (#741,
+`App::preview_outline_pen`): each change in the dialog is drawn at
+once, as an engine preview made again only when a value changes (never
+every frame). OK keeps it as one undo step; Cancel, Esc and the close
+button take it back, the drawing, the history (redo included) and the
+saved state as they were. Edit Line Style opened from the dialog takes
+the preview back, and it shows again on the return. With nothing
+selected (the default outline) nothing is previewed.
 
 ## Fields and defaults
 
@@ -140,6 +149,11 @@ their pattern). Custom line styles are kept in the settings
 
 ## Checks
 
+- `ui::outline_pen::tests::the_outline_shows_live_while_the_dialog_is_open`
+- Given a selected rectangle and the dialog open, when the width is set
+  to 2 mm, then the rectangle's outline is 2 mm at once, idle frames do
+  not change the drawing, Esc puts back the old width and history, and
+  OK keeps the new width as one undo step.
 - Given a 6 mm flat nib (stretch 0.1) at 0 degrees, a vertical line is
   6 mm wide and a horizontal line 0.6 mm tall.
 - Given stretch 1, the band equals a 2 mm round-capped stroke.

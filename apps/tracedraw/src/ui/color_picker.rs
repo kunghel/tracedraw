@@ -112,6 +112,62 @@ pub fn edit_model(c: Color) -> &'static str {
     }
 }
 
+/// The Model list's entry that makes the colour the registration colour
+/// (it prints on every separation), after the models.
+pub const REGISTRATION: &str = "Registration";
+
+/// The entry the Model list shows as chosen for `c`.
+pub fn list_model(c: Color) -> &'static str {
+    match c {
+        Color::Registration => REGISTRATION,
+        other => edit_model(other),
+    }
+}
+
+/// `c` after `choice` is picked in the Model list: the colour converted
+/// to that model, or the registration colour.
+pub fn choose_model(c: Color, choice: &str) -> Color {
+    if choice == REGISTRATION {
+        Color::Registration
+    } else {
+        c.convert_to(choice)
+    }
+}
+
+/// The Model list (the docker's models, then the registration colour).
+/// True when a choice changed the colour.
+pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
+    let shown = list_model(*c);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if shown == REGISTRATION {
+            tr("docker.registration")
+        } else {
+            shown.to_string()
+        })
+        .width(96.0)
+        .show_ui(ui, |ui| {
+            for m in crate::ui::color_docker::MODELS {
+                if ui.selectable_label(shown == m, m).clicked() && shown != m {
+                    *c = choose_model(*c, m);
+                    changed = true;
+                }
+            }
+            ui.separator();
+            let reg = shown == REGISTRATION;
+            if ui
+                .selectable_label(reg, tr("docker.registration"))
+                .on_hover_text(tr("docker.registration_tip"))
+                .clicked()
+                && !reg
+            {
+                *c = choose_model(*c, REGISTRATION);
+                changed = true;
+            }
+        });
+    changed
+}
+
 /// A colour chosen in the viewer (hue, saturation, brightness) as a
 /// colour of `model`.
 pub fn from_viewer(h: f32, s: f32, b: f32, model: &str) -> Color {
@@ -124,6 +180,85 @@ pub fn from_viewer(h: f32, s: f32, b: f32, model: &str) -> Color {
 /// entries (Lab, Grayscale, YIQ) is a choice (#440).
 fn closes(pressed_at: Option<Pos2>, esc: bool, popup: Rect, swatch: Rect, list_open: bool) -> bool {
     esc || (!list_open && pressed_at.is_some_and(|p| !popup.contains(p) && !swatch.contains(p)))
+}
+
+/// The picker waiting for a click on the drawing to give it a colour
+/// (its eyedropper was pressed, #814).
+fn pick_request_id() -> Id {
+    Id::new("color_pick_request")
+}
+
+/// The colour a click on the drawing gave, with the picker that asked.
+fn pick_result_id() -> Id {
+    Id::new("color_pick_result")
+}
+
+/// A picker's eyedropper is waiting for a click on the drawing.
+pub fn picking(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<Id>(pick_request_id()).is_some())
+}
+
+/// Picker `id` waits for a click on the drawing to give it a colour.
+pub fn start_pick(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|d| d.insert_temp(pick_request_id(), id));
+}
+
+/// The click on the drawing gave `c` (none: the pick was cancelled); the
+/// picker that asked takes it when it is next drawn.
+pub fn finish_pick(ctx: &egui::Context, c: Option<Color>) {
+    ctx.data_mut(|d| {
+        let asked = d.get_temp::<Id>(pick_request_id());
+        d.remove::<Id>(pick_request_id());
+        if let (Some(id), Some(c)) = (asked, c) {
+            d.insert_temp(pick_result_id(), (id, c));
+        }
+    });
+}
+
+/// The colour picked from the drawing for the picker `id`, once.
+fn take_pick(ui: &Ui, id: Id) -> Option<Color> {
+    ui.data_mut(|d| match d.get_temp::<(Id, Color)>(pick_result_id()) {
+        Some((asked, c)) if asked == id => {
+            d.remove::<(Id, Color)>(pick_result_id());
+            Some(c)
+        }
+        _ => None,
+    })
+}
+
+/// The eyedropper of picker `id`: pressed, the next click on the drawing
+/// gives `c` the colour there (Esc cancels); pressed again, it stops
+/// waiting (#814). True when `c` changed.
+pub fn eyedropper(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
+    let mut changed = false;
+    if let Some(p) = take_pick(ui, id) {
+        *c = p;
+        changed = true;
+    }
+    let waiting = ui.data(|d| d.get_temp::<Id>(pick_request_id())) == Some(id);
+    let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+    if waiting {
+        ui.painter().rect_filled(r, 2.0, Tokens::tool_active());
+    } else if resp.hovered() {
+        ui.painter().rect_filled(r, 2.0, Tokens::tool_hover());
+    }
+    crate::ui::icons::draw(
+        ui.painter(),
+        r.shrink(3.0),
+        crate::tools::Tool::ColorEyedropper,
+        Tokens::icon(),
+    );
+    if resp
+        .on_hover_text(crate::tools::Tool::ColorEyedropper.name())
+        .clicked()
+    {
+        if waiting {
+            ui.data_mut(|d| d.remove::<Id>(pick_request_id()));
+        } else {
+            start_pick(ui.ctx(), id);
+        }
+    }
+    changed
 }
 
 /// A colour swatch that opens the picker. True when the colour changed.
@@ -140,6 +275,13 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
         egui::StrokeKind::Inside,
     );
     let mut open = ui.data(|d| d.get_temp::<Open>(id));
+    // A colour its eyedropper asked for, picked from the drawing.
+    let mut changed = false;
+    if let Some(p) = take_pick(ui, id) {
+        *c = p;
+        changed = true;
+    }
+    let was_picking = picking(ui.ctx());
     if resp.clicked() {
         open = match open {
             Some(_) => None,
@@ -150,7 +292,6 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
             }),
         };
     }
-    let mut changed = false;
     if let Some(mut st) = open {
         let screen = ui.ctx().content_rect();
         let placed = place(swatch, st.size, screen);
@@ -183,17 +324,8 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
                                 .color(Tokens::text_dim())
                                 .size(11.0),
                         );
-                        egui::ComboBox::from_id_salt(id.with("model"))
-                            .selected_text(model)
-                            .width(96.0)
-                            .show_ui(ui, |ui| {
-                                for m in crate::ui::color_docker::MODELS {
-                                    if ui.selectable_label(model == m, m).clicked() && model != m {
-                                        *c = c.convert_to(m);
-                                        changed = true;
-                                    }
-                                }
-                            });
+                        changed |= model_list(ui, id.with("model"), c);
+                        changed |= eyedropper(ui, id, c);
                     });
                     let model = edit_model(*c);
                     let mut m = c.convert_to(model);
@@ -221,7 +353,9 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
             )
         });
         let list_open = egui::Popup::is_any_open(ui.ctx());
-        open = (!closes(pressed_at, esc, popup, swatch, list_open)).then_some(st);
+        // The click that picks a colour from the drawing keeps it open.
+        let pressed_at = pressed_at.filter(|_| !was_picking);
+        open = (!closes(pressed_at, esc && !was_picking, popup, swatch, list_open)).then_some(st);
         ui.data_mut(|d| {
             d.insert_temp(last_id(), Shown { swatch, popup });
         });
@@ -312,6 +446,23 @@ mod tests {
             Color::Rgb { .. }
         ));
         assert_eq!(edit_model(Color::Registration), "CMYK");
+    }
+
+    /// The Model list offers the registration colour after the models, as
+    /// the reference program's list does; it shows as chosen for that
+    /// colour, and a model chosen from it converts it like any colour
+    /// (#286).
+    #[test]
+    fn the_model_list_offers_the_registration_colour() {
+        let red = Color::rgb8(220, 30, 30);
+        let reg = choose_model(red, REGISTRATION);
+        assert_eq!(reg, Color::Registration);
+        assert_eq!(list_model(reg), REGISTRATION);
+        assert_eq!(list_model(red), "RGB");
+        let back = choose_model(reg, "CMYK");
+        assert!(matches!(back, Color::Cmyk { .. }), "{back:?}");
+        assert_eq!(list_model(back), "CMYK");
+        assert!(!crate::ui::color_docker::MODELS.contains(&REGISTRATION));
     }
 
     /// A press below the popup closes it, unless the Model list is open

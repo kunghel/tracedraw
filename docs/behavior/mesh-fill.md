@@ -14,9 +14,13 @@ the colours flow between the nodes and the object's outline clips them.
 - With a node selected, a click on a colour in the colour palette
   colours that node (the fill stays a mesh); with the Pick tool the same
   click fills the whole object as usual.
-- Double-click inside the mesh adds a grid line through the nearest node
-  (a column or a row, whichever is nearer), its nodes mixed from their
-  neighbours.
+- Double-click inside the mesh puts a node where it was: a new column
+  and a new row through that point, their nodes placed and coloured as
+  the cell's patch is there (the point's place `u`, `v` in the cell
+  found from its four corners, `a + (b - a) u + (d - a) v + (a - b - d +
+  e) u v = p`); the new node is selected. Within 4 pixels of a grid line
+  only the line across it is added, on a node nothing (#804; the line
+  used to go halfway between the nearest nodes, away from the click).
 - Delete with a node selected removes the grid lines through it that
   are not on the edge (its column, its row or both); a node on the edge
   keeps its lines and the status bar says so.
@@ -54,6 +58,8 @@ the colour at its middle:
 ## Checks
 
 - `tracedraw_core::style::tests::meshes_regrid_and_lose_lines_keeping_their_colours`
+- `tracedraw_core::style::tests::a_double_click_puts_the_new_mesh_node_where_it_was`
+- `pick_drag_tests::mesh_nodes_land_where_they_are_clicked_and_dragged`
 - `tracedraw_render::tests::mesh_fill_blends_corner_colours`
 - `tracedraw_render::tests::smooth_mesh_colour_flows_through_the_nodes`
 - `mesh_tool::tests::the_mesh_tool_builds_colours_and_clears_meshes`

@@ -136,3 +136,39 @@ their own crypt filter and signature contents are left alone.
   i sign at the start of a word or after another sign); a reph moves back
   only at the end of a word (#585,
   `pdf_import::tests::devanagari_text_from_a_pdf_comes_back_in_typed_order`).
+  A reph after a consonant or a sign at the end of a word also shows the
+  drawn order when the run holds a reph glyph (one glyph for र् with no
+  advance); a ra drawn with its virama shown at the end of a word (Nepali
+  गर्, Sanskrit पुनर्) stays as it is. In drawn order a reph before the next consonant moves
+  back to its syllable too (आर्थिक, प्रार्थना); a reph in a conjunct
+  (after a virama) stays (#599).
+- Hindi that a PDF draws apart comes in as one word (#599): a string
+  that continues the syllable before it (a vowel sign, virama, nukta or
+  anusvara, the rest of a conjunct, a reph glyph, the short i sign placed
+  back over its letter) stays in the same text when the producer moved it
+  up to an em off the baseline or up to three ems back, and no space goes
+  in before it for a gap or a `TJ` adjustment; a step back for a sign and
+  on again is no gap either. A consonant after a virama joins only when
+  it touches (no gap of more than 0.18 em, no big adjustment before it):
+  many words end in a virama (परिषद्, अर्थात्), and the next word or table
+  cell stays apart (परिषद् द्वारा). Vowels drawn as two glyphs, each mapped to
+  its own character, become one character again: the pairs the Unicode
+  Standard lists not to use for vowel letters (अ + ा for आ, ए + े for ऐ,
+  ऊ = उ + ु, the Kashmiri vowels ॳ to ॷ, ...) and a vowel sign split
+  into the aa sign and a sign on top (ा + े for ो, ा + ै for ौ). Shaped as they came, these showed dotted circles.
+- Marked content with an `ActualText` (inline or named in the page's
+  `Properties`): its text stands for the glyphs inside it, in place of
+  what their `ToUnicode` gives; a text that takes characters from one is
+  in typed order and is not reordered. The outermost `ActualText` wins.
+  It applies only while all its glyphs stay in one text: when they go on
+  in another (the next line), each text keeps its glyphs' own characters.
+  An empty `ActualText` or one of soft hyphens leaves the glyphs (a
+  hyphen drawn at a line end) their own characters
+  (`pdf_import::tests::hindi_drawn_apart_or_with_actual_text_comes_in_as_typed_words`).
+- Hindi written by Publish to PDF with its font comes back as the typed
+  words, shaped to the glyphs of the original: all 59 words of the
+  Devanagari corpus (35 came back wrong before, with letters doubled,
+  signs lost or a space inside the word)
+  (`crates/io/tests/devanagari_pdf.rs`, a test binary of its own so the
+  test font stays out of the other tests' fonts). Latin text gets no
+  marked content.

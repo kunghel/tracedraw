@@ -40,9 +40,15 @@ to the printer through PowerShell's printing classes
 the printer's paper of its size when the printer has one (either way
 round, within 2 mm), a wide sheet turns the paper, and the sheet is
 drawn at its size from the paper's corner; the copies and their
-collation go to the printer, the drawing's name is the job title. In the
-browser the list has no printers and the print goes through the PDF
-viewer.
+collation go to the printer, the drawing's name is the job title. The
+script runs without a window and shows no "Printing page" box, and gives
+up after five minutes; what came of each print (the sheets sent, or the
+error) is written to `tracedraw.log`. A one-sheet print used to fail
+before it reached the printer, on every printer: the list of sheet sizes
+flattened in PowerShell when it held one sheet (#614; checked on a
+Windows machine with a printer writing to a file: one and two sheets
+come out). In the browser the list has no printers and the print goes
+through the PDF viewer.
 
 Next to the list a Properties button (a gear, available when a system
 printer is chosen) opens the printer's own settings: on Windows its

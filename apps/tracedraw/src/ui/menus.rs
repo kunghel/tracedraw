@@ -954,12 +954,12 @@ pub(crate) mod invoke {
 
     /// The shortcut a row shows: the user's for `key`, else `default`.
     pub fn shown_shortcut(key: &str, default: &str) -> String {
+        // The first of its keys (a command may have several, #822).
         BINDINGS.with(|b| {
-            b.borrow()
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| default.to_string())
+            crate::shortcuts::keys_for(&b.borrow(), key, Some(default))
+                .into_iter()
+                .next()
+                .unwrap_or_default()
         })
     }
 }
@@ -2933,7 +2933,7 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sep(ui);
-    if item(ui, "menu.text.change_case", "", is_text) {
+    if item(ui, "menu.text.change_case", "Shift+F3", is_text) {
         app.dialog = Dialog::ChangeCase(crate::ops2::CaseMode::Sentence);
     }
     if item(ui, "menu.text.make_web_compatible", "", is_text) {

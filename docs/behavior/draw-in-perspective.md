@@ -45,8 +45,31 @@ Each plane is the projective image of a unit square (`homography`, the
 same as the Perspective effect's). The drawn object's box is taken onto
 the plane: each side of the box becomes the mean of its two corners'
 plane coordinates, giving a rectangle on the plane, whose corners on the
-page are the object's Perspective effect (Effects > Add Perspective),
+page are the object's Perspective effect (Object > Add Perspective),
 so the result is exact and the Shape tool edits its four corners. A box
 drawn past a plane's vanishing line is pulled towards the grid until it
 fits, and one that lies wholly beyond it stays flat. Drawing the object
 and laying it down are one undo step.
+
+## The Perspective effect on a group
+
+Object > Add Perspective on a group warps every object in it with the
+group's four corners, before the objects' own effects (a contour rings
+the warped object). Ungroup (Ctrl+U, also Ungroup All) keeps the
+perspective: each object takes a Perspective effect at the front of its
+stack, the group's projection as seen in the object's space, so the
+objects stay drawn as they were and the Shape tool edits each one's
+corners. An object that had a perspective first in its stack keeps one:
+the two are folded into it. Only the group's perspective is kept; its
+other effects go with the group, as before (#674).
+
+## Checks
+
+- Given a group of two rectangles, one scaled, the group turned and
+  given a perspective, and the other rectangle with no effect, an
+  outside contour, a push and pull distortion or a perspective of its
+  own, when it is ungrouped, then each rectangle has one Perspective
+  effect, first in its stack, and is drawn where it was in the group,
+  its contour or distortion included
+  (`command::tests::ungrouping_keeps_the_perspective_on_each_object`,
+  core).

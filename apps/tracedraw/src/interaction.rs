@@ -232,7 +232,7 @@ impl App {
             .rev()
             .filter(|l| l.visible && !l.locked)
             .flat_map(|l| l.shapes.iter().rev())
-            .find(|s| s.visible && self.shape_hit(s, p, tol))
+            .find(|s| s.visible && !self.outside_clip_edit(s.id) && self.shape_hit(s, p, tol))
             .filter(|s| s.locked)
             .map(|s| s.id)
     }
@@ -316,7 +316,7 @@ impl App {
             .rev()
             .filter(|l| l.visible && !l.locked)
             .flat_map(|l| l.shapes.iter().rev())
-            .filter(|s| !s.locked && s.visible)
+            .filter(|s| !s.locked && s.visible && !self.outside_clip_edit(s.id))
         {
             if let Some((g, inside)) = &members {
                 if s.id == *g {
@@ -479,19 +479,47 @@ impl App {
     /// there (the first level inside the topmost group when nothing of it
     /// is), down to the innermost object.
     pub fn hit_test_step(&self, p: Point) -> Option<ShapeId> {
-        let top = self.hit_test(p)?;
-        let tol = 3.0 / self.view.zoom as f64;
-        let mut chain = vec![top];
-        let mut current = self.doc().shape(top).ok()?.1.clone();
-        while let Some(c) = self.children_hit(&current, p, tol).into_iter().next() {
-            chain.push(c.id);
-            current = c;
-        }
+        let chain = self.hit_chain(p);
         let next = match chain.iter().rposition(|id| self.selection.contains(id)) {
             Some(k) => k + 1,
             None => 1,
         };
-        chain.get(next.min(chain.len() - 1)).copied()
+        chain.get(next.min(chain.len().saturating_sub(1))).copied()
+    }
+
+    /// The topmost object at `p` and the objects inside it under `p`, one
+    /// group level further in each, down to the innermost one.
+    fn hit_chain(&self, p: Point) -> Vec<ShapeId> {
+        let Some(top) = self.hit_test(p) else {
+            return Vec::new();
+        };
+        let tol = 3.0 / self.view.zoom as f64;
+        let mut chain = vec![top];
+        let Ok((_, s)) = self.doc().shape(top) else {
+            return chain;
+        };
+        let mut current = s.clone();
+        while let Some(c) = self.children_hit(&current, p, tol).into_iter().next() {
+            chain.push(c.id);
+            current = c;
+        }
+        chain
+    }
+
+    /// What a Pick press at `p` takes: a selected object under `p` (an
+    /// object chosen inside a group stays chosen, so a drag moves it alone,
+    /// #849), else with `ctrl` the object one group level in, else the
+    /// topmost object.
+    pub fn press_target(&self, p: Point, ctrl: bool) -> Option<ShapeId> {
+        let chain = self.hit_chain(p);
+        if let Some(id) = chain.iter().rev().find(|id| self.selection.contains(id)) {
+            return Some(*id);
+        }
+        if ctrl {
+            self.hit_test_step(p)
+        } else {
+            chain.first().copied()
+        }
     }
 
     /// Every object at `p`, top first: the objects on the layers, or with
@@ -522,7 +550,9 @@ impl App {
             .rev()
             .filter(|l| l.visible && !l.locked)
             .flat_map(|l| l.shapes.iter().rev())
-            .filter(|s| !s.locked && s.visible && self.shape_hit(s, p, tol))
+            .filter(|s| {
+                !s.locked && s.visible && !self.outside_clip_edit(s.id) && self.shape_hit(s, p, tol)
+            })
         {
             if deep {
                 leaves(self, s, p, tol, &mut out);
@@ -561,7 +591,7 @@ impl App {
             .into_iter()
             .filter(|l| l.visible && !l.locked)
             .flat_map(|l| &l.shapes)
-            .filter(|s| s.visible && !s.locked)
+            .filter(|s| s.visible && !s.locked && !self.outside_clip_edit(s.id))
         {
             match &members {
                 Some((g, inside)) if s.id == *g => candidates.extend(inside.iter().cloned()),
@@ -849,6 +879,21 @@ impl App {
         });
         let pointer = hover.map(|h| self.view.to_page(h));
         self.pointer_page = pointer;
+        // A colour picker's eyedropper waits for a click: the colour there
+        // goes to it, and no tool sees the click (#814). Esc stops it.
+        if crate::ui::color_picker::picking(&response.ctx) {
+            response.ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            if response.ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                crate::ui::color_picker::finish_pick(&response.ctx, None);
+            } else if let (true, Some(p)) = (response.clicked(), pointer) {
+                let c = self
+                    .sample_color_at(p, false)
+                    .or_else(|| self.sample_color_at(p, true))
+                    .unwrap_or(tracedraw_core::Color::WHITE);
+                crate::ui::color_picker::finish_pick(&response.ctx, Some(c));
+            }
+            return;
+        }
         let Some(p) = pointer else {
             let released = self.transforming() && !response.ctx.input(|i| i.pointer.primary_down());
             if response.drag_stopped() || released {
@@ -1304,11 +1349,9 @@ impl App {
                 return;
             }
             // Ctrl takes the object inside a group, unless the press is on
-            // what is selected already (Ctrl then keeps the move straight).
-            let hit = match self.hit_test(p) {
-                Some(top) if mods.ctrl && !self.selection.contains(&top) => self.hit_test_step(p),
-                other => other,
-            };
+            // what is selected already (Ctrl then keeps the move straight);
+            // an object chosen inside a group moves alone (#849).
+            let hit = self.press_target(p, mods.ctrl);
             match hit {
                 Some(id) => {
                     if mods.shift {
@@ -1890,6 +1933,15 @@ impl App {
                 .as_ref()
                 .is_some_and(|c| c.nodes.len() >= 2 && c.nodes.last().is_some_and(|n| near(n.0)));
         if response.clicked_by(PointerButton::Primary) {
+            // A line going on from an end of the selected curve: a click
+            // on that curve's other end closes it (#631).
+            if let Some(end) = self.continuation_close_at(raw, reach) {
+                if let Some(c) = &mut self.curve {
+                    c.nodes.push((end, None));
+                }
+                self.finish_curve();
+                return;
+            }
             if start_close {
                 // A click on the first node closes the curve with the
                 // segment the preview showed: it leaves the last node
@@ -2052,6 +2104,8 @@ impl App {
         };
         if let Some(id) = self.new_curve_in_steps(
             prior,
+            c.nodes.first().copied(),
+            None,
             ShapeKind::Path {
                 path: path.clone(),
                 closed: true,
@@ -2630,6 +2684,14 @@ impl App {
         }
         // A modal dialog owns the keyboard: Esc closes it, the rest is
         // not interpreted as shortcuts.
+        // A colour picker's eyedropper waiting for a click: Esc stops
+        // it, and no dialog closes (#814).
+        if crate::ui::color_picker::picking(ctx)
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            crate::ui::color_picker::finish_pick(ctx, None);
+            return;
+        }
         if !matches!(self.dialog, crate::ui::dialogs::Dialog::None) {
             // A command waiting for its shortcut (Options > Customization >
             // Commands): Esc stops waiting, other keys are the shortcut.
@@ -3015,6 +3077,15 @@ impl App {
         if pressed(Key::F3, Modifiers::NONE) {
             self.zoom_step(false);
         }
+        // Shift+F3: Text > Change Case for the selected text (#801).
+        if pressed(Key::F3, Modifiers::SHIFT)
+            && self
+                .selected_shapes()
+                .iter()
+                .any(|s| matches!(s.kind, ShapeKind::Text { .. }))
+        {
+            self.dialog = crate::ui::dialogs::Dialog::ChangeCase(crate::ops2::CaseMode::Sentence);
+        }
         if pressed(Key::T, cmd | Modifiers::SHIFT) {
             self.open_edit_text_dialog();
         }
@@ -3243,33 +3314,30 @@ impl App {
         // Tool shortcuts: user overrides from Options, then the defaults.
         for group in crate::tools::GROUPS {
             for t in group.tools {
-                let label = self
-                    .settings
-                    .shortcuts
-                    .iter()
-                    .find(|(id, _)| id == t.id())
-                    .map(|(_, v)| v.clone())
-                    .or_else(|| t.shortcut().map(|s| s.to_string()));
-                let Some(label) = label else { continue };
-                // Any of Ctrl, Alt and Shift with a key, as menu commands.
-                let keys = crate::shortcuts::parse(&label).or_else(|| {
-                    Tool::parse_shortcut(&label).map(|(k, shift)| {
-                        let mods = if shift {
-                            Modifiers::SHIFT
-                        } else {
-                            Modifiers::NONE
-                        };
-                        (mods, k)
-                    })
-                });
-                if let Some((mods, k)) = keys {
-                    // W and K during a move say what a drop on a clip
-                    // frame does; they pick no tool then.
-                    let drop_key = matches!(self.drag, Drag::Move { .. })
-                        && mods.is_none()
-                        && matches!(k, Key::W | Key::K);
-                    if pressed(k, mods) && !drop_key {
-                        self.set_tool(*t);
+                // Every key the tool has (#822).
+                let labels =
+                    crate::shortcuts::keys_for(&self.settings.shortcuts, t.id(), t.shortcut());
+                for label in labels {
+                    // Any of Ctrl, Alt and Shift with a key, as menu commands.
+                    let keys = crate::shortcuts::parse(&label).or_else(|| {
+                        Tool::parse_shortcut(&label).map(|(k, shift)| {
+                            let mods = if shift {
+                                Modifiers::SHIFT
+                            } else {
+                                Modifiers::NONE
+                            };
+                            (mods, k)
+                        })
+                    });
+                    if let Some((mods, k)) = keys {
+                        // W and K during a move say what a drop on a clip
+                        // frame does; they pick no tool then.
+                        let drop_key = matches!(self.drag, Drag::Move { .. })
+                            && mods.is_none()
+                            && matches!(k, Key::W | Key::K);
+                        if pressed(k, mods) && !drop_key {
+                            self.set_tool(*t);
+                        }
                     }
                 }
             }

@@ -99,8 +99,11 @@ Export > PDF offers PDF 1.4, PDF/X-1a:2003, PDF/X-3:2003 and PDF/X-4
   dates, Trapped False, GTS_PDFXVersion and, for X-1a, Conformance), a
   trailer ID, an XMP metadata stream with the pdfxid version, and an
   OutputIntent (`/S /GTS_PDFX`) whose identifier is the output condition
-  typed in the dialog (default FOGRA39; "CGATS TR 001" when empty). The
-  CMYK profile loaded in Colour Management is embedded as
+  typed in the dialog (default FOGRA39; when empty, the embedded
+  profile's description, "Custom" if it has none, or "CGATS TR 001"
+  without a profile). The CMYK profile loaded in Colour Management, else
+  the CMYK profile the drawing carries (`Document::cmyk_profile`, read
+  from .cdr files), is embedded as
   DestOutputProfile (`/N` from its colour space signature).
 - X-1a: PDF 1.4, every colour converted to CMYK (ICC engine when a CMYK
   profile is loaded, else the press model; image pixels with the simple

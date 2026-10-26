@@ -1147,19 +1147,25 @@ fn blend(app: &mut App, ui: &mut Ui) {
             changed = true;
         }
     }
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui
-            .add_enabled(
-                accel_o != 0.0 || accel_c != 0.0,
-                egui::Button::new(tr("docker.reset")).min_size(egui::vec2(90.0, 22.0)),
-            )
-            .clicked()
-        {
-            accel_o = 0.0;
-            accel_c = 0.0;
-            changed = true;
-        }
-    });
+    // One row high: laid out right to left over the whole rest of the
+    // panel, it pushed Color Blend out of sight (#815).
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 24.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if ui
+                .add_enabled(
+                    accel_o != 0.0 || accel_c != 0.0,
+                    egui::Button::new(tr("docker.reset")).min_size(egui::vec2(90.0, 22.0)),
+                )
+                .clicked()
+            {
+                accel_o = 0.0;
+                accel_c = 0.0;
+                changed = true;
+            }
+        },
+    );
     section(ui, Some(&tr("docker.blend_color_blend")));
     ui.horizontal(|ui| {
         for (how, key) in [
@@ -1199,8 +1205,27 @@ fn blend(app: &mut App, ui: &mut Ui) {
             }
         }
     });
+    // Apply: two objects selected and no blend yet, a blend between them
+    // with these settings (#815).
+    let two = cur.is_none() && app.selection.len() == 2;
+    let apply = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 28.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.add_enabled(
+                    two,
+                    egui::Button::new(tr("docker.apply")).min_size(egui::vec2(90.0, 22.0)),
+                )
+                .clicked()
+            },
+        )
+        .inner;
     app.blend_steps = steps;
     app.blend_options = BlendOptions { ..opt };
+    if apply {
+        app.blend_selection(steps, accel_o, accel_c, rot);
+    }
     if let Some(Effect::Blend { .. }) = cur {
         if changed {
             app.change_blends("Blend", |e| {
@@ -2044,5 +2069,76 @@ fn join_curves(app: &mut App, ui: &mut Ui) {
         .clicked()
     {
         app.join_curves();
+    }
+}
+
+#[cfg(test)]
+mod blend_docker_tests {
+    use super::*;
+
+    /// The Blend panel shows its Color Blend choices and an Apply button
+    /// in a panel of ordinary height, and Apply blends the two selected
+    /// objects (#815).
+    #[test]
+    fn the_blend_panel_shows_color_blend_and_applies() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let r = |app: &mut App, x: f64| {
+            app.new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(x, 10.0, x + 20.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let a = r(&mut app, 10.0);
+        let b = r(&mut app, 100.0);
+        app.select(vec![a, b]);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| blend(app, ui));
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            for s in &out.shapes {
+                if let egui::Shape::Text(t) = &s.shape {
+                    texts.push((t.galley.text().to_string(), t.visual_bounding_rect()));
+                }
+            }
+            texts
+        };
+        run(&mut app, Vec::new());
+        let texts = run(&mut app, Vec::new());
+        let find = |texts: &[(String, egui::Rect)], key: &str| {
+            texts.iter().find(|(t, _)| *t == tr(key)).map(|(_, r)| *r)
+        };
+        let color = find(&texts, "docker.blend_color_blend").expect("Color Blend shown");
+        let apply = find(&texts, "docker.apply").expect("Apply shown");
+        assert!(
+            color.bottom() < 600.0 && apply.bottom() < 600.0,
+            "{color:?} {apply:?}"
+        );
+        let at = apply.center();
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&mut app, vec![button(true)]);
+        run(&mut app, vec![button(false)]);
+        let s = app.doc().find_shape(a).expect("start");
+        assert!(
+            s.effects.iter().any(|e| matches!(e, Effect::Blend { .. })),
+            "{:?}",
+            s.effects
+        );
     }
 }

@@ -68,65 +68,20 @@ impl Default for PageNumberSettings {
 }
 
 impl PageNumberSettings {
+    /// The field these settings make: how the number is written.
+    pub fn field(&self) -> tracedraw_core::document::PageNumberField {
+        tracedraw_core::document::PageNumberField {
+            start_at: self.start_at,
+            style: self.style,
+            prefix: self.prefix.clone(),
+            suffix: self.suffix.clone(),
+        }
+    }
+
     /// Text for the page at `index` (0-based).
     pub fn label(&self, index: usize) -> String {
-        let n = self.start_at + index as i64;
-        let body = match self.style {
-            1 => roman(n),
-            2 => roman(n).to_lowercase(),
-            3 => alpha(n),
-            4 => alpha(n).to_lowercase(),
-            _ => n.to_string(),
-        };
-        format!("{}{}{}", self.prefix, body, self.suffix)
+        self.field().label(index)
     }
-}
-
-fn roman(mut n: i64) -> String {
-    if n <= 0 {
-        return n.to_string();
-    }
-    const T: [(i64, &str); 13] = [
-        (1000, "M"),
-        (900, "CM"),
-        (500, "D"),
-        (400, "CD"),
-        (100, "C"),
-        (90, "XC"),
-        (50, "L"),
-        (40, "XL"),
-        (10, "X"),
-        (9, "IX"),
-        (5, "V"),
-        (4, "IV"),
-        (1, "I"),
-    ];
-    let mut out = String::new();
-    for (v, s) in T {
-        while n >= v {
-            out.push_str(s);
-            n -= v;
-        }
-    }
-    out
-}
-
-fn alpha(n: i64) -> String {
-    if n <= 0 {
-        return n.to_string();
-    }
-    // A..Z, then AA, AB... like spreadsheet columns.
-    let mut n = n - 1;
-    let mut out = Vec::new();
-    loop {
-        out.push((b'A' + (n % 26) as u8) as char);
-        n /= 26;
-        if n == 0 {
-            break;
-        }
-        n -= 1;
-    }
-    out.iter().rev().collect()
 }
 
 thread_local! {
@@ -483,6 +438,9 @@ pub enum Drag {
         from: Point,
         grab: Point,
         begun: bool,
+        /// What stays put of the curves being edited, which the node snaps
+        /// to (#673): found at the first move, once a drag.
+        still: Option<std::rc::Rc<crate::snap::StillGeometry>>,
     },
     /// Bending a segment (Shape tool): the curve as it was when the drag
     /// began (local path, closed flag), the segment (the element ending
@@ -634,9 +592,28 @@ impl CurveSteps {
     }
 }
 
+/// Where a line drawn with the Pen or Bezier tool goes on from: a node
+/// (page) and the handle the next segment leaves along.
+pub type PenEnd = (Point, Option<Point>);
+
+/// A step that made or changed a curve drawn with the Pen or Bezier tool
+/// (#631): the curve, the tool, and where the line goes on from once the
+/// step is undone (`undo_to`) or redone (`redo_to`; none when it closed
+/// the curve).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PenStep {
+    pub shape: ShapeId,
+    pub tool: Tool,
+    pub undo_to: Option<PenEnd>,
+    pub redo_to: Option<PenEnd>,
+}
+
 /// Bezier / polyline tool in progress.
 #[derive(Debug, Clone, Default)]
 pub struct CurveInProgress {
+    /// Taken up again by an undo or redo of a Pen or Bezier step (#631):
+    /// another undo or redo replaces it.
+    pub resumed: bool,
     /// Nodes placed so far with their outgoing handle (dragged with the
     /// Bezier/Pen tool); the incoming handle mirrors the previous node's.
     pub nodes: Vec<(Point, Option<Point>)>,
@@ -854,6 +831,10 @@ pub struct App {
     pub curve: Option<CurveInProgress>,
     /// Undo and redo steps of `curve`, node by node.
     pub curve_steps: CurveSteps,
+    /// The steps that made or changed a curve drawn with the Pen or
+    /// Bezier tool, by (engine instance, step id). Undoing or redoing one
+    /// takes the curve up again with that tool.
+    pub pen_curve_steps: std::collections::HashMap<(u64, u64), PenStep>,
     pub text_edit: Option<TextEdit>,
     /// Text an input method is composing at the caret (Chinese, Japanese,
     /// Korean and other input methods), shown underlined until it is
@@ -865,6 +846,9 @@ pub struct App {
     /// The digits typed with Alt held while editing text, for a character
     /// by its number (#447; the system does it on Windows).
     pub alt_code: String,
+    /// The character the last Alt code typed, so the same character
+    /// coming from the system as text right after is not typed twice.
+    pub alt_composed: Option<char>,
     /// The last colours picked for a fill and for an outline (the
     /// palette's left and right clicks): the "current colours" the first
     /// built-in gradient runs between.
@@ -1052,6 +1036,9 @@ pub struct App {
     /// The Edit Fill dialog's fill is shown on the selection as an engine
     /// preview (#436).
     pub fill_preview: bool,
+    /// The Outline Pen dialog's outline is shown on the selection as an
+    /// engine preview (#741).
+    pub outline_preview: bool,
     /// The selected objects in page space, for the drawing, its revision
     /// and the selection they were gathered for (see
     /// [`App::selected_rc`]).
@@ -1143,7 +1130,11 @@ pub struct App {
     pub text_link_drag: Option<Point>,
     /// Clip frame being edited in place: (frame id, the page's other
     /// objects when editing began; see `clip_edit_contents`).
-    pub clip_frame_edit: Option<(ShapeId, Vec<ShapeId>)>,
+    pub clip_frame_edit: Option<(ShapeId, std::collections::HashSet<ShapeId>)>,
+    /// The undo steps that began and finished editing a clip frame's
+    /// contents, so undo and redo across them leave or enter the edit
+    /// (#851).
+    pub clip_edit_marks: Vec<crate::ops2::ClipEditMark>,
     /// Object > Symmetry > Edit Symmetry: the object whose symmetry is
     /// being edited.
     pub symmetry_edit: Option<ShapeId>,
@@ -1181,6 +1172,10 @@ pub struct App {
     /// The printer list being read off the interface's thread for the
     /// Print dialog, and the last list read (#614).
     pub printer_fetch: Option<std::sync::mpsc::Receiver<Vec<crate::printers::Printer>>>,
+    /// A print on its way to a printer, done off the interface's thread:
+    /// a printer's spooler can take minutes and the window stays usable
+    /// meanwhile (#810). The status it ends with.
+    pub print_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub printers_seen: Vec<crate::printers::Printer>,
     pub preview_selected_only: bool,
     pub page_sorter: bool,
@@ -1279,6 +1274,9 @@ pub struct App {
     pub right_drag: Option<crate::drop_menu::RightDrag>,
     /// A bar being moved (see ui/bars.rs).
     pub bar_drag: Option<crate::ui::bars::BarDrag>,
+    /// The rows of toolbars drawn this frame, for the drops of a dragged
+    /// toolbar (see ui/bars.rs).
+    pub bar_rows: Vec<crate::ui::bars::RowSpot>,
     /// A toolbar button being moved, and where the bars that take them
     /// were drawn this frame (see ui/bar_items.rs).
     pub bar_item_drag: Option<crate::ui::bar_items::ItemDrag>,
@@ -2094,6 +2092,7 @@ impl App {
             ime_preedit: String::new(),
             last_trace: None,
             alt_code: String::new(),
+            alt_composed: None,
             current_colors: (Color::BLACK, Color::WHITE),
             live_fill: None,
             live_stroke: None,
@@ -2192,6 +2191,7 @@ impl App {
             raster: std::cell::RefCell::new(crate::raster::Raster::default()),
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
             fill_preview: false,
+            outline_preview: false,
             selected_cache: std::cell::RefCell::new(None),
             outline_cache: std::cell::RefCell::new(None),
             view_anchor: None,
@@ -2209,6 +2209,7 @@ impl App {
             node_selection: Vec::new(),
             segment_spot: None,
             curve_steps: CurveSteps::default(),
+            pen_curve_steps: std::collections::HashMap::new(),
             snap: crate::snap::SnapSettings::default(),
             snap_mark: std::cell::Cell::new(None),
             live_guides: Default::default(),
@@ -2230,6 +2231,7 @@ impl App {
             pdf_text_chosen: false,
             text_link_drag: None,
             clip_frame_edit: None,
+            clip_edit_marks: Vec::new(),
             symmetry_edit: None,
             symmetry_step: None,
             symmetry_turning: false,
@@ -2247,6 +2249,7 @@ impl App {
             fullscreen_preview: false,
             print_preview: None,
             printer_fetch: None,
+            print_job: None,
             printers_seen: Vec::new(),
             preview_selected_only: false,
             page_sorter: false,
@@ -2303,6 +2306,7 @@ impl App {
             navigator_open: false,
             right_drag: None,
             bar_drag: None,
+            bar_rows: Vec::new(),
             bar_item_drag: None,
             bar_slots: Vec::new(),
             shown_bar_slots: Vec::new(),
@@ -4407,6 +4411,8 @@ impl App {
             let prior = Self::anchor_paths(&history, None);
             if let Some(id) = self.new_curve_in_steps(
                 prior,
+                c.nodes.first().copied(),
+                c.nodes.last().copied(),
                 ShapeKind::Path {
                     path: line,
                     closed: false,
@@ -4417,6 +4423,9 @@ impl App {
             return;
         }
         let id = self.add_drawn_line(line.clone());
+        if let Some(id) = id {
+            self.note_pen_curve_step(id, c.nodes.first().copied(), c.nodes.last().copied());
+        }
         if c.bspline {
             // A B-spline of its own keeps its control points (one that
             // went on from another curve is a curve like that one).
@@ -4428,19 +4437,25 @@ impl App {
 
     /// The open outlines a curve had while it was drawn (`history`, the
     /// Pen and Bezier tools' steps), from two nodes on, then `last` (the
-    /// curve as it was just before it closed), with repeats left out.
+    /// curve as it was just before it closed), with repeats left out;
+    /// each with its last node and that node's handle, where drawing went
+    /// on from.
     pub(crate) fn anchor_paths(
         history: &[Option<CurveInProgress>],
         last: Option<&CurveInProgress>,
-    ) -> Vec<tracedraw_core::BezPath> {
-        let mut out: Vec<tracedraw_core::BezPath> = Vec::new();
+    ) -> Vec<(tracedraw_core::BezPath, PenEnd)> {
+        let mut out: Vec<(tracedraw_core::BezPath, PenEnd)> = Vec::new();
         for c in history.iter().flatten().chain(last) {
             if c.nodes.len() < 2 || c.bspline {
                 continue;
             }
             let p = c.path(None);
-            if out.last() != Some(&p) {
-                out.push(p);
+            let Some(end) = c.nodes.last().copied() else {
+                continue;
+            };
+            match out.last_mut() {
+                Some(prev) if prev.0 == p => prev.1 = end,
+                _ => out.push((p, end)),
             }
         }
         out
@@ -4451,19 +4466,33 @@ impl App {
     /// an undo step of its own, so Ctrl+Z goes back through them. Its fill
     /// and outline are those `last` takes from the default properties.
     /// One step when there is nothing before, or while a symmetry is
-    /// edited.
+    /// edited. `first` is the curve's first node, where drawing goes on
+    /// from once the first step is undone, and `last_end` where it goes
+    /// on from after the last step (none for a closed curve).
     pub(crate) fn new_curve_in_steps(
         &mut self,
-        prior: Vec<tracedraw_core::BezPath>,
+        prior: Vec<(tracedraw_core::BezPath, PenEnd)>,
+        first: Option<PenEnd>,
+        last_end: Option<PenEnd>,
         last: ShapeKind,
     ) -> Option<ShapeId> {
         let prior: Vec<_> = prior
             .into_iter()
-            .filter(|p| !matches!(&last, ShapeKind::Path { path, .. } if path == p))
+            .filter(|(p, _)| !matches!(&last, ShapeKind::Path { path, .. } if path == p))
             .collect();
         if prior.is_empty() || self.symmetry_edit.is_some() {
-            return self.new_shape(last);
+            let id = self.new_shape(last);
+            if let Some(id) = id {
+                self.note_pen_curve_step(id, first, last_end);
+            }
+            return id;
         }
+        // Where drawing goes on from before and after each step.
+        let ends: Vec<Option<PenEnd>> = std::iter::once(first)
+            .chain(prior.iter().map(|(_, e)| Some(*e)))
+            .chain(std::iter::once(last_end))
+            .collect();
+        let (prior, _): (Vec<_>, Vec<_>) = prior.into_iter().unzip();
         let layer = self.active_layer()?;
         let id = self.engine.new_shape_id();
         let mut shape = Shape::new(id, last.clone());
@@ -4480,7 +4509,8 @@ impl App {
                 ..shape
             },
         });
-        for kind in kinds.chain(std::iter::once(last)) {
+        self.note_pen_curve_step(id, ends[0], ends[1]);
+        for (k, kind) in kinds.chain(std::iter::once(last)).enumerate() {
             if self
                 .engine
                 .run_with_label(&Command::SetShapeKind { shape: id, kind }, "Curve Node")
@@ -4488,8 +4518,53 @@ impl App {
             {
                 break;
             }
+            let (undo_to, redo_to) = (ends.get(k + 1), ends.get(k + 2));
+            self.note_pen_curve_step(id, undo_to.copied().flatten(), redo_to.copied().flatten());
         }
         Some(id)
+    }
+
+    /// The step just run made or changed curve `id` drawn with the Pen or
+    /// Bezier tool: undoing or redoing it takes the curve up again (#631).
+    fn note_pen_curve_step(
+        &mut self,
+        id: ShapeId,
+        undo_to: Option<PenEnd>,
+        redo_to: Option<PenEnd>,
+    ) {
+        if !matches!(self.tool, Tool::Pen | Tool::Bezier) {
+            return;
+        }
+        let Some(step) = self.engine.last_step_id() else {
+            return;
+        };
+        let instance = self.engine.instance();
+        // Steps that fell out of the history are dropped now and then.
+        if self.pen_curve_steps.len() >= 512 {
+            let max = self.engine.max_history() as u64;
+            self.pen_curve_steps
+                .retain(|k, _| k.0 == instance && k.1 + 2 * max >= step);
+        }
+        self.pen_curve_steps.insert(
+            (instance, step),
+            PenStep {
+                shape: id,
+                tool: self.tool,
+                undo_to,
+                redo_to,
+            },
+        );
+    }
+
+    /// After an undo (`undone`) or redo of the step `step` (see
+    /// [`Self::pen_curve_steps`]): a curve drawn with the Pen or Bezier
+    /// tool goes on being drawn with it, from where it stood then.
+    fn resume_pen_step(&mut self, step: Option<u64>, undone: bool) {
+        let key = step.map(|s| (self.engine.instance(), s));
+        if let Some(&ps) = key.and_then(|k| self.pen_curve_steps.get(&k)) {
+            let to = if undone { ps.undo_to } else { ps.redo_to };
+            self.resume_curve(ps.shape, ps.tool, to);
+        }
     }
 
     /// The curve `id`, just made with the outline `line` from the B-spline
@@ -4643,6 +4718,7 @@ impl App {
             .filter(|l| !l.locked)
             .flat_map(|l| &l.shapes)
             .map(|s| s.id)
+            .filter(|id| !self.outside_clip_edit(*id))
             .collect();
         self.select(ids);
     }
@@ -5251,25 +5327,65 @@ impl App {
         }
         self.curve_steps.clear();
         self.finish_text();
-        match self.engine.undo() {
-            Ok(l) => self.status = crate::i18n::trf("status.undo_n", &[("l", l)]),
-            Err(e) => self.status = e.to_string(),
-        }
+        let step = self.engine.last_step_id();
+        let undone = match self.engine.undo() {
+            Ok(l) => {
+                self.status = crate::i18n::trf("status.undo_n", &[("l", l)]);
+                true
+            }
+            Err(e) => {
+                self.status = e.to_string();
+                false
+            }
+        };
         self.selection
             .retain(|id| self.engine.document().find_shape(*id).is_some());
+        if undone {
+            self.clip_edit_across(step, true);
+            // A curve taken up by an earlier undo goes; undoing a Pen or
+            // Bezier step takes its curve up again (#631). A curve being
+            // drawn otherwise stays.
+            if self.curve.as_ref().is_some_and(|c| c.resumed) {
+                self.curve = None;
+            }
+            if self.curve.is_none() {
+                self.resume_pen_step(step, true);
+            }
+        }
     }
 
     pub fn redo(&mut self) {
         if self.curve_redo_step() {
             return;
         }
-        self.curve_steps.clear();
-        match self.engine.redo() {
-            Ok(l) => self.status = crate::i18n::trf("status.redo_n", &[("l", l)]),
-            Err(e) => self.status = e.to_string(),
+        // Nodes drawn on from a curve an undo took up replace what was
+        // undone: there is nothing to redo while they are drawn (#631).
+        if self.curve.as_ref().is_some_and(|c| c.resumed) && !self.curve_steps.undo.is_empty() {
+            self.status = tracedraw_core::Error::NothingToRedo.to_string();
+            return;
         }
+        self.curve_steps.clear();
+        let redone = match self.engine.redo() {
+            Ok(l) => {
+                self.status = crate::i18n::trf("status.redo_n", &[("l", l)]);
+                true
+            }
+            Err(e) => {
+                self.status = e.to_string();
+                false
+            }
+        };
         self.selection
             .retain(|id| self.engine.document().find_shape(*id).is_some());
+        if redone {
+            self.clip_edit_across(self.engine.last_step_id(), false);
+            if self.curve.as_ref().is_some_and(|c| c.resumed) {
+                self.curve = None;
+            }
+            if self.curve.is_none() {
+                self.resume_pen_step(self.engine.last_step_id(), false);
+            }
+        }
     }
 
     // ----- files -------------------------------------------------------------
@@ -6370,6 +6486,51 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         let _ = tx.send(list());
         self.printer_fetch = Some(rx);
+    }
+
+    /// Run `job` (a print to a printer) off the interface's thread; its
+    /// outcome goes to the status bar when it is done (#810).
+    pub fn start_print_job(
+        &mut self,
+        job: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let spawned = std::thread::Builder::new()
+                .name("print".into())
+                .spawn(move || {
+                    let _ = tx.send(job());
+                });
+            if let Err(e) = spawned {
+                self.status = format!("{}: {e}", crate::i18n::tr("dialog.print_failed"));
+                return;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = tx.send(job());
+        self.print_job = Some(rx);
+    }
+
+    /// The outcome of the print on its way, once there is one, into the
+    /// status bar. Returns whether a print is still on its way.
+    pub fn poll_print_job(&mut self) -> bool {
+        let Some(rx) = &self.print_job else {
+            return false;
+        };
+        let done = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::i18n::tr("dialog.print_failed"))
+            }
+        };
+        self.status = match done {
+            Ok(msg) => msg,
+            Err(e) => format!("{}: {e}", crate::i18n::tr("dialog.print_failed")),
+        };
+        self.print_job = None;
+        false
     }
 
     /// The printer list once it has been read: into the Print dialog's

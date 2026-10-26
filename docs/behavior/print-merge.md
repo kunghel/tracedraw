@@ -27,7 +27,16 @@ Record); Save Data Source, Finish and Cancel.
   (`field_types_are_guessed_from_the_data`). Save Data Source
   writes the records back as CSV, counters written out.
 - Add Column asks for a name and a type and adds the field to every
-  record (and a first record when there is none).
+  record (and a first record when there is none). For a Number it also
+  asks for the counter: digits (zeros in front), the starting value,
+  "Continually increment value" with its step (off: every record the
+  same number) and, when ticked, an ending value. With an ending value
+  the records from the start to it are made at once (15 to 25 in three
+  digits: eleven records, 015 to 025), counting down when the step is
+  negative; records already there are kept, and at most 100,000 are
+  made. An end the counter never reaches makes none (#791,
+  `print_merge::tests::a_number_column_with_an_end_value_makes_its_records`,
+  `pick_drag_tests::add_column_offers_a_number_range`).
 - Configure Columns shows each field's name (edited in place), type,
   counter settings and the x that removes it.
 - View Single Record shows the current record as a form; View All

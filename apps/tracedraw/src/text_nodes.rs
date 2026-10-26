@@ -156,7 +156,8 @@ fn spacing_measures(s: &Shape) -> Option<(usize, usize, f64, f64)> {
     let chars: Vec<char> = spans_text(spans).chars().collect();
     let widest = layout.lines.iter().max_by(|a, b| {
         let w = |l: &tracedraw_text::LineBox| {
-            l.edges.last().copied().unwrap_or(0.0) - l.edges.first().copied().unwrap_or(0.0)
+            let (a, b) = l.x_range();
+            b - a
         };
         w(a).total_cmp(&w(b))
     })?;

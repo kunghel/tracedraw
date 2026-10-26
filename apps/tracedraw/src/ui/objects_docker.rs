@@ -42,6 +42,9 @@ struct Actions {
     scope: Option<(LayerId, MasterScope)>,
     pick: Option<LayerId>,
     select: Option<ShapeId>,
+    /// An object's eye or padlock was clicked (#832).
+    object_visible: Option<(ShapeId, bool)>,
+    object_locked: Option<(ShapeId, bool)>,
     rename_layer: Option<(LayerId, String)>,
     rename_object: Option<(ShapeId, String)>,
     rename_page: Option<String>,
@@ -751,13 +754,35 @@ fn object_rows(app: &App, ui: &mut Ui, s: &Shape, depth: usize, act: &mut Action
     } else {
         Tokens::text_dim()
     };
-    ui.painter().text(
+    // The name stops short of the eye and padlock.
+    let name_room = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 48.0, rect.max.y));
+    ui.painter().with_clip_rect(name_room).text(
         Pos2::new(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         &label,
         egui::FontId::proportional(13.0),
         color,
     );
+    // Its own eye and padlock at the right end of the row, so an object
+    // is hidden or locked from the list, and a locked one unlocked (#832).
+    let base = egui::Id::new(("objects_object", s.id.raw()));
+    let lock_x = rect.right() - 22.0;
+    let eye_x = lock_x - 20.0;
+    let (er, e) = hot(ui, rect, eye_x, 18.0, base.with("eye"));
+    paint_eye(ui, er, s.visible);
+    if e.on_hover_text(tr("docker.show_hide")).clicked() {
+        act.object_visible = Some((s.id, !s.visible));
+    }
+    let (lr, l) = hot(ui, rect, lock_x, 18.0, base.with("lock"));
+    paint_lock(ui, lr, s.locked);
+    let lock_tip = if s.locked {
+        "menu.object.unlock_object"
+    } else {
+        "menu.object.lock_object"
+    };
+    if l.on_hover_text(tr(lock_tip)).clicked() {
+        act.object_locked = Some((s.id, !s.locked));
+    }
     if resp.double_clicked() {
         act.rename_object = Some((s.id, s.name.clone().unwrap_or_else(|| label.clone())));
     } else if resp.clicked() {
@@ -932,6 +957,18 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     if let Some((layer, locked)) = act.locked {
         app.run(Command::SetLayerLocked { layer, locked });
     }
+    if let Some((id, visible)) = act.object_visible {
+        app.run(Command::SetVisible {
+            shapes: vec![id],
+            visible,
+        });
+    }
+    if let Some((id, locked)) = act.object_locked {
+        app.run(Command::SetLocked {
+            shapes: vec![id],
+            locked,
+        });
+    }
     if let Some((layer, scope)) = act.scope {
         app.run(Command::SetLayerScope { layer, scope });
     }
@@ -1032,6 +1069,49 @@ mod tests {
         assert_eq!(object_label(&s), "Water");
         s.name = Some("   ".into());
         assert_eq!(object_label(&s), "Rectangle");
+    }
+
+    /// Each object's row has its own eye and padlock: a click hides or
+    /// shows it, locks or unlocks it, one undo step each (#832).
+    #[test]
+    fn an_objects_eye_and_padlock_hide_and_lock_it() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app.new_shape(rect_kind()).expect("shape");
+        let run = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| objects_docker(app, ui));
+            out.textures_delta.clear();
+        };
+        let click = |app: &mut App, what: &str| {
+            run(app, Vec::new());
+            let wid = egui::Id::new(("objects_object", id.raw())).with(what);
+            let at = ctx.read_response(wid).expect("drawn").rect.center();
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![button(true)]);
+            run(app, vec![button(false)]);
+        };
+        click(&mut app, "eye");
+        assert!(!app.doc().find_shape(id).expect("shape").visible);
+        click(&mut app, "eye");
+        assert!(app.doc().find_shape(id).expect("shape").visible);
+        click(&mut app, "lock");
+        assert!(app.doc().find_shape(id).expect("shape").locked);
+        app.undo();
+        assert!(!app.doc().find_shape(id).expect("shape").locked);
     }
 
     #[test]

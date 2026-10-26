@@ -49,6 +49,15 @@ frame is edited node by node, and the clip frame stays one
   pasted while editing go in too; the members of an ungrouped group were
   left out and faded, and Finish emptied the frame (#537,
   `a_group_inside_a_clip_frame_being_edited_drags_and_ungroups`).
+  While editing, only the contents can be picked: the faded objects and
+  the frame are out of reach of a click, Alt+click, a marquee, Select
+  All and Tab (`App::outside_clip_edit`). Undo takes back the steps of
+  the edit; past them it undoes the step that began the edit, which
+  leaves the edit with the frame and its contents as they were, so
+  nothing done outside the frame is undone while the edit still shows.
+  Redo of that step enters the edit again; undoing Finish goes back
+  into the edit and redoing it leaves (#851,
+  `clip_frame_edit_keeps_to_its_contents_and_its_own_undo`).
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame

@@ -67,6 +67,48 @@ pub mod text_outline {
         /// Pen x before each character from `start_char` to `end_char`,
         /// then after the last one.
         pub edges: Vec<f64>,
+        /// The left and right x of each character's own glyph,
+        /// `end_char - start_char` entries each (right-to-left text runs
+        /// its edges the other way, #629).
+        pub starts: Vec<f64>,
+        pub ends: Vec<f64>,
+    }
+
+    impl Line {
+        /// The stretches the characters `a..b` (text indexes) of this line
+        /// cover, from left to right, those touching merged: one for text
+        /// in one direction, more where directions mix. `out` is cleared
+        /// first.
+        pub fn stretches(&self, a: usize, b: usize, out: &mut Vec<(f64, f64)>) {
+            out.clear();
+            let from = a.max(self.start_char) - self.start_char;
+            let to = b.min(self.end_char).saturating_sub(self.start_char);
+            for i in from..to {
+                if let (Some(&x0), Some(&x1)) = (self.starts.get(i), self.ends.get(i)) {
+                    merge_stretch(out, x0.min(x1), x0.max(x1));
+                }
+            }
+        }
+    }
+
+    /// Add the stretch `x0..x1` to `out`, merged with those it touches,
+    /// `out` kept in order of x.
+    pub fn merge_stretch(out: &mut Vec<(f64, f64)>, x0: f64, x1: f64) {
+        let eps = 1e-6;
+        let (mut x0, mut x1) = (x0, x1);
+        let mut i = 0;
+        while i < out.len() {
+            let (a, b) = out[i];
+            if a <= x1 + eps && x0 <= b + eps {
+                x0 = x0.min(a);
+                x1 = x1.max(b);
+                out.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        let at = out.partition_point(|s| s.0 < x0);
+        out.insert(at, (x0, x1));
     }
 
     type Liner = fn(&TextRequest) -> Vec<Line>;
@@ -251,6 +293,7 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
             Affine::IDENTITY
         };
     let mut out: Vec<(Rect, Fill)> = frame_bg.into_iter().collect();
+    let mut stretches = Vec::new();
     let mut span_start = 0usize;
     for sp in spans {
         let n = sp.char_count();
@@ -265,18 +308,18 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
             if b <= a {
                 continue;
             }
-            let x0 = line.edges.get(a - line.start_char).copied();
-            let x1 = line.edges.get(b - line.start_char).copied();
-            let (Some(x0), Some(x1)) = (x0, x1) else {
-                continue;
-            };
-            let r = Rect::new(
-                x0.min(x1),
-                line.baseline - line.descent,
-                x0.max(x1),
-                line.baseline + line.ascent,
-            );
-            out.push(((to_local * r.to_path(0.01)).bounding_box(), fill.clone()));
+            // The stretches its characters cover: right-to-left text and
+            // mixed directions too (#629).
+            line.stretches(a, b, &mut stretches);
+            for &(x0, x1) in &stretches {
+                let r = Rect::new(
+                    x0,
+                    line.baseline - line.descent,
+                    x1,
+                    line.baseline + line.ascent,
+                );
+                out.push(((to_local * r.to_path(0.01)).bounding_box(), fill.clone()));
+            }
         }
     }
     out
@@ -1706,6 +1749,10 @@ pub struct Shape {
     /// Object data fields (name/value), like the Object Data docker.
     #[serde(default)]
     pub data: Vec<(String, String)>,
+    /// A text that shows the number of the page it is drawn on (Layout >
+    /// Insert Page Number on a master layer, #807).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<PageNumberField>,
     /// Live effects, evaluated at render time (see `live.rs`).
     #[serde(default)]
     pub effects: Vec<crate::live::Effect>,
@@ -2045,6 +2092,7 @@ impl Shape {
             overprint_outline: false,
             link: None,
             data: Vec::new(),
+            page_number: None,
             effects: Vec::new(),
             wrap_text: false,
             wrap_style: crate::text_flow::TextWrap::default(),
@@ -2736,6 +2784,12 @@ impl Shape {
             }
             // A B-spline keeps its outline; the control points go.
             ShapeKind::Path { .. } => Some(self.kind.clone()),
+            // Text fills with the nonzero rule, curves with even-odd: the
+            // overlapping strokes of a glyph would leave holes (#800).
+            ShapeKind::Text { .. } => Some(ShapeKind::Path {
+                path: crate::shaping::nonzero_as_even_odd(&self.local_path()),
+                closed: true,
+            }),
             _ => Some(ShapeKind::Path {
                 path: self.local_path(),
                 closed: true,
@@ -3351,6 +3405,110 @@ impl PrimaryColorMode {
         match self {
             PrimaryColorMode::Cmyk => crate::Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
             PrimaryColorMode::Rgb => crate::Color::BLACK,
+        }
+    }
+}
+
+/// How a page number field shows the number (Layout > Insert Page
+/// Number): the number of the first page, the style and the text around
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageNumberField {
+    pub start_at: i64,
+    /// 0 arabic, 1 upper roman, 2 lower roman, 3 upper alpha, 4 lower alpha.
+    pub style: u8,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub suffix: String,
+}
+
+impl PageNumberField {
+    /// The text for the page at `index` (0-based).
+    pub fn label(&self, index: usize) -> String {
+        let n = self.start_at + index as i64;
+        let body = match self.style {
+            1 => roman(n),
+            2 => roman(n).to_lowercase(),
+            3 => alpha(n),
+            4 => alpha(n).to_lowercase(),
+            _ => n.to_string(),
+        };
+        format!("{}{}{}", self.prefix, body, self.suffix)
+    }
+}
+
+fn roman(mut n: i64) -> String {
+    if n <= 0 {
+        return n.to_string();
+    }
+    const T: [(i64, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (v, s) in T {
+        while n >= v {
+            out.push_str(s);
+            n -= v;
+        }
+    }
+    out
+}
+
+fn alpha(n: i64) -> String {
+    if n <= 0 {
+        return n.to_string();
+    }
+    // A..Z, then AA, AB... like spreadsheet columns.
+    let mut n = n - 1;
+    let mut out = Vec::new();
+    loop {
+        out.push((b'A' + (n % 26) as u8) as char);
+        n /= 26;
+        if n == 0 {
+            break;
+        }
+        n -= 1;
+    }
+    out.iter().rev().collect()
+}
+
+impl Shape {
+    /// This object, or one inside it, is a page number field.
+    pub fn holds_page_number(&self) -> bool {
+        self.page_number.is_some()
+            || match &self.kind {
+                ShapeKind::Group { children } => children.iter().any(Shape::holds_page_number),
+                _ => false,
+            }
+    }
+
+    /// Page number fields in this object show the number of the page at
+    /// `index` (0-based).
+    pub fn show_page_number(&mut self, index: usize) {
+        if let (Some(f), ShapeKind::Text { spans, .. }) = (&self.page_number, &mut self.kind) {
+            let label = f.label(index);
+            spans.truncate(1);
+            if let Some(first) = spans.first_mut() {
+                first.text = label;
+            }
+        }
+        if let ShapeKind::Group { children } = &mut self.kind {
+            for c in children {
+                c.show_page_number(index);
+            }
         }
     }
 }
@@ -4071,13 +4229,10 @@ impl Document {
     }
 
     /// Layers drawn for a page, bottom to top: applicable master layers,
-    /// then the page's own layers.
+    /// then the page's own layers, as they are stored (what clicks and
+    /// selections take objects from).
     pub fn layers_for_page(&self, page: PageId) -> Result<Vec<&Layer>> {
-        let idx = self
-            .pages
-            .iter()
-            .position(|p| p.id == page)
-            .ok_or(Error::PageNotFound(page))?;
+        let idx = self.page_index(page)?;
         let mut out: Vec<&Layer> = self
             .master
             .iter()
@@ -4085,6 +4240,37 @@ impl Document {
             .collect();
         out.extend(self.pages[idx].layers.iter());
         Ok(out)
+    }
+
+    /// [`Document::layers_for_page`] as drawn, printed and exported: a
+    /// master layer holding a page number field comes as a copy showing
+    /// this page's number (#807).
+    pub fn layers_drawn_for_page(&self, page: PageId) -> Result<Vec<std::borrow::Cow<'_, Layer>>> {
+        use std::borrow::Cow;
+        let idx = self.page_index(page)?;
+        Ok(self
+            .layers_for_page(page)?
+            .into_iter()
+            .map(|l| {
+                let master = self.master.iter().any(|m| m.id == l.id);
+                if master && l.shapes.iter().any(Shape::holds_page_number) {
+                    let mut l = l.clone();
+                    for s in &mut l.shapes {
+                        s.show_page_number(idx);
+                    }
+                    Cow::Owned(l)
+                } else {
+                    Cow::Borrowed(l)
+                }
+            })
+            .collect())
+    }
+
+    fn page_index(&self, page: PageId) -> Result<usize> {
+        self.pages
+            .iter()
+            .position(|p| p.id == page)
+            .ok_or(Error::PageNotFound(page))
     }
 
     pub fn layer(&self, id: LayerId) -> Result<&Layer> {
@@ -4727,7 +4913,11 @@ mod tests {
         };
         assert!(contents[0].effects.is_empty());
         assert!(matches!(contents[0].kind, ShapeKind::Path { .. }));
-        assert_eq!(contents[0].local_path().elements(), want.elements());
+        assert!(crate::live::same_outline(
+            &contents[0].local_path(),
+            &want,
+            0.02
+        ));
         assert_eq!(frame.effects.len(), 1, "the frame keeps its envelope");
         assert_eq!(
             frame.local_path().elements(),

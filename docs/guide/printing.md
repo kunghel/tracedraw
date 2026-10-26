@@ -118,7 +118,8 @@ PDF...** (also on the standard toolbar).
 - **Bleed**: 0 to 50 mm, starting at the drawing's bleed.
 - For PDF/X: the **Output condition** (FOGRA39 to start with) and, for
   X-1a and X-3, the resolution transparency is flattened at (300 dpi).
-  The output intent uses the CMYK profile set in Color Management.
+  The output intent uses the CMYK profile set in Color Management, or
+  else the CMYK profile the drawing carries.
 
 ### Document
 

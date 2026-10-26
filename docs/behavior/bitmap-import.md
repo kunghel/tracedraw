@@ -44,6 +44,22 @@ vertical dpi. A file that records no resolution, only an aspect ratio,
 or a value outside 1 to 100000 dpi comes in at 96 dpi. Pasted images
 and generated pictures are placed at 96 dpi.
 
+## On screen and in exports
+
+A picture is decoded once and kept (`crates/render/src/image_cache.rs`,
+512 MB of decoded pixels in the desktop build, 256 MB in the browser;
+the least recently drawn go first). Drawn at less than half its pixels'
+size, it is drawn from a reduced copy instead: level `k` halves the
+sides `k` times, each pixel the average of the four beneath it, and the
+level used is `floor(log2(1 / s))` for `s` screen pixels per picture
+pixel (at most 12), so it is sampled at between half and the whole of
+its size. The reduced copies share the same memory budget and are made
+when first needed. An upright picture (not turned or slanted) covers
+whole pixels: its edges are rounded to the nearest pixel boundary, so
+pictures laid side by side meet without a pale seam (#853,
+`band_tests::pictures_side_by_side_meet_without_a_seam`,
+`band_tests::a_picture_drawn_small_shows_the_average_of_its_pixels`).
+
 ## Checks
 
 - Each reader gives the stored value and nothing for missing, broken or

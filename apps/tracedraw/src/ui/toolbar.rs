@@ -282,6 +282,47 @@ pub(crate) fn item_action(id: &str) -> Option<icons::Action> {
     })
 }
 
+/// The name of a built-in Standard or Zoom toolbar button, by its id, as
+/// its tip names it (the Commands page lists them, #836).
+pub(crate) fn item_name(id: &str) -> Option<String> {
+    let key = match id {
+        crate::ui::bar_items::SEP => "options.separator",
+        "new" => "toolbar.new",
+        "open" => "toolbar.open",
+        "save" => "toolbar.save",
+        "git_pull" => "toolbar.git_pull",
+        "git_push" => "toolbar.git_push",
+        "print" => "toolbar.print",
+        "cut" => "toolbar.cut",
+        "copy" => "toolbar.copy",
+        "paste" => "toolbar.paste",
+        "undo" => "toolbar.undo",
+        "redo" => "toolbar.redo",
+        "import" => "toolbar.import",
+        "export" => "toolbar.export",
+        "publish_pdf" => "toolbar.publish_pdf",
+        "zoom_levels" => "toolbar.zoom_levels",
+        "fullscreen" => "toolbar.fullscreen_preview",
+        "rulers" => "toolbar.show_rulers",
+        "grid" => "toolbar.show_grid",
+        "guidelines" => "toolbar.show_guidelines",
+        "snap_off" => "toolbar.snap_off",
+        "snap_to" => "menu.view.snap_to",
+        "options" => "toolbar.options",
+        "launch" => "toolbar.launch",
+        "ai" => "toolbar.ai_generate",
+        "zoom_in" => "menu.view.zoom_in",
+        "zoom_out" => "menu.view.zoom_out",
+        "zoom_selected" => "toolbar.zoom_to_selected",
+        "zoom_fit" => "toolbar.zoom_to_fit",
+        "zoom_page" => "toolbar.zoom_to_page",
+        "zoom_width" => "toolbar.zoom_to_width",
+        "zoom_height" => "toolbar.zoom_to_height",
+        _ => return None,
+    };
+    Some(tr(key).trim_end_matches("...").to_string())
+}
+
 /// The picture of a Zoom toolbar button, by its id.
 pub(crate) fn item_pic(id: &str) -> Option<crate::ui::propbar::Pic> {
     use crate::ui::propbar::Pic as P;

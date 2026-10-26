@@ -120,6 +120,9 @@ struct Flags {
     fill_open_curves: bool,
     anti_alias: bool,
     draft: bool,
+    /// Drawing the warped outline of a text: filled with the nonzero rule
+    /// as the text is, so letters that overlap leave no hole (#647).
+    text_outline: bool,
 }
 
 impl Flags {
@@ -131,6 +134,7 @@ impl Flags {
             fill_open_curves: false,
             anti_alias: opts.anti_alias,
             draft: opts.draft,
+            text_outline: false,
         }
     }
 }
@@ -144,7 +148,19 @@ impl Default for Flags {
             fill_open_curves: false,
             anti_alias: true,
             draft: false,
+            text_outline: false,
         }
+    }
+}
+
+/// How `kind` is filled: text, and the warped outline of a text
+/// (`text_outline`), with the nonzero rule, so overlapping strokes and
+/// letters stay filled (#647, #800); other curves with even-odd.
+fn fill_rule(kind: &ShapeKind, text_outline: bool) -> FillRule {
+    match kind {
+        ShapeKind::Text { .. } => FillRule::Winding,
+        _ if text_outline => FillRule::Winding,
+        _ => FillRule::EvenOdd,
     }
 }
 
@@ -196,6 +212,52 @@ pub fn render_page(doc: &Document, page: PageId, opts: &RenderOptions) -> Option
     render_page_whole(doc, page, opts)
 }
 
+/// The reduced level of a picture to draw it from, given `m` from its
+/// pixels to the screen: each level halves its sides, and the one
+/// chosen is drawn at between half and the whole of its pixels' size
+/// (level 0 when the picture is drawn at half its size or more).
+fn bitmap_level(m: Affine) -> u32 {
+    let c = m.as_coeffs();
+    let scale = c[0].hypot(c[1]).max(c[2].hypot(c[3]));
+    if !scale.is_finite() || scale <= 0.0 || scale >= 0.5 {
+        return 0;
+    }
+    ((1.0 / scale).log2().floor().max(0.0) as u32).min(image_cache::MAX_LEVEL)
+}
+
+/// A picture's pixels-to-screen map `m` (a `w` x `h` picture) made to
+/// cover whole screen pixels when it is upright (not turned or
+/// slanted): its edges rounded to the nearest pixel boundary, so two
+/// pictures that meet on the page meet on the same pixel boundary. The
+/// area to fill comes with it, `None` when the picture is narrower than
+/// a pixel after rounding. `None` for a turned or slanted picture.
+fn snap_upright(m: [f64; 6], w: u32, h: u32) -> Option<([f64; 6], Option<tiny_skia::Rect>)> {
+    let upright = m[1].abs() < 1e-9 && m[2].abs() < 1e-9;
+    if !upright || !m.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let (w, h) = (w.max(1) as f64, h.max(1) as f64);
+    let (xa, xb) = (m[4], m[4] + m[0] * w);
+    let (ya, yb) = (m[5], m[5] + m[3] * h);
+    let (x0, x1) = (xa.min(xb).round(), xa.max(xb).round());
+    let (y0, y1) = (ya.min(yb).round(), ya.max(yb).round());
+    // Each side goes to the rounded edge it came from (a mirrored
+    // picture keeps its mirroring).
+    let (a, e) = if m[0] >= 0.0 {
+        ((x1 - x0) / w, x0)
+    } else {
+        (-(x1 - x0) / w, x1)
+    };
+    let (d, f) = if m[3] >= 0.0 {
+        ((y1 - y0) / h, y0)
+    } else {
+        (-(y1 - y0) / h, y1)
+    };
+    let area = tiny_skia::Rect::from_ltrb(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+        .filter(|_| x1 > x0 && y1 > y0);
+    Some(([a, 0.0, 0.0, d, e, f], area))
+}
+
 /// What on the page reaches past its own pixels: a lens (it samples what
 /// lies around it) and the widest drop shadow blur, mm.
 #[cfg(not(target_arch = "wasm32"))]
@@ -226,7 +288,7 @@ fn page_reach(doc: &Document, page: PageId) -> (bool, f64) {
         }
     }
     let (mut lens, mut blur) = (false, 0.0f64);
-    if let Ok(layers) = doc.layers_for_page(page) {
+    if let Ok(layers) = doc.layers_drawn_for_page(page) {
         for l in layers {
             for s in &l.shapes {
                 walk(s, &mut lens, &mut blur);
@@ -331,7 +393,7 @@ fn render_page_whole(doc: &Document, page: PageId, opts: &RenderOptions) -> Opti
         r.draw_shape(&bg_shape, Affine::IDENTITY);
     }
     let visible = visible_page_rect(opts);
-    let layers = doc.layers_for_page(page.id).ok()?;
+    let layers = doc.layers_drawn_for_page(page.id).ok()?;
     for layer in layers {
         if !layer.visible {
             continue;
@@ -417,6 +479,15 @@ impl Renderer<'_> {
     /// bounds (effects, shadows, symbols, the drag preview) are always
     /// drawn.
     fn out_of_sight(&self, shape: &Shape, visible: &Rect) -> bool {
+        self.out_of_sight_in(shape, Affine::IDENTITY, visible)
+    }
+
+    /// [`Self::out_of_sight`] for `shape` inside a group or clip frame
+    /// whose transform to the page is `parent`: the objects of a group
+    /// and the frame of a clip frame lie in its space, so a moved clip
+    /// frame (the pages placed on a printed sheet) is tested where it
+    /// draws (#848).
+    fn out_of_sight_in(&self, shape: &Shape, parent: Affine, visible: &Rect) -> bool {
         if !shape.visible {
             return true;
         }
@@ -434,17 +505,24 @@ impl Renderer<'_> {
         // outline inside it flat (#626).
         match &shape.kind {
             ShapeKind::Group { children } => {
-                return children.iter().all(|c| self.out_of_sight(c, visible));
+                let t = parent * shape.transform;
+                return children.iter().all(|c| self.out_of_sight_in(c, t, visible));
             }
-            ShapeKind::ClipFrame { frame, .. } => return self.out_of_sight(frame, visible),
+            ShapeKind::ClipFrame { frame, .. } => {
+                return self.out_of_sight_in(frame, parent * shape.transform, visible)
+            }
             _ => {}
         }
-        let b = shape.bounds();
+        let b = if parent == Affine::IDENTITY {
+            shape.bounds()
+        } else {
+            parent.transform_rect_bbox(shape.bounds())
+        };
         if !b.x0.is_finite() || !b.y0.is_finite() || !b.x1.is_finite() || !b.y1.is_finite() {
             return false;
         }
         let scale = {
-            let c = shape.transform.as_coeffs();
+            let c = (parent * shape.transform).as_coeffs();
             (c[0] * c[0] + c[1] * c[1])
                 .sqrt()
                 .max((c[2] * c[2] + c[3] * c[3]).sqrt())
@@ -530,6 +608,8 @@ impl Renderer<'_> {
             });
             let mut main = ev.main.clone();
             main.effects.clear();
+            let was_text = self.flags.text_outline;
+            self.flags.text_outline |= matches!(shape.kind, ShapeKind::Text { .. });
             if !self.flags.complex_effects || self.flags.wireframe {
                 // Complex effects off: the object is drawn as it is, with
                 // no pixel work for lenses or transparency masks.
@@ -541,6 +621,7 @@ impl Renderer<'_> {
             } else {
                 self.draw_shape(&main, parent);
             }
+            self.flags.text_outline = was_text;
             for a in &ev.above {
                 let mut a = a.clone();
                 a.effects.clear();
@@ -765,12 +846,47 @@ impl Renderer<'_> {
         } = &shape.kind
         {
             if !self.flags.wireframe {
-                if let Some(img) = image_cache::decode(png) {
-                    // Image pixel space (y down) to local rect (y up) to screen.
-                    let sx = rect.width() / (*width_px).max(1) as f64;
-                    let sy = rect.height() / (*height_px).max(1) as f64;
-                    let img_to_local = Affine::new([sx, 0.0, 0.0, -sy, rect.x0, rect.y1]);
-                    let m = (self.screen * transform * img_to_local).as_coeffs();
+                // Image pixel space (y down) to local rect (y up) to screen.
+                let (w0, h0) = ((*width_px).max(1) as f64, (*height_px).max(1) as f64);
+                let full = self.screen
+                    * transform
+                    * Affine::new([
+                        rect.width() / w0,
+                        0.0,
+                        0.0,
+                        -rect.height() / h0,
+                        rect.x0,
+                        rect.y1,
+                    ]);
+                // Drawn much smaller than its pixels: from a reduced level
+                // of the picture near the size drawn (#853).
+                let level = bitmap_level(full);
+                if let Some(img) = image_cache::decode_level(png, level) {
+                    let m = if level == 0 {
+                        full.as_coeffs()
+                    } else {
+                        let (lw, lh) = (img.width().max(1) as f64, img.height().max(1) as f64);
+                        let img_to_local = Affine::new([
+                            rect.width() / lw,
+                            0.0,
+                            0.0,
+                            -rect.height() / lh,
+                            rect.x0,
+                            rect.y1,
+                        ]);
+                        (self.screen * transform * img_to_local).as_coeffs()
+                    };
+                    let mut paint = Paint::default();
+                    paint.anti_alias = self.flags.anti_alias;
+                    paint.blend_mode = self.blend_for(shape.overprint_fill);
+                    // Upright: on whole pixels, so pictures laid side by
+                    // side meet without a pale seam where both edges were
+                    // half covered (#853).
+                    let snapped = snap_upright(m, img.width(), img.height());
+                    let (m, area) = match snapped {
+                        Some((m, r)) => (m, Some(r)),
+                        None => (m, None),
+                    };
                     let t = Transform::from_row(
                         m[0] as f32,
                         m[1] as f32,
@@ -779,9 +895,6 @@ impl Renderer<'_> {
                         m[4] as f32,
                         m[5] as f32,
                     );
-                    let mut paint = Paint::default();
-                    paint.anti_alias = self.flags.anti_alias;
-                    paint.blend_mode = self.blend_for(shape.overprint_fill);
                     paint.shader = tiny_skia::Pattern::new(
                         Pixmap::as_ref(&img),
                         SpreadMode::Pad,
@@ -789,13 +902,21 @@ impl Renderer<'_> {
                         1.0,
                         t,
                     );
-                    self.pixmap.fill_path(
-                        &sk,
-                        &paint,
-                        FillRule::Winding,
-                        Transform::identity(),
-                        None,
-                    );
+                    match area {
+                        Some(None) => {}
+                        Some(Some(r)) => {
+                            paint.anti_alias = false;
+                            self.pixmap
+                                .fill_rect(r, &paint, Transform::identity(), None);
+                        }
+                        None => self.pixmap.fill_path(
+                            &sk,
+                            &paint,
+                            FillRule::Winding,
+                            Transform::identity(),
+                            None,
+                        ),
+                    }
                 }
             }
             if let Some(stroke) = &shape.stroke {
@@ -836,10 +957,7 @@ impl Renderer<'_> {
         }
 
         if !self.flags.wireframe {
-            let rule = match &shape.kind {
-                ShapeKind::Text { .. } => FillRule::Winding,
-                _ => FillRule::EvenOdd,
-            };
+            let rule = fill_rule(&shape.kind, self.flags.text_outline);
             let blend = self.blend_for(shape.overprint_fill);
             if let Fill::Mesh(m) = &shape.fill {
                 // Mesh nodes are local: bring them to page space first.
@@ -2437,6 +2555,20 @@ pub fn render_page_image_with(
 
 #[cfg(test)]
 mod tests {
+    /// A text and the warped outline of one fill with the nonzero rule,
+    /// so letters an envelope pushes together stay filled where they
+    /// overlap (#647); other curves fill even-odd.
+    #[test]
+    fn warped_text_fills_like_text() {
+        use super::fill_rule;
+        let path = ShapeKind::Path {
+            path: BezPath::new(),
+            closed: true,
+        };
+        assert!(matches!(fill_rule(&path, false), FillRule::EvenOdd));
+        assert!(matches!(fill_rule(&path, true), FillRule::Winding));
+    }
+
     use super::*;
     use tracedraw_core::document::{Shape, ShapeKind};
     use tracedraw_core::{
@@ -4173,6 +4305,94 @@ mod band_tests {
         assert!(!dark(100.0, 66.0) && !dark(100.0, 24.0));
     }
 
+    /// Clip frames and groups moved by their own transform (the pages a
+    /// printed sheet repeats, each a clip frame placed on the sheet) are
+    /// drawn in every strip they reach: only the strip holding their
+    /// untransformed frame drew them, so Print Preview showed one row of
+    /// a repeated page and white above it (#848).
+    #[test]
+    fn moved_clip_frames_and_groups_are_drawn_in_every_strip() {
+        let rect = |id: u64, r: Rect| {
+            let mut s = Shape::new(
+                tracedraw_core::ShapeId(id),
+                ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = tracedraw_core::Fill::Solid(tracedraw_core::Color::BLACK);
+            s.stroke = None;
+            s
+        };
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 200.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut shapes = Vec::new();
+        // A 40 x 20 mm card repeated four times up the sheet, left.
+        for row in 0..4u64 {
+            let mut frame = rect(100 + row, Rect::new(0.0, 0.0, 40.0, 20.0));
+            frame.fill = tracedraw_core::Fill::None;
+            let mut clip = Shape::new(
+                tracedraw_core::ShapeId(10 + row),
+                ShapeKind::ClipFrame {
+                    frame: Box::new(frame),
+                    contents: vec![rect(200 + row, Rect::new(0.0, 0.0, 40.0, 20.0))],
+                },
+            );
+            clip.transform = Affine::translate((5.0, 10.0 + 45.0 * row as f64));
+            shapes.push(clip);
+        }
+        // A group moved up the sheet, right.
+        let mut group = Shape::new(
+            tracedraw_core::ShapeId(50),
+            ShapeKind::Group {
+                children: vec![rect(51, Rect::new(0.0, 0.0, 40.0, 20.0))],
+            },
+        );
+        group.transform = Affine::translate((55.0, 160.0));
+        shapes.push(group);
+        if let Ok(l) = doc.layer_mut(layer) {
+            l.shapes.extend(shapes);
+        }
+        // 5 px per mm: 500 x 1000 px, enough to be drawn in strips.
+        let opts = RenderOptions {
+            width: 500,
+            height: 1000,
+            view: ViewTransform {
+                zoom: 5.0,
+                origin_x: 0.0,
+                origin_y: 1000.0,
+            },
+            ..RenderOptions::default()
+        };
+        let visible = Rect::new(0.0, 100.0, 100.0, 200.0);
+        let r_px = &mut Pixmap::new(1, 1).expect("pixmap");
+        let r = Renderer {
+            pixmap: r_px,
+            screen: opts.view.affine(),
+            zoom: opts.view.zoom,
+            flags: Flags::from_options(&opts),
+            symbols: &doc.symbols,
+            preview: None,
+        };
+        let drawn = &doc.pages[0].layers[0].shapes;
+        assert!(r.out_of_sight(&drawn[0], &visible), "the bottom card");
+        assert!(!r.out_of_sight(&drawn[3], &visible), "the top card");
+        assert!(!r.out_of_sight(&drawn[4], &visible), "the group");
+        let px = render_page(&doc, page, &opts).expect("render");
+        let dark = |x: f64, y: f64| {
+            let (col, row) = ((x * 5.0) as u32, (1000.0 - y * 5.0) as u32);
+            px.pixel(col, row).is_some_and(|p| p.alpha() > 200)
+        };
+        for row in 0..4 {
+            let y = 20.0 + 45.0 * row as f64;
+            assert!(dark(25.0, y), "card {row} at {y} mm");
+            assert!(!dark(25.0, y + 20.0), "gap above card {row}");
+        }
+        assert!(dark(75.0, 170.0), "the group");
+    }
+
     /// The same inside a group, nested twice, and an ordinary 16 mm
     /// outline inside a group: the strips no longer cut the band flat at
     /// the group's bounds, which count no outline (#626).
@@ -4341,6 +4561,106 @@ mod band_tests {
         );
     }
 
+    /// A picture shape of `w` x `h` pixels from `pm` over `rect`.
+    fn picture(id: u64, pm: &Pixmap, rect: Rect) -> Shape {
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(id),
+            ShapeKind::Bitmap {
+                rect,
+                width_px: pm.width(),
+                height_px: pm.height(),
+                png: pm.encode_png().unwrap().into(),
+                fx: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = None;
+        s
+    }
+
+    /// #853: pictures laid side by side meet without a pale seam, at any
+    /// zoom (their shared edge falls between pixels here).
+    #[test]
+    fn pictures_side_by_side_meet_without_a_seam() {
+        let mut pm = Pixmap::new(16, 16).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(200, 0, 0, 255));
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        let page = doc.pages[0].id;
+        for (i, x) in [10.0, 30.3].into_iter().enumerate() {
+            doc.pages[0].layers[0].shapes.push(picture(
+                i as u64 + 1,
+                &pm,
+                Rect::new(x, 10.0, x + 20.3, 30.3),
+            ));
+        }
+        for zoom in [1.0, 1.37, 2.9, 0.41] {
+            let opts = RenderOptions {
+                width: 300,
+                height: 300,
+                view: ViewTransform {
+                    zoom,
+                    origin_x: 0.3,
+                    origin_y: 299.6,
+                },
+                anti_alias: true,
+                ..RenderOptions::default()
+            };
+            let out = render_page_whole(&doc, page, &opts).unwrap();
+            let y = (299.6 - 20.0 * zoom) as u32;
+            let x0 = (12.0 * zoom) as u32;
+            let x1 = (48.0 * zoom) as u32;
+            for x in x0..=x1 {
+                let p = out.pixel(x, y).unwrap();
+                assert_eq!(
+                    (p.red(), p.green(), p.alpha()),
+                    (200, 0, 255),
+                    "zoom {zoom}, x {x}"
+                );
+            }
+        }
+    }
+
+    /// #853: a picture drawn far smaller than its pixels shows their
+    /// average, not a few scattered pixels: a one-pixel checkerboard at
+    /// about a tenth of its size is an even grey.
+    #[test]
+    fn a_picture_drawn_small_shows_the_average_of_its_pixels() {
+        let mut pm = Pixmap::new(400, 400).unwrap();
+        for (i, px) in pm.data_mut().chunks_mut(4).enumerate() {
+            let (x, y) = (i % 400, i / 400);
+            let v = if (x + y) % 2 == 0 { 255 } else { 0 };
+            px.copy_from_slice(&[v, v, v, 255]);
+        }
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        let page = doc.pages[0].id;
+        doc.pages[0].layers[0]
+            .shapes
+            .push(picture(1, &pm, Rect::new(0.0, 0.0, 100.0, 100.0)));
+        // 400 pixels over 37: about a tenth of their size.
+        let opts = RenderOptions {
+            width: 37,
+            height: 37,
+            view: ViewTransform {
+                zoom: 0.37,
+                origin_x: 0.0,
+                origin_y: 37.0,
+            },
+            anti_alias: true,
+            ..RenderOptions::default()
+        };
+        let out = render_page_whole(&doc, page, &opts).unwrap();
+        for y in 2..35 {
+            for x in 2..35 {
+                let r = out.pixel(x, y).unwrap().red();
+                assert!((110..=145).contains(&r), "({x}, {y}): {r}");
+            }
+        }
+        assert_eq!(bitmap_level(Affine::scale(0.1)), 3);
+        assert_eq!(bitmap_level(Affine::scale(0.5)), 0);
+        assert_eq!(bitmap_level(Affine::scale(0.49)), 1);
+        assert_eq!(bitmap_level(Affine::scale(2.0)), 0);
+    }
+
     /// One picture cache serves every band: a picture across all bands of
     /// a render is decoded once, and the next render decodes nothing.
     #[cfg(not(target_arch = "wasm32"))]
@@ -4428,6 +4748,56 @@ mod band_tests {
         }
         assert!(worst <= 48, "bands differ by {worst}");
         assert!(off * 2000 < a.data().len(), "{off} values differ");
+    }
+
+    /// Render times of a page of 200 photo tiles (6000 x 4000 pixels in
+    /// all) at screen zooms from 2 % to 100 %, the second render of each
+    /// with the pictures decoded (#853).
+    #[test]
+    #[ignore]
+    fn picture_render_times() {
+        let (tw, th) = (300u32, 400u32);
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(210.0, 297.0));
+        let page = doc.pages[0].id;
+        for j in 0..10u32 {
+            for i in 0..20u32 {
+                let mut pm = Pixmap::new(tw, th).unwrap();
+                for (k, px) in pm.data_mut().chunks_mut(4).enumerate() {
+                    let v = ((k as u32 * 7 + i * 13 + j * 29) % 251) as u8;
+                    px.copy_from_slice(&[v, v / 2, 255 - v, 255]);
+                }
+                let (w_mm, h_mm) = (33.33, 44.44);
+                let x = -150.0 + i as f64 * w_mm;
+                let y = 100.0 - (j + 1) as f64 * h_mm;
+                doc.pages[0].layers[0].shapes.push(picture(
+                    (j * 20 + i + 1) as u64,
+                    &pm,
+                    Rect::new(x, y, x + w_mm, y + h_mm),
+                ));
+            }
+        }
+        for pct in [2.0, 10.0, 21.0, 100.0] {
+            // 96 pixels per inch on screen.
+            let zoom = pct / 100.0 * 96.0 / 25.4;
+            let opts = RenderOptions {
+                width: 1360,
+                height: 768,
+                view: ViewTransform {
+                    zoom,
+                    origin_x: 680.0 + 100.0 * zoom,
+                    origin_y: 384.0 + 100.0 * zoom,
+                },
+                anti_alias: true,
+                draft: true,
+                ..RenderOptions::default()
+            };
+            let t = std::time::Instant::now();
+            let _ = render_page(&doc, page, &opts);
+            let first = t.elapsed();
+            let t = std::time::Instant::now();
+            let _ = render_page(&doc, page, &opts);
+            eprintln!("{pct} %: first {first:?}, again {:?}", t.elapsed());
+        }
     }
 
     #[test]

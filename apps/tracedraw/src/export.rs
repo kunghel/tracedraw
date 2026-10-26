@@ -377,7 +377,7 @@ fn encode_raster_with(
 pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
     let mut doc = print_sheets(app, st);
     if st.separations {
-        doc = separations_doc(&doc);
+        doc = separations_doc_without(&doc, &st.plates_off);
     }
     let stem = app.document_title().trim_end_matches('*').to_string();
     // Files get their copies inside; the printer (lp) or the system
@@ -412,7 +412,15 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
         _ => {
             let name = format!("{stem}.pdf");
             if let (Some(printer), false) = (&st.printer, crate::files::WEB) {
-                return print_on(printer, &name, &doc, st.copies, st.collate, &stem);
+                // The sheets are drawn and spooled off the interface's
+                // thread: a slow or stuck printer leaves the window usable
+                // (#810).
+                let (printer, copies, collate) = (printer.clone(), st.copies, st.collate);
+                let msg = trf("status.printing_to", &[("name", &printer)]);
+                app.start_print_job(move || {
+                    print_on(&printer, &name, &doc, copies, collate, &stem)
+                });
+                return Ok(msg);
             }
             let pdf = tracedraw_io::pdf::document_to_pdf(&doc);
             if crate::files::WEB {
@@ -473,11 +481,41 @@ fn print_on(
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
 }
 
+/// Prints sent to the system viewer in this session.
+#[cfg(not(target_arch = "wasm32"))]
+static VIEWER_PRINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Where the `count`th print of `name` to the viewer goes in `dir`: the
+/// first takes the name itself, later ones "name (2).pdf" and on, so a
+/// viewer still showing (and holding) an earlier print opens the new one
+/// in a page of its own (#809). Prints of the name before the last one
+/// are removed once no viewer holds them.
+#[cfg(not(target_arch = "wasm32"))]
+fn viewer_print_path(dir: &Path, name: &str, count: u32) -> std::path::PathBuf {
+    let p = Path::new(name);
+    let stem = p.file_stem().map_or(name.into(), |s| s.to_string_lossy());
+    let ext = p.extension().map_or("pdf".into(), |s| s.to_string_lossy());
+    let nth = |n: u32| match n {
+        0 | 1 => dir.join(name),
+        n => dir.join(format!("{stem} ({n}).{ext}")),
+    };
+    for n in 1..count.saturating_sub(1) {
+        let _ = std::fs::remove_file(nth(n));
+    }
+    // A file of that name left by another session and still held.
+    let mut n = count.max(1);
+    while n < count.max(1) + 100 && nth(n).exists() && std::fs::remove_file(nth(n)).is_err() {
+        n += 1;
+    }
+    nth(n)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(name);
+    let count = VIEWER_PRINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let path = viewer_print_path(&dir, name, count);
     crate::files::write(&path, pdf).map_err(|e| e.to_string())?;
     open_with_system(&path)?;
     Ok(trf(
@@ -995,13 +1033,18 @@ fn invert_colors(s: &mut tracedraw_core::Shape) {
     });
 }
 
-/// Colour separations: one grayscale page per ink (C, M, Y, K, then each
-/// spot ink of the drawing) per page, where the ink coverage of every
-/// colour is drawn as a gray value. A spot colour prints on its own plate
-/// only, at its tint.
-/// One page per sheet and plate: the four process inks, then the spot
-/// inks, each as the grey of its coverage.
+/// Colour separations with every plate.
+#[cfg(test)]
 fn separations_doc(doc: &Document) -> Document {
+    separations_doc_without(doc, &[])
+}
+
+/// Colour separations: one grey page per sheet and plate (the four
+/// process inks, then each spot ink), each the grey of that ink's
+/// coverage; a spot colour prints on its own plate only, at its tint.
+/// The plates at the indices `off` (in [`plates`] order), those unticked
+/// in Print Preview, are left out (#846).
+fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
     let size = doc
         .pages
         .first()
@@ -1010,7 +1053,12 @@ fn separations_doc(doc: &Document) -> Document {
     let mut sep = Document::new(format!("{} (separations)", doc.title), size);
     sep.pages.clear();
     sep.symbols = doc.symbols.clone();
-    let plates = plates(doc);
+    let plates: Vec<(Plate, String)> = plates(doc)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !off.contains(i))
+        .map(|(_, p)| p)
+        .collect();
     for page in &doc.pages {
         for (plate, name) in &plates {
             let mut p = plate_page(page, *plate);
@@ -1422,6 +1470,29 @@ fn replace_in(
 
 #[cfg(test)]
 mod tests {
+    /// Each print to the viewer gets a name of its own, so the viewer
+    /// opens it in a new page while the last one is still shown; older
+    /// ones are cleared away (#809).
+    #[test]
+    fn each_print_to_the_viewer_gets_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("tracedraw-viewer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for count in 1..=3 {
+            let p = super::viewer_print_path(&dir, "Poster.pdf", count);
+            std::fs::write(&p, b"%PDF").unwrap();
+            paths.push(p);
+        }
+        let names: Vec<_> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Poster.pdf", "Poster (2).pdf", "Poster (3).pdf"]);
+        assert!(!paths[0].exists(), "the oldest is cleared away");
+        assert!(paths[1].exists() && paths[2].exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// A spot colour on a rectangle: printed with separations, the sheets
@@ -1465,6 +1536,14 @@ mod tests {
         assert_eq!(names, ["Cyan", "Magenta", "Yellow", "Black", "Spot Red"]);
         let seps = separations_doc(&sheets);
         assert_eq!(seps.pages.len(), 5);
+        // Plates unticked in Print Preview do not print (#846).
+        let some = separations_doc_without(&sheets, &[0, 2]);
+        let kept: Vec<&str> = some.pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        assert!(
+            kept[0].ends_with("Magenta") && kept[2].ends_with("Spot Red"),
+            "{kept:?}"
+        );
         let spot = &seps.pages[4];
         assert!(spot.name.ends_with("Spot Red"), "{}", spot.name);
         // The rectangle is full ink on its plate and absent on cyan.

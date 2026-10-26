@@ -1,6 +1,10 @@
 //! Movable bars. The toolbox, the colour palette, the standard toolbar,
-//! the property bar and the status bar dock on an edge of the window or
-//! float over it (the status bar docks only). A docked bar starts with a
+//! the property bar, the Text, Zoom and Transform toolbars, the time
+//! tracker and the status bar dock on an edge of the window or float over
+//! it (the status bar docks only). The toolbars docked along the top or
+//! the bottom lie in rows, several side by side in a row (#837, #855): a
+//! toolbar dropped on a row joins it where it is dropped, dropped on the
+//! line between two rows it starts a row of its own. A docked bar starts with a
 //! grip of dots; dragging the grip, or the title of a floating bar, shows
 //! where the bar will go: near an edge it docks there, elsewhere it floats
 //! where it is dropped. A right click on a grip or on the empty part of a
@@ -51,15 +55,31 @@ pub enum Bar {
     Standard,
     Property,
     Status,
+    Text,
+    Zoom,
+    Transform,
+    TimeTracker,
 }
 
 impl Bar {
+    /// The bars shown at first (Reset Bar Positions shows them again).
     pub const ALL: [Bar; 5] = [
         Bar::Standard,
         Bar::Property,
         Bar::Toolbox,
         Bar::Palette,
         Bar::Status,
+    ];
+
+    /// The toolbars that lie in rows along the top or the bottom, in the
+    /// order of their first rows.
+    pub const ROWS: [Bar; 6] = [
+        Bar::Standard,
+        Bar::Property,
+        Bar::Text,
+        Bar::Zoom,
+        Bar::Transform,
+        Bar::TimeTracker,
     ];
 
     pub fn key(self) -> &'static str {
@@ -69,6 +89,47 @@ impl Bar {
             Bar::Standard => "menu.window.toolbar_standard",
             Bar::Property => "menu.window.toolbar_property_bar",
             Bar::Status => "menu.window.toolbar_status_bar",
+            Bar::Text => "menu.window.toolbar_text",
+            Bar::Zoom => "menu.window.toolbar_zoom",
+            Bar::Transform => "menu.window.toolbar_transform",
+            Bar::TimeTracker => "menu.window.toolbar_time_tracker",
+        }
+    }
+
+    /// The bar's name in the preferences.
+    pub fn id(self) -> &'static str {
+        match self {
+            Bar::Toolbox => "toolbox",
+            Bar::Palette => "palette",
+            Bar::Standard => "standard",
+            Bar::Property => "property",
+            Bar::Status => "status",
+            Bar::Text => "text",
+            Bar::Zoom => "zoom",
+            Bar::Transform => "transform",
+            Bar::TimeTracker => "time_tracker",
+        }
+    }
+
+    /// The toolbar lies in a row when docked along the top or the bottom.
+    pub fn in_rows(self) -> bool {
+        Bar::ROWS.contains(&self)
+    }
+
+    /// The height of the toolbar's band in a row, its line included.
+    pub fn row_height(self) -> f32 {
+        match self {
+            Bar::Property => 53.0,
+            _ => 36.0,
+        }
+    }
+
+    /// The room the toolbar's buttons take across its row: the band less
+    /// the margins above and below them.
+    fn inner_height(self) -> f32 {
+        match self {
+            Bar::Property => 37.0,
+            _ => 32.0,
         }
     }
 
@@ -82,7 +143,12 @@ impl Bar {
                 Dock::Right,
                 Dock::Floating,
             ],
-            Bar::Standard | Bar::Property => &[Dock::Top, Dock::Bottom, Dock::Floating],
+            Bar::Standard
+            | Bar::Property
+            | Bar::Text
+            | Bar::Zoom
+            | Bar::Transform
+            | Bar::TimeTracker => &[Dock::Top, Dock::Bottom, Dock::Floating],
             Bar::Status => &[Dock::Top, Dock::Bottom],
         }
     }
@@ -92,7 +158,12 @@ impl Bar {
             Bar::Toolbox => Dock::Left,
             Bar::Palette => Dock::Bottom,
             Bar::Status => Dock::Bottom,
-            Bar::Standard | Bar::Property => Dock::Top,
+            Bar::Standard
+            | Bar::Property
+            | Bar::Text
+            | Bar::Zoom
+            | Bar::Transform
+            | Bar::TimeTracker => Dock::Top,
         }
     }
 
@@ -103,6 +174,10 @@ impl Bar {
             Bar::Standard => app.show_standard_toolbar,
             Bar::Property => app.show_property_bar,
             Bar::Status => app.show_status_bar,
+            Bar::Text => app.show_text_toolbar,
+            Bar::Zoom => app.show_zoom_toolbar,
+            Bar::Transform => app.show_transform_toolbar,
+            Bar::TimeTracker => app.settings.time_tracker.show_bar,
         }
     }
 
@@ -113,6 +188,10 @@ impl Bar {
             Bar::Standard => app.show_standard_toolbar = on,
             Bar::Property => app.show_property_bar = on,
             Bar::Status => app.show_status_bar = on,
+            Bar::Text => app.show_text_toolbar = on,
+            Bar::Zoom => app.show_zoom_toolbar = on,
+            Bar::Transform => app.show_transform_toolbar = on,
+            Bar::TimeTracker => app.settings.time_tracker.show_bar = on,
         }
     }
 
@@ -127,9 +206,17 @@ impl Bar {
             Bar::Standard => vec2(940.0, 36.0 + TITLE_H + 4.0),
             Bar::Property => vec2(1100.0, 53.0 + TITLE_H + 4.0),
             Bar::Status => vec2(900.0, 40.0),
+            Bar::Text => vec2(760.0, 36.0 + TITLE_H + 4.0),
+            Bar::Zoom => vec2(420.0, 36.0 + TITLE_H + 4.0),
+            Bar::Transform => vec2(820.0, 36.0 + TITLE_H + 4.0),
+            Bar::TimeTracker => vec2(520.0, 36.0 + TITLE_H + 4.0),
         }
     }
 }
+
+/// Where a toolbar docked along the top or the bottom lies: its row
+/// (0 the topmost) and its place in the row (0 the leftmost).
+pub type RowPlace = [u32; 2];
 
 /// Height of a floating bar's title strip.
 pub const TITLE_H: f32 = 18.0;
@@ -150,6 +237,16 @@ pub struct BarLayout {
     pub palette_pos: [f32; 2],
     pub standard_pos: [f32; 2],
     pub property_pos: [f32; 2],
+    pub text: Dock,
+    pub zoom: Dock,
+    pub transform: Dock,
+    pub time_tracker: Dock,
+    /// Top-left corners of the other floating toolbars, by [`Bar::id`].
+    pub floating_pos: std::collections::BTreeMap<String, [f32; 2]>,
+    /// The rows of the toolbars docked along the top or the bottom, by
+    /// [`Bar::id`]; a toolbar missing here takes its first row (each its
+    /// own, in the order of [`Bar::ROWS`]).
+    pub rows: std::collections::BTreeMap<String, RowPlace>,
     pub locked: bool,
     /// The layout's version: preferences written at 1 had the palette at
     /// the right edge by default (see [`BarLayout::migrate`]).
@@ -172,6 +269,12 @@ impl Default for BarLayout {
             palette_pos: [300.0, 600.0],
             standard_pos: [200.0, 140.0],
             property_pos: [200.0, 200.0],
+            text: Dock::Top,
+            zoom: Dock::Top,
+            transform: Dock::Top,
+            time_tracker: Dock::Top,
+            floating_pos: Default::default(),
+            rows: Default::default(),
             locked: false,
             version: LAYOUT_VERSION,
         }
@@ -199,6 +302,10 @@ impl BarLayout {
             Bar::Standard => self.standard,
             Bar::Property => self.property,
             Bar::Status => self.status,
+            Bar::Text => self.text,
+            Bar::Zoom => self.zoom,
+            Bar::Transform => self.transform,
+            Bar::TimeTracker => self.time_tracker,
         };
         if bar.docks().contains(&d) {
             d
@@ -218,6 +325,10 @@ impl BarLayout {
             Bar::Standard => self.standard = dock,
             Bar::Property => self.property = dock,
             Bar::Status => self.status = dock,
+            Bar::Text => self.text = dock,
+            Bar::Zoom => self.zoom = dock,
+            Bar::Transform => self.transform = dock,
+            Bar::TimeTracker => self.time_tracker = dock,
         }
         true
     }
@@ -228,6 +339,11 @@ impl BarLayout {
             Bar::Palette => self.palette_pos,
             Bar::Standard => self.standard_pos,
             Bar::Property | Bar::Status => self.property_pos,
+            _ => self
+                .floating_pos
+                .get(bar.id())
+                .copied()
+                .unwrap_or([240.0, 260.0]),
         };
         pos2(p[0], p[1])
     }
@@ -239,6 +355,186 @@ impl BarLayout {
             Bar::Palette => self.palette_pos = v,
             Bar::Standard => self.standard_pos = v,
             Bar::Property | Bar::Status => self.property_pos = v,
+            _ => {
+                self.floating_pos.insert(bar.id().to_string(), v);
+            }
+        }
+    }
+
+    /// The row and place of a toolbar along the top or the bottom.
+    pub fn row_place(&self, bar: Bar) -> RowPlace {
+        self.rows.get(bar.id()).copied().unwrap_or_else(|| {
+            let first = Bar::ROWS.iter().position(|b| *b == bar).unwrap_or(0);
+            [first as u32, 0]
+        })
+    }
+
+    /// The rows of the toolbars docked at `dock`, top to bottom, each
+    /// left to right; hidden toolbars keep their places in them.
+    pub fn rows_at(&self, dock: Dock) -> Vec<Vec<Bar>> {
+        let mut placed: Vec<(RowPlace, usize, Bar)> = Bar::ROWS
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| self.dock(**b) == dock)
+            .map(|(i, b)| (self.row_place(*b), i, *b))
+            .collect();
+        placed.sort_by_key(|(place, first, _)| (*place, *first));
+        let mut rows: Vec<Vec<Bar>> = Vec::new();
+        let mut last: Option<u32> = None;
+        for ([row, _], _, b) in placed {
+            match (last, rows.last_mut()) {
+                (Some(r), Some(cur)) if r == row => cur.push(b),
+                _ => rows.push(vec![b]),
+            }
+            last = Some(row);
+        }
+        rows
+    }
+
+    /// Keep `rows` (top to bottom, each left to right) as the places of
+    /// their toolbars, numbered from 0.
+    fn set_rows(&mut self, rows: &[Vec<Bar>]) {
+        for (r, row) in rows.iter().enumerate() {
+            for (k, b) in row.iter().enumerate() {
+                self.rows.insert(b.id().to_string(), [r as u32, k as u32]);
+            }
+        }
+    }
+
+    /// Put the toolbar `bar` at `target`, docking it there; the other
+    /// toolbars of that edge keep their order.
+    pub fn place_in_row(&mut self, bar: Bar, target: RowTarget) {
+        let dock = target.dock();
+        if !bar.in_rows() || !self.set_dock(bar, dock) {
+            return;
+        }
+        let mut rows: Vec<Vec<Bar>> = self
+            .rows_at(dock)
+            .into_iter()
+            .map(|r| r.into_iter().filter(|b| *b != bar).collect::<Vec<_>>())
+            .collect();
+        match target {
+            RowTarget::Into { row, before, .. } => match rows.get_mut(row) {
+                Some(r) => {
+                    let at = before
+                        .and_then(|x| r.iter().position(|b| *b == x))
+                        .unwrap_or(r.len());
+                    r.insert(at, bar);
+                }
+                None => rows.push(vec![bar]),
+            },
+            RowTarget::NewRow { at, .. } => {
+                let at = at.min(rows.len());
+                rows.insert(at, vec![bar]);
+            }
+        }
+        rows.retain(|r| !r.is_empty());
+        self.set_rows(&rows);
+    }
+}
+
+/// Where a toolbar dropped along the top or the bottom goes: into a row
+/// (before a toolbar of it, or at its end), or a row of its own at `at`
+/// (an index into [`BarLayout::rows_at`], the rows from there on moving
+/// one down).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RowTarget {
+    Into {
+        dock: Dock,
+        row: usize,
+        before: Option<Bar>,
+    },
+    NewRow {
+        dock: Dock,
+        at: usize,
+    },
+}
+
+impl RowTarget {
+    pub fn dock(self) -> Dock {
+        match self {
+            RowTarget::Into { dock, .. } | RowTarget::NewRow { dock, .. } => dock,
+        }
+    }
+}
+
+/// A row of toolbars as drawn this frame: its edge, its index in
+/// [`BarLayout::rows_at`], its band and each shown toolbar's part of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowSpot {
+    pub dock: Dock,
+    pub row: usize,
+    pub rect: Rect,
+    pub slots: Vec<(Bar, Rect)>,
+}
+
+/// How near the line between two rows a dropped toolbar starts a row of
+/// its own there.
+pub const ROW_EDGE: f32 = 7.0;
+
+/// Where the toolbar `bar` dropped at `p` goes among the rows drawn
+/// (`spots`): over a row, into it before the first toolbar whose middle
+/// lies right of `p`; near a row's upper or lower line, a new row there.
+/// `None` off every row.
+pub fn row_target(spots: &[RowSpot], bar: Bar, p: Pos2) -> Option<RowTarget> {
+    if !bar.in_rows() {
+        return None;
+    }
+    let spot = spots.iter().find(|s| s.rect.contains(p))?;
+    let dock = spot.dock;
+    if p.y < spot.rect.top() + ROW_EDGE {
+        return Some(RowTarget::NewRow { dock, at: spot.row });
+    }
+    if p.y > spot.rect.bottom() - ROW_EDGE {
+        return Some(RowTarget::NewRow {
+            dock,
+            at: spot.row + 1,
+        });
+    }
+    let before = spot
+        .slots
+        .iter()
+        .filter(|(b, _)| *b != bar)
+        .find(|(_, r)| r.center().x > p.x)
+        .map(|(b, _)| *b);
+    Some(RowTarget::Into {
+        dock,
+        row: spot.row,
+        before,
+    })
+}
+
+/// The mark a drop at `t` shows: a bar between toolbars of a row, or a
+/// band across the window between rows.
+fn row_mark(spots: &[RowSpot], t: RowTarget, bar: Bar) -> Option<Rect> {
+    match t {
+        RowTarget::Into { dock, row, before } => {
+            let spot = spots.iter().find(|s| s.dock == dock && s.row == row)?;
+            let x = match before.and_then(|b| spot.slots.iter().find(|(s, _)| *s == b)) {
+                Some((_, r)) => r.left(),
+                None => spot
+                    .slots
+                    .iter()
+                    .filter(|(b, _)| *b != bar)
+                    .map(|(_, r)| r.right())
+                    .fold(spot.rect.left(), f32::max),
+            };
+            Some(Rect::from_min_max(
+                pos2(x - 2.0, spot.rect.top()),
+                pos2(x + 2.0, spot.rect.bottom()),
+            ))
+        }
+        RowTarget::NewRow { dock, at } => {
+            let mut of_dock = spots.iter().filter(|s| s.dock == dock);
+            let y = match of_dock.clone().find(|s| s.row == at) {
+                Some(s) => s.rect.top(),
+                None => of_dock.next_back()?.rect.bottom(),
+            };
+            let any = spots.iter().find(|s| s.dock == dock)?;
+            Some(Rect::from_min_max(
+                pos2(any.rect.left(), y - 3.0),
+                pos2(any.rect.right(), y + 3.0),
+            ))
         }
     }
 }
@@ -345,6 +641,26 @@ pub fn background(app: &mut App, ui: &mut Ui, bar: Bar) {
     bar_menu(app, &resp, bar);
 }
 
+/// A right click anywhere in `rect`, the part of the window the bar
+/// takes, on its buttons and boxes too, opens the bar's menu (the one its
+/// background opens), as the toolbox does (#835). Call after drawing the
+/// bar's controls.
+fn menu_anywhere(app: &mut App, ui: &mut Ui, bar: Bar, rect: Rect) {
+    let hit = ui.input(|i| {
+        i.pointer.secondary_clicked() && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+    });
+    if !hit {
+        return;
+    }
+    let background = egui::Id::new(("bar_background", bar as u8));
+    egui::Popup::menu(&ui.response())
+        .id(background.with("bar_menu"))
+        .open_memory(Some(egui::SetOpenCommand::Bool(true)))
+        .at_pointer_fixed()
+        .style(crate::ui::menus::menu_popup_style)
+        .show(|ui| crate::ui::menus::body(ui, |ui| menu_body(app, ui, bar)));
+}
+
 /// The bar's context menu on `resp`. Each place that opens it (a grip, the
 /// bar's background, a floating title) keeps its own popup, so one menu
 /// never shows twice in a frame.
@@ -439,8 +755,22 @@ pub fn reset(app: &mut App) {
     crate::ui::bar_items::reset(app);
 }
 
-/// Put `bar` at `dock` (floating at `at` when given).
+/// Put `bar` at `dock` (floating at `at` when given). A toolbar coming to
+/// the top or the bottom from elsewhere takes a row of its own at the
+/// window's edge.
 pub fn move_bar(app: &mut App, bar: Bar, dock: Dock, at: Option<Pos2>) {
+    let before = app.settings.bars.dock(bar);
+    if bar.in_rows() && dock.horizontal() && before != dock {
+        let at = match dock {
+            Dock::Top => 0,
+            _ => app.settings.bars.rows_at(dock).len(),
+        };
+        app.settings
+            .bars
+            .place_in_row(bar, RowTarget::NewRow { dock, at });
+        bar.set_visible(app, true);
+        return;
+    }
     if app.settings.bars.set_dock(bar, dock) {
         if let (Dock::Floating, Some(p)) = (dock, at) {
             app.settings.bars.set_pos(bar, p);
@@ -465,16 +795,34 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context, menu_h: f32) {
     };
     drag.last = Some(p);
     app.bar_drag = Some(drag);
-    let dock = target_dock(drag.bar, screen, menu_h, p);
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         egui::Id::new("bar_drag_overlay"),
     ));
     let fill = Color32::from_rgba_unmultiplied(0x1E, 0x78, 0xD7, 46);
     let edge = Stroke::new(1.5, Color32::from_rgb(0x1E, 0x78, 0xD7));
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    // Over a row of toolbars: into it, or a row of its own between two.
+    if let Some(t) = row_target(&app.bar_rows, drag.bar, p) {
+        if let Some(mark) = row_mark(&app.bar_rows, t, drag.bar) {
+            painter.rect(
+                mark,
+                1.0,
+                edge.color,
+                Stroke::NONE,
+                egui::StrokeKind::Inside,
+            );
+        }
+        if !down {
+            app.bar_drag = None;
+            app.settings.bars.place_in_row(drag.bar, t);
+            drag.bar.set_visible(app, true);
+        }
+        return;
+    }
+    let dock = target_dock(drag.bar, screen, menu_h, p);
     let zone = drop_zone(app, drag, dock, screen, menu_h, p);
     painter.rect(zone, 2.0, fill, edge, egui::StrokeKind::Inside);
-    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     if !down {
         app.bar_drag = None;
         move_bar(app, drag.bar, dock, Some(p - drag.grab));
@@ -486,9 +834,8 @@ fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p:
     let thick = match drag.bar {
         Bar::Toolbox => crate::ui::toolbox::column_width(app),
         Bar::Palette => crate::ui::palette::thickness(app, crate::ui::palette::Row::Main),
-        Bar::Standard => 36.0,
-        Bar::Property => 53.0,
         Bar::Status => crate::ui::status::BAR_H,
+        b => b.row_height(),
     };
     // Bars dock inside the status bar, which keeps the outer band.
     let status = app.show_status_bar && drag.bar != Bar::Status;
@@ -526,9 +873,150 @@ fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p:
     }
 }
 
+/// The toolbar's buttons and boxes, in a row that slides when it is
+/// longer than the room it gets; the length they take.
+fn toolbar_body(app: &mut App, ui: &mut Ui, bar: Bar) -> f32 {
+    use crate::ui::{overflow, time_tracker, toolbar};
+    match bar {
+        Bar::Standard => overflow::row(ui, "standard", |ui| toolbar::standard_toolbar(app, ui)),
+        Bar::Property => overflow::row(ui, "property", |ui| toolbar::property_bar(app, ui)),
+        Bar::Text => overflow::row(ui, "text", |ui| toolbar::text_toolbar(app, ui)),
+        Bar::Zoom => overflow::row(ui, "zoom", |ui| toolbar::zoom_toolbar(app, ui)),
+        Bar::Transform => overflow::row(ui, "transform", |ui| toolbar::transform_toolbar(app, ui)),
+        Bar::TimeTracker => overflow::row(ui, "time_tracker", |ui| time_tracker::toolbar(app, ui)),
+        Bar::Toolbox | Bar::Palette | Bar::Status => 0.0,
+    }
+}
+
+/// The rows of toolbars docked at `dock` (the top or the bottom), each a
+/// band as high as its highest toolbar, the toolbars side by side in it.
+/// Each toolbar gets the length its buttons take while they all fit; when
+/// they do not, the room is shared by those lengths and each slides.
+/// Where the rows and toolbars were drawn goes to `app.bar_rows` for the
+/// drops of a dragged toolbar.
+pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
+    let rows = app.settings.bars.rows_at(dock);
+    let mut order: Vec<(usize, Vec<Bar>)> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| (i, r.into_iter().filter(|b| b.visible(app)).collect()))
+        .filter(|(_, r): &(usize, Vec<Bar>)| !r.is_empty())
+        .collect();
+    // Bottom panels stack upwards: the lowest row first.
+    if dock == Dock::Bottom {
+        order.reverse();
+    }
+    for (index, bars) in order {
+        let height = bars.iter().map(|b| b.row_height()).fold(0.0, f32::max);
+        let panel = if dock == Dock::Top {
+            egui::Panel::top(egui::Id::new(("bar_row_top", index)))
+        } else {
+            egui::Panel::bottom(egui::Id::new(("bar_row_bottom", index)))
+        };
+        panel
+            .exact_size(height)
+            .resizable(false)
+            .show_separator_line(dock == Dock::Top)
+            .frame(egui::Frame::new().fill(Tokens::panel()))
+            .show(ui, |ui| {
+                let row = ui.max_rect();
+                let widths: Vec<f32> = bars
+                    .iter()
+                    .map(|b| {
+                        ui.data(|d| d.get_temp::<f32>(egui::Id::new(("bar_natural", *b as u8))))
+                            .unwrap_or(row.width())
+                    })
+                    .collect();
+                let slots = share_row(row.width(), &widths);
+                let mut x = row.left();
+                let mut spots = Vec::new();
+                for (bar, w) in bars.iter().zip(slots) {
+                    let slot = Rect::from_min_max(pos2(x, row.top()), pos2(x + w, row.bottom()));
+                    x += w;
+                    spots.push((*bar, slot));
+                    let inner = bar.inner_height().min(slot.height());
+                    let body = Rect::from_center_size(slot.center(), vec2(slot.width(), inner));
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(slot)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .id_salt(("bar_slot", *bar as u8)),
+                    );
+                    child.set_clip_rect(slot.intersect(ui.clip_rect()));
+                    background(app, &mut child, *bar);
+                    let mut body_ui = child.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(
+                                body.with_min_x(body.min.x + 2.0)
+                                    .with_max_x(body.max.x - 4.0),
+                            )
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    grip(app, &mut body_ui, *bar, true);
+                    let gap = body_ui.spacing().item_spacing.x;
+                    let len = toolbar_body(app, &mut body_ui, *bar);
+                    // The length the toolbar takes whole: its margins, grip
+                    // and buttons.
+                    let natural = (2.0 + 9.0 + gap + len + 4.0).ceil();
+                    let key = egui::Id::new(("bar_natural", *bar as u8));
+                    if ui.data(|d| d.get_temp::<f32>(key)) != Some(natural) {
+                        ui.data_mut(|d| d.insert_temp(key, natural));
+                        ui.ctx().request_repaint();
+                    }
+                    menu_anywhere(app, &mut child, *bar, slot);
+                }
+                app.bar_rows.push(RowSpot {
+                    dock,
+                    row: index,
+                    rect: row,
+                    slots: spots,
+                });
+            });
+    }
+}
+
+/// The lengths of toolbars side by side in a row `room` long, wanting
+/// `want` each, left to right: each the length it wants while the room
+/// holds it and leaves [`MIN_SLOT`] for each toolbar after it, the last
+/// one taking the rest. A toolbar cut short slides (see `overflow.rs`).
+pub fn share_row(room: f32, want: &[f32]) -> Vec<f32> {
+    let n = want.len();
+    let floor = if n == 0 {
+        0.0
+    } else {
+        MIN_SLOT.min(room / n as f32)
+    };
+    let mut left = room.max(0.0);
+    let mut out = Vec::with_capacity(n);
+    for (i, w) in want.iter().enumerate() {
+        let after = (n - 1 - i) as f32 * floor;
+        let w = if i + 1 == n {
+            left
+        } else {
+            let w = if w.is_finite() { w.max(1.0) } else { left };
+            w.min(left - after).max(floor.min(left))
+        };
+        out.push(w);
+        left = (left - w).max(0.0);
+    }
+    out
+}
+
+/// The shortest part of a row a toolbar gets while there is room.
+pub const MIN_SLOT: f32 = 90.0;
+
 /// The floating bars, each in a small window with its name, at its place.
 pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
-    for bar in [Bar::Standard, Bar::Property, Bar::Toolbox, Bar::Palette] {
+    for bar in [
+        Bar::Standard,
+        Bar::Property,
+        Bar::Text,
+        Bar::Zoom,
+        Bar::Transform,
+        Bar::TimeTracker,
+        Bar::Toolbox,
+        Bar::Palette,
+    ] {
         if !bar.visible(app) || app.settings.bars.dock(bar) != Dock::Floating {
             continue;
         }
@@ -648,6 +1136,15 @@ fn floating_body(app: &mut App, ui: &mut Ui, bar: Bar, size: Vec2) {
                 .show(ui, |ui| {
                     ui.set_height(37.0);
                     crate::ui::toolbar::property_bar(app, ui);
+                });
+        }
+        Bar::Text | Bar::Zoom | Bar::Transform | Bar::TimeTracker => {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(4, 2))
+                .show(ui, |ui| {
+                    ui.set_height(32.0);
+                    ui.set_width(size.x - 8.0);
+                    toolbar_body(app, ui, bar);
                 });
         }
         Bar::Status => {}
@@ -786,6 +1283,182 @@ mod tests {
         let mut empty: BarLayout = serde_json::from_str("{}").expect("empty");
         empty.migrate();
         assert_eq!(empty, BarLayout::default());
+    }
+
+    /// The toolbars along the top start each in a row of its own; one
+    /// dropped into a row joins it where it was dropped, one dropped on
+    /// the line between rows starts a row there, and the places survive
+    /// the preferences (#837, #855).
+    #[test]
+    fn toolbars_share_rows_and_keep_their_places() {
+        use Bar::*;
+        let mut l = BarLayout::default();
+        let first = vec![
+            vec![Standard],
+            vec![Property],
+            vec![Text],
+            vec![Zoom],
+            vec![Transform],
+            vec![TimeTracker],
+        ];
+        assert_eq!(l.rows_at(Dock::Top), first);
+        assert!(l.rows_at(Dock::Bottom).is_empty());
+        // The property bar beside the standard toolbar.
+        l.place_in_row(
+            Property,
+            RowTarget::Into {
+                dock: Dock::Top,
+                row: 0,
+                before: None,
+            },
+        );
+        assert_eq!(l.rows_at(Dock::Top)[0], vec![Standard, Property]);
+        assert_eq!(l.rows_at(Dock::Top).len(), 5);
+        // The Zoom toolbar in front of the standard toolbar.
+        l.place_in_row(
+            Zoom,
+            RowTarget::Into {
+                dock: Dock::Top,
+                row: 0,
+                before: Some(Standard),
+            },
+        );
+        assert_eq!(l.rows_at(Dock::Top)[0], vec![Zoom, Standard, Property]);
+        // The property bar back on a row of its own under the first.
+        l.place_in_row(
+            Property,
+            RowTarget::NewRow {
+                dock: Dock::Top,
+                at: 1,
+            },
+        );
+        assert_eq!(
+            l.rows_at(Dock::Top)[..2],
+            [vec![Zoom, Standard], vec![Property]]
+        );
+        // Kept in the preferences.
+        let json = serde_json::to_string(&l).expect("json");
+        let back: BarLayout = serde_json::from_str(&json).expect("back");
+        assert_eq!(back.rows_at(Dock::Top), l.rows_at(Dock::Top));
+        // A toolbar sent to the bottom takes a row at the window's edge,
+        // and back at the top the first row.
+        let mut app = App::headless();
+        app.settings.bars = l;
+        move_bar(&mut app, Text, Dock::Bottom, None);
+        assert_eq!(app.settings.bars.rows_at(Dock::Bottom), vec![vec![Text]]);
+        move_bar(&mut app, Transform, Dock::Bottom, None);
+        assert_eq!(
+            app.settings.bars.rows_at(Dock::Bottom),
+            vec![vec![Text], vec![Transform]]
+        );
+        move_bar(&mut app, Text, Dock::Top, None);
+        assert_eq!(app.settings.bars.rows_at(Dock::Top)[0], vec![Text]);
+        assert!(Text.visible(&app));
+        // The toolbox and the palette have no rows.
+        app.settings.bars.place_in_row(
+            Toolbox,
+            RowTarget::Into {
+                dock: Dock::Top,
+                row: 0,
+                before: None,
+            },
+        );
+        assert_eq!(app.settings.bars.dock(Toolbox), Dock::Left);
+        // Reset puts every toolbar back in its first row.
+        reset(&mut app);
+        assert_eq!(app.settings.bars.rows_at(Dock::Top), first);
+    }
+
+    /// Where a dragged toolbar goes over the rows drawn: into a row by
+    /// the middles of its toolbars, near a row's line a new row (#855).
+    #[test]
+    fn a_toolbar_dropped_on_a_row_joins_it_or_starts_one() {
+        let spot = |row: usize, top: f32, slots: Vec<(Bar, f32, f32)>| RowSpot {
+            dock: Dock::Top,
+            row,
+            rect: Rect::from_min_max(pos2(0.0, top), pos2(1600.0, top + 36.0)),
+            slots: slots
+                .into_iter()
+                .map(|(b, a, z)| (b, Rect::from_min_max(pos2(a, top), pos2(z, top + 36.0))))
+                .collect(),
+        };
+        let spots = vec![
+            spot(
+                0,
+                24.0,
+                vec![(Bar::Standard, 0.0, 900.0), (Bar::Zoom, 900.0, 1600.0)],
+            ),
+            spot(1, 60.0, vec![(Bar::Property, 0.0, 1600.0)]),
+        ];
+        let into = |row, before| RowTarget::Into {
+            dock: Dock::Top,
+            row,
+            before,
+        };
+        assert_eq!(
+            row_target(&spots, Bar::Property, pos2(300.0, 40.0)),
+            Some(into(0, Some(Bar::Standard)))
+        );
+        assert_eq!(
+            row_target(&spots, Bar::Property, pos2(1000.0, 40.0)),
+            Some(into(0, Some(Bar::Zoom)))
+        );
+        assert_eq!(
+            row_target(&spots, Bar::Property, pos2(1300.0, 40.0)),
+            Some(into(0, None))
+        );
+        // Its own row: it stays.
+        assert_eq!(
+            row_target(&spots, Bar::Property, pos2(800.0, 78.0)),
+            Some(into(1, None))
+        );
+        // Near the lines: a row of its own above or below.
+        assert_eq!(
+            row_target(&spots, Bar::Property, pos2(800.0, 26.0)),
+            Some(RowTarget::NewRow {
+                dock: Dock::Top,
+                at: 0
+            })
+        );
+        assert_eq!(
+            row_target(&spots, Bar::Zoom, pos2(800.0, 94.0)),
+            Some(RowTarget::NewRow {
+                dock: Dock::Top,
+                at: 2
+            })
+        );
+        // Off the rows, or a bar without rows: the edges decide.
+        assert_eq!(row_target(&spots, Bar::Property, pos2(800.0, 500.0)), None);
+        assert_eq!(row_target(&spots, Bar::Toolbox, pos2(300.0, 40.0)), None);
+        // The marks: a line before the Zoom toolbar, a band between rows.
+        let m = row_mark(&spots, into(0, Some(Bar::Zoom)), Bar::Property).expect("mark");
+        assert!((m.center().x - 900.0).abs() < 1e-3 && m.height() == 36.0);
+        let m = row_mark(
+            &spots,
+            RowTarget::NewRow {
+                dock: Dock::Top,
+                at: 1,
+            },
+            Bar::Zoom,
+        )
+        .expect("band");
+        assert!((m.center().y - 60.0).abs() < 1e-3 && m.width() == 1600.0);
+    }
+
+    /// Toolbars side by side keep their lengths while they fit, the last
+    /// taking the rest; when they do not, the first ones keep theirs and
+    /// the later ones get what is left, never under the floor (#855).
+    #[test]
+    fn a_row_shares_its_length() {
+        assert_eq!(share_row(1600.0, &[900.0, 500.0]), vec![900.0, 700.0]);
+        assert_eq!(share_row(1600.0, &[980.0, 940.0]), vec![980.0, 620.0]);
+        assert_eq!(
+            share_row(1000.0, &[980.0, 940.0]),
+            vec![1000.0 - MIN_SLOT, MIN_SLOT]
+        );
+        assert_eq!(share_row(1600.0, &[f32::INFINITY]), vec![1600.0]);
+        assert_eq!(share_row(100.0, &[300.0, 300.0]), vec![50.0, 50.0]);
+        assert!(share_row(500.0, &[]).is_empty());
     }
 
     #[test]

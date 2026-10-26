@@ -416,7 +416,7 @@ pub fn sample_outline(data: &[u8], index: u32, text: &str) -> Option<(BezPath, f
     let mut x = 0.0;
     let mut any = false;
     for c in text.chars() {
-        let Some(g) = f.glyph_index(c).or_else(|| f.glyph_index('?')) else {
+        let Some(g) = crate::face_glyph(&f, c).or_else(|| f.glyph_index('?')) else {
             continue;
         };
         let mut pen = Pen {

@@ -110,12 +110,6 @@ use crate::theme::Tokens;
 use egui::{Frame, Panel, Sense, Ui};
 use tracedraw_core::geometry::Point;
 
-fn bar() -> Frame {
-    Frame::new()
-        .fill(Tokens::panel())
-        .inner_margin(egui::Margin::symmetric(4, 2))
-}
-
 /// Customization > Appearance > Interface size: the size of the menus,
 /// bars and panels relative to the scaling the system gives the monitor
 /// the window is on, as other programs size themselves. 1 (100 %) is the
@@ -249,6 +243,8 @@ pub fn root(app: &mut App, ui: &mut Ui) {
 }
 
 fn root_frame(app: &mut App, ui: &mut Ui) {
+    // The rest of a notch a number field took scrolls nothing (#783).
+    crate::ui::field::hold_taken_wheel(ui.ctx());
     // Dockers set their canvas previews again each frame they are shown;
     // the document palette says where it is when it is drawn.
     app.docker_preview.clear();
@@ -329,6 +325,10 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     }
     // VBA macros: their requests, dialogs, forms and editor.
     macros_ui::frame(app, &ctx);
+    // A print on its way to a printer (#810).
+    if app.poll_print_job() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
     // Help > Updates, once a day.
     app.update_tick(crate::recovery::now_secs(), Some(ctx.clone()));
     // Options > Save > Auto-backup.
@@ -372,36 +372,6 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             .resizable(false)
             .show_separator_line(false)
     };
-    let standard_frame = Frame::new()
-        .fill(Tokens::panel())
-        .inner_margin(egui::Margin {
-            left: 2,
-            right: 4,
-            top: 2,
-            bottom: 2,
-        });
-    let property_frame = Frame::new()
-        .fill(Tokens::panel())
-        .inner_margin(egui::Margin {
-            left: 2,
-            right: 4,
-            top: 8,
-            bottom: 8,
-        });
-    let standard = |app: &mut App, ui: &mut Ui| {
-        bars::background(app, ui, Bar::Standard);
-        ui.horizontal(|ui| {
-            bars::grip(app, ui, Bar::Standard, true);
-            overflow::row(ui, "standard", |ui| toolbar::standard_toolbar(app, ui));
-        });
-    };
-    let property = |app: &mut App, ui: &mut Ui| {
-        bars::background(app, ui, Bar::Property);
-        ui.horizontal(|ui| {
-            bars::grip(app, ui, Bar::Property, true);
-            overflow::row(ui, "property", |ui| toolbar::property_bar(app, ui));
-        });
-    };
     let status_dock = bars_layout.dock(Bar::Status);
     let status_panel = |app: &mut App, ui: &mut Ui, panel: Panel| {
         panel
@@ -416,55 +386,15 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if app.show_status_bar && status_dock == Dock::Top {
         status_panel(app, ui, Panel::top("status_bar"));
     }
-    // The bands along the top: a 36 px standard toolbar and a 53 px
-    // property bar, each closed by a light line (included in the sizes).
-    if app.show_standard_toolbar && bars_layout.dock(Bar::Standard) == Dock::Top {
-        side(Panel::top("standard_toolbar"), 36.0)
-            .frame(standard_frame)
-            .show_separator_line(true)
-            .show(ui, |ui| standard(app, ui));
-    }
-    if app.show_property_bar && bars_layout.dock(Bar::Property) == Dock::Top {
-        side(Panel::top("property_bar"), 53.0)
-            .frame(property_frame)
-            .show_separator_line(true)
-            .show(ui, |ui| property(app, ui));
-    }
-    if app.show_text_toolbar {
-        Panel::top("text_toolbar").frame(bar()).show(ui, |ui| {
-            overflow::row(ui, "text", |ui| toolbar::text_toolbar(app, ui))
-        });
-    }
-    if app.show_zoom_toolbar {
-        Panel::top("zoom_toolbar").frame(bar()).show(ui, |ui| {
-            overflow::row(ui, "zoom", |ui| toolbar::zoom_toolbar(app, ui))
-        });
-    }
-    if app.show_transform_toolbar {
-        Panel::top("transform_toolbar").frame(bar()).show(ui, |ui| {
-            overflow::row(ui, "transform", |ui| toolbar::transform_toolbar(app, ui))
-        });
-    }
-    if app.settings.time_tracker.show_bar {
-        Panel::top("time_tracker_toolbar")
-            .frame(bar())
-            .show(ui, |ui| {
-                overflow::row(ui, "time_tracker", |ui| time_tracker::toolbar(app, ui))
-            });
-    }
+    // The toolbars along the top, in rows (a 36 px band for the standard
+    // toolbar, 53 px for the property bar, each closed by a light line),
+    // several side by side in a row where they were put (#837, #855).
+    app.bar_rows.clear();
+    bars::docked_rows(app, ui, Dock::Top);
     if app.show_status_bar && status_dock == Dock::Bottom {
         status_panel(app, ui, Panel::bottom("status_bar"));
     }
-    if app.show_property_bar && bars_layout.dock(Bar::Property) == Dock::Bottom {
-        side(Panel::bottom("property_bar"), 53.0)
-            .frame(property_frame)
-            .show(ui, |ui| property(app, ui));
-    }
-    if app.show_standard_toolbar && bars_layout.dock(Bar::Standard) == Dock::Bottom {
-        side(Panel::bottom("standard_toolbar"), 36.0)
-            .frame(standard_frame)
-            .show(ui, |ui| standard(app, ui));
-    }
+    bars::docked_rows(app, ui, Dock::Bottom);
 
     // The default palette as a column on a side lies outermost (outside
     // the dockers); as a row (at the bottom by default) it comes after the
@@ -724,8 +654,16 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                     app.view.pan(egui::vec2(scroll.y, scroll.x));
                 } else if mods.ctrl && scroll != egui::Vec2::ZERO {
                     app.view.pan(scroll);
-                } else if notches != 0.0 {
-                    app.view.zoom_at(h, zoom_factor);
+                } else if scroll.y != 0.0 {
+                    // The smoothed wheel delta, spread over a few frames
+                    // as a scroll is, so a notch zooms in one glide
+                    // instead of one jump; its frames multiply to the same
+                    // 1.15 a notch (#766).
+                    let per_notch = ui
+                        .ctx()
+                        .options(|o| o.input_options.line_scroll_speed)
+                        .max(1.0);
+                    app.view.zoom_at(h, 1.15f32.powf(scroll.y / per_notch));
                 }
             } else if mods.ctrl && notches != 0.0 {
                 app.view.zoom_at(h, zoom_factor);

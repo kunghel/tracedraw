@@ -26,7 +26,7 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
     let mut gradient_defs = String::new();
     let mut body = String::new();
     let mut next_grad = 0usize;
-    let layers = doc.layers_for_page(page.id).unwrap_or_default();
+    let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     for layer in layers {
         if !layer.visible {
             continue;
@@ -312,17 +312,22 @@ fn write_unlinked(
         paint_value(&shape.fill, bounds, symbols, defs, next_grad)
     );
 
+    let drawn = shape.stroke.as_ref().map(|s| drawn_stroke(s, transform));
     // A calligraphic, variable, inside or outside outline, or one with
     // dashes fitted to the corners, has no SVG equivalent: its area is
     // written as a filled path after the object.
-    let calligraphic = shape.stroke.as_ref().and_then(|s| {
-        tracedraw_core::shaping::outline_band(&shape.page_path(), s, 1.0).map(|b| {
-            let band = parent * b;
-            let paint = outline_paint_value(s, band.bounding_box(), symbols, defs, next_grad);
-            (band, paint)
-        })
-    });
-    let stroke_attr = match &shape.stroke {
+    let calligraphic = shape
+        .stroke
+        .as_ref()
+        .zip(drawn.as_ref())
+        .and_then(|(s, (_, scale))| {
+            tracedraw_core::shaping::outline_band(&shape.page_path(), s, *scale).map(|b| {
+                let band = parent * b;
+                let paint = outline_paint_value(s, band.bounding_box(), symbols, defs, next_grad);
+                (band, paint)
+            })
+        });
+    let stroke_attr = match drawn.as_ref().map(|(s, _)| s) {
         None => "stroke=\"none\"".to_string(),
         Some(s) if calligraphic.is_some() || s.painterly.is_some() => "stroke=\"none\"".to_string(),
         Some(s) => {
@@ -385,10 +390,9 @@ fn write_unlinked(
         );
     }
     // A painterly outline: its marks, one path per opacity step.
-    if let Some((s, brush)) = shape
-        .stroke
+    if let Some((s, brush)) = drawn
         .as_ref()
-        .and_then(|s| s.painterly.as_ref().map(|b| (s, b)))
+        .and_then(|(s, _)| s.painterly.as_ref().map(|b| (s, b)))
     {
         for (alpha, marks) in
             tracedraw_core::painterly::marks_by_opacity(&shape.page_path(), s.width, brush, 12)
@@ -415,6 +419,28 @@ fn write_unlinked(
             );
         }
     }
+}
+
+/// The outline as the drawing window draws it under `transform`, and the
+/// factor its width took: one that scales with its object ("Scale with
+/// object") takes the object's scale factor, so a 10 mm outline on an
+/// object scaled to a quarter is 2.5 mm wide. Others keep their width
+/// (factor 1), and a hairline stays a hairline.
+pub(crate) fn drawn_stroke(
+    s: &tracedraw_core::Stroke,
+    transform: Affine,
+) -> (tracedraw_core::Stroke, f64) {
+    let scale = if s.scale_with_object {
+        let c = transform.as_coeffs();
+        (c[0] * c[3] - c[1] * c[2]).abs().sqrt().max(1e-6)
+    } else {
+        1.0
+    };
+    let mut drawn = s.clone();
+    if drawn.width > tracedraw_core::Stroke::HAIRLINE + 1e-9 {
+        drawn.width *= scale;
+    }
+    (drawn, scale)
 }
 
 /// The SVG paint of an outline: its own paint (a gradient, pattern,
@@ -841,6 +867,34 @@ mod tests {
         };
         assert!(svg_of(true).contains("paint-order=\"stroke\""));
         assert!(!svg_of(false).contains("paint-order"));
+    }
+
+    /// An outline that scales with its object is as wide in the SVG as in
+    /// the drawing window: its width times the object's scale factor.
+    #[test]
+    fn an_outline_that_scales_with_its_object_takes_the_object_scale() {
+        let svg_of = |scale_with_object: bool| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let id = doc.ids_mut().shape();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 200.0, 100.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.transform = Affine::translate((20.0, 20.0)) * Affine::scale(0.25);
+            s.stroke = Some(Stroke {
+                scale_with_object,
+                ..Stroke::new(Color::rgb8(0, 0, 0), 10.0)
+            });
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+            page_to_svg(&doc, 0)
+        };
+        assert!(svg_of(true).contains("stroke-width=\"2.5\""));
+        assert!(svg_of(false).contains("stroke-width=\"10\""));
     }
 
     #[test]

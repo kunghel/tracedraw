@@ -191,15 +191,13 @@ pub fn text_box(t: &Shape) -> Option<Rect> {
     let (layout, to_parent) = crate::text_editing::layout_of_text_shape(t, Affine::IDENTITY)?;
     let mut b: Option<Rect> = None;
     for l in &layout.lines {
-        let (Some(x0), Some(x1)) = (l.edges.first(), l.edges.last()) else {
+        if l.edges.is_empty() {
             continue;
-        };
-        let r = Rect::new(
-            x0.min(*x1),
-            l.baseline - l.descent,
-            x0.max(*x1),
-            l.baseline + l.ascent,
-        );
+        }
+        // The line's left and right ends (in right-to-left text the
+        // edges run the other way, #629).
+        let (x0, x1) = l.x_range();
+        let r = Rect::new(x0, l.baseline - l.descent, x1, l.baseline + l.ascent);
         b = Some(b.map_or(r, |b| b.union(r)));
     }
     let ok = |r: &Rect| {
@@ -701,6 +699,56 @@ impl App {
 mod tests {
     use super::*;
     use crate::tools::Tool;
+
+    /// The box of a callout's text and a character background reach
+    /// over the whole of a line mixing directions, Arabic after a Latin
+    /// word included, not only to its first run (#629).
+    #[test]
+    fn text_boxes_and_backgrounds_cover_mixed_direction_text() {
+        tracedraw_text::install();
+        let fonts = tracedraw_text::fonts();
+        // A face without Arabic sets the Arabic word apart, as the default
+        // font on Linux does.
+        let Some(family) = ["Carlito", "Liberation Sans", "DejaVu Sans"]
+            .into_iter()
+            .find(|f| fonts.has_family(f))
+        else {
+            return;
+        };
+        for t in [
+            "Asasa \u{645}\u{631}\u{62D}\u{628}\u{627}",
+            "\u{645}\u{631}\u{62D}\u{628}\u{627} Asasa",
+        ] {
+            let mut span = tracedraw_core::TextSpan::new(t, family, 24.0);
+            span.background = Some(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+                255, 255, 0,
+            )));
+            let kind = ShapeKind::Text {
+                spans: vec![span],
+                origin: Point::new(0.0, 0.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            };
+            let ink = Shape::new(ShapeId(1), kind.clone()).bounds();
+            if ink.width() <= 0.0 {
+                continue;
+            }
+            let tb = text_box(&Shape::new(ShapeId(1), kind.clone())).expect("box");
+            assert!(
+                tb.x0 <= ink.x0 + 0.5 && tb.x1 >= ink.x1 - 0.5,
+                "{t}: {tb:?} {ink:?}"
+            );
+            let bg = tracedraw_core::document::text_backgrounds(&kind);
+            let x0 = bg.iter().map(|(r, _)| r.x0).fold(f64::MAX, f64::min);
+            let x1 = bg.iter().map(|(r, _)| r.x1).fold(f64::MIN, f64::max);
+            assert!(
+                x0 <= ink.x0 + 0.5 && x1 >= ink.x1 - 0.5,
+                "{t}: {bg:?} {ink:?}"
+            );
+        }
+    }
 
     fn parts_of(app: &App, g: ShapeId) -> (Vec<Point>, Option<Shape>, Shape) {
         let Some(ShapeKind::Group { children }) = app.doc().find_shape(g).map(|s| s.kind.clone())

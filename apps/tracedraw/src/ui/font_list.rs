@@ -479,7 +479,7 @@ fn font_list_with(
         });
         if let Some(dy) = step {
             // The bar under the list does not scroll as well.
-            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            crate::ui::field::take_wheel(ui);
             let at = families.iter().position(|f| f == current);
             let next = match (at, dy < 0.0) {
                 (Some(i), true) => (i + 1).min(families.len().saturating_sub(1)),

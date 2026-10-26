@@ -331,20 +331,12 @@ fn uniform(ui: &mut Ui, st: &mut EditFillState) {
             ui.horizontal(|ui| {
                 ui.label(tr("edit_fill.color"));
                 crate::ui::color_picker::color_button(ui, c);
+                // A colour picked from the drawing (#814).
+                crate::ui::color_picker::eyedropper(ui, egui::Id::new("edit_fill_pick"), c);
             });
             ui.horizontal(|ui| {
                 ui.label(tr("docker.model"));
-                let model = crate::ui::color_picker::edit_model(*c);
-                egui::ComboBox::from_id_salt("edit_fill_model")
-                    .selected_text(model)
-                    .width(96.0)
-                    .show_ui(ui, |ui| {
-                        for m in crate::ui::color_docker::MODELS {
-                            if ui.selectable_label(model == m, m).clicked() && model != m {
-                                *c = c.convert_to(m);
-                            }
-                        }
-                    });
+                crate::ui::color_picker::model_list(ui, egui::Id::new("edit_fill_model"), c);
             });
             let mut m = c.convert_to(crate::ui::color_picker::edit_model(*c));
             if crate::ui::color_docker::sliders(ui, &mut m) {

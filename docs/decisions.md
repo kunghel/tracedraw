@@ -23,8 +23,12 @@ for large documents; the trigger is the performance budget in
 
 Shaping is OpenType-complete through rustybuzz (HarfBuzz port). Line
 breaking, justification and hyphenation are ours; hyphenation uses the
-TeX pattern dictionaries (LGPL/MIT hyph files) per language. Type 1
-fonts are out of scope; convert them to OpenType.
+TeX pattern dictionaries (LGPL/MIT hyph files) per language. Mixed
+directions follow the Unicode bidirectional algorithm through
+`unicode-bidi` (MIT/Apache): the levels of text holding right-to-left
+letters, glyphs kept in text order for line breaking and each line put
+in display order when placed. Type 1 fonts are out of scope; convert
+them to OpenType.
 
 ## D4. PDF and PostScript: hand-written PDF writer, EPS from the same core
 

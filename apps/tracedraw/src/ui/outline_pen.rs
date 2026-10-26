@@ -36,6 +36,9 @@ pub struct OutlinePenState {
     pub node: Option<usize>,
     /// Nothing is selected: the dialog edits the default outline.
     pub defaults: bool,
+    /// What the drawing shows of the dialog (outline, fields set,
+    /// overprint), so the preview is made again only when it changes.
+    pub shown: Option<(Option<Stroke>, Vec<StrokeField>, Option<bool>)>,
 }
 
 /// Outline widths the width list offers, in points.
@@ -95,7 +98,40 @@ impl App {
             overprint_old,
             node: None,
             defaults,
+            shown: None,
         }));
+    }
+
+    /// Show what the dialog holds on the selection while it is open, as
+    /// the Edit Fill dialog does: the change is taken back and made anew
+    /// only when a value in the dialog changes, OK keeps it as one step
+    /// and Cancel, Esc or the close button take it back (#741).
+    pub fn preview_outline_pen(&mut self, st: &mut OutlinePenState) {
+        if st.defaults {
+            return;
+        }
+        let new = st.has.then(|| st.stroke.clone());
+        let unchanged = new == st.old && st.touched.is_empty() && st.overprint == st.overprint_old;
+        let now = (new, st.touched.clone(), st.overprint);
+        // Shown already, unless something else took the preview back.
+        if st.shown.as_ref() == Some(&now) && self.outline_preview != unchanged {
+            return;
+        }
+        self.end_outline_pen_preview();
+        if !unchanged {
+            self.engine.begin_preview();
+            self.outline_preview = true;
+            self.apply_outline_pen(st);
+        }
+        st.shown = Some(now);
+    }
+
+    /// Take back the outline the Outline Pen dialog shows on the
+    /// selection.
+    pub fn end_outline_pen_preview(&mut self) {
+        if std::mem::take(&mut self.outline_preview) {
+            self.engine.withdraw_preview();
+        }
     }
 
     /// OK in the Outline Pen dialog.
@@ -175,7 +211,12 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut OutlinePenState, clos
         app.open_dialog_help();
     }
     if ok {
+        app.end_outline_pen_preview();
         app.apply_outline_pen(st);
+    } else if *close {
+        app.end_outline_pen_preview();
+    } else {
+        app.preview_outline_pen(st);
     }
 }
 
@@ -1021,7 +1062,8 @@ mod tests {
     /// their neighbours and the ends, the fields following; a drag there
     /// no longer moves the dialog (#652). A click on empty bar adds a
     /// node, on a node picks it, a drag on empty bar adds one and slides
-    /// it; the document changes only on OK, in one step.
+    /// it; the drawing shows the change at once and OK keeps it as one
+    /// step.
     #[test]
     fn a_width_node_drags_along_the_bar_between_its_neighbours() {
         let ctx = crate::theme::ui_context();
@@ -1038,6 +1080,7 @@ mod tests {
             WidthNode::symmetric(0.25, 1.0),
             WidthNode::symmetric(0.75, 2.0),
         ];
+        let steps = app.engine.history_labels().0.len();
         for _ in 0..4 {
             run_dialog(&ctx, &mut app, &mut st, Vec::new());
         }
@@ -1048,7 +1091,6 @@ mod tests {
         let window_id = egui::Id::new(("chrome_dialog", tr("outline_pen.title")));
         let window = ctx.memory(|m| m.area_rect(window_id)).expect("the window");
         let x = |t: f32| egui::pos2(bar.left() + bar.width() * t, bar.center().y);
-        let steps = app.engine.history_labels().0.len();
         drag_on(&ctx, &mut app, &mut st, x(0.25), x(0.5));
         assert!(
             (st.stroke.widths[0].at - 0.5).abs() < 0.01,
@@ -1066,10 +1108,13 @@ mod tests {
             (moved.min - window.min).length() < 0.5,
             "the dialog stays: {moved:?}"
         );
+        // Shown on the drawing at once, as a preview OK keeps (#741).
         assert_eq!(
-            app.engine.history_labels().0.len(),
-            steps,
-            "nothing until OK"
+            app.doc()
+                .find_shape(a)
+                .and_then(|s| s.stroke.as_ref())
+                .map(|s| s.widths.clone()),
+            Some(st.stroke.widths.clone())
         );
         // Not past its neighbour, nor past the start.
         drag_on(&ctx, &mut app, &mut st, x(0.5), x(0.95));
@@ -1106,6 +1151,8 @@ mod tests {
             st.stroke.widths
         );
         assert!(st.stroke.widths.windows(2).all(|p| p[0].at <= p[1].at));
+        app.end_outline_pen_preview();
+        assert_eq!(app.engine.history_labels().0.len(), steps, "taken back");
         app.apply_outline_pen(&st);
         assert_eq!(app.engine.history_labels().0.len(), steps + 1);
         let got = app
@@ -1114,6 +1161,83 @@ mod tests {
             .and_then(|s| s.stroke.clone())
             .expect("outline");
         assert_eq!(got.widths, st.stroke.widths);
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    /// The dialog's outline shows on the selection while the dialog is
+    /// open, made again only when a value changes (not every frame);
+    /// Esc takes it back, history and all, and OK keeps it as one step
+    /// (#741).
+    #[test]
+    fn the_outline_shows_live_while_the_dialog_is_open() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let a = rect(&mut app, 10.0);
+        app.select(vec![a]);
+        let width = |app: &App| {
+            app.doc()
+                .find_shape(a)
+                .and_then(|s| s.stroke.as_ref())
+                .map(|s| s.width)
+        };
+        let before = width(&app);
+        let steps = app.engine.history_labels();
+        let edit = |app: &mut App, w: f64| {
+            let crate::ui::dialogs::Dialog::OutlinePen(st) = &mut app.dialog else {
+                panic!("the dialog");
+            };
+            st.stroke.width = w;
+            if !st.touched.contains(&StrokeField::Width) {
+                st.touched.push(StrokeField::Width);
+            }
+        };
+        app.open_outline_pen();
+        frame(&ctx, &mut app);
+        assert_eq!(width(&app), before, "nothing changed yet");
+        assert!(!app.outline_preview);
+        edit(&mut app, 2.0);
+        frame(&ctx, &mut app);
+        assert_eq!(width(&app), Some(2.0), "shown at once");
+        // Idle frames leave the preview as it is.
+        let rev = app.engine.revision();
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        assert_eq!(app.engine.revision(), rev, "made again only on a change");
+        edit(&mut app, 3.0);
+        frame(&ctx, &mut app);
+        assert_eq!(width(&app), Some(3.0));
+        // Esc (the keyboard closes any dialog): taken back.
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        frame(&ctx, &mut app);
+        assert_eq!(width(&app), before);
+        assert_eq!(app.engine.history_labels(), steps);
+        assert!(!app.outline_preview);
+        // OK: one step.
+        app.open_outline_pen();
+        frame(&ctx, &mut app);
+        edit(&mut app, 2.5);
+        frame(&ctx, &mut app);
+        let crate::ui::dialogs::Dialog::OutlinePen(st) = &app.dialog else {
+            panic!("the dialog");
+        };
+        let st = st.as_ref().clone();
+        app.end_outline_pen_preview();
+        app.apply_outline_pen(&st);
+        assert_eq!(app.engine.history_labels().0.len(), steps.0.len() + 1);
+        assert_eq!(width(&app), Some(2.5));
     }
 
     /// A node slides between its neighbours and the ends only.

@@ -639,7 +639,7 @@ mod tests {
             let sh = app.doc().shape(t).expect("text").1.clone();
             app.visual_bounds(&sh).center()
         };
-        // Corel's way: round to the bottom, then both mirrors.
+        // Moved round to the bottom, then both mirrors.
         app.place_fitted_text_round(false);
         let len = app.fitted_text().unwrap().on_path.guide().length();
         app.edit_fitted_text(|tp, _| tp.offset += len / 2.0);

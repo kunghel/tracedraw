@@ -90,6 +90,26 @@ impl ItemBar {
     }
 }
 
+/// Every built-in button of the bars (each once, the separator first):
+/// what the Commands page offers to drag back onto a bar, so a button
+/// taken off can always be put back (#836).
+pub fn all_buttons() -> Vec<&'static str> {
+    let mut out = vec![SEP];
+    for b in ItemBar::ALL {
+        for id in b.defaults() {
+            if !out.contains(id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// Whether `id` is one of [`all_buttons`].
+pub fn is_button(id: &str) -> bool {
+    all_buttons().contains(&id)
+}
+
 /// The bar's buttons, in order.
 pub fn items(app: &App, bar: ItemBar) -> Vec<String> {
     match app.settings.bar_items.get(bar.id()) {

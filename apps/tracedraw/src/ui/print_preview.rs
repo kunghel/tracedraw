@@ -639,6 +639,14 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         close = true;
     }
     if print {
+        // The inks unticked here do not print (#846).
+        pv.st.plates_off = pv
+            .inks
+            .iter()
+            .enumerate()
+            .filter(|(_, on)| !**on)
+            .map(|(i, _)| i)
+            .collect();
         match crate::export::print(app, &pv.st) {
             Ok(msg) => app.status = msg,
             Err(e) => app.status = format!("{}: {e}", tr("dialog.print_failed")),
@@ -826,5 +834,44 @@ mod tests {
         assert_eq!(settings_key(&a), settings_key(&b));
         b.crop_marks = true;
         assert_ne!(settings_key(&a), settings_key(&b));
+    }
+
+    /// A page smaller than the paper, repeated on it: every copy shows in
+    /// the preview, not only the bottom row with white over the rest
+    /// (#848).
+    #[test]
+    fn every_repeated_page_shows_in_the_preview() {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(90.0, 50.0));
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 90.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(230, 30, 30));
+        s.stroke = None;
+        doc.pages[0].layers[0].shapes.push(s);
+        let o = crate::imposition::Options {
+            layout: crate::imposition::Layout::Repeat { cols: 2, rows: 5 },
+            sheet: Some(tracedraw_core::geometry::Size::new(210.0, 297.0)),
+            ..Default::default()
+        };
+        let sheets = crate::imposition::impose(&doc, &o);
+        let page = &sheets.pages[0];
+        let plan = crate::imposition::plan(&[doc.pages[0].size], &o);
+        let zoom = 3.0;
+        let (w, h) = (630usize, 891usize);
+        let img = render_sheet(page, w as u32, h as u32, zoom).expect("image");
+        assert_eq!(img.size, [w, h]);
+        assert_eq!(plan[0].cells.len(), 10);
+        for c in &plan[0].cells {
+            let m = c.trim.center();
+            let (x, y) = ((m.x * zoom) as usize, h - (m.y * zoom) as usize);
+            let px = img.pixels[y * w + x];
+            assert!(px.r() > 200 && px.g() < 80, "cell at {m:?}: {px:?}");
+        }
     }
 }

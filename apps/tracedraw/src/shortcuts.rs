@@ -100,6 +100,23 @@ pub fn same(a: &str, b: &str) -> bool {
     }
 }
 
+/// The keys that run `id` (a menu command's key or a tool's id): the
+/// user's keys for it when there are any (a command may have several,
+/// #822), else its `built_in` keys. An empty entry of the user's means
+/// the built-in keys were deleted.
+pub fn keys_for(user: &[(String, String)], id: &str, built_in: Option<&str>) -> Vec<String> {
+    let mut mine = user.iter().filter(|(k, _)| k == id).peekable();
+    if mine.peek().is_none() {
+        return built_in
+            .filter(|b| !b.is_empty())
+            .map(|b| vec![b.to_string()])
+            .unwrap_or_default();
+    }
+    mine.filter(|(_, v)| !v.is_empty())
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
 /// Shift, Ctrl, Alt and the system key pressed on their own (they arrive
 /// as key presses too, before the key they modify).
 pub fn is_modifier(key: Key) -> bool {

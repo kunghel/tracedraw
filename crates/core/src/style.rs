@@ -1023,54 +1023,128 @@ impl Mesh {
         true
     }
 
-    /// Add a grid line through the node nearest to `p` (double-click).
-    pub fn add_line(&mut self, p: Point) {
-        let Some(i) = self.nearest(p) else { return };
+    /// The cell of the grid that holds `p` (local space) and where in
+    /// it: (row, column, fraction across, fraction up), the fractions
+    /// those of the cell's bilinear patch.
+    pub fn locate(&self, p: Point) -> Option<(usize, usize, f64, f64)> {
         let cols = self.cols as usize + 1;
-        let (r, c) = (i / cols, i % cols);
-        // Insert a column after c (interpolating positions and colours),
-        // or a row after r, whichever edge is nearer.
-        let pos = self.nodes[i].pos;
-        let add_col = (p.x - pos.x).abs() >= (p.y - pos.y).abs() && c + 1 < cols;
-        if add_col {
-            let mut new_nodes = Vec::new();
-            for rr in 0..=self.rows as usize {
-                for cc in 0..cols {
-                    let n = self.nodes[rr * cols + cc];
-                    new_nodes.push(n);
-                    if cc == c {
-                        let next = self.nodes[rr * cols + cc + 1];
-                        new_nodes.push(MeshNode {
-                            pos: n.pos.midpoint(next.pos),
-                            color: lerp_color(n.color, next.color, 0.5),
-                            alpha: (n.alpha + next.alpha) / 2.0,
-                        });
+        let at = |r: usize, c: usize| self.nodes.get(r * cols + c).map(|n| n.pos);
+        for r in 0..self.rows as usize {
+            for c in 0..self.cols as usize {
+                let (Some(a), Some(b), Some(d), Some(e)) =
+                    (at(r, c), at(r, c + 1), at(r + 1, c), at(r + 1, c + 1))
+                else {
+                    continue;
+                };
+                // Newton steps on the patch a + (b - a) u + (d - a) v +
+                // (a - b - d + e) u v = p from its middle.
+                let (mut u, mut v) = (0.5, 0.5);
+                for _ in 0..12 {
+                    let q = a.to_vec2() * ((1.0 - u) * (1.0 - v))
+                        + b.to_vec2() * (u * (1.0 - v))
+                        + d.to_vec2() * ((1.0 - u) * v)
+                        + e.to_vec2() * (u * v);
+                    let f = q - p.to_vec2();
+                    let du = (b - a) * (1.0 - v) + (e - d) * v;
+                    let dv = (d - a) * (1.0 - u) + (e - b) * u;
+                    let det = du.x * dv.y - du.y * dv.x;
+                    if det.abs() < 1e-12 {
+                        break;
                     }
+                    u -= (f.x * dv.y - f.y * dv.x) / det;
+                    v -= (du.x * f.y - du.y * f.x) / det;
+                }
+                const EPS: f64 = 1e-6;
+                if u.is_finite()
+                    && v.is_finite()
+                    && (-EPS..=1.0 + EPS).contains(&u)
+                    && (-EPS..=1.0 + EPS).contains(&v)
+                {
+                    return Some((r, c, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)));
                 }
             }
-            self.cols += 1;
-            self.nodes = new_nodes;
-        } else if r < self.rows as usize {
-            let mut new_nodes = Vec::new();
-            for rr in 0..=self.rows as usize {
-                for cc in 0..cols {
-                    new_nodes.push(self.nodes[rr * cols + cc]);
-                }
-                if rr == r && rr < self.rows as usize {
-                    for cc in 0..cols {
-                        let n = self.nodes[rr * cols + cc];
-                        let next = self.nodes[(rr + 1) * cols + cc];
-                        new_nodes.push(MeshNode {
-                            pos: n.pos.midpoint(next.pos),
-                            color: lerp_color(n.color, next.color, 0.5),
-                            alpha: (n.alpha + next.alpha) / 2.0,
-                        });
-                    }
-                }
-            }
-            self.rows += 1;
-            self.nodes = new_nodes;
         }
+        None
+    }
+
+    /// A column of nodes between columns `c` and `c + 1`, `t` of the way
+    /// across, positions, colours and opacity mixed from its neighbours.
+    pub fn insert_column(&mut self, c: usize, t: f64) {
+        let cols = self.cols as usize + 1;
+        if c + 1 >= cols {
+            return;
+        }
+        let mut nodes = Vec::with_capacity(self.nodes.len() + self.rows as usize + 1);
+        for (k, n) in self.nodes.iter().enumerate() {
+            nodes.push(*n);
+            if k % cols == c {
+                if let Some(next) = self.nodes.get(k + 1) {
+                    nodes.push(mix_nodes(n, next, t));
+                }
+            }
+        }
+        self.nodes = nodes;
+        self.cols += 1;
+    }
+
+    /// A row of nodes between rows `r` and `r + 1`, `t` of the way up.
+    pub fn insert_row(&mut self, r: usize, t: f64) {
+        let cols = self.cols as usize + 1;
+        if r >= self.rows as usize {
+            return;
+        }
+        let at = (r + 1) * cols;
+        let row: Vec<MeshNode> = (0..cols)
+            .filter_map(|c| {
+                let n = self.nodes.get(r * cols + c)?;
+                let next = self.nodes.get((r + 1) * cols + c)?;
+                Some(mix_nodes(n, next, t))
+            })
+            .collect();
+        if row.len() != cols || at > self.nodes.len() {
+            return;
+        }
+        self.nodes.splice(at..at, row);
+        self.rows += 1;
+    }
+
+    /// Double-click at `p` (local space) inside the mesh: a node there,
+    /// on a new grid line across and a new one up and down through `p`;
+    /// within `tol` of a grid line only the line across it is added, and
+    /// on a node nothing. The lines go through `p` itself, not halfway
+    /// between the nearest nodes (#804). False when nothing changed.
+    pub fn add_lines_at(&mut self, p: Point, tol: f64) -> bool {
+        let Some((r, c, u, v)) = self.locate(p) else {
+            return false;
+        };
+        let cols = self.cols as usize + 1;
+        let pos = |r: usize, c: usize| self.nodes.get(r * cols + c).map(|n| n.pos);
+        // The cell's size across and up, at `p`.
+        let (Some(a), Some(b), Some(d), Some(e)) =
+            (pos(r, c), pos(r, c + 1), pos(r + 1, c), pos(r + 1, c + 1))
+        else {
+            return false;
+        };
+        let width = (a.lerp(d, v) - b.lerp(e, v)).hypot().max(1e-9);
+        let height = (a.lerp(b, u) - d.lerp(e, u)).hypot().max(1e-9);
+        let near_column = u * width <= tol || (1.0 - u) * width <= tol;
+        let near_row = v * height <= tol || (1.0 - v) * height <= tol;
+        if !near_column {
+            self.insert_column(c, u);
+        }
+        if !near_row {
+            self.insert_row(r, v);
+        }
+        !(near_column && near_row)
+    }
+}
+
+/// The node `t` of the way from `a` to `b`.
+fn mix_nodes(a: &MeshNode, b: &MeshNode, t: f64) -> MeshNode {
+    MeshNode {
+        pos: a.pos.lerp(b.pos, t),
+        color: lerp_color(a.color, b.color, t as f32),
+        alpha: a.alpha + (b.alpha - a.alpha) * t as f32,
     }
 }
 
@@ -1487,6 +1561,42 @@ impl Default for Stroke {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #804: a double-click inside a mesh puts a node exactly where it
+    /// was, also in a cell pulled out of shape, its colour mixed from
+    /// the cell's corners; next to a grid line only the line across it
+    /// is added, and on a node nothing.
+    #[test]
+    fn a_double_click_puts_the_new_mesh_node_where_it_was() {
+        let b = crate::geometry::Rect::new(0.0, 0.0, 40.0, 20.0);
+        let mut m = Mesh::new(b, 1, 2, Color::WHITE);
+        // Pull the top-right node of the first cell out of shape and
+        // colour the first cell's corners.
+        m.nodes[4].pos = Point::new(26.0, 27.0);
+        m.nodes[0].color = Color::rgb8(0, 0, 0);
+        let p = Point::new(9.0, 13.0);
+        let (r, c, u, v) = m.locate(p).expect("inside");
+        assert_eq!((r, c), (0, 0));
+        assert!(m.add_lines_at(p, 0.5));
+        assert_eq!((m.rows, m.cols), (2, 3));
+        let i = m.nearest(p).expect("node");
+        assert!((m.nodes[i].pos - p).hypot() < 1e-6, "{:?}", m.nodes[i].pos);
+        assert_eq!(m.row_col(i), (1, 1));
+        // Its colour: the patch's colour there.
+        let k = ((1.0 - u) * (1.0 - v) * 255.0).round();
+        let red = m.nodes[i].color.to_rgb8()[0] as f64;
+        assert!((red - (255.0 - k)).abs() <= 2.0, "{red} {k}");
+        // Next to the new column, only a row; on a node, nothing.
+        let below = m.node(0, 1).expect("node").pos;
+        let on_column = m.nodes[i].pos.midpoint(below);
+        let q = Point::new(on_column.x + 0.2, on_column.y);
+        assert!(m.add_lines_at(q, 0.5));
+        assert_eq!((m.rows, m.cols), (3, 3));
+        assert!(!m.add_lines_at(p, 0.5));
+        assert_eq!((m.rows, m.cols), (3, 3));
+        assert!(m.locate(Point::new(-5.0, 5.0)).is_none());
+        assert!(!m.add_lines_at(Point::new(-5.0, 5.0), 0.5));
+    }
 
     #[test]
     fn meshes_regrid_and_lose_lines_keeping_their_colours() {

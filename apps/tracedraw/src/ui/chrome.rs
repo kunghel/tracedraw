@@ -259,6 +259,10 @@ pub fn modal_blocker(ctx: &Context) {
 /// [`modal_blocker`] leaving `holes` open: the toolbars whose buttons
 /// the Customization options let the user move (#563).
 pub fn modal_blocker_except(ctx: &Context, holes: &[Rect]) {
+    // A colour picker's eyedropper waits for a click on the drawing.
+    if crate::ui::color_picker::picking(ctx) {
+        return;
+    }
     let screen = ctx.content_rect();
     let pieces = if holes.is_empty() {
         vec![screen]

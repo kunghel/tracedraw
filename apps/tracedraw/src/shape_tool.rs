@@ -61,6 +61,7 @@ impl App {
             from,
             grab,
             begun,
+            still,
         } = self.drag.clone()
         else {
             return;
@@ -68,13 +69,22 @@ impl App {
         let mut d = p - from;
         let horizontal = (mods.ctrl || mods.command).then_some(d.x.abs() >= d.y.abs());
         let exclude: Vec<ShapeId> = start.iter().map(|c| c.shape).collect();
-        d = self.snapped_node_move(grab, d, horizontal, &exclude);
+        // The rest of the curve being edited stays put: the node snaps to
+        // its other nodes and segments too (#673).
+        let still =
+            still.unwrap_or_else(|| std::rc::Rc::new(crate::snap::StillGeometry::of(&start)));
+        // Where the node goes once Ctrl keeps the move on one axis.
+        let mut along = d;
+        constrain_axis(&mut along, horizontal);
+        let own = self.still_near(&still, grab + along);
+        d = self.snapped_node_move(grab, d, horizontal, &exclude, &own);
         self.move_start_nodes(&start, d, grab, begun);
         self.drag = Drag::NodeMove {
             start,
             from,
             grab,
             begun: true,
+            still: Some(still),
         };
     }
 
@@ -99,23 +109,25 @@ impl App {
             from: p,
             grab,
             begun: false,
+            still: None,
         };
         true
     }
 
     /// The move of a grabbed node by `d` (page space): the node snaps to
-    /// the grid, the page, guidelines and other objects, and the move
-    /// follows it. `horizontal` keeps the move on one axis, before and
-    /// after snapping.
+    /// the grid, the page, guidelines, other objects and `own` (what stays
+    /// put of its own curve), and the move follows it. `horizontal` keeps
+    /// the move on one axis, before and after snapping.
     pub(crate) fn snapped_node_move(
         &self,
         grab: Point,
         mut d: Vec2,
         horizontal: Option<bool>,
         exclude: &[ShapeId],
+        own: &[&crate::snap_points::Geo],
     ) -> Vec2 {
         constrain_axis(&mut d, horizontal);
-        let target = self.snap_point_excluding(grab + d, exclude);
+        let target = self.snap_point_with(grab + d, exclude, own);
         let mut snapped = target - grab;
         constrain_axis(&mut snapped, horizontal);
         snapped
@@ -452,6 +464,7 @@ impl App {
                         from: p,
                         grab,
                         begun: false,
+                        still: None,
                     };
                     return;
                 }
@@ -532,6 +545,7 @@ impl App {
                     from: p,
                     grab,
                     begun: false,
+                    still: None,
                 };
                 return;
             }
@@ -1155,7 +1169,28 @@ impl App {
             self.selection
                 .retain(|id| self.engine.document().find_shape(*id).is_some());
         }
-        self.for_each_selected_node("Delete Nodes", nodes::delete_node);
+        // The chosen nodes of a curve go together: neighbouring ones
+        // become one curve keeping the outline's shape (#675).
+        let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
+        for &(id, i) in &self.node_selection {
+            by_shape.entry(id).or_default().push(i);
+        }
+        let mut cmds = Vec::new();
+        for (id, idxs) in by_shape {
+            let Some((path, closed, _)) = self.path_of(id) else {
+                continue;
+            };
+            cmds.push(Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path {
+                    path: nodes::delete_nodes(&path, &idxs),
+                    closed,
+                },
+            });
+        }
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Delete Nodes", &cmds);
+        }
         self.node_selection.clear();
     }
 
@@ -1629,7 +1664,7 @@ mod constrain_tests {
     fn a_grabbed_node_snaps_to_a_guideline_and_the_move_follows_it() {
         let app = app_with_guide();
         // The node at x = 45 moved by 4.5 mm lands at 49.5, which snaps to 50.
-        let d = app.snapped_node_move(Point::new(45.0, 20.0), Vec2::new(4.5, 0.0), None, &[]);
+        let d = app.snapped_node_move(Point::new(45.0, 20.0), Vec2::new(4.5, 0.0), None, &[], &[]);
         assert!((d.x - 5.0).abs() < 1e-9, "{d:?}");
         assert!(d.y.abs() < 1e-9, "{d:?}");
     }
@@ -1638,7 +1673,13 @@ mod constrain_tests {
     fn a_constrained_node_move_stays_on_its_axis_after_snapping() {
         let app = app_with_guide();
         // Horizontal: the guideline pulls x, y stays put.
-        let d = app.snapped_node_move(Point::new(45.0, 20.0), Vec2::new(4.5, 3.0), Some(true), &[]);
+        let d = app.snapped_node_move(
+            Point::new(45.0, 20.0),
+            Vec2::new(4.5, 3.0),
+            Some(true),
+            &[],
+            &[],
+        );
         assert!((d.x - 5.0).abs() < 1e-9 && d.y == 0.0, "{d:?}");
     }
 
@@ -1719,6 +1760,78 @@ mod bitmap_node_tests {
             fx: None,
         })
         .expect("picture")
+    }
+
+    /// Trim, Intersect and Weld with a picture as the target keep the
+    /// picture showing inside the result: its frame takes the result's
+    /// shape (#827). A cropped picture works the same way.
+    #[test]
+    fn shaping_a_picture_crops_it_to_the_result() {
+        use crate::ops::Shaping;
+        for op in [Shaping::Trim, Shaping::Intersect, Shaping::Weld] {
+            let mut app = App::headless();
+            let pic = picture(&mut app);
+            let ellipse = app
+                .new_shape(ShapeKind::Ellipse {
+                    rect: Rect::new(40.0, 30.0, 60.0, 50.0),
+                    arc: None,
+                })
+                .expect("ellipse");
+            // The picture last: the target, keeping its looks.
+            app.select(vec![ellipse, pic]);
+            app.shaping_with(op, false, false);
+            let id = app.selection[0];
+            let s = app.doc().find_shape(id).expect("result").clone();
+            let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+                panic!("{op:?}: {:?}", s.kind);
+            };
+            assert!(
+                matches!(contents[0].kind, ShapeKind::Bitmap { .. }),
+                "{op:?}"
+            );
+            let b = tracedraw_core::geometry::Shape::bounding_box(&frame.page_path());
+            match op {
+                Shaping::Intersect => {
+                    assert!(
+                        (b.x0 - 40.0).abs() < 0.1 && (b.y1 - 40.0).abs() < 0.1,
+                        "{b:?}"
+                    )
+                }
+                Shaping::Weld => {
+                    assert!(
+                        (b.x1 - 60.0).abs() < 0.1 && (b.y1 - 50.0).abs() < 0.1,
+                        "{b:?}"
+                    )
+                }
+                _ => assert!(
+                    (b.x1 - 50.0).abs() < 0.1 && (b.y1 - 40.0).abs() < 0.1,
+                    "{b:?}"
+                ),
+            }
+            assert!(app.doc().find_shape(pic).is_none(), "{op:?}: replaced");
+            let left = b.x0.max(30.0);
+            // A second cut on the cropped picture keeps it a picture.
+            let cutter = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 30.0, 100.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.select(vec![cutter, id]);
+            app.shaping_with(Shaping::Trim, false, false);
+            let s = app
+                .doc()
+                .find_shape(app.selection[0])
+                .expect("result")
+                .clone();
+            let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+                panic!("{op:?} then Trim: {:?}", s.kind);
+            };
+            assert!(matches!(contents[0].kind, ShapeKind::Bitmap { .. }));
+            let b = tracedraw_core::geometry::Shape::bounding_box(&frame.page_path());
+            assert!((b.x0 - left).abs() < 0.1, "{op:?}: {b:?}");
+        }
     }
 
     #[test]

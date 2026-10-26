@@ -197,6 +197,29 @@ pub struct Dimension {
     /// How the label was last drawn, to tell an edit made to it in place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drawn: Option<DrawnLabel>,
+    /// The measured points that sit on a node of an object: they follow
+    /// it when it is moved, resized or reshaped (#838).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<Anchor>,
+}
+
+/// A measured point held to a node of an object.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    /// Which point: 0 the first (`a`), 1 the second (`b`), 2 an angle's
+    /// centre.
+    pub point: u8,
+    pub shape: ShapeId,
+    /// The node's place among the object's nodes ([`node_points`]).
+    pub node: usize,
+}
+
+/// The nodes of `s` on the page, in order: what an anchor's `node` counts.
+pub fn node_points(s: &Shape) -> Vec<Point> {
+    tracedraw_core::nodes::nodes(&s.page_path())
+        .into_iter()
+        .map(|n| n.pos)
+        .collect()
 }
 
 /// A dimension's label as it was drawn: its text, the measured value as it
@@ -254,6 +277,7 @@ impl Dimension {
             style,
             text: None,
             drawn: None,
+            anchors: Vec::new(),
         }
     }
 
@@ -291,6 +315,26 @@ impl Dimension {
         Dimension {
             measure,
             ..self.clone()
+        }
+    }
+
+    /// Measured point `i` (as [`Anchor::point`] counts them).
+    pub fn point(&self, i: u8) -> Option<Point> {
+        match (self.measure, i) {
+            (Measure::Linear { a, .. } | Measure::Angular { a, .. }, 0) => Some(a),
+            (Measure::Linear { b, .. } | Measure::Angular { b, .. }, 1) => Some(b),
+            (Measure::Angular { center, .. }, 2) => Some(center),
+            _ => None,
+        }
+    }
+
+    /// Measured point `i` moved to `p`.
+    fn set_point(&mut self, i: u8, p: Point) {
+        match (&mut self.measure, i) {
+            (Measure::Linear { a, .. } | Measure::Angular { a, .. }, 0) => *a = p,
+            (Measure::Linear { b, .. } | Measure::Angular { b, .. }, 1) => *b = p,
+            (Measure::Angular { center, .. }, 2) => *center = p,
+            _ => {}
         }
     }
 
@@ -689,8 +733,9 @@ impl App {
         let Some(layer) = self.active_layer() else {
             return;
         };
-        let d = Dimension::new(measure, self.dimension_style.clone())
-            .noting_drawn(&self.text_font, self.units);
+        let mut d = Dimension::new(measure, self.dimension_style.clone());
+        d.anchors = self.anchors_for(&d);
+        let d = d.noting_drawn(&self.text_font, self.units);
         let ids = [
             self.engine.new_shape_id(),
             self.engine.new_shape_id(),
@@ -713,6 +758,90 @@ impl App {
             return;
         }
         self.select(vec![group]);
+    }
+
+    /// The anchors of `d`'s points (page space) that sit on a node of an
+    /// object on the page: within 3 pixels of it.
+    fn anchors_for(&self, d: &Dimension) -> Vec<Anchor> {
+        let tol = (3.0 / self.view.zoom as f64).max(1e-3);
+        let mut out = Vec::new();
+        for i in 0..3u8 {
+            let Some(p) = d.point(i) else {
+                continue;
+            };
+            let mut best: Option<(Anchor, f64)> = None;
+            for layer in self.page_layers() {
+                if !layer.visible {
+                    continue;
+                }
+                for s in &layer.shapes {
+                    if is_dimension(s) || !s.visible {
+                        continue;
+                    }
+                    for (node, q) in node_points(s).into_iter().enumerate() {
+                        let dist = (q - p).hypot();
+                        if dist <= tol && best.is_none_or(|b| dist < b.1) {
+                            let a = Anchor {
+                                point: i,
+                                shape: s.id,
+                                node,
+                            };
+                            best = Some((a, dist));
+                        }
+                    }
+                }
+            }
+            out.extend(best.map(|b| b.0));
+        }
+        out
+    }
+
+    /// `d` (dimension group `g`'s) with its anchored points on their nodes
+    /// again, the dimension line or arc moved as far as they moved on
+    /// average; anchors whose object or node is gone let go. `None` when
+    /// nothing changes. A dimension moved on its own (its group has a
+    /// transform the anchored points do not follow) lets go of them all:
+    /// it was pulled off the object on purpose.
+    fn follow_anchors(&self, g: &Shape, d: &Dimension) -> Option<Dimension> {
+        if d.anchors.is_empty() {
+            return None;
+        }
+        let doc = self.doc();
+        let parent = doc.parent_transform(g.id).unwrap_or(Affine::IDENTITY);
+        let to_local = (parent * g.transform).inverse();
+        let mut next = d.clone();
+        next.anchors.clear();
+        let mut moved: Vec<Vec2> = Vec::new();
+        for a in &d.anchors {
+            let target = doc
+                .find_shape(a.shape)
+                .and_then(|s| node_points(s).get(a.node).copied())
+                .map(|q| to_local * q);
+            let (Some(target), Some(now)) = (target, d.point(a.point)) else {
+                continue;
+            };
+            next.anchors.push(*a);
+            if (target - now).hypot() > 1e-9 {
+                moved.push(target - now);
+                next.set_point(a.point, target);
+            }
+        }
+        if g.transform != Affine::IDENTITY && !moved.is_empty() {
+            // Moved by itself, not with what it measures.
+            let mut loose = d.clone();
+            loose.anchors.clear();
+            return Some(loose);
+        }
+        if moved.is_empty() && next.anchors.len() == d.anchors.len() {
+            return None;
+        }
+        if !moved.is_empty() {
+            let shift = moved.iter().fold(Vec2::ZERO, |s, v| s + *v) / moved.len() as f64;
+            match &mut next.measure {
+                Measure::Linear { at, .. } | Measure::Angular { at, .. } => *at += shift,
+            }
+        }
+        Some(next)
     }
 
     /// Parallel, Horizontal or Vertical and Segment dimensions: from `a` to
@@ -961,14 +1090,16 @@ impl App {
         let editing = self.text_edit.as_ref().map(|te| te.shape);
         fn walk(
             s: &Shape,
-            out: &mut Vec<(Shape, Dimension)>,
+            out: &mut Vec<(Shape, Dimension, bool)>,
             seen: &Seen,
             editing: Option<ShapeId>,
         ) {
             if let Some(d) = Dimension::of(s) {
                 match d.read_back(s, seen.get(&s.id), editing) {
-                    Some(next) => out.push((s.clone(), next)),
-                    None if s.transform != Affine::IDENTITY => out.push((s.clone(), d)),
+                    Some(next) => out.push((s.clone(), next, true)),
+                    None if s.transform != Affine::IDENTITY => out.push((s.clone(), d, true)),
+                    // Held to an object: drawn again if it moved (#838).
+                    None if !d.anchors.is_empty() => out.push((s.clone(), d, false)),
                     None => {}
                 }
                 return;
@@ -993,7 +1124,13 @@ impl App {
         // One amend for all of them: a keystroke in a label costs one copy
         // of the drawing.
         let mut cmds = Vec::new();
-        for (g, d) in changed {
+        for (g, d, redraw) in changed {
+            // Points held to an object follow it (#838).
+            let followed = self.follow_anchors(&g, &d);
+            if followed.is_none() && !redraw {
+                continue;
+            }
+            let d = followed.unwrap_or(d);
             // Drawn again, it notes its label itself.
             self.dimension_labels_seen.remove(&g.id);
             cmds.extend(self.redraw_commands(&g, &d));
@@ -1228,6 +1365,96 @@ mod tests {
         }
     }
 
+    /// A dimension drawn between two nodes of an object holds to them:
+    /// resizing or moving the object takes the dimension along and its
+    /// value follows; a dimension moved by itself lets go; one whose
+    /// object is deleted lets go (#838).
+    #[test]
+    fn a_dimension_follows_the_object_it_measures() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.create_dimension(
+            Point::new(10.0, 10.0),
+            Point::new(50.0, 10.0),
+            Point::new(30.0, 0.0),
+        );
+        let dim = app.selection[0];
+        let d = || Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        let d0 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        assert_eq!(d0.anchors.len(), 2, "{:?}", d0.anchors);
+        assert!((d0.value() - 40.0).abs() < 1e-9);
+        let _ = d;
+        // Twice as wide, about its left side.
+        app.run(Command::TransformShapes {
+            shapes: vec![rect],
+            transform: Affine::translate((10.0, 0.0))
+                * Affine::scale_non_uniform(2.0, 1.0)
+                * Affine::translate((-10.0, 0.0)),
+        });
+        app.bake_dimensions();
+        let d1 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        assert!((d1.value() - 80.0).abs() < 1e-6, "{}", d1.value());
+        assert!(
+            label_of(&app, dim).contains("80"),
+            "{}",
+            label_of(&app, dim)
+        );
+        // Moved: the dimension goes along, line and all.
+        app.run(Command::TransformShapes {
+            shapes: vec![rect],
+            transform: Affine::translate((0.0, 50.0)),
+        });
+        app.bake_dimensions();
+        let d2 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        let Measure::Linear { a, at, .. } = d2.measure else {
+            panic!("linear");
+        };
+        assert!((a - Point::new(10.0, 60.0)).hypot() < 1e-6, "{a:?}");
+        assert!((at.y - 50.0).abs() < 1e-6, "{at:?}");
+        assert_eq!(d2.anchors.len(), 2);
+        // The dimension moved by itself lets go of the object.
+        app.run(Command::TransformShapes {
+            shapes: vec![dim],
+            transform: Affine::translate((5.0, 5.0)),
+        });
+        app.bake_dimensions();
+        let d3 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        assert!(d3.anchors.is_empty());
+        assert!((d3.value() - 80.0).abs() < 1e-6);
+    }
+
+    /// The object deleted: the dimension stays where it is and lets go.
+    #[test]
+    fn a_dimension_lets_go_of_a_deleted_object() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.create_dimension(
+            Point::new(10.0, 10.0),
+            Point::new(50.0, 10.0),
+            Point::new(30.0, 0.0),
+        );
+        let dim = app.selection[0];
+        app.run(Command::DeleteShapes { shapes: vec![rect] });
+        app.bake_dimensions();
+        let d = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        assert!(d.anchors.is_empty());
+        assert!((d.value() - 40.0).abs() < 1e-9);
+    }
+
     /// The preview follows the pointer; Horizontal or Vertical keeps the
     /// larger span; a segment's ends are found under the pointer.
     #[test]
@@ -1274,6 +1501,7 @@ mod tests {
             style: DimensionStyle::default(),
             text: None,
             drawn: None,
+            anchors: Vec::new(),
         };
         assert_eq!(d.label(Units::Millimeters), "25.40 mm");
         let inches = Dimension {
@@ -1309,6 +1537,7 @@ mod tests {
             },
             text: None,
             drawn: None,
+            anchors: Vec::new(),
         };
         assert_eq!(angle.label(Units::Millimeters), "90.0\u{b0}");
     }
@@ -1338,6 +1567,7 @@ mod tests {
             },
             text: None,
             drawn: None,
+            anchors: Vec::new(),
         };
         let ids = [ShapeId(1), ShapeId(2), ShapeId(3)];
         let [line, heads, label] = d.shapes(ids, "Arial", Units::Millimeters);

@@ -331,6 +331,43 @@ pub fn add_field(st: &mut PrintMergeState, name: &str) {
     }
 }
 
+/// Add a number field counting from `start` by `step`, padded to
+/// `digits` digits; with `end`, records are added until the counter
+/// reaches it (from start to end, both included), as many as that takes,
+/// at most [`MAX_RANGE_RECORDS`] in all; records already there are kept
+/// (#791).
+pub fn add_number_field(
+    st: &mut PrintMergeState,
+    name: &str,
+    start: i64,
+    step: i64,
+    digits: u32,
+    end: Option<i64>,
+) {
+    add_field(st, name);
+    if let Some(k) = st.kinds.last_mut() {
+        *k = FieldKind::Number {
+            start,
+            step,
+            digits: digits.clamp(1, 12),
+        };
+    }
+    let Some(end) = end else {
+        return;
+    };
+    if step == 0 || (end - start).signum() != step.signum() && end != start {
+        return;
+    }
+    let count = ((end - start) / step).unsigned_abs() as usize + 1;
+    let want = count.min(MAX_RANGE_RECORDS);
+    while st.rows.len() < want {
+        add_record(st);
+    }
+}
+
+/// The most records an end value adds.
+pub const MAX_RANGE_RECORDS: usize = 100_000;
+
 /// Remove field `i` and its cells.
 pub fn remove_field(st: &mut PrintMergeState, i: usize) {
     if i >= st.headers.len() {
@@ -1003,6 +1040,40 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// Add Column with a number from 15 to 25 in three digits, as in the
+    /// report: the records are made for the whole range, 015 to 025, and
+    /// records already there are kept; no end value adds none, and an end
+    /// the counter never reaches adds none either (#791).
+    #[test]
+    fn a_number_column_with_an_end_value_makes_its_records() {
+        let mut st = PrintMergeState::default();
+        add_number_field(&mut st, "Check Number", 15, 1, 3, Some(25));
+        assert_eq!(st.rows.len(), 11);
+        let v = values(&st);
+        assert_eq!(v.first().map(|r| r[0].as_str()), Some("015"));
+        assert_eq!(v.last().map(|r| r[0].as_str()), Some("025"));
+        // Counting down by two.
+        let mut st = PrintMergeState::default();
+        add_number_field(&mut st, "Down", 10, -2, 2, Some(0));
+        let v: Vec<String> = values(&st).into_iter().map(|r| r[0].clone()).collect();
+        assert_eq!(v, ["10", "08", "06", "04", "02", "00"]);
+        // A second column keeps the records there and adds what it needs.
+        add_number_field(&mut st, "More", 1, 1, 1, Some(8));
+        assert_eq!(st.rows.len(), 8);
+        add_number_field(&mut st, "Fewer", 1, 1, 1, Some(3));
+        assert_eq!(st.rows.len(), 8, "records are never taken away");
+        // No end, a fixed value, or an end the counter never reaches.
+        let mut st = PrintMergeState::default();
+        add_number_field(&mut st, "N", 1, 1, 1, None);
+        add_number_field(&mut st, "Same", 5, 0, 1, Some(9));
+        add_number_field(&mut st, "Away", 5, 1, 1, Some(1));
+        assert!(st.rows.is_empty());
+        // A huge range stops at the limit.
+        let mut st = PrintMergeState::default();
+        add_number_field(&mut st, "Huge", 0, 1, 1, Some(i64::MAX));
+        assert_eq!(st.rows.len(), MAX_RANGE_RECORDS);
     }
 
     #[test]

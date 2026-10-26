@@ -82,7 +82,12 @@ the choices. The writer:
   name carries a six-letter tag (`ABCDEF+Name`). The `W` array gives
   each glyph's advance, and a `ToUnicode` CMap maps each glyph to the
   characters it stands for (a ligature to all of them), so copying and
-  searching give back the text.
+  searching give back the text. A cluster whose glyphs do not each stand
+  for their own characters (several glyphs for one syllable, such as a
+  vowel sign drawn before its consonant or a reph after it, or a glyph
+  the map already gives other characters) is wrapped in marked content
+  `/Span << /ActualText ... >> BDC ... EMC` with its characters in typed
+  order (#599).
 - Places glyphs as the text engine lays them out: one text matrix per
   run of glyphs of one font on one line (size, position, slant, turn,
   the object's transform), with `TJ` adjustments for kerning, tracking

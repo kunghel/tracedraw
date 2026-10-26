@@ -961,7 +961,7 @@ pub fn page_to_psd(doc: &Document, page_index: usize, dpi: f64) -> Option<Vec<u8
 
     // One render per visible layer, with every other layer hidden.
     let layer_ids: Vec<(tracedraw_core::id::LayerId, String)> = doc
-        .layers_for_page(page_id)
+        .layers_drawn_for_page(page_id)
         .ok()?
         .iter()
         .filter(|l| l.visible)

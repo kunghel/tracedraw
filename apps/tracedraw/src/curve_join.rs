@@ -251,6 +251,59 @@ impl App {
             })
     }
 
+    /// Take the curve `id` up again with the Pen or Bezier `tool` as if
+    /// it were still being drawn (#631): the tool is chosen, the curve
+    /// selected (when it is still there), and a line goes on from `to`,
+    /// the node it stood at with the handle it had; without one (the step
+    /// closed the curve) the curve is only selected.
+    pub(crate) fn resume_curve(
+        &mut self,
+        id: ShapeId,
+        tool: crate::tools::Tool,
+        to: Option<crate::app::PenEnd>,
+    ) {
+        if self.tool != tool {
+            self.set_tool(tool);
+        }
+        if self.doc().shape_on_page(id).is_some() {
+            self.select(vec![id]);
+        } else {
+            self.select(Vec::new());
+        }
+        if let Some(node) = to {
+            self.curve = Some(crate::app::CurveInProgress {
+                nodes: vec![node],
+                smooth: true,
+                resumed: true,
+                ..Default::default()
+            });
+        }
+    }
+
+    /// The curve being drawn goes on from an end of the selected curve:
+    /// the other end of that open subpath when `p` (page) is within
+    /// `reach` of it, where a click closes the curve.
+    pub(crate) fn continuation_close_at(&self, p: Point, reach: f64) -> Option<Point> {
+        let c = self.curve.as_ref()?;
+        if !c.smooth || c.bspline {
+            return None;
+        }
+        let from = c.nodes.first()?.0;
+        let curve = self.join_candidate()?;
+        let subs = subpaths(&curve.page_path());
+        subs.iter().filter(|s| !s.closed).find_map(|s| {
+            let (a, b) = (s.start, s.end());
+            let other = if (a - from).hypot() < 1e-6 {
+                b
+            } else if (b - from).hypot() < 1e-6 {
+                a
+            } else {
+                return None;
+            };
+            ((other - p).hypot() <= reach && (other - from).hypot() > 1e-6).then_some(other)
+        })
+    }
+
     /// The selected curve a new line may join: one open curve lying on a
     /// layer.
     pub(crate) fn join_candidate(&self) -> Option<tracedraw_core::Shape> {

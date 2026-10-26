@@ -1178,9 +1178,18 @@ impl Command {
                 let (layer_id, idx) = doc.locate(*group)?;
                 let layer = doc.layer_mut(layer_id)?;
                 let g = layer.shapes.remove(idx);
+                // The group's perspective stays on each of its objects, which
+                // are drawn as they were (#674); its other effects go.
+                let group_path = g.local_path();
+                let group_effects = g.effects.clone();
                 match g.kind {
                     ShapeKind::Group { children } => {
                         for (k, mut c) in children.into_iter().enumerate() {
+                            crate::live::take_group_perspectives(
+                                &mut c,
+                                &group_path,
+                                &group_effects,
+                            );
                             c.absorb(g.transform);
                             layer.shapes.insert(idx + k, c);
                         }
@@ -1770,6 +1779,124 @@ mod tests {
         assert!(Command::DeleteShapes { shapes: vec![ia] }
             .apply(&mut doc)
             .is_err());
+    }
+
+    /// A group's perspective stays on each object when it is ungrouped,
+    /// drawn where it was in the group (#674): before the object's own
+    /// effects (a contour rings the warped object, a distortion bends it),
+    /// and folded into a perspective the object had, so it keeps one.
+    #[test]
+    fn ungrouping_keeps_the_perspective_on_each_object() {
+        use crate::geometry::{Point, Shape as _};
+        use crate::live::Effect;
+        let contour = Effect::Contour {
+            steps: 2,
+            offset: 1.5,
+            outside: true,
+            to_center: false,
+            fill_to: Color::WHITE,
+            outline_to: None,
+            color_blend: 0,
+            corners: None,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        };
+        let distort = Effect::Distort(crate::effects::Distort::PushPull {
+            amount: 30.0,
+            center: None,
+        });
+        let own = Effect::Perspective {
+            corners: [
+                Point::new(1.0, 0.0),
+                Point::new(10.0, 2.0),
+                Point::new(9.0, 10.0),
+                Point::new(0.0, 8.0),
+            ],
+        };
+        for effects in [vec![], vec![contour], vec![distort], vec![own]] {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut a = rect(&mut doc, 0.0);
+            a.effects = effects.clone();
+            let mut b = rect(&mut doc, 20.0);
+            b.transform = Affine::translate((3.0, 4.0)) * Affine::scale_non_uniform(1.5, 0.5);
+            let (ia, ib) = (a.id, b.id);
+            for s in [a, b] {
+                Command::AddShape { layer, shape: s }
+                    .apply(&mut doc)
+                    .unwrap();
+            }
+            Command::Group {
+                shapes: vec![ia, ib],
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let gid = doc.layer(layer).unwrap().shapes[0].id;
+            Command::TransformShapes {
+                shapes: vec![gid],
+                transform: Affine::translate((5.0, 7.0)) * Affine::rotate(0.3),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let bb = doc.find_shape(gid).unwrap().local_path().bounding_box();
+            Command::SetEffects {
+                shape: gid,
+                effects: vec![Effect::Perspective {
+                    corners: [
+                        Point::new(bb.x0 + 4.0, bb.y0),
+                        Point::new(bb.x1 - 2.0, bb.y0 + 1.0),
+                        Point::new(bb.x1, bb.y1),
+                        Point::new(bb.x0, bb.y1 - 3.0),
+                    ],
+                }],
+            }
+            .apply(&mut doc)
+            .unwrap();
+            // Where each object is drawn in the group, its effects too.
+            let main = crate::live::evaluate(doc.find_shape(gid).unwrap()).main;
+            let ShapeKind::Group { children } = &main.kind else {
+                panic!("a group: {:?}", main.kind);
+            };
+            let drawn: Vec<_> = children
+                .iter()
+                .map(|c| {
+                    let mut c = c.clone();
+                    c.transform_by(main.transform);
+                    c.visual_bounds()
+                })
+                .collect();
+            Command::Ungroup { group: gid }.apply(&mut doc).unwrap();
+            for (id, want) in [ia, ib].into_iter().zip(drawn) {
+                let s = doc.find_shape(id).unwrap();
+                let perspectives = s
+                    .effects
+                    .iter()
+                    .filter(|e| matches!(e, Effect::Perspective { .. }))
+                    .count();
+                assert_eq!(perspectives, 1, "{:?}", s.effects);
+                assert!(
+                    matches!(s.effects[0], Effect::Perspective { .. }),
+                    "{:?}",
+                    s.effects
+                );
+                // The member's own effects stay after it, an own
+                // perspective folded in.
+                let own_effects = if id == ia { effects.len() } else { 0 };
+                let folded =
+                    id == ia && matches!(effects.first(), Some(Effect::Perspective { .. }));
+                assert_eq!(s.effects.len(), own_effects + usize::from(!folded));
+                let got = s.visual_bounds();
+                for (g, w) in [
+                    (got.x0, want.x0),
+                    (got.y0, want.y0),
+                    (got.x1, want.x1),
+                    (got.y1, want.y1),
+                ] {
+                    // Contours are fitted with curves within 0.05 mm (#821).
+                    assert!((g - w).abs() < 0.05, "{effects:?}: {got:?} != {want:?}");
+                }
+            }
+        }
     }
 
     #[test]

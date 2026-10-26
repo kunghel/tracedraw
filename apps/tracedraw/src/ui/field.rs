@@ -257,19 +257,27 @@ impl<N: Numeric> NumField<'_, N> {
                 }
             }
         }
-        // The wheel over the box or the arrows.
+        // The wheel over the box or the arrows, a step a notch; the bar or
+        // panel around the field does not scroll with it (#783).
         if ui.rect_contains_pointer(resp.rect) || ui.rect_contains_pointer(spin) {
-            let scroll: Option<(f32, egui::Modifiers)> = ui.input(|i| {
-                i.raw.events.iter().rev().find_map(|e| match e {
-                    egui::Event::MouseWheel {
-                        delta, modifiers, ..
-                    } if delta.y != 0.0 => Some((delta.y, *modifiers)),
-                    _ => None,
-                })
-            });
-            if let Some((dy, mods)) = scroll {
-                stepped = Some((if dy > 0.0 { 1.0 } else { -1.0 }, mods));
+            if let Some(steps) = wheel_steps(ui, id.with("wheel")) {
+                let mods = ui.input(|i| {
+                    i.raw
+                        .events
+                        .iter()
+                        .rev()
+                        .find_map(|e| match e {
+                            egui::Event::MouseWheel { modifiers, .. } => Some(*modifiers),
+                            _ => None,
+                        })
+                        .unwrap_or(i.modifiers)
+                });
+                if steps != 0 {
+                    stepped = Some((f64::from(steps), mods));
+                }
             }
+        } else {
+            ui.data_mut(|d| d.remove::<f32>(id.with("wheel")));
         }
         if let Some((dir, mods)) = stepped {
             let factor = if mods.command {
@@ -337,6 +345,96 @@ impl<N: Numeric> NumField<'_, N> {
         }
         resp
     }
+}
+
+/// The points a wheel or touchpad sends for one notch when it counts in
+/// points (browsers send 100 points or 3 lines a notch).
+pub const WHEEL_POINTS_PER_NOTCH: f32 = 50.0;
+
+/// The memory key that says a field took the wheel and the smoothed
+/// scroll of that turn is still running.
+fn wheel_taken_id() -> egui::Id {
+    egui::Id::new("field_wheel_taken")
+}
+
+/// The wheel turned over a field, list or tab strip that steps with it:
+/// nothing around it scrolls with that turn. The smoothed scroll egui
+/// makes of a notch reaches the next frames too, and those frames slid the
+/// bar or panel holding the field, carrying the field away from under the
+/// pointer after a step or two (#783); [`hold_taken_wheel`] keeps them
+/// from scrolling anything.
+pub fn take_wheel(ui: &Ui) {
+    ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+    ui.ctx().data_mut(|d| d.insert_temp(wheel_taken_id(), true));
+}
+
+/// Called at the start of every frame, before anything reads the scroll:
+/// while the smoothed scroll of a notch a field took is still running,
+/// it scrolls nothing. A new turn of the wheel ends the hold (a field
+/// under the pointer takes that one again).
+pub fn hold_taken_wheel(ctx: &egui::Context) {
+    let id = wheel_taken_id();
+    if !ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
+        return;
+    }
+    let (turned, scrolling) = ctx.input(|i| {
+        (
+            i.raw
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::MouseWheel { .. })),
+            i.is_scrolling(),
+        )
+    });
+    if turned || !scrolling {
+        ctx.data_mut(|d| d.remove::<bool>(id));
+        return;
+    }
+    ctx.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+}
+
+/// The wheel notches turned this frame over a widget that steps with the
+/// wheel, up positive; `None` when the wheel did not turn. An event of a
+/// notch or more is one step whatever its size; parts of a notch from a
+/// touchpad or a fine wheel add up (in memory under `acc_id`) until they
+/// make one, and start again when the wheel turns the other way. A turn
+/// takes the wheel ([`take_wheel`]), so nothing around scrolls with it.
+pub fn wheel_steps(ui: &Ui, acc_id: egui::Id) -> Option<i32> {
+    let deltas: Vec<f32> = ui.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { unit, delta, .. } if delta.y != 0.0 => Some(match unit {
+                    egui::MouseWheelUnit::Line if delta.y.abs() >= 1.0 => delta.y.signum(),
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Point if delta.y.abs() >= WHEEL_POINTS_PER_NOTCH => {
+                        delta.y.signum()
+                    }
+                    egui::MouseWheelUnit::Point => delta.y / WHEEL_POINTS_PER_NOTCH,
+                    egui::MouseWheelUnit::Page => delta.y.signum(),
+                }),
+                _ => None,
+            })
+            .collect()
+    });
+    if deltas.is_empty() {
+        return None;
+    }
+    take_wheel(ui);
+    let mut acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0);
+    let mut steps = 0i32;
+    for d in deltas {
+        if acc != 0.0 && acc.signum() != d.signum() {
+            acc = 0.0;
+        }
+        acc += d;
+        let whole = acc.trunc();
+        steps += whole as i32;
+        acc -= whole;
+    }
+    ui.data_mut(|d| d.insert_temp(acc_id, acc));
+    Some(steps)
 }
 
 /// Cover a colour button whose objects have different colours: an empty
@@ -539,6 +637,192 @@ impl<'a> Expr<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One notch of a mouse wheel, as Windows sends it (one line).
+    fn notch(dy: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// The wheel over a number field in a bar longer than its window (the
+    /// property bar, which slides with the wheel) steps the field every
+    /// notch and leaves the bar where it is, however many frames the
+    /// smoothed scroll of a notch takes to run out: the bar slid on the
+    /// frames after a notch, carrying the field away from under the
+    /// pointer, so the wheel stopped working on it after a step or two
+    /// (#783). Away from the fields the wheel still slides the bar.
+    #[test]
+    fn the_wheel_steps_a_field_in_a_long_bar_without_sliding_the_bar() {
+        let ctx = crate::theme::ui_context();
+        let mut v = 100.0f64;
+        // Frames a sixtieth of a second apart, as on screen.
+        let clock = std::cell::Cell::new(0.0f64);
+        let run = |v: &mut f64, events: Vec<egui::Event>| -> egui::Rect {
+            let mut field = egui::Rect::NOTHING;
+            clock.set(clock.get() + 1.0 / 60.0);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 200.0),
+                    )),
+                    events,
+                    time: Some(clock.get()),
+                    ..Default::default()
+                },
+                |ui| {
+                    hold_taken_wheel(ui.ctx());
+                    crate::ui::overflow::row(ui, "bar", |ui| {
+                        ui.add_space(150.0);
+                        field = ui.add(NumField::new(v).range(0.0..=360.0)).rect;
+                        // Wider than the window, as a full bar is.
+                        ui.add_space(900.0);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            field
+        };
+        for _ in 0..3 {
+            run(&mut v, Vec::new());
+        }
+        let start = run(&mut v, Vec::new());
+        assert!(start.is_positive(), "{start:?}");
+        run(&mut v, vec![egui::Event::PointerMoved(start.center())]);
+        for k in 1..=8 {
+            // Down: up would push the bar back past its start, where it
+            // cannot go.
+            let now = run(&mut v, vec![notch(-1.0)]);
+            assert!(
+                (now.left() - start.left()).abs() < 0.5,
+                "notch {k}: {now:?}"
+            );
+            // The frames between two notches, while the smoothed scroll
+            // of the last one runs.
+            for f in 0..4 {
+                let now = run(&mut v, Vec::new());
+                assert!(
+                    (now.left() - start.left()).abs() < 0.5,
+                    "notch {k}, frame {f}: the bar slid to {now:?}"
+                );
+            }
+            assert_eq!(v, 100.0 - k as f64, "notch {k}");
+        }
+        // The smoothed scroll runs out with the bar in place.
+        for _ in 0..40 {
+            assert!((run(&mut v, Vec::new()).left() - start.left()).abs() < 0.5);
+        }
+        // Two notches in one frame (a slow frame): two steps.
+        run(&mut v, vec![notch(-1.0), notch(-1.0)]);
+        assert_eq!(v, 90.0);
+        for _ in 0..40 {
+            run(&mut v, Vec::new());
+        }
+        // Over the bar away from the field the wheel slides the bar.
+        let away = egui::pos2(start.left() - 60.0, start.center().y);
+        run(&mut v, vec![egui::Event::PointerMoved(away)]);
+        run(&mut v, vec![notch(-1.0)]);
+        let mut moved = start;
+        for _ in 0..20 {
+            moved = run(&mut v, Vec::new());
+        }
+        assert!(moved.left() < start.left() - 10.0, "{moved:?}");
+        assert_eq!(v, 90.0);
+    }
+
+    /// The same in a docker or dialog that scrolls up and down: the wheel
+    /// over a field steps it and the panel stays put.
+    #[test]
+    fn the_wheel_steps_a_field_in_a_scrolling_panel_without_scrolling_it() {
+        let ctx = crate::theme::ui_context();
+        let mut v = 5i32;
+        let clock = std::cell::Cell::new(0.0f64);
+        let run = |v: &mut i32, events: Vec<egui::Event>| -> egui::Rect {
+            let mut field = egui::Rect::NOTHING;
+            clock.set(clock.get() + 1.0 / 60.0);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(300.0, 300.0),
+                    )),
+                    events,
+                    time: Some(clock.get()),
+                    ..Default::default()
+                },
+                |ui| {
+                    hold_taken_wheel(ui.ctx());
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(100.0);
+                        field = ui.add(NumField::new(v).range(0..=100)).rect;
+                        ui.add_space(2000.0);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            field
+        };
+        for _ in 0..3 {
+            run(&mut v, Vec::new());
+        }
+        let start = run(&mut v, Vec::new());
+        run(&mut v, vec![egui::Event::PointerMoved(start.center())]);
+        for k in 1..=5 {
+            run(&mut v, vec![notch(-1.0)]);
+            for _ in 0..6 {
+                let now = run(&mut v, Vec::new());
+                assert!((now.top() - start.top()).abs() < 0.5, "notch {k}: {now:?}");
+            }
+            assert_eq!(v, 5 - k, "notch {k}");
+        }
+    }
+
+    /// A touchpad or a fine wheel sends parts of a notch: they add up to
+    /// one step instead of a step each.
+    #[test]
+    fn parts_of_a_notch_add_up_to_one_step() {
+        let ctx = crate::theme::ui_context();
+        let mut v = 0.0f64;
+        let mut rect = egui::Rect::NOTHING;
+        let mut run = |v: &mut f64, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(300.0, 200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| rect = ui.add(NumField::new(v)).rect,
+            );
+            out.textures_delta.clear();
+            rect
+        };
+        run(&mut v, Vec::new());
+        let r = run(&mut v, Vec::new());
+        run(&mut v, vec![egui::Event::PointerMoved(r.center())]);
+        for _ in 0..3 {
+            run(&mut v, vec![notch(0.25)]);
+            assert_eq!(v, 0.0);
+        }
+        run(&mut v, vec![notch(0.25)]);
+        assert_eq!(v, 1.0);
+        run(
+            &mut v,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 100.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(v, 2.0);
+    }
 
     /// The spin arrows at the right of a field and the mouse wheel over
     /// it step the value: a unit (or the field's step), ten with Shift,
