@@ -2388,20 +2388,63 @@ impl App {
     /// text object. One undo step.
     pub fn apply_text_align(&mut self, a: tracedraw_core::TextAlign) {
         self.text_align = a;
-        let cmds: Vec<Command> = self
+        let doc = self.doc();
+        let mut cmds: Vec<Command> = Vec::new();
+        for s in self
             .selected_shapes()
             .iter()
             .filter(|s| matches!(s.kind, ShapeKind::Text { .. }))
-            .filter_map(|s| {
-                let mut kind = s.kind.clone();
-                tracedraw_core::paragraphs::edit_paragraph_formats(
-                    &mut kind,
-                    self.paragraph_range(s.id),
-                    |f| f.align = a,
-                );
-                (kind != s.kind).then_some(Command::SetShapeKind { shape: s.id, kind })
-            })
-            .collect();
+        {
+            let mut kind = s.kind.clone();
+            // Text typed at a point lines up as a whole; paragraph text
+            // takes the alignment in the paragraphs at the caret.
+            let point_text = matches!(
+                &s.kind,
+                ShapeKind::Text {
+                    frame: None,
+                    on_path: None,
+                    ..
+                }
+            );
+            let range = if point_text {
+                None
+            } else {
+                self.paragraph_range(s.id)
+            };
+            tracedraw_core::paragraphs::edit_paragraph_formats(&mut kind, range, |f| f.align = a);
+            if kind == s.kind {
+                continue;
+            }
+            // Text typed at a point lines up about that point, so a new
+            // alignment would move it: it moves back so the reference
+            // point of the X and Y fields stays where it was. Text in a
+            // frame or on a path keeps its frame or path; its lines
+            // realign inside.
+            let shift = if point_text {
+                let before = s.bounds();
+                let mut after = s.clone();
+                after.kind = kind.clone();
+                let after = after.bounds();
+                let o = self.object_origin;
+                let d = crate::ui::propbar::origin_point(before, o)
+                    - crate::ui::propbar::origin_point(after, o);
+                // The move in the object's parent's space (a group's).
+                let parent = doc.parent_transform(s.id).unwrap_or(Affine::IDENTITY);
+                let inv = parent.inverse();
+                let local = inv * (Point::ZERO + d) - inv * Point::ZERO;
+                (local.hypot() > 1e-9 && local.x.is_finite() && local.y.is_finite())
+                    .then_some(local)
+            } else {
+                None
+            };
+            cmds.push(Command::SetShapeKind { shape: s.id, kind });
+            if let Some(v) = shift {
+                cmds.push(Command::TransformShapes {
+                    shapes: vec![s.id],
+                    transform: Affine::translate(v),
+                });
+            }
+        }
         if !cmds.is_empty() {
             if let Err(e) = self.engine.run_batch("Text Alignment", &cmds) {
                 self.status = e.to_string();
@@ -3305,6 +3348,16 @@ impl App {
 }
 
 impl App {
+    /// Whether text set in `family` draws with an installed or carried
+    /// font of that family. A face named with its weight ("Titillium Web
+    /// SemiBold") is drawn by its family's face of that weight, so it is
+    /// not missing when the family is there (#892).
+    pub fn font_installed(&self, family: &str) -> bool {
+        self.font_families.iter().any(|g| g == family)
+            || tracedraw_text::split_weight(family)
+                .is_some_and(|(base, _)| self.font_families.iter().any(|g| g == base))
+    }
+
     /// Fonts used by the document (in groups, tables and symbols too) that
     /// are neither installed nor carried by a drawing (Font Manager,
     /// missing-font substitution notice).
@@ -3313,7 +3366,7 @@ impl App {
             .doc()
             .font_families_used()
             .into_iter()
-            .filter(|f| !self.font_families.contains(f))
+            .filter(|f| !self.font_installed(f))
             .collect();
         if !missing.is_empty() {
             self.status = trf("status.missing_fonts", &[("f", &with_stand_ins(&missing))]);

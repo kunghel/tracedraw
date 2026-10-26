@@ -113,8 +113,13 @@ Text and Glyphs dockers and Options (default font):
   (the tooltip says which). The family in use is marked and brought into
   view. A family with more than one face has an arrow that shows its
   styles under it (Regular, Italic, Bold, Light ..., each drawn in itself);
-  picking a style sets Bold and Italic as its weight (600 or more is bold)
-  and slant say.
+  picking a style sets Italic as its slant says, and Bold for a bold face
+  (700, or a weight from 600 the style does not name). A face of another
+  weight (Thin, Light, Medium, SemiBold, Black ...) is named by the family
+  with its weight, not bold: SemiBold of "Titillium Web" sets "Titillium
+  Web SemiBold", as a .cdr file names that face, so the bars show it and
+  never Bold (#892). With no family row of that whole name, the family's
+  row is the one marked.
 - The sample size: a slider from 12 to 40 points (18 at first, kept in
   the preferences, `font_sample_px`); the rows grow with it.
 - The preview: "AaBbYyZz" in the family (and style) under the pointer,
@@ -393,8 +398,11 @@ the preferences, `text_sections_closed`).
   through the usual question about new objects; the eye shows boxes at
   the right of the rows, and while they are shown only the ticked rows
   are taken (`text_docker_checks`, `text_docker_ticked`).
-- Character: the font list across the docker; the style list (Normal,
-  Italic, Bold, Bold-Italic) and the size list; range kerning (-50 to
+- Character: the font list across the docker; the style list (the
+  faces of the family, by their own names: Regular, SemiBold, Bold ...;
+  Normal, Italic, Bold, Bold-Italic for a family whose faces are not
+  known, and the weight of a family named with one, "SemiBold") and the
+  size list; range kerning (-50 to
   200 %) and the underline button; the text fill, the characters'
   background and the text outline, each as a kind (No Fill or Uniform
   Fill; none, hairline or a width in points for the outline), a colour
@@ -552,10 +560,15 @@ bitmaps-only counts from table version 2; the reserved bits, which old
 fonts set, mean nothing; `tracedraw_text::usable_in_documents`); others
 are skipped with a log line and their text falls back like any missing
 font. The Fonts docker marks carried families
-"embedded" under "Fonts in document". Saving a drawing as `.tdraw` adds
+"embedded" under "Fonts in document". In every font list (the property
+bar, the Text docker, the Glyphs docker) a carried family that is not
+installed shows "Embedded" in orange at the end of its row, and the font
+box shows it after the name while that family is the current one and
+nothing is typed in it (#518,
+`ui::font_list::tests::fonts_embedded_in_the_drawing_say_so`). Saving a drawing as `.tdraw` adds
 the carried fonts its text uses (text imported or pasted from another
 drawing), so the file keeps its letters on machines without them, and,
-with Save As's Embed fonts on (as it starts), the installed fonts its
+with Save As's Embed fonts on (it starts off), the installed fonts its
 text uses whose licence allows it (`FontSystem::fonts_to_embed`; see
 `files.md`, Save Drawing dialog). An embedded copy of an installed font
 is ignored where the font is installed.
@@ -578,12 +591,17 @@ has it.
 A font is found by the family name its file lists (the typographic
 family, "Arial") and by its legacy family name when that differs
 ("Arial Narrow", "Arial Black", "Segoe UI Semibold", the name a drawing
-from another program usually gives); the font lists show both. A
+from another program usually gives); the font lists show both. Names
+in every language the file gives count ("微软雅黑" as well as "Microsoft
+YaHei"), including family names a font keeps only in a Chinese,
+Japanese or Korean code page (GBK, Big5, Shift JIS, Wansung), as older
+Chinese fonts such as "方正黑体_GBK" do (#860, #898). A
 legacy name picks the face of that name nearest the text's weight and
 style. A family name ending in a weight ("Titillium Web SemiBold",
 "Lato Light", "Semi Bold" written apart too) that no font lists is
 drawn with the family's face nearest that weight, and is not reported
-missing. Drawn that way, through the family without the weight or a
+missing (the notice on opening, the Font Manager and the fonts docker
+check the family without the weight, #892). Drawn that way, through the family without the weight or a
 stand-in, the weight in the name carries on everywhere: a variable font
 draws at it on its weight axis ("Quicksand SemiBold" at 600), a family
 with only a regular face draws a weight from 600 up thickened as bold

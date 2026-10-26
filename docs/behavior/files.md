@@ -11,15 +11,23 @@ One window, 760 px wide, the same on every system:
 
 - **Folder** (desktop): an Up button, the path bar (a folder typed there
   opens with Enter; one that does not exist says so) and New folder
-  (makes "New folder", "New folder (2)" ... and opens it). Down the left,
+  (makes "New folder", "New folder (2)" ... in the folder shown, picks it
+  and starts renaming it: Enter keeps the name typed, Esc the one it
+  has). Down the left,
   shortcuts to the folders that exist: Home, Desktop, Documents,
   Downloads and Pictures (on Linux the names in
   `~/.config/user-dirs.dirs`), then the drives (Windows) or `/`. On the
   right, 250 px high and scrolling, the folder's contents: folders, then
   the files of the chosen type, by name ignoring case (hidden ones left
   out), with Name, Date modified (local time), Type ("File folder",
-  "CDR file") and Size (KB, MB from 1 MB). A click on a file takes its
-  name; a double click on a folder opens it.
+  "CDR file") and Size (KB, MB from 1 MB). A click picks an entry
+  (a file's name becomes the name); a double click on a folder opens it;
+  a right click offers Open (folders) and Rename. With the list picked,
+  letters jump to the first entry starting with them (letters a second
+  apart start again; one letter typed again goes on to the next entry
+  with it), F2 renames the entry picked, Enter opens the folder picked
+  and the arrow keys move. A name that is empty, holds `/` or `\` or is
+  taken leaves the entry as it was and says so.
 - **File name**: the drawing's file name, else its title, else
   "Graphic1", with the type's extension; a name typed with either
   extension, or none, gets the chosen type's.
@@ -41,8 +49,9 @@ One window, 760 px wide, the same on every system:
   it; every face is listed in the file's font table either way. It is
   greyed below version 16 and when no face may be embedded. Both
   choices stay for the next Save As and for Save. Embed fonts starts
-  on.
-- **Embed fonts (size)** for TraceDraw files: on (as it starts), the
+  off, so that drawings saved one after another do not each carry a copy
+  of the same fonts (#886).
+- **Embed fonts (size)** for TraceDraw files: on (it starts off, #886), the
   installed fonts the text uses go into the `.tdraw` file, one file per
   face (the regular face for a bold or italic the family lacks), where
   the font's licence allows use in documents, so the drawing keeps its

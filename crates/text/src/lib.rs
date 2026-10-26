@@ -324,6 +324,66 @@ pub fn split_weight(family: &str) -> Option<(&str, u16)> {
         .map(|w| (head2, w))
 }
 
+/// How text names a face picked from a family's styles: the family, and
+/// whether it is bold and italic. A face of a weight other than regular
+/// and bold is named by the family with the weight ("Titillium Web" and
+/// its SemiBold face are "Titillium Web SemiBold", not bold), as drawings
+/// name it, so the bars show the face's own weight and not Bold (#892).
+/// The weight's name is the style's own when it is one ("SemiBold
+/// Italic" gives "SemiBold"), else the usual name of the weight. Regular
+/// and bold faces, and a family already named with its weight, keep the
+/// family, bold from 700 (600 for an unnamed weight between).
+pub fn face_family(family: &str, face: &FaceStyle) -> (String, bool, bool) {
+    let italic = face.italic;
+    if let Some((_, named)) = split_weight(family) {
+        return (
+            family.to_string(),
+            face.weight >= 700 && named < 700,
+            italic,
+        );
+    }
+    let weight_words: Vec<&str> = face
+        .name
+        .split_whitespace()
+        .filter(|w| !w.eq_ignore_ascii_case("italic") && !w.eq_ignore_ascii_case("oblique"))
+        .collect();
+    let own = weight_words.join(" ");
+    if !own.is_empty() {
+        let full = format!("{} {own}", family.trim_end());
+        if split_weight(&full).is_some() {
+            return (full, false, italic);
+        }
+    }
+    let rounded = (face.weight.saturating_add(50) / 100 * 100).clamp(100, 900);
+    let canonical = match rounded {
+        100 => Some("Thin"),
+        200 => Some("ExtraLight"),
+        300 => Some("Light"),
+        500 => Some("Medium"),
+        600 => Some("SemiBold"),
+        800 => Some("ExtraBold"),
+        900 => Some("Black"),
+        _ => None,
+    };
+    // A style named "Bold" or "Regular" is that, whatever its weight.
+    let plain = own.is_empty()
+        || ["regular", "normal", "book", "roman", "bold"]
+            .iter()
+            .any(|n| own.eq_ignore_ascii_case(n));
+    match canonical.filter(|_| !plain) {
+        Some(name) => (format!("{} {name}", family.trim_end()), false, italic),
+        None => (family.to_string(), face.weight >= 600, italic),
+    }
+}
+
+/// The weight part of a family named with its weight: "SemiBold" for
+/// "Titillium Web SemiBold", "Semi Bold" for "Lato Semi Bold". `None`
+/// for other names.
+pub fn weight_suffix(family: &str) -> Option<&str> {
+    let (base, _) = split_weight(family)?;
+    family.get(base.len()..).map(str::trim)
+}
+
 /// The weight text in `family` is drawn at: the weight the family's
 /// name ends in ("Lato Black" 900), else 400; bold text at least 700.
 pub fn target_weight(family: &str, bold: bool) -> u16 {
@@ -335,9 +395,32 @@ pub fn target_weight(family: &str, bold: bool) -> u16 {
     }
 }
 
+/// A name record kept in a Chinese, Japanese or Korean code page (the
+/// Windows encodings 2 to 5 and the matching Macintosh scripts of the
+/// OpenType `name` table), decoded: older Chinese fonts name their family
+/// in GBK only ("方正黑体_GBK"). Windows records keep each character in
+/// 16 bits, a one-byte one with a zero high byte; the zeros are dropped
+/// (no code of these code pages holds a zero byte). `None` for other
+/// encodings and for bytes that do not decode.
+fn code_page_name(name: &ttf_parser::name::Name) -> Option<String> {
+    use ttf_parser::PlatformId;
+    let enc = match (name.platform_id, name.encoding_id) {
+        (PlatformId::Windows, 2) | (PlatformId::Macintosh, 1) => encoding_rs::SHIFT_JIS,
+        (PlatformId::Windows, 3) | (PlatformId::Macintosh, 25) => encoding_rs::GBK,
+        (PlatformId::Windows, 4) | (PlatformId::Macintosh, 2) => encoding_rs::BIG5,
+        (PlatformId::Windows, 5) | (PlatformId::Macintosh, 3) => encoding_rs::EUC_KR,
+        _ => return None,
+    };
+    let bytes: Vec<u8> = name.name.iter().copied().filter(|b| *b != 0).collect();
+    let (text, bad) = enc.decode_without_bom_handling(&bytes);
+    (!bad && !text.trim().is_empty()).then(|| text.into_owned())
+}
+
 /// The legacy family names (name ID 1) a face's name table gives that
 /// differ from the families fontdb lists for it (the typographic family,
 /// name ID 16): "Arial Narrow" for a face fontdb files under "Arial".
+/// Family names (IDs 1 and 16) kept only in a CJK code page count too
+/// (see [`code_page_name`]).
 fn legacy_families(db: &fontdb::Database, id: fontdb::ID) -> Vec<String> {
     let Some(face) = db.face(id) else {
         return Vec::new();
@@ -349,10 +432,22 @@ fn legacy_families(db: &fontdb::Database, id: fontdb::ID) -> Vec<String> {
         };
         let mut out: Vec<String> = Vec::new();
         for name in f.names() {
-            if name.name_id != ttf_parser::name_id::FAMILY || !name.is_unicode() {
+            let family = name.name_id == ttf_parser::name_id::FAMILY;
+            let typographic = name.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY;
+            // Unicode legacy names, and the family names a font keeps in a
+            // Chinese, Japanese or Korean code page only (#860), which the
+            // font database does not read.
+            let text = if name.is_unicode() {
+                if !family {
+                    continue;
+                }
+                name.to_string()
+            } else if family || typographic {
+                code_page_name(&name)
+            } else {
                 continue;
-            }
-            let Some(text) = name.to_string() else {
+            };
+            let Some(text) = text else {
                 continue;
             };
             let text = text.trim().to_string();
@@ -766,6 +861,21 @@ fn continues_syllable(prev: char, c: char) -> bool {
         || (prev == '\u{200D}' && indic_letter(c))
 }
 
+/// Two spans whose letters shape the same way: only their colours,
+/// outlines, backgrounds, lines or paragraph differ, so they can be
+/// shaped as one run (#911).
+fn shapes_alike(a: &TextSpan, b: &TextSpan) -> bool {
+    a.font_family == b.font_family
+        && a.size_pt == b.size_pt
+        && a.bold == b.bold
+        && a.italic == b.italic
+        && a.tracking_pct == b.tracking_pct
+        && a.baseline_shift_pt == b.baseline_shift_pt
+        && a.offset_x_pct == b.offset_x_pct
+        && a.angle_deg == b.angle_deg
+        && a.features == b.features
+}
+
 /// Text in which a character may continue the syllable before it: any
 /// text but plain ASCII, the only text the syllable checks are skipped
 /// for (every frame of editing lays text out, #599).
@@ -1128,6 +1238,11 @@ impl FontSystem {
             }
         }
         Self::from_db(db)
+    }
+
+    /// A font system with no fonts, for tests that install their own.
+    pub fn empty() -> Self {
+        Self::from_db(fontdb::Database::new())
     }
 
     /// A font system over `db` (tests start from an empty one).
@@ -2087,7 +2202,10 @@ impl FontSystem {
 
     /// Shape one run of text in one span's style into glyphs, with the
     /// paragraph's character and word spacing. Letters the span's face
-    /// lacks are drawn with a face that has them.
+    /// lacks are drawn with a face that has them. `breaks` are the
+    /// characters (counted like `char_base`) where another span shaped
+    /// with this one starts: no ligature joins letters across them.
+    #[allow(clippy::too_many_arguments)]
     fn shape_run(
         &self,
         span: &TextSpan,
@@ -2096,6 +2214,7 @@ impl FontSystem {
         size_scale: f64,
         char_base: usize,
         para: &ParagraphStyle,
+        breaks: &[usize],
     ) -> Vec<Glyph> {
         let mut out = Vec::new();
         if text.is_empty() {
@@ -2146,6 +2265,7 @@ impl FontSystem {
                         char_base + before,
                         para,
                         level,
+                        breaks,
                     ));
                 }
             }
@@ -2312,6 +2432,7 @@ impl FontSystem {
         char_base: usize,
         para: &ParagraphStyle,
         level: Option<u8>,
+        breaks: &[usize],
     ) -> Vec<Glyph> {
         let mut out = Vec::new();
         let Some((data, index)) = self.face_data(id) else {
@@ -2369,6 +2490,26 @@ impl FontSystem {
                 rustybuzz::Feature::new(tag, 1, ..)
             })
             .collect();
+        // Letters of two spans shaped together keep their own colours: no
+        // ligature forms over the two letters either side of the change
+        // (a font may form one from a lookahead past its first letter);
+        // kerning and the other features still see across it.
+        for b in breaks {
+            let Some(k) = b.checked_sub(char_base).filter(|k| *k > 0) else {
+                continue;
+            };
+            let Some((at, c)) = text.char_indices().nth(k) else {
+                continue;
+            };
+            let from = text[..at].char_indices().next_back().map_or(at, |(i, _)| i);
+            for tag in [b"liga", b"clig", b"dlig"] {
+                features.push(rustybuzz::Feature::new(
+                    rustybuzz::ttf_parser::Tag::from_bytes(tag),
+                    0,
+                    from..at + c.len_utf8(),
+                ));
+            }
+        }
         // Vertical text takes the font's vertical forms (brackets and
         // punctuation turned or moved for columns) for its upright
         // letters.
@@ -2642,18 +2783,39 @@ impl FontSystem {
                         char_idx += 1;
                     }
                     let mut shaped = std::borrow::Cow::Borrowed(part);
+                    // The spans after this one that shape alike (the same
+                    // font, size and character placement, another colour
+                    // only) are shaped with it, so the font's kerning and
+                    // contextual forms hold across the change of colour
+                    // (#911): the characters each one gave, and where it
+                    // starts.
+                    let mut joined: Vec<(Range<usize>, usize)> = Vec::new();
+                    let mut breaks: Vec<usize> = Vec::new();
                     if let (true, Some(mut prev)) = (
                         last_piece && parts.peek().is_none(),
                         part.chars().next_back(),
                     ) {
                         for (sj, next) in spans.iter().enumerate().skip(si + 1) {
                             let mut n = 0;
-                            for c in next.text.chars() {
-                                if !continues_syllable(prev, c) {
-                                    break;
+                            if shapes_alike(span, next) {
+                                n = next.text.find(['\n', '\t']).unwrap_or(next.text.len());
+                                if let Some(c) =
+                                    next.text.get(..n).and_then(|t| t.chars().next_back())
+                                {
+                                    let from = char_idx + shaped.chars().count();
+                                    let count = next.text.get(..n).map_or(0, |t| t.chars().count());
+                                    breaks.push(from);
+                                    joined.push((from..from + count, sj));
+                                    prev = c;
                                 }
-                                prev = c;
-                                n += c.len_utf8();
+                            } else {
+                                for c in next.text.chars() {
+                                    if !continues_syllable(prev, c) {
+                                        break;
+                                    }
+                                    prev = c;
+                                    n += c.len_utf8();
+                                }
                             }
                             if let Some(more) = next.text.get(..n).filter(|m| !m.is_empty()) {
                                 shaped.to_mut().push_str(more);
@@ -2670,8 +2832,24 @@ impl FontSystem {
                         }
                     }
                     let pi = paragraphs.len().saturating_sub(1);
-                    let run =
-                        self.shape_run(span, si, &shaped, size_scale, char_idx, &style_of(pi).1);
+                    let mut run = self.shape_run(
+                        span,
+                        si,
+                        &shaped,
+                        size_scale,
+                        char_idx,
+                        &style_of(pi).1,
+                        &breaks,
+                    );
+                    if !joined.is_empty() {
+                        for g in &mut run {
+                            if let Some((_, sj)) =
+                                joined.iter().find(|(r, _)| r.contains(&g.char_idx))
+                            {
+                                g.span = *sj;
+                            }
+                        }
+                    }
                     char_idx += shaped.chars().count();
                     if let Some(p) = paragraphs.last_mut() {
                         p.extend(run);
@@ -3034,7 +3212,7 @@ impl FontSystem {
             if let (Some(bx), false) = (line.bullet_x, artistic) {
                 let first_span = glyphs.first().map(|g| g.span).unwrap_or(0);
                 if let Some(span) = spans.get(first_span).filter(|_| span_drawn(first_span)) {
-                    let b = self.shape_run(span, 0, &ps.bullet_char, size_scale, 0, ps);
+                    let b = self.shape_run(span, 0, &ps.bullet_char, size_scale, 0, ps, &[]);
                     for g in &b {
                         let a = orient(Affine::translate((bx, y)), g, m.ascent);
                         place_glyph(collect, a, g, &mut line_glyphs);
@@ -5307,6 +5485,105 @@ mod tests {
         FontSystem::from_db(db)
     }
 
+    /// `font` with its `name` table replaced by one holding `records`
+    /// (platform, encoding, language, name id, bytes), the tables laid
+    /// out again; checksums are not kept (fonts are read without them).
+    fn with_names(font: &[u8], records: &[(u16, u16, u16, u16, Vec<u8>)]) -> Vec<u8> {
+        let be16 = |d: &[u8], at: usize| u16::from_be_bytes([d[at], d[at + 1]]);
+        let be32 = |d: &[u8], at: usize| u32::from_be_bytes(d[at..at + 4].try_into().expect("4"));
+        let mut name = Vec::new();
+        name.extend_from_slice(&0u16.to_be_bytes());
+        name.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        name.extend_from_slice(&(6 + 12 * records.len() as u16).to_be_bytes());
+        let mut strings = Vec::new();
+        for (p, e, l, id, bytes) in records {
+            for v in [*p, *e, *l, *id, bytes.len() as u16, strings.len() as u16] {
+                name.extend_from_slice(&v.to_be_bytes());
+            }
+            strings.extend_from_slice(bytes);
+        }
+        name.extend_from_slice(&strings);
+        let n = usize::from(be16(font, 4));
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = (0..n)
+            .map(|i| {
+                let at = 12 + 16 * i;
+                let tag: [u8; 4] = font[at..at + 4].try_into().expect("tag");
+                let off = be32(font, at + 8) as usize;
+                let len = be32(font, at + 12) as usize;
+                let data = if &tag == b"name" {
+                    name.clone()
+                } else {
+                    font[off..off + len].to_vec()
+                };
+                (tag, data)
+            })
+            .collect();
+        tables.sort_by_key(|t| t.0);
+        let mut out = font[..12].to_vec();
+        let mut body = Vec::new();
+        let start = 12 + 16 * n;
+        for (tag, data) in &tables {
+            out.extend_from_slice(tag);
+            out.extend_from_slice(&0u32.to_be_bytes());
+            out.extend_from_slice(&((start + body.len()) as u32).to_be_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            body.extend_from_slice(data);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// A font that names its family in Chinese only in the GBK code page
+    /// (Windows encoding 3), as older Chinese fonts do, is found by that
+    /// name as well as its English one, and not reported missing (#860,
+    /// #898); a Big5 name too, with or without the zero high bytes.
+    #[test]
+    fn family_names_in_chinese_code_pages_are_found() {
+        let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_be_bytes).collect() };
+        let gbk = encoding_rs::GBK.encode("方正黑体_GBK").0.into_owned();
+        // Big5 kept as 16-bit values: "_" with a zero high byte.
+        let mut big5 = Vec::new();
+        for c in "華康_W5".chars() {
+            let b = encoding_rs::BIG5.encode(&c.to_string()).0.into_owned();
+            if b.len() == 1 {
+                big5.push(0);
+            }
+            big5.extend_from_slice(&b);
+        }
+        let font = with_names(
+            SELAWIK,
+            &[
+                (3, 1, 0x409, 1, utf16("FZHei-B01")),
+                (3, 1, 0x409, 2, utf16("Regular")),
+                (3, 1, 0x409, 4, utf16("FZHei-B01")),
+                (3, 1, 0x409, 6, utf16("FZHei-B01")),
+                (3, 3, 0x804, 1, gbk),
+                (3, 1, 0x804, 1, utf16("方正测试")),
+                (3, 4, 0x404, 16, big5),
+                // Johab is not read; nothing breaks.
+                (3, 6, 0x412, 1, vec![0x88, 0x61]),
+            ],
+        );
+        let f = system_with(&[&font]);
+        let families = f.families();
+        assert!(families.iter().any(|n| n == "FZHei-B01"), "{families:?}");
+        assert!(families.iter().any(|n| n == "方正黑体_GBK"), "{families:?}");
+        assert!(families.iter().any(|n| n == "華康_W5"), "{families:?}");
+        // A Unicode name in Chinese, as most fonts give it.
+        assert!(families.iter().any(|n| n == "方正测试"), "{families:?}");
+        assert!(f.has_family("方正测试"));
+        assert!(f.has_family("方正黑体_GBK"));
+        assert_eq!(f.substitute("方正黑体_GBK"), None);
+        assert_eq!(
+            f.face_for("方正黑体_GBK", false, false),
+            f.face_for("FZHei-B01", false, false)
+        );
+        assert!(f.family_info("方正黑体_GBK").is_some());
+    }
+
     #[test]
     fn families_tell_how_they_are_built_and_their_styles() {
         const SELAWIK_BOLD: &[u8] =
@@ -5339,6 +5616,68 @@ mod tests {
         let g = system_with(&[]);
         g.add_document_fonts(&[DocumentFont::new("Selawik", SELAWIK.to_vec())]);
         assert!(g.family_info("Selawik").is_some_and(|i| i.embedded));
+    }
+
+    /// A face picked from a family's styles is named the way drawings
+    /// name it: a semibold face by the family with its weight, not as
+    /// bold (#892, #624).
+    #[test]
+    fn faces_of_in_between_weights_are_named_by_their_weight() {
+        let face = |name: &str, weight: u16, italic: bool| FaceStyle {
+            name: name.into(),
+            weight,
+            italic,
+        };
+        let pick = |family: &str, f: FaceStyle| face_family(family, &f);
+        assert_eq!(
+            pick("Titillium Web", face("SemiBold", 600, false)),
+            ("Titillium Web SemiBold".to_string(), false, false)
+        );
+        assert_eq!(
+            pick("Titillium Web", face("SemiBold Italic", 600, true)),
+            ("Titillium Web SemiBold".to_string(), false, true)
+        );
+        assert_eq!(
+            pick("Lato", face("Semi Bold", 600, false)),
+            ("Lato Semi Bold".to_string(), false, false)
+        );
+        // A style name that is not a weight: the weight's usual name.
+        assert_eq!(
+            pick("Some Sans", face("Demi", 600, false)),
+            ("Some Sans SemiBold".to_string(), false, false)
+        );
+        assert_eq!(
+            pick("Some Sans", face("Thin Italic", 100, true)),
+            ("Some Sans Thin".to_string(), false, true)
+        );
+        // Regular and bold faces keep the family and the Bold switch.
+        assert_eq!(
+            pick("Titillium Web", face("Bold", 700, false)),
+            ("Titillium Web".to_string(), true, false)
+        );
+        assert_eq!(
+            pick("Titillium Web", face("Regular", 400, false)),
+            ("Titillium Web".to_string(), false, false)
+        );
+        assert_eq!(
+            pick("Titillium Web", face("Bold Italic", 700, true)),
+            ("Titillium Web".to_string(), true, true)
+        );
+        // A family named with its weight already keeps its name.
+        assert_eq!(
+            pick("Titillium Web SemiBold", face("SemiBold", 600, false)),
+            ("Titillium Web SemiBold".to_string(), false, false)
+        );
+        // What the bars show as the style of such a family.
+        assert_eq!(weight_suffix("Titillium Web SemiBold"), Some("SemiBold"));
+        assert_eq!(weight_suffix("Lato Semi Bold"), Some("Semi Bold"));
+        assert_eq!(weight_suffix("Titillium Web"), None);
+        // The face picked that way draws at its weight and is not missing.
+        let f = system_with(&[SELAWIK]);
+        let (family, bold, _) = pick("Selawik", face("SemiBold", 600, false));
+        assert!(!bold);
+        assert!(f.has_family(&family));
+        assert_eq!(f.substitute(&family), None);
     }
 
     #[test]
@@ -5578,6 +5917,64 @@ mod tests {
             (a.x0 - b.x0).abs() < 1e-6 && (a.x1 - b.x1).abs() < 1e-6,
             "{a:?} {b:?}"
         );
+    }
+
+    /// Letters in another colour keep the font's kerning with their
+    /// neighbours: "Hell" and "o" in two colours are as wide as "Hello"
+    /// in one, its "lo" pair kerned, and each part draws its own letters
+    /// where the whole text has them (#911).
+    #[test]
+    fn a_colour_change_keeps_the_kerning_across_it() {
+        let f = system_with(&[QUICKSAND]);
+        let whole = f.outline(&[TextSpan::new("Hello", "Quicksand", 100.0)]);
+        let mut a = TextSpan::new("Hell", "Quicksand", 100.0);
+        a.fill = Some(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            0, 255, 255,
+        )));
+        let b = TextSpan::new("o", "Quicksand", 100.0);
+        let split = f.outline(&[a.clone(), b.clone()]);
+        assert_eq!(whole.lines[0].edges, split.lines[0].edges);
+        assert_eq!(split.glyphs, 5);
+        // Shaped apart the pair loses its kerning: the test sees it.
+        let apart = |t: &str| f.outline(&[TextSpan::new(t, "Quicksand", 100.0)]);
+        let loose = apart("Hell").lines[0].edges[4] + apart("o").lines[0].edges[1];
+        assert!((loose - whole.lines[0].edges[5]).abs() > 1e-3, "{loose}");
+        // The two parts of the coloured text: each its own letters, at
+        // their places in the whole.
+        let part = |first_drawn: bool| {
+            let mut a = a.clone();
+            let mut b = b.clone();
+            a.layout_only = !first_drawn;
+            b.layout_only = first_drawn;
+            f.outline(&[a, b]).path.bounding_box()
+        };
+        let all = whole.path.bounding_box();
+        assert!((part(true).x0 - all.x0).abs() < 1e-9);
+        assert!((part(false).x1 - all.x1).abs() < 1e-9);
+        // Another size is shaped on its own, as before.
+        let mut big = b.clone();
+        big.size_pt = 200.0;
+        let mixed = f.outline(&[a.clone(), big]);
+        assert_eq!(mixed.glyphs, 5);
+    }
+
+    /// No ligature joins letters of two colours: each keeps its glyph.
+    #[test]
+    fn a_colour_change_breaks_ligatures() {
+        for font in [SELAWIK, QUICKSAND] {
+            let f = system_with(&[font]);
+            let family = f.families().into_iter().next().unwrap_or_default();
+            for pair in ["fi", "fl", "ff"] {
+                let one = f.outline(&[TextSpan::new(pair, &family, 100.0)]);
+                let mut a = TextSpan::new(&pair[..1], &family, 100.0);
+                a.fill = Some(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+                    255, 0, 0,
+                )));
+                let two = f.outline(&[a, TextSpan::new(&pair[1..], &family, 100.0)]);
+                assert!(one.glyphs <= 2);
+                assert_eq!(two.glyphs, 2, "{family} {pair}");
+            }
+        }
     }
 
     #[test]

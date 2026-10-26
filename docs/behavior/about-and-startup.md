@@ -151,6 +151,16 @@ and `--reset-settings` starts open windows of their own.
   computer whose card crashes in wgpu opens with OpenGL from the second
   start on, without `--renderer=gl` typed (#570,
   `gpu::tests::a_start_that_never_opened_its_window_is_followed_by_the_next_renderer`).
+- A start whose window has not opened 20 seconds after it began
+  (`gpu::WINDOW_WAIT`: the driver hung it inside wgpu's set-up, so it
+  never comes back to hand over) starts TraceDraw again with the next
+  renderer itself, the other arguments kept, and ends. Before that it
+  answers no to later starts, so a file opened meanwhile goes to a window
+  of its own instead of to the window that never shows. With the last
+  renderer it only logs and keeps waiting, which may just be slow. So the
+  first start opens too, not only the one after it (#570,
+  `gpu::tests::a_start_hung_without_its_window_goes_on_with_the_next_renderer`,
+  `instance::tests::a_start_without_its_window_declines_files`).
 - The log names every graphics adapter wgpu offers (backend, type,
   vendor and device ids, driver) with why it was taken or left, the
   renderer each start tries and the one that opened the window; an
@@ -217,6 +227,21 @@ support). Drawings are never touched.
 
 The main window's state is kept in the preferences on exit: maximized or
 not, and its inner size while it was neither maximized nor minimized.
+The size is kept in system points (pixels over the system's scaling of
+the monitor), not in interface points, which shrink as the interface
+size (Options, or the system's text size) grows: the splash opens the
+window before the interface size applies, and a size kept in interface
+points came back smaller at every start (#787,
+`splash::tests::the_window_comes_back_at_its_size_with_a_larger_interface`).
+
+For the first 30 frames of the main window (`splash::SETTLE_FRAMES`)
+its state is not kept: the window system may still report the splash's
+state then. In those frames, a window that should start maximized (it
+was left maximized, or its kept size does not fit this monitor) and
+still reports it is not is asked to maximize again at the 4th and 16th
+frame: some window systems drop a maximize asked for while the splash
+window takes its frame (#787,
+`splash::tests::a_dropped_maximize_is_asked_for_again_and_a_large_window_fills_the_screen`).
 
 ## Checks
 

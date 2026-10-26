@@ -491,40 +491,47 @@ impl OutlineWarp {
     /// across the part alone). Each part on its own if the warp changed
     /// the number of subpaths.
     pub fn apply_parts(&self, parts: &[BezPath]) -> Vec<BezPath> {
-        let starts = |p: &BezPath| {
-            p.elements()
-                .iter()
-                .filter(|e| matches!(e, PathEl::MoveTo(_)))
-                .count()
-        };
-        let mut whole = BezPath::new();
-        for p in parts {
-            whole.extend(p.elements().iter().copied());
-        }
-        let warped = self.apply(&whole);
-        let counts: Vec<usize> = parts.iter().map(starts).collect();
-        if counts.iter().sum::<usize>() != starts(&warped) {
-            return parts.iter().map(|p| self.apply(p)).collect();
-        }
-        let mut out = Vec::with_capacity(parts.len());
-        let mut els = warped.elements().iter().copied().peekable();
-        for n in counts {
-            let mut part = BezPath::new();
-            let mut seen = 0;
-            while let Some(e) = els.peek() {
-                if matches!(e, PathEl::MoveTo(_)) {
-                    if seen == n {
-                        break;
-                    }
-                    seen += 1;
-                }
-                part.push(*e);
-                els.next();
-            }
-            out.push(part);
-        }
-        out
+        warp_parts(parts, &|p| self.apply(p))
     }
+}
+
+/// `parts`, which together make one outline, warped by `warp` as the
+/// whole is: warped together, then split back by their subpaths. Each
+/// part on its own if the warp changed the number of subpaths.
+fn warp_parts(parts: &[BezPath], warp: &dyn Fn(&BezPath) -> BezPath) -> Vec<BezPath> {
+    let starts = |p: &BezPath| {
+        p.elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count()
+    };
+    let mut whole = BezPath::new();
+    for p in parts {
+        whole.extend(p.elements().iter().copied());
+    }
+    let warped = warp(&whole);
+    let counts: Vec<usize> = parts.iter().map(starts).collect();
+    if counts.iter().sum::<usize>() != starts(&warped) {
+        return parts.iter().map(warp).collect();
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    let mut els = warped.elements().iter().copied().peekable();
+    for n in counts {
+        let mut part = BezPath::new();
+        let mut seen = 0;
+        while let Some(e) = els.peek() {
+            if matches!(e, PathEl::MoveTo(_)) {
+                if seen == n {
+                    break;
+                }
+                seen += 1;
+            }
+            part.push(*e);
+            els.next();
+        }
+        out.push(part);
+    }
+    out
 }
 
 /// The outline warps of `shape` a bake would take (see [`OutlineWarp`]).
@@ -801,15 +808,50 @@ impl Effect {
 }
 
 /// Result of evaluating a shape's effect stack.
+#[derive(Clone)]
 pub struct Evaluated {
     pub below: Vec<Shape>,
     pub main: Shape,
     pub above: Vec<Shape>,
 }
 
+/// How many evaluations [`evaluate`] remembers.
+const EVALUATION_MEMORY: usize = 8;
+
+/// The latest evaluations of shapes that draw objects from their outline,
+/// newest last, each with the shape it was made from. Shared by all
+/// threads: the rasteriser works on its own.
+static EVALUATED: std::sync::Mutex<Vec<(Shape, Evaluated)>> = std::sync::Mutex::new(Vec::new());
+
 /// Evaluate every effect of `shape` in order. Geometry effects replace the
 /// main shape's kind with a path; object effects add shapes.
+///
+/// A contour, blend or extrusion costs milliseconds, and a frame asks for
+/// it to draw, to measure and to pick: the evaluations of the latest
+/// shapes are kept, so the same shape is worked out once (#897).
 pub fn evaluate(shape: &Shape) -> Evaluated {
+    if !shape.effects.iter().any(Effect::draws_from_outline) {
+        return evaluate_now(shape);
+    }
+    if let Ok(mut kept) = EVALUATED.lock() {
+        if let Some(i) = kept.iter().position(|(from, _)| from == shape) {
+            let hit = kept.remove(i);
+            let ev = hit.1.clone();
+            kept.push(hit);
+            return ev;
+        }
+    }
+    let ev = evaluate_now(shape);
+    if let Ok(mut kept) = EVALUATED.lock() {
+        if kept.len() >= EVALUATION_MEMORY {
+            kept.remove(0);
+        }
+        kept.push((shape.clone(), ev.clone()));
+    }
+    ev
+}
+
+fn evaluate_now(shape: &Shape) -> Evaluated {
     let mut main = shape.clone();
     let mut below: Vec<Shape> = Vec::new();
     let mut above: Vec<Shape> = Vec::new();
@@ -980,6 +1022,29 @@ pub fn evaluate(shape: &Shape) -> Evaluated {
 /// bounding box, for a group the box of all its objects.
 fn reshape(shape: &mut Shape, f: &dyn Fn(&BezPath, Rect) -> BezPath) {
     let b = shape.local_path().bounding_box();
+    // Text with characters of their own colours: a group of one curve a
+    // look (as the text is drawn in parts), warped together in the box of
+    // the whole text, so the colours stay (#912).
+    if let Some(parts) = shape.text_parts() {
+        let paths: Vec<BezPath> = parts.iter().map(Shape::local_path).collect();
+        let warped = warp_parts(&paths, &|p| f(p, b));
+        let children = parts
+            .into_iter()
+            .zip(warped)
+            .map(|(mut part, path)| {
+                part.transform = Affine::IDENTITY;
+                part.effects.clear();
+                part.parked_effects.clear();
+                part.shadow = None;
+                set_path(&mut part, path);
+                part
+            })
+            .collect();
+        shape.kind = ShapeKind::Group { children };
+        shape.spline = None;
+        shape.node_types.clear();
+        return;
+    }
     match &mut shape.kind {
         ShapeKind::Group { children } => {
             for c in children.iter_mut() {
@@ -1267,6 +1332,14 @@ fn blend(
                 center
             };
             extra = Affine::rotate_about(rotation.to_radians() * to, pivot) * extra;
+        }
+        if path_samples.is_none() && to != t {
+            // Off a path the object acceleration moves the steps toward
+            // one end: each goes where its accelerated place lies between
+            // the two objects' centres (the steps stay evenly sized unless
+            // Apply to sizing is on). It moved only sizes and turns, so
+            // the slider seemed to do nothing (#910).
+            extra = Affine::translate((cb_center - ca_center) * (to - t)) * extra;
         }
         if let Some((pts, cum)) = &path_samples {
             if pts.len() >= 2 {
@@ -2004,6 +2077,44 @@ mod tests {
         );
     }
 
+    /// An evaluation kept for the same shape is the one made then, and a
+    /// change of the shape or of its effect is never answered with it
+    /// (#897).
+    #[test]
+    fn a_kept_evaluation_follows_the_shape() {
+        let contour = |offset: f64| Effect::Contour {
+            steps: 2,
+            offset,
+            outside: true,
+            to_center: false,
+            fill_to: Color::WHITE,
+            outline_to: None,
+            color_blend: 0,
+            corners: Some(crate::shaping::Join::Miter),
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        };
+        let mut s = rect_shape();
+        s.effects.push(contour(2.0));
+        let first = evaluate(&s);
+        let again = evaluate(&s);
+        assert_eq!(first.below.len(), again.below.len());
+        assert_eq!(first.below[0].bounds(), again.below[0].bounds());
+        // Another offset, the same object.
+        s.effects = vec![contour(3.0)];
+        let wider = evaluate(&s).below[0].bounds().width();
+        assert!(wider > first.below[0].bounds().width() + 1.0, "{wider}");
+        // Another fill, the same effect.
+        let mut red = s.clone();
+        red.fill = Fill::Solid(Color::rgb8(200, 0, 0));
+        assert_ne!(evaluate(&red).main.fill, evaluate(&s).main.fill);
+        // Moved: the steps move with it.
+        let mut moved = s.clone();
+        moved.transform = Affine::translate((10.0, 0.0)) * moved.transform;
+        let dx = evaluate(&moved).below[0].bounds().x0 - evaluate(&s).below[0].bounds().x0;
+        assert!((dx - 10.0).abs() < 1e-6, "{dx}");
+    }
+
     #[test]
     fn contour_outside_three_steps() {
         let mut s = rect_shape();
@@ -2597,6 +2708,54 @@ mod tests {
         assert_eq!(evaluate(&linked).above.len(), 9);
         let mid = ev.above[4].bounds().center();
         assert!((mid.x - 60.0).abs() < 1.0, "{mid:?}");
+    }
+
+    /// The object acceleration moves the steps toward one end of a blend
+    /// off a path; it only changed their sizes and turns, so the slider
+    /// seemed to do nothing (#910).
+    #[test]
+    fn object_acceleration_moves_the_steps() {
+        let a = rect_shape();
+        let mut b = rect_shape();
+        b.transform = Affine::translate((100.0, 0.0));
+        let centres = |accel: f64| -> Vec<f64> {
+            let mut s = a.clone();
+            s.effects.push(Effect::Blend {
+                end: Box::new(b.clone()),
+                steps: 3,
+                accel_objects: accel,
+                accel_colors: 0.0,
+                rotation: 0.0,
+                path: None,
+                rotate_on_path: false,
+                end_id: Some(b.id),
+                options: BlendOptions::default(),
+            });
+            evaluate(&s)
+                .above
+                .iter()
+                .map(|x| x.bounds().center().x)
+                .collect()
+        };
+        let even = centres(0.0);
+        let x0 = a.bounds().center().x;
+        for (k, x) in even.iter().enumerate() {
+            let want = x0 + 100.0 * (k + 1) as f64 / 4.0;
+            assert!((x - want).abs() < 1.0, "even step {k}: {x} not {want}");
+        }
+        // Toward the start object, then toward the end one.
+        let to_start = centres(0.8);
+        let to_end = centres(-0.8);
+        for k in 0..3 {
+            assert!(
+                to_start[k] < even[k] - 2.0,
+                "step {k}: {to_start:?} {even:?}"
+            );
+            assert!(to_end[k] > even[k] + 2.0, "step {k}: {to_end:?} {even:?}");
+        }
+        // Still in order between the two objects.
+        assert!(to_start.windows(2).all(|w| w[0] < w[1]) && to_start[0] > x0);
+        assert!(to_end.windows(2).all(|w| w[0] < w[1]) && to_end[2] < x0 + 100.0);
     }
 
     #[test]

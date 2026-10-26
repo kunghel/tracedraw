@@ -629,6 +629,80 @@ fn fill_row(
     out
 }
 
+/// The style list: the faces the family has (Regular, SemiBold, Bold
+/// ...), else regular, italic, bold and bold italic. A face of a weight
+/// between is the family named with its weight, so the list shows
+/// "SemiBold" for "Titillium Web SemiBold", never Bold (#892). True when
+/// the style changed.
+fn style_list(app: &mut App, ui: &mut Ui) -> bool {
+    let font = app.text_font.clone();
+    let base = tracedraw_text::split_weight(&font).map_or(font.as_str(), |(b, _)| b);
+    let faces = app
+        .font_previews
+        .info(base)
+        .map(|i| i.faces)
+        .unwrap_or_default();
+    let now = (font.clone(), app.text_bold, app.text_italic);
+    let picks: Vec<(String, (String, bool, bool))> = faces
+        .iter()
+        .map(|f| (f.name.clone(), tracedraw_text::face_family(base, f)))
+        .collect();
+    let shown = style_name(&picks, &now);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt("docker_text_style")
+        .width(110.0)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            let mut chosen = None;
+            if picks.is_empty() {
+                for (b, i, key) in STYLES {
+                    let on = app.text_bold == b && app.text_italic == i;
+                    if ui.selectable_label(on, tr(key)).clicked() {
+                        chosen = Some((font.clone(), b, i));
+                    }
+                }
+            } else {
+                for (name, pick) in &picks {
+                    if ui.selectable_label(*pick == now, name).clicked() {
+                        chosen = Some(pick.clone());
+                    }
+                }
+            }
+            if let Some((family, bold, italic)) = chosen {
+                if family != app.text_font {
+                    app.text_font = family;
+                }
+                app.text_bold = bold;
+                app.text_italic = italic;
+                changed = true;
+            }
+        });
+    changed
+}
+
+/// The style the list shows for the text settings `now` (family, bold,
+/// italic) among a family's faces and the names text gives them: the
+/// face's own name, else the weight a family name ends in ("SemiBold"),
+/// else regular, italic, bold or bold italic.
+fn style_name(picks: &[(String, (String, bool, bool))], now: &(String, bool, bool)) -> String {
+    if let Some((name, _)) = picks.iter().find(|(_, p)| p == now) {
+        return name.clone();
+    }
+    let (family, bold, italic) = now;
+    if let Some(weight) = tracedraw_text::weight_suffix(family).filter(|_| !*bold) {
+        return if *italic {
+            format!("{weight} {}", tr("docker.style_italic"))
+        } else {
+            weight.to_string()
+        };
+    }
+    let idx = STYLES
+        .iter()
+        .position(|(b, i, _)| b == bold && i == italic)
+        .unwrap_or(0);
+    tr(STYLES[idx].2)
+}
+
 fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
     let span = first.and_then(|t| match &t.kind {
         ShapeKind::Text { spans, .. } => spans.first().cloned(),
@@ -646,25 +720,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         row_check(app, ui, "font");
     });
     ui.horizontal(|ui| {
-        let idx = STYLES
-            .iter()
-            .position(|(b, i, _)| *b == app.text_bold && *i == app.text_italic)
-            .unwrap_or(0);
-        egui::ComboBox::from_id_salt("docker_text_style")
-            .width(110.0)
-            .selected_text(tr(STYLES[idx].2))
-            .show_ui(ui, |ui| {
-                for (b, i, key) in STYLES {
-                    if ui
-                        .selectable_label(app.text_bold == b && app.text_italic == i, tr(key))
-                        .clicked()
-                    {
-                        app.text_bold = b;
-                        app.text_italic = i;
-                        changed = true;
-                    }
-                }
-            });
+        changed |= style_list(app, ui);
         row_check(app, ui, "style");
         changed |= crate::ui::toolbar::text_size_list(app, ui);
         row_check(app, ui, "size");
@@ -890,15 +946,15 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     };
     let before = p.clone();
     let mut pc = false;
-    let line_icon = |ui: &mut Ui, text: &str, key: &str| {
-        ui.add_sized(
-            [18.0, 22.0],
-            egui::Label::new(egui::RichText::new(text).size(13.0)),
-        )
-        .on_hover_text(tr(key));
+    let line_icon = |ui: &mut Ui, icon: ParaIcon, key: &str| {
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(18.0, 22.0), egui::Sense::hover());
+        for shape in para_icon_shapes(icon, r, ui.visuals().text_color()) {
+            ui.painter().add(shape);
+        }
+        resp.on_hover_text(tr(key));
     };
     ui.horizontal(|ui| {
-        line_icon(ui, "\u{2195}", "docker.leading");
+        line_icon(ui, ParaIcon::Leading, "docker.leading");
         let (range, suffix) = match p.leading_unit {
             LeadingUnit::Points => (0.0..=2000.0, " pt"),
             _ => (0.0..=2000.0, " %"),
@@ -935,17 +991,17 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         .num_columns(4)
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
-            line_icon(ui, "\u{21E5}", "docker.left_indent");
+            line_icon(ui, ParaIcon::LeftIndent, "docker.left_indent");
             pc |= length(ui, app, &mut p.left_indent);
-            line_icon(ui, "\u{2912}", "docker.space_before");
+            line_icon(ui, ParaIcon::SpaceBefore, "docker.space_before");
             pc |= length(ui, app, &mut p.space_before);
             ui.end_row();
-            line_icon(ui, "\u{21B3}", "docker.first_line_indent");
+            line_icon(ui, ParaIcon::FirstLineIndent, "docker.first_line_indent");
             pc |= length(ui, app, &mut p.first_line_indent);
-            line_icon(ui, "\u{2913}", "docker.space_after");
+            line_icon(ui, ParaIcon::SpaceAfter, "docker.space_after");
             pc |= length(ui, app, &mut p.space_after);
             ui.end_row();
-            line_icon(ui, "\u{21E4}", "docker.right_indent");
+            line_icon(ui, ParaIcon::RightIndent, "docker.right_indent");
             pc |= length(ui, app, &mut p.right_indent);
             ui.end_row();
         });
@@ -1121,9 +1177,125 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
     }
 }
 
+/// The small pictures beside the paragraph spacing and indent fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParaIcon {
+    Leading,
+    LeftIndent,
+    RightIndent,
+    FirstLineIndent,
+    SpaceBefore,
+    SpaceAfter,
+}
+
+/// The lines of a paragraph icon in `r`: lines of text with an arrow or a
+/// bar showing what the field sets. Drawn rather than taken from a font,
+/// whose arrows the interface fonts of some systems lack (#863).
+fn para_icon_shapes(icon: ParaIcon, r: egui::Rect, color: egui::Color32) -> Vec<egui::Shape> {
+    let st = egui::Stroke::new(1.0, color);
+    let c = r.center();
+    let (l, rt) = (c.x - 7.0, c.x + 7.0);
+    let line = |x0: f32, x1: f32, y: f32| {
+        egui::Shape::line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], st)
+    };
+    let arrow = |from: egui::Pos2, to: egui::Pos2| {
+        let d = (to - from).normalized() * 3.0;
+        let n = egui::vec2(-d.y, d.x);
+        vec![
+            egui::Shape::line_segment([from, to], st),
+            egui::Shape::line_segment([to, to - d + n], st),
+            egui::Shape::line_segment([to, to - d - n], st),
+        ]
+    };
+    let mut out = Vec::new();
+    match icon {
+        ParaIcon::Leading => {
+            out.push(line(l, rt - 5.0, c.y - 6.0));
+            out.push(line(l, rt - 5.0, c.y + 6.0));
+            out.extend(arrow(
+                egui::pos2(rt - 1.0, c.y),
+                egui::pos2(rt - 1.0, c.y - 6.0),
+            ));
+            out.extend(arrow(
+                egui::pos2(rt - 1.0, c.y),
+                egui::pos2(rt - 1.0, c.y + 6.0),
+            ));
+        }
+        ParaIcon::LeftIndent | ParaIcon::RightIndent => {
+            let left = icon == ParaIcon::LeftIndent;
+            let (x0, x1) = if left { (l + 6.0, rt) } else { (l, rt - 6.0) };
+            for k in -1..=1 {
+                out.push(line(x0, x1, c.y + k as f32 * 4.0));
+            }
+            if left {
+                out.extend(arrow(egui::pos2(l, c.y), egui::pos2(l + 4.0, c.y)));
+            } else {
+                out.extend(arrow(egui::pos2(rt, c.y), egui::pos2(rt - 4.0, c.y)));
+            }
+        }
+        ParaIcon::FirstLineIndent => {
+            out.push(line(l + 6.0, rt, c.y - 4.0));
+            out.push(line(l, rt, c.y));
+            out.push(line(l, rt, c.y + 4.0));
+            out.extend(arrow(
+                egui::pos2(l, c.y - 4.0),
+                egui::pos2(l + 4.0, c.y - 4.0),
+            ));
+        }
+        ParaIcon::SpaceBefore => {
+            out.push(line(l, rt, c.y - 7.0));
+            out.push(line(l, rt, c.y + 3.0));
+            out.push(line(l, rt, c.y + 7.0));
+            out.extend(arrow(
+                egui::pos2(c.x, c.y - 6.0),
+                egui::pos2(c.x, c.y + 1.0),
+            ));
+        }
+        ParaIcon::SpaceAfter => {
+            out.push(line(l, rt, c.y - 7.0));
+            out.push(line(l, rt, c.y - 3.0));
+            out.push(line(l, rt, c.y + 7.0));
+            out.extend(arrow(
+                egui::pos2(c.x, c.y + 6.0),
+                egui::pos2(c.x, c.y - 1.0),
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The paragraph icons are drawn lines inside their box, not font
+    /// arrows, which the interface fonts of some systems do not have and
+    /// left the boxes empty (#863).
+    #[test]
+    fn paragraph_icons_are_drawn_lines_inside_their_box() {
+        let r = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(18.0, 22.0));
+        for icon in [
+            ParaIcon::Leading,
+            ParaIcon::LeftIndent,
+            ParaIcon::RightIndent,
+            ParaIcon::FirstLineIndent,
+            ParaIcon::SpaceBefore,
+            ParaIcon::SpaceAfter,
+        ] {
+            let shapes = para_icon_shapes(icon, r, egui::Color32::BLACK);
+            assert!(shapes.len() >= 4, "{icon:?}");
+            for sh in &shapes {
+                match sh {
+                    egui::Shape::LineSegment { points, .. } => {
+                        for p in points {
+                            assert!(r.expand(0.5).contains(*p), "{icon:?}: {p:?} outside {r:?}");
+                        }
+                    }
+                    other => panic!("{icon:?}: not a line: {other:?}"),
+                }
+            }
+        }
+    }
     use tracedraw_core::{Point, Size, TextSpan};
 
     fn draw(app: &mut App) {
@@ -1164,6 +1336,66 @@ mod tests {
         }
         draw(&mut app);
         assert_eq!(app.settings.text_sections_closed.len(), 3);
+    }
+
+    /// The style list names a semibold face by its weight, never Bold
+    /// (#892, #624): from the family's faces, and from the family name
+    /// when the faces are not known.
+    #[test]
+    fn the_style_list_shows_a_semibold_face_as_semibold() {
+        let face = |name: &str, weight: u16, italic: bool| tracedraw_text::FaceStyle {
+            name: name.into(),
+            weight,
+            italic,
+        };
+        let faces = [
+            face("Regular", 400, false),
+            face("SemiBold", 600, false),
+            face("Bold", 700, false),
+        ];
+        let picks: Vec<(String, (String, bool, bool))> = faces
+            .iter()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    tracedraw_text::face_family("Titillium Web", f),
+                )
+            })
+            .collect();
+        let now = |f: &str, b: bool| (f.to_string(), b, false);
+        assert_eq!(
+            style_name(&picks, &now("Titillium Web SemiBold", false)),
+            "SemiBold"
+        );
+        assert_eq!(style_name(&picks, &now("Titillium Web", true)), "Bold");
+        assert_eq!(style_name(&picks, &now("Titillium Web", false)), "Regular");
+        // Faces not known (the family is not installed).
+        assert_eq!(
+            style_name(&[], &now("Titillium Web SemiBold", false)),
+            "SemiBold"
+        );
+        assert_eq!(
+            style_name(&[], &now("Titillium Web", true)),
+            tr("docker.style_bold")
+        );
+        // A .cdr run in the semibold face shows as that face in the docker,
+        // with Bold off.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("Text", "Selawik SemiBold", 11.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.sync_text_defaults_from(id);
+        draw(&mut app);
+        assert_eq!(app.text_font, "Selawik SemiBold");
+        assert!(!app.text_bold);
     }
 
     /// The vertical alignment a paragraph text takes is kept with it and

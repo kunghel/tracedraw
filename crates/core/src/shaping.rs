@@ -81,6 +81,102 @@ pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
     recover_curves(&from_shapes(result), &[subject, clip])
 }
 
+/// Which parts of an open path [`cut_open`] keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// Outside every region (Trim, Weld).
+    Outside,
+    /// Inside every region (Intersect).
+    Inside,
+}
+
+/// An open path cut where it crosses the outlines of the closed
+/// `regions` (all in one space), keeping its pieces outside every region
+/// or inside every one. Each piece keeps the path's own lines and curves
+/// (a curve cut is a part of the same curve), and pieces that meet stay
+/// one subpath. The result is open (#828).
+pub fn cut_open(path: &BezPath, regions: &[BezPath], keep: Keep) -> BezPath {
+    use kurbo::{Line, PathSeg, Shape as _};
+    // The regions' outlines as straight edges, flattened finely.
+    let mut edges: Vec<Line> = Vec::new();
+    for r in regions {
+        let mut start: Option<Point> = None;
+        let mut last: Option<Point> = None;
+        kurbo::flatten(
+            r.elements().iter().copied(),
+            TOL / 4.0,
+            &mut |el| match el {
+                PathEl::MoveTo(p) => {
+                    if let (Some(a), Some(b)) = (last, start) {
+                        edges.push(Line::new(a, b));
+                    }
+                    start = Some(p);
+                    last = Some(p);
+                }
+                PathEl::LineTo(p) => {
+                    if let Some(a) = last {
+                        edges.push(Line::new(a, p));
+                    }
+                    last = Some(p);
+                }
+                PathEl::ClosePath => {
+                    if let (Some(a), Some(b)) = (last, start) {
+                        edges.push(Line::new(a, b));
+                    }
+                    last = start;
+                }
+                _ => {}
+            },
+        );
+        // Regions count as closed, closed or not.
+        if let (Some(a), Some(b)) = (last, start) {
+            if a != b {
+                edges.push(Line::new(a, b));
+            }
+        }
+    }
+    let kept = |p: Point| match keep {
+        Keep::Outside => regions.iter().all(|r| r.winding(p) == 0),
+        Keep::Inside => regions.iter().all(|r| r.winding(p) != 0),
+    };
+    let mut out = BezPath::new();
+    // Whether the last piece pushed ends where the next one starts.
+    let mut open_end: Option<Point> = None;
+    let push = |out: &mut BezPath, open_end: &mut Option<Point>, seg: PathSeg| {
+        let a = seg.start();
+        if open_end.is_none_or(|e| (e - a).hypot() > 1e-9) {
+            out.move_to(a);
+        }
+        match seg {
+            PathSeg::Line(l) => out.line_to(l.p1),
+            PathSeg::Quad(q) => out.quad_to(q.p1, q.p2),
+            PathSeg::Cubic(c) => out.curve_to(c.p1, c.p2, c.p3),
+        }
+        *open_end = Some(seg.end());
+    };
+    for seg in path.segments() {
+        let mut ts: Vec<f64> = edges
+            .iter()
+            .flat_map(|e| seg.intersect_line(*e))
+            .map(|i| i.segment_t)
+            .filter(|t| *t > 1e-9 && *t < 1.0 - 1e-9)
+            .collect();
+        ts.push(0.0);
+        ts.push(1.0);
+        ts.sort_by(|a, b| a.total_cmp(b));
+        ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        for w in ts.windows(2) {
+            let piece = seg.subsegment(w[0]..w[1]);
+            if kept(piece.eval(0.5)) {
+                push(&mut out, &mut open_end, piece);
+            } else {
+                open_end = None;
+            }
+        }
+    }
+    out
+}
+
 /// Combine `subject` and `clip` as [`overlay`] does, each separate piece
 /// of the result (its outline with its holes) a path of its own.
 pub fn overlay_parts(subject: &BezPath, clip: &BezPath, op: Op) -> Vec<BezPath> {
@@ -489,6 +585,93 @@ pub enum Enclosed {
     OnOutline,
 }
 
+/// The widest gap, mm, between the end of an open outline and another
+/// outline (or its own start) that [`enclosed_area`] closes: the hairline
+/// gaps files carry from rounding (a few ten thousandths of a millimetre,
+/// #899), not a gap anyone drew.
+const GAP: f64 = 0.01;
+
+/// The short lines that close the gaps of at most [`GAP`] between the ends
+/// of the open `lines` (`open[i]`: line `i` is open) and the lines
+/// themselves, each running from the end to the nearest point of the
+/// outline it nearly meets and a little beyond, so that it crosses it.
+fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
+    // A grid over the segments, each in the cells its box (widened by the
+    // gap) covers, so an end finds its neighbours without a look at all.
+    let mut segs: Vec<(usize, usize)> = Vec::new();
+    let mut bounds: Option<kurbo::Rect> = None;
+    for (i, l) in lines.iter().enumerate() {
+        for (k, w) in l.windows(2).enumerate() {
+            let bx = kurbo::Rect::from_points((w[0][0], w[0][1]), (w[1][0], w[1][1]));
+            bounds = Some(bounds.map_or(bx, |b| b.union(bx)));
+            segs.push((i, k));
+        }
+    }
+    let Some(bounds) = bounds else {
+        return Vec::new();
+    };
+    if !open.iter().any(|o| *o) {
+        return Vec::new();
+    }
+    let side = ((segs.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+    let cell = (bounds.width().max(bounds.height()) / side as f64).max(4.0 * GAP);
+    let nx = ((bounds.width() / cell).floor() as usize + 1).max(1);
+    let ny = ((bounds.height() / cell).floor() as usize + 1).max(1);
+    let cell_of = |x: f64, y: f64| {
+        let cx = (((x - bounds.x0) / cell).floor().max(0.0) as usize).min(nx - 1);
+        let cy = (((y - bounds.y0) / cell).floor().max(0.0) as usize).min(ny - 1);
+        (cx, cy)
+    };
+    let mut cells: Vec<Vec<usize>> = vec![Vec::new(); nx * ny];
+    for (n, (i, k)) in segs.iter().enumerate() {
+        let (a, b) = (lines[*i][*k], lines[*i][*k + 1]);
+        let (cx0, cy0) = cell_of(a[0].min(b[0]) - GAP, a[1].min(b[1]) - GAP);
+        let (cx1, cy1) = cell_of(a[0].max(b[0]) + GAP, a[1].max(b[1]) + GAP);
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                cells[cy * nx + cx].push(n);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if !open[i] || l.len() < 2 {
+            continue;
+        }
+        // The two ends, each with the segment it ends (that one is no
+        // neighbour of it).
+        for (end, own) in [(l[0], 0), (l[l.len() - 1], l.len() - 2)] {
+            let p = Point::new(end[0], end[1]);
+            let (cx, cy) = cell_of(end[0], end[1]);
+            let mut best: Option<(f64, Point)> = None;
+            for n in &cells[cy * nx + cx] {
+                let (j, k) = segs[*n];
+                if j == i && k == own {
+                    continue;
+                }
+                let seg = kurbo::Line::new(
+                    Point::new(lines[j][k][0], lines[j][k][1]),
+                    Point::new(lines[j][k + 1][0], lines[j][k + 1][1]),
+                );
+                use kurbo::ParamCurveNearest as _;
+                let nearest = seg.nearest(p, 1e-9);
+                let d = nearest.distance_sq.sqrt();
+                if d < GAP && best.is_none_or(|(b, _)| d < b) {
+                    best = Some((d, seg.eval(nearest.t)));
+                }
+            }
+            if let Some((d, q)) = best {
+                // Already touching: nothing to close.
+                if d > 1e-9 {
+                    let past = q + (q - p) * 0.5;
+                    out.push(vec![end, [past.x, past.y]]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The area around `p` that the outlines `paths` (page coordinates; open
 /// and closed subpaths alike, a subpath crossing itself enclosing the
 /// areas between its crossings) close off: the outlines, flattened, cut
@@ -499,12 +682,17 @@ pub enum Enclosed {
 pub fn enclosed_area(paths: &[BezPath], p: Point) -> Enclosed {
     use i_overlay::float::slice::FloatSlice as _;
     use kurbo::Shape as _;
-    let lines: Vec<Vec<[f64; 2]>> = paths
-        .iter()
-        .flat_map(|path| polylines(path, TOL))
-        .map(|(pts, _)| pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>())
-        .filter(|l: &Vec<[f64; 2]>| l.iter().all(|q| q[0].is_finite() && q[1].is_finite()))
-        .collect();
+    let mut lines: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut open_ends: Vec<bool> = Vec::new();
+    for (pts, closed) in paths.iter().flat_map(|path| polylines(path, TOL)) {
+        let l: Vec<[f64; 2]> = pts.iter().map(|q| [q.x, q.y]).collect();
+        if l.iter().all(|q| q[0].is_finite() && q[1].is_finite()) {
+            lines.push(l);
+            open_ends.push(!closed);
+        }
+    }
+    let bridges = gap_bridges(&lines, &open_ends);
+    lines.extend(bridges);
     let Some(bounds) = lines
         .iter()
         .flatten()
@@ -1934,6 +2122,58 @@ mod tests {
         assert_eq!(enclosed_area(&[], Point::new(5.0, 5.0)), Enclosed::Open);
     }
 
+    /// Lines that stop a hair short of the next outline still close the
+    /// area (#899): a frame cut in two by a line ending 0.0002 mm from
+    /// the frame, as files carry from rounding, gives the half under the
+    /// click; a gap anyone could see (0.2 mm) stays open, and so does a
+    /// line that merely touches nothing.
+    #[test]
+    fn enclosed_area_closes_hairline_gaps() {
+        use super::{enclosed_area, Enclosed};
+        use crate::geometry::{BezPath, Point, Rect};
+        use kurbo::Shape as _;
+        let frame = crate::geometry::rect_path(Rect::new(0.0, 0.0, 40.0, 20.0), 0.0);
+        let divider = |top: f64, bottom: f64| {
+            let mut p = BezPath::new();
+            p.move_to((20.0, top));
+            p.line_to((20.0, bottom));
+            p
+        };
+        let width_at = |gap: f64, at: Point| match enclosed_area(
+            &[frame.clone(), divider(0.0002 + gap, 19.9998 - gap)],
+            at,
+        ) {
+            Enclosed::Area(a) => a.bounding_box().width(),
+            other => panic!("{other:?}"),
+        };
+        // Both ends a hair short of the frame: two halves.
+        assert!((width_at(0.0, Point::new(10.0, 10.0)) - 20.0).abs() < 1e-3);
+        assert!((width_at(0.0, Point::new(30.0, 10.0)) - 20.0).abs() < 1e-3);
+        // Ends 0.2 mm short: the halves are one area around the line.
+        assert!((width_at(0.2, Point::new(10.0, 10.0)) - 40.0).abs() < 1e-3);
+        // A line that crosses nothing never divides the frame.
+        let mut stray = BezPath::new();
+        stray.move_to((10.0, 5.0));
+        stray.line_to((10.0, 15.0));
+        let Enclosed::Area(a) = enclosed_area(&[frame.clone(), stray], Point::new(30.0, 10.0))
+        else {
+            panic!("no area");
+        };
+        assert!((a.bounding_box().width() - 40.0).abs() < 1e-3);
+        // An outline's own ends: a ring left open by a hairline closes
+        // into an area of its own.
+        let mut ring = BezPath::new();
+        ring.move_to((5.0, 5.0));
+        ring.line_to((15.0, 5.0));
+        ring.line_to((15.0, 15.0));
+        ring.line_to((5.0, 15.0));
+        ring.line_to((5.0, 5.0002));
+        let Enclosed::Area(a) = enclosed_area(&[ring], Point::new(10.0, 10.0)) else {
+            panic!("ring not closed");
+        };
+        assert!((a.bounding_box().width() - 10.0).abs() < 1e-3);
+    }
+
     #[test]
     /// The width eases between nodes along a smooth curve however short
     /// the span on a long path: half-way into the ease the reach is the
@@ -2133,6 +2373,68 @@ mod tests {
         assert!((area - want).abs() < want * 0.02, "{area} against {want}");
     }
 
+    /// #828: an open path cut by closed regions keeps its pieces outside
+    /// them (or inside), open, each a part of its own line or curve.
+    #[test]
+    fn open_paths_are_cut_by_closed_regions() {
+        use super::{cut_open, Keep};
+        use crate::geometry::{BezPath, PathEl, Point, Rect, Shape as _};
+        let rect = Rect::new(20.0, -10.0, 60.0, 10.0).to_path(0.01);
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((80.0, 0.0));
+        let outside = cut_open(&line, std::slice::from_ref(&rect), Keep::Outside);
+        let starts: Vec<Point> = outside
+            .elements()
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 2, "{outside:?}");
+        let b = outside.bounding_box();
+        assert!((b.x0 - 0.0).abs() < 1e-9 && (b.x1 - 80.0).abs() < 1e-9);
+        assert!(!outside
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::ClosePath)));
+        let len: f64 = outside.segments().map(|s| s.arclen(1e-6)).sum();
+        assert!((len - 40.0).abs() < 1e-6, "{len}");
+        let inside = cut_open(&line, std::slice::from_ref(&rect), Keep::Inside);
+        let b = inside.bounding_box();
+        assert!(
+            (b.x0 - 20.0).abs() < 1e-6 && (b.x1 - 60.0).abs() < 1e-6,
+            "{b:?}"
+        );
+        // A curve keeps its curve: the cut pieces are parts of it.
+        let mut arc = BezPath::new();
+        arc.move_to((0.0, 0.0));
+        arc.curve_to((20.0, 40.0), (60.0, 40.0), (80.0, 0.0));
+        let cut = cut_open(
+            &arc,
+            &[Rect::new(30.0, 0.0, 50.0, 50.0).to_path(0.01)],
+            Keep::Outside,
+        );
+        let curves = cut
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..)))
+            .count();
+        assert_eq!(curves, 2, "{cut:?}");
+        let full: f64 = arc.segments().map(|s| s.arclen(1e-6)).sum();
+        let kept: f64 = cut.segments().map(|s| s.arclen(1e-6)).sum();
+        assert!(kept < full - 15.0 && kept > full - 25.0, "{kept} of {full}");
+        // Two regions: outside both.
+        let two = cut_open(
+            &line,
+            &[rect.clone(), Rect::new(70.0, -5.0, 90.0, 5.0).to_path(0.01)],
+            Keep::Outside,
+        );
+        let len: f64 = two.segments().map(|s| s.arclen(1e-6)).sum();
+        assert!((len - 30.0).abs() < 1e-6, "{len}");
+    }
+
     #[test]
     fn calligraphic_band_is_thin_along_the_nib_and_full_across_it() {
         use super::calligraphic_band;
@@ -2241,6 +2543,27 @@ mod tests {
         let cut = stroke_area(&spike, &st).bounding_box().x1;
         assert!(sharp > 54.0, "{sharp}");
         assert!(cut < 51.0, "{cut}");
+    }
+
+    /// A thick outline with the default mitre limit keeps narrow turns
+    /// (the joins inside lettering) to a bevel, not a long spike (#894).
+    #[test]
+    fn a_thick_default_outline_grows_no_spikes() {
+        use crate::style::Stroke;
+        // Two turns of about 20 degrees, like a stem meeting a serifless
+        // curve; the outline is as wide as the shape is tall.
+        let mut shape = BezPath::new();
+        shape.move_to((0.0, 0.0));
+        shape.line_to((40.0, 0.0));
+        shape.line_to((0.0, 7.0));
+        shape.line_to((0.0, 14.0));
+        shape.line_to((40.0, 14.0));
+        shape.close_path();
+        let st = Stroke::new(crate::Color::BLACK, 14.0);
+        let reach = stroke_area(&shape, &st).bounding_box();
+        // Half the width each side and a bevel: never several widths out.
+        assert!(reach.x1 < 40.0 + 14.0, "{reach:?}");
+        assert!(reach.x0 > -14.0, "{reach:?}");
     }
 
     /// Whether `p` is on the drawn part of `dashes` (within `tol`).
