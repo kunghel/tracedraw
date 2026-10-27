@@ -819,7 +819,7 @@ fn snap_to_button(app: &mut App, ui: &mut Ui, bar: &str, doc: bool) {
                 ui.checkbox(&mut app.snap.pixels, tr("menu.view.snap_pixels"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new("\u{2715}").frame(false))
+                        .add(egui::Button::new("\u{00D7}").frame(false))
                         .rich_tip(tr("toolbar.snap_close"))
                         .clicked()
                     {
@@ -1099,9 +1099,16 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                     .all(|s| matches!(s.kind, ShapeKind::Text { .. })) =>
             {
                 // Text selected with the Pick tool: the object fields, then
-                // the text fields.
+                // the text fields. A text fitted to a path also gets how it
+                // follows the path (placement, distance, mirrors) first; a
+                // separate arm for it came after this one and was never
+                // reached (#193).
                 object_properties(app, ui);
                 vsep(ui);
+                if app.fitted_text().is_some() {
+                    crate::ui::text_path_bar::text_path_bar(app, ui);
+                    vsep(ui);
+                }
                 if let Some(first) = shapes.first() {
                     let id = first.id;
                     app.sync_text_defaults_from(id);
@@ -1119,13 +1126,6 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 object_properties(app, ui);
                 vsep(ui);
                 crate::ui::connector_bar::connector_bar(app, ui);
-            }
-            Tool::Pick | Tool::FreeformPick if app.fitted_text().is_some() => {
-                // A text fitted to a path: the object fields, then how it
-                // follows the path.
-                object_properties(app, ui);
-                vsep(ui);
-                crate::ui::text_path_bar::text_path_bar(app, ui);
             }
             Tool::Pick | Tool::FreeformPick
                 if shapes
@@ -1867,6 +1867,8 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
     }
     let mut changed = crate::ui::font_list::text_font_list(app, ui, "propbar_font", 180.0);
     changed |= text_size_list(app, ui);
+    // The axes of a variable font, beside its size (#870).
+    crate::ui::text_docker::font_axes_button(app, ui, "propbar");
     for (on, label, key) in [
         (
             app.text_bold,

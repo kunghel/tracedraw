@@ -65,19 +65,35 @@ selected (the default outline) nothing is previewed.
 | Behind fill | off | the outline is drawn under the fill |
 | Scale with object | off | the width follows the object's scale factor `sqrt(|det|)` |
 
+## Properties docker
+
+The Properties docker's outline section (the default outline with
+nothing selected, the selection's outline otherwise) shows the common
+settings in view: Paint, Hairline and the width, Caps, Corners, the
+start and end arrowheads, Dash (and custom dashes), Align dashes, Edit
+Line Style, Position, Behind fill and Scale with object. The mitre limit
+(with mitred corners), the nib stretch and the nib angle sit under an
+Advanced header below them, closed at first unless one of them is set
+away from its default (45 degrees, 100 %, 0 degrees) or differs between
+the selected objects, so nothing set is hidden (#487,
+`ui::dockers::tests::every_outline_option_is_in_the_properties_docker`).
+
 ## Width unit
 
 Widths are kept in millimetres. The Properties docker's outline section
 and the property bar show and take them in the outline unit, picked
 next to the width: points (the default), millimetres, centimetres,
 inches or pixels. The choice is a preference (`outline_units` in the
-settings) shared by both places and the callout bar. The width list
-offers round values in that unit: points 0.25, 0.5, 0.75, 1, 1.5, 2, 3,
+settings) shared by both places, the Outline Pen dialog and the
+callout bar. The width lists of the property bar, the callout bar and
+the Outline Pen dialog offer one list, round values in that unit: points 0.25, 0.5, 0.75, 1, 1.5, 2, 3,
 4, 6, 8, 10, 12, 16; millimetres (and centimetres) 0.1 to 3 mm; inches
 0.003 to 0.1; pixels 1 to 16. A number typed with a unit after it
 (`1 mm`) is read in that unit. Checked by
 `ui::propbar::tests::outline_widths_read_in_the_outline_unit` and
-`ui::propbar::tests::the_width_presets_follow_the_outline_unit`.
+`ui::propbar::tests::the_width_presets_follow_the_outline_unit`;
+`ui::outline_pen::tests::the_width_list_matches_the_property_bar`
+checks the dialog's list is the same (#967).
 
 ## Mitre limit
 

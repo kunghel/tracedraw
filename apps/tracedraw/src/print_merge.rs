@@ -15,9 +15,15 @@ pub enum FieldKind {
     /// Text put in place of `<Field>` in every text object.
     #[default]
     Text,
-    /// A counter: `start`, then `step` more each record, padded with zeros
-    /// to `digits` digits; its cells are not typed in.
-    Number { start: i64, step: i64, digits: u32 },
+    /// A counter: `start`, then `step` more each record, written in
+    /// `format` (numbers padded with zeros to `digits` digits); its cells
+    /// are not typed in.
+    Number {
+        start: i64,
+        step: i64,
+        digits: u32,
+        format: NumberFormat,
+    },
     /// The path of a picture (relative paths from the data file's folder);
     /// a text object holding only `<Field>` becomes the picture, fitted in
     /// its box.
@@ -25,6 +31,90 @@ pub enum FieldKind {
     /// A QR code of the cell's text in place of a text object holding only
     /// `<Field>`, as large as the box allows.
     Qr,
+}
+
+/// How a number field writes its counter: the Format of Add Column and
+/// Configure Columns (#930).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum NumberFormat {
+    /// 1, 2, 3, padded with zeros to the field's digits.
+    #[default]
+    Digits,
+    /// A, B, C ... Z, AA, AB: 1 is A, 26 is Z, 27 is AA.
+    Upper,
+    /// a, b, c ... z, aa, ab, the same in small letters.
+    Lower,
+    /// The number padded as for `Digits`, between a text of the user's
+    /// own before it and one after it (tickets "T-0001", serial numbers).
+    Custom { prefix: String, suffix: String },
+}
+
+impl NumberFormat {
+    /// The index in the Format list: 0 digits, 1 capitals, 2 small
+    /// letters, 3 custom.
+    pub fn index(&self) -> usize {
+        match self {
+            NumberFormat::Digits => 0,
+            NumberFormat::Upper => 1,
+            NumberFormat::Lower => 2,
+            NumberFormat::Custom { .. } => 3,
+        }
+    }
+
+    /// The format at `index` of the Format list; a custom one starts with
+    /// no text around the number.
+    pub fn from_index(index: usize) -> NumberFormat {
+        match index {
+            1 => NumberFormat::Upper,
+            2 => NumberFormat::Lower,
+            3 => NumberFormat::Custom {
+                prefix: String::new(),
+                suffix: String::new(),
+            },
+            _ => NumberFormat::Digits,
+        }
+    }
+
+    /// The i18n keys of the Format list, in index order.
+    pub const KEYS: [&'static str; 4] = [
+        "merge.format_digits",
+        "merge.format_upper",
+        "merge.format_lower",
+        "merge.format_custom",
+    ];
+
+    /// `n` written in this format, numbers padded to `digits` digits.
+    /// Letters count from 1 (A); 0 and below have no letters and are
+    /// written as numbers.
+    pub fn write(&self, n: i64, digits: u32) -> String {
+        let number = || {
+            let width = digits.min(30) as usize;
+            if n < 0 {
+                format!("-{:0width$}", n.unsigned_abs())
+            } else {
+                format!("{n:0width$}")
+            }
+        };
+        match self {
+            NumberFormat::Digits => number(),
+            NumberFormat::Upper if n > 0 => letters(n.unsigned_abs(), b'A'),
+            NumberFormat::Lower if n > 0 => letters(n.unsigned_abs(), b'a'),
+            NumberFormat::Upper | NumberFormat::Lower => number(),
+            NumberFormat::Custom { prefix, suffix } => format!("{prefix}{}{suffix}", number()),
+        }
+    }
+}
+
+/// `n` (1 or more) in letters from `first`: A to Z, then AA to ZZ, AAA...
+fn letters(mut n: u64, first: u8) -> String {
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(first + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// How a picture sits in the placeholder of a picture field: the Print
@@ -74,6 +164,122 @@ impl Scale {
 /// The object data names a placeholder keeps its Align and scale under.
 pub const SCALE_DATA: &str = "PrintMerge.Scale";
 pub const ANCHOR_DATA: &str = "PrintMerge.Anchor";
+
+/// The object data a copy of a field made by On every page keeps: the id
+/// of the field object on the page it was copied from, and the box the
+/// copy was last put in ("x0 y0 x1 y1", mm). While the copy is still in
+/// that box (not moved or resized by hand) it follows its original (#956).
+pub const COPY_OF_DATA: &str = "PrintMerge.CopyOf";
+pub const COPY_AT_DATA: &str = "PrintMerge.CopyAt";
+
+/// `data` with the link of a copy of `original` put in `at`, replacing
+/// any link it had.
+pub fn copy_data(
+    data: &[(String, String)],
+    original: tracedraw_core::ShapeId,
+    at: Rect,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = data
+        .iter()
+        .filter(|(k, _)| k != COPY_OF_DATA && k != COPY_AT_DATA)
+        .cloned()
+        .collect();
+    out.push((COPY_OF_DATA.to_string(), original.raw().to_string()));
+    out.push((
+        COPY_AT_DATA.to_string(),
+        format!("{} {} {} {}", at.x0, at.y0, at.x1, at.y1),
+    ));
+    out
+}
+
+/// The original a copy made by On every page follows and the box it was
+/// put in; `None` for any other object or unreadable data.
+pub fn copy_link(s: &Shape) -> Option<(tracedraw_core::ShapeId, Rect)> {
+    let get = |k: &str| s.data.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let id = get(COPY_OF_DATA)?.trim().parse::<u64>().ok()?;
+    let v: Vec<f64> = get(COPY_AT_DATA)?
+        .split_whitespace()
+        .map(|t| t.parse::<f64>())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    match v.as_slice() {
+        [x0, y0, x1, y1] if v.iter().all(|n| n.is_finite()) => {
+            Some((tracedraw_core::ShapeId(id), Rect::new(*x0, *y0, *x1, *y1)))
+        }
+        _ => None,
+    }
+}
+
+/// Two boxes the same within 0.01 mm.
+pub fn same_box(a: Rect, b: Rect) -> bool {
+    (a.x0 - b.x0).abs() < 0.01
+        && (a.y0 - b.y0).abs() < 0.01
+        && (a.x1 - b.x1).abs() < 0.01
+        && (a.y1 - b.y1).abs() < 0.01
+}
+
+/// The move (and scale) that takes box `from` onto box `to`.
+pub fn box_to_box(from: Rect, to: Rect) -> tracedraw_core::geometry::Affine {
+    use tracedraw_core::geometry::Affine;
+    let k = |a: f64, b: f64| {
+        if a.abs() > 1e-9 && b.abs() > 1e-9 {
+            b / a
+        } else {
+            1.0
+        }
+    };
+    Affine::translate((to.x0, to.y0))
+        * Affine::scale_non_uniform(k(from.width(), to.width()), k(from.height(), to.height()))
+        * Affine::translate((-from.x0, -from.y0))
+}
+
+/// The commands that put `copy` (a copy made by On every page) in the box
+/// of its original `original`, when it is still where it was put: the
+/// field moved or resized on its page after it was copied moves the same
+/// on the other pages; a copy moved by hand stays where it is (#956).
+pub fn follow(copy: &Shape, original: &Shape) -> Vec<Command> {
+    let Some((of, at)) = copy_link(copy) else {
+        return Vec::new();
+    };
+    let (from, to) = (copy.bounds(), original.bounds());
+    if of != original.id
+        || copy.id == original.id
+        || !same_box(from, at)
+        || same_box(from, to)
+        || ![to.x0, to.y0, to.x1, to.y1].iter().all(|v| v.is_finite())
+    {
+        return Vec::new();
+    }
+    vec![
+        Command::TransformShapes {
+            shapes: vec![copy.id],
+            transform: box_to_box(from, to),
+        },
+        Command::SetObjectData {
+            shape: copy.id,
+            data: copy_data(&copy.data, of, to),
+        },
+    ]
+}
+
+/// [`follow`] for every copy on the drawing's pages whose original is
+/// still there.
+pub fn follow_originals(doc: &tracedraw_core::Document) -> Vec<Command> {
+    let mut cmds = Vec::new();
+    for s in doc
+        .pages
+        .iter()
+        .flat_map(|p| p.layers.iter().flat_map(|l| l.shapes.iter()))
+    {
+        let Some((of, _)) = copy_link(s) else {
+            continue;
+        };
+        if let Some(o) = doc.find_shape(of) {
+            cmds.extend(follow(s, o));
+        }
+    }
+    cmds
+}
 
 /// A placeholder's Align and scale: its object data, else (placeholders
 /// made before the docker) filling it from the centre.
@@ -305,14 +511,10 @@ pub fn values(st: &PrintMergeState) -> Vec<Vec<String>> {
                         start,
                         step,
                         digits,
+                        format,
                     } => {
                         let n = start.saturating_add(step.saturating_mul(r as i64));
-                        let width = digits.min(30) as usize;
-                        if n < 0 {
-                            format!("-{:0width$}", n.unsigned_abs())
-                        } else {
-                            format!("{n:0width$}")
-                        }
+                        format.write(n, digits)
                     }
                     _ => row.get(c).cloned().unwrap_or_default(),
                 })
@@ -332,16 +534,17 @@ pub fn add_field(st: &mut PrintMergeState, name: &str) {
 }
 
 /// Add a number field counting from `start` by `step`, padded to
-/// `digits` digits; with `end`, records are added until the counter
-/// reaches it (from start to end, both included), as many as that takes,
-/// at most [`MAX_RANGE_RECORDS`] in all; records already there are kept
-/// (#791).
+/// `digits` digits and written in `format` (#930); with `end`, records
+/// are added until the counter reaches it (from start to end, both
+/// included), as many as that takes, at most [`MAX_RANGE_RECORDS`] in
+/// all; records already there are kept (#791).
 pub fn add_number_field(
     st: &mut PrintMergeState,
     name: &str,
     start: i64,
     step: i64,
     digits: u32,
+    format: NumberFormat,
     end: Option<i64>,
 ) {
     add_field(st, name);
@@ -350,6 +553,7 @@ pub fn add_number_field(
             start,
             step,
             digits: digits.clamp(1, 12),
+            format,
         };
     }
     let Some(end) = end else {
@@ -957,6 +1161,18 @@ pub fn merge_onto_pages(
     st: &PrintMergeState,
 ) -> Result<InPlaceMerge, String> {
     let rows = values(st);
+    // Copies of a field put on every page go where the field is now on
+    // its own page, unless they were moved by hand (#956).
+    let follow = if rows.is_empty() {
+        Vec::new()
+    } else {
+        follow_originals(engine.document())
+    };
+    if !follow.is_empty() {
+        engine
+            .run_batch("Print Merge", &follow)
+            .map_err(|e| e.to_string())?;
+    }
     let pages: Vec<tracedraw_core::document::Page> = engine
         .document()
         .pages
@@ -976,9 +1192,13 @@ pub fn merge_onto_pages(
         cmds.extend(page_cmds);
     }
     if !cmds.is_empty() {
-        engine
-            .run_batch("Print Merge", &cmds)
-            .map_err(|e| e.to_string())?;
+        // One undo step with the copies' moves.
+        let done = if follow.is_empty() {
+            engine.run_batch("Print Merge", &cmds)
+        } else {
+            engine.amend_batch("Print Merge", &cmds)
+        };
+        done.map_err(|e| e.to_string())?;
     }
     let fields = pages
         .iter()
@@ -1035,6 +1255,7 @@ mod tests {
                     start: 7,
                     step: 3,
                     digits: 3,
+                    format: NumberFormat::Digits,
                 },
                 FieldKind::Qr,
             ],
@@ -1049,30 +1270,46 @@ mod tests {
     #[test]
     fn a_number_column_with_an_end_value_makes_its_records() {
         let mut st = PrintMergeState::default();
-        add_number_field(&mut st, "Check Number", 15, 1, 3, Some(25));
+        add_number_field(
+            &mut st,
+            "Check Number",
+            15,
+            1,
+            3,
+            NumberFormat::Digits,
+            Some(25),
+        );
         assert_eq!(st.rows.len(), 11);
         let v = values(&st);
         assert_eq!(v.first().map(|r| r[0].as_str()), Some("015"));
         assert_eq!(v.last().map(|r| r[0].as_str()), Some("025"));
         // Counting down by two.
         let mut st = PrintMergeState::default();
-        add_number_field(&mut st, "Down", 10, -2, 2, Some(0));
+        add_number_field(&mut st, "Down", 10, -2, 2, NumberFormat::Digits, Some(0));
         let v: Vec<String> = values(&st).into_iter().map(|r| r[0].clone()).collect();
         assert_eq!(v, ["10", "08", "06", "04", "02", "00"]);
         // A second column keeps the records there and adds what it needs.
-        add_number_field(&mut st, "More", 1, 1, 1, Some(8));
+        add_number_field(&mut st, "More", 1, 1, 1, NumberFormat::Digits, Some(8));
         assert_eq!(st.rows.len(), 8);
-        add_number_field(&mut st, "Fewer", 1, 1, 1, Some(3));
+        add_number_field(&mut st, "Fewer", 1, 1, 1, NumberFormat::Digits, Some(3));
         assert_eq!(st.rows.len(), 8, "records are never taken away");
         // No end, a fixed value, or an end the counter never reaches.
         let mut st = PrintMergeState::default();
-        add_number_field(&mut st, "N", 1, 1, 1, None);
-        add_number_field(&mut st, "Same", 5, 0, 1, Some(9));
-        add_number_field(&mut st, "Away", 5, 1, 1, Some(1));
+        add_number_field(&mut st, "N", 1, 1, 1, NumberFormat::Digits, None);
+        add_number_field(&mut st, "Same", 5, 0, 1, NumberFormat::Digits, Some(9));
+        add_number_field(&mut st, "Away", 5, 1, 1, NumberFormat::Digits, Some(1));
         assert!(st.rows.is_empty());
         // A huge range stops at the limit.
         let mut st = PrintMergeState::default();
-        add_number_field(&mut st, "Huge", 0, 1, 1, Some(i64::MAX));
+        add_number_field(
+            &mut st,
+            "Huge",
+            0,
+            1,
+            1,
+            NumberFormat::Digits,
+            Some(i64::MAX),
+        );
         assert_eq!(st.rows.len(), MAX_RANGE_RECORDS);
     }
 
@@ -1086,8 +1323,50 @@ mod tests {
             start: -2,
             step: 1,
             digits: 2,
+            format: NumberFormat::Digits,
         };
         assert_eq!(values(&st)[0][1], "-02");
+    }
+
+    /// A number field's Format: letters (A to Z, then AA), small letters,
+    /// and a custom text before and after the padded number, for tickets
+    /// and serial numbers (#930).
+    #[test]
+    fn number_fields_write_letters_and_custom_text() {
+        let column = |format: NumberFormat, start: i64, end: i64| {
+            let mut st = PrintMergeState::default();
+            add_number_field(&mut st, "No", start, 1, 4, format, Some(end));
+            values(&st)
+                .into_iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(column(NumberFormat::Upper, 1, 3), ["A", "B", "C"]);
+        assert_eq!(column(NumberFormat::Upper, 25, 28), ["Y", "Z", "AA", "AB"]);
+        assert_eq!(column(NumberFormat::Lower, 52, 53), ["az", "ba"]);
+        assert_eq!(NumberFormat::Upper.write(702, 1), "ZZ");
+        assert_eq!(NumberFormat::Upper.write(703, 1), "AAA");
+        assert_eq!(NumberFormat::Upper.write(i64::MAX, 1), "CRPXNLSKVLJFHG");
+        // No letters for 0 and below: written as numbers.
+        assert_eq!(NumberFormat::Lower.write(0, 2), "00");
+        assert_eq!(NumberFormat::Upper.write(-3, 1), "-3");
+        let ticket = NumberFormat::Custom {
+            prefix: "Ticket T-".into(),
+            suffix: "/2026".into(),
+        };
+        assert_eq!(
+            column(ticket, 98, 100),
+            [
+                "Ticket T-0098/2026",
+                "Ticket T-0099/2026",
+                "Ticket T-0100/2026"
+            ]
+        );
+        // The Format list round-trips its indices.
+        for i in 0..NumberFormat::KEYS.len() {
+            assert_eq!(NumberFormat::from_index(i).index(), i);
+        }
+        assert_eq!(NumberFormat::from_index(99), NumberFormat::Digits);
     }
 
     #[test]

@@ -65,6 +65,12 @@ pub struct ExportState {
     /// A name being typed for a new preset (false) or for renaming the
     /// chosen one (true).
     pub preset_name: Option<(String, bool)>,
+    /// The unit the bitmap size is typed in: an index into
+    /// [`EXPORT_SIZE_UNITS`] (#617).
+    pub size_unit: usize,
+    /// Bitmaps: the artwork's printed size against the page's, the same
+    /// across and down (1 = as drawn, #617).
+    pub scale: f64,
 }
 
 impl Default for ExportState {
@@ -87,6 +93,52 @@ impl Default for ExportState {
             webp_lossless: false,
             preset: String::new(),
             preset_name: None,
+            size_unit: 0,
+            scale: 1.0,
+        }
+    }
+}
+
+/// The units a bitmap export's size is shown and typed in, with their
+/// length in mm (pixels have none: they follow the resolution).
+pub const EXPORT_SIZE_UNITS: [(&str, f64); 4] =
+    [("px", 0.0), ("mm", 1.0), ("cm", 10.0), ("in", 25.4)];
+
+/// The smallest and largest bitmap export scale.
+pub const EXPORT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.01..=100.0;
+
+/// What the bitmap size fields show for an artwork `w_mm` by `h_mm` with
+/// `st`'s scale, resolution and unit.
+pub fn export_size_in_unit(w_mm: f64, h_mm: f64, st: &ExportState) -> (f64, f64) {
+    let unit = EXPORT_SIZE_UNITS[st.size_unit.min(EXPORT_SIZE_UNITS.len() - 1)].1;
+    if unit > 0.0 {
+        let s = st.scale_or_one();
+        (w_mm * s / unit, h_mm * s / unit)
+    } else {
+        let (w, h) = export_pixels(w_mm, h_mm, st.render_dpi());
+        (f64::from(w), f64::from(h))
+    }
+}
+
+/// A size typed in a bitmap size field: `typed` (in `st`'s unit) for the
+/// side that is `side_mm` long on the page. In pixels it sets the
+/// resolution, as before; in a length it sets the scale, the resolution
+/// staying. Either way the other side follows (#617).
+pub fn set_export_size(st: &mut ExportState, side_mm: f64, typed: f64) {
+    if !(side_mm > 0.0 && side_mm.is_finite() && typed > 0.0 && typed.is_finite()) {
+        return;
+    }
+    let unit = EXPORT_SIZE_UNITS[st.size_unit.min(EXPORT_SIZE_UNITS.len() - 1)].1;
+    if unit > 0.0 {
+        // Not past what the highest resolution can draw.
+        let most = (2400.0 / st.dpi.max(MIN_EXPORT_DPI)).min(*EXPORT_SCALE_RANGE.end());
+        let least = EXPORT_SCALE_RANGE.start().min(most);
+        st.scale = (typed * unit / side_mm).clamp(least, most);
+    } else {
+        let px = typed.round().clamp(1.0, 200_000.0) as u32;
+        let scale = st.scale_or_one();
+        if let Some(dpi) = dpi_for_pixels(side_mm * scale, px) {
+            st.dpi = dpi;
         }
     }
 }
@@ -97,6 +149,22 @@ pub const CDR_ISSUE: &str = "https://github.com/igtoth/tracedraw/issues/new?temp
 pub const PDF_STANDARDS: [&str; 4] = ["PDF 1.4", "PDF/X-1a:2003", "PDF/X-3:2003", "PDF/X-4"];
 
 impl ExportState {
+    /// The scale, 1 when it is not a usable number.
+    pub fn scale_or_one(&self) -> f64 {
+        if self.scale.is_finite() && self.scale > 0.0 {
+            self.scale
+                .clamp(*EXPORT_SCALE_RANGE.start(), *EXPORT_SCALE_RANGE.end())
+        } else {
+            1.0
+        }
+    }
+
+    /// The resolution bitmaps are drawn at: the one the file records,
+    /// times the scale.
+    pub fn render_dpi(&self) -> f64 {
+        (self.dpi * self.scale_or_one()).clamp(MIN_EXPORT_DPI, 2400.0)
+    }
+
     pub fn web() -> Self {
         ExportState {
             format: 2,
@@ -269,6 +337,9 @@ pub struct PrintState {
     pub range: usize,
     /// Pages to print, e.g. "1-3, 5".
     pub pages: String,
+    /// Of the whole drawing or the pages listed: 0 every page, 1 the odd
+    /// pages only, 2 the even ones (#951).
+    pub parity: usize,
     /// Copies of a file come out as whole sets (on) or page by page.
     pub collate: bool,
     /// Every sheet printed as one picture of `bitmap_dpi`.
@@ -416,6 +487,28 @@ impl PrintState {
     /// The indexes of the pages to print among `count` pages, the current
     /// one being `current`.
     pub fn page_indexes(&self, count: usize, current: usize) -> Vec<usize> {
+        let picked = self.range_indexes(count, current);
+        // Odd or even pages of the drawing or of the list; the current
+        // page and the selection stay as they are, and a choice that
+        // leaves no page is let go rather than printing nothing (#951).
+        if self.parity == 0 || matches!(self.range, 1 | 3) || self.range == 0 && !self.all_pages {
+            return picked;
+        }
+        let odd = self.parity == 1;
+        let kept: Vec<usize> = picked
+            .iter()
+            .copied()
+            .filter(|i| (i % 2 == 0) == odd)
+            .collect();
+        if kept.is_empty() {
+            picked
+        } else {
+            kept
+        }
+    }
+
+    /// The pages of the range, before the odd or even choice.
+    fn range_indexes(&self, count: usize, current: usize) -> Vec<usize> {
         match self.range {
             1 | 3 => vec![current.min(count.saturating_sub(1))],
             2 => {
@@ -501,6 +594,7 @@ impl Default for PrintState {
             orientation: 0,
             range: 0,
             pages: String::new(),
+            parity: 0,
             collate: true,
             as_bitmap: false,
             bitmap_dpi: 300.0,
@@ -549,7 +643,7 @@ pub struct PrintMergeState {
 
 /// The counter of a number field being added (see
 /// [`PrintMergeState::adding_number`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NumberForm {
     pub start: i64,
     pub increment: bool,
@@ -557,6 +651,9 @@ pub struct NumberForm {
     pub digits: u32,
     pub use_end: bool,
     pub end: i64,
+    /// How the counter is written: numbers, letters or custom text around
+    /// the number (#930).
+    pub format: crate::print_merge::NumberFormat,
 }
 
 impl Default for NumberForm {
@@ -568,6 +665,7 @@ impl Default for NumberForm {
             digits: 1,
             use_end: false,
             end: 1,
+            format: Default::default(),
         }
     }
 }
@@ -2638,6 +2736,8 @@ fn export_preview_key(app: &App, st: &ExportState) -> u64 {
     st.all_pages.hash(&mut h);
     st.quality.hash(&mut h);
     st.dpi.to_bits().hash(&mut h);
+    st.scale_or_one().to_bits().hash(&mut h);
+    st.webp_lossless.hash(&mut h);
     if st.selection_only {
         for id in &app.selection {
             id.raw().hash(&mut h);
@@ -2942,9 +3042,9 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                                         export_format_label(i),
                                     )
                                     .clicked()
+                                    && (st.format != i || st.script.is_some())
                                 {
-                                    st.format = i;
-                                    st.script = None;
+                                    app.recall_export_format(st, i);
                                 }
                             }
                             if !scripted.is_empty() {
@@ -2990,32 +3090,73 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     } else {
                         app.page_rect()
                     };
-                    // The size in pixels: typing either side sets the
-                    // resolution that gives it, the other side following.
-                    let (mut w, mut h) = export_pixels(b.width(), b.height(), st.dpi);
+                    // The size in the chosen unit: typing either side sets
+                    // the resolution (pixels) or the scale (lengths) that
+                    // gives it, the other side following (#617).
+                    let (mut w, mut h) = export_size_in_unit(b.width(), b.height(), st);
+                    let unit = st.size_unit.min(EXPORT_SIZE_UNITS.len() - 1);
+                    let (decimals, step) = if unit == 0 { (0, 1.0) } else { (2, 0.1) };
                     ui.horizontal(|ui| {
-                        ui.label(tr("dialog.pixels"));
+                        ui.label(tr("dialog.export_size"));
                         let wc = ui
                             .add(
                                 crate::ui::field::NumField::new(&mut w)
-                                    .range(1..=200_000)
-                                    .suffix(" px"),
+                                    .range(0.01..=200_000.0)
+                                    .max_decimals(decimals)
+                                    .speed(step)
+                                    .width(70.0),
                             )
                             .changed();
                         ui.label("x");
                         let hc = ui
                             .add(
                                 crate::ui::field::NumField::new(&mut h)
-                                    .range(1..=200_000)
-                                    .suffix(" px"),
+                                    .range(0.01..=200_000.0)
+                                    .max_decimals(decimals)
+                                    .speed(step)
+                                    .width(70.0),
                             )
                             .changed();
                         if wc {
-                            st.dpi = dpi_for_pixels(b.width(), w).unwrap_or(st.dpi);
+                            set_export_size(st, b.width(), w);
                         } else if hc {
-                            st.dpi = dpi_for_pixels(b.height(), h).unwrap_or(st.dpi);
+                            set_export_size(st, b.height(), h);
+                        }
+                        egui::ComboBox::from_id_salt("exp_size_unit")
+                            .selected_text(EXPORT_SIZE_UNITS[unit].0)
+                            .width(50.0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, _)) in EXPORT_SIZE_UNITS.iter().enumerate() {
+                                    ui.selectable_value(&mut st.size_unit, i, *name);
+                                }
+                            });
+                        let scale = st.scale_or_one();
+                        if (scale - 1.0).abs() > 1e-9
+                            && ui
+                                .small_button(format!("{:.0} %", scale * 100.0))
+                                .on_hover_text(tr("dialog.export_scale_reset"))
+                                .clicked()
+                        {
+                            st.scale = 1.0;
                         }
                     });
+                    // What comes out: pixels, the resolution the file
+                    // records and its colours.
+                    let (pw, ph) = export_pixels(b.width(), b.height(), st.render_dpi());
+                    let (_, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
+                    let alpha = st.transparent && crate::export::keeps_alpha(ext);
+                    ui.label(
+                        egui::RichText::new(trf(
+                            "dialog.export_output",
+                            &[
+                                ("w", &pw.to_string()),
+                                ("h", &ph.to_string()),
+                                ("dpi", &format!("{:.0}", st.dpi)),
+                                ("mode", if alpha { "sRGB + alpha" } else { "sRGB" }),
+                            ],
+                        ))
+                        .color(Tokens::text_dim()),
+                    );
                 }
                 if !scripted && st.format == 1 {
                     ui.horizontal(|ui| {
@@ -3538,6 +3679,37 @@ pub fn destination_row(ui: &mut Ui, st: &mut PrintState, width: f32) -> Option<S
     properties
 }
 
+/// The choice of every page, the odd ones or the even ones, for the
+/// whole drawing or the pages listed (greyed out for the current page
+/// and the selection), as wide as its longest choice (#951).
+pub fn parity_combo(ui: &mut Ui, st: &mut PrintState, id: &str) {
+    let keys = [
+        "print.odd_and_even",
+        "options.scope_odd",
+        "options.scope_even",
+    ];
+    let names = keys.map(tr);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let widest = names
+        .iter()
+        .map(|n| {
+            ui.fonts_mut(|f| f.layout_no_wrap(n.clone(), font.clone(), egui::Color32::WHITE))
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    ui.add_enabled_ui(matches!(st.range, 0 | 2), |ui| {
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(names[st.parity.min(2)].clone())
+            .width(widest + 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_width)
+            .show_ui(ui, |ui| {
+                for (i, n) in names.iter().enumerate() {
+                    ui.selectable_value(&mut st.parity, i, n.clone());
+                }
+            });
+    });
+}
+
 /// The General tab; the printer whose Properties button was clicked.
 fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) -> Option<String> {
     let mut properties = None;
@@ -3606,6 +3778,7 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) -> Option<Stri
                 ui.add_enabled_ui(!app.selection.is_empty(), |ui| {
                     ui.radio_value(&mut st.range, 3, tr("print.range_selection"));
                 });
+                parity_combo(ui, st, "print_parity");
             });
         });
         ui.vertical(|ui| {
@@ -3821,11 +3994,54 @@ fn merge_kind_of(index: usize) -> crate::print_merge::FieldKind {
             start: 1,
             step: 1,
             digits: 1,
+            format: Default::default(),
         },
         2 => FieldKind::Image,
         3 => FieldKind::Qr,
         _ => FieldKind::Text,
     }
+}
+
+/// A number field's Format: 1, 2, 3 / A, B, C / a, b, c / Custom, and for
+/// Custom the texts before and after the number (#930).
+fn merge_number_format(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    format: &mut crate::print_merge::NumberFormat,
+) {
+    use crate::print_merge::NumberFormat;
+    let cur = format.index();
+    let mut pick = cur;
+    ui.horizontal(|ui| {
+        ui.label(tr("merge.format"));
+        egui::ComboBox::from_id_salt(("merge_format", salt))
+            .selected_text(tr(NumberFormat::KEYS[cur]))
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                for (i, key) in NumberFormat::KEYS.iter().enumerate() {
+                    ui.selectable_value(&mut pick, i, tr(key));
+                }
+            });
+    });
+    if pick != cur {
+        *format = NumberFormat::from_index(pick);
+    }
+    if let NumberFormat::Custom { prefix, suffix } = format {
+        ui.horizontal(|ui| {
+            ui.label(tr("merge.prefix"));
+            ui.add(egui::TextEdit::singleline(prefix).desired_width(90.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr("merge.suffix"));
+            ui.add(egui::TextEdit::singleline(suffix).desired_width(90.0));
+        });
+    }
+}
+
+/// Whether a number format pads with zeros (letters have no digits).
+fn merge_format_has_digits(format: &crate::print_merge::NumberFormat) -> bool {
+    use crate::print_merge::NumberFormat;
+    !matches!(format, NumberFormat::Upper | NumberFormat::Lower)
 }
 
 fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, close: &mut bool) {
@@ -3912,8 +4128,10 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                 // the records from the start to it (#791).
                 if *kind == 1 {
                     let f = &mut st.adding_number;
+                    merge_number_format(ui, "add", &mut f.format);
                     ui.horizontal(|ui| {
-                        ui.add(
+                        ui.add_enabled(
+                            merge_format_has_digits(&f.format),
                             crate::ui::field::NumField::new(&mut f.digits)
                                 .range(1..=12)
                                 .prefix(tr("merge.digits")),
@@ -3954,13 +4172,14 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
         if let Some(done) = add_done {
             if let Some((name, kind)) = done {
                 if kind == 1 {
-                    let f = st.adding_number;
+                    let f = st.adding_number.clone();
                     pm::add_number_field(
                         st,
                         &name,
                         f.start,
                         if f.increment { f.step } else { 0 },
                         f.digits,
+                        f.format,
                         (f.use_end && f.increment).then_some(f.end),
                     );
                 } else {
@@ -4021,8 +4240,10 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                         start,
                                         step,
                                         digits,
+                                        format,
                                     } = &mut st.kinds[i]
                                     {
+                                        merge_number_format(ui, ("cfg", i), format);
                                         ui.add(
                                             crate::ui::field::NumField::new(start)
                                                 .prefix(tr("merge.start")),
@@ -4031,7 +4252,8 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                             crate::ui::field::NumField::new(step)
                                                 .prefix(tr("merge.step")),
                                         );
-                                        ui.add(
+                                        ui.add_enabled(
+                                            merge_format_has_digits(format),
                                             crate::ui::field::NumField::new(digits)
                                                 .range(1..=12)
                                                 .prefix(tr("merge.digits")),
@@ -5035,7 +5257,10 @@ fn palette_editor_dialog(
                 }
                 if ui.button(tr("dialog.save_palette")).clicked() {
                     if let Some(p) = crate::files::Dialog::new()
-                        .add_filter("Palette", &["tdpal", "gpl"])
+                        .add_filter(
+                            crate::palette::filter_label(&tr("file.palettes"), &["tdpal", "gpl"]),
+                            &["tdpal", "gpl"],
+                        )
                         .set_file_name(format!("{}.tdpal", pal.name))
                         .save_path()
                     {

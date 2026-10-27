@@ -337,6 +337,32 @@ impl App {
         None
     }
 
+    /// What a click at `p` picks: the topmost object there, or an object
+    /// whose drop shadow lies at `p` over whatever is beneath it (a
+    /// shadow draws above the objects under its own), so a shadow is
+    /// picked for editing with its object (#935). In focus mode and
+    /// while a symmetry is edited, as [`Self::hit_test`].
+    pub fn pick_at(&self, p: Point) -> Option<ShapeId> {
+        let hit = self.hit_test(p);
+        if self.focus_shape_on_page().is_some() || self.symmetry_edit.is_some() {
+            return hit;
+        }
+        self.page_layers()
+            .into_iter()
+            .rev()
+            .filter(|l| l.visible && !l.locked)
+            .flat_map(|l| l.shapes.iter().rev())
+            .filter(|s| !s.locked && s.visible && !self.outside_clip_edit(s.id))
+            .find_map(|s| {
+                if Some(s.id) == hit {
+                    hit
+                } else {
+                    crate::shadow_tool::shadow_covers(s, p).then_some(s.id)
+                }
+            })
+            .or(hit)
+    }
+
     /// `s` (in page space) is under `p` within `tol` page units: text,
     /// groups, tables, bitmaps, clip frames and symbols anywhere in their
     /// box; filled objects inside their shape (an open curve only when the
@@ -487,10 +513,11 @@ impl App {
         chain.get(next.min(chain.len().saturating_sub(1))).copied()
     }
 
-    /// The topmost object at `p` and the objects inside it under `p`, one
+    /// The topmost object at `p` (or the one whose drop shadow is there,
+    /// see [`Self::pick_at`]) and the objects inside it under `p`, one
     /// group level further in each, down to the innermost one.
     fn hit_chain(&self, p: Point) -> Vec<ShapeId> {
-        let Some(top) = self.hit_test(p) else {
+        let Some(top) = self.pick_at(p) else {
             return Vec::new();
         };
         let tol = 3.0 / self.view.zoom as f64;
@@ -504,6 +531,18 @@ impl App {
             current = c;
         }
         chain
+    }
+
+    /// Whether a Pick press at `p` lands on what is selected: `None`
+    /// where no object is, else whether the topmost object there, or one
+    /// of its parts under `p`, is in the selection (a drag then moves the
+    /// selection as it is, see [`Self::press_target`]).
+    pub fn over_selection(&self, p: Point) -> Option<bool> {
+        if self.selection.is_empty() {
+            return self.hit_test(p).map(|_| false);
+        }
+        let chain = self.hit_chain(p);
+        (!chain.is_empty()).then(|| chain.iter().any(|id| self.selection.contains(id)))
     }
 
     /// What a Pick press at `p` takes: a selected object under `p` (an
@@ -623,7 +662,7 @@ impl App {
         let hit = if mods.ctrl {
             self.hit_test_step(p)
         } else {
-            self.hit_test(p)
+            self.pick_at(p)
         };
         match hit {
             Some(id) if mods.shift => {
@@ -771,6 +810,46 @@ impl App {
     }
 
     /// Start moving the selection from `p` (page).
+    /// The selection's own point under `p` that a drag in rotate mode
+    /// turns the selection by: a node, a segment's midpoint or an
+    /// ellipse's quadrant (as the pointer marks it), away from the centre
+    /// of rotation (#933).
+    pub(crate) fn grab_turn_point(&self, p: Point) -> Option<Point> {
+        use crate::snap_points::SnapMode;
+        if !self.rotate_mode || !matches!(self.tool, Tool::Pick | Tool::FreeformPick) {
+            return None;
+        }
+        let t = self.selection_hover_target(p)?;
+        if !matches!(
+            t.mode,
+            SnapMode::Node | SnapMode::Midpoint | SnapMode::Quadrant
+        ) {
+            return None;
+        }
+        let c = self.rotation_center()?;
+        ((t.point - c).hypot() > self.snap_tolerance()).then_some(t.point)
+    }
+
+    /// Rotate mode: a press on a node of the selection (see
+    /// [`App::grab_turn_point`]) starts turning it about the centre of
+    /// rotation, the node following the pointer round its circle.
+    fn start_grab_turn(&mut self, p: Point) -> bool {
+        let Some(g) = self.grab_turn_point(p) else {
+            return false;
+        };
+        let Some(c) = self.rotation_center() else {
+            return false;
+        };
+        let a = (g - c).atan2();
+        self.drag = Drag::Rotate {
+            center: c,
+            start_angle: a,
+            current_angle: a,
+            grab: Some(g),
+        };
+        true
+    }
+
     fn start_move(&mut self, p: Point) {
         // A text fitted to a path slides along it instead.
         if self.fitted_text().is_some() {
@@ -1055,6 +1134,10 @@ impl App {
         // A click with a tool whose click has no job of its own selects;
         // a drag goes on to the tool below.
         if self.tool.click_selects() && response.clicked_by(PointerButton::Primary) {
+            // A click on a slider of the selected blend keeps the blend.
+            if self.tool == Tool::Blend && self.blend_handle_at(p).is_some() {
+                return;
+            }
             self.click_select(p, mods);
             return;
         }
@@ -1096,7 +1179,7 @@ impl App {
             }
             t if t.is_box_tool() => self.box_input(response, p, mods),
             Tool::ThreePointRectangle | Tool::ThreePointEllipse | Tool::ThreePointCurve => {
-                self.three_point_input(response, p)
+                self.three_point_input(response, p, mods)
             }
             Tool::Freehand => self.freehand_input(response, p, mods),
             Tool::Bezier | Tool::Pen | Tool::Polyline | Tool::TwoPointLine | Tool::BSpline => {
@@ -1133,7 +1216,16 @@ impl App {
                         .map(|o| self.view.to_page(o))
                         .unwrap_or(p);
                     if let Some(handle) = self.shadow_handle_at(press) {
-                        self.drag = Drag::ShadowHandle { handle };
+                        self.drag = Drag::ShadowHandle {
+                            handle,
+                            grab: Vec2::ZERO,
+                        };
+                    } else if let Some(grab) = self.grab_shadow(press) {
+                        // On the shadow itself: it moves with the pointer.
+                        self.drag = Drag::ShadowHandle {
+                            handle: crate::shadow_tool::ShadowHandle::End,
+                            grab,
+                        };
                     } else if let Some(id) = self.hit_test(press) {
                         self.select(vec![id]);
                         self.drag = Drag::Shadow {
@@ -1149,7 +1241,9 @@ impl App {
                             self.drag_new_shadow(shape, start, p, first);
                             self.drag = Drag::Shadow { shape, start };
                         }
-                        Drag::ShadowHandle { handle } => self.drag_shadow_handle(handle, p),
+                        Drag::ShadowHandle { handle, grab } => {
+                            self.drag_shadow_handle(handle, p + grab)
+                        }
                         _ => {}
                     }
                 }
@@ -1157,7 +1251,7 @@ impl App {
                     if self.shadow_handle_at(p).is_some() {
                         return;
                     }
-                    match self.hit_test(p) {
+                    match self.pick_at(p) {
                         Some(id) => self.select(vec![id]),
                         None => self.select(Vec::new()),
                     }
@@ -1326,6 +1420,7 @@ impl App {
                             center: c,
                             start_angle: a,
                             current_angle: a,
+                            grab: None,
                         };
                     } else {
                         self.drag = Drag::Skew {
@@ -1365,6 +1460,12 @@ impl App {
                 if let Some(now) = self.pointer_page {
                     self.pick_drag_to(now, mods);
                 }
+                return;
+            }
+            // Rotate mode: a node of the selection (a midpoint, a quadrant)
+            // turns it about the centre of rotation, carried onto other
+            // objects' points and edges (#933).
+            if !mods.shift && self.start_grab_turn(p) {
                 return;
             }
             // The centre mark moves the selection, whatever lies under it.
@@ -1472,7 +1573,7 @@ impl App {
             let hit = if mods.ctrl {
                 self.hit_test_step(p)
             } else {
-                self.hit_test(p)
+                self.pick_at(p)
             };
             match hit {
                 Some(id) if mods.shift => {
@@ -1602,8 +1703,9 @@ impl App {
         };
         // Handles snap to other objects, guidelines, the grid and the
         // page, never to the selection's own points: the point of the box
-        // a scale or skew handle stands for, and the pointer turning the
-        // selection (unless Ctrl turns it in steps).
+        // a scale or skew handle stands for. The pointer turning the
+        // selection (unless Ctrl turns it in steps) snaps to points only
+        // (#933, see `snap_turn_point`).
         let snapped_handle = match &self.drag {
             Drag::Scale { grab, .. } => self.snap_point_excluding(p - *grab, &self.selection),
             Drag::Skew {
@@ -1615,7 +1717,12 @@ impl App {
                 let grab = *start - handle_point(*start_bounds, *handle);
                 self.snap_point_excluding(p - grab, &self.selection) + grab
             }
-            Drag::Rotate { .. } if !mods.ctrl => self.snap_point_excluding(p, &self.selection),
+            Drag::Rotate {
+                center,
+                grab: Some(g),
+                ..
+            } if !mods.ctrl => self.snap_turn_grab(*center, *g, p, &self.selection),
+            Drag::Rotate { .. } if !mods.ctrl => self.snap_turn_point(p, &self.selection),
             _ => p,
         };
         match &mut self.drag {
@@ -1680,6 +1787,7 @@ impl App {
                 center,
                 start_angle,
                 current_angle,
+                ..
             } => {
                 let mut a = (snapped_handle - *center).atan2();
                 // Ctrl turns in steps of the constrain angle.
@@ -1843,13 +1951,24 @@ impl App {
     }
 
     /// 3-point rectangle, ellipse and curve: drag the base segment, then
-    /// click the third point (Esc cancels, see `keyboard`).
-    fn three_point_input(&mut self, response: &Response, p: Point) {
+    /// click the third point (Esc cancels, see `keyboard`). Ctrl keeps the
+    /// base to steps of the constrain angle from where it starts, as the
+    /// other line tools do (the curve's chord: the constrain key of the
+    /// curve tools, Ctrl by default; #934). Held at the third click of the
+    /// curve, it makes the curve a bow: the arc of the circle through the
+    /// three points.
+    fn three_point_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         let p = self.snap_point(p);
+        let constrain = if self.tool == Tool::ThreePointCurve {
+            self.constrain_held(&mods)
+        } else {
+            mods.ctrl || mods.command
+        };
+        let step = self.settings.constrain_angle;
         if self.three_point_base.is_some() {
             if response.clicked_by(PointerButton::Primary) {
                 if let Some((a, b)) = self.three_point_base.take() {
-                    self.finish_three_point(a, b, p);
+                    self.finish_three_point(a, b, p, constrain);
                 }
             }
             return;
@@ -1868,8 +1987,12 @@ impl App {
             };
         }
         if response.dragged_by(PointerButton::Primary) {
-            if let Drag::ThreePointBase { current, .. } = &mut self.drag {
-                *current = p;
+            if let Drag::ThreePointBase { start, current } = &mut self.drag {
+                *current = if constrain {
+                    constrain_from(*start, p, step)
+                } else {
+                    p
+                };
             }
         }
     }
@@ -2651,6 +2774,7 @@ impl App {
                 center,
                 start_angle,
                 current_angle,
+                ..
             } => {
                 let a = current_angle - start_angle;
                 Some(

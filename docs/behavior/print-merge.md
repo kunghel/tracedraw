@@ -28,7 +28,8 @@ Record); Save Data Source, Finish and Cancel.
   writes the records back as CSV, counters written out.
 - Add Column asks for a name and a type and adds the field to every
   record (and a first record when there is none). For a Number it also
-  asks for the counter: digits (zeros in front), the starting value,
+  asks for the counter: its Format (below), digits (zeros in front;
+  greyed for letters), the starting value,
   "Continually increment value" with its step (off: every record the
   same number) and, when ticked, an ending value. With an ending value
   the records from the start to it are made at once (15 to 25 in three
@@ -56,7 +57,15 @@ Record); Save Data Source, Finish and Cancel.
   - Text: put in place of `<Field>` in every text object of the page.
   - Number: a counter, not typed in: Start, then Step more for each
     record, padded with zeros to Digits digits (start 7, step 3, digits 3
-    gives 007, 010, 013).
+    gives 007, 010, 013). Its Format (Add Column and Configure
+    Columns, #930): 1, 2, 3 (the default, as above); A, B, C (1 is A,
+    26 is Z, then AA, AB, ...; 702 is ZZ, 703 AAA); a, b, c (the same in
+    small letters); or Custom, the padded number between a text before
+    it and a text after it, both typed in (Text before "Ticket T-",
+    digits 4, start 98: Ticket T-0098, Ticket T-0099, Ticket T-0100).
+    Letters count from 1: a counter at 0 or below is written as a
+    number (`print_merge::tests::number_fields_write_letters_and_custom_text`,
+    `pick_drag_tests::add_column_offers_number_formats_and_custom_text`).
   - Picture: the cell is the path of a picture (relative paths start at
     the data file's folder). A text object holding only `<Field>` becomes
     the picture, as large as fits in the object's box (the frame of
@@ -126,6 +135,17 @@ at once (#437). From top to bottom:
   insert; a field typed into text being edited goes in that text only
   (#793,
   `print_merge_docker::tests::on_every_page_a_text_field_goes_on_every_page_and_merges_there`).
+  Each copy keeps the field it was copied from and the box it was put in
+  (object data `PrintMerge.CopyOf` and `PrintMerge.CopyAt`). While a copy
+  is still in that box, it follows its field: when the field was moved or
+  resized on its page, Create Merged Document and Print Merged Document
+  with On every page first put the copy in the field's box (same box, so
+  the same anchor for pictures and QR codes), in the same undo step as the
+  merge, and Place Inside Frame with On every page moves the copy there
+  and puts the picture in it instead of making a second frame. A copy
+  moved or resized by hand on its own page stays where it is (#956,
+  `print_merge_docker::tests::on_every_page_copies_follow_the_field_moved_on_its_page`,
+  `print_merge_docker::tests::place_inside_frame_moves_the_copies_of_a_moved_frame`).
   For a picture field Place Inside Frame also puts the placeholder picture in the same place on
   every other page of the drawing, as part of the same undo step: in the
   shape there of the same kind and bounds (within 0.01 mm), which takes
@@ -197,3 +217,5 @@ large as its box allows.
 - `ui::print_merge_docker::tests::the_docker_draws_with_and_without_data`
 - `ui::print_merge_docker::tests::on_every_page_takes_the_pictures_folder_page_by_page`
 - `ui::print_merge_docker::tests::on_every_page_merges_onto_the_drawings_own_pages`
+- `ui::print_merge_docker::tests::on_every_page_copies_follow_the_field_moved_on_its_page`
+- `ui::print_merge_docker::tests::place_inside_frame_moves_the_copies_of_a_moved_frame`
