@@ -1331,6 +1331,9 @@ pub struct App {
     pub navigator_tex: Option<egui::TextureHandle>,
     pub options_label_index: usize,
     pub options_current_only: bool,
+    /// Document Options > Page Size: the name being typed for a page
+    /// size to save (Some while the field is shown).
+    pub options_page_size_name: Option<String>,
     /// Selected custom anchor index (Anchor Editing tool).
     pub anchor_sel: Option<usize>,
     /// Object > Order > In Front Of / Behind is waiting for a click: Some(in_front).
@@ -2358,6 +2361,7 @@ impl App {
             navigator_tex: None,
             options_label_index: 0,
             options_current_only: false,
+            options_page_size_name: None,
             anchor_sel: None,
             pending_order: None,
             repeatables: Vec::new(),
@@ -2532,6 +2536,17 @@ impl App {
     }
 
     /// A new document with localised default page and layer names.
+    /// A command adding a page of `size` at the end, named in the
+    /// interface's language as the first page is, with its layer (#1127).
+    pub fn localized_page(&self, size: Size) -> Command {
+        let n = self.doc().pages.len() + 1;
+        Command::AddPage {
+            name: Some(crate::i18n::trf("doc.page_n", &[("n", &n.to_string())])),
+            size,
+            layer: Some(crate::i18n::trf("docker.layer_n", &[("n", "1")])),
+        }
+    }
+
     pub fn localized_document(title: impl Into<String>, size: Size) -> tracedraw_core::Document {
         let mut doc = tracedraw_core::Document::new(title, size);
         for (i, p) in doc.pages.iter_mut().enumerate() {
@@ -5178,27 +5193,35 @@ impl App {
 
     /// Add a colour to the document palette as a step of its own (its
     /// eyedropper, Add from selection); nothing when it is there already.
+    /// Either way its swatch gets the white frame of the last colour used,
+    /// so a colour picked again shows where it is (#1125).
     pub fn add_to_document_palette(&mut self, c: Color) {
-        if self.doc().palette.contains(&c) {
+        if let Some(i) = self.doc().palette.iter().position(|x| *x == c) {
+            self.doc_palette_current = Some(i);
             return;
         }
         let mut colors = self.doc().palette.clone();
         colors.push(c);
         self.run(Command::SetDocumentPalette { colors });
+        self.doc_palette_current = self.doc().palette.iter().position(|x| *x == c);
     }
 
     /// The document palette collects the colours applied to objects; the addition joins the step that applied it.
     pub fn remember_color(&mut self, c: Color) {
-        if !self.settings.palette.auto_update_document
-            || matches!(c, Color::Registration)
-            || self.doc().palette.contains(&c)
-        {
+        // A colour of the palette applied again: its swatch is the last
+        // used (#1125).
+        if let Some(i) = self.doc().palette.iter().position(|x| *x == c) {
+            self.doc_palette_current = Some(i);
+            return;
+        }
+        if !self.settings.palette.auto_update_document || matches!(c, Color::Registration) {
             return;
         }
         let mut colors = self.doc().palette.clone();
         colors.push(c);
-        if let Err(e) = self.engine.amend(&Command::SetDocumentPalette { colors }) {
-            self.status = e.to_string();
+        match self.engine.amend(&Command::SetDocumentPalette { colors }) {
+            Ok(_) => self.doc_palette_current = Some(self.doc().palette.len() - 1),
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -7275,7 +7298,7 @@ impl App {
 
     pub fn add_page(&mut self) {
         let size = self.page_size();
-        self.run(Command::AddPage { name: None, size });
+        self.run(self.localized_page(size));
         if let Some(p) = self.doc().pages.last() {
             self.page = p.id;
         }
@@ -7288,7 +7311,7 @@ impl App {
     pub fn insert_page(&mut self, after: bool) {
         let idx = self.page_index();
         let size = self.page_size();
-        self.run(Command::AddPage { name: None, size });
+        self.run(self.localized_page(size));
         let Some(new) = self.doc().pages.last().map(|p| p.id) else {
             return;
         };

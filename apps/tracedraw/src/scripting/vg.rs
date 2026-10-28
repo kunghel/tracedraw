@@ -661,7 +661,11 @@ impl HostInner {
                     .unwrap_or(tracedraw_core::document::paper::A4);
                 let mut out = Vec::new();
                 for k in 0..count {
-                    self.run(Command::AddPage { name: None, size })?;
+                    self.run(Command::AddPage {
+                        name: None,
+                        size,
+                        layer: None,
+                    })?;
                     let page = self.doc.pages.last().map(|p| p.id).ok_or("no page")?;
                     let to = (at + k).min(self.doc.pages.len() - 1);
                     if to != self.doc.pages.len() - 1 {

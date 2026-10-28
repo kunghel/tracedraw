@@ -1748,6 +1748,83 @@ fn curve_nodes_carry_the_marks_of_version_16_files() {
 }
 
 #[test]
+fn subpaths_back_at_their_start_close_on_their_last_node() {
+    // Letters' outlines (#1130): a curve back to the start, then the
+    // close; a line back to the start; lone moves around them.
+    let mut p = BezPath::new();
+    p.move_to((5.0, 5.0));
+    p.move_to((0.0, 0.0));
+    p.curve_to((0.0, 10.0), (10.0, 10.0), (10.0, 0.0));
+    p.curve_to((10.0, -10.0), (0.0, -10.0), (0.0, 0.0));
+    p.close_path();
+    p.move_to((20.0, 0.0));
+    p.line_to((30.0, 0.0));
+    p.line_to((30.0, 10.0));
+    p.line_to((30.0, 10.0));
+    p.line_to((20.0, 0.0));
+    p.line_to((20.0, 0.0));
+    p.close_path();
+    p.move_to((40.0, 0.0));
+    p.line_to((50.0, 0.0));
+    p.line_to((50.0, 10.0));
+    p.close_path();
+    p.move_to((60.0, 0.0));
+    p.close_path();
+    p.move_to((70.0, 0.0));
+    let coords = curve_coords(&p).expect("coords");
+    let n = u32::from_le_bytes([coords[0], coords[1], coords[2], coords[3]]) as usize;
+    let types: Vec<u8> = coords[4 + 8 * n..].iter().map(|t| t & !0x30).collect();
+    assert_eq!(
+        types,
+        [
+            0x00, 0xc0, 0xc0, 0x80, 0xc0, 0xc0, 0x88, 0x00, 0x40, 0x40, 0x48, 0x00, 0x40, 0x40,
+            0x48
+        ]
+    );
+    // No segment of no length.
+    let pt = |i: usize| {
+        let at = 4 + 8 * i;
+        coords[at..at + 8].to_vec()
+    };
+    for i in 1..n {
+        if types[i] & 0xc0 != 0 && types[i] != 0xc0 && types[i - 1] & 0xc0 != 0xc0 {
+            assert_ne!(pt(i), pt(i - 1), "node {i}");
+        }
+    }
+    // Read back closed, with as many nodes.
+    let mut doc = Document::new("w", Size::new(200.0, 100.0));
+    let mut ids = doc.ids().clone();
+    let c = Shape::new(
+        ids.shape(),
+        ShapeKind::Path {
+            path: p.clone(),
+            closed: true,
+        },
+    );
+    doc.pages[0].layers[0].shapes = vec![c];
+    doc.set_ids(ids);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        let ShapeKind::Path { path, .. } = &s.kind else {
+            panic!("{v}: {:?}", rep.warnings);
+        };
+        let els = path.elements();
+        let count = |f: fn(&PathEl) -> bool| els.iter().filter(|e| f(e)).count();
+        assert_eq!(count(|e| matches!(e, PathEl::MoveTo(_))), 3, "{v}: {els:?}");
+        assert_eq!(count(|e| matches!(e, PathEl::ClosePath)), 3, "{v}: {els:?}");
+        assert_eq!(
+            count(|e| matches!(e, PathEl::CurveTo(..))),
+            2,
+            "{v}: {els:?}"
+        );
+        let b = s.bounds();
+        assert!((b.width() - 50.0).abs() < 1e-3, "{v}: {b:?}");
+    }
+}
+
+#[test]
 fn version_21_text_records_are_numbered_and_complete() {
     let mut ids = Document::new("w", Size::new(200.0, 100.0)).ids().clone();
     let a = text_shape(
@@ -3171,11 +3248,10 @@ fn fonts_named_in_chinese_keep_their_names() {
     }
 }
 
-/// A blend of two texts goes out as one plain group of the start text
-/// and its steps as curves, beside the end text, and reads back so in
-/// every version (#946).
-#[test]
-fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
+/// A blend of two texts and its end, as the Blend tool leaves them: the
+/// end above the start (or below it, the steps then drawn below the
+/// start), both texts of the drawing.
+fn text_blend(steps: u32, end_below: bool) -> Document {
     let mut doc = doc_with(Vec::new());
     let mut ids = doc.ids().clone();
     let mut start = text_shape(
@@ -3183,31 +3259,76 @@ fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
         vec![TextSpan::new("ABC", "Arial", 24.0)],
         TextAlign::Left,
     );
+    start.transform = Affine::translate((10.0, 30.0));
+    start.fill = Fill::Solid(Color::rgb8(255, 240, 0));
     let mut end = text_shape(
         &mut ids,
         vec![TextSpan::new("XYZ", "Arial", 24.0)],
         TextAlign::Left,
     );
-    end.transform = Affine::translate((120.0, 20.0));
-    end.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+    end.transform = Affine::translate((120.0, 50.0));
+    end.fill = Fill::Solid(Color::rgb8(0, 180, 80));
     start.effects.push(tracedraw_core::live::Effect::Blend {
         end: Box::new(end.clone()),
-        steps: 5,
-        accel_objects: 0.0,
-        accel_colors: 0.0,
+        steps,
+        accel_objects: 0.25,
+        accel_colors: -0.5,
         rotation: 0.0,
         path: None,
         rotate_on_path: false,
         end_id: Some(end.id),
-        options: Default::default(),
+        options: tracedraw_core::live::BlendOptions {
+            steps_below: end_below,
+            ..Default::default()
+        },
     });
-    // The end above the start, as the Blend tool leaves them.
-    doc.pages[0].layers[0].shapes = vec![start, end];
+    doc.pages[0].layers[0].shapes = if end_below {
+        vec![end, start]
+    } else {
+        vec![start, end]
+    };
     doc.set_ids(ids);
+    doc
+}
+
+/// `bytes` read as a reader without TraceDraw's own package member sees
+/// them (what other programs show).
+fn open_as_drawn(bytes: &[u8]) -> Document {
+    let container = crate::container::detect(bytes).expect("container");
+    let riff = crate::container::riff_stream(bytes, &container).expect("riff");
+    let externals = crate::container::external_streams(bytes, &container);
+    let root =
+        crate::riff::parse_with_externals(&riff, externals, container.version.0).expect("tree");
+    crate::parse::parse_document_with(&root, &riff, container.version, None).0
+}
+
+/// The boxes of what a blend draws besides its two objects.
+fn step_boxes(s: &Shape) -> Vec<Rect> {
+    let ev = tracedraw_core::live::evaluate(s);
+    ev.below
+        .iter()
+        .chain(&ev.above)
+        .map(|x| x.bounds())
+        .collect()
+}
+
+fn near(a: Rect, b: Rect, tol: f64) -> bool {
+    (a.x0 - b.x0).abs() < tol
+        && (a.y0 - b.y0).abs() < tol
+        && (a.x1 - b.x1).abs() < tol
+        && (a.y1 - b.y1).abs() < tol
+}
+
+/// A blend of two texts goes out as one plain group of the start text
+/// and its steps as curves, beside the end text, and other readers see
+/// it so in every version (#946), the steps where the blend drew them.
+#[test]
+fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
+    let doc = text_blend(5, false);
+    let drawn = step_boxes(&doc.pages[0].layers[0].shapes[0]);
+    assert_eq!(drawn.len(), 5);
     for v in versions() {
-        let (back, rep) =
-            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
-        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let back = open_as_drawn(&document_to_cdr_version(&doc, v));
         let read = &back.pages[0].layers[0].shapes;
         assert_eq!(read.len(), 2, "{v}: {read:?}");
         let ShapeKind::Group { children } = &read[0].kind else {
@@ -3223,18 +3344,25 @@ fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
             .collect();
         assert_eq!((texts.len(), steps.len()), (1, 5), "{v}: {children:?}");
         assert_eq!(children.len(), 6, "{v}");
+        assert!(read[0].effects.is_empty(), "{v}");
         let ShapeKind::Text { spans, .. } = &texts[0].kind else {
             unreachable!()
         };
         assert_eq!(spans[0].text, "ABC", "{v}");
-        // The steps' colours run from the start's black to the end's red.
-        for s in &steps {
+        // The steps' colours run from the start's yellow to the end's
+        // green, and they lie where the blend drew them.
+        for (s, want) in steps.iter().zip(&drawn) {
             let Fill::Solid(c) = s.fill else {
                 panic!("{v}: {:?}", s.fill);
             };
             assert!(
-                c != Color::BLACK && c != Color::rgb8(255, 0, 0),
+                c != Color::rgb8(255, 240, 0) && c != Color::rgb8(0, 180, 80),
                 "{v}: {c:?}"
+            );
+            assert!(
+                near(s.bounds(), *want, 0.05),
+                "{v}: {:?} {want:?}",
+                s.bounds()
             );
         }
         let ShapeKind::Text { spans, .. } = &read[1].kind else {
@@ -3415,4 +3543,339 @@ fn the_font_table_lists_weight_named_faces_under_their_family() {
             ("X Light".to_string(), false)
         ]
     );
+}
+
+#[test]
+fn versions_9_to_11_carry_a_whole_configuration_record() {
+    let r9 = mcfg(Ver(9), 210.0, 297.0);
+    let r10 = mcfg(Ver(10), 210.0, 297.0);
+    let r11 = mcfg(Ver(11), 210.0, 297.0);
+    assert_eq!((r9.len(), r10.len(), r11.len()), (848, 4096, 4088));
+    let i32_at =
+        |r: &[u8], at: usize| i32::from_le_bytes(r[at..at + 4].try_into().unwrap_or([0; 4]));
+    let f64_at =
+        |r: &[u8], at: usize| f64::from_le_bytes(r[at..at + 8].try_into().unwrap_or([0; 8]));
+    // Page size after 4 zero bytes, the ruler origin at the bottom-left
+    // corner, a grid and scale that are not zero.
+    for r in [&r9, &r10, &r11] {
+        assert_eq!(i32_at(r, 0), 0);
+        assert_eq!((i32_at(r, 4), i32_at(r, 8)), (2_100_000, 2_970_000));
+        assert_eq!((i32_at(r, 372), i32_at(r, 376)), (-1_050_000, -1_485_000));
+        assert_eq!((f64_at(r, 384), f64_at(r, 392)), (0.2, 0.2));
+        assert_eq!(f64_at(r, 408), 1.0);
+        assert_eq!((i32_at(r, 428), i32_at(r, 448)), (11_811_024, 11_811_024));
+        assert_eq!(i32_at(r, 520), 1_000);
+    }
+    // Version 11 scales of 2.54, version 10 the same record with smaller
+    // scales and 8 bytes more at 940, ending with 12.0.
+    assert_eq!(f64_at(&r11, 848), 2.54);
+    assert_eq!(f64_at(&r10, 848), 0.000_254);
+    assert_eq!(&r10[..848], &r11[..848]);
+    assert_eq!(&r10[896..940], &r11[896..940]);
+    assert_eq!((i32_at(&r10, 940), i32_at(&r10, 944)), (0, 1));
+    assert_eq!(&r10[948..], &r11[940..]);
+    assert_eq!(f64_at(&r11, 4080), 12.0);
+    // Version 9: version 10 without the bytes after the nudge, the name
+    // fields and the last flag.
+    assert_eq!(&r9[..528], &r10[..528]);
+    assert_eq!(&r9[528..612], &r10[536..620]);
+    assert_eq!(&r9[616..764], &r10[700..848]);
+    assert_eq!(&r9[768..844], &r10[848..924]);
+    assert_eq!(i32_at(&r9, 536), 10_000);
+    // Each version reads its page size back.
+    for v in [9, 10, 11] {
+        let doc = Document::new("t", Size::new(210.0, 297.0));
+        let (back, _) = crate::open_bytes(&document_to_cdr_version(&doc, v), "t").expect("opens");
+        assert!((back.pages[0].size.width - 210.0).abs() < 0.01, "{v}");
+        assert!((back.pages[0].size.height - 297.0).abs() < 0.01, "{v}");
+    }
+}
+
+/// A text whose only run has a colour of its own, and a text of several
+/// paragraphs, one run each, in different colours, keep their colours in
+/// every version (#1057: they came back black).
+#[test]
+fn single_run_colours_round_trip() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let red = Fill::Solid(Color::rgb8(255, 0, 0));
+    let blue = Fill::Solid(Color::rgb8(0, 0, 255));
+    let mut one = TextSpan::new("Red", "Arial", 12.0);
+    one.fill = Some(red.clone());
+    let mut a = TextSpan::new("Red\n", "Arial", 12.0);
+    a.fill = Some(red.clone());
+    let mut b = TextSpan::new("Blue", "Arial", 12.0);
+    b.fill = Some(blue.clone());
+    doc.pages[0].layers[0].shapes = vec![
+        text_shape(&mut ids, vec![one], TextAlign::Left),
+        text_shape(&mut ids, vec![a, b], TextAlign::Left),
+    ];
+    doc.set_ids(ids);
+    let colour = |s: &Shape, i: usize| {
+        let ShapeKind::Text { spans, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        let mut at = 0;
+        for sp in spans {
+            let n = sp.text.chars().count();
+            if i < at + n {
+                return sp.fill.clone().unwrap_or_else(|| s.fill.clone());
+            }
+            at += n;
+        }
+        panic!("letter {i} past {spans:?}");
+    };
+    for v in versions() {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 2, "{v}: {:?}", rep.warnings);
+        assert_eq!(colour(&read[0], 0), red, "{v}");
+        assert_eq!(colour(&read[1], 0), red, "{v}");
+        assert_eq!(colour(&read[1], 4), blue, "{v}");
+    }
+}
+
+/// `font` with its name table replaced by one of `names` (name ID and
+/// text, Windows English records), appended at the end of the file.
+fn with_names(font: &[u8], names: &[(u16, &str)]) -> Vec<u8> {
+    let mut f = font.to_vec();
+    let be16 = |b: &[u8], at: usize| u16::from_be_bytes([b[at], b[at + 1]]) as usize;
+    let dir = (0..be16(&f, 4))
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &f[r..r + 4] == b"name")
+        .expect("name table");
+    let mut storage = Vec::new();
+    let mut table = Vec::new();
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&(names.len() as u16).to_be_bytes());
+    table.extend_from_slice(&(6 + 12 * names.len() as u16).to_be_bytes());
+    for (id, text) in names {
+        let bytes: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        for v in [
+            3u16,
+            1,
+            0x0409,
+            *id,
+            bytes.len() as u16,
+            storage.len() as u16,
+        ] {
+            table.extend_from_slice(&v.to_be_bytes());
+        }
+        storage.extend_from_slice(&bytes);
+    }
+    table.extend_from_slice(&storage);
+    while !f.len().is_multiple_of(4) {
+        f.push(0);
+    }
+    let at = f.len() as u32;
+    f[dir + 8..dir + 12].copy_from_slice(&at.to_be_bytes());
+    f[dir + 12..dir + 16].copy_from_slice(&(table.len() as u32).to_be_bytes());
+    f.extend_from_slice(&table);
+    f
+}
+
+/// A static face of a large family names the whole name only as its
+/// family (name ID 1, "Khand SemiBold") and the family in its
+/// typographic names (ID 16 and 17, "Khand" and "SemiBold"): it is
+/// written as the family at the SemiBold weight, its font table entry
+/// "Khand" at 0x400 with the style "SemiBold", as files list such faces,
+/// and its embedded font keeps the font's own names (#1055: the whole
+/// name at the regular weight was reported missing where the face was
+/// only embedded).
+#[test]
+fn a_face_with_typographic_names_is_written_under_its_family() {
+    const FONT: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let khand = with_names(
+        FONT,
+        &[
+            (1, "Khand SemiBold"),
+            (2, "Regular"),
+            (4, "Khand SemiBold"),
+            (6, "Khand-SemiBold"),
+            (16, "Khand"),
+            (17, "SemiBold"),
+        ],
+    );
+    let faces = vec![FontFace {
+        family: "Khand SemiBold".into(),
+        bold: false,
+        italic: false,
+        data: Some(std::sync::Arc::new(khand)),
+    }];
+    assert_eq!(
+        fonts::split_family("Khand SemiBold", false, &faces),
+        Some(("Khand".into(), 600))
+    );
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("semi", "Khand SemiBold", 12.0)],
+        TextAlign::Left,
+    )]);
+    let previews = Previews {
+        fonts: faces,
+        embed_fonts: true,
+        ..Default::default()
+    };
+    let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+    let mut table = Vec::new();
+    std::io::Read::read_to_end(
+        &mut z.by_name("font/fontTable.dat").expect("table"),
+        &mut table,
+    )
+    .expect("read");
+    let units = |s: &str| -> Vec<u8> {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(|u| u.to_le_bytes())
+            .collect()
+    };
+    let has = |s: &str| table.windows(units(s).len()).any(|w| w == units(s));
+    let u32_at = |at: usize| u32::from_le_bytes(table[at..at + 4].try_into().expect("u32"));
+    assert_eq!(u32_at(8), 1, "one face");
+    assert_eq!(u32_at(12 + 8 + 4), 0x400, "the SemiBold flags");
+    assert!(
+        has("Khand") && !has("Khand SemiBold"),
+        "listed as the family"
+    );
+    assert!(has("SemiBold"), "its style");
+    let mut member = Vec::new();
+    std::io::Read::read_to_end(
+        &mut z.by_name("embed/embedding0").expect("embedded"),
+        &mut member,
+    )
+    .expect("read");
+    let eot = crate::eot::read(&member[crate::eot::find(&member).expect("eot")..]).expect("font");
+    assert_eq!(eot.family, "Khand SemiBold", "the font's own family");
+
+    let (back, _) = crate::open_bytes(&bytes, "khand").expect("reads back");
+    let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+        panic!("not text");
+    };
+    assert_eq!(spans[0].font_family, "Khand SemiBold");
+    assert!(!spans[0].bold);
+    assert_eq!(back.fonts.len(), 1);
+}
+
+/// A blend of two texts saved and opened again in TraceDraw is a blend
+/// again (#986): from version 14 (a package) the start text comes back
+/// with its blend to the end text, settings and all, its steps where
+/// they were; RIFF files keep the drawn group.
+#[test]
+fn a_text_blend_opens_live_again() {
+    for end_below in [false, true] {
+        a_text_blend_opens_live_again_with(end_below);
+    }
+}
+
+fn a_text_blend_opens_live_again_with(end_below: bool) {
+    let doc = text_blend(20, end_below);
+    let (si, ei) = if end_below { (1, 0) } else { (0, 1) };
+    let shapes = &doc.pages[0].layers[0].shapes;
+    let drawn = step_boxes(&shapes[si]);
+    assert_eq!(drawn.len(), 20);
+    let tracedraw_core::live::Effect::Blend {
+        accel_objects,
+        accel_colors,
+        options,
+        ..
+    } = &shapes[si].effects[0]
+    else {
+        unreachable!()
+    };
+    for v in versions() {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 2, "{v}: {read:?}");
+        if v < 14 {
+            assert!(matches!(read[si].kind, ShapeKind::Group { .. }), "{v}");
+            continue;
+        }
+        let ShapeKind::Text { spans, .. } = &read[si].kind else {
+            panic!("{v} {end_below}: {:?}", read[si].kind);
+        };
+        assert_eq!(spans[0].text, "ABC", "{v}");
+        let [tracedraw_core::live::Effect::Blend {
+            end,
+            steps,
+            accel_objects: ao,
+            accel_colors: ac,
+            end_id,
+            options: o,
+            ..
+        }] = read[si].effects.as_slice()
+        else {
+            panic!("{v}: {:?}", read[si].effects);
+        };
+        assert_eq!(*steps, 20, "{v}");
+        assert_eq!((*ao, *ac), (*accel_objects, *accel_colors), "{v}");
+        assert_eq!(o, options, "{v}");
+        // The end is the end text of the drawing, its copy up to date.
+        assert_eq!(*end_id, Some(read[ei].id), "{v}");
+        let ShapeKind::Text { spans, .. } = &end.kind else {
+            panic!("{v}: {:?}", end.kind);
+        };
+        assert_eq!(spans[0].text, "XYZ", "{v}");
+        assert_eq!(end.transform, read[ei].transform, "{v}");
+        let again = step_boxes(&read[si]);
+        assert_eq!(again.len(), 20, "{v}");
+        for (a, b) in again.iter().zip(&drawn) {
+            assert!(near(*a, *b, 0.05), "{v}: {a:?} {b:?}");
+        }
+        // Saved and opened once more, it is still the same blend.
+        let (twice, _) =
+            crate::open_bytes(&document_to_cdr_version(&back, v), "twice").expect("reads back");
+        let read2 = &twice.pages[0].layers[0].shapes;
+        assert_eq!(read2.len(), 2, "{v}");
+        assert_eq!(step_boxes(&read2[si]).len(), 20, "{v}");
+    }
+}
+
+/// A blend whose drawn group another program changed (a step deleted),
+/// or a member that does not read, opens as drawn, never fails (#986).
+#[test]
+fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
+    let doc = text_blend(4, false);
+    let mut w = Writer::new(Ver(27), &doc.symbols, &doc.title);
+    let _ = w.document(&doc);
+    let member = crate::kept_blends::encode(&w.blends, &w.static_ids).expect("member");
+    let mut kept = crate::kept_blends::decode(&member);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].count, 5);
+    // The member is small: the end object is read back, not copied.
+    assert!(member.len() < 4096, "{}", member.len());
+    let bytes = document_to_cdr_version(&doc, 27);
+    let container = crate::container::detect(&bytes).expect("container");
+    let riff = crate::container::riff_stream(&bytes, &container).expect("riff");
+    let externals = crate::container::external_streams(&bytes, &container);
+    let root = crate::riff::parse_with_externals(&riff, externals, 27).expect("tree");
+    let open = |kept: &[crate::kept_blends::KeptBlend]| {
+        crate::parse::parse_document_kept(&root, &riff, container.version, None, kept).0
+    };
+    let live = open(&kept);
+    assert!(matches!(
+        live.pages[0].layers[0].shapes[0].kind,
+        ShapeKind::Text { .. }
+    ));
+    kept[0].count = 4;
+    let drawn = open(&kept);
+    assert!(matches!(
+        drawn.pages[0].layers[0].shapes[0].kind,
+        ShapeKind::Group { .. }
+    ));
+    kept[0].count = 5;
+    kept[0].group = 9999;
+    let drawn = open(&kept);
+    assert!(matches!(
+        drawn.pages[0].layers[0].shapes[0].kind,
+        ShapeKind::Group { .. }
+    ));
+    for junk in [&b""[..], b"{", b"{\"format\":2,\"blends\":[]}", b"[1,2]"] {
+        assert!(crate::kept_blends::decode(junk).is_empty());
+    }
 }

@@ -13,6 +13,7 @@ use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::rulers::Pixels;
+use crate::ui::tips::RichTip;
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use tracedraw_core::{Color, Command, Fill};
 
@@ -178,6 +179,31 @@ pub fn swatch_tip(name: &str, c: Color) -> String {
     }
 }
 
+/// A swatch's tooltip: the colour's name in bold, then its values one
+/// per line (#1082).
+pub fn swatch_tip_ui(ui: &mut Ui, name: &str, c: Color) {
+    ui.spacing_mut().item_spacing.y = 1.0;
+    let size = ui.style().text_styles[&egui::TextStyle::Body].size;
+    if !name.is_empty() {
+        ui.label(egui::RichText::new(name).font(crate::theme::bold(size)));
+    }
+    ui.label(color_lines(c));
+}
+
+/// A colour's values one per line ("C: 0", "M: 60", ...).
+pub fn color_lines(c: Color) -> String {
+    match c {
+        Color::Cmyk { .. } | Color::Rgb { .. } => color_values(c)
+            .split(' ')
+            .collect::<Vec<_>>()
+            .chunks(2)
+            .map(|p| p.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => color_values(c),
+    }
+}
+
 /// Values as the palette tooltips show them.
 pub fn color_values(c: Color) -> String {
     let pct = |v: f32| (v * 100.0).round() as i32;
@@ -220,12 +246,6 @@ pub fn visible_slots(width: f32) -> usize {
 }
 
 fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
-    // Nothing to colour on the Welcome Screen: the swatches show pale
-    // and take no clicks (#482).
-    if !app.drawing_shown() {
-        ui.disable();
-        ui.multiply_opacity(0.4);
-    }
     let lines = lines_of(app, which);
     let thick = thickness(app, which);
     let size = if vertical {
@@ -304,7 +324,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         crate::theme::Tokens::text_dim(),
         Stroke::NONE,
     ));
-    let menu_resp = menu_resp.on_hover_text(tr("palette.menu_tip"));
+    let menu_resp = menu_resp.rich_tip(tr("palette.menu_tip"));
     egui::Popup::menu(&menu_resp)
         .id(egui::Id::new(("palette_menu_popup", which as u8)))
         .style(crate::ui::menus::menu_popup_style)
@@ -317,7 +337,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
 
     // The eyedropper: only the document palette takes new colours.
     let drop_rect = ax.rect(34.0, EDGE + 2.0, 18.0, 18.0);
-    let can_sample = which == Row::Document && app.has_document();
+    let can_sample = which == Row::Document && app.drawing_shown();
     let drop_resp = ui.interact(
         drop_rect,
         ui.id().with(("palette_dropper", which as u8)),
@@ -352,7 +372,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         },
     );
     if can_sample {
-        let drop_resp = drop_resp.on_hover_text(tr("palette.eyedropper_tip"));
+        let drop_resp = drop_resp.rich_tip(tr("palette.eyedropper_tip"));
         if drop_resp.clicked() {
             app.pending_palette_sample = !app.pending_palette_sample;
             if app.pending_palette_sample {
@@ -377,7 +397,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
             ui.id().with(("palette_expand", which as u8)),
             Sense::click(),
         )
-        .on_hover_text(tr("palette.expand_tip"));
+        .rich_tip(tr("palette.expand_tip"));
     double_chevron(
         &painter,
         expand.center(),
@@ -500,7 +520,15 @@ fn swatch(
     color_index: Option<usize>,
 ) {
     let id = ui.id().with(("swatch", which as u8, index));
-    let resp = ui.interact(cell, id, Sense::click_and_drag());
+    // Nothing to colour on the Welcome Screen or with no drawing open:
+    // the swatches keep their colours and their tooltips but take no
+    // clicks or drags (#482, #1082).
+    let sense = if app.drawing_shown() {
+        Sense::click_and_drag()
+    } else {
+        Sense::hover()
+    };
+    let resp = ui.interact(cell, id, sense);
     match entry {
         None => {
             painter.rect_filled(cell, 0.0, Color32::WHITE);
@@ -540,11 +568,10 @@ fn swatch(
         );
         px.paint(painter);
     }
-    let tip = match entry {
-        None => tr("palette.no_color_tip"),
-        Some((name, c)) => swatch_tip(name, *c),
+    let resp = match entry {
+        None => resp.rich_tip(tr("palette.no_color_tip")),
+        Some((name, c)) => resp.on_hover_ui(|ui| swatch_tip_ui(ui, name, *c)),
     };
-    let resp = resp.on_hover_text(tip);
 
     // Dragging the colour: inside an object it fills it, on its outline
     // it colours the outline, on the document palette it joins it.
@@ -713,7 +740,14 @@ fn chevron(
     vertical: bool,
 ) -> bool {
     let id = ui.id().with(("palette_chevron", which as u8, dir));
-    let resp = ui.interact(r, id, Sense::click());
+    let key = if dir < 0 {
+        "palette.scroll_back"
+    } else {
+        "palette.scroll_forward"
+    };
+    let resp = ui
+        .interact(r, id, Sense::click())
+        .rich_tip(crate::ui::tips::keyed(key));
     let color = if enabled {
         crate::theme::Tokens::text_dim()
     } else {
@@ -895,7 +929,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                     painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                     let resp = ui
                         .interact(cell, id.with(i), Sense::click())
-                        .on_hover_text(color_values(*c));
+                        .rich_tip(color_values(*c));
                     if resp.hovered() {
                         painter.rect_stroke(
                             cell.expand(1.0),
@@ -931,6 +965,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
         let strip = ctx
             .data(|d| d.get_temp::<Pos2>(egui::Id::new(("palette_strip", which as u8))))
             .unwrap_or(pos2(screen.left() + LEAD, screen.bottom() - 3.0 * ROW_H));
+        // Clear of every row of the strip.
+        let thick = thickness(app, which);
         let vertical = ctx
             .data(|d| d.get_temp::<bool>(egui::Id::new(("palette_strip_vertical", which as u8))))
             .unwrap_or(false);
@@ -942,7 +978,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             let x = if strip.x > screen.center().x {
                 strip.x - size.x - 24.0
             } else {
-                strip.x + ROW_H + 8.0
+                strip.x + thick + 8.0
             };
             let y = strip
                 .y
@@ -956,7 +992,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             // Above the row, or below it when it is docked at the top.
             let above = strip.y - size.y - 16.0;
             let y = if above < screen.top() {
-                strip.y + ROW_H + 8.0
+                strip.y + thick + 8.0
             } else {
                 above
             };
@@ -980,7 +1016,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                         painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                         let resp = ui
                             .interact(cell, id.with(i), Sense::click())
-                            .on_hover_text(swatch_tip(name, *c));
+                            .rich_tip(swatch_tip(name, *c));
                         if resp.hovered() {
                             painter.rect_stroke(
                                 cell.expand(1.0),
@@ -1134,6 +1170,11 @@ mod tests {
             "Light Green\nC: 60 M: 0 Y: 40 K: 20"
         );
         assert_eq!(swatch_tip("", Color::rgb8(255, 0, 10)), "R: 255 G: 0 B: 10");
+        assert_eq!(
+            color_lines(Color::cmyk_pct(0.0, 60.0, 100.0, 0.0)),
+            "C: 0\nM: 60\nY: 100\nK: 0"
+        );
+        assert_eq!(color_lines(Color::rgb8(255, 0, 10)), "R: 255\nG: 0\nB: 10");
     }
 
     #[test]
@@ -1171,6 +1212,27 @@ mod tests {
         let a = Color::cmyk_pct(0.0, 0.0, 0.0, 0.0);
         let b = Color::cmyk_pct(100.0, 0.0, 0.0, 50.0);
         assert_eq!(mix(a, b, 0.1), Color::cmyk_pct(10.0, 0.0, 0.0, 5.0));
+    }
+
+    /// The eyedropper of the document palette picking a colour it has
+    /// already frames that swatch, as the last colour used; a new colour
+    /// joins and takes the frame, and applying a palette colour moves it
+    /// there (#1125).
+    #[test]
+    fn a_colour_picked_again_frames_its_swatch() {
+        let mut app = App::headless();
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        app.add_to_document_palette(red);
+        app.add_to_document_palette(blue);
+        let n = app.doc().palette.len();
+        let at = |app: &App, c: Color| app.doc().palette.iter().position(|x| *x == c);
+        assert_eq!(app.doc_palette_current, at(&app, blue));
+        app.add_to_document_palette(red);
+        assert_eq!(app.doc().palette.len(), n, "no second red swatch");
+        assert_eq!(app.doc_palette_current, at(&app, red));
+        app.remember_color(blue);
+        assert_eq!(app.doc_palette_current, at(&app, blue));
     }
 
     #[test]
@@ -1271,6 +1333,64 @@ mod tests {
         app.show_welcome = false;
         click(&mut app, x);
         assert_ne!(fill(&app), before);
+        // The swatches keep their full colours on the Welcome Screen
+        // (#1082): the row paints the same colours as with the drawing.
+        let fills = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) => Some(r.fill),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let shown = fills(&mut app);
+        app.show_welcome = true;
+        let welcome = fills(&mut app);
+        assert!(shown.len() > 10, "{shown:?}");
+        assert_eq!(welcome, shown);
+    }
+
+    /// Every colour at once, for a palette of three rows along the top:
+    /// the window opens below all three rows, not over them (#610).
+    #[test]
+    fn every_colour_opens_clear_of_all_the_rows() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.palette.rows = 3;
+        let run = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                palette_row(app, ui);
+                popups(app, ui.ctx());
+            });
+            out.textures_delta.clear();
+        };
+        run(&mut app);
+        app.palette_expanded = Some(Row::Main);
+        run(&mut app);
+        run(&mut app);
+        let area = ctx
+            .memory(|m| m.area_rect(egui::Id::new("palette_expanded")))
+            .expect("every colour shown");
+        assert!(
+            area.top() >= thickness(&app, Row::Main),
+            "{area:?} over the rows"
+        );
     }
 
     /// With two rows the default palette is twice as thick and fills line

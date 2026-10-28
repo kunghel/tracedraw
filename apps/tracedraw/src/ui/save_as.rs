@@ -13,6 +13,7 @@ use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::dialogs::{enter_pressed, window};
 use crate::ui::options::{combo, grid, row_label};
+use crate::ui::tips::RichTip;
 use egui::{Context, RichText, Ui};
 use std::path::{Path, PathBuf};
 use tracedraw_core::document::{TDRAW_FORMAT_VERSION, TDRAW_RELEASES};
@@ -81,14 +82,20 @@ pub struct SaveAsState {
 }
 
 impl SaveAsState {
-    /// Start in the drawing's folder (else the last one used, else the
-    /// documents folder) with its name, its type (`.cdr` for a drawing
-    /// that came from or went to one, or a new one when the options say
-    /// so), the version the options set and its properties.
+    /// Start in the drawing's folder (that of its file, else of the file
+    /// it was read from, else the last one used, else the documents
+    /// folder) with its name, its type (`.cdr` for a drawing that came
+    /// from or went to one, or a new one when the options say so), the
+    /// version the options set and its properties.
     pub fn new(app: &App) -> Self {
         let doc = app.doc();
         let file = app.file.as_ref();
+        // A drawing read from a `.cdr` (or any other format) has no file of
+        // its own until it is saved: its folder is still the one it came
+        // from, not the last one any dialog used (#900).
+        let from = app.opened_from.as_deref().map(files::plain_path);
         let dir = file
+            .or(from.as_ref())
             .and_then(|f| f.parent())
             .map(Path::to_path_buf)
             .filter(|d| files::is_dir(d))
@@ -102,6 +109,7 @@ impl SaveAsState {
             .or_else(files::home_dir)
             .unwrap_or_default();
         let stem = file
+            .or(from.as_ref())
             .and_then(|f| f.file_stem())
             .map(|s| s.to_string_lossy().to_string())
             .filter(|s| !s.trim().is_empty())
@@ -474,6 +482,20 @@ impl App {
             st.note = Some(tr("dialog.need_file_name"));
             return false;
         }
+        // A folder typed in the path bar counts without Enter: Save
+        // writes where the bar says (#900).
+        if !files::WEB {
+            let typed = PathBuf::from(st.dir_text.trim());
+            if st.dir_text.trim() != st.dir.display().to_string() && !st.dir_text.trim().is_empty()
+            {
+                if files::is_dir(&typed) {
+                    st.open_dir(typed);
+                } else {
+                    st.note = Some(tr("dialog.no_such_folder"));
+                    return false;
+                }
+            }
+        }
         if !files::WEB && !files::is_dir(&st.dir) {
             st.note = Some(tr("dialog.no_such_folder"));
             return false;
@@ -606,7 +628,7 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
                 up.is_some(),
                 egui::Button::new("  ").min_size(egui::vec2(24.0, 20.0)),
             )
-            .on_hover_text(tr("dialog.up_folder"));
+            .rich_tip(tr("dialog.up_folder"));
         // An arrow pointing up.
         let c = resp.rect.center();
         let colour = if up.is_some() {
@@ -660,7 +682,7 @@ fn places(ui: &mut Ui, st: &mut SaveAsState) {
             let name = place_name(place, &path);
             if ui
                 .selectable_label(st.dir == path, name)
-                .on_hover_text(path.display().to_string())
+                .rich_tip(path.display().to_string())
                 .clicked()
             {
                 st.open_dir(path);
@@ -1006,7 +1028,7 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                     let mut on = st.embed_fonts && can;
                     if ui
                         .checkbox(&mut on, text)
-                        .on_disabled_hover_text(tr("dialog.embed_fonts_later"))
+                        .rich_disabled_tip(tr("dialog.embed_fonts_later"))
                         .changed()
                     {
                         st.embed_fonts = on;
@@ -1032,7 +1054,7 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                 let mut on = st.tdraw_embed_fonts && can;
                 if ui
                     .checkbox(&mut on, text)
-                    .on_disabled_hover_text(tr("dialog.embed_fonts_none"))
+                    .rich_disabled_tip(tr("dialog.embed_fonts_none"))
                     .changed()
                 {
                     st.tdraw_embed_fonts = on;
@@ -1233,6 +1255,7 @@ mod tests {
         assert!(!app.finish_save_as(&mut st));
         st.name = "ok".into();
         st.dir = dir.join("missing");
+        st.dir_text = st.dir.display().to_string();
         assert!(!app.finish_save_as(&mut st));
         assert_eq!(st.note, Some(tr("dialog.no_such_folder")));
         // Every way of typing the extension ends with the type's.
@@ -1385,6 +1408,59 @@ mod tests {
         let st = state(&mut app);
         st.set_cdr(true);
         assert_eq!(st.version, 15);
+    }
+
+    /// Save of a drawing read from a `.cdr` file opens in that file's
+    /// folder with its name, not in the folder another dialog used last;
+    /// a folder typed in the path bar takes the file without Enter (#900).
+    #[test]
+    fn save_of_an_opened_cdr_starts_in_its_own_folder() {
+        let dir = temp_dir("save-as-own-folder");
+        let other = dir.join("downloads");
+        let work = dir.join("work");
+        std::fs::create_dir_all(&other).expect("folder");
+        std::fs::create_dir_all(&work).expect("folder");
+        let doc = drawing().engine.document().clone();
+        let path = work.join("card.cdr");
+        std::fs::write(
+            &path,
+            tracedraw_cdr::write::document_to_cdr_version(&doc, 24),
+        )
+        .expect("written");
+        let mut app = App::headless();
+        app.open_path(path.clone());
+        // Another dialog went somewhere else since.
+        app.settings.last_dir = Some(other.clone());
+        app.engine.mark_unsaved();
+        app.save(false);
+        let st = state(&mut app);
+        assert!(
+            files::same_path(&files::canonical(&st.dir), &files::canonical(&work)),
+            "{:?}",
+            st.dir
+        );
+        assert_eq!(st.name, "card.cdr");
+        // Typed in the bar, not confirmed with Enter: Save writes there.
+        let mut st = st.clone();
+        st.dir_text = other.display().to_string();
+        st.name = "copy".into();
+        assert!(app.finish_save_as(&mut st));
+        assert_eq!(version_of(&other.join("copy.cdr")), Some(24));
+        assert!(!work.join("copy.cdr").exists());
+        // A folder that does not exist says so.
+        st.dir_text = dir.join("missing").display().to_string();
+        assert!(!app.finish_save_as(&mut st));
+        assert_eq!(st.note, Some(tr("dialog.no_such_folder")));
+        assert_eq!(
+            files::plain_path(Path::new(r"\\?\C:\a\b")),
+            PathBuf::from(r"C:\a\b")
+        );
+        assert_eq!(
+            files::plain_path(Path::new(r"\\?\UNC\srv\share")),
+            PathBuf::from(r"\\srv\share")
+        );
+        assert_eq!(files::plain_path(Path::new("/a/b")), PathBuf::from("/a/b"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! `Command::SetShapeKind`, collapsed into one undo step per drag.
 
 use crate::app::{App, Drag};
+use crate::i18n::tr;
 use egui::{Modifiers, PointerButton, Response};
 use tracedraw_core::{
     document::ShapeKind,
@@ -154,6 +155,18 @@ impl App {
             Some(ShapeKind::ClipFrame { frame, .. }) if frame.id != id => frame.id,
             _ => id,
         }
+    }
+
+    /// With more than one object selected, the curve the Shape tool marks
+    /// as the one picked last: its outline shows in the node colour (blue)
+    /// and the outlines of the other selected objects in the second node
+    /// colour (red), so the objects can be told apart (#1007). `None`
+    /// with one object or none.
+    pub(crate) fn shape_tool_key_curve(&self) -> Option<ShapeId> {
+        if self.selection.len() < 2 {
+            return None;
+        }
+        self.selection.last().map(|id| self.node_target(*id))
     }
 
     /// The selected objects as the Shape tool sees them: a clip frame
@@ -700,7 +713,11 @@ impl App {
                         if det.is_finite() && det.abs() > 1e-12 {
                             let inv = tf.inverse();
                             let d = (inv * p) - (inv * from);
-                            let bent = nodes::bend_segment(&path, index, t, d);
+                            let chosen = match self.doc().shape(shape) {
+                                Ok((_, s)) => s.node_types.clone(),
+                                Err(_) => Default::default(),
+                            };
+                            let bent = nodes::bend_segment_with(&path, index, t, d, &chosen);
                             let cmd = Command::SetShapeKind {
                                 shape,
                                 kind: ShapeKind::Path { path: bent, closed },
@@ -1334,68 +1351,58 @@ impl App {
 }
 
 impl App {
-    /// Join two selected end nodes (of the same or different curves).
+    /// Join two selected end nodes of one curve. Nodes of two objects
+    /// are not joined: the objects must be combined first (#1007).
     pub fn join_selected_nodes(&mut self) {
         if self.node_selection.len() != 2 {
             return;
         }
         let (a, b) = (self.node_selection[0], self.node_selection[1]);
+        if a.0 != b.0 {
+            self.status = tr("status.join_other_object");
+            return;
+        }
         if self.join_nodes(a, b) {
             self.node_selection.clear();
         }
     }
 
-    /// Join end node `a` with end node `b` into one node halfway between
-    /// them, with no segment added: the ends of one open subpath close it,
-    /// ends of two subpaths (of one curve, or of two curves, which become
-    /// one curve keeping `a`'s place and look) make one subpath. One undo
+    /// Join end node `a` with end node `b` of the same curve into one node
+    /// halfway between them, with no segment added: the ends of one open
+    /// subpath close it, ends of two subpaths make one subpath. One undo
     /// step (Join Nodes). False, and nothing changes, when either is not an
-    /// end of an open subpath.
+    /// end of an open subpath or the two are on different objects (those
+    /// are combined first, #1007).
     pub(crate) fn join_nodes(&mut self, a: (ShapeId, usize), b: (ShapeId, usize)) -> bool {
         let (sa, ia) = a;
         let (sb, ib) = b;
-        let Some((pa, _, ta)) = self.path_of(sa) else {
+        if sa != sb {
+            return false;
+        }
+        let Some((path, _, _)) = self.path_of(sa) else {
             return false;
         };
-        let (combined, jb) = if sa == sb {
-            (pa, ib)
-        } else {
-            let Some((pb, _, tb)) = self.path_of(sb) else {
-                return false;
-            };
-            // The second curve drawn into the first one's space, after it.
-            let mut both = nodes::normalize(&pa);
-            let offset = both.elements().len();
-            for el in (ta.inverse() * tb * nodes::normalize(&pb)).elements() {
-                both.push(*el);
-            }
-            (both, ib + offset)
-        };
-        let Some(joined) = nodes::join_ends(&combined, ia, jb) else {
+        let Some(joined) = nodes::join_ends(&path, ia, ib) else {
             return false;
         };
         let closed = every_subpath_closed(&joined);
-        let mut cmds = vec![Command::SetShapeKind {
+        let cmd = Command::SetShapeKind {
             shape: sa,
             kind: ShapeKind::Path {
                 path: joined,
                 closed,
             },
-        }];
-        if sa != sb {
-            cmds.push(Command::DeleteShapes { shapes: vec![sb] });
-            self.selection.retain(|id| *id != sb);
-        }
-        if let Err(e) = self.engine.run_batch("Join Nodes", &cmds) {
+        };
+        if let Err(e) = self.engine.run_batch("Join Nodes", &[cmd]) {
             self.status = e.to_string();
             return false;
         }
         true
     }
 
-    /// After dragging one end node: dropped on another end node of a
-    /// selected curve (within the pick distance), the two are joined, the
-    /// curve dropped onto keeping its place and look.
+    /// After dragging one end node: dropped on another end node of the
+    /// same curve (within the pick distance), the two are joined; an end
+    /// node of another object only snaps there (#1007).
     pub(crate) fn join_dropped_end_node(&mut self) {
         let [(id, index)] = self.node_selection[..] else {
             return;
@@ -1411,26 +1418,16 @@ impl App {
             return;
         };
         let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
-        let mut near: Vec<((ShapeId, usize), f64)> = Vec::new();
-        for other in self.node_targets() {
-            let Some((op, _, ot)) = self.path_of(other) else {
-                continue;
-            };
-            for n in nodes::nodes(&op) {
-                if (other, n.index) == (id, index) {
-                    continue;
-                }
-                let d = (ot * n.pos - at).hypot();
-                if d <= tol {
-                    near.push(((other, n.index), d));
-                }
-            }
-        }
+        let mut near: Vec<(usize, f64)> = nodes::nodes(&path)
+            .into_iter()
+            .filter(|n| n.index != index)
+            .map(|n| (n.index, (t * n.pos - at).hypot()))
+            .filter(|(_, d)| *d <= tol)
+            .collect();
         near.sort_by(|a, b| a.1.total_cmp(&b.1));
-        // The nearest end node of an open subpath; the curve dropped onto
-        // keeps its place and look.
+        // The nearest end node of an open subpath.
         for (target, _) in near {
-            if self.join_nodes(target, (id, index)) {
+            if self.join_nodes((id, target), (id, index)) {
                 self.node_selection.clear();
                 return;
             }
@@ -1681,6 +1678,36 @@ mod constrain_tests {
             &[],
         );
         assert!((d.x - 5.0).abs() < 1e-9 && d.y == 0.0, "{d:?}");
+    }
+
+    #[test]
+    fn a_grabbed_node_snaps_to_the_document_grid() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        app.snap.grid = true;
+        app.snap.guides = false;
+        app.snap.objects = false;
+        app.snap.page = false;
+        assert_eq!(app.doc().metadata.grid.spacing_x, 10.0);
+        let origin = app.doc().metadata.rulers.origin_x;
+        let grab = Point::new(origin + 31.0, 20.0);
+        let d = app.snapped_node_move(grab, Vec2::new(7.0, 0.0), None, &[], &[]);
+        assert!((grab.x + d.x - (origin + 40.0)).abs() < 1e-9, "{d:?}");
+    }
+
+    #[test]
+    fn a_grabbed_node_snaps_to_the_baseline_grid_alone() {
+        // Only the baseline grid is on: snapping still works (#3).
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        app.snap.guides = false;
+        app.snap.objects = false;
+        app.snap.page = false;
+        app.snap.baseline_grid = true;
+        let y = app.baseline_ys()[2];
+        let grab = Point::new(30.0, y + 6.0);
+        let d = app.snapped_node_move(grab, Vec2::new(0.0, -4.0), None, &[], &[]);
+        assert!((grab.y + d.y - y).abs() < 1e-9, "{d:?}");
     }
 
     #[test]

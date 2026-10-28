@@ -1436,6 +1436,118 @@ fn two_open_curves(ctx: &egui::Context, app: &mut App, id: ShapeId) -> (ShapeId,
     (a, b)
 }
 
+/// The colours of the outlines one frame draws through `point` (screen),
+/// with `events` sent in that frame.
+fn outline_colors_through(
+    ctx: &egui::Context,
+    app: &mut App,
+    events: Vec<Event>,
+    point: Pos2,
+) -> Vec<egui::Color32> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+    out.textures_delta.clear();
+    let mut found = Vec::new();
+    fn walk(s: &egui::Shape, point: Pos2, found: &mut Vec<egui::Color32>) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, point, found)),
+            egui::Shape::Path(p) if !p.closed && p.points.len() >= 2 => {
+                if p.points.iter().any(|q| q.distance(point) < 0.5) {
+                    if let egui::epaint::ColorMode::Solid(c) = p.stroke.color {
+                        found.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.shapes
+        .iter()
+        .for_each(|c| walk(&c.shape, point, &mut found));
+    found
+}
+
+/// Shape tool with several objects selected (#1007): the object picked
+/// last has its outline in the node colour (blue), the others in the
+/// second node colour (red), also while a node of the red one is being
+/// dragged; that node moves and the other object stays as it was.
+#[test]
+fn shape_tool_marks_the_last_picked_object_blue_and_the_others_red() {
+    let (ctx, mut app, id) = setup();
+    let (a, b) = two_open_curves(&ctx, &mut app, id);
+    let blue = {
+        let [r, g, b] = app.settings.nodes.main_rgb;
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let red = {
+        let [r, g, b] = app.settings.nodes.secondary_rgb;
+        egui::Color32::from_rgb(r, g, b)
+    };
+    assert_ne!(blue, red);
+    let at = |app: &App, x: f64, y: f64| app.view.to_screen(Point::new(x, y));
+    let start_a = at(&app, 10.0, 10.0);
+    let start_b = at(&app, 44.0, 10.0);
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), start_a);
+    assert_eq!(colors, vec![red], "a, picked first");
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), start_b);
+    assert_eq!(colors, vec![blue], "b, picked last");
+    // Drag the start node of a: while dragging it stays red and b blue.
+    let b_before = curve_path(&app, b);
+    let to = start_a + egui::vec2(0.0, 40.0);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(start_a)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            start_a,
+            true,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(start_a + egui::vec2(0.0, 20.0))],
+        Modifiers::NONE,
+    );
+    let colors = outline_colors_through(&ctx, &mut app, vec![Event::PointerMoved(to)], start_b);
+    assert_eq!(colors, vec![blue], "b while a node of a is dragged");
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), to);
+    assert_eq!(colors, vec![red], "a while its node is dragged");
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(to, false, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let moved = tracedraw_core::nodes::nodes(&curve_path(&app, a))[0].pos;
+    assert!(
+        (moved.y - 10.0).abs() > 1.0,
+        "the node of a moved: {moved:?}"
+    );
+    assert_eq!(curve_path(&app, b), b_before);
+    // One object alone: its outline in the node colour.
+    app.select(vec![a]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let p = app.view.to_screen(moved);
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), p);
+    assert_eq!(colors, vec![blue], "a alone");
+}
+
 fn curve_path(app: &App, id: ShapeId) -> tracedraw_core::BezPath {
     match app.doc().find_shape(id).map(|s| s.kind.clone()) {
         Some(ShapeKind::Path { path, .. }) => path,
@@ -1443,33 +1555,65 @@ fn curve_path(app: &App, id: ShapeId) -> tracedraw_core::BezPath {
     }
 }
 
+/// Join does not join end nodes of two objects (#1007): nothing changes
+/// and the status says to combine them; once combined into one curve
+/// the same two ends join into one node, with no line between them. An
+/// end node dropped on another object's end node is not joined either.
 #[test]
-fn join_fuses_two_end_nodes_of_two_curves_without_a_line() {
+fn join_takes_end_nodes_of_one_object_only() {
     use tracedraw_core::geometry::PathEl;
     let (ctx, mut app, id) = setup();
     let (a, b) = two_open_curves(&ctx, &mut app, id);
+    let before = (curve_path(&app, a), curve_path(&app, b));
     // The end of a (element 1) and the start of b (element 0).
     app.node_selection = vec![(a, 1), (b, 0)];
     app.join_selected_nodes();
-    // One curve is left, one subpath through the joined node, no line.
-    assert!(app.doc().find_shape(b).is_none());
-    let p = curve_path(&app, a);
+    assert_eq!((curve_path(&app, a), curve_path(&app, b)), before);
+    assert_eq!(app.status, crate::i18n::tr("status.join_other_object"));
+    // Dropping a's end on the start of a curve there does not join them.
+    let mut touching = tracedraw_core::BezPath::new();
+    touching.move_to((30.0, 10.0));
+    touching.line_to((40.0, 0.0));
+    let t = app
+        .new_shape(ShapeKind::Path {
+            path: touching.clone(),
+            closed: false,
+        })
+        .expect("curve");
+    app.select(vec![a, t]);
+    app.node_selection = vec![(a, 1)];
+    app.join_dropped_end_node();
+    assert_eq!(curve_path(&app, a), before.0);
+    assert_eq!(curve_path(&app, t), touching);
+    app.select(vec![t]);
+    app.delete_selection();
+    // Combined, the two ends join.
+    app.select(vec![a, b]);
+    app.combine();
+    let [c] = app.selection[..] else {
+        panic!("not one curve: {:?}", app.selection);
+    };
+    let p = curve_path(&app, c);
+    let end_of_a = tracedraw_core::nodes::nodes(&p)
+        .into_iter()
+        .find(|n| n.pos == Point::new(30.0, 10.0))
+        .expect("end of a");
+    let start_of_b = tracedraw_core::nodes::nodes(&p)
+        .into_iter()
+        .find(|n| n.pos == Point::new(44.0, 10.0))
+        .expect("start of b");
+    app.node_selection = vec![(c, end_of_a.index), (c, start_of_b.index)];
+    app.join_selected_nodes();
+    let p = curve_path(&app, c);
     assert_eq!(
-        p.elements(),
-        &[
-            PathEl::MoveTo(Point::new(10.0, 10.0)),
-            PathEl::CurveTo(
-                Point::new(15.0, 20.0),
-                Point::new(32.0, 20.0),
-                Point::new(37.0, 10.0)
-            ),
-            PathEl::LineTo(Point::new(60.0, 30.0)),
-        ]
+        p.elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count(),
+        1,
+        "{p:?}"
     );
-    // One undo step brings both curves back.
-    app.undo();
-    assert!(app.doc().find_shape(b).is_some());
-    assert_eq!(tracedraw_core::nodes::nodes(&curve_path(&app, a)).len(), 2);
+    assert!(p.elements().iter().all(|e| !matches!(e, PathEl::ClosePath)));
 }
 
 #[test]
@@ -1597,14 +1741,25 @@ fn a_dragged_node_does_not_snap_to_itself_or_its_moving_segments() {
 fn dropping_an_end_node_on_another_end_node_joins_them() {
     let (ctx, mut app, id) = setup();
     let (a, b) = two_open_curves(&ctx, &mut app, id);
-    // Drag the start of b onto the end of a.
+    // Two objects: dragging the start of b onto the end of a leaves them
+    // two objects (#1007).
     let from = app.view.to_screen(Point::new(44.0, 10.0));
     let to = app.view.to_screen(Point::new(30.0, 10.0));
     click_at(&ctx, &mut app, from, Modifiers::NONE);
     drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
-    assert!(app.doc().find_shape(b).is_none(), "b was not joined");
-    let p = curve_path(&app, a);
-    assert_eq!(tracedraw_core::nodes::nodes(&p).len(), 3);
+    assert!(app.doc().find_shape(a).is_some() && app.doc().find_shape(b).is_some());
+    app.undo();
+    // Combined into one curve, the same drag joins the two ends.
+    app.select(vec![a, b]);
+    app.combine();
+    let [c] = app.selection[..] else {
+        panic!("not one curve: {:?}", app.selection);
+    };
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    click_at(&ctx, &mut app, from, Modifiers::NONE);
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let p = curve_path(&app, c);
+    assert_eq!(tracedraw_core::nodes::nodes(&p).len(), 3, "{p:?}");
     assert_eq!(
         p.elements()
             .iter()
@@ -3939,16 +4094,18 @@ fn the_pen_deletes_a_node_of_the_selected_curve_and_the_toggle_turns_it_off() {
     assert!(node_count(&app, id) >= 3);
 }
 
+/// Pen with automatic adding and deleting on: a click on a segment or a
+/// middle node of the curve being drawn places the next node there, it
+/// neither adds on the segment nor deletes the node (#1143).
 #[test]
-fn the_pen_adds_and_deletes_nodes_on_the_curve_being_drawn() {
-    use crate::ui::cursors::CurveMark;
+fn the_pen_places_nodes_on_the_curve_being_drawn() {
     let (ctx, mut app, _) = setup();
     app.select(Vec::new());
     app.set_tool(Tool::Pen);
+    app.settings.curves.pen_auto_add_delete = true;
     for x in [100.0, 140.0, 180.0] {
         click_page(&ctx, &mut app, Point::new(x, 150.0));
     }
-    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
     let on_segment = app.view.to_screen(Point::new(120.0, 150.0));
     let on_node = app.view.to_screen(Point::new(140.0, 150.0));
     frame(
@@ -3959,30 +4116,20 @@ fn the_pen_adds_and_deletes_nodes_on_the_curve_being_drawn() {
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_segment)),
-        ToolCursor::PenNib(Some(CurveMark::AddNode))
+        ToolCursor::PenNib(None)
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_node)),
-        ToolCursor::PenNib(Some(CurveMark::DeleteNode))
+        ToolCursor::PenNib(None)
     );
     click_page(&ctx, &mut app, Point::new(120.0, 150.0));
-    let xs: Vec<f64> = app
-        .curve
-        .as_ref()
-        .map(|c| c.nodes.iter().map(|n| n.0.x.round()).collect())
-        .unwrap_or_default();
-    assert_eq!(xs, vec![100.0, 120.0, 140.0, 180.0]);
     click_page(&ctx, &mut app, Point::new(140.0, 150.0));
     let xs: Vec<f64> = app
         .curve
         .as_ref()
         .map(|c| c.nodes.iter().map(|n| n.0.x.round()).collect())
         .unwrap_or_default();
-    assert_eq!(xs, vec![100.0, 120.0, 180.0]);
-    // Off: a click there places a node.
-    app.settings.curves.pen_auto_add_delete = false;
-    click_page(&ctx, &mut app, Point::new(110.0, 150.0));
-    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(4));
+    assert_eq!(xs, vec![100.0, 140.0, 180.0, 120.0, 140.0]);
 }
 
 #[test]
@@ -7888,8 +8035,10 @@ fn overlays_are_drawn_on_a_white_line() {
         })
         .count();
     assert!(heads >= 2, "{heads}");
+    // The handle line: white under blue dashes of the same width, so
+    // the dashes go blue and white in turn (#670).
     assert!(shapes.iter().any(|s| matches!(s, egui::Shape::LineSegment { stroke, .. }
-        if stroke.color == egui::Color32::WHITE && (stroke.width - crate::canvas::HALO_WIDTH).abs() < 1e-3)));
+        if stroke.color == egui::Color32::WHITE && (stroke.width - crate::canvas::HALO_INNER).abs() < 1e-3)));
 }
 
 /// An idle window asks for no frame (#616): once the start has settled,
@@ -10888,4 +11037,298 @@ fn f2_zooms_once_and_gives_the_tool_back() {
     let at = app.view.to_screen(Point::new(35.0, 25.0));
     click_at(&ctx, &mut app, at, Modifiers::SHIFT);
     assert_eq!(app.tool, Tool::Zoom);
+}
+
+/// Corner widgets on a stretched curve (#1000): a corner rounded after
+/// the stretch is round on the page; one rounded before keeps its
+/// stretched arc and its widget, goes sharp when dragged out, and rounds
+/// on the page from then on.
+#[test]
+fn corner_widgets_round_stretched_curves_on_the_page() {
+    use tracedraw_core::corner_cut::fillets;
+    use tracedraw_core::geometry::{BezPath, Shape as _};
+    use tracedraw_core::Command;
+    let (ctx, mut app, rect) = setup();
+    app.select(vec![rect]);
+    app.delete_selection();
+    app.settings.nodes.corner_widgets = true;
+    let square = || {
+        let mut p = BezPath::new();
+        p.move_to((20.0, 20.0));
+        p.line_to((60.0, 20.0));
+        p.line_to((60.0, 60.0));
+        p.line_to((20.0, 60.0));
+        p.close_path();
+        p
+    };
+    // Twice as wide, about its left side: 80 by 40 on the page.
+    let stretch = Affine::translate((20.0, 0.0))
+        * Affine::scale_non_uniform(2.0, 1.0)
+        * Affine::translate((-20.0, 0.0));
+    let page_of = |app: &App, id: ShapeId| app.doc().find_shape(id).expect("curve").page_path();
+    let local_of = |app: &App, id: ShapeId| match &app.doc().find_shape(id).expect("curve").kind {
+        ShapeKind::Path { path, .. } => path.clone(),
+        _ => panic!("a curve"),
+    };
+    let drag_widget = |ctx: &egui::Context, app: &mut App, toward: Point, mm: f32| {
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+        let w = app.corner_widgets()[0];
+        let dir = (app.view.to_screen(toward) - w.at).normalized();
+        let zoom = app.view.zoom;
+        drag(
+            ctx,
+            app,
+            w.at,
+            w.at + dir * (mm * zoom),
+            Modifiers::NONE,
+            Vec::new(),
+        );
+    };
+    let centre = Point::new(60.0, 40.0);
+
+    // Stretched, then rounded: round on the page.
+    let id = app
+        .new_shape(ShapeKind::Path {
+            path: square(),
+            closed: true,
+        })
+        .expect("square");
+    app.run(Command::TransformShapes {
+        shapes: vec![id],
+        transform: stretch,
+    });
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(app.corner_widgets().len(), 4);
+    drag_widget(&ctx, &mut app, centre, 5.0);
+    let found = fillets(&page_of(&app, id));
+    assert_eq!(found.len(), 4, "round on the page: {found:?}");
+    assert!(found
+        .iter()
+        .all(|f| (f.radius - found[0].radius).abs() < 1e-6));
+    let b = page_of(&app, id).bounding_box();
+    assert!((b.width() - 80.0).abs() < 1e-6 && (b.height() - 40.0).abs() < 1e-6);
+    // Selected again, its round corners keep their widgets.
+    app.select(Vec::new());
+    app.select(vec![id]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(app.corner_widgets().len(), 4);
+
+    // Rounded, then stretched: the stretched arcs keep their widgets.
+    app.set_tool(Tool::Pick);
+    let id = app
+        .new_shape(ShapeKind::Path {
+            path: square(),
+            closed: true,
+        })
+        .expect("square");
+    app.select(vec![id]);
+    app.set_tool(Tool::Shape);
+    drag_widget(&ctx, &mut app, Point::new(40.0, 40.0), 7.0);
+    assert_eq!(fillets(&local_of(&app, id)).len(), 4);
+    app.run(Command::TransformShapes {
+        shapes: vec![id],
+        transform: stretch,
+    });
+    app.select(Vec::new());
+    app.select(vec![id]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let widgets = app.corner_widgets();
+    assert_eq!(widgets.len(), 4, "{widgets:?}");
+    assert!(widgets.iter().all(|w| w.stretched));
+    assert!(fillets(&page_of(&app, id)).is_empty(), "stretched arcs");
+    // Dragged out past the corner: every corner sharp again.
+    drag_widget(&ctx, &mut app, centre, -25.0);
+    assert!(fillets(&local_of(&app, id)).is_empty());
+    assert!((page_of(&app, id).area().abs() - 3200.0).abs() < 1e-6);
+    // Rounded again: round on the page.
+    drag_widget(&ctx, &mut app, centre, 5.0);
+    let found = fillets(&page_of(&app, id));
+    assert_eq!(found.len(), 4, "{found:?}");
+}
+
+/// Pen with automatic adding and deleting on: once a curve is being
+/// drawn (new or going on from an end), a click on another curve's
+/// segment or node places the next node there and leaves that curve as
+/// it is (#1143).
+#[test]
+fn the_pen_never_edits_another_curve_while_drawing() {
+    let (ctx, mut app, _) = setup();
+    let other = line_curve(&ctx, &mut app);
+    app.settings.curves.pen_auto_add_delete = true;
+    app.set_tool(Tool::Pen);
+    // A new curve.
+    click_page(&ctx, &mut app, Point::new(100.0, 160.0));
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(1));
+    click_page(&ctx, &mut app, Point::new(125.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "nothing added to the other curve"
+    );
+    click_page(&ctx, &mut app, Point::new(150.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "nothing deleted from the other curve"
+    );
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
+    // Going on from the end of a curve: the same.
+    app.finish_curve();
+    let drawn = app.selection[0];
+    click_page(&ctx, &mut app, Point::new(150.0, 100.0));
+    assert_eq!(
+        app.curve.as_ref().map(|c| c.nodes.len()),
+        Some(1),
+        "goes on"
+    );
+    assert_eq!(app.selection, vec![drawn]);
+    click_page(&ctx, &mut app, Point::new(175.0, 100.0));
+    click_page(&ctx, &mut app, Point::new(100.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "the other curve is left as it is"
+    );
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
+}
+
+/// Pen going on from the end of a curve: the start keeps the mirrored
+/// handle, and a second click on that node makes it a cusp, so the new
+/// segment leaves it straight (#1138).
+#[test]
+fn the_pen_makes_the_start_of_a_continued_curve_a_cusp() {
+    use crate::ui::cursors::CurveMark;
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    app.set_tool(Tool::Pen);
+    let a = Point::new(100.0, 150.0);
+    let b = Point::new(140.0, 150.0);
+    pull(&ctx, &mut app, a, Point::new(110.0, 140.0));
+    pull(&ctx, &mut app, b, Point::new(150.0, 160.0));
+    app.finish_curve();
+    let before = shape_count(&app);
+    app.set_tool(Tool::Pen);
+    click_page(&ctx, &mut app, b);
+    let c = app.curve.clone().expect("a curve going on");
+    assert!(c.nodes[0].1.is_some(), "smooth by default: {c:?}");
+    let at_b = app.view.to_screen(b);
+    assert_eq!(
+        for_tool(&app, false, false, false, Some(at_b)),
+        ToolCursor::PenNib(Some(CurveMark::EditNode))
+    );
+    // Not a double click: the second click comes later.
+    for _ in 0..30 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    click_page(&ctx, &mut app, b);
+    let c = app.curve.clone().expect("still going on");
+    assert_eq!(c.nodes.len(), 1, "no node added: {c:?}");
+    assert_eq!(c.nodes[0].1, None, "a cusp: {c:?}");
+    let pointer = Point::new(180.0, 150.0);
+    click_page(&ctx, &mut app, pointer);
+    app.finish_curve();
+    assert_eq!(shape_count(&app), before, "no new object");
+    let segs: Vec<_> = last_path(&app).segments().collect();
+    assert_eq!(segs.len(), 2, "{segs:?}");
+    // The new segment leaves b straight.
+    match segs[1] {
+        tracedraw_core::geometry::PathSeg::Line(l) => assert!(near(l.p0, b), "{l:?}"),
+        tracedraw_core::geometry::PathSeg::Cubic(k) => {
+            assert!(near(k.p1, b) || near(k.p1, k.p0), "{k:?}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// #670: the Pen's preview segment to the pointer is a solid line, the
+/// selection blue on top of a white line twice as wide, unbroken from
+/// the last node to the pointer; dashes are for the handles.
+#[test]
+fn the_pen_preview_is_a_blue_line_on_a_white_one() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let a = Pos2::new(500.0, 400.0);
+    click_at(&ctx, &mut app, a, Modifiers::NONE);
+    let b = Pos2::new(700.0, 400.0);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(b)],
+        Modifiers::NONE,
+    );
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events: vec![Event::PointerMoved(b)],
+        ..Default::default()
+    };
+    let out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+    fn flat(s: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| flat(s, f)),
+            s => f(s),
+        }
+    }
+    // Segments along y = 400 between the node and the pointer.
+    let (mut blue, mut white) = (0.0f32, 0.0f32);
+    for c in &out.shapes {
+        flat(&c.shape, &mut |s| {
+            if let egui::Shape::LineSegment { points, stroke } = s {
+                let along = points
+                    .iter()
+                    .all(|p| (p.y - 400.0).abs() < 1.0 && p.x > a.x - 1.0);
+                if !along {
+                    return;
+                }
+                let len = (points[1] - points[0]).length();
+                if stroke.color == crate::theme::Tokens::SELECTION {
+                    assert_eq!(stroke.width, crate::canvas::HALO_INNER);
+                    blue += len;
+                } else if stroke.color == egui::Color32::WHITE {
+                    assert_eq!(stroke.width, crate::canvas::HALO_WIDTH);
+                    white += len;
+                }
+            }
+        });
+    }
+    let span = b.x - a.x;
+    assert!(
+        (blue - span).abs() < 2.0,
+        "blue {blue} of {span}: not dashed"
+    );
+    assert!((white - span).abs() < 2.0, "white {white} of {span}");
+    assert_eq!(crate::canvas::HALO_INNER * 2.0, crate::canvas::HALO_WIDTH);
+}
+
+/// Pages added to a drawing (Layout > Insert Page, the + of the page
+/// tabs, the navigator's insert buttons) are named in the interface's
+/// language, as the first page is, and so is their layer (#1127).
+#[test]
+fn added_pages_are_named_in_the_interface_language() {
+    crate::i18n::with_thread_language("de", || {
+        let (_, mut app, _) = setup();
+        app.add_page();
+        app.insert_page(true);
+        let names: Vec<(String, String)> = app
+            .doc()
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.layers[0].name.clone()))
+            .collect();
+        assert_eq!(names.len(), 3);
+        for (name, layer) in &names[1..] {
+            assert!(name.starts_with("Seite "), "{names:?}");
+            assert_eq!(layer, "Ebene 1", "{names:?}");
+        }
+        assert_eq!(names[1].0, "Seite 2", "{names:?}");
+        // Undo takes the page away again.
+        app.undo();
+        assert_eq!(app.doc().pages.len(), 2);
+    });
 }

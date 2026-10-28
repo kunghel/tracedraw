@@ -56,6 +56,7 @@ pub mod font_sampler;
 pub mod fx_icons;
 pub mod github_dialogs;
 pub mod glyphs_docker;
+pub mod hint_pics;
 pub mod hints;
 pub mod icons;
 pub mod lab_dialog;
@@ -93,6 +94,9 @@ pub mod template_dialog;
 pub mod text_docker;
 pub mod text_path_bar;
 pub mod time_tracker;
+// The audit reads widget names, which egui keeps only in debug builds.
+#[cfg(all(test, debug_assertions))]
+mod tip_audit;
 pub mod tips;
 pub mod toolbar;
 pub mod toolbox;
@@ -107,6 +111,7 @@ use crate::app::App;
 use crate::canvas;
 use crate::i18n::tr;
 use crate::theme::Tokens;
+use crate::ui::tips::RichTip;
 use egui::{Frame, Panel, Sense, Ui};
 use tracedraw_core::geometry::Point;
 
@@ -782,7 +787,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     envelope_ui::draw_envelopes(app, &painter);
     dimension_bar::draw_preview(app, &painter);
     callout_bar::draw_preview(app, &painter);
-    distort_bar::draw_centers(app, &painter);
+    distort_bar::draw_handles(app, &painter);
     extrude_bar::draw_handles(app, &painter);
     crop_bar::draw_area(app, &painter, canvas_rect);
     canvas::draw_docker_preview(app, &painter);
@@ -845,7 +850,7 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
     painter.line_segment([c + egui::vec2(3.3, 3.3), c + egui::vec2(6.5, 6.5)], s);
     painter.line_segment([c + egui::vec2(-2.5, 0.0), c + egui::vec2(2.5, 0.0)], s);
     painter.line_segment([c + egui::vec2(0.0, -2.5), c + egui::vec2(0.0, 2.5)], s);
-    let resp = resp.on_hover_text(crate::i18n::tr("status.navigator"));
+    let resp = resp.rich_tip(crate::i18n::tr("status.navigator"));
     let down = ui.input(|i| i.pointer.primary_down());
     if resp.drag_started() || resp.is_pointer_button_down_on() {
         app.navigator_open = true;

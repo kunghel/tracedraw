@@ -25,6 +25,9 @@ pub enum Command {
     AddPage {
         name: Option<String>,
         size: Size,
+        /// The name of the page's first layer ("Layer 1" when none).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layer: Option<String>,
     },
     DeletePage {
         page: PageId,
@@ -466,7 +469,7 @@ impl Command {
         match self {
             Command::SetTitle { title } => doc.title = title.clone(),
 
-            Command::AddPage { name, size } => {
+            Command::AddPage { name, size, layer } => {
                 let n = doc.pages.len() + 1;
                 let page_id = doc.ids_mut().page();
                 let layer_id = doc.ids_mut().layer();
@@ -474,7 +477,10 @@ impl Command {
                     id: page_id,
                     name: name.clone().unwrap_or_else(|| format!("Page {n}")),
                     size: *size,
-                    layers: vec![Layer::new(layer_id, "Layer 1")],
+                    layers: vec![Layer::new(
+                        layer_id,
+                        layer.clone().unwrap_or_else(|| "Layer 1".to_string()),
+                    )],
                     guides: Vec::new(),
                     background: None,
                 });
@@ -1331,6 +1337,7 @@ mod tests {
             .run(&Command::AddPage {
                 name: None,
                 size: Size::new(100.0, 100.0),
+                layer: None,
             })
             .unwrap();
         let (p1, p2) = (engine.document().pages[0].id, engine.document().pages[1].id);

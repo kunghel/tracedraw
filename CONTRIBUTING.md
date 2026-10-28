@@ -4,6 +4,27 @@ Thank you for helping. Read `AGENTS.md` first: it holds the engineering
 rules (commands, no panics on input, layering, tests, units, language).
 This file covers what every contribution must also respect.
 
+## Reporting a problem
+
+Use one of the forms under **New issue**, so the report has what it takes
+to find the problem:
+
+- **One problem per issue.** A report with several problems is hard to
+  follow and cannot be closed until all of them are done; open one for
+  each.
+- **The TraceDraw version** (Help > About), and check it still happens
+  in the latest release.
+- **What to repeat it with:** the steps, and a drawing that shows it
+  (zipped, as GitHub takes no `.tdraw` or `.cdr` files), a screenshot or
+  a short video. For a `.cdr` that opens wrong the file is needed: a
+  small drawing made just for the report is best. Never attach
+  confidential work.
+- **Bug or feature:** something that exists and works wrong is a bug;
+  something TraceDraw does not do yet is a feature request.
+
+Reports without what it takes to repeat the problem are marked
+`needs info` until the missing details come.
+
 ## Clean contributions
 
 - Send only work you wrote yourself, or work under a license compatible
