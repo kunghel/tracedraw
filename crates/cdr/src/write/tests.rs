@@ -1887,6 +1887,38 @@ fn the_version_12_record_keeps_the_page_and_settings_of_version_13() {
 }
 
 #[test]
+fn versions_7_and_8_carry_a_whole_configuration_record() {
+    let r8 = mcfg(Ver(8), 297.0, 210.0);
+    let r7 = mcfg(Ver(7), 297.0, 210.0);
+    assert_eq!((r7.len(), r8.len()), (536, 656));
+    let i32_at =
+        |r: &[u8], at: usize| i32::from_le_bytes(r[at..at + 4].try_into().unwrap_or([0; 4]));
+    let f64_at =
+        |r: &[u8], at: usize| f64::from_le_bytes(r[at..at + 8].try_into().unwrap_or([0; 8]));
+    // Page size first, then the ruler origin at the bottom-left corner
+    // and a grid that is not zero.
+    assert_eq!((i32_at(&r8, 0), i32_at(&r8, 4)), (2_970_000, 2_100_000));
+    assert_eq!((i32_at(&r8, 24), i32_at(&r8, 28)), (-1_485_000, -1_050_000));
+    assert_eq!((f64_at(&r8, 32), f64_at(&r8, 40)), (0.2, 0.2));
+    assert_eq!(f64_at(&r8, 56), 1.0);
+    assert_eq!((i32_at(&r8, 68), i32_at(&r8, 72)), (11_811_024, 11_811_024));
+    // Version 7: the white page colour after the paper, the rest moved.
+    assert_eq!(&r7[0..12], &r8[0..12]);
+    assert_eq!(&r7[12..24], &[5, 0, 5, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0]);
+    assert_eq!(&r7[24..44], &r8[12..32]);
+    assert_eq!(&r7[48..480], &r8[32..464]);
+    assert_eq!(i32_at(&r7, 480), 1);
+    assert_eq!(&r7[484..536], &r8[468..520]);
+    // Both versions read their page size back.
+    for v in [7, 8] {
+        let doc = Document::new("t", Size::new(297.0, 210.0));
+        let (back, _) = crate::open_bytes(&document_to_cdr_version(&doc, v), "t").expect("opens");
+        assert!((back.pages[0].size.width - 297.0).abs() < 0.01, "{v}");
+        assert!((back.pages[0].size.height - 210.0).abs() < 0.01, "{v}");
+    }
+}
+
+#[test]
 fn version_16_text_is_one_byte_a_letter_and_reads_back() {
     let mut ids = Document::new("w", Size::new(200.0, 100.0)).ids().clone();
     let t = text_shape(
@@ -2891,8 +2923,10 @@ fn a_version_8_style_table_with_set11_is_read() {
     assert_eq!(eight.len(), nine.len());
 }
 
-/// A face named by its family and weight is written under that name
-/// and reads back as it was in every version (#624).
+/// A face named by its family and weight ("Titillium Web SemiBold") is
+/// written as files name it, the family at the weight's style code
+/// ("Titillium Web" at 1024), and reads back as it was in every version
+/// (#624, #892).
 #[test]
 fn faces_named_with_their_weight_round_trip() {
     let mut doc = doc_with(Vec::new());
@@ -2905,13 +2939,71 @@ fn faces_named_with_their_weight_round_trip() {
     ];
     doc.pages[0].layers[0].shapes = shapes;
     doc.set_ids(ids);
-    // Written as named, regular, as before: the reader brings the face
-    // back from its name.
-    let json = character_json(&TextSpan::new("x", "Titillium Web SemiBold", 1.0), None);
+    // Written as the family at the weight's code, as the version 19
+    // file of #624 has it; bold text and plain families keep theirs.
+    let mut w = Writer::new(Ver(NEWEST_VERSION), &[], "t");
+    let mut bold_semi = TextSpan::new("x", "Titillium Web SemiBold", 1.0);
+    bold_semi.bold = true;
+    let plain = TextSpan::new("x", "Titillium Web", 1.0);
+    let semi_italic = {
+        let mut sp = TextSpan::new("x", "Titillium Web SemiBold", 1.0);
+        sp.italic = true;
+        sp
+    };
+    let file = w
+        .file_spans(&[
+            TextSpan::new("x", "Titillium Web SemiBold", 1.0),
+            bold_semi.clone(),
+            plain.clone(),
+            semi_italic,
+        ])
+        .expect("renamed");
+    let json = character_json(&file[0], None);
     assert!(
-        json.contains(r#""font":"Titillium Web SemiBold""#) && json.contains(r#""weight":"64""#),
+        json.contains(r#""font":"Titillium Web""#) && json.contains(r#""weight":"1024""#),
         "{json}"
     );
+    assert_eq!(file[1], bold_semi);
+    assert_eq!(file[2], plain);
+    assert_eq!(style_flags(&file[3]), 2048, "the italic of 600");
+    assert_eq!(file[3].font_family, "Titillium Web");
+    assert!(w.file_spans(&[plain, bold_semi]).is_none());
+    for v in versions() {
+        // The family's font records: one at 0x40, one at the 600 face,
+        // as the version 19 file has them.
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut faces = Vec::new();
+        tree.root.walk(&mut |ch, _| {
+            if ch.id_str() == "font" {
+                let d = tree.data(&riff, ch);
+                let flags = u32::from_le_bytes(d[4..8].try_into().expect("u32"));
+                let name: String = if v >= 12 {
+                    char::decode_utf16(
+                        d[18..80]
+                            .chunks(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .take_while(|&u| u != 0),
+                    )
+                    .map(|c| c.unwrap_or('?'))
+                    .collect()
+                } else {
+                    d[18..]
+                        .iter()
+                        .take_while(|&&b| b != 0)
+                        .map(|&b| b as char)
+                        .collect()
+                };
+                faces.push((name, flags));
+            }
+        });
+        assert!(
+            faces.contains(&("Titillium Web".into(), 0x400))
+                && faces.contains(&("Lato".into(), 0x1_0000))
+                && !faces.iter().any(|(n, _)| n.contains("SemiBold")),
+            "{v}: {faces:x?}"
+        );
+    }
     for v in versions() {
         let bytes = document_to_cdr_version(&doc, v);
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
@@ -2922,6 +3014,69 @@ fn faces_named_with_their_weight_round_trip() {
                 ShapeKind::Text { spans, .. } => {
                     assert_eq!(spans[0].font_family, family, "{v}");
                     assert!(!spans[0].bold, "{v}");
+                }
+                k => panic!("{v}: {k:?}"),
+            }
+        }
+    }
+}
+
+/// The weight axis of a variable font set on the text is written as the
+/// style code of its weight, so the text reopens at that weight in every
+/// version (#1013): 600 is 1024 and reads back as the family's SemiBold
+/// face (the variable font drawn at 600), 700 as bold, 400 as regular.
+#[test]
+fn variable_font_weight_axis_round_trips() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let at = |w: Option<f64>, bold: bool, italic: bool| {
+        let mut sp = TextSpan::new("Weight", "MiSans VF", 18.0);
+        sp.bold = bold;
+        sp.italic = italic;
+        sp.set_variation("wght", w);
+        sp
+    };
+    // The codes: one bit per 100 of weight, the italic the bit above;
+    // a weight between steps rounds, one out of range is clamped.
+    assert_eq!(weight_code(&at(Some(600.0), false, false)), 1024);
+    assert_eq!(weight_code(&at(Some(600.0), false, true)), 2048);
+    assert_eq!(weight_code(&at(Some(640.0), true, false)), 1024);
+    assert_eq!(weight_code(&at(Some(100.0), false, false)), 1);
+    assert_eq!(weight_code(&at(Some(1000.0), false, true)), 0x2_0000);
+    assert_eq!(weight_code(&at(Some(f64::NAN), false, false)), 64);
+    assert_eq!(weight_code(&at(None, false, false)), 64);
+    assert_eq!(weight_code(&at(None, true, true)), 0x2000);
+    assert_eq!(style_flags(&at(Some(500.0), false, false)), 256);
+    let json = character_json(&at(Some(600.0), false, true), None);
+    assert!(
+        json.contains(r#""weight":"1024""#) && json.contains(r#""italic":"1""#),
+        "{json}"
+    );
+    // Set on bold text, the axis is what draws it.
+    let json = character_json(&at(Some(400.0), true, false), None);
+    assert!(json.contains(r#""weight":"64""#), "{json}");
+
+    let spans = [
+        (at(Some(600.0), false, false), "MiSans VF SemiBold", false),
+        (at(Some(700.0), false, false), "MiSans VF", true),
+        (at(Some(300.0), true, false), "MiSans VF Light", false),
+        (at(None, false, false), "MiSans VF", false),
+    ];
+    doc.pages[0].layers[0].shapes = spans
+        .iter()
+        .map(|(sp, _, _)| text_shape(&mut ids, vec![sp.clone()], TextAlign::Left))
+        .collect();
+    doc.set_ids(ids);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), spans.len(), "{v}: {:?}", rep.warnings);
+        for (s, (_, family, bold)) in read.iter().zip(&spans) {
+            match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    assert_eq!(spans[0].font_family, *family, "{v}");
+                    assert_eq!(spans[0].bold, *bold, "{v}: {family}");
                 }
                 k => panic!("{v}: {k:?}"),
             }
@@ -3117,4 +3272,147 @@ fn a_font_file_two_faces_share_is_embedded_once() {
     let (back, _) = crate::open_bytes(&bytes, "shared").expect("reads back");
     assert_eq!(back.fonts.len(), 1);
     assert_eq!(back.fonts[0].data.as_slice(), FONT);
+}
+
+/// `font` with every family name (name ID 1) replaced by `name`, which
+/// has the old name's length.
+fn renamed_font(font: &[u8], name: &str) -> Vec<u8> {
+    let mut f = font.to_vec();
+    let be16 = |b: &[u8], at: usize| u16::from_be_bytes([b[at], b[at + 1]]) as usize;
+    let tables = be16(&f, 4);
+    let name_at = (0..tables)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &f[r..r + 4] == b"name")
+        .map(|r| u32::from_be_bytes(f[r + 8..r + 12].try_into().expect("u32")) as usize)
+        .expect("name table");
+    let (count, storage) = (be16(&f, name_at + 2), name_at + be16(&f, name_at + 4));
+    for i in 0..count {
+        let r = name_at + 6 + 12 * i;
+        if be16(&f, r + 6) != 1 {
+            continue;
+        }
+        let (len, at) = (be16(&f, r + 8), storage + be16(&f, r + 10));
+        let bytes: Vec<u8> = if be16(&f, r) == 1 {
+            name.bytes().collect()
+        } else {
+            name.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()
+        };
+        assert_eq!(bytes.len(), len, "same length");
+        f[at..at + len].copy_from_slice(&bytes);
+    }
+    f
+}
+
+/// The font table lists a face of a family named with its weight under
+/// the family, with its weight's flags and the family's font number, as
+/// the version 19 file of #624 lists "Titillium Web" at 0x400 (#892); a
+/// font whose own family name is the whole name keeps it.
+#[test]
+fn the_font_table_lists_weight_named_faces_under_their_family() {
+    const FONT: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let named = renamed_font(FONT, "X Light");
+    let face = |family: &str, data: &[u8]| FontFace {
+        family: family.into(),
+        bold: false,
+        italic: false,
+        data: Some(std::sync::Arc::new(data.to_vec())),
+    };
+    let faces = vec![
+        face("Selawik SemiBold", FONT),
+        face("Selawik", FONT),
+        face("X Light", &named),
+    ];
+    assert_eq!(
+        fonts::split_family("Selawik SemiBold", false, &faces),
+        Some(("Selawik".into(), 600))
+    );
+    assert_eq!(fonts::split_family("X Light", false, &faces), None);
+    assert_eq!(
+        fonts::split_family("X Light", false, &[]),
+        Some(("X".into(), 300)),
+        "with no font file the name is split"
+    );
+    assert_eq!(fonts::split_family("Selawik SemiBold", true, &faces), None);
+    assert_eq!(fonts::split_family("Selawik", false, &faces), None);
+
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("semi", "Selawik SemiBold", 12.0)],
+            TextAlign::Left,
+        ),
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("plain", "Selawik", 12.0)],
+            TextAlign::Left,
+        ),
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("light", "X Light", 12.0)],
+            TextAlign::Left,
+        ),
+    ]);
+    let previews = Previews {
+        fonts: faces,
+        embed_fonts: false,
+        ..Default::default()
+    };
+    let bytes = document_to_cdr_version_with(&doc, 19, &previews);
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+    let mut table = Vec::new();
+    std::io::Read::read_to_end(
+        &mut z.by_name("font/fontTable.dat").expect("table"),
+        &mut table,
+    )
+    .expect("read");
+    let u32_at = |at: usize| u32::from_le_bytes(table[at..at + 4].try_into().expect("u32"));
+    // Each entry: its number, flags and family.
+    let mut entries = Vec::new();
+    let mut at = 12;
+    for _ in 0..u32_at(8) {
+        let size = u32_at(at + 4) as usize;
+        let e = at + 8;
+        let number = u16::from_le_bytes([table[e], table[e + 1]]);
+        let flags = u32_at(e + 4);
+        let len = u32_at(e + 18) as usize;
+        let family: String = char::decode_utf16(
+            table[e + 22..e + 22 + 2 * (len - 1)]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]])),
+        )
+        .map(|c| c.unwrap_or('?'))
+        .collect();
+        entries.push((number, flags, family));
+        at = e + size;
+    }
+    let of = |family: &str, flags: u32| {
+        entries
+            .iter()
+            .find(|(_, f, n)| *f == flags && n == family)
+            .map(|(id, _, _)| *id)
+    };
+    let semi = of("Selawik", 0x400).expect("the 600 face under Selawik");
+    assert_eq!(Some(semi), of("Selawik", 0x40), "one family, one number");
+    assert!(of("X Light", 0x40).is_some(), "{entries:?}");
+    assert!(!entries.iter().any(|(_, _, n)| n.contains("SemiBold")));
+    // It reads back as it was written.
+    let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+    let families: Vec<(String, bool)> = back.pages[0].layers[0]
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.kind {
+            ShapeKind::Text { spans, .. } => Some((spans[0].font_family.clone(), spans[0].bold)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        families,
+        [
+            ("Selawik SemiBold".to_string(), false),
+            ("Selawik".to_string(), false),
+            ("X Light".to_string(), false)
+        ]
+    );
 }

@@ -2432,6 +2432,85 @@ fn ctrl_keeps_the_marquee_square_and_space_copies_while_turning() {
     );
 }
 
+/// A right press during a selection box (or a freehand selection): the
+/// box goes on with the pointer and ends with the buttons, whichever
+/// goes up first, selecting what it encloses. It stayed on the canvas,
+/// frozen, until the next selection box (#1015).
+#[test]
+fn a_right_press_during_a_selection_box_does_not_leave_it_frozen() {
+    let n = Modifiers::NONE;
+    let right = |p: Pos2, down: bool| button(p, down, PointerButton::Secondary, n);
+    let left = |p: Pos2, down: bool| button(p, down, PointerButton::Primary, n);
+    for tool in [Tool::Pick, Tool::FreeformPick] {
+        for left_first in [false, true] {
+            for same_frame in [false, true] {
+                let (ctx, mut app, id) = setup();
+                app.set_tool(tool);
+                app.select(Vec::new());
+                frame(&ctx, &mut app, Vec::new(), n);
+                // From an empty spot above and left of the rectangle,
+                // around it.
+                let from = app.view.to_screen(Point::new(2.0, 2.0));
+                frame(&ctx, &mut app, vec![Event::PointerMoved(from)], n);
+                frame(&ctx, &mut app, vec![left(from, true)], n);
+                let mut p = from;
+                for _ in 0..4 {
+                    p += egui::vec2(15.0, 0.0);
+                    frame(&ctx, &mut app, vec![Event::PointerMoved(p)], n);
+                }
+                assert!(
+                    matches!(app.drag, Drag::Marquee { .. } | Drag::Lasso { .. }),
+                    "{tool:?}: {:?}",
+                    app.drag
+                );
+                frame(&ctx, &mut app, vec![right(p, true)], n);
+                // Moves with both buttons held go on shaping the box.
+                let corner = app.view.to_screen(Point::new(70.0, 2.0));
+                let mut end = app.view.to_screen(Point::new(70.0, 50.0));
+                frame(&ctx, &mut app, vec![Event::PointerMoved(corner)], n);
+                frame(&ctx, &mut app, vec![Event::PointerMoved(end)], n);
+                if tool == Tool::FreeformPick {
+                    // On round the bottom left, so that the freehand
+                    // selection goes all around the rectangle.
+                    end = app.view.to_screen(Point::new(2.0, 50.0));
+                    frame(&ctx, &mut app, vec![Event::PointerMoved(end)], n);
+                }
+                let what = format!("{tool:?} left first {left_first} same frame {same_frame}");
+                assert!(
+                    !matches!(app.drag, Drag::None),
+                    "{what}: the box goes on while the left button is held"
+                );
+                let ups = if left_first {
+                    vec![left(end, false), right(end, false)]
+                } else {
+                    vec![right(end, false), left(end, false)]
+                };
+                if same_frame {
+                    frame(&ctx, &mut app, ups, n);
+                } else {
+                    for e in ups {
+                        frame(&ctx, &mut app, vec![e], n);
+                    }
+                }
+                frame(&ctx, &mut app, Vec::new(), n);
+                assert!(matches!(app.drag, Drag::None), "{what}: {:?}", app.drag);
+                assert_eq!(app.selection, vec![id], "{what}: the box selects");
+                assert!(app.right_drag.is_none(), "{what}");
+                assert!(app.drop_menu.is_none(), "{what}");
+                // The next click on bare canvas empties the selection as
+                // usual: nothing is held over.
+                let bare = app.view.to_screen(Point::new(150.0, 150.0));
+                frame(&ctx, &mut app, vec![Event::PointerMoved(bare)], n);
+                frame(&ctx, &mut app, vec![left(bare, true)], n);
+                frame(&ctx, &mut app, vec![left(bare, false)], n);
+                frame(&ctx, &mut app, Vec::new(), n);
+                assert!(matches!(app.drag, Drag::None), "{what}: {:?}", app.drag);
+                assert!(app.selection.is_empty(), "{what}");
+            }
+        }
+    }
+}
+
 #[test]
 fn selection_groups_store_recall_add_and_zoom() {
     let (ctx, mut app, id) = setup();
@@ -3151,6 +3230,107 @@ fn clicking_the_last_node_again_makes_it_a_cusp() {
     let s1 = cubic(segs[1]);
     assert!(near(s1.p1, b), "{s1:?}");
     assert!(near(s1.p2, Point::new(170.0, 170.0)), "{s1:?}");
+}
+
+/// A screen point right of the drawing window (over the dockers), at the
+/// height of page point `p`.
+fn beside_canvas(app: &App, p: Point) -> Pos2 {
+    let r = app.canvas_rect;
+    Pos2::new((r.max.x + 60.0).min(1590.0), app.view.to_screen(p).y)
+}
+
+/// A Pen handle pulled out of the drawing window and let go over a docker
+/// ends there: back on the drawing the preview follows the pointer again
+/// and the first click places a node (#1014).
+#[test]
+fn a_pen_pull_let_go_outside_the_canvas_ends_and_the_next_click_places_a_node() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let (a, b, c) = (
+        Point::new(100.0, 150.0),
+        Point::new(140.0, 150.0),
+        Point::new(150.0, 200.0),
+    );
+    click_page(&ctx, &mut app, a);
+    let out = beside_canvas(&app, b);
+    assert!(!app.canvas_rect.contains(out));
+    let from = app.view.to_screen(b);
+    drag(&ctx, &mut app, from, out, Modifiers::NONE, Vec::new());
+    let curve = app.curve.as_ref().expect("the curve goes on");
+    assert!(!curve.dragging_handle, "the pull ended with the release");
+    assert_eq!(curve.nodes.len(), 2);
+    // The handle followed the pointer out of the window.
+    let handle = curve.nodes[1].1.expect("a pulled handle");
+    assert!(near(handle, app.view.to_page(out)), "{handle:?}");
+    // Back on the drawing the preview runs to the pointer.
+    let back = app.view.to_screen(c);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(back)],
+        Modifiers::NONE,
+    );
+    let pointer = app.pointer_page.expect("the pointer is on the drawing");
+    let look = crate::pen_look::curve_look(
+        app.curve.as_ref().expect("curve"),
+        Some(pointer),
+        true,
+        None,
+    );
+    assert!(look.preview.is_some(), "the preview follows the pointer");
+    // The first click places the node.
+    click_page(&ctx, &mut app, c);
+    let curve = app.curve.as_ref().expect("curve");
+    assert_eq!(curve.nodes.len(), 3);
+    assert!(near(curve.nodes[2].0, c), "{:?}", curve.nodes[2]);
+}
+
+/// A drag from the first node let go outside the drawing window closes
+/// the curve, as it does on the drawing (#1014).
+#[test]
+fn a_pen_closing_drag_let_go_outside_the_canvas_closes_the_curve() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let a = Point::new(100.0, 150.0);
+    click_page(&ctx, &mut app, a);
+    click_page(&ctx, &mut app, Point::new(150.0, 190.0));
+    click_page(&ctx, &mut app, Point::new(160.0, 130.0));
+    let before = shape_count(&app);
+    let out = beside_canvas(&app, a);
+    let from = app.view.to_screen(a);
+    drag(&ctx, &mut app, from, out, Modifiers::NONE, Vec::new());
+    assert!(app.curve.is_none(), "the curve was closed");
+    assert_eq!(shape_count(&app), before + 1);
+}
+
+/// The button let go with the pointer out of the window (no position
+/// known): the pull of the curve being drawn ends all the same, and a
+/// closing drag closes the curve (#1014).
+#[test]
+fn a_pen_pull_ends_when_the_button_goes_up_out_of_the_window() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    click_page(&ctx, &mut app, Point::new(100.0, 150.0));
+    if let Some(c) = &mut app.curve {
+        c.dragging_handle = true;
+    }
+    frame(&ctx, &mut app, vec![Event::PointerGone], Modifiers::NONE);
+    let curve = app.curve.as_ref().expect("curve");
+    assert!(!curve.dragging_handle);
+    assert_eq!(curve.nodes.len(), 1);
+
+    click_page(&ctx, &mut app, Point::new(150.0, 190.0));
+    click_page(&ctx, &mut app, Point::new(160.0, 130.0));
+    let before = shape_count(&app);
+    if let Some(c) = &mut app.curve {
+        c.closing = Some(Point::new(90.0, 140.0));
+    }
+    frame(&ctx, &mut app, vec![Event::PointerGone], Modifiers::NONE);
+    assert!(app.curve.is_none(), "the curve was closed");
+    assert_eq!(shape_count(&app), before + 1);
 }
 
 #[test]
@@ -7825,15 +8005,61 @@ fn the_welcome_tab_closes_to_its_house() {
         (back.width() - wide.width()).abs() < 0.5,
         "{back:?} {wide:?}"
     );
-    // With no drawing open there is nothing else to show: no close button.
+    // With no drawing open it closes too: the workspace stays empty, the
+    // Hints docker shows its Home topics, and the house brings the
+    // Welcome Screen back (#1081).
     let ctx = crate::theme::ui_context();
     let mut app = App::headless();
     app.close_active_document();
     assert!(!app.has_document());
+    app.hints.go(crate::ui::hints::HintPage::Topic(
+        crate::ui::hints::Topic::Fill,
+    ));
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
-    assert!(rect_of(&ctx, WELCOME_TAB).is_some());
-    assert!(rect_of(&ctx, WELCOME_CLOSE).is_none());
+    assert!(app.show_welcome);
+    let wide = rect_of(&ctx, WELCOME_TAB).expect("welcome tab");
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(wide.center())],
+        Modifiers::NONE,
+    );
+    let close = rect_of(&ctx, WELCOME_CLOSE).expect("close button");
+    press(&ctx, &mut app, close.center());
+    assert!(!app.show_welcome, "the empty workspace shows");
+    assert!(app.settings.welcome_tab_closed);
+    assert_eq!(app.docker_tab, crate::app::DockerTab::Hints);
+    assert!(app.show_dockers);
+    assert_eq!(app.hints.current(), crate::ui::hints::HintPage::Home);
+    // It stays empty over more frames, and the property bar rests.
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(!app.show_welcome);
+    assert!(!app.drawing_shown());
+    let house = rect_of(&ctx, WELCOME_TAB).expect("house");
+    press(&ctx, &mut app, house.center());
+    assert!(app.show_welcome);
+    assert!(!app.settings.welcome_tab_closed);
+}
+
+/// Closing the last drawing with the Welcome Screen tab closed leaves the
+/// empty workspace; with the tab open the Welcome Screen comes back.
+#[test]
+fn closing_the_last_drawing_keeps_the_welcome_tab_choice() {
+    let ctx = crate::theme::ui_context();
+    let mut app = App::headless();
+    app.show_welcome = false;
+    app.settings.welcome_tab_closed = true;
+    app.close_active_document();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(!app.has_document());
+    assert!(!app.show_welcome);
+    let mut app = App::headless();
+    app.show_welcome = false;
+    app.close_active_document();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(app.show_welcome);
 }
 
 #[test]
@@ -10554,4 +10780,112 @@ fn a_right_click_on_any_toolbar_keeps_the_bar_menu_open() {
         !bar_menu_shown(&ctx, &mut app, Vec::new()),
         "and the menu closed"
     );
+}
+
+/// A dimension without arrowheads drawn across the page with its tool
+/// and dragged with the Pick tool keeps its selection box around its
+/// line and label, moved sideways and upwards (#996).
+#[test]
+fn a_moved_dimension_keeps_its_selection_box_around_it() {
+    let (ctx, mut app, rect) = setup();
+    app.run(tracedraw_core::Command::DeleteShapes { shapes: vec![rect] });
+    app.select(Vec::new());
+    // No arrowheads: their curve is empty, and its box was the origin's.
+    app.dimension_style.arrows = crate::dimensions::ArrowStyle::None;
+    app.set_tool(Tool::ParallelDimension);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    for p in [
+        Point::new(0.0, 297.0),
+        Point::new(210.0, 297.0),
+        Point::new(105.0, 312.0),
+    ] {
+        let at = app.view.to_screen(p);
+        click_at(&ctx, &mut app, at, Modifiers::NONE);
+    }
+    app.bake_dimensions();
+    let g = *app.selection.first().expect("a dimension");
+    app.set_tool(Tool::Pick);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    app.bake_dimensions();
+    let check = |app: &App, what: &str| {
+        let label = match &app.doc().find_shape(g).expect("dimension").kind {
+            ShapeKind::Group { children } => children[2].bounds(),
+            other => panic!("{other:?}"),
+        };
+        let got = app.selection_bounds().expect("selected");
+        assert!(
+            got.contains(label.center()),
+            "{what}: box {got:?}, label {label:?}"
+        );
+        assert!(got.height() < 30.0, "{what}: box {got:?}, label {label:?}");
+        assert!(got.width() < 230.0, "{what}: box {got:?}, label {label:?}");
+        label.center()
+    };
+    let mut label = check(&app, "drawn");
+    for step in [egui::vec2(-150.0, 0.0), egui::vec2(0.0, -120.0)] {
+        let from = app.view.to_screen(label);
+        drag(
+            &ctx,
+            &mut app,
+            from,
+            from + step,
+            Modifiers::NONE,
+            Vec::new(),
+        );
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        app.bake_dimensions();
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        label = check(&app, &format!("{step:?}"));
+    }
+}
+
+/// F2 picks the Zoom tool for one zoom: after a click or a marquee the
+/// tool before it comes back; Z keeps it (#1039).
+#[test]
+fn f2_zooms_once_and_gives_the_tool_back() {
+    let (ctx, mut app, _id) = setup();
+    let at = app.view.to_screen(Point::new(35.0, 25.0));
+    // A marquee.
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::F2, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.tool, Tool::Zoom);
+    let zoom = app.view.zoom;
+    drag(
+        &ctx,
+        &mut app,
+        at,
+        at + egui::vec2(60.0, 40.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert!(app.view.zoom > zoom * 1.5, "{} {}", app.view.zoom, zoom);
+    assert_eq!(app.tool, Tool::Pick);
+
+    // A click, from another tool.
+    app.set_tool(Tool::Freehand);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::F2, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.tool, Tool::Zoom);
+    let zoom = app.view.zoom;
+    let at = app.view.to_screen(Point::new(35.0, 25.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!((app.view.zoom / zoom - 2.0).abs() < 1e-6);
+    assert_eq!(app.tool, Tool::Freehand);
+
+    // The Zoom tool picked for good stays after a zoom.
+    app.set_tool(Tool::Zoom);
+    let at = app.view.to_screen(Point::new(35.0, 25.0));
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    assert_eq!(app.tool, Tool::Zoom);
 }

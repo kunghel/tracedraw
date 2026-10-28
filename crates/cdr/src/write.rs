@@ -100,6 +100,7 @@ pub struct Png {
 pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Previews) -> Vec<u8> {
     let v = Ver(version.clamp(OLDEST_VERSION, NEWEST_VERSION));
     let mut w = Writer::new(v, &doc.symbols, &doc.title);
+    w.faces = &previews.fonts;
     let mut tree = w.document(doc);
     let font_ids = w.fonts.clone();
     if !v.zip() {
@@ -1613,10 +1614,10 @@ fn ftil() -> Vec<u8> {
     identity_matrix()
 }
 
-/// `mcfg`: the document configuration. Versions before 21 get the page
-/// size and the length files of the version have; from 21 the record has
-/// the layout of those files with the fields that are understood (see
-/// `docs/cdr-format.md`, Writing).
+/// `mcfg`: the document configuration. Versions 7, 8 and 12 to 27 get
+/// the record of files of their version, with the fields that are
+/// understood (see `docs/cdr-format.md`, Writing); versions 9 to 11 get
+/// the page size and zeros up to 4088 bytes.
 fn mcfg(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
     if v.0 >= 21 {
         return mcfg_21(w_mm, h_mm);
@@ -1626,6 +1627,9 @@ fn mcfg(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
     }
     if v.0 == 12 {
         return mcfg_12(w_mm, h_mm);
+    }
+    if v.0 <= 8 {
+        return mcfg_7_8(v, w_mm, h_mm);
     }
     let mut b = Buf::default();
     let size: usize = if v.0 >= 15 {
@@ -1779,6 +1783,91 @@ fn mcfg_12(w_mm: f64, h_mm: f64) -> Vec<u8> {
     }
     out.resize(8152, 0);
     out
+}
+
+/// The configuration record of version 8 (656 bytes, no tag) and of
+/// version 7 (536 bytes), with the values files saved for those versions
+/// hold: the page size, the paper (A4 code as before), the ruler origin
+/// at the page's bottom-left corner, a grid of 0.2 across and down, the
+/// units, a scale of 1, the 46.5 inch square twice, the nudge (1000) and
+/// the flags and default colour records after them. Version 7 holds the
+/// same fields with the page colour (white) inserted after the paper and
+/// 4 more bytes after the ruler origin, and stops 120 bytes earlier. A
+/// record holding only the page size, followed by zeros, was what these
+/// versions got before (every version 7 file written so crashed the
+/// program that wrote the samples, issue #98).
+fn mcfg_7_8(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
+    const SIZE_8: usize = 656;
+    let (w, h) = (units(w_mm), units(h_mm));
+    let mut r = vec![0u8; SIZE_8];
+    put(&mut r, 0, &w.to_le_bytes());
+    put(&mut r, 4, &h.to_le_bytes());
+    put(&mut r, 8, &0x0fu32.to_le_bytes());
+    put(&mut r, 12, &1u32.to_le_bytes());
+    // Ruler origin: the page's bottom-left corner, from the page centre.
+    put(&mut r, 24, &(-(w / 2)).to_le_bytes());
+    put(&mut r, 28, &(-(h / 2)).to_le_bytes());
+    put(&mut r, 32, &0.2f64.to_le_bytes());
+    put(&mut r, 40, &0.2f64.to_le_bytes());
+    put(&mut r, 48, &2u16.to_le_bytes());
+    put(&mut r, 50, &2u16.to_le_bytes());
+    put(&mut r, 56, &1.0f64.to_le_bytes());
+    for (at, x) in [
+        (64, 2i32),
+        (68, 11_811_024),
+        (72, 11_811_024),
+        (76, 3),
+        (88, 1_000),
+        (92, 10_000),
+        (100, 2),
+        (444, 1),
+        (448, 1),
+        (452, 1),
+        (456, 1),
+        (460, 2),
+        (468, 1),
+        (476, 1),
+        (500, 1),
+        (504, 1),
+        (512, 1),
+        (524, 1),
+        (528, 1),
+        (532, 1),
+        (536, 1),
+        (592, 3),
+        (600, 1),
+        (604, 1),
+        (608, 1),
+        (616, 1),
+        (636, 2),
+        (644, 4),
+        (648, 100),
+        (652, 1),
+    ] {
+        put(&mut r, at, &x.to_le_bytes());
+    }
+    // Colour records (model 5, palette 5, black) and the values between.
+    for at in [484, 552, 564, 576] {
+        put(&mut r, at, &[5, 0, 5, 0]);
+    }
+    for (at, x) in [(560, 196u16), (572, 32), (574, 196), (584, 196), (586, 196)] {
+        put(&mut r, at, &x.to_le_bytes());
+    }
+    if v.0 >= 8 {
+        return r;
+    }
+    // Version 7: the page colour (model 5, palette 5, white) after the
+    // paper, 4 bytes more after the ruler origin, a flag the version 8
+    // record leaves zero (its byte 464) and 536 bytes in all.
+    let mut r7 = Vec::with_capacity(536);
+    r7.extend_from_slice(r.get(..12).unwrap_or_default());
+    r7.extend_from_slice(&[5, 0, 5, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0]);
+    r7.extend_from_slice(r.get(12..32).unwrap_or_default());
+    r7.extend_from_slice(&[0; 4]);
+    r7.extend_from_slice(r.get(32..520).unwrap_or_default());
+    r7.resize(536, 0);
+    put(&mut r7, 464 + 16, &1u32.to_le_bytes());
+    r7
 }
 
 /// Write `bytes` into `rec` at `at` (records are built to their size
@@ -2493,13 +2582,12 @@ fn object_style_json(
 /// The style codes of the font tables: one bit per weight and slant
 /// (0x40 regular, 0x80 italic, 0x1000 bold, 0x2000 bold italic), single
 /// underline in bits 18 to 20, single strike-through in bits 24 to 26.
+/// A face of another weight (a variable font's weight axis set on the
+/// text, #1013) takes the code of its weight: one bit per 100 of weight
+/// (1 = 100 ... 64 = 400, 1024 = 600, 4096 = 700 ... 65536 = 900), the
+/// next bit up its italic.
 fn style_flags(sp: &TextSpan) -> u32 {
-    let mut f = match (sp.bold, sp.italic) {
-        (false, false) => 0x40,
-        (false, true) => 0x80,
-        (true, false) => 0x1000,
-        (true, true) => 0x2000,
-    };
+    let mut f = weight_code(sp);
     if sp.underline {
         f |= 1 << 18;
     }
@@ -2507,6 +2595,31 @@ fn style_flags(sp: &TextSpan) -> u32 {
         f |= 1 << 24;
     }
     f
+}
+
+/// The weight `sp` is drawn at, in the steps of 100 the style codes
+/// count: its variable font weight axis when that is set (#1013), else
+/// 700 bold and 400 regular.
+fn span_weight(sp: &TextSpan) -> u32 {
+    match sp.variation("wght").filter(|w| w.is_finite()) {
+        Some(w) => (w / 100.0).round().clamp(1.0, 9.0) as u32 * 100,
+        None if sp.bold => 700,
+        None => 400,
+    }
+}
+
+/// The style code of `sp`'s face: a power of two counting weights from
+/// 1 for 100 (64 = 400, 1024 = 600, 4096 = 700), the italic of a weight
+/// the bit above it (128 = 400 italic, 8192 = 700 italic).
+fn weight_code(sp: &TextSpan) -> u32 {
+    let step = span_weight(sp) / 100 - 1;
+    1 << (2 * step + u32::from(sp.italic))
+}
+
+/// The weight member of a version 16+ font style: the weight's code,
+/// without the italic, which has a member of its own.
+fn weight_member(sp: &TextSpan) -> u32 {
+    1 << (2 * (span_weight(sp) / 100 - 1))
 }
 
 /// The style string of a run (versions 16+): its font, size, weight,
@@ -2517,7 +2630,7 @@ fn run_style_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
 
 /// The `character` member of a style string.
 fn character_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
-    let weight = if sp.bold { 4096 } else { 64 };
+    let weight = weight_member(sp);
     let size = (sp.size_pt * 254000.0 / 72.0).round() as i64;
     let family = sp.font_family.replace('\\', "\\\\").replace('"', "\\\"");
     let font = format!(
@@ -2572,7 +2685,7 @@ fn full_text_style(
         Some(sp) => (
             sp.font_family.replace('\\', "\\\\").replace('"', "\\\""),
             (sp.size_pt * 254000.0 / 72.0).round() as i64,
-            if sp.bold { 4096 } else { 64 },
+            weight_member(sp),
             u8::from(sp.italic),
             u8::from(sp.underline),
             u8::from(sp.strikethrough),
@@ -2662,6 +2775,15 @@ struct Writer<'a> {
     /// which each page's entries for them repeat.
     master_guids: [[u8; 16]; 3],
     has_text: bool,
+    /// The faces the text uses, with their font files (see
+    /// [`Previews::fonts`]), and what [`fonts::split_family`] said for
+    /// each family named with a weight.
+    faces: &'a [FontFace],
+    split_families: HashMap<String, Option<(String, u16)>>,
+    /// The faces the runs of version 16+ text use (font id, face bits of
+    /// the style flags), for the font table as [`Writer::text_formats`]
+    /// gives them before.
+    run_faces: Vec<(u16, u32)>,
 }
 
 /// The master page's layers, in the order of `Writer::master_guids`.
@@ -2732,7 +2854,41 @@ impl<'a> Writer<'a> {
             guids: master_guids.len() as u64,
             master_guids,
             has_text: false,
+            faces: &[],
+            split_families: HashMap::new(),
+            run_faces: Vec::new(),
         }
+    }
+
+    /// `spans` with their faces named as files name them, `None` when
+    /// every span keeps its own: a span in a family named with its weight
+    /// ("Titillium Web SemiBold", how text in a semibold face reads) is
+    /// written as the family ("Titillium Web") at that weight, carried
+    /// as the weight axis value the style codes are taken from (#892).
+    fn file_spans(&mut self, spans: &[TextSpan]) -> Option<Vec<TextSpan>> {
+        let mut out: Option<Vec<TextSpan>> = None;
+        for (i, sp) in spans.iter().enumerate() {
+            if sp.bold || sp.variation("wght").is_some() {
+                continue;
+            }
+            let split = match self.split_families.get(&sp.font_family) {
+                Some(s) => s.clone(),
+                None => {
+                    let s = fonts::split_family(&sp.font_family, false, self.faces);
+                    self.split_families
+                        .insert(sp.font_family.clone(), s.clone());
+                    s
+                }
+            };
+            let Some((family, weight)) = split else {
+                continue;
+            };
+            if let Some(file_sp) = out.get_or_insert_with(|| spans.to_vec()).get_mut(i) {
+                file_sp.font_family = family;
+                file_sp.set_variation("wght", Some(f64::from(weight)));
+            }
+        }
+        out
     }
 
     fn guid(&mut self) -> [u8; 16] {
@@ -2831,6 +2987,7 @@ impl<'a> Writer<'a> {
             .text_formats
             .iter()
             .map(|f| (f.font, f.flags & 0x3_ffff))
+            .chain(self.run_faces.iter().copied())
             .collect();
         let mut out = Vec::new();
         if v.redirects() {
@@ -3505,6 +3662,8 @@ impl<'a> Writer<'a> {
                 // spacing from version 16); the object takes the first
                 // paragraph's.
                 let own_align = *align;
+                let file_spans = self.file_spans(spans);
+                let spans = file_spans.as_deref().unwrap_or(spans);
                 let first_align = paragraph_aligns(spans, own_align)
                     .first()
                     .copied()
@@ -3843,7 +4002,11 @@ impl<'a> Writer<'a> {
             let format = formats.get(pi);
             let align = format.map_or(align, |f| f.align);
             for sp in runs {
-                self.font_id(&sp.font_family);
+                let id = self.font_id(&sp.font_family);
+                let face = (id, style_flags(sp) & 0x3_ffff);
+                if !self.run_faces.contains(&face) {
+                    self.run_faces.push(face);
+                }
             }
             let first = runs.first().or(spans.first());
             let leading = format.map_or(1.0, |f| {
