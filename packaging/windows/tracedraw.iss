@@ -1,4 +1,4 @@
-; Inno Setup script for TraceDraw. Built by CI on windows-latest.
+﻿; Inno Setup script for TraceDraw. Built by CI on windows-latest.
 ; Variables: /DVersion=x.y.z /DSrcDir=<dir with tracedraw.exe and tracedraw-cli.exe>
 
 #ifndef Version
@@ -29,14 +29,57 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequiredOverridesAllowed=dialog
 ChangesAssociations=yes
 ChangesEnvironment=yes
+; Ask which language the wizard runs in (the system's is selected).
+ShowLanguageDialog=yes
 
 [Languages]
+; The wizard's own language. These are the translations that ship with
+; Inno Setup 6; the editor itself has more interface languages than this,
+; chosen in Options > Global > Language. The six the editor has but Inno
+; Setup does not ship (Arabic, Bengali, Hindi, Indonesian, Simplified and
+; Traditional Chinese) need their .isl committed here and are a follow-up.
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "czech"; MessagesFile: "compiler:Languages\Czech.isl"
+Name: "dutch"; MessagesFile: "compiler:Languages\Dutch.isl"
+Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "german"; MessagesFile: "compiler:Languages\German.isl"
+Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
+
+[CustomMessages]
+english.AddToPath=Add tracedraw-cli to PATH
+english.CommandLine=Command line:
+brazilianportuguese.AddToPath=Adicionar tracedraw-cli ao PATH
+brazilianportuguese.CommandLine=Linha de comando:
+czech.AddToPath=Přidat tracedraw-cli do proměnné PATH
+czech.CommandLine=Příkazový řádek:
+dutch.AddToPath=tracedraw-cli aan PATH toevoegen
+dutch.CommandLine=Opdrachtregel:
+french.AddToPath=Ajouter tracedraw-cli au PATH
+french.CommandLine=Ligne de commande :
+german.AddToPath=tracedraw-cli zum PATH hinzufügen
+german.CommandLine=Befehlszeile:
+italian.AddToPath=Aggiungi tracedraw-cli al PATH
+italian.CommandLine=Riga di comando:
+japanese.AddToPath=tracedraw-cli を PATH に追加する
+japanese.CommandLine=コマンドライン:
+polish.AddToPath=Dodaj tracedraw-cli do zmiennej PATH
+polish.CommandLine=Wiersz poleceń:
+russian.AddToPath=Добавить tracedraw-cli в PATH
+russian.CommandLine=Командная строка:
+spanish.AddToPath=Añadir tracedraw-cli al PATH
+spanish.CommandLine=Línea de comandos:
+turkish.AddToPath=tracedraw-cli'yi PATH'e ekle
+turkish.CommandLine=Komut satırı:
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "addtopath"; Description: "Add tracedraw-cli to PATH"; GroupDescription: "Command line:"
+Name: "addtopath"; Description: "{cm:AddToPath}"; GroupDescription: "{cm:CommandLine}"
 
 [Files]
 Source: "{#SrcDir}\tracedraw.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -47,7 +90,7 @@ Source: "..\..\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\TraceDraw"; Filename: "{app}\tracedraw.exe"
-Name: "{group}\Uninstall TraceDraw"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,TraceDraw}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\TraceDraw"; Filename: "{app}\tracedraw.exe"; Tasks: desktopicon
 
 [Registry]

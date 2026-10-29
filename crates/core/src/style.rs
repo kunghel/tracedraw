@@ -874,7 +874,10 @@ pub enum Fill {
 }
 
 /// Mesh fill: a grid of (rows+1) x (cols+1) nodes with a colour each;
-/// cells are bilinear patches (Gouraud) clipped by the object.
+/// the cells between them are patches whose sides are the grid lines
+/// (cubic curves when the nodes carry handles, straight otherwise),
+/// their colour mixed from the corners (Coons patches), clipped by the
+/// object.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
     pub rows: u32,
@@ -892,6 +895,73 @@ pub struct MeshNode {
     /// 1.0 = opaque.
     #[serde(default = "one_f32")]
     pub alpha: f32,
+    /// The handles of the grid lines through the node, in local space:
+    /// towards the next column, the previous column, the next row and
+    /// the previous row (see [`MeshHandle`]). `None` draws straight
+    /// lines to the neighbours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handles: Option<[Point; 4]>,
+}
+
+/// Which of a node's four handles: the index into [`MeshNode::handles`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshHandle {
+    /// Towards the next column (the node to the right in the grid).
+    Right = 0,
+    /// Towards the previous column.
+    Left = 1,
+    /// Towards the next row.
+    Down = 2,
+    /// Towards the previous row.
+    Up = 3,
+}
+
+impl MeshNode {
+    /// A node without handles.
+    pub fn new(pos: Point, color: Color) -> Self {
+        MeshNode {
+            pos,
+            color,
+            alpha: 1.0,
+            handles: None,
+        }
+    }
+
+    /// The handle `h`, or the point a third of the way to `towards` when
+    /// the node has none there (a handle on the node itself counts as
+    /// none: a straight grid line).
+    pub fn handle(&self, h: MeshHandle, towards: Point) -> Point {
+        match self.handles {
+            Some(hs) if hs[h as usize] != self.pos => hs[h as usize],
+            _ => self.pos.lerp(towards, 1.0 / 3.0),
+        }
+    }
+
+    /// Set the handle `h`, keeping the others (straight when unset).
+    pub fn set_handle(&mut self, h: MeshHandle, p: Point) {
+        let hs = self.handles.get_or_insert([self.pos; 4]);
+        hs[h as usize] = p;
+    }
+
+    /// The node moved by `d`, its handles with it.
+    pub fn translate(&mut self, d: Vec2) {
+        self.pos += d;
+        if let Some(hs) = &mut self.handles {
+            for h in hs.iter_mut() {
+                *h += d;
+            }
+        }
+    }
+
+    /// The node and its handles through `t`.
+    pub fn transform(&mut self, t: Affine) {
+        self.pos = t * self.pos;
+        if let Some(hs) = &mut self.handles {
+            for h in hs.iter_mut() {
+                *h = t * *h;
+            }
+        }
+    }
 }
 
 impl Mesh {
@@ -899,14 +969,13 @@ impl Mesh {
         let mut nodes = Vec::new();
         for r in 0..=rows {
             for c in 0..=cols {
-                nodes.push(MeshNode {
-                    pos: Point::new(
+                nodes.push(MeshNode::new(
+                    Point::new(
                         bounds.x0 + bounds.width() * c as f64 / cols as f64,
                         bounds.y0 + bounds.height() * r as f64 / rows as f64,
                     ),
-                    color: base,
-                    alpha: 1.0,
-                });
+                    base,
+                ));
             }
         }
         Mesh {
@@ -919,6 +988,57 @@ impl Mesh {
 
     pub fn node(&self, r: u32, c: u32) -> Option<&MeshNode> {
         self.nodes.get((r * (self.cols + 1) + c) as usize)
+    }
+
+    /// The mesh with every node and handle through `t`.
+    pub fn transformed(&self, t: Affine) -> Mesh {
+        let mut m = self.clone();
+        for n in m.nodes.iter_mut() {
+            n.transform(t);
+        }
+        m
+    }
+
+    /// Whether any node carries handles (curved grid lines).
+    pub fn is_curved(&self) -> bool {
+        self.nodes.iter().any(|n| n.handles.is_some())
+    }
+
+    /// The grid line between the nodes at `(r, c)` and `(r, c + 1)`
+    /// (`across` true) or `(r + 1, c)` (false), as a cubic curve.
+    pub fn edge(&self, r: u32, c: u32, across: bool) -> Option<crate::geometry::CubicBez> {
+        let (b, h0, h1) = if across {
+            (self.node(r, c + 1)?, MeshHandle::Right, MeshHandle::Left)
+        } else {
+            (self.node(r + 1, c)?, MeshHandle::Down, MeshHandle::Up)
+        };
+        let a = self.node(r, c)?;
+        Some(crate::geometry::CubicBez::new(
+            a.pos,
+            a.handle(h0, b.pos),
+            b.handle(h1, a.pos),
+            b.pos,
+        ))
+    }
+
+    /// The point of the cell `(r, c)` at `(u, v)` (0 to 1 across and
+    /// down): the Coons patch bounded by the cell's four grid lines.
+    pub fn patch_point(&self, r: u32, c: u32, u: f64, v: f64) -> Option<Point> {
+        use crate::geometry::ParamCurve;
+        let top = self.edge(r, c, true)?;
+        let bottom = self.edge(r + 1, c, true)?;
+        let left = self.edge(r, c, false)?;
+        let right = self.edge(r, c + 1, false)?;
+        let (a, b, d, e) = (top.p0, top.p3, bottom.p0, bottom.p3);
+        let p = top.eval(u).to_vec2() * (1.0 - v)
+            + bottom.eval(u).to_vec2() * v
+            + left.eval(v).to_vec2() * (1.0 - u)
+            + right.eval(v).to_vec2() * u
+            - a.to_vec2() * ((1.0 - u) * (1.0 - v))
+            - b.to_vec2() * (u * (1.0 - v))
+            - d.to_vec2() * ((1.0 - u) * v)
+            - e.to_vec2() * (u * v);
+        Some(p.to_point())
     }
 
     /// Index of the node nearest to `p` (local space).
@@ -960,6 +1080,7 @@ impl Mesh {
             pos: p.pos.lerp(q.pos, t),
             color: lerp_color(p.color, q.color, t as f32),
             alpha: p.alpha + (q.alpha - p.alpha) * t as f32,
+            handles: None,
         };
         Some(mix(mix(a, b, fu), mix(d, e, fu), fv))
     }
@@ -995,6 +1116,8 @@ impl Mesh {
 
     /// Remove the grid lines through node `i` that are not on the edge:
     /// its column, its row, or both. False when both are on the edge.
+    /// Where the removed line had cut a curved grid line, the neighbours'
+    /// handles are stretched back so the curve through them is restored.
     pub fn remove_lines_through(&mut self, i: usize) -> bool {
         if i >= self.nodes.len() {
             return false;
@@ -1005,6 +1128,36 @@ impl Mesh {
         let drop_row = r > 0 && r < self.rows as usize;
         if !drop_col && !drop_row {
             return false;
+        }
+        if drop_col {
+            for rr in 0..=self.rows as usize {
+                let k = rr * cols + c;
+                if let (Some(&removed), Some(&a), Some(&b)) = (
+                    self.nodes.get(k),
+                    self.nodes.get(k - 1),
+                    self.nodes.get(k + 1),
+                ) {
+                    let (mut a, mut b) = (a, b);
+                    merge_nodes(&mut a, &mut b, &removed, true);
+                    self.nodes[k - 1] = a;
+                    self.nodes[k + 1] = b;
+                }
+            }
+        }
+        if drop_row {
+            for cc in 0..cols {
+                let k = r * cols + cc;
+                if let (Some(&removed), Some(&a), Some(&b)) = (
+                    self.nodes.get(k),
+                    self.nodes.get(k - cols),
+                    self.nodes.get(k + cols),
+                ) {
+                    let (mut a, mut b) = (a, b);
+                    merge_nodes(&mut a, &mut b, &removed, false);
+                    self.nodes[k - cols] = a;
+                    self.nodes[k + cols] = b;
+                }
+            }
         }
         let nodes: Vec<MeshNode> = self
             .nodes
@@ -1025,42 +1178,47 @@ impl Mesh {
 
     /// The cell of the grid that holds `p` (local space) and where in
     /// it: (row, column, fraction across, fraction up), the fractions
-    /// those of the cell's bilinear patch.
+    /// those of the cell's patch (the Coons patch of its grid lines; the
+    /// bilinear patch when they are straight).
     pub fn locate(&self, p: Point) -> Option<(usize, usize, f64, f64)> {
-        let cols = self.cols as usize + 1;
-        let at = |r: usize, c: usize| self.nodes.get(r * cols + c).map(|n| n.pos);
-        for r in 0..self.rows as usize {
-            for c in 0..self.cols as usize {
-                let (Some(a), Some(b), Some(d), Some(e)) =
-                    (at(r, c), at(r, c + 1), at(r + 1, c), at(r + 1, c + 1))
-                else {
-                    continue;
-                };
-                // Newton steps on the patch a + (b - a) u + (d - a) v +
-                // (a - b - d + e) u v = p from its middle.
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                // Newton steps on the patch from its middle, the slopes
+                // taken by small steps; kept near the cell, as a point in
+                // another cell makes the steps wander.
                 let (mut u, mut v) = (0.5, 0.5);
-                for _ in 0..12 {
-                    let q = a.to_vec2() * ((1.0 - u) * (1.0 - v))
-                        + b.to_vec2() * (u * (1.0 - v))
-                        + d.to_vec2() * ((1.0 - u) * v)
-                        + e.to_vec2() * (u * v);
-                    let f = q - p.to_vec2();
-                    let du = (b - a) * (1.0 - v) + (e - d) * v;
-                    let dv = (d - a) * (1.0 - u) + (e - b) * u;
+                const STEP: f64 = 1e-6;
+                let at = |u: f64, v: f64| self.patch_point(r, c, u, v);
+                for _ in 0..16 {
+                    let (Some(q), Some(qu), Some(qv)) =
+                        (at(u, v), at(u + STEP, v), at(u, v + STEP))
+                    else {
+                        break;
+                    };
+                    let f = q - p;
+                    if f.hypot() < 1e-9 {
+                        break;
+                    }
+                    let du = (qu - q) / STEP;
+                    let dv = (qv - q) / STEP;
                     let det = du.x * dv.y - du.y * dv.x;
                     if det.abs() < 1e-12 {
                         break;
                     }
                     u -= (f.x * dv.y - f.y * dv.x) / det;
                     v -= (du.x * f.y - du.y * f.x) / det;
+                    if !(u.is_finite() && v.is_finite()) {
+                        break;
+                    }
+                    u = u.clamp(-0.5, 1.5);
+                    v = v.clamp(-0.5, 1.5);
                 }
                 const EPS: f64 = 1e-6;
-                if u.is_finite()
-                    && v.is_finite()
-                    && (-EPS..=1.0 + EPS).contains(&u)
+                if (-EPS..=1.0 + EPS).contains(&u)
                     && (-EPS..=1.0 + EPS).contains(&v)
+                    && at(u, v).is_some_and(|q| (q - p).hypot() < 1e-6)
                 {
-                    return Some((r, c, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)));
+                    return Some((r as usize, c as usize, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)));
                 }
             }
         }
@@ -1068,7 +1226,9 @@ impl Mesh {
     }
 
     /// A column of nodes between columns `c` and `c + 1`, `t` of the way
-    /// across, positions, colours and opacity mixed from its neighbours.
+    /// across, positions, colours and opacity mixed from its neighbours;
+    /// a curved grid line is cut there, the neighbours' handles shortened
+    /// to the cut.
     pub fn insert_column(&mut self, c: usize, t: f64) {
         let cols = self.cols as usize + 1;
         if c + 1 >= cols {
@@ -1076,12 +1236,22 @@ impl Mesh {
         }
         let mut nodes = Vec::with_capacity(self.nodes.len() + self.rows as usize + 1);
         for (k, n) in self.nodes.iter().enumerate() {
-            nodes.push(*n);
+            let mut n = *n;
             if k % cols == c {
                 if let Some(next) = self.nodes.get(k + 1) {
-                    nodes.push(mix_nodes(n, next, t));
+                    let mut next = *next;
+                    let between = split_nodes(&mut n, &mut next, t, true);
+                    nodes.push(n);
+                    nodes.push(between);
+                    continue;
+                }
+            } else if k % cols == c + 1 {
+                if let Some(prev) = self.nodes.get(k - 1) {
+                    let mut prev = *prev;
+                    split_nodes(&mut prev, &mut n, t, true);
                 }
             }
+            nodes.push(n);
         }
         self.nodes = nodes;
         self.cols += 1;
@@ -1094,15 +1264,28 @@ impl Mesh {
             return;
         }
         let at = (r + 1) * cols;
+        let mut above: Vec<MeshNode> = Vec::with_capacity(cols);
+        let mut below: Vec<MeshNode> = Vec::with_capacity(cols);
         let row: Vec<MeshNode> = (0..cols)
             .filter_map(|c| {
-                let n = self.nodes.get(r * cols + c)?;
-                let next = self.nodes.get((r + 1) * cols + c)?;
-                Some(mix_nodes(n, next, t))
+                let mut n = *self.nodes.get(r * cols + c)?;
+                let mut next = *self.nodes.get((r + 1) * cols + c)?;
+                let between = split_nodes(&mut n, &mut next, t, false);
+                above.push(n);
+                below.push(next);
+                Some(between)
             })
             .collect();
         if row.len() != cols || at > self.nodes.len() {
             return;
+        }
+        for (c, (a, b)) in above.into_iter().zip(below).enumerate() {
+            if let Some(n) = self.nodes.get_mut(r * cols + c) {
+                *n = a;
+            }
+            if let Some(n) = self.nodes.get_mut((r + 1) * cols + c) {
+                *n = b;
+            }
         }
         self.nodes.splice(at..at, row);
         self.rows += 1;
@@ -1139,13 +1322,85 @@ impl Mesh {
     }
 }
 
-/// The node `t` of the way from `a` to `b`.
-fn mix_nodes(a: &MeshNode, b: &MeshNode, t: f64) -> MeshNode {
-    MeshNode {
-        pos: a.pos.lerp(b.pos, t),
-        color: lerp_color(a.color, b.color, t as f32),
-        alpha: a.alpha + (b.alpha - a.alpha) * t as f32,
+/// The node `removed` between `a` and `b` on a grid line (`across`
+/// true: along a row, else down a column) goes: the handles of `a` and
+/// `b` towards it are stretched back to span the whole line, undoing the
+/// cut `split_nodes` made (the cut's place taken from the chords).
+fn merge_nodes(a: &mut MeshNode, b: &mut MeshNode, removed: &MeshNode, across: bool) {
+    if a.handles.is_none() && b.handles.is_none() && removed.handles.is_none() {
+        return;
     }
+    let (fwd, back) = if across {
+        (MeshHandle::Right, MeshHandle::Left)
+    } else {
+        (MeshHandle::Down, MeshHandle::Up)
+    };
+    let la = (removed.pos - a.pos).hypot();
+    let lb = (b.pos - removed.pos).hypot();
+    if la + lb <= 0.0 {
+        return;
+    }
+    let t = (la / (la + lb)).clamp(0.05, 0.95);
+    let ha = a.pos + (a.handle(fwd, removed.pos) - a.pos) / t;
+    let hb = b.pos + (b.handle(back, removed.pos) - b.pos) / (1.0 - t);
+    a.set_handle(fwd, ha);
+    b.set_handle(back, hb);
+}
+
+/// The node `t` of the way from `a` to `b` along the grid line between
+/// them (`across` true: `b` is the next column, else the next row).
+/// With handles, the line is cut there: the new node takes the cut's
+/// handles and `a` and `b` have theirs shortened to it, so the line
+/// keeps its shape; its handles across the line are mixed from the two.
+fn split_nodes(a: &mut MeshNode, b: &mut MeshNode, t: f64, across: bool) -> MeshNode {
+    let color = lerp_color(a.color, b.color, t as f32);
+    let alpha = a.alpha + (b.alpha - a.alpha) * t as f32;
+    if a.handles.is_none() && b.handles.is_none() {
+        return MeshNode {
+            pos: a.pos.lerp(b.pos, t),
+            color,
+            alpha,
+            handles: None,
+        };
+    }
+    use crate::geometry::{CubicBez, ParamCurve};
+    let (fwd, back, side0, side1) = if across {
+        (
+            MeshHandle::Right,
+            MeshHandle::Left,
+            MeshHandle::Down,
+            MeshHandle::Up,
+        )
+    } else {
+        (
+            MeshHandle::Down,
+            MeshHandle::Up,
+            MeshHandle::Right,
+            MeshHandle::Left,
+        )
+    };
+    let curve = CubicBez::new(a.pos, a.handle(fwd, b.pos), b.handle(back, a.pos), b.pos);
+    let (first, second) = (curve.subsegment(0.0..t), curve.subsegment(t..1.0));
+    let pos = first.p3;
+    // The sideways handles: the neighbours' offsets mixed.
+    let side = |h: MeshHandle| {
+        let oa = a.handle(h, a.pos) - a.pos;
+        let ob = b.handle(h, b.pos) - b.pos;
+        pos + oa.lerp(ob, t)
+    };
+    let mut n = MeshNode {
+        pos,
+        color,
+        alpha,
+        handles: None,
+    };
+    n.set_handle(side0, side(side0));
+    n.set_handle(side1, side(side1));
+    n.set_handle(back, first.p2);
+    n.set_handle(fwd, second.p1);
+    a.set_handle(fwd, first.p1);
+    b.set_handle(back, second.p2);
+    n
 }
 
 impl Fill {
@@ -1598,6 +1853,74 @@ mod tests {
         assert_eq!((m.rows, m.cols), (3, 3));
         assert!(m.locate(Point::new(-5.0, 5.0)).is_none());
         assert!(!m.add_lines_at(Point::new(-5.0, 5.0), 0.5));
+    }
+
+    /// A node's handles follow it when it moves or the mesh is
+    /// transformed; a column added through a curved cell cuts the curve
+    /// where the new node is, keeping the grid line's shape (#896).
+    #[test]
+    fn mesh_handles_move_with_their_nodes_and_cut_at_new_lines() {
+        use crate::geometry::{Affine, ParamCurve, Vec2};
+        let b = crate::geometry::Rect::new(0.0, 0.0, 30.0, 10.0);
+        let mut m = Mesh::new(b, 1, 1, Color::WHITE);
+        assert!(!m.is_curved());
+        // The top line bows down to y = 7.5 in the middle.
+        m.nodes[0].set_handle(MeshHandle::Right, Point::new(10.0, 10.0));
+        m.nodes[1].set_handle(MeshHandle::Left, Point::new(20.0, 10.0));
+        assert!(m.is_curved());
+        let before = m.edge(0, 0, true).unwrap();
+        assert!((before.eval(0.5).y - 7.5).abs() < 1e-9);
+        // The other handles are straight thirds.
+        let third = m.nodes[0].handle(MeshHandle::Down, m.nodes[2].pos);
+        assert!(
+            (third - Point::new(0.0, 10.0 / 3.0)).hypot() < 1e-9,
+            "{third:?}"
+        );
+        // Moved and transformed, the handles come along.
+        let mut moved = m.clone();
+        moved.nodes[0].translate(Vec2::new(1.0, 2.0));
+        assert_eq!(moved.nodes[0].handles.unwrap()[0], Point::new(11.0, 12.0));
+        let scaled = m.transformed(Affine::scale(2.0));
+        assert_eq!(scaled.nodes[1].handles.unwrap()[1], Point::new(40.0, 20.0));
+        assert_eq!(scaled.nodes[1].pos, Point::new(60.0, 0.0));
+        // A column through the middle: the curve is cut there and keeps
+        // its shape; the new node sits on it.
+        m.insert_column(0, 0.5);
+        assert_eq!((m.rows, m.cols), (1, 2));
+        let n = m.node(0, 1).unwrap();
+        assert!((n.pos - before.eval(0.5)).hypot() < 1e-9, "{:?}", n.pos);
+        let left = m.edge(0, 0, true).unwrap();
+        let right = m.edge(0, 1, true).unwrap();
+        assert!((left.eval(0.5) - before.eval(0.25)).hypot() < 1e-9);
+        assert!((right.eval(0.5) - before.eval(0.75)).hypot() < 1e-9);
+        // The straight bottom line stays straight.
+        let bottom = m.edge(1, 0, true).unwrap();
+        assert!((bottom.eval(0.5) - Point::new(7.5, 10.0)).hypot() < 1e-9);
+        // The patch's corner and middle.
+        let mid = m.patch_point(0, 0, 0.5, 0.5).unwrap();
+        assert!(
+            (mid.x - 7.5).abs() < 1e-9 && mid.y > 5.0 && mid.y < 10.0,
+            "{mid:?}"
+        );
+        assert_eq!(m.patch_point(0, 0, 0.0, 0.0).unwrap(), Point::new(0.0, 0.0));
+        // Locating goes by the curved patch: a point under the bowed top
+        // line is in the cell, a point just above it (inside the straight
+        // box) is not; the place found maps back to the point.
+        let (r, c, u, v) = m.locate(Point::new(7.5, 9.0)).expect("inside");
+        assert_eq!((r, c), (0, 0));
+        let back = m.patch_point(r as u32, c as u32, u, v).unwrap();
+        assert!((back - Point::new(7.5, 9.0)).hypot() < 1e-6, "{back:?}");
+        assert!(m.locate(Point::new(15.0, 6.5)).is_none());
+        // Removing the added column stretches the handles back: the top
+        // line is the curve it was.
+        let i = m.nearest(n.pos).unwrap();
+        assert!(m.remove_lines_through(i));
+        assert_eq!((m.rows, m.cols), (1, 1));
+        let restored = m.edge(0, 0, true).unwrap();
+        for k in 0..=10 {
+            let t = k as f64 / 10.0;
+            assert!((restored.eval(t) - before.eval(t)).hypot() < 1e-6, "{t}");
+        }
     }
 
     #[test]

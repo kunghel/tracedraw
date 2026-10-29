@@ -46,11 +46,37 @@ later, and removing the last one gives the original back.
 
 ## Effect dialogs
 
+- Live preview on the drawing: while the dialog is open and its Preview
+  box is ticked (it starts ticked on the desktop and cleared in the
+  browser), every selected object shows the
+  effect with the values the dialog holds, from the moment it opens and
+  again each time a value changes, without any button. The preview is
+  made off the interface thread (the canvas keeps answering; a spinner
+  and "Updating the preview..." show beside the box meanwhile), starts
+  once a changed value has rested 80 ms (300 ms at most while a slider
+  keeps moving), one at a time (a value changed meanwhile follows when
+  the running one is done), and never again for the same values. Every
+  preview starts from the objects as they were without it, so previews
+  never stack. OK keeps what the drawing shows as one undo step ("Add
+  Effect" or "Edit Effect") without making it again; Cancel, Esc, the
+  close button or clearing the box put the drawing and the history back
+  exactly as they were (no undo step, redo kept). Editing from the FX
+  section previews nothing until a value differs from the effect as it
+  is. At most one preview is being made at a time: one dropped (the box
+  cleared, Cancel, the dialog closed) stops before its next effect and
+  the next one waits until it has, so toggling the box on a large
+  picture never runs several makings side by side. Values whose making
+  failed are not made again until a value changes. In the browser the
+  preview is made on the interface thread, so the box starts cleared
+  there and opening an effect never stalls the page.
 - Before and after previews of the first selected bitmap side by side:
   a copy at most 240 pixels across, worked out again only when a setting
   changes. Settings measured in pixels (radius, size, width, height,
   distance, period, amplitude, spacing and the like) are scaled with the
   copy, never below their minimum, so the preview looks like the result.
+  The before view is the bitmap without the effect being set up (its
+  effects so far on the copy), whether or not the live preview is on the
+  drawing.
 - Settings: sliders for numbers, a dial and a number for directions
   (degrees counter-clockwise from the right), lists, check boxes and
   colour buttons. Reset puts every setting back to its default.
@@ -390,6 +416,34 @@ through the master curve, then its channel's curve.
   chosen and all three with Always adjust all channels
   (`channel_lists_limit_levels_and_target_balance`); a preset file keeps
   only its numbers (`presets_keep_numbers_only`).
+- Given a selected bitmap and the Blur dialog, then the drawing shows
+  the blur as soon as the dialog opens and follows a changed radius
+  with no button pressed, idle frames make nothing again, the dialog
+  closed by Esc leaves the bitmap and the history as they were, and OK
+  keeps the preview shown as one "Add Effect" step
+  (`fx::preview::tests::the_effect_shows_on_the_drawing_while_its_dialog_is_open`).
+- Given the Preview box, when it is cleared, then the effect leaves the
+  drawing with no step left, ticked again it comes back, and OK with
+  the box cleared makes the effect then, still one step
+  (`the_preview_box_puts_the_effect_on_the_drawing_and_takes_it_off`).
+- Given an effect edited from the FX section, then nothing is made
+  until a value differs, the change then shows in the effect's place,
+  and OK is one "Edit Effect" step
+  (`editing_an_effect_previews_the_change_in_its_place`); a vector
+  object previews as its picture and is itself again on Cancel
+  (`a_vector_object_previews_its_picture`); a cancelled preview job
+  gives nothing (`a_cancelled_job_gives_nothing`), and a raised flag
+  stops the render before its next effect
+  (`a_raised_flag_stops_the_render`).
+- Given a dropped preview whose thread still runs, then no second one
+  starts beside it until it has ended, also when the Preview box is
+  cleared and ticked again
+  (`a_dropped_preview_still_running_holds_the_next_one_back`); given a
+  preview whose thread died, then the same values are not made again
+  frame after frame, and a changed value is made
+  (`a_failed_preview_is_not_made_again_until_a_value_changes`); the
+  box starts cleared in the browser
+  (`the_preview_box_starts_cleared_in_the_browser`).
 - Given a preview at a quarter of the size, then pixel settings are a
   quarter, never below their minimum, and other settings stay
   (`previews_scale_pixel_sizes_only`).

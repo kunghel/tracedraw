@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 pub const LATEST_URL: &str = "https://api.github.com/repos/igtoth/tracedraw/releases/latest";
 /// The release list, for when no download fits this system.
 pub const RELEASES_PAGE: &str = "https://github.com/igtoth/tracedraw/releases";
+/// TraceDraw's page in the Microsoft Store app, which Help > Updates opens
+/// in a copy installed from the Store.
+pub const STORE_PAGE: &str = "ms-windows-store://pdp/?productid=9P50L12VHF33";
 /// How often the check at start runs, seconds.
 pub const DAILY: u64 = 24 * 60 * 60;
 
@@ -183,6 +186,35 @@ pub fn linux_kind(
     } else {
         Kind::Tarball
     }
+}
+
+/// Whether this copy runs from the Microsoft Store's package (MSIX): it
+/// then has a package identity. The Store updates such a copy itself and
+/// its policy (10.2.10.1) refuses an app that offers downloads of code, so
+/// it never asks GitHub for a release.
+#[cfg(windows)]
+pub fn store_install() -> bool {
+    static STORE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STORE.get_or_init(|| {
+        #[link(name = "kernel32", kind = "raw-dylib")]
+        unsafe extern "system" {
+            fn GetCurrentPackageFullName(length: *mut u32, name: *mut u16) -> i32;
+        }
+        // A packaged process answers that the empty buffer is too small;
+        // one without a package answers APPMODEL_ERROR_NO_PACKAGE (15700).
+        const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+        let mut length = 0u32;
+        // SAFETY: with a zero length and no buffer the call only reports
+        // the length the name needs, or that the process has no package; it
+        // writes nothing but `length`.
+        let status = unsafe { GetCurrentPackageFullName(&mut length, std::ptr::null_mut()) };
+        status == ERROR_INSUFFICIENT_BUFFER
+    })
+}
+
+#[cfg(not(windows))]
+pub fn store_install() -> bool {
+    false
 }
 
 /// How the running copy was installed.

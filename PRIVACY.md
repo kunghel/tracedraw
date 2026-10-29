@@ -50,6 +50,8 @@ at first start and can turn off at any time:
   downloaded or installed unless you press Download (or, for the Linux
   AppImage, Install), and downloads come from the project's GitHub
   releases. GitHub sees these requests under its own privacy policy.
+  The copy installed from the Microsoft Store makes no update check:
+  the Store updates it, and Help > Updates opens its Store page.
 
 - Help, the project's pages and links you click open in your web
   browser, which then follows its own privacy policy.

@@ -13,6 +13,7 @@ pub mod color;
 pub mod creative;
 pub mod distort;
 pub mod noise;
+pub mod preview;
 pub mod texture;
 pub mod util;
 
@@ -326,10 +327,14 @@ pub fn reach(e: &BitmapEffect, w: u32, h: u32) -> u32 {
 
 /// The result of a bitmap's effects: the image and its place. With
 /// `inflate` the original grows by what the visible effects reach first.
+/// With `cancel` raised it stops before the next effect and gives
+/// `None`, so a dropped live preview ends soon.
 pub fn render_stack(
     stack: &BitmapFxStack,
     inflate: bool,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Option<(RgbaImage, tracedraw_core::Rect)> {
+    let cancelled = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     let mut img = crate::bitmap_fx::decode(&stack.png)?;
     let (w, h) = img.dimensions();
     let pad: u32 = if inflate {
@@ -351,6 +356,9 @@ pub fn render_stack(
         rect = tracedraw_core::Rect::new(rect.x0 - mx, rect.y0 - my, rect.x1 + mx, rect.y1 + my);
     }
     for e in stack.effects.iter().filter(|e| e.visible) {
+        if cancelled() {
+            return None;
+        }
         img = apply_effect(&img, e);
     }
     Some((img, rect))
@@ -465,6 +473,19 @@ pub fn vector_raster_fx(
     auto_inflate: bool,
     dpi: f64,
 ) -> Option<Box<tracedraw_core::document::RasterFx>> {
+    vector_raster_fx_until(shape, symbols, effects, auto_inflate, dpi, None)
+}
+
+/// [`vector_raster_fx`] that gives up (`None`) once `cancel` is raised,
+/// checked between the picture and each effect.
+pub fn vector_raster_fx_until(
+    shape: &tracedraw_core::Shape,
+    symbols: &[tracedraw_core::Symbol],
+    effects: Vec<BitmapEffect>,
+    auto_inflate: bool,
+    dpi: f64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Option<Box<tracedraw_core::document::RasterFx>> {
     use tracedraw_core::document::RasterFx;
     let mut target = shape.clone();
     target.raster_fx = Some(Box::new(RasterFx {
@@ -484,7 +505,7 @@ pub fn vector_raster_fx(
         png: png.into(),
         effects: effects.clone(),
     };
-    let (img, rect) = render_stack(&stack, auto_inflate)?;
+    let (img, rect) = render_stack(&stack, auto_inflate, cancel)?;
     let png = crate::bitmap_fx::encode(&img)?;
     Some(Box::new(RasterFx {
         effects,
@@ -510,69 +531,14 @@ impl crate::app::App {
         id: tracedraw_core::ShapeId,
         f: impl FnOnce(&mut Vec<BitmapEffect>),
     ) -> Option<tracedraw_core::Command> {
-        use tracedraw_core::document::ShapeKind;
-        let s = self.doc().find_shape(id)?;
-        if takes_vector_fx(&s.kind) {
-            let mut effects = s
-                .raster_fx
-                .as_ref()
-                .map(|fx| fx.effects.clone())
-                .unwrap_or_default();
-            f(&mut effects);
-            let fx = if effects.is_empty() {
-                None
-            } else {
-                Some(vector_raster_fx(
-                    s,
-                    &self.doc().symbols,
-                    effects,
-                    self.doc().metadata.auto_inflate_bitmaps(),
-                    vector_fx_dpi(&self.doc().metadata),
-                )?)
-            };
-            return Some(tracedraw_core::Command::SetRasterFx { shape: id, fx });
-        }
-        let ShapeKind::Bitmap {
-            rect,
-            width_px,
-            height_px,
-            png,
-            fx,
-        } = &s.kind
-        else {
-            return None;
-        };
-        let mut stack = match fx {
-            Some(st) => (**st).clone(),
-            None => BitmapFxStack {
-                rect: *rect,
-                width_px: *width_px,
-                height_px: *height_px,
-                png: png.clone(),
-                effects: Vec::new(),
-            },
-        };
-        f(&mut stack.effects);
-        let kind = if stack.effects.is_empty() {
-            ShapeKind::Bitmap {
-                rect: stack.rect,
-                width_px: stack.width_px,
-                height_px: stack.height_px,
-                png: stack.png,
-                fx: None,
-            }
-        } else {
-            let (img, r) = render_stack(&stack, self.doc().metadata.auto_inflate_bitmaps())?;
-            let png = crate::bitmap_fx::encode(&img)?;
-            ShapeKind::Bitmap {
-                rect: r,
-                width_px: img.width(),
-                height_px: img.height(),
-                png: png.into(),
-                fx: Some(Box::new(stack)),
-            }
-        };
-        Some(tracedraw_core::Command::SetShapeKind { shape: id, kind })
+        // The same making as the dialogs' live preview (`fx::preview`).
+        self.fx_target(id)?.command(
+            f,
+            &self.doc().symbols,
+            self.doc().metadata.auto_inflate_bitmaps(),
+            vector_fx_dpi(&self.doc().metadata),
+            None,
+        )
     }
 
     /// Add an effect to every selected bitmap, in one undo step.
@@ -647,12 +613,22 @@ impl crate::app::App {
     }
 
     /// [`vector_base`] of `s`, kept for the last object asked about until
-    /// it changes (the effect dialogs ask every frame).
+    /// it changes (the effect dialogs ask every frame). The picture is the
+    /// object without its effects, so a change of the effects alone (the
+    /// dialogs' live preview) keeps it.
     pub fn vector_base_cached(
         &self,
         s: &tracedraw_core::Shape,
     ) -> Option<(tracedraw_core::SharedBytes, u32, u32, tracedraw_core::Rect)> {
-        let key = (s.id, s.raster_source());
+        let source = match &s.raster_fx {
+            Some(_) => {
+                let mut bare = s.clone();
+                bare.raster_fx = None;
+                bare.raster_source()
+            }
+            None => s.raster_source(),
+        };
+        let key = (s.id, source);
         if let Some((k, v)) = self.vector_fx_base.borrow().as_ref() {
             if *k == key {
                 return Some(v.clone());
@@ -1060,14 +1036,14 @@ mod tests {
             png: png.into(),
             effects: vec![blur.clone()],
         };
-        let (out, rect) = render_stack(&stack, true).expect("renders");
+        let (out, rect) = render_stack(&stack, true, None).expect("renders");
         assert!(out.width() > 24 && rect.x0 < 0.0, "{:?}", rect);
-        let (flat, r2) = render_stack(&stack, false).expect("renders");
+        let (flat, r2) = render_stack(&stack, false, None).expect("renders");
         assert_eq!((flat.dimensions(), r2), ((24, 20), stack.rect));
         // Hidden effects do nothing.
         let mut hidden = stack.clone();
         hidden.effects[0].visible = false;
-        let (same, _) = render_stack(&hidden, true).expect("renders");
+        let (same, _) = render_stack(&hidden, true, None).expect("renders");
         assert_eq!(same, src);
     }
 
