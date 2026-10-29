@@ -54,6 +54,8 @@ démarrage. Il est activé au départ : une fois par jour, TraceDraw vérifie
 discrètement au démarrage et ne se manifeste que lorsqu'une version plus
 récente que vous n'avez pas ignorée est sortie.
 
+Au premier démarrage, TraceDraw demande s'il doit rechercher les mises à jour : [[updates.policy_always]] ou [[updates.policy_never]]. Tant que vous n'avez pas répondu, TraceDraw n'établit aucune connexion de lui-même. La réponse règle cette option, que vous pouvez modifier ici à tout moment.
+
 > **Remarque :** La version pour navigateur est toujours la plus récente.
 > Là, [[menu.help > menu.help.updates]] ouvre la page des versions.
 

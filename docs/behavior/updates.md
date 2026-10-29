@@ -42,9 +42,17 @@ Updates opens the releases page).
   was; the dialog says why and offers Download. The new version runs
   from the next start. Windows, macOS, the `.deb` and the tar.gz keep
   Download and the system's installer.
-- Options > Global > General, Check for updates at start (on by
-  default): once a day, the same check runs in the background at start;
-  only a newer release that was not skipped is shown, nothing otherwise.
+- First start: before any check runs on its own, a question asks
+  whether to check for updates, Always check or Never check
+  (`Dialog::UpdatePolicy`, settings `update_check_asked`). It waits for
+  any other start-up dialog to close. Until it is answered no request is
+  made, so a first start is silent on the network. Settings saved by
+  older versions have no answer, so the question is asked once after
+  updating. The answer sets the option below.
+- Options > Global > General, Check for updates at start (set by the
+  first-start answer): once a day, the same check runs in the background
+  at start; only a newer release that was not skipped is shown, nothing
+  otherwise.
 - A failed check (no connection) says why and offers the releases page.
 
 ## Checks
@@ -63,6 +71,9 @@ Updates opens the releases page).
 - `updates::tests::the_appimage_comes_with_its_digest`
 - `updates::tests::installing_replaces_the_file_only_when_it_checks_out`
 - `ui::dialogs::tests::the_updates_dialog_draws_every_state`
+- `app::tests::no_update_check_before_the_first_start_question`
+- `app::tests::the_first_start_answer_sets_the_update_option`
+- `app::tests::older_settings_have_not_answered_the_update_question`
 - `updates::tests::live_install_from_the_latest_release` (run by hand,
   needs the network): the 0.4.0 AppImage downloaded through GitHub's
   redirect, its digest checked and the file put in place.

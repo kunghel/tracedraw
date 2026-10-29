@@ -177,8 +177,10 @@ is one, it offers:
 - **Skip this version**;
 - **Close**.
 
-TraceDraw also checks once a day when it starts and shows only a newer
-release you did not skip. To turn that off: **Tools > Options > Global >
+The first time it starts, TraceDraw asks whether to check for updates
+(**Always check** or **Never check**) and connects to nothing on its own
+before you answer. With Always check, it checks once a day when it starts
+and shows only a newer release you did not skip. To change your answer: **Tools > Options > Global >
 General**, clear **Check for updates at start**. The browser version is
 always the latest; there, Help > Updates opens the releases page. See
 [the update notes](../behavior/updates.md).

@@ -24,6 +24,9 @@ if sys.argv[2] == "1":
     except (OSError, ValueError):
         s = {}
 s["ui_size"] = 1.0
+# No first-start update question and no network check in automation.
+s.setdefault("update_check_asked", True)
+s.setdefault("check_updates", False)
 json.dump(s, open(sys.argv[1], "w"), indent=2)
 PY
 Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 & XPID=$!

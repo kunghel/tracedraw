@@ -923,6 +923,9 @@ pub struct App {
     /// it is the one shown: the hint that hardware acceleration is off.
     pub status_opens_options: Option<String>,
     pub fit_pending: bool,
+    /// Set the view of Options > Display > View when a drawing opens
+    /// with the next fit (a drawing just opened or made, #1134).
+    pub open_view_pending: bool,
     pub units: Units,
     pub nudge_mm: f64,
     pub show_rulers: bool,
@@ -1035,6 +1038,8 @@ pub struct App {
     pub eyedropper_apply: bool,
     /// Bitmap sample box side in pixels: 1, 2 or 5.
     pub eyedropper_sample: u32,
+    /// The colour eyedroppers' readout beside the pointer (#990).
+    pub eyedropper_hover: crate::eyedropper::HoverReadout,
     pub canvas_rect: egui::Rect,
     pub pointer_page: Option<Point>,
     /// The palette shown in the bottom strip (the first visible one).
@@ -1046,6 +1051,11 @@ pub struct App {
     pub palette_scroll: usize,
     /// The same for the document palette row.
     pub doc_palette_scroll: usize,
+    /// The palettes shown after the first one (Window > Color Palettes),
+    /// a strip each (#1164).
+    pub extra_palettes: Vec<crate::ui::palette::ExtraRow>,
+    /// What a strip no longer there scrolls (nothing reads it).
+    pub palette_scroll_spare: usize,
     /// The document palette swatch clicked last (Delete color acts on it).
     pub doc_palette_current: Option<usize>,
     /// Pop-up of a palette colour's shades (click and hold a swatch): the
@@ -1116,6 +1126,14 @@ pub struct App {
     pub join_settings: crate::corners::JoinSettings,
     /// The Fit Objects to Path docker's spacing, offset and turning.
     pub fit_path: crate::ops2::FitPathSettings,
+    /// The objects (the drawing and the selection, the path last) the
+    /// Fit Objects to Path docker's values were set for, and whether a
+    /// value was entered for them: other objects start from the defaults
+    /// with no preview (#1136).
+    pub fit_path_for: Option<(Option<u64>, Vec<ShapeId>)>,
+    pub fit_path_edited: bool,
+    /// The Fit Objects to Path preview and what it was worked out for.
+    pub fit_path_preview: Option<(crate::ops2::FitPreviewKey, Vec<tracedraw_core::BezPath>)>,
     /// Outlines a docker previews on the canvas this frame (page space).
     pub docker_preview: Vec<tracedraw_core::geometry::BezPath>,
     /// A point a docker marks on the drawing (the Coordinates docker's
@@ -1419,6 +1437,10 @@ pub struct App {
     /// The Table tool's drag and bar choices.
     pub table_ui: crate::table_tool::TableUi,
     pub missing_fonts: Vec<String>,
+    /// Ask which font draws each missing family after a drawing opens
+    /// (the Missing Fonts dialog, #936): the windowed application only;
+    /// automated opens (tests, scripts, the MCP server) keep the note.
+    pub ask_missing_fonts: bool,
     /// Thumbnails of recent drawings loaded for the Welcome Screen (none
     /// when a drawing has no thumbnail).
     pub recent_thumbs: std::collections::HashMap<PathBuf, Option<egui::TextureHandle>>,
@@ -1531,10 +1553,16 @@ pub struct App {
     pub fill_node: Option<usize>,
     /// A font shown in the drawing while a font list points at it.
     pub live_font: Option<crate::ui::font_list::LiveFont>,
+    /// A variable font axis slider is being dragged: the text shows its
+    /// value as a preview the history does not keep (#870).
+    pub live_axis: bool,
     pub blend_accel_objects: f64,
     pub blend_accel_colors: f64,
     /// The Knife's mode, gap and pieces (its bar).
     pub knife: crate::knife::KnifeSettings,
+    /// Segment Delete drags a freehand stroke rather than a box (its
+    /// bar; Alt at the press takes the other, #1150).
+    pub segment_freehand: bool,
     /// Properties docker section to expand: 0 fill, 1 outline.
     /// A section of the Properties docker to expand on the next frame
     /// (0 fill, 1 outline), set by F11 and F12.
@@ -2106,6 +2134,8 @@ impl App {
         app.show_welcome = false;
         // Tests read PDFs without the question in between.
         app.settings.formats.pdf_ask_text = false;
+        // Nor the fonts: automated opens are never stopped by a question.
+        app.ask_missing_fonts = false;
         app
     }
 
@@ -2152,6 +2182,7 @@ impl App {
             status: String::new(),
             status_opens_options: None,
             fit_pending: true,
+            open_view_pending: true,
             units: Units::Millimeters,
             nudge_mm: 2.54,
             show_rulers: true,
@@ -2223,12 +2254,15 @@ impl App {
             eyedropper_groups: Default::default(),
             eyedropper_apply: false,
             eyedropper_sample: 1,
+            eyedropper_hover: Default::default(),
             canvas_rect: egui::Rect::NOTHING,
             pointer_page: None,
             palette: crate::palette::default_cmyk(),
             palette_rgb: crate::ui::palette::as_rgb(&crate::palette::default_cmyk()),
             palette_scroll: 0,
             doc_palette_scroll: 0,
+            extra_palettes: Vec::new(),
+            palette_scroll_spare: 0,
             doc_palette_current: None,
             palette_shades: None,
             palette_expanded: None,
@@ -2262,6 +2296,9 @@ impl App {
             corners: Default::default(),
             join_settings: Default::default(),
             fit_path: Default::default(),
+            fit_path_for: None,
+            fit_path_edited: false,
+            fit_path_preview: None,
             docker_preview: Vec::new(),
             docker_preview_point: None,
             dialog: crate::ui::dialogs::Dialog::None,
@@ -2421,6 +2458,7 @@ impl App {
             table_edit: None,
             table_ui: Default::default(),
             missing_fonts: Vec::new(),
+            ask_missing_fonts: true,
             shaping_op: crate::ops::Shaping::Weld,
             shaping_leave: crate::settings::PanelPrefs::default().shaping_leave,
             color_model: 1,
@@ -2470,9 +2508,11 @@ impl App {
             blend_rotation: 0.0,
             fill_node: None,
             live_font: None,
+            live_axis: false,
             blend_accel_objects: 0.0,
             blend_accel_colors: 0.0,
             knife: Default::default(),
+            segment_freehand: false,
             properties_open: None,
             area_fill_color: Color::cmyk_pct(0.0, 0.0, 100.0, 0.0),
             area_fill_mode: 0,
@@ -3023,6 +3063,7 @@ impl App {
             recognize: self.recognize,
             sketch: self.sketch,
             knife: self.knife,
+            segment_freehand: self.segment_freehand,
         }
     }
 
@@ -3094,6 +3135,7 @@ impl App {
             gap: finite(t.knife.gap, 0.0, 1000.0, 0.0),
             ..t.knife
         };
+        self.segment_freehand = t.segment_freehand;
         self.sketch = crate::recognize::SketchSettings {
             join_distance: finite(t.sketch.join_distance, 0.0, 1000.0, 5.0),
             smoothing: t.sketch.smoothing.min(5),
@@ -5567,6 +5609,11 @@ impl App {
     /// Open `path`; `password` opens a protected PDF (empty: none).
     pub fn open_path_with_password(&mut self, path: PathBuf, password: &str) {
         let ext = Self::file_kind(&path);
+        // A package's fonts, beside the drawing, before its text is laid
+        // out (#852).
+        if ext == "tdraw" {
+            self.load_package_fonts(&path);
+        }
         // Objects of a `.cdr` file left out because they could not be read.
         let mut unread = 0usize;
         // The version of an opened `.cdr` file: saving keeps it.
@@ -6090,6 +6137,7 @@ impl App {
             let version = self
                 .tdraw_version
                 .unwrap_or(tracedraw_core::document::TDRAW_FORMAT_VERSION);
+            self.keep_saved_view();
             let fonts = tracedraw_text::fonts();
             let carried = fonts.with_carried_fonts(self.engine.document());
             let doc = if self.tdraw_embed_fonts {
@@ -6353,6 +6401,20 @@ impl App {
         if crate::files::WEB || cfg!(test) {
             return;
         }
+        self.update_tick_desktop(now, ctx);
+    }
+
+    /// [`Self::update_tick`] on a desktop: first ask whether to check at
+    /// all (once, at first start), then the daily check.
+    fn update_tick_desktop(&mut self, now: u64, ctx: Option<egui::Context>) {
+        if !self.settings.update_check_asked {
+            // No check before the answer; the question waits for any
+            // other start-up dialog (recovery, notes) to close.
+            if matches!(self.dialog, crate::ui::dialogs::Dialog::None) {
+                self.dialog = crate::ui::dialogs::Dialog::UpdatePolicy;
+            }
+            return;
+        }
         if self.settings.check_updates
             && now.saturating_sub(self.settings.last_update_check) >= crate::updates::DAILY
             && self.updates.get() == crate::updates::UpdateState::Idle
@@ -6375,6 +6437,14 @@ impl App {
                 _ => self.update_quiet = false,
             }
         }
+    }
+
+    /// The answer to the first-start question: check for updates once a
+    /// day (`always`) or never. Options > Global > General changes it later.
+    pub fn set_update_policy(&mut self, always: bool) {
+        self.settings.check_updates = always;
+        self.settings.update_check_asked = true;
+        self.settings.save();
     }
 
     /// A clean exit: this session's marker and auto-backups go.
@@ -6537,6 +6607,18 @@ impl App {
             return;
         }
         let w = &self.settings.warnings;
+        // The windowed application asks which font draws each missing
+        // one (#936); the note about unread objects follows.
+        if self.ask_missing_fonts && w.missing_fonts && !self.missing_fonts.is_empty() {
+            self.dialog = crate::ui::dialogs::Dialog::MissingFonts(
+                crate::ui::missing_fonts::MissingFontsState::new(
+                    name,
+                    if w.unread_objects { unread } else { 0 },
+                    &self.missing_fonts,
+                ),
+            );
+            return;
+        }
         let notes = crate::ui::dialogs::OpenNotes {
             name,
             unread: if w.unread_objects { unread } else { 0 },
@@ -7230,6 +7312,12 @@ impl App {
     }
 
     /// File > Publish to PDF: the dialog for the active drawing.
+    /// File > Package: the Package Drawing dialog (#852).
+    pub fn package_dialog(&mut self) {
+        self.dialog =
+            crate::ui::dialogs::Dialog::Package(crate::ui::package_dialog::PackageState::new(self));
+    }
+
     pub fn publish_pdf(&mut self) {
         self.dialog = crate::ui::dialogs::Dialog::PublishPdf(Box::new(
             crate::ui::publish_pdf::PublishState::new(self),
@@ -7240,6 +7328,87 @@ impl App {
 
     pub fn zoom_to_page(&mut self) {
         self.fit_pending = true;
+    }
+
+    /// The view a drawing opens in, in a window showing `canvas`, after
+    /// the page was fitted to it: Options > Display > View when a drawing
+    /// opens (#1134). As saved takes the page, the point in the middle of
+    /// the window and the zoom the drawing was saved with; a drawing
+    /// saved without them (or with numbers that cannot be used) stays
+    /// fitted to the page.
+    pub fn apply_open_view(&mut self, canvas: egui::Rect) {
+        use crate::settings::OpenView;
+        let keep = self.canvas_rect;
+        self.canvas_rect = canvas;
+        match self.settings.open_view {
+            OpenView::FitPage => {}
+            OpenView::FitObjects => {
+                if !self.multipage {
+                    if let Some(b) = self.doc().content_bounds(self.page).ok().flatten() {
+                        self.view.fit(
+                            b.inflate(b.width() * 0.05 + 1.0, b.height() * 0.05 + 1.0),
+                            canvas,
+                        );
+                    }
+                }
+            }
+            OpenView::PageWidth => self.zoom_to_page_width(),
+            OpenView::PageHeight => self.zoom_to_page_height(),
+            OpenView::Actual => {
+                let c = self.page_rect().center();
+                self.centre_view_at(c, 100.0, canvas);
+            }
+            OpenView::AsSaved => {
+                let pages = self.doc().pages.len();
+                if let Some(v) = self.doc().saved_view.filter(|v| v.is_valid(pages)) {
+                    if let Some(id) = self.doc().pages.get(v.page).map(|p| p.id) {
+                        if self.multipage {
+                            self.multipage_activate(id);
+                        } else if id != self.page {
+                            self.page = id;
+                            self.view.fit(self.fit_rect(), canvas);
+                        }
+                        if !self.multipage {
+                            self.centre_view_at(
+                                Point::new(v.x, v.y),
+                                v.zoom_percent as f32,
+                                canvas,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        self.canvas_rect = keep;
+    }
+
+    /// Put page point `p` in the middle of `canvas` at `percent` zoom.
+    fn centre_view_at(&mut self, p: Point, percent: f32, canvas: egui::Rect) {
+        let zoom = (percent / 100.0 * self.zoom_100()).clamp(0.05, 400.0);
+        if !zoom.is_finite() {
+            return;
+        }
+        let c = canvas.center();
+        self.view.zoom = zoom;
+        self.view.origin = Pos2::new(c.x - p.x as f32 * zoom, c.y + p.y as f32 * zoom);
+    }
+
+    /// Keep the page, the point in the middle of the window and the zoom
+    /// in the drawing, for As saved (#1134); no undo step, no change mark.
+    pub fn keep_saved_view(&mut self) {
+        let c = self.view.to_page(self.canvas_rect.center());
+        let view = tracedraw_core::document::SavedView {
+            page: self.page_index(),
+            x: c.x,
+            y: c.y,
+            zoom_percent: self.zoom_percent() as f64,
+        };
+        let view = view.is_valid(self.doc().pages.len()).then_some(view);
+        if view != self.doc().saved_view {
+            if let Err(e) = self.engine.run(&Command::SetSavedView { view }) {
+                log::warn!("saved view: {e}");
+            }
+        }
     }
 
     /// Zoom so the page's width fills the window, keeping the vertical
@@ -8757,5 +8926,52 @@ mod tests {
                 span.font_family
             );
         }
+    }
+
+    /// First start: no update check runs before the user answers; the
+    /// question opens instead, and waits for another start-up dialog.
+    #[test]
+    fn no_update_check_before_the_first_start_question() {
+        let mut app = App::headless();
+        app.settings.update_check_asked = false;
+        app.settings.check_updates = true;
+        app.dialog = crate::ui::dialogs::Dialog::ConfirmClose;
+        app.update_tick_desktop(10 * crate::updates::DAILY, None);
+        assert!(matches!(
+            app.dialog,
+            crate::ui::dialogs::Dialog::ConfirmClose
+        ));
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.update_tick_desktop(10 * crate::updates::DAILY, None);
+        assert!(matches!(
+            app.dialog,
+            crate::ui::dialogs::Dialog::UpdatePolicy
+        ));
+        assert_eq!(app.updates.get(), crate::updates::UpdateState::Idle);
+        assert_eq!(app.settings.last_update_check, 0);
+    }
+
+    /// Never check: the daily check stays off and the question is not
+    /// asked again; Always check turns it on.
+    #[test]
+    fn the_first_start_answer_sets_the_update_option() {
+        let mut app = App::headless();
+        app.set_update_policy(false);
+        assert!(app.settings.update_check_asked);
+        assert!(!app.settings.check_updates);
+        app.update_tick_desktop(10 * crate::updates::DAILY, None);
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
+        assert_eq!(app.updates.get(), crate::updates::UpdateState::Idle);
+        app.set_update_policy(true);
+        assert!(app.settings.check_updates);
+    }
+
+    /// Settings saved by older versions have no answer yet, so the
+    /// question is asked once after updating.
+    #[test]
+    fn older_settings_have_not_answered_the_update_question() {
+        let s: crate::settings::Settings = serde_json::from_str("{}").expect("defaults");
+        assert!(!s.update_check_asked);
+        assert!(s.check_updates);
     }
 }

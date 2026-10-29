@@ -231,7 +231,8 @@ or the moon button at the right of the status bar).
 
 ## .cdr files, read and written independently
 
-TraceDraw's `.cdr` support lives in its own crate (`crates/cdr`), written
+TraceDraw's `.cdr` support lives in its own crates (`crates/cdr-format`
+for the file structure, `crates/cdr` for reading and writing drawings), written
 from public format notes and from files we own, never from decompiled
 programs or other implementations. `CLEANROOM.md` records where each piece
 of format knowledge comes from and when; `docs/cdr-format.md` records what
@@ -284,6 +285,7 @@ TRACEDRAW_PDF_BOOKMARKS=1 TRACEDRAW_PDF_OWNER_PASSWORD=boss \
 tracedraw-cli inspect drawing.cdr
 tracedraw-cli info drawing.cdr
 TRACEDRAW_OBJECTS=1 tracedraw-cli info drawing.cdr   # every object
+tracedraw-cli check saved.cdr   # what a reader would stumble on in a file TraceDraw wrote
 
 # Serve the editor to an AI agent over the Model Context Protocol
 tracedraw --mcp
@@ -457,7 +459,13 @@ is described in [`docs/code-signing.md`](docs/code-signing.md).
 Privacy policy: this program will not transfer any information to other
 networked systems unless specifically requested by the user or the person
 installing or operating it. TraceDraw opens web pages (help, the project's
-pages) in your browser only when you choose to. The full policy is in
+pages) in your browser only when you choose to. The one automatic
+connection is the update check: the first time TraceDraw starts it asks
+whether to check for updates (Always check / Never check) and connects to
+nothing before you answer; with Always check it asks GitHub
+(`api.github.com`) once a day whether a newer release is out, sending no
+data about you or your drawings. Turn it off at any time in Tools >
+Options > Global > General, "Check for updates at start". The full policy is in
 [`PRIVACY.md`](PRIVACY.md).
 
 ## Documentation

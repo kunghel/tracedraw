@@ -468,3 +468,52 @@ jobs:
           prerelease: ${{ env.RELEASE_TAG == '' }}
           make_latest: ${{ env.RELEASE_TAG != '' && 'true' || 'false' }}
           body_path: release-notes.md
+
+  # Microsoft Store: a version's MSIX is submitted for certification, once
+  # the Store API secrets and the MSSTORE_APP_ID variable are set (see
+  # docs/code-signing.md). The new submission copies the last published one
+  # (listings, screenshots, price, age ratings) and replaces only the
+  # package. It works once the app is live in the Store, and a failure here
+  # never holds back the release.
+  store:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    needs: release
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Store API
+        id: store
+        shell: bash
+        env:
+          HAS_MSSTORE: ${{ secrets.MSSTORE_CLIENT_SECRET != '' && vars.MSSTORE_APP_ID != '' }}
+        run: |
+          echo "enabled=$HAS_MSSTORE" >> "$GITHUB_OUTPUT"
+          if [[ "$HAS_MSSTORE" != true ]]; then
+            echo "Microsoft Store: API not set up, nothing submitted" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.store.outputs.enabled == 'true'
+        with:
+          path: store
+          pattern: tracedraw-windows-*
+          merge-multiple: true
+      - uses: microsoft/microsoft-store-apppublisher@v1.1
+        if: steps.store.outputs.enabled == 'true'
+      - name: Submit to the Microsoft Store
+        if: steps.store.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          MSSTORE_APP_ID: ${{ vars.MSSTORE_APP_ID }}
+        run: |
+          $msix = Get-ChildItem store\*.msix | Select-Object -First 1
+          if (-not $msix) { throw 'No .msix in the Windows build' }
+          msstore reconfigure --tenantId $env:MSSTORE_TENANT_ID --sellerId $env:MSSTORE_SELLER_ID --clientId $env:MSSTORE_CLIENT_ID --clientSecret $env:MSSTORE_CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed ($LASTEXITCODE)" }
+          # Uploads the package and commits the submission for certification.
+          msstore publish $msix.FullName --appId $env:MSSTORE_APP_ID
+          if ($LASTEXITCODE -ne 0) { throw "msstore publish failed ($LASTEXITCODE)" }
+          "Microsoft Store: $($msix.Name) submitted for certification" >> $env:GITHUB_STEP_SUMMARY

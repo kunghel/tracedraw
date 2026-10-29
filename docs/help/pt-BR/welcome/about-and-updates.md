@@ -48,6 +48,8 @@ Em [[menu.tools > menu.tools.options > menu.tools.options_global]], na página
 vem ativada: uma vez por dia, o TraceDraw verifica em silêncio ao iniciar e só
 avisa quando sai uma versão mais nova que você não pulou.
 
+Na primeira vez que o TraceDraw inicia, ele pergunta se deve procurar atualizações: [[updates.policy_always]] ou [[updates.policy_never]]. Até você responder, o TraceDraw não faz nenhuma conexão por conta própria. A resposta define esta opção, então você pode mudá-la aqui quando quiser.
+
 > **Observação:** A versão para navegador é sempre a mais recente. Nela,
 > [[menu.help > menu.help.updates]] abre a página de versões.
 

@@ -3,8 +3,9 @@
 
 use crate::app::App;
 use crate::i18n::{tr, trf};
-use crate::ui::dialogs::{ExportState, PrintState, EXPORT_FORMATS};
+use crate::ui::dialogs::{ExportState, FindReplaceState, PrintState, PropertyFind, EXPORT_FORMATS};
 use std::path::Path;
+use tracedraw_core::find::{self as objfind, ColorQuery, Hit, ObjectQuery, ObjectType};
 use tracedraw_core::{
     document::ShapeKind,
     geometry::{Affine, Rect, Size},
@@ -675,6 +676,58 @@ fn fit_contents_to_page(page: &mut tracedraw_core::document::Page, all: bool) {
     }
 }
 
+/// The area `shapes` print on: their outlines (half the outline's width
+/// beyond the path) and live effects included, at least a sliver each
+/// way (a line has no height). `None` for no shapes.
+pub fn print_area<'a>(shapes: impl Iterator<Item = &'a tracedraw_core::Shape>) -> Option<Rect> {
+    const MIN: f64 = 0.01;
+    let area = shapes
+        .map(|s| {
+            let half = s.stroke.as_ref().map_or(0.0, |st| st.width.max(0.0) / 2.0);
+            s.visual_bounds().inflate(half, half)
+        })
+        .filter(|b| b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite())
+        .reduce(|a, b| a.union(b))?;
+    let c = area.center();
+    let (w, h) = (area.width().max(MIN), area.height().max(MIN));
+    Some(Rect::new(
+        c.x - w / 2.0,
+        c.y - h / 2.0,
+        c.x + w / 2.0,
+        c.y + h / 2.0,
+    ))
+}
+
+/// The area the objects left on `page` and in the `master` layers cover
+/// (what prints of them: visible objects of visible, printable layers,
+/// their outlines and live effects included) made the page: the page
+/// takes its size and the objects move with it, so they print as they
+/// are placed among themselves. Nothing changes when nothing prints.
+fn selection_as_page(
+    page: &mut tracedraw_core::document::Page,
+    master: &mut [tracedraw_core::Layer],
+) {
+    let printed = |l: &tracedraw_core::Layer| l.visible && l.printable;
+    let shapes = page
+        .layers
+        .iter()
+        .chain(master.iter())
+        .filter(|l| printed(l))
+        .flat_map(|l| &l.shapes)
+        .filter(|s| s.visible);
+    let Some(area) = print_area(shapes) else {
+        return;
+    };
+    let (w, h) = (area.width(), area.height());
+    let to_page = Affine::translate((-area.x0, -area.y0));
+    for layer in page.layers.iter_mut().chain(master.iter_mut()) {
+        for s in layer.shapes.iter_mut() {
+            s.transform_by(to_page);
+        }
+    }
+    page.size = Size::new(w, h);
+}
+
 pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     let mut doc = app.engine.document().clone();
     let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
@@ -684,12 +737,21 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
         i += 1;
         keep.contains(&(i - 1))
     });
-    // Selection: only the selected objects of the current page.
+    // Selection: only the selected objects of the current page (none of
+    // the master layers' others, no page background), and the area they
+    // cover is the page printed: the layout, the sheet the size of the
+    // page, Keep size and the marks work on it (#1001).
     if st.range == 3 && !app.selection.is_empty() {
+        let picked = |s: &tracedraw_core::Shape| app.selection.contains(&s.id);
+        for layer in doc.master.iter_mut() {
+            layer.shapes.retain(picked);
+        }
         for page in doc.pages.iter_mut() {
+            page.background = None;
             for layer in page.layers.iter_mut() {
-                layer.shapes.retain(|s| app.selection.contains(&s.id));
+                layer.shapes.retain(picked);
             }
+            selection_as_page(page, &mut doc.master);
         }
     }
     // Fit to page: objects running off the page (the selection, when
@@ -1030,6 +1092,7 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         page_offset: st.art_offset,
         page_stretch: st.art_stretch,
         stretch_fit: st.stretch_fit,
+        booklet: st.booklet(),
         marks: crate::imposition::Marks {
             crop: st.crop_marks,
             registration: st.registration_marks,
@@ -1531,6 +1594,171 @@ fn replace_in(
     }
     out.push_str(&text[i..]);
     out
+}
+
+// ----- find and replace by properties -----------------------------------------
+
+impl PropertyFind {
+    /// The criteria ticked.
+    pub fn query(&self) -> ObjectQuery {
+        let color = |none: bool, c| {
+            if none {
+                ColorQuery::Nothing
+            } else {
+                ColorQuery::Color(c)
+            }
+        };
+        let font = self.font.trim();
+        ObjectQuery {
+            object_type: self
+                .use_type
+                .then(|| ObjectType::ALL.get(self.object_type).copied())
+                .flatten(),
+            fill: self.use_fill.then(|| color(self.fill_none, self.fill)),
+            outline: self
+                .use_outline
+                .then(|| color(self.outline_none, self.outline)),
+            outline_width: self.use_width.then_some(self.width),
+            font: (self.use_font && !font.is_empty()).then(|| font.to_string()),
+        }
+    }
+
+    /// The replacements ticked.
+    pub fn replacement(&self) -> objfind::Replacement {
+        let font = self.new_font.trim();
+        objfind::Replacement {
+            fill: self.set_fill.then_some(self.new_fill),
+            outline: self.set_outline.then_some(self.new_outline),
+            outline_width: self.set_width.then_some(self.new_width),
+            font: (self.set_font && !font.is_empty()).then(|| font.to_string()),
+        }
+    }
+
+    /// Fill in the criteria from `s` (From Selection): its type, fill,
+    /// outline, outline width and font, ticking the ones it has.
+    pub fn take_from(&mut self, s: &tracedraw_core::Shape) {
+        let q = objfind::query_from(s);
+        self.use_type = false;
+        if let Some(t) = q.object_type {
+            self.object_type = ObjectType::ALL.iter().position(|x| *x == t).unwrap_or(0);
+        }
+        self.use_fill = q.fill.is_some();
+        match q.fill {
+            Some(ColorQuery::Nothing) => self.fill_none = true,
+            Some(ColorQuery::Color(c)) => {
+                self.fill_none = false;
+                self.fill = c;
+            }
+            None => {}
+        }
+        self.use_outline = q.outline.is_some();
+        match q.outline {
+            Some(ColorQuery::Nothing) => self.outline_none = true,
+            Some(ColorQuery::Color(c)) => {
+                self.outline_none = false;
+                self.outline = c;
+            }
+            None => {}
+        }
+        self.use_width = false;
+        if let Some(w) = q.outline_width {
+            self.width = w;
+        }
+        self.use_font = q.font.is_some();
+        if let Some(f) = q.font {
+            self.font = f;
+        }
+    }
+}
+
+/// The objects that meet the ticked criteria, on the current page or in
+/// the whole drawing.
+pub fn find_by_properties(app: &App, pf: &PropertyFind) -> Vec<Hit> {
+    let scope = if pf.whole_drawing {
+        objfind::Scope::Document
+    } else {
+        objfind::Scope::Page
+    };
+    objfind::find(app.doc(), &pf.query(), scope, app.page_index())
+}
+
+/// Find All by properties: select the objects found on the current page.
+/// Returns how many of them are on it.
+pub fn select_found(app: &mut App, st: &mut FindReplaceState) -> usize {
+    st.props.hits = find_by_properties(app, &st.props);
+    // No object shown alone yet: Next starts at the first one.
+    st.cursor = st.props.hits.len();
+    let here = Some(app.page_index());
+    let ids: Vec<ShapeId> = st
+        .props
+        .hits
+        .iter()
+        .filter(|h| h.page.is_none_or(|p| Some(p) == here))
+        .map(|h| h.id)
+        .collect();
+    let n = ids.len();
+    app.select(ids);
+    n
+}
+
+/// The next (or previous) object found: its page comes into view and it
+/// is selected alone. The search runs again first, so it follows edits.
+pub fn step_found(app: &mut App, st: &mut FindReplaceState, forward: bool) {
+    let before = st.props.hits.get(st.cursor).copied();
+    st.props.hits = find_by_properties(app, &st.props);
+    let n = st.props.hits.len();
+    if n == 0 {
+        return;
+    }
+    // Carry on from the object shown last, wherever it is now.
+    let at = before.and_then(|b| st.props.hits.iter().position(|h| h.id == b.id));
+    st.cursor = match (at, forward) {
+        (None, true) => 0,
+        (None, false) => n - 1,
+        (Some(i), true) => (i + 1) % n,
+        (Some(i), false) => (i + n - 1) % n,
+    };
+    let Some(hit) = st.props.hits.get(st.cursor).copied() else {
+        return;
+    };
+    if let Some(p) = hit.page {
+        if p != app.page_index() {
+            app.goto_page(p);
+        }
+    }
+    app.select(vec![hit.id]);
+}
+
+/// Replace All by properties, as one undo step. Returns how many
+/// objects changed.
+pub fn replace_properties(app: &mut App, st: &mut FindReplaceState) -> usize {
+    st.props.hits = find_by_properties(app, &st.props);
+    let cmds = objfind::replace_commands(
+        app.doc(),
+        &st.props.hits,
+        &st.props.query(),
+        &st.props.replacement(),
+    );
+    if cmds.is_empty() {
+        return 0;
+    }
+    let changed: std::collections::HashSet<ShapeId> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::SetFill { shapes, .. } | Command::SetStroke { shapes, .. } => {
+                shapes.first().copied()
+            }
+            Command::SetShapeKind { shape, .. } => Some(*shape),
+            _ => None,
+        })
+        .collect();
+    match app.engine.run_batch("Replace", &cmds) {
+        Ok(()) => changed.len(),
+        Err(e) => {
+            app.status = e.to_string();
+            0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2260,6 +2488,163 @@ mod tests {
 
     /// Fit to page shrinks objects running off the page to fit inside it,
     /// centred; objects wholly off the page stay out (#534).
+    /// A drawing on an A4 page: two selected squares (10 x 10 mm, a 1 mm
+    /// outline) 40 mm apart, one not selected, an object on a master
+    /// layer and a page background.
+    fn selection_drawing() -> (App, [tracedraw_core::ShapeId; 2]) {
+        use tracedraw_core::{Color, Fill, Layer, Shape, Stroke};
+        let mut doc = Document::new("sel", Size::new(210.0, 297.0));
+        let square = |doc: &mut Document, x: f64, y: f64| {
+            let mut s = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(x, y, x + 10.0, y + 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(Color::rgb8(200, 30, 30));
+            s.stroke = Some(Stroke {
+                width: 1.0,
+                ..Stroke::default()
+            });
+            s
+        };
+        let a = square(&mut doc, 50.0, 100.0);
+        let b = square(&mut doc, 90.0, 120.0);
+        let other = square(&mut doc, 150.0, 200.0);
+        let ids = [a.id, b.id];
+        doc.pages[0].layers[0].shapes.extend([a, b, other]);
+        doc.pages[0].background = Some(Fill::Solid(Color::rgb8(0, 0, 255)));
+        let master_shape = square(&mut doc, 5.0, 5.0);
+        let mut master = Layer::master(doc.ids_mut().layer(), "Master", Default::default());
+        master.shapes.push(master_shape);
+        doc.master.push(master);
+        let mut app = App::headless();
+        app.engine = tracedraw_core::Engine::new(doc);
+        if let Some(p) = app.doc().pages.first() {
+            app.page = p.id;
+        }
+        app.selection = ids.to_vec();
+        (app, ids)
+    }
+
+    /// The shapes a sheet prints (what its page clips hold) and their
+    /// bounds on the sheet.
+    fn printed(sheet: &tracedraw_core::document::Page) -> Vec<Rect> {
+        sheet
+            .layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter_map(|c| match &c.kind {
+                ShapeKind::ClipFrame { contents, .. } => Some(
+                    contents
+                        .iter()
+                        .map(|s| {
+                            let mut s = s.clone();
+                            s.transform_by(c.transform);
+                            s.bounds()
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Print range Selection prints only the selected objects (no other
+    /// object, nothing of the master layers, no page background) on a
+    /// page the size of the area they cover: the sheet sized to the page
+    /// is that area, a fixed sheet gets it centred at its size, and the
+    /// layouts repeat it (#1001).
+    #[test]
+    fn the_selection_prints_alone_on_a_page_of_its_size() {
+        let (app, _) = selection_drawing();
+        // The two squares with their outlines: from (49.5, 99.5) to
+        // (100.5, 130.5).
+        let (w, h) = (51.0, 31.0);
+        let st = PrintState {
+            range: 3,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        assert_eq!(sheets.pages.len(), 1);
+        let sheet = &sheets.pages[0];
+        assert!(
+            (sheet.size.width - w).abs() < 1e-6 && (sheet.size.height - h).abs() < 1e-6,
+            "{:?}",
+            sheet.size
+        );
+        let shapes = printed(sheet);
+        assert_eq!(shapes.len(), 2, "only the two selected squares: {shapes:?}");
+        // As they are placed among themselves, the area's corner at the
+        // sheet's corner.
+        let mut x0: Vec<f64> = shapes.iter().map(|r| r.x0).collect();
+        x0.sort_by(f64::total_cmp);
+        assert!(
+            (x0[0] - 0.5).abs() < 1e-6 && (x0[1] - 40.5).abs() < 1e-6,
+            "{x0:?}"
+        );
+        // On an A4 sheet: centred, at its size.
+        let st = PrintState {
+            range: 3,
+            sheet: 2,
+            orientation: 1,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        let sheet = &sheets.pages[0];
+        assert_eq!(sheet.size, Size::new(210.0, 297.0));
+        let area = printed(sheet)
+            .into_iter()
+            .reduce(|a, b| a.union(b))
+            .expect("printed");
+        assert!((area.width() - 50.0).abs() < 1e-6, "{area:?}");
+        assert!((area.center().x - 105.0).abs() < 1e-6, "{area:?}");
+        // Repeated 2 x 3 on the sheet: six copies of the area.
+        let st = PrintState {
+            range: 3,
+            sheet: 2,
+            orientation: 1,
+            layout_kind: 3,
+            cols: 2,
+            rows: 3,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        assert_eq!(printed(&sheets.pages[0]).len(), 12);
+        let plan = crate::imposition::plan(&[Size::new(w, h)], &print_layout(&app, &st, &sheets));
+        assert!(plan[0]
+            .cells
+            .iter()
+            .all(|c| (c.trim.width() - w).abs() < 1e-6));
+    }
+
+    /// Keep size: the selection never prints smaller than it is, even on
+    /// a sheet too small for it; without it, it shrinks to fit (#1001).
+    #[test]
+    fn keep_size_keeps_the_selection_at_its_size() {
+        let (app, _) = selection_drawing();
+        let a6ish = |keep_size| PrintState {
+            range: 3,
+            sheet: crate::ui::dialogs::CUSTOM_SHEET,
+            custom_sheet: Size::new(30.0, 30.0),
+            orientation: 1,
+            keep_size,
+            ..PrintState::default()
+        };
+        let width = |st: &PrintState| {
+            printed(&print_sheets(&app, st).pages[0])
+                .into_iter()
+                .reduce(|a, b| a.union(b))
+                .map(|r| r.width())
+                .expect("printed")
+        };
+        assert!((width(&a6ish(true)) - 50.0).abs() < 1e-6);
+        assert!(width(&a6ish(false)) < 30.0);
+    }
+
     #[test]
     fn fit_to_page_shrinks_what_runs_off_the_page() {
         let mut app = App::headless();

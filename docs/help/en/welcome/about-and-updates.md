@@ -49,6 +49,8 @@ says so and offers the releases page.
 is on at first: once a day, TraceDraw checks quietly when it starts and only
 speaks up when a newer version that you have not skipped is out.
 
+The first time TraceDraw starts, it asks whether to check for updates: [[updates.policy_always]] or [[updates.policy_never]]. Until you answer, TraceDraw makes no connection on its own. The answer sets this option, so you can change it here at any time.
+
 > **Note:** The browser version is always the latest one. There,
 > [[menu.help > menu.help.updates]] opens the releases page.
 

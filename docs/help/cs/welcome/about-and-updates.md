@@ -47,6 +47,8 @@ nabídne stránku vydání.
 je zapnuté: jednou denně TraceDraw při spuštění potichu zkontroluje a ozve se,
 jen když vyšla novější verze, kterou jste nepřeskočili.
 
+Při prvním spuštění se TraceDraw zeptá, zda má hledat aktualizace: [[updates.policy_always]] nebo [[updates.policy_never]]. Dokud neodpovíte, TraceDraw sám nenavazuje žádné spojení. Odpověď nastaví tuto možnost, kterou zde můžete kdykoli změnit.
+
 > **Poznámka:** Verze pro prohlížeč je vždy nejnovější. Tam
 > [[menu.help > menu.help.updates]] otevře stránku vydání.
 

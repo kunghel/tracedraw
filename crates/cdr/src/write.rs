@@ -131,7 +131,7 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     // package's own member (#986); a RIFF file has no place for it.
     let own = crate::kept_blends::encode(&w.blends, &w.static_ids);
     let own = own.as_deref();
-    if v.redirects() {
+    let out = if v.redirects() {
         let (root, files) = pack_redirected(v, &tree);
         zip_v16(v, doc, &root, &files, previews, &font_ids, own)
     } else {
@@ -141,7 +141,11 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
         } else {
             riff
         }
-    }
+    };
+    // Every file the tests write passes the checker (`check.rs`).
+    #[cfg(test)]
+    crate::check::assert_clean(&out, v.0);
+    out
 }
 
 /// Coordinate units per millimetre.
@@ -150,6 +154,17 @@ const UNITS_PER_MM: f64 = 254000.0 / 25.4;
 const SINCE_13: u32 = 1300;
 /// The `trfd` record tag of version 18 and later.
 const TRFD_SINCE_18: u32 = 1740;
+/// Palette ids (property 7 of a colour) files hold after their default
+/// palettes' CMYK and RGB colours.
+const PALETTE_CMYK: [u8; 16] = [
+    0xcb, 0x19, 0xcd, 0xcc, 0x75, 0x46, 0x5e, 0x4a, 0x8b, 0xda, 0xd0, 0xbb, 0xba, 0xab, 0x8a, 0xf0,
+];
+const PALETTE_RGB: [u8; 16] = [
+    0x5b, 0x96, 0x73, 0x82, 0xfd, 0xa0, 0x34, 0x4e, 0xa5, 0xc2, 0xa2, 0x97, 0x20, 0x14, 0x6c, 0xc3,
+];
+/// Argument 19170 of objects in versions 9 to 15: 1, 1, 0 on every
+/// shape, text and picture of the files seen.
+const ARG_DRAW_FLAGS: u32 = 19170;
 /// Halftone screen of fills and outlines: 45 degrees, 60 lines per inch.
 const SCREEN: [u8; 8] = [0x40, 0xa5, 0xae, 0x02, 0x3c, 0x00, 0x00, 0x00];
 /// A full ellipse is stored from 270 to 270 degrees (millionths).
@@ -237,6 +252,18 @@ impl Ver {
     /// A ZIP archive around the RIFF stream.
     fn zip(self) -> bool {
         self.0 >= 14
+    }
+    /// Colours carry their palette id (property 7): files of versions 14
+    /// and 15 saved by the program that reads them, and all later ones.
+    /// Version 13 files of that program's own release hold the 76-byte
+    /// solid fill without it.
+    fn palette_ids(self) -> bool {
+        self.0 >= 14
+    }
+    /// Objects carry argument 19170 (1, 1, 0), as every shape, text and
+    /// picture of files of versions 9 to 15 does; from 16 none has it.
+    fn draw_flags(self) -> bool {
+        (9..=15).contains(&self.0)
     }
     /// Payloads in data files, reached through redirect records.
     fn redirects(self) -> bool {
@@ -1192,16 +1219,30 @@ fn colour(c: Color) -> [u8; 12] {
     out
 }
 
-/// Version 13+: a colour as a property list (type 1, then from version 15
-/// an empty palette entry id, type 7), closed by an empty record.
+/// Version 13+: a colour as a property list (type 1, then from version 14
+/// the id of the palette the colour comes from, type 7), closed by an
+/// empty record.
 fn colour_props(v: Ver, c: Color) -> Vec<u8> {
     let mut b = Buf::default();
     b.u8(1).u32(12).bytes(&colour(c));
-    if v.0 >= 15 {
-        b.u8(7).u32(16).zeros(16);
+    if v.palette_ids() {
+        b.u8(7).u32(16).bytes(&palette_id(c));
     }
     b.u8(0).u32(0);
     b.done()
+}
+
+/// The id files of versions 13 to 25 keep after a colour (property 7):
+/// one constant for the CMYK colours of their default palette, another
+/// for the RGB ones, both the same in files of six different users;
+/// zeros for colours of no palette. TraceDraw's CMYK and RGB colours
+/// take the two constants, other models zeros.
+fn palette_id(c: Color) -> [u8; 16] {
+    match c.process() {
+        Color::Cmyk { .. } | Color::Registration => PALETTE_CMYK,
+        Color::Gray { .. } => [0; 16],
+        _ => PALETTE_RGB,
+    }
 }
 
 /// The master page's `loda` arguments for a solid page background, as
@@ -1401,8 +1442,8 @@ fn fild(v: Ver, id: u32, fill: &Fill) -> Vec<u8> {
             inner.u16(stops.len() as u16);
             for s in stops {
                 inner.u8(1).u32(12).bytes(&colour(s.color));
-                if v.0 >= 15 {
-                    inner.u8(7).u32(16).zeros(16);
+                if v.palette_ids() {
+                    inner.u8(7).u32(16).bytes(&palette_id(s.color));
                 }
                 inner
                     .zeros(5)
@@ -1536,7 +1577,7 @@ fn outl(v: Ver, id: u32, s: Option<&Stroke>) -> Vec<u8> {
     let mut proper = proper;
     proper.resize(130, 0);
     let col = colour_props(v, color);
-    if v.0 == 15 {
+    if (14..=15).contains(&v.0) {
         b.u32(5).u32(48).zeros(48);
     }
     b.u32(3)
@@ -3589,6 +3630,12 @@ impl<'a> Writer<'a> {
         }
         if v.props() {
             args.push((ARG_PROPS, vec![0; 4]));
+        }
+        if v.draw_flags() {
+            args.push((
+                ARG_DRAW_FLAGS,
+                [1u32, 1, 0].iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ));
         }
         if let Some(n) = &s.name {
             args.push((ARG_NAME, name_bytes(v, n)));

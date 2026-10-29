@@ -24,7 +24,7 @@ scene() { # scene <name> <drawing or ""> [LANG] [theme] [settings json to merge]
     if [ -n "$ONLY" ] && [[ " $ONLY " != *" $name "* ]]; then return; fi
     python3 - "$CONFIG/settings.json" "$theme" "$extra" <<'PY'
 import json, sys
-s = {"ui_size": 1.0, "theme": sys.argv[2]}
+s = {"ui_size": 1.0, "theme": sys.argv[2], "update_check_asked": True, "check_updates": False}
 s.update(json.loads(sys.argv[3]))
 json.dump(s, open(sys.argv[1], "w"))
 PY

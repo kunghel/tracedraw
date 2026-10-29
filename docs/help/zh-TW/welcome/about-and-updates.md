@@ -43,6 +43,8 @@ AppImage 下載到執行中的檔案旁，檢查下載是否完整且真實，�
 [[options.general]] 頁面有一個啟動時檢查更新的設定。它預設開啟：TraceDraw
 每天在啟動時安靜地檢查一次，只有在出現你未略過的新版本時才提示。
 
+TraceDraw 首次啟動時會詢問是否檢查更新：[[updates.policy_always]] 或 [[updates.policy_never]]。在您回答之前，TraceDraw 不會自行建立任何連線。您的回答會設定此選項，之後可隨時在此處變更。
+
 > **注意：** 瀏覽器版本永遠是最新的。在瀏覽器版本中，
 > [[menu.help > menu.help.updates]] 會開啟發行頁面。
 

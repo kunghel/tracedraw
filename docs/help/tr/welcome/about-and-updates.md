@@ -50,6 +50,8 @@ ve sürüm sayfasını önerir.
 Başta açıktır: TraceDraw günde bir kez başlarken sessizce denetler ve yalnızca
 atlamadığınız daha yeni bir sürüm çıktığında seslenir.
 
+TraceDraw ilk açıldığında güncellemeleri denetleyip denetlemeyeceğini sorar: [[updates.policy_always]] veya [[updates.policy_never]]. Siz yanıt verene kadar TraceDraw kendiliğinden hiçbir bağlantı kurmaz. Yanıt bu seçeneği ayarlar; onu burada istediğiniz zaman değiştirebilirsiniz.
+
 > **Not:** Tarayıcı sürümü her zaman en yenisidir. Orada
 > [[menu.help > menu.help.updates]] sürüm sayfasını açar.
 

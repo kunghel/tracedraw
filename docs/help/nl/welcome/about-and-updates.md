@@ -51,6 +51,8 @@ zoeken. Die staat eerst aan: eens per dag controleert TraceDraw stil bij het
 starten en meldt zich alleen als er een nieuwere versie is die u niet hebt
 overgeslagen.
 
+De eerste keer dat TraceDraw start, vraagt het of het naar updates moet zoeken: [[updates.policy_always]] of [[updates.policy_never]]. Tot u antwoordt, maakt TraceDraw uit zichzelf geen verbinding. Het antwoord stelt deze optie in, die u hier altijd kunt wijzigen.
+
 > **Opmerking:** De browserversie is altijd de nieuwste. Daar opent
 > [[menu.help > menu.help.updates]] de releasepagina.
 

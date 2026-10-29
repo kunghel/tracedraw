@@ -49,6 +49,8 @@ hal itu dan menawarkan halaman rilis.
 Awalnya aktif: sekali sehari TraceDraw memeriksa diam-diam saat mulai dan hanya
 memberi tahu bila ada versi lebih baru yang belum Anda lewati.
 
+Saat pertama kali dijalankan, TraceDraw bertanya apakah perlu memeriksa pembaruan: [[updates.policy_always]] atau [[updates.policy_never]]. Sampai Anda menjawab, TraceDraw tidak membuat koneksi apa pun sendiri. Jawaban Anda mengatur opsi ini, dan Anda dapat mengubahnya di sini kapan saja.
+
 > **Catatan:** Versi peramban selalu yang terbaru. Di sana,
 > [[menu.help > menu.help.updates]] membuka halaman rilis.
 

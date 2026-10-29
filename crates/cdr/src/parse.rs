@@ -34,6 +34,10 @@ pub struct ParseReport {
     pub shapes: usize,
     pub skipped_objects: usize,
     pub warnings: Vec<String>,
+    /// The chunk tags and `loda` argument types the reader left
+    /// uninterpreted, with their counts (RIFF files only; see
+    /// [`crate::open_bytes_keeping`] for the records themselves).
+    pub unknown: tracedraw_cdr_format::raw::UnknownTags,
 }
 
 impl ParseReport {
@@ -69,6 +73,44 @@ const UNIT_MM: f64 = 25.4 / 254000.0;
 const UNIT16_MM: f64 = 25.4 / 1000.0;
 /// Byte offset of the point count in an `arrx` record.
 const ARRX_COUNT_AT: usize = 268;
+
+/// What this reader interprets, for the table of what it leaves (see
+/// [`tracedraw_cdr_format::raw`]): every chunk tag read anywhere in the
+/// tree, in any version. Lists are structure, not records, so they are
+/// not named here; `loda` and `lobj` are read argument by argument.
+pub(crate) const KNOWN_CHUNKS: &[[u8; 4]] = &[
+    *b"loda", *b"lobj", *b"trfd", *b"txsm", *b"flgs", *b"bbox", *b"spnd", *b"usdn", *b"ppdt",
+    *b"vrsn", *b"mcfg", *b"fild", *b"fill", *b"outl", *b"stlt", *b"bmp ", *b"bmpf", *b"arrw",
+    *b"arrx", *b"font", *b"ftbl", *b"ole2", *b"olel", *b"vpat", *b"imhd",
+];
+
+/// The `loda` argument types this reader interprets, in any version.
+pub(crate) const KNOWN_ARGS: &[u32] = &[
+    ARG_OUTLINE,
+    ARG_FILL,
+    ARG_COORDS,
+    ARG_LEGACY_TRANSFORM,
+    ARG_STYLE,
+    ARG_STYLE_STRING,
+    ARG_NAME,
+    ARG_OPACITY,
+    ARG_POLYGON,
+    ARG_CLIP_CONTENTS,
+    ARG_PAGE_SIZE,
+    ARG_PAGE_BACKGROUND,
+    ARG_HIDDEN,
+    ARG_MESH,
+    ARG_GUIDE_LINE,
+    ARG_BLEND_STEPS,
+];
+
+/// What this reader interprets, for [`tracedraw_cdr_format::raw::collect`].
+pub fn known() -> tracedraw_cdr_format::raw::Known<'static> {
+    tracedraw_cdr_format::raw::Known {
+        chunks: KNOWN_CHUNKS,
+        args: KNOWN_ARGS,
+    }
+}
 
 /// Argument types of the `loda` argument table.
 pub(crate) const ARG_OUTLINE: u32 = 0x0a;
@@ -188,7 +230,7 @@ pub(crate) const OBJ_ELLIPSE: u32 = 0x02;
 pub(crate) const OBJ_CURVE: u32 = 0x03;
 pub(crate) const OBJ_ARTISTIC_TEXT: u32 = 0x04;
 pub(crate) const OBJ_BITMAP: u32 = 0x05;
-const OBJ_PARAGRAPH_TEXT: u32 = 0x06;
+pub(crate) const OBJ_PARAGRAPH_TEXT: u32 = 0x06;
 const OBJ_POLYGON: u32 = 0x14;
 const OBJ_PATH: u32 = 0x25;
 /// A straight connector line whose ends are in its `ppdt` record.
@@ -215,6 +257,9 @@ const SPACE_EM: f64 = 0.25;
 const OBJ_GUIDE: u32 = 0x16;
 /// Argument of a guideline: its line (see [`Ctx::read_guide`]).
 const ARG_GUIDE_LINE: u32 = 16000;
+/// The step count of a blend's linked group (its `lgob` `loda`, object
+/// type 7): the first u32 of this argument.
+const ARG_BLEND_STEPS: u32 = 3000;
 
 /// Little-endian cursor over a chunk payload. `v16` selects the 16-bit
 /// layouts of versions before 6 for integers, coordinates and angles.
@@ -321,13 +366,9 @@ struct BitmapDef {
     png: tracedraw_core::SharedBytes,
 }
 
-/// One entry of a `loda` argument table: type, payload start and end.
-#[derive(Debug, Clone, Copy)]
-struct Arg {
-    ty: u32,
-    off: usize,
-    end: usize,
-}
+// One entry of a `loda` argument table (type, payload start and end) and
+// the table itself, decoded by the format crate.
+use tracedraw_cdr_format::loda::Arg;
 
 /// What a paragraph text's frame may be worked out from when its
 /// coordinates hold no size (version 16 and later).
@@ -341,10 +382,7 @@ struct FrameHints<'s> {
 }
 
 /// Decoded `loda` header and argument table.
-struct Loda {
-    kind: u32,
-    args: Vec<Arg>,
-}
+use tracedraw_cdr_format::loda::Table as Loda;
 
 /// Polygon parameters from the `loda` argument of type 11000.
 #[derive(Debug, Clone, Copy)]
@@ -1183,13 +1221,18 @@ impl<'a> Ctx<'a> {
         let mut stops = Vec::with_capacity(num_stops.min(64));
         for _ in 0..num_stops.min(64) {
             let color = self.read_color(&mut r)?;
-            r.skip(if v >= 15 {
-                26
-            } else if v >= 13 {
-                5
-            } else {
-                0
-            });
+            if v >= 13 {
+                // The colour's palette id (property 7, 16 bytes) follows
+                // in files of versions 14 and 15 saved by newer releases
+                // and in every file from 15; version 13 files and version
+                // 14 files of that version's own release have none.
+                let id_follows = r.b.get(r.pos) == Some(&7)
+                    && r.b.get(r.pos + 1..r.pos + 5) == Some(&[16, 0, 0, 0]);
+                if id_follows || v >= 15 {
+                    r.skip(21);
+                }
+                r.skip(5);
+            }
             let pos = (r.uint()? & 0xffff) as f64 / 100.0;
             if v >= 13 {
                 r.skip(3);
@@ -1698,6 +1741,14 @@ impl<'a> Ctx<'a> {
             self.report.warn(w);
         }
         for (id, rec) in recs {
+            log::debug!(
+                "style {id}: parent {} font {:?} size {:?} align {:?} fill {:?}",
+                rec.parent,
+                rec.style.font_id,
+                rec.style.size_pt,
+                rec.style.align,
+                rec.style.fill_id
+            );
             self.styles.insert(id, rec);
         }
     }
@@ -1933,23 +1984,37 @@ impl<'a> Ctx<'a> {
                     text.push('\n');
                 }
                 chars += text.chars().count();
-                let span = self.make_span(text, &style, object_fill);
-                match spans.last_mut() {
-                    Some(last)
-                        if last.font_family == span.font_family
-                            && last.size_pt == span.size_pt
-                            && last.bold == span.bold
-                            && last.italic == span.italic
-                            && last.underline == span.underline
-                            && last.strikethrough == span.strikethrough
-                            && last.fill == span.fill
-                            && last.angle_deg == span.angle_deg
-                            && last.offset_x_pct == span.offset_x_pct
-                            && last.baseline_shift_pt == span.baseline_shift_pt =>
-                    {
-                        last.text.push_str(&span.text)
+                // East Asian letters take the style's East Asian font
+                // when it is another one (a version 14 file sets its
+                // Chinese titles in a 54 pt script font with Arial at
+                // 12 pt in the Latin slot, #955).
+                let pieces = match &style.asian {
+                    Some(a) if a.differs_from(&style) => text::split_scripts(&text),
+                    _ => vec![(text, false)],
+                };
+                for (piece, asian) in pieces {
+                    let span = if asian {
+                        self.make_span(piece, &style.for_east_asian(), object_fill)
+                    } else {
+                        self.make_span(piece, &style, object_fill)
+                    };
+                    match spans.last_mut() {
+                        Some(last)
+                            if last.font_family == span.font_family
+                                && last.size_pt == span.size_pt
+                                && last.bold == span.bold
+                                && last.italic == span.italic
+                                && last.underline == span.underline
+                                && last.strikethrough == span.strikethrough
+                                && last.fill == span.fill
+                                && last.angle_deg == span.angle_deg
+                                && last.offset_x_pct == span.offset_x_pct
+                                && last.baseline_shift_pt == span.baseline_shift_pt =>
+                        {
+                            last.text.push_str(&span.text)
+                        }
+                        _ => spans.push(span),
                     }
-                    _ => spans.push(span),
                 }
             }
         }
@@ -2689,40 +2754,13 @@ impl<'a> Ctx<'a> {
     }
 
     fn read_loda(&mut self, d: &'a [u8]) -> Option<Loda> {
-        let mut r = self.reader(d);
-        let _len = r.uint()?;
-        let num_args = r.uint()? as usize;
-        let start_args = r.uint()? as usize;
-        let start_types = r.uint()? as usize;
-        let mut kind = r.uint()?;
+        let mut l = tracedraw_cdr_format::loda::table(d, self.v)?;
         // Version 3 numbers the object types from 0 (rectangle, ellipse,
         // curve, text, bitmap), one below the later codes.
-        if self.v < 4 && kind <= 4 {
-            kind += 1;
+        if self.v < 4 && l.kind <= 4 {
+            l.kind += 1;
         }
-        let step = if self.v16() { 2 } else { 4 };
-        let n = num_args.min(64);
-        let mut offsets = Vec::with_capacity(n + 1);
-        for i in 0..=n {
-            match self.reader_at(d, start_args + i * step).uint() {
-                Some(o) => offsets.push(o as usize),
-                None if i == n => offsets.push(d.len()),
-                None => return None,
-            }
-        }
-        let mut args = Vec::with_capacity(n);
-        for i in 0..n {
-            let ty = self.reader_at(d, start_types + (n - 1 - i) * step).uint()?;
-            let off = offsets[i].min(d.len());
-            let next = offsets[i + 1];
-            let end = if next > off && next <= d.len() {
-                next
-            } else {
-                d.len()
-            };
-            args.push(Arg { ty, off, end });
-        }
-        Some(Loda { kind, args })
+        Some(l)
     }
 
     /// The mesh of a mesh fill object (argument 19150, a version 11 file,
@@ -2896,7 +2934,7 @@ impl<'a> Ctx<'a> {
         if l.args.iter().any(|a| a.ty == ARG_STYLE_STRING) {
             return None;
         }
-        let arg = l.args.iter().find(|a| a.ty == 3000)?;
+        let arg = l.args.iter().find(|a| a.ty == ARG_BLEND_STEPS)?;
         // The count is the low 16 bits: versions 9 and 13 leave the high
         // ones 0, version 25 keeps another value there (#980).
         let raw = self.reader_at(d, arg.off).u16().map(u32::from);
@@ -5047,7 +5085,7 @@ fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> Paragraph
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -5106,7 +5144,7 @@ mod tests {
 
     // Byte-building helpers: RIFF chunks and typical payloads.
 
-    fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    pub(crate) fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut v = id.to_vec();
         v.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         v.extend_from_slice(payload);
@@ -5116,25 +5154,25 @@ mod tests {
         v
     }
 
-    fn list(lt: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    pub(crate) fn list(lt: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut payload = lt.to_vec();
         payload.extend_from_slice(body);
         chunk(b"LIST", &payload)
     }
 
-    fn riff(form: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    pub(crate) fn riff(form: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut payload = form.to_vec();
         payload.extend_from_slice(body);
         chunk(b"RIFF", &payload)
     }
 
-    fn u16s(v: &[u16]) -> Vec<u8> {
+    pub(crate) fn u16s(v: &[u16]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
-    fn u32s(v: &[u32]) -> Vec<u8> {
+    pub(crate) fn u32s(v: &[u32]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
-    fn i32s(v: &[i32]) -> Vec<u8> {
+    pub(crate) fn i32s(v: &[i32]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
     fn f64s(v: &[f64]) -> Vec<u8> {
@@ -5142,7 +5180,7 @@ mod tests {
     }
 
     /// 12-byte colour record (version 5+): BGR model 5.
-    fn color_bgr(r: u8, g: u8, b: u8) -> Vec<u8> {
+    pub(crate) fn color_bgr(r: u8, g: u8, b: u8) -> Vec<u8> {
         let mut v = u16s(&[5, 0]);
         v.extend_from_slice(&[0xaa; 4]); // unknown bytes must be skipped
         v.extend_from_slice(&[b, g, r, 0]);
@@ -5158,7 +5196,7 @@ mod tests {
 
     /// A `loda` payload (32-bit header) with the given object type and
     /// arguments (type, body). Types are written reversed, as in files.
-    fn loda(kind: u32, args: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    pub(crate) fn loda(kind: u32, args: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let header = 20usize;
         let mut bodies = Vec::new();
         let mut offsets = Vec::new();
@@ -5235,7 +5273,7 @@ mod tests {
         out
     }
 
-    fn mcfg(v: u16, w: i32, h: i32) -> Vec<u8> {
+    pub(crate) fn mcfg(v: u16, w: i32, h: i32) -> Vec<u8> {
         let pad = if v >= 13 {
             12
         } else if v >= 9 {
@@ -5367,6 +5405,64 @@ mod tests {
         // Page is 254 mm square; the rectangle sits at the centre.
         let p = s.transform * Point::ZERO;
         assert!((p.x - 127.0).abs() < 1e-9 && (p.y - 127.0).abs() < 1e-9);
+    }
+
+    /// What the reader does not interpret is kept by object and listed in
+    /// the report: here an `obbx` chunk and an argument of type 12010 of
+    /// the object numbered 42 in its `usdn`, and a `sumi` chunk of the
+    /// document; what it reads (the coordinates, the `mcfg`) is not.
+    #[test]
+    fn unknown_records_are_kept_by_object_and_counted() {
+        let obj = list(
+            b"obj ",
+            &[
+                chunk(b"usdn", &u32s(&[42])),
+                chunk(
+                    b"loda",
+                    &loda(
+                        OBJ_RECT,
+                        &[
+                            (ARG_COORDS, i32s(&[254000, 127000, 0])),
+                            (12010, vec![8, 9, 10, 11]),
+                        ],
+                    ),
+                ),
+                chunk(b"obbx", &i32s(&[0; 8])),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"vrsn", &u16s(&[900])),
+            chunk(b"sumi", &[3; 10]),
+            chunk(b"mcfg", &mcfg(9, 2_540_000, 2_540_000)),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep, kept) =
+            crate::open_bytes_keeping(&riff(b"CDR9", &body), "t").expect("opens");
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        assert_eq!(doc.pages.len(), 1);
+        assert_eq!(
+            rep.unknown.lines(),
+            [
+                "chunk obbx: 1 record(s), 32 bytes",
+                "chunk sumi: 1 record(s), 10 bytes",
+                "argument 12010: 1 record(s), 4 bytes"
+            ]
+        );
+        use tracedraw_cdr_format::raw::{Key, Owner};
+        let of_object = &kept.records[&Owner::Object(42)];
+        assert_eq!(of_object.len(), 2);
+        assert_eq!(of_object[0].key, Key::Arg(12010));
+        assert_eq!(kept.bytes(&of_object[0]), &[8, 9, 10, 11]);
+        assert_eq!(of_object[1].key, Key::Chunk(*b"obbx"));
+        assert_eq!(kept.path_of(&of_object[1]), "CDR9/page/layr/obj ");
+        let of_document = &kept.records[&Owner::Document];
+        assert_eq!(of_document.len(), 1);
+        assert_eq!(kept.bytes(&of_document[0]), &[3; 10]);
+        // Without the table, the same document and report.
+        let (_, plain) = crate::open_bytes(&riff(b"CDR9", &body), "t").expect("opens");
+        assert_eq!(plain.unknown, rep.unknown);
     }
 
     /// A mesh fill object (type 0x20, a version 11 file, #896): a curve
@@ -5681,6 +5777,56 @@ mod tests {
                 assert_eq!(f.stops[1].color, Color::rgb8(255, 255, 255));
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// Version 14 files saved by newer releases keep the palette id
+    /// (property 7) after each stop's colour, as version 15 files do;
+    /// version 14 files of that release's own writer leave it out. Both
+    /// read.
+    #[test]
+    fn fountain_fill_version_14_stops_with_or_without_the_palette_id() {
+        for with_id in [false, true] {
+            let v = 14u16;
+            let mut g = vec![0u8; 8];
+            g.push(1);
+            g.extend_from_slice(&[0; 17]);
+            g.extend_from_slice(&i16s(&[0]));
+            g.extend_from_slice(&i32s(&[90_000_000]));
+            g.extend_from_slice(&i32s(&[0, 0]));
+            g.extend_from_slice(&[0; 2]);
+            g.extend_from_slice(&u32s(&[0]));
+            g.extend_from_slice(&[50, 0]);
+            g.extend_from_slice(&u16s(&[2]));
+            for (c, pos) in [((0, 0, 0), 0u16), ((255, 255, 255), 100)] {
+                g.push(1);
+                g.extend_from_slice(&u32s(&[12]));
+                g.extend_from_slice(&color_bgr(c.0, c.1, c.2));
+                if with_id {
+                    g.push(7);
+                    g.extend_from_slice(&u32s(&[16]));
+                    g.extend_from_slice(&[0xcb; 16]);
+                }
+                g.extend_from_slice(&[0; 5]);
+                g.extend_from_slice(&u16s(&[pos]));
+            }
+            g.extend_from_slice(&[0; 8]); // the record's tail
+            let mut fild = u32s(&[1, 1300, (g.len() + 2) as u32]);
+            fild.extend_from_slice(&u16s(&[2]));
+            fild.extend_from_slice(&g);
+            let main = riff(b"CDRE", &chunk(b"fild", &fild));
+            let tree = crate::riff::parse(&main).unwrap();
+            let mut ctx = Ctx::new(&main, &tree, v);
+            ctx.read_fill(tree.root.find(b"fild").unwrap());
+            match &ctx.fills[&1].fill {
+                Fill::Fountain(f) => {
+                    assert_eq!(f.stops.len(), 2, "{with_id}");
+                    assert_eq!(f.stops[0].color, Color::rgb8(0, 0, 0), "{with_id}");
+                    assert_eq!(f.stops[1].color, Color::rgb8(255, 255, 255), "{with_id}");
+                    assert!((f.stops[1].pos - 1.0).abs() < 1e-9, "{with_id}");
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 
@@ -7005,7 +7151,7 @@ mod tests {
     }
 
     /// version 13+ solid fill with a property list holding one colour.
-    fn solid_fild_v13(id: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
+    pub(crate) fn solid_fild_v13(id: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
         let mut props = vec![0x01u8];
         props.extend_from_slice(&12u32.to_le_bytes());
         props.extend_from_slice(&color_bgr(rgb.0, rgb.1, rgb.2));
@@ -7019,15 +7165,15 @@ mod tests {
     }
 
     /// One style record of the 7 to version 15 `txsm` layout.
-    struct Style7 {
-        chars: u16,
-        font: Option<u16>,
-        flags: Option<u32>,
-        size_units: Option<i32>,
-        fill: Option<u32>,
+    pub(crate) struct Style7 {
+        pub(crate) chars: u16,
+        pub(crate) font: Option<u16>,
+        pub(crate) flags: Option<u32>,
+        pub(crate) size_units: Option<i32>,
+        pub(crate) fill: Option<u32>,
     }
 
-    fn txsm7(v: u16, frame: bool, styles: &[Style7], text: &str) -> Vec<u8> {
+    pub(crate) fn txsm7(v: u16, frame: bool, styles: &[Style7], text: &str) -> Vec<u8> {
         txsm7_opt(v, frame, styles, text, false)
     }
 
@@ -8479,6 +8625,121 @@ mod tests {
                 assert!((para.left_indent - 25.4).abs() < 1e-9, "{para:?}");
                 assert!((para.first_line_indent - 6.35).abs() < 1e-9);
                 assert!((para.right_indent - 12.7).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A version 14 style table whose font entry sets Arial at 12 pt in
+    /// the Latin slot and another font at 54 pt in the East Asian slot,
+    /// as the file of #955 does for its Chinese titles: the Chinese
+    /// letters take the East Asian font and size, the Latin ones Arial.
+    #[test]
+    fn style_table_east_asian_slot_sets_the_cjk_letters() {
+        let v = 14u16;
+        let mut st = u32s(&[1]); // one record
+        st.extend_from_slice(&u32s(&[0])); // fills
+        st.extend_from_slice(&u32s(&[0])); // outlines
+        st.extend_from_slice(&u32s(&[1, 100])); // one font entry, id 100
+        st.extend_from_slice(&[0; 20]);
+        st.extend_from_slice(&u16s(&[3, 0])); // Latin: font 3
+        st.extend_from_slice(&u16s(&[4, 0x86])); // East Asian: font 4
+        st.extend_from_slice(&u16s(&[3, 0xb2])); // other: font 3
+        st.extend_from_slice(&i32s(&[42_333, 190_500, 42_333])); // 12, 54, 12 pt
+        st.extend_from_slice(&u32s(&[0x40, 0x1000, 0x40])); // regular, bold, regular
+        st.extend_from_slice(&u32s(&[1, 200, 0, 2])); // one align entry: centre
+        st.extend_from_slice(&u32s(&[0])); // intervals
+        for _ in 0..6 {
+            st.extend_from_slice(&u32s(&[0])); // set5 .. drop caps
+        }
+        st.extend_from_slice(&u32s(&[0])); // set11
+        st.extend_from_slice(&u32s(&[2, 77, 0, 0, 0, 0])); // num 2, style 77, no name
+        st.extend_from_slice(&u32s(&[0, 0])); // fill, outline refs
+        st.extend_from_slice(&u32s(&[100, 200, 0, 0, 0])); // font, align, interval, set5, set11
+        let styles = [Style7 {
+            chars: 8,
+            font: None,
+            flags: None,
+            size_units: None,
+            fill: None,
+        }];
+        let tables = [
+            chunk(b"font", &font_chunk(3, "Arial")),
+            chunk(b"font", &font_chunk(4, "Script Han")),
+            list(b"stlt", &st),
+        ]
+        .concat();
+        let (doc, rep) = text_doc(
+            v,
+            b"CDRE",
+            tables,
+            OBJ_ARTISTIC_TEXT,
+            &[(ARG_COORDS, i32s(&[0, 0])), (ARG_STYLE, u32s(&[77]))],
+            txsm7(v, false, &styles, "Ab 荣誉证书"),
+        );
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Text { spans, align, .. } => {
+                assert_eq!(*align, TextAlign::Center);
+                assert_eq!(spans.len(), 2, "{spans:?}");
+                assert_eq!(spans[0].text, "Ab ");
+                assert_eq!(spans[0].font_family, "Arial");
+                assert!((spans[0].size_pt - 12.0).abs() < 1e-3);
+                assert!(!spans[0].bold);
+                assert_eq!(spans[1].text, "荣誉证书");
+                assert_eq!(spans[1].font_family, "Script Han");
+                assert!(
+                    (spans[1].size_pt - 54.0).abs() < 1e-3,
+                    "{}",
+                    spans[1].size_pt
+                );
+                assert!(spans[1].bold);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The same entry with the three slots alike (as most files have
+    /// them) keeps the text in one run.
+    #[test]
+    fn style_table_alike_slots_keep_one_run() {
+        let v = 14u16;
+        let mut st = u32s(&[1]);
+        st.extend_from_slice(&u32s(&[0, 0]));
+        st.extend_from_slice(&u32s(&[1, 100]));
+        st.extend_from_slice(&[0; 20]);
+        for _ in 0..3 {
+            st.extend_from_slice(&u16s(&[3, 0]));
+        }
+        st.extend_from_slice(&i32s(&[42_333; 3]));
+        st.extend_from_slice(&u32s(&[0x40; 3]));
+        st.extend_from_slice(&u32s(&[0, 0]));
+        for _ in 0..8 {
+            st.extend_from_slice(&u32s(&[0]));
+        }
+        st.extend_from_slice(&u32s(&[2, 77, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0]));
+        let styles = [Style7 {
+            chars: 8,
+            font: None,
+            flags: None,
+            size_units: None,
+            fill: None,
+        }];
+        let tables = [chunk(b"font", &font_chunk(3, "Arial")), list(b"stlt", &st)].concat();
+        let (doc, rep) = text_doc(
+            v,
+            b"CDRE",
+            tables,
+            OBJ_ARTISTIC_TEXT,
+            &[(ARG_COORDS, i32s(&[0, 0])), (ARG_STYLE, u32s(&[77]))],
+            txsm7(v, false, &styles, "Ab 荣誉证书"),
+        );
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Text { spans, .. } => {
+                assert_eq!(spans.len(), 1, "{spans:?}");
+                assert_eq!(spans[0].text, "Ab 荣誉证书");
+                assert_eq!(spans[0].font_family, "Arial");
             }
             other => panic!("{other:?}"),
         }

@@ -26,6 +26,7 @@ pub mod comments_docker;
 pub mod connector_bar;
 pub mod context;
 pub mod contour_bar;
+pub mod convert_colors;
 pub mod coords_docker;
 pub mod crop_bar;
 pub mod cursors;
@@ -66,11 +67,13 @@ pub mod macros_ui;
 pub mod menu_glyphs;
 pub mod menu_pics;
 pub mod menus;
+pub mod missing_fonts;
 pub mod objects_docker;
 pub mod options;
 pub mod options_global;
 pub mod outline_pen;
 pub mod overflow;
+pub mod package_dialog;
 pub mod palette;
 pub mod pdf_import_dialog;
 pub mod pdf_password;
@@ -426,6 +429,18 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             )
             .frame(palette_frame)
             .show(ui, |ui| palette::palette_column(app, ui));
+            // A column for each further palette shown, inside it (#1164).
+            for which in palette::extra_rows(app) {
+                let id = egui::Id::new(("palette_extra", which));
+                let panel = if palette_dock == Dock::Left {
+                    Panel::left(id)
+                } else {
+                    Panel::right(id)
+                };
+                side(panel, palette::thickness(app, which))
+                    .frame(palette_frame)
+                    .show(ui, |ui| palette::extra_palette_column(app, ui, which));
+            }
         }
     }
 
@@ -536,6 +551,18 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             )
             .frame(palette_frame)
             .show(ui, |ui| palette::palette_row(app, ui));
+            // A row for each further palette shown, next to it (#1164).
+            for which in palette::extra_rows(app) {
+                let id = egui::Id::new(("palette_extra", which));
+                let panel = if palette_dock == Dock::Top {
+                    Panel::top(id)
+                } else {
+                    Panel::bottom(id)
+                };
+                side(panel, palette::thickness(app, which))
+                    .frame(palette_frame)
+                    .show(ui, |ui| palette::extra_palette_row(app, ui, which));
+            }
         }
     }
     // The AI prompt bar, over the palette rows, while a service is set up.
@@ -662,6 +689,9 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     if app.fit_pending {
         app.view.fit(app.fit_rect(), canvas_rect);
         app.fit_pending = false;
+        if std::mem::take(&mut app.open_view_pending) {
+            app.apply_open_view(canvas_rect);
+        }
     }
 
     let response = ui.allocate_rect(canvas_rect, Sense::click_and_drag());
@@ -819,6 +849,18 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
         });
         let cursor = cursors::for_tool(app, shift, primary, middle, pos);
         cursors::show(ui.ctx(), cursor, pos);
+        // A colour eyedropper waiting to sample: the colour under the
+        // pointer beside it (#990).
+        let picker = crate::ui::color_picker::picking(ui.ctx());
+        if let (true, Some(at), Some(p)) = (
+            (picker || app.eyedropper_sampling()) && !primary && !middle,
+            pos,
+            app.pointer_page,
+        ) {
+            if let Some(r) = app.hover_reading(p, shift, picker) {
+                cursors::paint_color_readout(ui.ctx(), at, r);
+            }
+        }
         // A scale, turn or slant that leaves the original (after a right
         // click): the plus a move's pointer carries, beside the pointer.
         if app.drag_copy && app.transforming() && !matches!(app.drag, crate::app::Drag::Move { .. })

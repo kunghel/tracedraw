@@ -1962,6 +1962,10 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.file.publish_to_pdf", "", doc) {
         app.publish_pdf();
     }
+    // Folders are a desktop thing (#852).
+    if item(ui, "menu.file.package", "", doc && !crate::files::WEB) {
+        app.package_dialog();
+    }
     sep(ui);
     sub(ui, "menu.file.print_merge", |ui| {
         if item(ui, "menu.file.print_merge_create", "", doc) {
@@ -2450,11 +2454,15 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
                 app.run(Command::ExtractContents { clip: c });
             }
         }
-        if app.clip_frame_edit.is_some() {
-            if item(ui, "menu.object.clip_frame_finish", "", true) {
-                app.finish_clip_frame_edit();
-            }
-        } else if item(ui, "menu.object.clip_frame_edit", "", is_clip) {
+        // Walked for the list of commands (Options > Customization >
+        // Commands) both rows count, so each can take a shortcut (#1148).
+        let editing = app.clip_frame_edit.is_some();
+        if (editing || invoke::active()) && item(ui, "menu.object.clip_frame_finish", "", editing) {
+            app.finish_clip_frame_edit();
+        }
+        if (!editing || invoke::active())
+            && item(ui, "menu.object.clip_frame_edit", "", is_clip && !editing)
+        {
             app.edit_clip_frame();
         }
         let locked = app
@@ -3055,9 +3063,12 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     // Vertical text, offered with a CJK interface language or for text
     // in those scripts (#257).
-    if app.vertical_text_offered() {
+    // (Listed in Options > Customization > Commands all the same, so it
+    // can take a shortcut, #1148.)
+    let offered = app.vertical_text_offered();
+    if offered || invoke::active() {
         let on = app.vertical_text_on();
-        if check(ui, "menu.text.vertical_text", "", on) {
+        if mark_item_if(ui, "menu.text.vertical_text", "", Mark::Check(on), offered) {
             app.set_vertical_text(!on);
         }
     }
@@ -3353,6 +3364,9 @@ fn tools_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     if item(ui, "menu.tools.color_management", "", true) {
         app.dialog = Dialog::ColorManagement(Default::default());
+    }
+    if item(ui, "menu.tools.convert_colors", "", true) {
+        app.convert_colors_dialog();
     }
     sep(ui);
     sub(ui, "menu.tools.scripts", |ui| {

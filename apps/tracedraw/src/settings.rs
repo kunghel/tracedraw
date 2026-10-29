@@ -122,6 +122,9 @@ pub struct Settings {
     /// Default action of the mouse wheel: zoom (the default) or scroll.
     #[serde(default = "default_true")]
     pub wheel_zooms: bool,
+    /// The view a drawing opens in (#1134).
+    #[serde(default)]
+    pub open_view: OpenView,
     /// Arrowheads created with Object > Create > Arrowhead.
     #[serde(default)]
     pub custom_arrowheads: Vec<tracedraw_core::Arrowhead>,
@@ -440,9 +443,15 @@ pub struct Settings {
     #[serde(default)]
     pub mcp_window: bool,
     /// Options > Global > General: look for a newer release once a day at
-    /// start (desktop).
+    /// start (desktop). Nothing is checked before the user answered the
+    /// question at first start (`update_check_asked`).
     #[serde(default = "default_true")]
     pub check_updates: bool,
+    /// The user answered the first-start question about checking for
+    /// updates (Always check / Never check). Until then no check runs on
+    /// its own, so the first start makes no network connection unasked.
+    #[serde(default)]
+    pub update_check_asked: bool,
     /// When that check last ran, seconds since 1970.
     #[serde(default)]
     pub last_update_check: u64,
@@ -631,6 +640,48 @@ fn default_precision() -> u32 {
 
 fn default_text_increment() -> f64 {
     1.0
+}
+
+/// The view a drawing opens in (Options > Display, #1134).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenView {
+    /// The whole page in the window.
+    #[default]
+    FitPage,
+    /// The objects on the page, or the page when it is empty.
+    FitObjects,
+    /// The page's width across the window.
+    PageWidth,
+    /// The page's height down the window.
+    PageHeight,
+    /// Real size, the page in the middle.
+    Actual,
+    /// The page, place and zoom it was saved with (TraceDraw files), else
+    /// the whole page.
+    AsSaved,
+}
+
+impl OpenView {
+    pub const ALL: [OpenView; 6] = [
+        OpenView::FitPage,
+        OpenView::FitObjects,
+        OpenView::PageWidth,
+        OpenView::PageHeight,
+        OpenView::Actual,
+        OpenView::AsSaved,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            OpenView::FitPage => "options.open_view_page",
+            OpenView::FitObjects => "options.open_view_objects",
+            OpenView::PageWidth => "options.open_view_width",
+            OpenView::PageHeight => "options.open_view_height",
+            OpenView::Actual => "options.open_view_actual",
+            OpenView::AsSaved => "options.open_view_saved",
+        }
+    }
 }
 
 /// What opens when the application starts (Options > General).
@@ -1060,6 +1111,8 @@ pub struct ToolPrefs {
     pub sketch: crate::recognize::SketchSettings,
     /// The Knife's mode, gap and pieces.
     pub knife: crate::knife::KnifeSettings,
+    /// Segment Delete's drag is a freehand stroke, not a box (#1150).
+    pub segment_freehand: bool,
 }
 
 impl Default for ToolPrefs {
@@ -1107,6 +1160,7 @@ impl Default for ToolPrefs {
             recognize: Default::default(),
             sketch: Default::default(),
             knife: Default::default(),
+            segment_freehand: false,
         }
     }
 }
@@ -1345,6 +1399,7 @@ impl Default for Settings {
             color: ColorPrefs::default(),
             show_outline_flyout: false,
             wheel_zooms: true,
+            open_view: OpenView::default(),
             toolbox: Vec::new(),
             custom_arrowheads: Vec::new(),
             custom_dashes: Vec::new(),
@@ -1436,6 +1491,7 @@ impl Default for Settings {
             ai_image: None,
             mcp_window: false,
             check_updates: true,
+            update_check_asked: false,
             last_update_check: 0,
             skipped_update: String::new(),
             script_filters: Vec::new(),

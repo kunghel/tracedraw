@@ -11,7 +11,12 @@ impressora e imprime. Na versão para navegador, o PDF é baixado.
 - **Destino**: a impressora, um arquivo PDF ou um arquivo PostScript.
 - **Orientação**: igual ao layout, retrato ou paisagem.
 - **Intervalo de impressão**: o documento inteiro, a página atual, uma lista de
-  páginas (como `1-3, 5, 8-`) ou os objetos selecionados.
+  páginas (como `1-3, 5, 8-`) ou os objetos selecionados. Os objetos
+  selecionados saem sozinhos (nada mais da página, das camadas mestras ou do
+  fundo), numa página do tamanho da área que ocupam: com a folha no tamanho
+  da página o papel é essa área, numa folha fixa eles ficam centralizados no
+  seu tamanho (menores só quando não cabem, a não ser que **Manter tamanho da página**
+  esteja marcado), e os layouts repetem essa área.
 - **Cópias**, agrupadas em conjuntos inteiros ou não.
 - **Imprimir como bitmap**: cada folha vira uma imagem na resolução que você
   der.
@@ -47,6 +52,25 @@ impressora e imprime. Na versão para navegador, o PDF é baixado.
   páginas que não cabem saem da folha, e um aviso diz isso). Sem ela, as
   páginas encolhem para caber nas colunas e linhas pedidas. Na Visualização de impressão, arraste na folha para mover a
   informação da página.
+
+## Livretos {#booklet}
+
+Escolha **Livreto** como imposição para imprimir duas páginas em cada lado
+de uma folha, prontas para dobrar. O número de páginas é arredondado para
+um múltiplo de quatro com páginas em branco no fim, e o resumo sob o esboço
+diz quantas páginas, páginas em branco e folhas de papel são necessárias.
+Para imprimir só algumas páginas, liste-as antes em **Páginas**.
+
+- [[print.binding]]: [[print.saddle_stitch]] encaixa cada folha dentro da
+  anterior e as grampeia na dobra (8 páginas: 8 1, 2 7 na folha externa).
+  [[print.perfect_bound]] dobra as folhas em cadernos de
+  [[print.signature_sheets]], empilha os cadernos e os cola na lombada (uma
+  folha por caderno: 4 1, 2 3, depois 8 5, 6 7).
+- [[print.creep]] (grampo a cavalo): quanto as páginas da folha mais interna
+  se movem em direção à lombada, para que as bordas se alinhem depois do
+  refile; as folhas intermediárias se movem em proporção, a externa nada.
+- [[print.booklet_gap]]: o espaço entre as duas páginas de uma página dupla,
+  centrado na dobra.
 
 ## Pré-impressão {#prepress}
 

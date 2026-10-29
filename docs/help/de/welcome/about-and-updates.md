@@ -53,6 +53,8 @@ suchen. Sie ist anfangs eingeschaltet: Einmal am Tag prüft TraceDraw beim Start
 im Stillen und meldet sich nur, wenn eine neuere Version vorliegt, die Sie
 nicht übersprungen haben.
 
+Beim ersten Start fragt TraceDraw, ob es nach Updates suchen soll: [[updates.policy_always]] oder [[updates.policy_never]]. Bis Sie antworten, baut TraceDraw von sich aus keine Verbindung auf. Die Antwort setzt diese Einstellung, die Sie hier jederzeit ändern können.
+
 > **Hinweis:** Die Browserversion ist immer die neueste. Dort öffnet
 > [[menu.help > menu.help.updates]] die Release-Seite.
 

@@ -49,6 +49,8 @@ TraceDraw が Linux の AppImage として動いているときは、ボック�
 最初はオンになっており、TraceDraw は 1 日に 1 回起動時に静かに確認し、
 スキップしていない新しいバージョンが出たときだけ知らせます。
 
+TraceDraw は初回起動時に、アップデートを確認するかどうかを尋ねます: [[updates.policy_always]] または [[updates.policy_never]]。回答するまで、TraceDraw が自分から接続することはありません。回答はこの設定に反映され、ここでいつでも変更できます。
+
 > **注:** ブラウザー版は常に最新です。そこでは
 > [[menu.help > menu.help.updates]] がリリースページを開きます。
 

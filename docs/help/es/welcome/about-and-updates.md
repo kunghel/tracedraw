@@ -51,6 +51,8 @@ Está activado de entrada: una vez al día, TraceDraw comprueba en silencio al
 iniciarse y solo avisa cuando hay una versión más reciente que usted no haya
 omitido.
 
+La primera vez que se inicia, TraceDraw pregunta si debe buscar actualizaciones: [[updates.policy_always]] o [[updates.policy_never]]. Hasta que responda, TraceDraw no establece ninguna conexión por su cuenta. La respuesta fija esta opción, así que puede cambiarla aquí en cualquier momento.
+
 > **Nota:** La versión para navegador es siempre la más reciente. Allí,
 > [[menu.help > menu.help.updates]] abre la página de versiones.
 

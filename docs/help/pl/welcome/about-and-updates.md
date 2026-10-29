@@ -49,6 +49,8 @@ tym informuje i proponuje stronę wydań.
 Początkowo jest włączone: raz dziennie TraceDraw po cichu sprawdza przy starcie
 i odzywa się tylko wtedy, gdy wyszła nowsza wersja, której nie pominięto.
 
+Przy pierwszym uruchomieniu TraceDraw pyta, czy sprawdzać aktualizacje: [[updates.policy_always]] lub [[updates.policy_never]]. Dopóki nie odpowiesz, TraceDraw sam nie nawiązuje żadnego połączenia. Odpowiedź ustawia tę opcję, którą możesz tu zmienić w każdej chwili.
+
 > **Uwaga:** Wersja w przeglądarce jest zawsze najnowsza. Tam
 > [[menu.help > menu.help.updates]] otwiera stronę wydań.
 

@@ -11,7 +11,12 @@ printer and print. In the browser version, the PDF is downloaded.
 - **Destination**: the printer, a PDF file or a PostScript file.
 - **Orientation**: match the layout, portrait or landscape.
 - **Print range**: the whole document, the current page, a list of pages
-  (such as `1-3, 5, 8-`), or the selected objects.
+  (such as `1-3, 5, 8-`), or the selected objects. The selected objects
+  print alone (nothing else of the page, its master layers or its
+  background), on a page the size of the area they cover: with the sheet
+  set to the page's size the paper is that area, on a fixed sheet they are
+  centred at their size (smaller only when they do not fit, unless
+  **Keep page size** is ticked), and the layouts repeat that area.
 - **Copies**, collated as whole sets or not.
 - **Print as bitmap**: each sheet becomes one picture at the resolution you
   give.
@@ -44,6 +49,25 @@ printer and print. In the browser version, the PDF is downloaded.
   sheet, and a warning says so). Without it, the pages shrink to fit the
   columns and rows you ask for. In Print
   Preview, drag on the sheet to move the page information.
+
+## Booklets {#booklet}
+
+Choose **Booklet** as the imposition to print two pages on each side of
+a sheet, ready to fold. The page count is rounded up to a multiple of
+four with blank pages at the back, and the summary under the sketch says
+how many pages, blanks and sheets of paper it takes. To print only some
+of the pages, list them in **Pages** first.
+
+- [[print.binding]]: [[print.saddle_stitch]] nests every sheet inside the one
+  before and staples them through the fold (8 pages: 8 1, 2 7 on the outer
+  sheet). [[print.perfect_bound]] folds the sheets in signatures of
+  [[print.signature_sheets]], stacks the signatures and glues them at the
+  spine (one sheet per signature: 4 1, 2 3, then 8 5, 6 7).
+- [[print.creep]] (saddle stitch): how far the pages of the innermost sheet
+  move toward the spine, so the fore edges line up after trimming; the
+  sheets between move in proportion, the outer one not at all.
+- [[print.booklet_gap]]: the space between the two pages of a spread,
+  centred on the fold.
 
 ## Prepress {#prepress}
 

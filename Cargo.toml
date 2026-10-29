@@ -4,6 +4,7 @@ resolver = "2"
 exclude = ["vendor"]
 members = [
     "crates/core",
+    "crates/cdr-format",
     "crates/cdr",
     "crates/io",
     "crates/text",
@@ -15,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.19.11"
+version = "0.24.0"
 edition = "2021"
 authors = ["Ighor Toth"]
 license = "MIT OR Apache-2.0"
@@ -25,6 +26,7 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 tracedraw-core = { path = "crates/core" }
+tracedraw-cdr-format = { path = "crates/cdr-format" }
 tracedraw-cdr = { path = "crates/cdr" }
 tracedraw-io = { path = "crates/io" }
 tracedraw-text = { path = "crates/text" }
