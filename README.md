@@ -253,10 +253,7 @@ is confirmed and what is still assumed.
 - **Writing back, in the version you need:** drawings save as `.cdr` in
   any version from 7 to 27, as well as in TraceDraw's own JSON format. A
   drawing opened from a `.cdr` saves in its own version unless you pick
-  another. Save As offers versions 14 to 27, the ones checked to open in
-  the program that wrote the samples; versions 7 to 13 are experimental
-  and are not saved (a drawing opened from one asks which checked version
-  to save in). From version 16 the file can carry the drawing's CMYK
+  another. Save As offers every version from 7 to 27. From version 16 the file can carry the drawing's CMYK
   colour profile and the fonts its text uses (when their licence allows
   embedding).
 - **Never crashes on a file:** `tracedraw-cli stress` runs mutation tests
@@ -274,7 +271,7 @@ MCP server all go through it, so anything a click can do, a script can do.
 tracedraw-cli convert poster.cdr poster.pdf
 TRACEDRAW_DPI=300 tracedraw-cli convert poster.tdraw poster.png
 TRACEDRAW_PAGE=2 tracedraw-cli convert brochure.cdr page2.png
-TRACEDRAW_CDR_VERSION=15 tracedraw-cli convert logo.svg logo.cdr   # .cdr version 15 (14 to 27)
+TRACEDRAW_CDR_VERSION=15 tracedraw-cli convert logo.svg logo.cdr   # .cdr version 15 (7 to 27)
 
 # A PDF with a bookmark per page that cannot be printed or copied
 # without its permissions password
@@ -436,6 +433,8 @@ names is the version number.
 | macOS (Apple silicon, Intel) | `tracedraw-<version>-macos-arm64.dmg`, `tracedraw-<version>-macos-x86_64.dmg` (unsigned for now: right-click, Open) |
 | Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz` |
 | Web | no download: [open it in the browser](https://igtoth.github.io/tracedraw/), nothing to install |
+| Android (64-bit ARM; x86_64 Chromebooks) | `tracedraw-<version>-android-arm64-v8a-debug.apk` (`-x86_64-` for Chromebooks) in the releases and the nightly, signed with a debug key (remove the installed one before installing a build of another run); `scripts/android/build.sh` builds debug-signed APKs and an App Bundle for Google Play, and CI keeps them with each run as the `android-apk` and `android-aab` artifacts after starting the app on Android emulators (see [`docs/behavior/android.md`](docs/behavior/android.md) and [`docs/android-play.md`](docs/android-play.md)) |
+| Web | no download: [open it in the browser](https://igtoth.github.io/tracedraw/), nothing to install; on an Android tablet, an iPad or a desktop the browser can also install the page as an app that opens full screen and starts offline (see [`docs/behavior/web.md`](docs/behavior/web.md), Installing on a tablet) |
 
 Each download includes `tracedraw-cli` next to the editor. Packaging sources
 are in [`packaging/`](packaging/); the browser build is described in

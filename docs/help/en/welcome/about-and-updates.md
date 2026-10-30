@@ -54,12 +54,21 @@ The first time TraceDraw starts, it asks whether to check for updates: [[updates
 > **Note:** The browser version is always the latest one. There,
 > [[menu.help > menu.help.updates]] opens the releases page.
 
+The copy installed from the Microsoft Store and the Android app are updated by
+their store: they never check GitHub, [[menu.help > menu.help.updates]] opens
+their store page, and the options have no update check. Every other
+installation downloads the file made for its processor and for how it was
+installed (installer, portable zip, AppImage, `.deb`, archive or disk
+image).
+
 ## The Welcome Screen {#welcome-screen}
 
 The Welcome Screen is the first tab when TraceDraw starts. From it you can
 create a drawing, open one of the drawings you used last (each shown with a
 thumbnail; [[menu.file.clear_recent]] forgets them), start from a template,
-read the news and find learning material. Choose
+read the news and find learning material. When a page is taller than the
+window (a long list of recent drawings), it scrolls with the mouse wheel or
+its scroll bar; the row of tabs at the top stays in place. Choose
 [[menu.help > menu.help.welcome_screen]] to bring it back.
 [[menu.help > menu.help.video_tutorials]], [[menu.help.quick_start_guide]]
 and [[menu.help.user_guide]] open its learning page, and

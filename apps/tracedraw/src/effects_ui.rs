@@ -11,6 +11,10 @@ pub struct BevelSettings {
     pub style: u8,
     pub shadow_color: Color,
     pub light_color: Color,
+    /// Steps the band is cut into (1 to `MAX_BEVEL_LEVEL`).
+    pub level: u8,
+    /// The colour the band is toned from; `None` uses the object's fill.
+    pub emboss_color: Option<Color>,
 }
 
 impl Default for BevelSettings {
@@ -22,6 +26,8 @@ impl Default for BevelSettings {
             style: 0,
             shadow_color: Color::BLACK,
             light_color: Color::WHITE,
+            level: 1,
+            emboss_color: None,
         }
     }
 }

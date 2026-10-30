@@ -12,6 +12,7 @@ pub mod align_docker;
 pub mod bar_items;
 pub mod barcode_wizard;
 pub mod bars;
+pub mod before_after;
 pub mod bitmap_dialogs;
 pub mod bitmap_preview;
 pub mod brand;
@@ -171,7 +172,8 @@ pub(crate) fn note_software_renderer(app: &mut App, name: &str) {
         app.status = crate::i18n::trf("status.software_renderer", &[("name", name)]);
     } else {
         app.status = crate::i18n::trf("status.software_renderer_off", &[("name", name)]);
-        app.status_opens_options = Some(app.status.clone());
+        app.status_opens_options =
+            Some((app.status.clone(), crate::ui::dialogs::OptionsPage::General));
     }
 }
 

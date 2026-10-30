@@ -44,6 +44,24 @@ applies at once.
 
 The tool's property bar has the steps, rotation and the two accelerations.
 
+### Controls on the canvas {#canvas-controls}
+
+Pick a blend with the [[tool.blend]] tool (click its start or end object, or a
+step) to show its controls: a square on the start object, a crossed square on
+the end object, the line between them and two sliders on it, the object
+acceleration above and the color acceleration below.
+
+- Drag a slider toward the start or the end to crowd the steps or the colors
+  there. The blend follows live, each drag is one undo step, and the property
+  bar follows. A slider goes as far one way as the other: at 100 % the middle
+  step sits right by the start object, at -100 % right by the end object.
+- Drag an end square to move its object, so the blend changes direction. Drop
+  it on another object to make that object the new start or end, with the
+  blend's settings.
+
+The object acceleration moves the steps toward one end also when the blend
+follows no path. A bitmap effect on the start object keeps the blend drawn.
+
 ## Blending along a path {#path}
 
 1. Select the blend.
@@ -59,3 +77,12 @@ ends of the curve.
 turns the steps into objects of their own, grouped.
 [[menu.object > menu.object.break_blend_apart]] (<kbd>Ctrl+K</kbd>, also on the
 right-click menu) does the same.
+
+## Saving as `.cdr` {#cdr}
+
+A blend saved as `.cdr` (version 9 or later) stays a blend: the file
+holds the two objects and the blend record between them, so the program
+that opens the file shows the steps and lets you change the blend. The
+steps, spacing and the two objects go into the file; acceleration,
+rotation, a path and the colour direction come back in TraceDraw
+(version 14 or later), other programs start from their defaults.

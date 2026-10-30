@@ -365,6 +365,20 @@ jobs:
           grep -q "data-wasm-size=\"$size\"" site/index.html
           if grep -q "@VERSION@" site/index.html; then exit 1; fi
           cp assets/icon/tracedraw-256.png site/icon-256.png
+          # The installable app (docs/behavior/web.md, "Installing on a
+          # tablet"): the manifest, its icons and the service worker, whose
+          # cache is named after the version and a digest of the page,
+          # script and module, so every deploy is a new worker and a new
+          # cache (never a stale module against a new script).
+          cp web/manifest.webmanifest site/
+          cp assets/icon/tracedraw-192.png site/icon-192.png
+          cp assets/icon/tracedraw-512.png site/icon-512.png
+          build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest | sha256sum | cut -c1-16)
+          sed -e "s/@VERSION@/${{ steps.ver.outputs.version }}/" -e "s/@BUILD@/$build/" web/sw.js > site/sw.js
+          # The module loads, the page links the manifest and registers the
+          # worker, the manifest and the worker are valid and name files the
+          # site holds (Node, no packages, no network).
+          node scripts/web/check_pwa.mjs site
           (cd site && zip -r "../dist/tracedraw-${{ steps.ver.outputs.version }}-web.zip" .)
 
       # The font folder of the published page (web/fonts.txt): free fonts
@@ -403,6 +417,101 @@ jobs:
         with:
           path: site
 
+  # The Android app (docs/behavior/android.md, docs/android-play.md): the
+  # editor as a shared library for 64-bit ARM, built with the NDK and
+  # build tools the runner has, as a debug-signed APK to install by hand
+  # and as an App Bundle (.aab) for Google Play. The bundle is signed with
+  # the upload key when the ANDROID_KEYSTORE_* secrets are set (Play App
+  # Signing) and with the debug key otherwise. Both are kept with the
+  # run only, never attached to the releases (their names do not match
+  # tracedraw-*): uploading to Play is the owner's step.
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: Build
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # 64-bit ARM for tablets and phones; x86_64 for Chromebooks and
+          # the emulator check below.
+          ANDROID_ABIS: arm64-v8a x86_64
+        run: |
+          # The newest NDK the runner has, the SDK's build tools and the
+          # platform the app targets (installed when the runner lacks it).
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "NDK $ANDROID_NDK_HOME, SDK $ANDROID_HOME"
+          if [ ! -f "$ANDROID_HOME/platforms/android-36/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" >/dev/null
+          fi
+          scripts/android/build.sh
+          ls -la dist-android/*.apk dist-android/*.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist-android/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: dist-android/*.aab
+          if-no-files-found: error
+
+  # The app started on Android emulators, Android 11 and Android 14
+  # (scripts/android/emulator_check.sh): the x86_64 APK installed,
+  # launched from its launcher activity, still running 45 s later, nothing
+  # crashed in the system log, its first frame drawn with the system fonts
+  # loaded and the editor on the screenshot. The runner's KVM runs the
+  # emulator at full speed; the x86_64 library is the same code as the
+  # ARM64 one (the emulator's ARM translation stops the ARM64 library in
+  # the activity glue's first JNI calls, which the x86_64 one passes, so
+  # it cannot stand in for an ARM device). The screenshot and the logs
+  # are kept as the android-emulator-api* artifacts.
+  android-emulator:
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [30, 34]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the app on an emulator
+        # v2.38.0
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: scripts/android/emulator_check.sh "$(ls apk/*-x86_64-debug.apk | head -n 1)" dist-android/emulator-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-emulator-api${{ matrix.api }}
+          path: dist-android/emulator-check
+          if-no-files-found: warn
+
   # GitHub Pages must be set to "GitHub Actions" (Settings > Pages); the
   # job tries to enable it and does not fail the build when it cannot.
   pages:
@@ -427,7 +536,7 @@ jobs:
   # "nightly" pre-release with the installers of that commit.
   release:
     if: (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
-    needs: [build, web]
+    needs: [build, web, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -442,6 +551,12 @@ jobs:
           path: artifacts
           pattern: tracedraw-*
           merge-multiple: true
+      # The Android APKs (one per ABI, signed with a debug key) go with the
+      # installers, so a tablet can install the build of the same commit.
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          name: android-apk
       - name: Release notes
         shell: bash
         run: |

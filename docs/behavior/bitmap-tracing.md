@@ -23,7 +23,7 @@
 | Colors tab: Number of colors | per preset | 2..256 |
 | Colors tab: list | the trace's colours with their curve counts | tick two or more and Merge selected colors; the swatch of a row changes the colour its curves are drawn in |
 | Reset, undo, redo | | Reset: the image type's settings; the arrows step through every settings state of the dialog, Reset included |
-| Preview | Before and After | Before and After (the picture above, the trace below), Before, After, Wireframe overlay (the curves as blue lines over the picture); zoom to fit, zoom out, zoom in, the wheel zooms, a drag pans |
+| Preview | Before and After | the shared preview (`before-after-preview.md`): Before and After (the picture above, the trace below), Before and After side by side, Before, After, Wireframe overlay (the curves as blue lines over the picture); zoom to fit, zoom out, zoom in, pan, the wheel zooms, a drag pans |
 | Options... | | Options > Global > Bitmap Tracing, then back to the dialog |
 
 ## Commands
@@ -38,17 +38,19 @@ The last trace is kept for the session.
 
 A window the user sizes (1040 x 700 points at first, never under 780 x
 540; a maximize button in the title bar fills the main window, pressing
-it again restores the size). Left, the preview of the first selected
-bitmap: a Preview list (Before and After, Before, After, Wireframe
-overlay), zoom to fit, zoom out and zoom in buttons, a pan button, and a
-spinner while a trace is being made; under the preview the status line
-`Curves: N, Nodes: N, Colors: N` (the whole picture's trace; with a dots
-sign after it while only the quick look is in). Before and After stacks
-the picture over its trace, each in its own pane, with the same zoom and
-place; the wheel zooms about the pointer (fit / 10 to 64 points per
-preview pixel), a drag pans, the images sit on a checkerboard (one
-2 x 2 texture repeated, a single rectangle a frame). The
-preview copy is at most 1024 pixels on its longer side. Right, the
+it again restores the size). Left, the shared Before and After preview
+of the first selected bitmap (`before-after-preview.md`): a Preview
+list (Before and After, Before and After side by side, Before, After,
+Wireframe overlay), zoom to fit, zoom out and zoom in buttons, a pan
+button, and a spinner while a trace is being made; under the preview
+the status line `Curves: N, Nodes: N, Colors: N` (the whole picture's
+trace; with a dots sign after it while only the quick look is in).
+Before and After stacks the picture over its trace, each in its own
+pane, with the same zoom and place; the wheel zooms about the pointer
+(fit / 10 to 64 points per preview pixel), a drag pans, the images sit
+on a checkerboard (one 2 x 2 texture repeated, a single rectangle a
+frame). The preview copy is at most 1024 pixels on its longer side.
+Right, the
 Settings and Colors tabs over a Reset button with undo and redo arrows;
 bottom, the help button, Options..., OK and Cancel. Enter is OK, Esc and
 the close button cancel.
@@ -90,6 +92,14 @@ pane, the wireframe and the counts take the result when it comes in.
   once with each result, not every frame.
 - In the browser (no threads) the quick look is made in the frame; the
   whole picture is traced on OK when it is larger than 400 000 pixels.
+  The quick look is then the request's last result: the preview rests
+  on it (nothing is traced again while the settings stand, the spinner
+  stops, an idle dialog asks for no frames) and the counts show it
+  without the dots sign. Every result says whether it is the last of
+  its request (`Shown::done`), so a result that will be followed by
+  another never counts as the end.
+- A trace whose thread ended without a result is not started again:
+  the preview keeps what it shows until a setting changes.
 
 ### Remove
 
@@ -227,14 +237,27 @@ width equal to the mean local thickness.
   it back with the step to redo kept, redo goes forward again.
 - `trace_dialog::tests::only_settings_that_change_the_trace_change_its_key`.
 - `pick_drag_tests::frame_times_of_the_trace_dialog` (ignored): frame
-  times of a slider drag with a 2000 x 2000 picture in the dialog, and
-  how long the whole picture's trace takes to show.
+  times of a slider drag with a 2000 x 2000 picture in the dialog, how
+  long the whole picture's trace takes to show, and the idle dialog's
+  frames once it is in (how many ask for another frame).
+- `pick_drag_tests::frame_times_of_the_trace_dialog_resting_on_the_quick_look`
+  (ignored): the same where the whole picture waits for OK (the
+  browser's way), idle on the quick look and dragging Detail.
+- `pick_drag_tests::the_trace_dialog_rests_once_the_trace_is_in`: with
+  the trace in, on the desktop and where the whole picture waits for
+  OK, idle frames ask for no frame, start no trace and draw no spinner;
+  a change traces once more and the dialog rests again.
 - `trace_preview::tests`: a request gives the quick look then the whole
   trace, a cancelled one nothing, and the live preview traces each
   distinct request once, debounced while the pointer is held; new
   colours alone are not traced again
   (`new_colours_alone_are_not_traced_again`); closing the dialog ends
-  the running trace soon (`clearing_stops_the_running_trace`).
+  the running trace soon (`clearing_stops_the_running_trace`); with the
+  whole picture deferred the quick look is the last result
+  (`with_the_whole_picture_deferred_the_quick_look_is_the_last_result`)
+  and the preview rests on it (`a_deferred_request_rests_on_its_quick_look`);
+  a trace that died is not started again
+  (`a_trace_that_died_is_not_started_again`).
 - `trace::tests::removing_the_background_or_the_entire_colour_or_nothing`,
   `trace::tests::merge_adjacent_off_makes_a_curve_per_patch`,
   `trace::tests::remove_overlap_keeps_regions_to_their_pixels`,

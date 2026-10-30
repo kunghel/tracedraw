@@ -261,7 +261,13 @@ fn groups_bitmaps_and_pages(doc: &Document, v: u16) {
     let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
     assert_eq!(back.pages.len(), 2, "{v}: {:?}", rep.warnings);
     assert_eq!(rep.skipped_objects, 0, "{:?}", rep.warnings);
-    let l = &back.pages[0].layers[0];
+    // Before version 14 every page lists every layer of the drawing (the
+    // master page's order), so the first page also has an empty "Second".
+    let l = back.pages[0]
+        .layers
+        .iter()
+        .find(|l| l.name == "Ink")
+        .unwrap_or_else(|| panic!("{v}: no Ink layer"));
     assert_eq!(l.shapes.len(), 2, "{v}: {:?}", rep.warnings);
     match &l.shapes[0].kind {
         ShapeKind::Group { children } => {
@@ -297,8 +303,25 @@ fn groups_bitmaps_and_pages(doc: &Document, v: u16) {
         (bb.x0 - 100.0).abs() < 0.01 && (bb.y1 - 90.0).abs() < 0.01,
         "{bb:?}"
     );
-    assert_eq!(back.pages[1].layers[0].name, "Second");
-    assert_eq!(back.pages[1].layers[0].shapes.len(), 1);
+    let second = back.pages[1]
+        .layers
+        .iter()
+        .find(|l| l.name == "Second")
+        .unwrap_or_else(|| panic!("{v}: no Second layer"));
+    assert_eq!(second.shapes.len(), 1, "{v}");
+    let names = |page: &Page| {
+        page.layers
+            .iter()
+            .map(|l| l.name.clone())
+            .collect::<Vec<_>>()
+    };
+    if v >= 14 {
+        assert_eq!(names(&back.pages[0]), ["Ink"], "{v}");
+        assert_eq!(names(&back.pages[1]), ["Second"], "{v}");
+    } else {
+        assert_eq!(names(&back.pages[0]), ["Second", "Ink"], "{v}");
+        assert_eq!(names(&back.pages[1]), ["Second", "Ink"], "{v}");
+    }
 }
 
 #[test]
@@ -795,9 +818,10 @@ fn files_are_laid_out_as_the_versions_have_them() {
         let pages = ids.iter().filter(|i| i.trim() == "page").count();
         assert_eq!(pages, 2, "{v}: master page and page");
         // A page lists the master's guides and desktop layers, from 14 its
-        // own guides, then the drawing's layer and the master's grid.
+        // own guides, then the drawing's layer and the master's grid; before
+        // 14 the master page lists the drawing's layer too.
         let layers = ids.iter().filter(|i| i.trim() == "layr").count();
-        assert_eq!(layers, if v >= 14 { 3 + 5 } else { 3 + 4 }, "{v}: {ids:?}");
+        assert_eq!(layers, if v >= 14 { 3 + 5 } else { 4 + 4 }, "{v}: {ids:?}");
         // Every object: flags, boxes, static id, attributes with the
         // transform; the text starts with its number and ends with its
         // record.
@@ -809,11 +833,12 @@ fn files_are_laid_out_as_the_versions_have_them() {
             "{v}: the text comes first, front to back"
         );
         assert!(ids.iter().any(|i| i.trim() == "txsm"), "{v}");
-        // From 11 the text record is followed by its line breaking tables.
+        // The text record is followed by its line breaking tables in every
+        // version.
         let txsm = at("txsm").expect("txsm");
         assert_eq!(
-            ids.get(txsm + 1).map(|i| i.trim()) == Some("txtj"),
-            v >= 11,
+            ids.get(txsm + 1).map(|i| i.trim()),
+            Some("txtj"),
             "{v}: {ids:?}"
         );
         let mut flags = Vec::new();
@@ -822,8 +847,13 @@ fn files_are_laid_out_as_the_versions_have_them() {
                 flags.push(tree.data(&riff, ch).to_vec());
             }
         });
-        // Text is flagged 9 before version 18, 8 (as other objects) after.
-        assert_eq!(flags.contains(&vec![0, 2, 0, 9]), v < 18, "{v}: text flags");
+        // Text is flagged 8 like the shapes, except in versions 14 to 17,
+        // which keep the 9 their files opened with.
+        assert_eq!(
+            flags.contains(&vec![0, 2, 0, 9]),
+            (14..18).contains(&v),
+            "{v}: text flags"
+        );
         assert!(flags.contains(&vec![0, 2, 0, 8]), "{v}: object flags");
         assert!(
             flags.iter().any(|f| f.get(2..4) == Some(&[1, 0x90])),
@@ -874,7 +904,9 @@ fn layer_args(
 /// Pages list the master page's guides, desktop and grid layers by the
 /// master's GUIDs, as every sample file of versions 14 to 22 does (entries
 /// with GUIDs of their own are the likeliest reason earlier files closed
-/// the program that opened them; not confirmed yet).
+/// the program that opened them; not confirmed yet). Before 14 the master
+/// page lists the drawing's layers too and every page lists them all in
+/// the master's order (#1139).
 #[test]
 fn pages_refer_to_the_master_layers_by_their_guids() {
     let mut doc = doc_with(Vec::new());
@@ -905,11 +937,21 @@ fn pages_refer_to_the_master_layers_by_their_guids() {
         };
         let master = entries(pages[0]);
         let master_flags: Vec<[u8; 4]> = master.iter().map(|(f, _)| *f).collect();
-        assert_eq!(
-            master_flags,
-            [[0x0a, 0, 1, 0x98], [0x08, 0, 1, 0x98], [0x1a, 1, 1, 0x98]],
-            "{v}"
-        );
+        let mut expect_master = vec![[0x0a, 0, 1, 0x98], [0x08, 0, 1, 0x98]];
+        if v < 14 {
+            expect_master.push([0, 0, 0, 0x98]);
+            expect_master.push([0, 0, 0, 0x98]);
+        }
+        expect_master.push([0x1a, 1, 1, 0x98]);
+        assert_eq!(master_flags, expect_master, "{v}");
+        // The master's entries for the drawing's layers are named and
+        // hold no objects.
+        for (l, (f, args)) in pages[0].find_all(b"layr").zip(&master) {
+            if *f == [0, 0, 0, 0x98] {
+                assert!(arg(args, ARG_NAME).is_some(), "{v}");
+                assert!(l.find(b"obj ").is_none(), "{v}");
+            }
+        }
         // The master page closes with an empty object list from 16; pages
         // do not.
         assert_eq!(pages[0].find(b"lgob").is_some(), v >= 16, "{v}");
@@ -921,10 +963,23 @@ fn pages_refer_to_the_master_layers_by_their_guids() {
             let mut expect = vec![[0x0a, 0, 1, 0x98], [0x08, 0, 1, 0x98]];
             if v >= 14 {
                 expect.push([0x0a, 0, 0, 0x98]);
+            } else {
+                // Both drawing layers on both pages, as on the master.
+                expect.push([0, 0, 0, 0x98]);
             }
             expect.push([0, 0, 0, 0x98]);
             expect.push([0x1a, 1, 1, 0x98]);
             assert_eq!(flags, expect, "{v}");
+            if v < 14 {
+                let kinds = |entries: &[([u8; 4], Args)]| -> Vec<[u8; 4]> {
+                    entries.iter().map(|(f, _)| *f).collect()
+                };
+                assert_eq!(kinds(&layers), kinds(&master), "{v}: the master's order");
+                let names = |entries: &[([u8; 4], Args)]| -> Vec<Option<Vec<u8>>> {
+                    entries.iter().map(|(_, a)| arg(a, ARG_NAME)).collect()
+                };
+                assert_eq!(names(&layers), names(&master), "{v}: the master's names");
+            }
             for (f, args) in &layers {
                 let guid = arg(args, ARG_GUID);
                 let name = arg(args, ARG_NAME);
@@ -961,16 +1016,20 @@ fn pages_refer_to_the_master_layers_by_their_guids() {
                 );
             }
         }
-        // It still reads back as two pages of one layer each.
+        // It still reads back as two pages; before 14 each page lists both
+        // layers (the one it lacks empty), from 14 its own alone.
         let (back, _) = crate::open_bytes(&bytes, "t").expect("opens");
         assert_eq!(back.pages.len(), 2, "{v}");
-        let names: Vec<&str> = back
+        let names: Vec<Vec<&str>> = back
             .pages
             .iter()
-            .map(|p| p.layers[0].name.as_str())
+            .map(|p| p.layers.iter().map(|l| l.name.as_str()).collect())
             .collect();
-        assert_eq!(names, ["Ink", "Second"], "{v}");
-        assert!(back.pages.iter().all(|p| p.layers.len() == 1), "{v}");
+        if v >= 14 {
+            assert_eq!(names, [vec!["Ink"], vec!["Second"]], "{v}");
+        } else {
+            assert_eq!(names, [vec!["Second", "Ink"], vec!["Second", "Ink"]], "{v}");
+        }
     }
 }
 
@@ -1020,16 +1079,28 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
         assert_eq!(fills, [7, 8], "{v}");
         let n = u();
         assert_eq!(entry(n, 0, &mut ids, &mut u), [9], "{v}");
-        // One font: three scripts in font 3 at 12 pt.
+        // One font: three scripts in font 3 at 12 pt. Before 10 the entry
+        // holds 0, 0xffff, 1, one size and three style flags; from 10 0,
+        // three masks, 1, three sizes and three style flags.
         assert_eq!(u(), 1, "{v}");
         ids.push(u());
         let mask: Vec<u32> = (0..if v >= 10 { 5 } else { 3 }).map(|_| u()).collect();
         assert_eq!(mask[0], 0, "{v}");
+        assert_eq!(mask[1], if v >= 16 { 0xff } else { 0xffff }, "{v}");
+        assert_eq!(
+            mask.last().copied(),
+            Some(if v >= 16 { u32::MAX } else { 1 }),
+            "{v}"
+        );
         assert_eq!(u(), 3, "{v}: font 3, character set 0");
         assert_eq!((u(), u()), (3, 3), "{v}: the other scripts' fonts");
-        assert_eq!((u(), u(), u()), (42333, 42333, 42333), "{v}: sizes");
-        for _ in 0..if v >= 10 { 3 } else { 1 } {
-            assert_eq!(u(), 0x40, "{v}");
+        if v >= 10 {
+            assert_eq!((u(), u(), u()), (42333, 42333, 42333), "{v}: sizes");
+        } else {
+            assert_eq!(u(), 42333, "{v}: one size");
+        }
+        for _ in 0..3 {
+            assert_eq!(u(), 0x40, "{v}: style flags");
         }
         let n = u();
         assert_eq!(
@@ -1050,11 +1121,11 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
         for (pos, thick) in DECORATION_LINES {
             assert_eq!((u(), u() as i32, u() as i32), (0, pos, thick), "{v}");
         }
-        // No tabs, bullets, indents, hyphenation or drop caps; set11 from 9.
+        // No tabs, bullets, indents, hyphenation or drop caps; set11 from 8.
         for _ in 0..5 {
             assert_eq!(u(), 0, "{v}");
         }
-        if v >= 9 {
+        if v >= 8 {
             assert_eq!(u(), 1, "{v}");
             ids.push(u());
             assert_eq!((u(), u()), (0, 0));
@@ -1072,12 +1143,26 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
             u();
             u();
             let len = u() as usize;
+            let label = [
+                "Default",
+                "Centred",
+                "Right",
+                "Justified",
+                "Default Graphic",
+            ][style as usize - 1];
             if v >= 16 {
                 assert_eq!(len, 0, "{v}: no names from 16");
+            } else if v >= 12 {
+                assert_eq!(len, label.len(), "{v}: UTF-16 names count their letters");
+            } else {
+                // 8-bit names end with a NUL that the length counts.
+                assert_eq!(len, label.len() + 1, "{v}");
+                let bytes = &d[at.get()..at.get() + len];
+                assert_eq!(bytes, [label.as_bytes(), &[0]].concat(), "{v}");
             }
             at.set(at.get() + len * if v >= 12 { 2 } else { 1 });
             let refs = if style < 5 {
-                6 + usize::from(v >= 9)
+                6 + usize::from(v >= 8)
             } else {
                 2
             };
@@ -1194,13 +1279,16 @@ fn records_have_the_sizes_of_the_versions_files() {
         );
         assert_eq!(fild(Ver(v), 1, &Fill::None).len(), none, "{v}");
         assert_eq!(
-            font_record(Ver(v), 1, "Arial", 0x40).len(),
+            font_record(Ver(v), 1, "Arial", 0x40, None).len(),
             if v >= 12 { 296 } else { 92 },
             "{v}"
         );
+        // The transform: 184 bytes before 13 (the 160-byte record of the
+        // files of versions 7 to 12), 96 from 13.
         assert_eq!(
             trfd(Ver(v), Affine::IDENTITY).len(),
-            if v >= 13 { 96 } else { 80 }
+            if v >= 13 { 96 } else { 184 },
+            "{v}"
         );
     }
     // Two-stop gradients: stops of 16 bytes before version 13, 24 in 13,
@@ -1289,11 +1377,11 @@ fn colours_carry_the_palette_id_of_their_model_from_version_14() {
     assert_eq!(v14, v15, "versions 14 and 15 share the solid fill record");
 }
 
-/// Objects of versions 9 to 15 carry argument 19170 (1, 1, 0), as every
-/// shape, text and picture of files of those versions does; files of 8
-/// and of 16 on have none.
+/// Objects of versions 7 to 15 carry argument 19170 (1, 1, 0), as every
+/// shape, text and picture of files of those versions saved by the
+/// program that reads them does; files of 16 on have none.
 #[test]
-fn objects_of_versions_9_to_15_carry_argument_19170() {
+fn objects_of_versions_7_to_15_carry_argument_19170() {
     let mut doc = doc_with(Vec::new());
     let mut ids = doc.ids().clone();
     let r = Shape::new(
@@ -1329,7 +1417,7 @@ fn objects_of_versions_9_to_15_carry_argument_19170() {
             }
         });
         assert_eq!(flags.len(), 2, "{v}");
-        let want = (9..=15).contains(&v).then(|| {
+        let want = (7..=15).contains(&v).then(|| {
             [1u32, 1, 0]
                 .iter()
                 .flat_map(|x| x.to_le_bytes())
@@ -1610,8 +1698,11 @@ fn every_version_writes_what_files_of_that_version_hold() {
             let side = if v >= 13 { 128 } else { 96 };
             assert_eq!(u32::from_le_bytes(disp[0..4].try_into().unwrap()), 8);
             assert_eq!(i32::from_le_bytes(disp[8..12].try_into().unwrap()), side);
+            // 8 bits with a palette in every version (the version 13 files
+            // of the program that reads them hold an 8-bit picture too).
             let bpp = u16::from_le_bytes(disp[18..20].try_into().unwrap());
-            assert_eq!(bpp, if v >= 13 { 24 } else { 8 }, "{v}");
+            assert_eq!(bpp, 8, "{v}");
+            assert_eq!(u32::from_le_bytes(disp[36..40].try_into().unwrap()), 256);
             assert!(!has("pref"));
             continue;
         }
@@ -1714,14 +1805,11 @@ fn riff_streams_are_compressed_and_end_with_a_summary() {
         let (back, _) = crate::open_bytes(&bytes, "back").expect("reads");
         assert_eq!(back.pages[0].layers[0].shapes.len(), 1, "{v}");
         if v < 14 {
+            // 60 bytes in every version: the box, 1, 1, 0, the time, 0, 0,
+            // the version, the build, 0, the locale, 0, the version.
             let sumi = tree.root.find(b"sumi").expect("sumi");
             let d = tree.data(&riff, sumi);
-            let len = match v {
-                0..=9 => 44,
-                10 | 11 => 56,
-                _ => 60,
-            };
-            assert_eq!(d.len(), len, "{v}");
+            assert_eq!(d.len(), 60, "{v}");
             let word = |i: usize| i32::from_le_bytes(d[i * 4..i * 4 + 4].try_into().unwrap());
             // The rectangle's box from the page centre, in units.
             let size = doc.pages[0].size;
@@ -1731,7 +1819,13 @@ fn riff_streams_are_compressed_and_end_with_a_summary() {
             assert_eq!(word(1), u(50.0 - cy), "{v}");
             assert_eq!(word(2), u(30.0 - cx), "{v}");
             assert_eq!(word(3), u(20.0 - cy), "{v}");
+            assert_eq!((word(4), word(5)), (0x1_0001, 0), "{v}");
+            assert!(word(6) > 1_700_000_000, "{v}: the time saved");
+            assert_eq!((word(7), word(8)), (0, 0), "{v}");
             assert_eq!(word(9), i32::from(v) * 100, "{v}");
+            assert!(word(10) > 0, "{v}: a build number");
+            assert_eq!((word(11), word(12), word(13)), (0, 1033, 0), "{v}");
+            assert_eq!(word(14), i32::from(v) * 100, "{v}");
         }
     }
 }
@@ -2238,6 +2332,17 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
         let bytes = document_to_cdr_version(&doc, v);
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
         let l = &back.pages[0].layers[0];
+        if v >= 12 {
+            // A clip container: the frame with its look, the contents
+            // inside it (the next test).
+            let ShapeKind::ClipFrame { frame, contents } = &l.shapes[0].kind else {
+                panic!("{v}: {:?} {:?}", l.shapes[0].kind, rep.warnings);
+            };
+            assert_eq!(frame.fill, Fill::Solid(Color::rgb8(0, 120, 0)), "{v}");
+            assert!(frame.stroke.is_some(), "{v}");
+            assert_eq!(contents.len(), 1, "{v}");
+            continue;
+        }
         let ShapeKind::Group { children } = &l.shapes[0].kind else {
             panic!("{v}: {:?} {:?}", l.shapes[0].kind, rep.warnings);
         };
@@ -2248,6 +2353,167 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
         // Bottom to top: the frame's fill, the contents, its outline.
         assert_eq!(looks, [(true, false), (true, false), (false, true)], "{v}");
         assert_eq!(children[0].fill, Fill::Solid(Color::rgb8(0, 120, 0)), "{v}");
+    }
+}
+
+/// From version 12 a clip frame goes out as a clip container (#1222): the
+/// frame object names, in argument 8005, a group of the document's `LIST
+/// clpt` holding the contents, laid out as a version 27 file saved by the
+/// program that reads them holds its own (the group's flags, its loda of
+/// argument 3500, no `usdn` inside; the container's id arguments and
+/// flag). Read back, the frame keeps its look and the contents their
+/// places; the file passes the checker. A picture inside a frame was
+/// written as a bitmap with a crop path and other frames as a plain group,
+/// which that program showed without the picture and the frame.
+#[test]
+fn clip_frames_go_out_as_clip_containers_from_version_12() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let png = {
+        let mut pm = tiny_skia::Pixmap::new(4, 4).expect("pixmap");
+        pm.fill(tiny_skia::Color::from_rgba8(200, 30, 30, 255));
+        pm.encode_png().expect("png")
+    };
+    let mut bm = Shape::new(
+        ids.shape(),
+        ShapeKind::Bitmap {
+            rect: Rect::new(0.0, 0.0, 60.0, 60.0),
+            width_px: 4,
+            height_px: 4,
+            png: png.into(),
+            fx: None,
+        },
+    );
+    bm.fill = Fill::None;
+    bm.stroke = None;
+    bm.transform = Affine::translate((30.0, 20.0));
+    let mut dot = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(50.0, 40.0, 70.0, 50.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    dot.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+    dot.stroke = None;
+    let mut frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Ellipse {
+            rect: Rect::new(40.0, 30.0, 100.0, 80.0),
+            arc: None,
+        },
+    );
+    frame.fill = Fill::Solid(Color::rgb8(255, 240, 0));
+    frame.stroke = Some(Stroke::new(Color::BLACK, 1.0));
+    let mut pc = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: vec![bm, dot],
+        },
+    );
+    pc.name = Some("photo".into());
+    pc.transform = Affine::translate((5.0, 0.0));
+    doc.pages[0].layers[0].shapes = vec![pc];
+    doc.set_ids(ids);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let l = &back.pages[0].layers[0];
+        assert_eq!(l.shapes.len(), 1, "{v}: {:?}", rep.warnings);
+        if v < 12 {
+            assert!(
+                matches!(l.shapes[0].kind, ShapeKind::Group { .. }),
+                "{v}: {:?}",
+                l.shapes[0].kind
+            );
+            continue;
+        }
+        let ShapeKind::ClipFrame { frame, contents } = &l.shapes[0].kind else {
+            panic!("{v}: {:?} {:?}", l.shapes[0].kind, rep.warnings);
+        };
+        assert_eq!(frame.fill, Fill::Solid(Color::rgb8(255, 240, 0)), "{v}");
+        assert!(
+            frame
+                .stroke
+                .as_ref()
+                .is_some_and(|s| (s.width - 1.0).abs() < 0.01),
+            "{v}"
+        );
+        let fb = (l.shapes[0].transform * frame.page_path()).bounding_box();
+        assert!(
+            (fb.x0 - 45.0).abs() < 0.05 && (fb.y1 - 80.0).abs() < 0.05,
+            "{v}: {fb:?}"
+        );
+        assert_eq!(contents.len(), 2, "{v}: {:?}", rep.warnings);
+        assert!(
+            matches!(contents[0].kind, ShapeKind::Bitmap { .. }),
+            "{v}: {:?}",
+            contents[0].kind
+        );
+        let cb = (l.shapes[0].transform * contents[0].page_path()).bounding_box();
+        assert!(
+            (cb.x0 - 35.0).abs() < 0.05 && (cb.x1 - 95.0).abs() < 0.05,
+            "{v}: {cb:?}"
+        );
+        assert_eq!(contents[1].fill, Fill::Solid(Color::rgb8(0, 0, 255)), "{v}");
+        assert_eq!(l.shapes[0].name.as_deref(), Some("photo"), "{v}");
+        // The records as the version 27 file has them.
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut clip_groups = Vec::new();
+        let mut containers = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"clpt") {
+                for g in c.children.iter().filter(|g| g.is(b"grp ")) {
+                    let spnd = g
+                        .find(b"spnd")
+                        .and_then(|s| tree.data(&riff, s).get(..4).map(|b| b.to_vec()));
+                    let (flags, args) = layer_args(&tree, &riff, g);
+                    let objects = g.children.iter().filter(|o| o.is(b"obj ")).count();
+                    let usdns = g
+                        .children
+                        .iter()
+                        .filter(|o| o.is(b"obj ") && o.find(b"usdn").is_some())
+                        .count();
+                    clip_groups.push((spnd, flags, args, objects, usdns));
+                }
+            } else if c.is(b"obj ") {
+                let (flags, args) = layer_args(&tree, &riff, c);
+                if let Some((_, body)) = args.iter().find(|(t, _)| *t == 8005) {
+                    containers.push((body.clone(), flags, args.clone()));
+                }
+            }
+        });
+        assert_eq!(clip_groups.len(), 1, "{v}");
+        let (spnd, flags, gargs, objects, usdns) = &clip_groups[0];
+        assert_eq!(*flags, [0, 8, 0x80, 0x10], "{v}");
+        assert_eq!(
+            gargs
+                .iter()
+                .map(|(t, b)| (*t, b.clone()))
+                .collect::<Vec<_>>(),
+            vec![(3500, vec![2, 0, 0, 0])],
+            "{v}"
+        );
+        assert_eq!((*objects, *usdns), (2, 0), "{v}: no usdn inside the group");
+        assert_eq!(containers.len(), 1, "{v}");
+        let (body, cflags, cargs) = &containers[0];
+        assert_eq!(
+            body.get(..4).map(|b| b.to_vec()),
+            *spnd,
+            "{v}: names the group"
+        );
+        assert_eq!(&body[4..], &[1u8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "{v}");
+        assert_eq!(cflags[2], 0x10, "{v}");
+        assert!(
+            cargs.iter().any(|(t, b)| *t == 40001 && b.len() == 16),
+            "{v}"
+        );
+        assert!(
+            cargs.iter().any(|(t, b)| *t == 40200 && *b == [0; 4]),
+            "{v}"
+        );
     }
 }
 
@@ -2281,7 +2547,8 @@ fn layers_go_out_front_to_back_and_come_back_bottom_to_top() {
             .collect();
         assert_eq!(names, ["Ink", "Front"], "{v}: {:?}", rep.warnings);
     }
-    // In the file the front layer is listed first.
+    // In the file the front layer is listed first: on the master page,
+    // which lists the drawing's layers before version 14, then on the page.
     let (_, tree, riff) = chunk_ids(&document_to_cdr_version(&doc, 12));
     let mut names = Vec::new();
     tree.root.walk(&mut |c, _| {
@@ -2295,7 +2562,7 @@ fn layers_go_out_front_to_back_and_come_back_bottom_to_top() {
             }
         }
     });
-    assert_eq!(names, ["Front", "Ink"]);
+    assert_eq!(names, ["Front", "Ink", "Front", "Ink"]);
 }
 
 #[test]
@@ -2485,7 +2752,157 @@ fn bitmap_objects_carry_their_pixel_size() {
             "{v}"
         );
         assert_eq!([i(32), i(36), i(40)], [24 << 16 | 2, 3, 2], "{v}");
-        assert_eq!(i(60), -1, "{v}");
+        // The image's number among the bitmap objects' images (never 0 in
+        // files) and its id; then 0, 0, -1, 0, 0.
+        // Before version 14 the number stays 0 (no file of those
+        // versions with a bitmap was seen).
+        let number = if v >= 14 { 1 } else { 0 };
+        assert_eq!(
+            [i(44), i(48), i(52), i(56), i(60)],
+            [number, 1, 0, 0, -1],
+            "{v}"
+        );
+        // The crop outline: the box as five points with a node byte each,
+        // then, from version 14, four zero bytes as files end the record.
+        let count_at = if v == 8 { 64 } else { 72 };
+        assert_eq!(i(count_at), 5, "{v}");
+        let types_at = count_at + 4 + 5 * 8;
+        let tail = if v >= 14 { 4 } else { 0 };
+        assert_eq!(b.len(), types_at + 5 + tail, "{v}");
+        if v >= 14 {
+            assert_eq!(&b[types_at + 5..], &[0, 0, 0, 0], "{v}");
+        }
+    }
+}
+
+/// The coordinates argument of the first bitmap object of `bytes`.
+fn bitmap_coords(bytes: &[u8]) -> Vec<u8> {
+    let (_, tree, riff) = chunk_ids(bytes);
+    let mut coords = None;
+    tree.root.walk(&mut |c, _| {
+        if c.is(b"loda") && coords.is_none() {
+            let d = tree.data(&riff, c);
+            if d.get(16..20) == Some(&5u32.to_le_bytes()[..]) {
+                coords = loda_args(d)
+                    .into_iter()
+                    .find(|(t, _)| *t == 30)
+                    .map(|(_, b)| b);
+            }
+        }
+    });
+    coords.expect("a bitmap object")
+}
+
+/// Files place a bitmap by its transform: the record's box starts at the
+/// origin and spans the image, whatever the shape's own rectangle and
+/// transform are, and a crop outline moves with it. A file saved with the
+/// box away from the origin showed no image and closed the program that
+/// read it when the image was clicked (#1226, #1268).
+#[test]
+fn bitmap_boxes_start_at_the_origin_and_their_transform_places_them() {
+    let png = {
+        let mut pm = tiny_skia::Pixmap::new(4, 2).expect("pixmap");
+        pm.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        pm.encode_png().expect("png")
+    };
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut bm = Shape::new(
+        ids.shape(),
+        ShapeKind::Bitmap {
+            rect: Rect::new(100.0, 50.0, 140.0, 70.0),
+            width_px: 4,
+            height_px: 2,
+            png: png.into(),
+            fx: None,
+        },
+    );
+    bm.fill = Fill::None;
+    bm.stroke = None;
+    // Turned and moved: the record still speaks from the origin.
+    bm.transform = Affine::translate((7.0, -3.0)) * Affine::rotate(0.3);
+    let want = bm.bounds();
+    // An ellipse inside the picture, turned with it.
+    let mut frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Ellipse {
+            rect: Rect::new(105.0, 52.0, 135.0, 68.0),
+            arc: None,
+        },
+    );
+    frame.transform = bm.transform;
+    frame.fill = Fill::None;
+    frame.stroke = None;
+    let mut clipped = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame.clone()),
+            contents: vec![bm.clone()],
+        },
+    );
+    clipped.fill = Fill::None;
+    clipped.stroke = None;
+    for v in versions() {
+        // Before version 14 the box stays where the shape's rectangle is
+        // (no file of those versions with a bitmap was seen).
+        let (ox, oy) = if v >= 14 {
+            (0, 0)
+        } else {
+            (1_000_000, 500_000)
+        };
+        let want_box = [ox, oy + 200_000, ox + 400_000, oy];
+        let plain = document_to_cdr_version(&doc_with(vec![bm.clone()]), v);
+        let b = bitmap_coords(&plain);
+        let i = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!([i(0), i(4), i(8), i(12)], want_box, "{v}");
+        let (back, rep) = crate::open_bytes(&plain, "back").expect("reads back");
+        let got = back.pages[0].layers[0].shapes[0].bounds();
+        assert!(
+            (got.x0 - want.x0).abs() < 0.05
+                && (got.y0 - want.y0).abs() < 0.05
+                && (got.x1 - want.x1).abs() < 0.05
+                && (got.y1 - want.y1).abs() < 0.05,
+            "{v}: {got:?} for {want:?} {:?}",
+            rep.warnings
+        );
+        // The crop outline lies within the image's box from the origin.
+        let cut = document_to_cdr_version(&doc_with(vec![clipped.clone()]), v);
+        let b = bitmap_coords(&cut);
+        let i = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!([i(0), i(4), i(8), i(12)], want_box, "{v}");
+        let count_at = if v == 8 { 64 } else { 72 };
+        let n = i(count_at) as usize;
+        // From version 12 the frame is a clip container and the picture
+        // inside it keeps its whole rectangle as its outline (#1222);
+        // before, the frame is the picture's crop outline.
+        if v >= 12 {
+            assert_eq!(n, 5, "{v}: {n} points");
+        } else {
+            assert!(n > 5, "{v}: {n} points");
+        }
+        for k in 0..n {
+            let (x, y) = (i(count_at + 4 + k * 8), i(count_at + 8 + k * 8));
+            assert!(
+                (ox - 1..=ox + 400_001).contains(&x) && (oy - 1..=oy + 200_001).contains(&y),
+                "{v}: point {k} at ({x}, {y}) outside the image box"
+            );
+        }
+        let (back, rep) = crate::open_bytes(&cut, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert!(
+            matches!(s.kind, ShapeKind::ClipFrame { .. }),
+            "{v}: {:?} {:?}",
+            s.kind,
+            rep.warnings
+        );
+        let got = s.bounds();
+        let want = frame.bounds();
+        assert!(
+            (got.x0 - want.x0).abs() < 0.1
+                && (got.y0 - want.y0).abs() < 0.1
+                && (got.x1 - want.x1).abs() < 0.1
+                && (got.y1 - want.y1).abs() < 0.1,
+            "{v}: {got:?} for {want:?}"
+        );
     }
 }
 
@@ -2523,8 +2940,9 @@ fn version_15_objects_carry_the_arguments_its_files_have() {
         let has = |kind: u32, arg: u32| seen.iter().any(|(k, a)| *k == kind && a.contains(&arg));
         // No bare transparency value where these versions keep a record.
         assert_eq!(has(3, 8000) || has(1, 8000), v < 13, "{v}");
-        // Text: 16015 from version 15.
-        assert_eq!(has(4, 16015), v >= 15, "{v}");
+        // Text: 16015 in every version but 14 (its files, which open, were
+        // written without it and stay so).
+        assert_eq!(has(4, 16015), v != 14, "{v}");
     }
 }
 
@@ -2539,7 +2957,8 @@ fn artistic_text_records_before_16_open_as_files_have_them() {
     let doc = doc_with(vec![t]);
     for (v, layout) in [
         (7u16, 2u32),
-        (8, 3),
+        (8, 4),
+        (9, 4),
         (10, 5),
         (11, 5),
         (12, 6),
@@ -2700,7 +3119,7 @@ fn unmarked_utf8_letters_of_older_saves_read_back() {
     old.extend_from_slice(utf8);
     old.extend_from_slice(&d[at + units.len()..]);
     let mut warnings = Vec::new();
-    let txsm = crate::text::read_txsm(&old, v, &mut |w| warnings.push(w)).expect("read");
+    let txsm = crate::text::read_txsm(&old, v, 0, &mut |w| warnings.push(w)).expect("read");
     let text: String = txsm
         .paragraphs
         .iter()
@@ -2962,6 +3381,55 @@ fn the_package_lists_the_text_faces_and_embeds_those_allowed() {
         .any(|n| n.starts_with("font/") || n.starts_with("embed/")));
 }
 
+/// The faces embedding leaves out, by family and reason (#1219): a font
+/// whose licence forbids embedding (OS/2 `fsType` restricted), a face
+/// without a font file (drawn by a stand-in, or in a collection); a
+/// family with one face that may be embedded is not listed, and a family
+/// is listed once.
+#[test]
+fn embedding_names_the_families_it_leaves_out_and_why() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    // Selawik Bold with its embedding bits set to "restricted".
+    let mut restricted = BOLD.to_vec();
+    let n = u16::from_be_bytes([restricted[4], restricted[5]]) as usize;
+    for i in 0..n {
+        let rec = 12 + i * 16;
+        if &restricted[rec..rec + 4] == b"OS/2" {
+            let off =
+                u32::from_be_bytes(restricted[rec + 8..rec + 12].try_into().expect("u32")) as usize;
+            restricted[off + 8..off + 10].copy_from_slice(&2u16.to_be_bytes());
+        }
+    }
+    let face = |family: &str, bold: bool, data: Option<&[u8]>| FontFace {
+        family: family.into(),
+        bold,
+        italic: false,
+        data: data.map(|d| std::sync::Arc::new(d.to_vec())),
+    };
+    let faces = vec![
+        face("Locked", false, Some(&restricted)),
+        face("Locked", true, Some(&restricted)),
+        face("Missing Sans", false, None),
+        face("Selawik", true, Some(&restricted)),
+        face("Selawik", false, Some(REGULAR)),
+    ];
+    assert_eq!(
+        left_out(&faces),
+        vec![
+            ("Locked".to_string(), LeftOut::Licence),
+            ("Missing Sans".to_string(), LeftOut::NoFile),
+        ]
+    );
+    assert_eq!(embedded_size(&faces), REGULAR.len() as u64);
+    // The other way round too: the embeddable face first.
+    let mut swapped = faces.clone();
+    swapped.swap(3, 4);
+    assert_eq!(left_out(&swapped).len(), 2);
+    assert!(left_out(&[face("Selawik", false, Some(REGULAR))]).is_empty());
+}
+
 /// Embedded fonts are written as files that embed them have them (#352):
 /// each font table entry carries its family's font id from the drawing
 /// (shared by the faces of a family), entries and embeddings follow
@@ -3064,6 +3532,116 @@ fn embedded_fonts_carry_the_drawings_font_ids() {
         assert_eq!(back.fonts[0].data.as_slice(), REGULAR, "{v}");
         assert_eq!(back.fonts[1].data.as_slice(), BOLD, "{v}");
         assert!(back.fonts.iter().all(|f| f.family == "Selawik"), "{v}");
+    }
+}
+
+/// An embedded face is named where the files that embed fonts name it
+/// (#1009): the embedding header's face block at 2063 (its size, the
+/// family in UTF-16 and single bytes, the style flags, the PANOSE bytes,
+/// the licence level and u32 1), and the drawing's `font` record (PANOSE
+/// bytes, "Western", u32 1 at 156, the PostScript name at 164). Without
+/// Embed fonts the records stay plain (a drawing saved so writes what it
+/// wrote before); files before 16 keep their short records.
+#[test]
+fn embedded_faces_are_named_in_the_header_and_the_font_record() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let plain = TextSpan::new("plain", "Selawik", 12.0);
+    let mut bold = TextSpan::new("bold", "Selawik", 12.0);
+    bold.bold = true;
+    let doc = doc_with(vec![text_shape(
+        &mut ids,
+        vec![plain, bold],
+        TextAlign::Left,
+    )]);
+    let face = |bold: bool, data: &[u8]| FontFace {
+        family: "Selawik".into(),
+        bold,
+        italic: false,
+        data: Some(std::sync::Arc::new(data.to_vec())),
+    };
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("u32"));
+    let selawik_panose = {
+        let f = ttf_parser::Face::parse(REGULAR, 0).expect("font");
+        let os2 = f
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"OS/2"))
+            .expect("OS/2");
+        let mut p = [0u8; 10];
+        p.copy_from_slice(&os2[32..42]);
+        p
+    };
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect() };
+    for embed in [true, false] {
+        let previews = Previews {
+            fonts: vec![face(false, REGULAR), face(true, BOLD)],
+            embed_fonts: embed,
+            ..Default::default()
+        };
+        for v in [15, 16, 19, NEWEST_VERSION] {
+            let bytes = document_to_cdr_version_with(&doc, v, &previews);
+            let (_, tree, riff) = chunk_ids(&bytes);
+            let mut records: Vec<Vec<u8>> = Vec::new();
+            tree.root.walk(&mut |ch, _| {
+                if ch.id_str() == "font" {
+                    records.push(tree.data(&riff, ch).to_vec());
+                }
+            });
+            if v < 16 || !embed {
+                // Files before 16 keep their short records (the bold
+                // face is a text style there), and faces not embedded
+                // their plain ones.
+                for r in &records {
+                    assert_eq!(r.len(), 296, "{v}");
+                    assert!(r[8..18].iter().all(|&b| b == 0), "{v}");
+                    assert!(r[86..160].iter().all(|&b| b == 0), "{v}");
+                    assert!(r[164..].iter().all(|&b| b == 0), "{v}");
+                }
+                continue;
+            }
+            assert_eq!(records.len(), 2, "{v} {embed}");
+            for (r, (flags, ps)) in records
+                .iter()
+                .zip([(0x40, "Selawik-Regular"), (0x1000, "Selawik-Bold")])
+            {
+                assert_eq!(r.len(), 296, "{v}");
+                assert_eq!(u32_at(r, 4), flags, "{v}");
+                assert_eq!(&r[18..18 + 14], &utf16("Selawik"), "{v}");
+                assert_eq!(u32_at(r, 160), 2, "{v}");
+                assert_eq!(&r[8..18], &selawik_panose, "{v}");
+                assert_eq!(u16_at(r, 86), 0, "{v}");
+                assert_eq!(&r[88..88 + 14], &utf16("Western"), "{v}");
+                assert_eq!(u32_at(r, 156), 1, "{v}");
+                assert_eq!(&r[164..164 + 2 * ps.len()], &utf16(ps), "{v}");
+            }
+            let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+            for (n, flags) in [(0, 0x40u32), (1, 0x1000)] {
+                let mut m = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut z.by_name(&format!("embed/embedding{n}")).expect("member"),
+                    &mut m,
+                )
+                .expect("read");
+                assert_eq!(u32_at(&m, 2063), 638, "{v}: block size");
+                assert_eq!(&m[2067..2067 + 14], &utf16("Selawik"), "{v}");
+                assert!(m[2081..2131].iter().all(|&b| b == 0), "{v}");
+                assert_eq!(&m[2131..2131 + 7], b"Selawik", "{v}");
+                assert!(m[2138..2163].iter().all(|&b| b == 0), "{v}");
+                assert_eq!(u32_at(&m, 2163), flags, "{v}");
+                assert_eq!(m[2167], 0, "{v}");
+                assert_eq!(&m[2168..2178], &selawik_panose, "{v}");
+                // Selawik allows editable embedding (fsType 8): level 2.
+                assert_eq!(m[2178], 2, "{v}");
+                assert!(m[2179..2184].iter().all(|&b| b == 0), "{v}");
+                assert_eq!(u32_at(&m, 2184), 1, "{v}");
+                assert!(m[2188..2705].iter().all(|&b| b == 0), "{v}");
+                // The EOT structure still starts at 2705 and reads.
+                assert_eq!(crate::eot::find(&m), Some(2705), "{v}");
+            }
+        }
     }
 }
 
@@ -3441,15 +4019,16 @@ fn near(a: Rect, b: Rect, tol: f64) -> bool {
         && (a.y1 - b.y1).abs() < tol
 }
 
-/// A blend of two texts goes out as one plain group of the start text
+/// A blend of two texts goes out, in versions 7 and 8 (which have no
+/// live blend the reader knows), as one plain group of the start text
 /// and its steps as curves, beside the end text, and other readers see
-/// it so in every version (#946), the steps where the blend drew them.
+/// it so (#946), the steps where the blend drew them.
 #[test]
 fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
     let doc = text_blend(5, false);
     let drawn = step_boxes(&doc.pages[0].layers[0].shapes[0]);
     assert_eq!(drawn.len(), 5);
-    for v in versions() {
+    for v in versions().into_iter().filter(|v| *v < 9) {
         let back = open_as_drawn(&document_to_cdr_version(&doc, v));
         let read = &back.pages[0].layers[0].shapes;
         assert_eq!(read.len(), 2, "{v}: {read:?}");
@@ -3491,6 +4070,224 @@ fn a_blend_of_two_texts_is_written_as_a_group_of_text_and_curves() {
             panic!("{v}: {:?}", read[1].kind);
         };
         assert_eq!(spans[0].text, "XYZ", "{v}");
+    }
+}
+
+/// From version 9 a blend goes out live (#1192), as files of the program
+/// that reads them hold one: the two end texts as objects of their own,
+/// the upper one first, with an empty `LIST lnkg` between them whose
+/// `loda` is of object type 7 and holds the link argument (12020 with
+/// u32 2 before version 23, 12040 with u32 1 from it) and the step
+/// argument (3000, 88 bytes: the step count, the spacing of one inch, or
+/// 10 mm from 23, and the centres of the two ends). A reader without
+/// TraceDraw's member draws the steps between the two and gives the
+/// upper object the blend to the lower one; the written file passes the
+/// checker.
+#[test]
+fn a_blend_goes_out_live_from_version_9() {
+    for end_below in [false, true] {
+        let doc = text_blend(7, end_below);
+        let (si, ei) = if end_below { (1, 0) } else { (0, 1) };
+        let shapes = &doc.pages[0].layers[0].shapes;
+        let centre_of = |s: &Shape| s.bounds().center();
+        let (start_c, end_c) = (centre_of(&shapes[si]), centre_of(&shapes[ei]));
+        for v in versions().into_iter().filter(|v| *v >= 9) {
+            let bytes = document_to_cdr_version(&doc, v);
+            let (_, tree, riff) = chunk_ids(&bytes);
+            // The records: one linked group between the two texts.
+            let mut groups = Vec::new();
+            let mut orders: Vec<Vec<String>> = Vec::new();
+            tree.root.walk(&mut |c, _| {
+                if c.is(b"lnkg") {
+                    groups.push(c);
+                }
+                if c.children.iter().any(|k| k.is(b"lnkg")) {
+                    // Lists by their type (`obj `, `lnkg`), chunks by id.
+                    orders.push(
+                        c.children
+                            .iter()
+                            .map(|k| match k.list_type {
+                                Some(t) => String::from_utf8_lossy(&t).into_owned(),
+                                None => k.id_str(),
+                            })
+                            .collect(),
+                    );
+                }
+            });
+            assert_eq!(groups.len(), 1, "{v} {end_below}: {orders:?}");
+            let g = groups[0];
+            let kids: Vec<String> = g.children.iter().map(|k| k.id_str()).collect();
+            assert_eq!(kids[..5], ["spnd", "flgs", "bbox", "obbx", "usdn"], "{v}");
+            assert!(
+                g.children.len() == 6 && g.children[5].is(b"lgob"),
+                "{v}: {kids:?}"
+            );
+            let flags = tree.data(&riff, g.find(b"flgs").expect("flgs"));
+            assert_eq!(flags, [1, 0, 0, 0x18], "{v}");
+            let loda = g.find(b"lgob").and_then(|l| l.find(b"loda")).expect("loda");
+            let (kind, args) = crate::check::loda_args(tree.data(&riff, loda)).expect("args");
+            assert_eq!(kind, 7, "{v}");
+            let types: Vec<u32> = args.iter().map(|(t, _)| *t).collect();
+            let (link, link_body): (u32, Vec<u8>) = if v >= 23 {
+                (
+                    12040,
+                    [1u32, 0, 0, 0]
+                        .iter()
+                        .flat_map(|x| x.to_le_bytes())
+                        .collect(),
+                )
+            } else {
+                (
+                    12020,
+                    [2u32, 0, 0].iter().flat_map(|x| x.to_le_bytes()).collect(),
+                )
+            };
+            assert_eq!(types, [link, 3000], "{v}");
+            assert_eq!(args[0].1, link_body.as_slice(), "{v}");
+            let b = args[1].1;
+            assert_eq!(b.len(), 88, "{v}");
+            assert_eq!(u16::from_le_bytes([b[0], b[1]]), 7, "{v}: the step count");
+            let spacing = i32::from_le_bytes(b[4..8].try_into().expect("i32"));
+            assert_eq!(spacing, if v >= 23 { 100_000 } else { 254_000 }, "{v}");
+            // The centres of the two ends, the lower (later) one first,
+            // from the centre of the 200 x 100 page (`doc_with`), in the
+            // writer's units.
+            let centre = |at: usize| {
+                let x = i32::from_le_bytes(b[at..at + 4].try_into().expect("i32")) as f64;
+                let y = i32::from_le_bytes(b[at + 4..at + 8].try_into().expect("i32")) as f64;
+                (x * 25.4 / 254_000.0 + 100.0, y * 25.4 / 254_000.0 + 50.0)
+            };
+            let (lower, upper) = if end_below {
+                (end_c, start_c)
+            } else {
+                (start_c, end_c)
+            };
+            for (got, want) in [(centre(28), lower), (centre(36), upper)] {
+                assert!(
+                    (got.0 - want.x).abs() < 0.05 && (got.1 - want.y).abs() < 0.05,
+                    "{v} {end_below}: centre {got:?}, not {want:?}"
+                );
+            }
+            assert_eq!(
+                u32::from_le_bytes(b[44..48].try_into().expect("u32")),
+                0x780,
+                "{v}"
+            );
+            // The list: text, group, text.
+            let order = orders
+                .iter()
+                .find(|o| o.iter().any(|k| k == "lnkg"))
+                .expect("list");
+            let at = order.iter().position(|k| k == "lnkg").expect("lnkg");
+            assert!(at >= 1 && at + 1 < order.len(), "{v}: {order:?}");
+            assert_eq!(
+                (&order[at - 1][..], &order[at + 1][..]),
+                ("obj ", "obj "),
+                "{v}: {order:?}"
+            );
+            // Read without the member: two texts, the upper one with the
+            // blend to the lower.
+            let back = open_as_drawn(&bytes);
+            let read = &back.pages[0].layers[0].shapes;
+            assert_eq!(read.len(), 2, "{v}: {read:?}");
+            let text_of = |s: &Shape| match &s.kind {
+                ShapeKind::Text { spans, .. } => spans[0].text.clone(),
+                other => panic!("{v}: {other:?}"),
+            };
+            assert_eq!(
+                (text_of(&read[si]), text_of(&read[ei])),
+                ("ABC".into(), "XYZ".into()),
+                "{v}"
+            );
+            let (holder, other) = if end_below { (si, ei) } else { (ei, si) };
+            assert!(
+                read[other].effects.is_empty(),
+                "{v} {end_below}: {:?}",
+                read[other].effects
+            );
+            let [tracedraw_core::live::Effect::Blend { steps, end_id, .. }] =
+                read[holder].effects.as_slice()
+            else {
+                panic!("{v} {end_below}: {:?}", read[holder].effects);
+            };
+            assert_eq!((*steps, *end_id), (7, Some(read[other].id)), "{v}");
+            assert_eq!(step_boxes(&read[holder]).len(), 7, "{v}");
+        }
+    }
+}
+
+/// A blend whose end lives in the effect alone (no end object of the
+/// drawing) goes out live too: the end copy becomes an object of its own
+/// in the file, and the blend reads back between the two (#1192).
+#[test]
+fn a_blend_whose_end_is_its_own_goes_out_live_with_the_end_as_an_object() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut start = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    start.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+    let mut end = Shape::new(
+        ids.shape(),
+        ShapeKind::Ellipse {
+            rect: Rect::new(80.0, 10.0, 100.0, 30.0),
+            arc: None,
+        },
+    );
+    end.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+    start.effects.push(tracedraw_core::live::Effect::Blend {
+        end: Box::new(end),
+        steps: 3,
+        accel_objects: 0.0,
+        accel_colors: 0.0,
+        rotation: 0.0,
+        path: None,
+        rotate_on_path: false,
+        end_id: None,
+        options: Default::default(),
+    });
+    doc.pages[0].layers[0].shapes = vec![start];
+    doc.set_ids(ids);
+    for v in versions() {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        if v < 9 {
+            assert_eq!(read.len(), 1, "{v}: {:?}", rep.warnings);
+            assert!(matches!(read[0].kind, ShapeKind::Group { .. }), "{v}");
+            continue;
+        }
+        assert_eq!(read.len(), 2, "{v}: {:?}", rep.warnings);
+        let holder = read
+            .iter()
+            .position(|s| !s.effects.is_empty())
+            .unwrap_or_else(|| panic!("{v}: no blend read"));
+        let [tracedraw_core::live::Effect::Blend { steps, end_id, .. }] =
+            read[holder].effects.as_slice()
+        else {
+            panic!("{v}: {:?}", read[holder].effects);
+        };
+        assert_eq!(*steps, 3, "{v}");
+        assert_eq!(*end_id, Some(read[1 - holder].id), "{v}");
+        if v >= 14 {
+            // The member names the start: the rectangle (a curve before
+            // version 15) keeps the blend.
+            assert!(
+                near(
+                    read[holder].bounds(),
+                    Rect::new(10.0, 10.0, 30.0, 30.0),
+                    0.05
+                ),
+                "{v}: {:?}",
+                read[holder].bounds()
+            );
+        }
+        assert_eq!(step_boxes(&read[holder]).len(), 3, "{v}");
     }
 }
 
@@ -3758,6 +4555,84 @@ fn single_run_colours_round_trip() {
     }
 }
 
+/// A text of two colours in one line (two runs, each with a colour of
+/// its own) names its font in each run's style the way the paragraph's
+/// default style does, every member included (character set, technology,
+/// script, version), and the run's fill with its overprint and screen
+/// members: the file of the program that reads them has them so, and
+/// written with six members only the runs lost their embedded font there
+/// and the text its second colour (#1297). The colours read back.
+#[test]
+fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let red = Fill::Solid(Color::rgb8(255, 0, 0));
+    let blue = Fill::Solid(Color::rgb8(0, 0, 255));
+    let mut a = TextSpan::new("Red", "Selawik", 24.0);
+    a.fill = Some(red.clone());
+    let mut b = TextSpan::new("Blue", "Selawik", 24.0);
+    b.fill = Some(blue.clone());
+    doc.pages[0].layers[0].shapes = vec![text_shape(&mut ids, vec![a, b], TextAlign::Left)];
+    doc.set_ids(ids);
+    let previews = Previews {
+        fonts: vec![FontFace {
+            family: "Selawik".into(),
+            bold: false,
+            italic: false,
+            data: Some(std::sync::Arc::new(REGULAR.to_vec())),
+        }],
+        embed_fonts: true,
+        ..Default::default()
+    };
+    let font = |charset: u32| {
+        format!(
+            r#"{{"overline":"0","effect":"0","version":"","italic":"0","weight":"64","underline":"0","charset":"{charset}","technology":"4","size":"84667","font":"Selawik","script":"0","strikeout":"0"}}"#
+        )
+    };
+    let run = |colour: &str| {
+        format!(
+            r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}},"latin":{},"RTL":{},"farEast":{}}}}}"#,
+            font(0),
+            font(178),
+            font(128)
+        )
+    };
+    let red_spec = colour_spec(Color::rgb8(255, 0, 0));
+    let blue_spec = colour_spec(Color::rgb8(0, 0, 255));
+    for v in 16..=NEWEST_VERSION {
+        let bytes = document_to_cdr_version_with(&doc, v, &previews);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut recs = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"txsm") {
+                recs.push(tree.data(&riff, c).to_vec());
+            }
+        });
+        assert_eq!(recs.len(), 1, "{v}");
+        // The style strings are UTF-16 in version 16 and UTF-8 from 17;
+        // without the zero bytes both read as the ASCII they hold.
+        let ascii: Vec<u8> = recs[0].iter().copied().filter(|b| *b != 0).collect();
+        let text = String::from_utf8_lossy(&ascii);
+        for want in [run(&red_spec), run(&blue_spec)] {
+            assert!(text.contains(&want), "{v}: no run style {want}\n{text}");
+        }
+        // Not the short form of before.
+        assert!(!text.contains(r#""latin":{"font":"#), "{v}");
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{v}: {:?}", rep.warnings);
+        let ShapeKind::Text { spans, .. } = &read[0].kind else {
+            panic!("{v}: {:?}", read[0].kind);
+        };
+        let fills: Vec<Fill> = spans.iter().filter_map(|sp| sp.fill.clone()).collect();
+        assert_eq!(fills, vec![red.clone(), blue.clone()], "{v}: {spans:?}");
+        assert!(spans.iter().all(|sp| sp.font_family == "Selawik"), "{v}");
+        assert_eq!(back.fonts.len(), 1, "{v}: the font is embedded");
+    }
+}
+
 /// `font` with its name table replaced by one of `names` (name ID and
 /// text, Windows English records), appended at the end of the file.
 fn with_names(font: &[u8], names: &[(u16, &str)]) -> Vec<u8> {
@@ -3885,7 +4760,9 @@ fn a_face_with_typographic_names_is_written_under_its_family() {
 /// A blend of two texts saved and opened again in TraceDraw is a blend
 /// again (#986): from version 14 (a package) the start text comes back
 /// with its blend to the end text, settings and all, its steps where
-/// they were; RIFF files keep the drawn group.
+/// they were. Versions 9 to 13 (RIFF files, no member) read the blend
+/// the file holds: on the upper text, with the file's settings (#1192);
+/// versions 7 and 8 keep the drawn group.
 #[test]
 fn a_text_blend_opens_live_again() {
     for end_below in [false, true] {
@@ -3914,8 +4791,18 @@ fn a_text_blend_opens_live_again_with(end_below: bool) {
         assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
         let read = &back.pages[0].layers[0].shapes;
         assert_eq!(read.len(), 2, "{v}: {read:?}");
-        if v < 14 {
+        if v < 9 {
             assert!(matches!(read[si].kind, ShapeKind::Group { .. }), "{v}");
+            continue;
+        }
+        if v < 14 {
+            let holder = if end_below { si } else { ei };
+            let [tracedraw_core::live::Effect::Blend { steps, end_id, .. }] =
+                read[holder].effects.as_slice()
+            else {
+                panic!("{v} {end_below}: {:?}", read[holder].effects);
+            };
+            assert_eq!((*steps, *end_id), (20, Some(read[1 - holder].id)), "{v}");
             continue;
         }
         let ShapeKind::Text { spans, .. } = &read[si].kind else {
@@ -3958,8 +4845,10 @@ fn a_text_blend_opens_live_again_with(end_below: bool) {
     }
 }
 
-/// A blend whose drawn group another program changed (a step deleted),
-/// or a member that does not read, opens as drawn, never fails (#986).
+/// A blend whose objects another program changed (its start object
+/// gone, its end another object), or a member that does not read, opens
+/// as the reader made it from the file (the blend on the upper text,
+/// with the file's settings), never fails (#986, #1192).
 #[test]
 fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
     let doc = text_blend(4, false);
@@ -3968,7 +4857,9 @@ fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
     let member = crate::kept_blends::encode(&w.blends, &w.static_ids).expect("member");
     let mut kept = crate::kept_blends::decode(&member);
     assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].count, 5);
+    // Written live: the member names the start text, no group.
+    assert_eq!(kept[0].count, 0);
+    assert!(kept[0].end.is_some());
     // The member is small: the end object is read back, not copied.
     assert!(member.len() < 4096, "{}", member.len());
     let bytes = document_to_cdr_version(&doc, 27);
@@ -3977,27 +4868,907 @@ fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
     let externals = crate::container::external_streams(&bytes, &container);
     let root = crate::riff::parse_with_externals(&riff, externals, 27).expect("tree");
     let open = |kept: &[crate::kept_blends::KeptBlend]| {
-        crate::parse::parse_document_kept(&root, &riff, container.version, None, kept).0
+        crate::parse::parse_document_kept(&root, &riff, container.version, None, kept, &[]).0
     };
+    let accel = |d: &Document, i: usize| match d.pages[0].layers[0].shapes[i].effects.first() {
+        Some(tracedraw_core::live::Effect::Blend { accel_objects, .. }) => Some(*accel_objects),
+        _ => None,
+    };
+    // The start text (below) holds the blend with its settings.
     let live = open(&kept);
     assert!(matches!(
         live.pages[0].layers[0].shapes[0].kind,
         ShapeKind::Text { .. }
     ));
-    kept[0].count = 4;
-    let drawn = open(&kept);
-    assert!(matches!(
-        drawn.pages[0].layers[0].shapes[0].kind,
-        ShapeKind::Group { .. }
-    ));
-    kept[0].count = 5;
+    assert_eq!((accel(&live, 0), accel(&live, 1)), (Some(0.25), None));
+    // A start the file no longer has: the file's blend stays as read,
+    // on the upper text with even acceleration.
     kept[0].group = 9999;
     let drawn = open(&kept);
-    assert!(matches!(
-        drawn.pages[0].layers[0].shapes[0].kind,
-        ShapeKind::Group { .. }
-    ));
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
+    // An end that is another object: the same.
+    kept = crate::kept_blends::decode(&member);
+    kept[0].end = Some(9999);
+    let drawn = open(&kept);
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
+    // A member of a drawn group that is not a group: left alone.
+    kept = crate::kept_blends::decode(&member);
+    kept[0].count = 5;
+    let drawn = open(&kept);
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
     for junk in [&b""[..], b"{", b"{\"format\":2,\"blends\":[]}", b"[1,2]"] {
         assert!(crate::kept_blends::decode(junk).is_empty());
+    }
+}
+
+// ---- the interoperability drawing (issue #1139) --------------------------
+
+/// The drawing of the interoperability bundles
+/// (`apps/tracedraw-cli/examples/interop.rs`): a rectangle with a fill and
+/// an outline, an ellipse, a filled curve, a line, a gradient, a group of
+/// two shapes, an open polyline and four artistic texts (plain with
+/// accents, runs with a colour of their own, right aligned and centred) on
+/// an A5 landscape page.
+fn interop_document() -> Document {
+    let hex = |s: &str| Color::from_hex(s).unwrap_or(Color::BLACK);
+    let mut doc = Document::new("interop", Size::new(210.0, 148.0));
+    let mut ids = doc.ids().clone();
+    let styled = |mut s: Shape, fill: Option<Color>, stroke: Option<(Color, f64)>, name: &str| {
+        s.fill = fill.map(Fill::Solid).unwrap_or(Fill::None);
+        s.stroke = stroke.map(|(c, w)| Stroke::new(c, w));
+        s.name = Some(name.into());
+        s
+    };
+    let rect = |ids: &mut tracedraw_core::id::IdSource, x: f64, top: f64, w: f64, h: f64| {
+        Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(x, top - h, x + w, top),
+                radius: 0.0,
+                corners: None,
+            },
+        )
+    };
+    let ellipse = |ids: &mut tracedraw_core::id::IdSource, cx: f64, cy: f64, rx: f64, ry: f64| {
+        Shape::new(
+            ids.shape(),
+            ShapeKind::Ellipse {
+                rect: Rect::new(cx - rx, cy - ry, cx + rx, cy + ry),
+                arc: None,
+            },
+        )
+    };
+    let path = |ids: &mut tracedraw_core::id::IdSource, p: BezPath, closed: bool| {
+        Shape::new(ids.shape(), ShapeKind::Path { path: p, closed })
+    };
+    let text = |ids: &mut tracedraw_core::id::IdSource,
+                spans: Vec<TextSpan>,
+                x: f64,
+                y: f64,
+                align: TextAlign| {
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::Text {
+                spans,
+                origin: Point::ZERO,
+                frame: None,
+                align,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            },
+        );
+        s.transform = Affine::translate((x, y));
+        s.fill = Fill::Solid(Color::BLACK);
+        s.stroke = None;
+        s
+    };
+    let mut shapes = Vec::new();
+    let r = rect(&mut ids, 15.0, 133.0, 40.0, 30.0);
+    shapes.push(styled(
+        r,
+        Some(hex("#3366cc")),
+        Some((Color::BLACK, 0.5)),
+        "rectangle",
+    ));
+    let e = ellipse(&mut ids, 90.0, 118.0, 20.0, 15.0);
+    shapes.push(styled(
+        e,
+        Some(hex("#33cc33")),
+        Some((hex("#003300"), 1.0)),
+        "ellipse",
+    ));
+    let mut curve = BezPath::new();
+    curve.move_to((120.0, 133.0));
+    curve.curve_to((135.0, 143.0), (150.0, 103.0), (165.0, 133.0));
+    curve.line_to((180.0, 108.0));
+    curve.curve_to((160.0, 98.0), (140.0, 98.0), (120.0, 108.0));
+    curve.close_path();
+    let c = path(&mut ids, curve, true);
+    shapes.push(styled(c, Some(hex("#cc3399")), None, "curve"));
+    let mut line = BezPath::new();
+    line.move_to((15.0, 88.0));
+    line.line_to((80.0, 73.0));
+    let l = path(&mut ids, line, false);
+    shapes.push(styled(l, None, Some((Color::BLACK, 1.5)), "line"));
+    let mut g = rect(&mut ids, 95.0, 93.0, 50.0, 25.0);
+    g.fill = Fill::Fountain(tracedraw_core::Fountain::two(
+        FountainKind::Linear,
+        hex("#ffcc00"),
+        hex("#cc0000"),
+        0.0,
+    ));
+    g.stroke = Some(Stroke::new(Color::BLACK, 0.25));
+    g.name = Some("gradient".into());
+    shapes.push(g);
+    let a = rect(&mut ids, 155.0, 93.0, 20.0, 20.0);
+    let a = styled(a, Some(hex("#ff9900")), None, "group square");
+    let b = ellipse(&mut ids, 185.0, 83.0, 10.0, 10.0);
+    let b = styled(b, Some(hex("#0099cc")), None, "group circle");
+    let mut group = Shape::new(
+        ids.shape(),
+        ShapeKind::Group {
+            children: vec![a, b],
+        },
+    );
+    group.name = Some("group".into());
+    shapes.push(group);
+    let mut poly = BezPath::new();
+    poly.move_to((15.0, 58.0));
+    poly.line_to((40.0, 63.0));
+    poly.line_to((65.0, 53.0));
+    poly.line_to((80.0, 60.0));
+    let p = path(&mut ids, poly, false);
+    shapes.push(styled(p, None, Some((hex("#660066"), 0.75)), "polyline"));
+    shapes.push(text(
+        &mut ids,
+        vec![TextSpan::new("Interop test 0003 éàü", "Arial", 9.0)],
+        15.0,
+        33.0,
+        TextAlign::Left,
+    ));
+    let mut bold = TextSpan::new("bold red", "Arial", 8.0);
+    bold.bold = true;
+    bold.fill = Some(Fill::Solid(hex("#cc0000")));
+    let mut italic = TextSpan::new("italic", "Arial", 8.0);
+    italic.italic = true;
+    shapes.push(text(
+        &mut ids,
+        vec![
+            TextSpan::new("Runs: ", "Arial", 8.0),
+            bold,
+            TextSpan::new(" and ", "Arial", 8.0),
+            italic,
+        ],
+        15.0,
+        16.0,
+        TextAlign::Left,
+    ));
+    shapes.push(text(
+        &mut ids,
+        vec![TextSpan::new("right aligned", "Arial", 7.0)],
+        195.0,
+        33.0,
+        TextAlign::Right,
+    ));
+    shapes.push(text(
+        &mut ids,
+        vec![TextSpan::new("centred", "Arial", 7.0)],
+        150.0,
+        16.0,
+        TextAlign::Center,
+    ));
+    doc.pages[0].layers[0].shapes = shapes;
+    doc.set_ids(ids);
+    doc
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+/// Files of versions 14 and 15 open with their fills in the program that
+/// reads them (a user's test of 2026-10-29, issue #1139), so the RIFF
+/// stream of the interoperability drawing stays byte for byte what it was
+/// when versions 7 to 13 were corrected. The hashes are of that stream
+/// (`content/riffData.cdr`, with no save time in it); they move only with
+/// a change to these versions made on purpose.
+///
+/// Changed on purpose once since: groups carry their names (argument 1000
+/// of their own `loda`) from version 14, as a group in a version 14 file
+/// does (#98, #1139), and the interoperability drawing has named groups.
+/// Without the names the stream is what #1139 pinned (0x7e7f333076ad70a3
+/// for 14, 0x88ab5fb328ef43e3 for 15).
+#[test]
+fn versions_14_and_15_are_written_as_before() {
+    use std::io::Read as _;
+    let doc = interop_document();
+    for (v, want) in [
+        (14u16, 0x6f15_b56f_9563_faf2u64),
+        (15, 0x0128_bfec_cf21_449c),
+    ] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut riff = Vec::new();
+        z.by_name("content/riffData.cdr")
+            .expect("riff stream")
+            .read_to_end(&mut riff)
+            .expect("read");
+        assert_eq!(fnv1a(&riff), want, "{v}: hash {:#018x}", fnv1a(&riff));
+    }
+}
+
+/// Files of versions 7 to 13 hold what the files of those versions saved
+/// by the program that reads them hold (one drawing saved by it in each
+/// version, issue #1139, 2026-10-29; a real version 9 file and two
+/// releases' version 13 files agree on the layers, the master page and the
+/// layer arguments): the chunk layout, the record sizes, the arguments of
+/// every object, group and layer, the text records with their tables and
+/// the summary; and the drawing reads back whole.
+#[test]
+fn versions_7_to_13_hold_the_records_their_files_have() {
+    let doc = interop_document();
+    for v in 7u16..=13 {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let name = |c: &crate::riff::Chunk| {
+            c.list_type_str()
+                .unwrap_or_else(|| c.id_str())
+                .trim()
+                .to_string()
+        };
+        assert_eq!(&bytes[8..12], &Ver(v).form(), "{v}");
+        let vrsn = tree.root.find(b"vrsn").expect("vrsn");
+        assert_eq!(tree.data(&riff, vrsn), (v * 100).to_le_bytes(), "{v}");
+        // The top level and the document tables, in order.
+        let top: Vec<String> = tree.root.children.iter().map(name).collect();
+        assert_eq!(top, ["vrsn", "INFO", "cmpr", "cmpr", "sumi"], "{v}");
+        let mut by_name: std::collections::HashMap<String, Vec<&crate::riff::Chunk>> =
+            std::collections::HashMap::new();
+        tree.root
+            .walk(&mut |c, _| by_name.entry(name(c)).or_default().push(c));
+        let only = |n: &str| -> &crate::riff::Chunk {
+            let found = by_name.get(n).unwrap_or_else(|| panic!("{v}: no {n}"));
+            assert_eq!(found.len(), 1, "{v}: one {n}");
+            found[0]
+        };
+        let tables: Vec<String> = only("doc").children.iter().map(name).collect();
+        assert_eq!(
+            tables,
+            ["pfrd", "mcfg", "ptrt", "fntt", "filt", "otlt", "stlt", "uil"],
+            "{v}"
+        );
+        let sizes = |n: &str| -> Vec<usize> {
+            let mut s: Vec<usize> = by_name
+                .get(n)
+                .map(|cs| cs.iter().map(|c| tree.data(&riff, c).len()).collect())
+                .unwrap_or_default();
+            s.sort_unstable();
+            s.dedup();
+            s
+        };
+        let mcfg_len = [536, 656, 848, 4096, 4088, 8152, 8323][usize::from(v - 7)];
+        assert_eq!(sizes("mcfg"), [mcfg_len], "{v}");
+        assert_eq!(sizes("pfrd"), [if v >= 13 { 2 } else { 1 }], "{v}");
+        assert_eq!(sizes("sumi"), [60], "{v}");
+        assert_eq!(sizes("trfd"), [if v >= 13 { 96 } else { 184 }], "{v}");
+        assert_eq!(sizes("outl"), [if v >= 13 { 192 } else { 140 }], "{v}");
+        assert_eq!(
+            sizes("fild"),
+            if v >= 13 { [22, 76, 128] } else { [8, 36, 88] },
+            "{v}: no fill, solid and two-stop fountain"
+        );
+        assert_eq!(sizes("txtj"), [528], "{v}");
+        assert_eq!(by_name["txsm"].len(), 4, "{v}: four texts");
+        assert_eq!(by_name["txtj"].len(), 4, "{v}: each with its tables");
+        // Objects: flags [0, 2, 0, 8] (texts too), their text record followed
+        // by its tables; the arguments every object of those files carries.
+        let mut objects = 0;
+        for obj in &by_name["obj"] {
+            objects += 1;
+            let kids: Vec<String> = obj.children.iter().map(name).collect();
+            let flags = tree.data(&riff, obj.find(b"flgs").expect("flgs"));
+            assert_eq!(flags, [0, 2, 0, 8], "{v}: {kids:?}");
+            if let Some(i) = kids.iter().position(|k| k == "txsm") {
+                assert_eq!(kids.get(i + 1).map(String::as_str), Some("txtj"), "{v}");
+                assert_eq!(kids[0], "spnd", "{v}");
+            }
+            let loda = obj
+                .find(b"lgob")
+                .and_then(|l| l.find(b"loda"))
+                .map(|l| tree.data(&riff, l))
+                .expect("loda");
+            let kind = u32::from_le_bytes(loda[16..20].try_into().expect("kind"));
+            let types: Vec<u32> = loda_args(loda).iter().map(|(t, _)| *t).collect();
+            for t in [19170, 12000, 200, 100, 30, 20, 10] {
+                assert!(types.contains(&t), "{v}: kind {kind}: {types:?} lacks {t}");
+            }
+            assert_eq!(types.contains(&12030), v <= 12, "{v}: {types:?}");
+            assert_eq!(types.contains(&16015), kind == 4, "{v}: {types:?}");
+            assert!(!types.contains(&40050) && !types.contains(&201), "{v}");
+            // Highest type first, as files order them.
+            let mut sorted = types.clone();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(types, sorted, "{v}");
+        }
+        assert_eq!(objects, 12, "{v}: 8 shapes and 4 texts");
+        for grp in &by_name["grp"] {
+            let loda = grp
+                .find(b"lgob")
+                .and_then(|l| l.find(b"loda"))
+                .map(|l| tree.data(&riff, l))
+                .expect("loda");
+            let types: Vec<u32> = loda_args(loda).iter().map(|(t, _)| *t).collect();
+            let mut want = vec![12000, 100];
+            if v <= 12 {
+                want.insert(0, 12030);
+            }
+            assert_eq!(types, want, "{v}");
+        }
+        assert_eq!(by_name["grp"].len(), 1, "{v}");
+        // Layers: no 12000, rotation or GUID before 14; a colour and a name.
+        let layer_kinds = |page: &crate::riff::Chunk| -> Vec<u32> {
+            page.find(b"gobj")
+                .expect("gobj")
+                .find_all(b"layr")
+                .map(|l| {
+                    let (_, args) = layer_args(&tree, &riff, l);
+                    let loda = l
+                        .find(b"lgob")
+                        .and_then(|g| g.find(b"loda"))
+                        .map(|c| tree.data(&riff, c))
+                        .expect("loda");
+                    let types: Vec<u32> = args.iter().map(|(t, _)| *t).collect();
+                    for t in [12000, 12030, 40050] {
+                        assert!(!types.contains(&t), "{v}: layer {types:?}");
+                    }
+                    assert!(types.contains(&2000) && types.contains(&1000), "{v}");
+                    u32::from_le_bytes(loda[16..20].try_into().expect("kind"))
+                })
+                .collect()
+        };
+        let pages = &by_name["page"];
+        assert_eq!(pages.len(), 2, "{v}");
+        let (master, page) = (pages[0], pages[1]);
+        // The master page: flags [0, 0, 1, 0x90], a zero box, no object box,
+        // the same layers as the page in the same order and no objects.
+        assert_eq!(
+            tree.data(&riff, master.find(b"flgs").expect("flgs")),
+            [0, 0, 1, 0x90],
+            "{v}"
+        );
+        assert_eq!(
+            tree.data(&riff, master.find(b"bbox").expect("bbox")),
+            [0; 16],
+            "{v}"
+        );
+        assert!(master.find(b"obbx").is_none(), "{v}");
+        assert!(master.find(b"lgob").is_none(), "{v}");
+        assert_eq!(layer_kinds(master), [0x0c, 0x11, 0, 0x0b], "{v}");
+        assert_eq!(layer_kinds(page), layer_kinds(master), "{v}");
+        let mut master_objects = 0;
+        master.walk(&mut |c, _| {
+            if c.is(b"obj ") {
+                master_objects += 1;
+            }
+        });
+        assert_eq!(master_objects, 0, "{v}");
+        assert_eq!(
+            tree.data(&riff, page.find(b"flgs").expect("flgs")),
+            [0, 0, 0, 0x90],
+            "{v}"
+        );
+        assert!(page.find(b"obbx").is_some(), "{v}");
+        // The drawing reads back whole.
+        let (back, rep) = crate::open_bytes(&bytes, "interop").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        assert_eq!(back.pages.len(), 1, "{v}");
+        assert_eq!(back.pages[0].layers.len(), 1, "{v}");
+        let shapes = &back.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 11, "{v}: {:?}", rep.warnings);
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    Some(spans.iter().map(|sp| sp.text.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        for t in [
+            "Interop test 0003 éàü",
+            "Runs: bold red and italic",
+            "right aligned",
+            "centred",
+        ] {
+            assert!(texts.iter().any(|x| x == t), "{v}: {texts:?}");
+        }
+        assert!(
+            shapes.iter().any(
+                |s| matches!(s.kind, ShapeKind::Group { ref children } if children.len() == 2)
+            ),
+            "{v}"
+        );
+        assert!(
+            shapes.iter().any(|s| matches!(s.fill, Fill::Fountain(_))),
+            "{v}"
+        );
+    }
+}
+
+/// The records and letter descriptions of the first paragraph of a text
+/// record of versions 7 to 15: (letters, flags) of each record, and each
+/// letter's record number.
+fn txsm_first_paragraph(d: &[u8], v: u16) -> (Vec<(u16, u8)>, Vec<u8>) {
+    let u32_at = |at: usize| u32::from_le_bytes(d[at..at + 4].try_into().expect("4 bytes"));
+    let u16_at = |at: usize| u16::from_le_bytes(d[at..at + 2].try_into().expect("2 bytes"));
+    let mut at = 36 + usize::from(v >= 15) + if v < 8 { 4 } else { 0 };
+    let frames = u32_at(at) as usize;
+    at += 4;
+    for _ in 0..frames {
+        at += 4 + 48;
+        if v >= 8 {
+            at += 4;
+            if v >= 15 {
+                at += 12;
+            }
+        }
+    }
+    at += 4; // the paragraph count
+    at += 4 + 1 + usize::from(v >= 13);
+    let n = u32_at(at) as usize;
+    at += 4;
+    let mut records = Vec::new();
+    for _ in 0..n {
+        let (count, flags) = (u16_at(at), d[at + 2]);
+        at += 3 + usize::from(v >= 8);
+        if flags & 0x04 != 0 {
+            at += 4;
+        }
+        if flags & 0x40 != 0 {
+            at += 4 + if v >= 13 { 48 } else { 0 };
+        }
+        records.push((count, flags));
+    }
+    let chars = u32_at(at) as usize;
+    at += 4;
+    let rec = if v >= 12 { 8 } else { 4 };
+    let numbers = (0..chars).map(|i| d[at + i * rec + 2] >> 1).collect();
+    (records, numbers)
+}
+
+/// Before version 14 a paragraph's records list its distinct looks (size
+/// and fill), the paragraph's own first with the paragraph end counted,
+/// and every letter numbers its record in its description (the 4-byte
+/// descriptions of versions 7 to 11 too), as the files of those versions
+/// saved by the program that reads them have it: "Runs: bold red and
+/// italic" is two records, 17 (18 here, with the end) and 8 letters, the
+/// red ones numbered 1. Versions 14 and 15 keep one record per run, which
+/// opens there.
+#[test]
+fn text_records_before_14_list_the_looks_and_number_the_letters() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut bold = TextSpan::new("bold red", "Arial", 8.0);
+    bold.bold = true;
+    bold.fill = Some(Fill::Solid(Color::rgb8(204, 0, 0)));
+    let mut italic = TextSpan::new("italic", "Arial", 8.0);
+    italic.italic = true;
+    let t = text_shape(
+        &mut ids,
+        vec![
+            TextSpan::new("Runs: ", "Arial", 8.0),
+            bold,
+            TextSpan::new(" and ", "Arial", 8.0),
+            italic,
+        ],
+        TextAlign::Left,
+    );
+    let doc = doc_with(vec![t]);
+    for v in 7u16..=15 {
+        let (_, tree, riff) = chunk_ids(&document_to_cdr_version(&doc, v));
+        let mut rec = None;
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"txsm") && rec.is_none() {
+                rec = Some(tree.data(&riff, c).to_vec());
+            }
+        });
+        let (records, numbers) = txsm_first_paragraph(&rec.expect("a text record"), v);
+        let repeat = |n: u8, k: usize| std::iter::repeat_n(n, k);
+        if v < 14 {
+            assert_eq!(records, [(18, 0x00), (8, 0x40)], "{v}");
+            let want: Vec<u8> = repeat(0, 6)
+                .chain(repeat(1, 8))
+                .chain(repeat(0, 11))
+                .collect();
+            assert_eq!(numbers, want, "{v}");
+        } else {
+            assert_eq!(records, [(6, 0x00), (8, 0x40), (5, 0x00), (7, 0x00)], "{v}");
+            let want: Vec<u8> = repeat(0, 6)
+                .chain(repeat(1, 8))
+                .chain(repeat(2, 5))
+                .chain(repeat(3, 6))
+                .collect();
+            assert_eq!(numbers, want, "{v}");
+        }
+        // It reads back as one text with the red letters red.
+        let (back, rep) = crate::open_bytes(&document_to_cdr_version(&doc, v), "t").expect("opens");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("{v}: {:?}", rep.warnings);
+        };
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "Runs: bold red and italic", "{v}");
+        let red = spans
+            .iter()
+            .find(|s| s.fill == Some(Fill::Solid(Color::rgb8(204, 0, 0))))
+            .unwrap_or_else(|| panic!("{v}: no red run in {spans:?}"));
+        assert_eq!(red.text, "bold red", "{v}");
+    }
+}
+
+/// The configuration records of versions 7 to 11 carry the paper preset
+/// (0x0f A4, 3 Letter, 0 another size) and the orientation, and in 9 to
+/// 11 the 1/8 inch value a page of its own size holds, as the files of
+/// those versions saved by the program that reads them have them.
+#[test]
+fn configuration_records_before_12_carry_the_paper_code_and_orientation() {
+    assert_eq!(paper_code(210.0, 297.0), (0x0f, 0));
+    assert_eq!(paper_code(297.0, 210.0), (0x0f, 1));
+    assert_eq!(paper_code(215.9, 279.4), (3, 0));
+    assert_eq!(paper_code(210.0, 148.0), (0, 1));
+    assert_eq!(paper_code(148.0, 210.0), (0, 0));
+    let u16_at = |r: &[u8], at: usize| u16::from_le_bytes(r[at..at + 2].try_into().expect("2"));
+    let u32_at = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().expect("4"));
+    for v in 7u16..=11 {
+        let a5 = mcfg(Ver(v), 210.0, 148.0);
+        let a4 = mcfg(Ver(v), 210.0, 297.0);
+        let paper_at = if v <= 8 { 8 } else { 12 };
+        assert_eq!(
+            (u16_at(&a5, paper_at), u16_at(&a5, paper_at + 2)),
+            (0, 1),
+            "{v}"
+        );
+        assert_eq!(
+            (u16_at(&a4, paper_at), u16_at(&a4, paper_at + 2)),
+            (0x0f, 0),
+            "{v}"
+        );
+        if v >= 9 {
+            assert_eq!(u32_at(&a5, 36), 31750, "{v}");
+            assert_eq!(u32_at(&a4, 36), 0, "{v}");
+        }
+    }
+}
+
+// ---- objects with live effects and drop shadows (#1031) ---------------
+
+/// A rectangle of 40 by 30 at (20, 20), red, with `effects`.
+fn effect_rect(effects: Vec<tracedraw_core::live::Effect>) -> Document {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut r = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(20.0, 20.0, 60.0, 50.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    r.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+    r.stroke = None;
+    r.effects = effects;
+    doc.pages[0].layers[0].shapes = vec![r];
+    doc.set_ids(ids);
+    doc
+}
+
+/// A distorted rectangle saved and opened again is the rectangle with
+/// its distortion, adjustable again (#1031): from version 14 (a package)
+/// the member of TraceDraw's own puts the object back; other readers,
+/// and RIFF files, show the curve it was drawn as.
+#[test]
+fn a_distorted_rectangle_opens_live_again() {
+    let twister =
+        tracedraw_core::live::Effect::Distort(tracedraw_core::effects::Distort::Twister {
+            angle_deg: 90.0,
+            center: None,
+        });
+    let doc = effect_rect(vec![twister.clone()]);
+    let drawn = tracedraw_core::live::evaluate(&doc.pages[0].layers[0].shapes[0])
+        .main
+        .bounds();
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{v}: {read:?}");
+        if v < 14 {
+            assert!(
+                matches!(read[0].kind, ShapeKind::Path { .. }),
+                "{v}: {:?}",
+                read[0].kind
+            );
+            assert!(read[0].effects.is_empty(), "{v}");
+            assert!(
+                near(read[0].bounds(), drawn, 0.05),
+                "{v}: {:?}",
+                read[0].bounds()
+            );
+            continue;
+        }
+        let ShapeKind::Rect { rect, .. } = &read[0].kind else {
+            panic!("{v}: {:?}", read[0].kind);
+        };
+        assert_eq!(*rect, Rect::new(20.0, 20.0, 60.0, 50.0), "{v}");
+        assert_eq!(read[0].effects, vec![twister.clone()], "{v}");
+        assert_eq!(read[0].fill, Fill::Solid(Color::rgb8(255, 0, 0)), "{v}");
+        let again = tracedraw_core::live::evaluate(&read[0]).main.bounds();
+        assert!(near(again, drawn, 0.05), "{v}: {again:?} {drawn:?}");
+        // Other programs see the curve the distortion drew.
+        let plain = open_as_drawn(&bytes);
+        let shown = &plain.pages[0].layers[0].shapes;
+        assert_eq!(shown.len(), 1, "{v}");
+        assert!(matches!(shown[0].kind, ShapeKind::Path { .. }), "{v}");
+        // Saved and opened once more, it is still the rectangle.
+        let (twice, _) =
+            crate::open_bytes(&document_to_cdr_version(&back, v), "twice").expect("reads back");
+        let read2 = &twice.pages[0].layers[0].shapes;
+        assert_eq!(read2.len(), 1, "{v}");
+        assert!(matches!(read2[0].kind, ShapeKind::Rect { .. }), "{v}");
+        assert_eq!(read2[0].effects, vec![twister.clone()], "{v}");
+    }
+}
+
+/// A contour goes out as its steps and the object, loose; from version
+/// 14 it comes back as the one object with its contour (#1031).
+#[test]
+fn a_contour_opens_live_again() {
+    let contour = tracedraw_core::live::Effect::Contour {
+        steps: 3,
+        offset: 2.0,
+        outside: true,
+        to_center: false,
+        fill_to: Color::rgb8(0, 0, 255),
+        outline_to: None,
+        color_blend: 0,
+        corners: None,
+        accel_objects: 0.0,
+        accel_colors: 0.0,
+    };
+    let doc = effect_rect(vec![contour.clone()]);
+    for v in [13u16, 14, 16, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let read = &back.pages[0].layers[0].shapes;
+        let shown = open_as_drawn(&bytes).pages[0].layers[0].shapes.len();
+        assert_eq!(shown, 4, "{v}: three steps and the rectangle");
+        if v < 14 {
+            assert_eq!(read.len(), 4, "{v}");
+            continue;
+        }
+        assert_eq!(read.len(), 1, "{v}: {read:?}");
+        assert!(matches!(read[0].kind, ShapeKind::Rect { .. }), "{v}");
+        assert_eq!(read[0].effects, vec![contour.clone()], "{v}");
+    }
+}
+
+/// A drop shadow goes out as the picture the caller rendered of it, a
+/// bitmap beneath the object, so any reader shows it; from version 14 the
+/// object comes back with its shadow and no bitmap (#1031). Without a
+/// picture from the caller (a writer call without previews) the writer
+/// draws one from the object's outline.
+#[test]
+fn a_drop_shadow_goes_out_as_its_picture_and_comes_back() {
+    let shadow = tracedraw_core::Shadow {
+        offset: tracedraw_core::geometry::Vec2::new(3.0, -3.0),
+        opacity: 0.6,
+        blur: 1.0,
+        color: Color::BLACK,
+        ..Default::default()
+    };
+    let mut doc = effect_rect(Vec::new());
+    doc.pages[0].layers[0].shapes[0].shadow = Some(shadow);
+    let id = doc.pages[0].layers[0].shapes[0].id;
+    // A grey, half transparent picture over the shadow's area.
+    let mut pm = tiny_skia::Pixmap::new(60, 50).expect("pixmap");
+    pm.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 128));
+    let picture = ShadowPicture {
+        shape: id,
+        rect: Rect::new(21.0, 15.0, 65.0, 49.0),
+        png: Png {
+            data: pm.encode_png().expect("png"),
+            width: 60,
+            height: 50,
+        },
+    };
+    let with = Previews {
+        shadows: vec![picture],
+        ..Default::default()
+    };
+    let without = Previews::default();
+    for v in [8u16, 13, 14, 16, 21, 27] {
+        let bytes = document_to_cdr_version_with(&doc, v, &with);
+        let shown = open_as_drawn(&bytes);
+        let shapes = &shown.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 2, "{v}: the picture and the rectangle");
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            ..
+        } = &shapes[0].kind
+        else {
+            panic!("{v}: {:?}", shapes[0].kind);
+        };
+        // Where the picture lies on the page (its own box and transform
+        // together, however a version lays the record out).
+        let rect = shapes[0].bounds();
+        assert!(
+            near(rect, Rect::new(21.0, 15.0, 65.0, 49.0), 0.05),
+            "{v}: {rect:?}"
+        );
+        assert_eq!((*width_px, *height_px), (60, 50), "{v}");
+        assert!(
+            shapes[0].shadow.is_none() && shapes[1].shadow.is_none(),
+            "{v}"
+        );
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let read = &back.pages[0].layers[0].shapes;
+        if v < 14 {
+            assert_eq!(read.len(), 2, "{v}");
+            continue;
+        }
+        assert_eq!(read.len(), 1, "{v}: {read:?}");
+        assert!(matches!(read[0].kind, ShapeKind::Rect { .. }), "{v}");
+        assert_eq!(read[0].shadow, Some(shadow), "{v}");
+        // No picture passed: the writer draws one where the shadow falls
+        // (the rectangle moved 3 mm right and down, feathered by 1 mm).
+        let bytes = document_to_cdr_version_with(&doc, v, &without);
+        let shown = open_as_drawn(&bytes);
+        let shapes = &shown.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 2, "{v}: the drawn picture and the rectangle");
+        assert!(
+            matches!(shapes[0].kind, ShapeKind::Bitmap { .. }),
+            "{v}: {:?}",
+            shapes[0].kind
+        );
+        let rect = shapes[0].bounds();
+        let under = Rect::new(23.0, 17.0, 63.0, 47.0);
+        assert!(
+            rect.x0 <= under.x0
+                && rect.y0 <= under.y0
+                && rect.x1 >= under.x1
+                && rect.y1 >= under.y1,
+            "{v}: {rect:?}"
+        );
+        assert!(rect.x0 > 15.0 && rect.y1 < 55.0, "{v}: {rect:?}");
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{v}");
+        assert_eq!(read[0].shadow, Some(shadow), "{v}");
+    }
+}
+
+/// A distorted object inside a group comes back inside the group, and
+/// an object whose drawn curve another program moved, or whose member
+/// does not read, stays as drawn, never fails (#1031).
+#[test]
+fn a_kept_effect_in_a_group_comes_back_and_a_moved_one_stays_drawn() {
+    let push = tracedraw_core::live::Effect::Distort(tracedraw_core::effects::Distort::PushPull {
+        amount: 50.0,
+        center: None,
+    });
+    let inner = effect_rect(vec![push.clone()]);
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut other = Shape::new(
+        ids.shape(),
+        ShapeKind::Ellipse {
+            rect: Rect::new(100.0, 10.0, 140.0, 40.0),
+            arc: None,
+        },
+    );
+    other.fill = Fill::Solid(Color::rgb8(0, 200, 0));
+    let mut group = Shape::new(
+        ids.shape(),
+        ShapeKind::Group {
+            children: vec![inner.pages[0].layers[0].shapes[0].clone(), other],
+        },
+    );
+    group.transform = Affine::translate((5.0, 5.0));
+    doc.pages[0].layers[0].shapes = vec![group];
+    doc.set_ids(ids);
+    let bytes = document_to_cdr_version(&doc, 27);
+    let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+    let read = &back.pages[0].layers[0].shapes;
+    assert_eq!(read.len(), 1);
+    let ShapeKind::Group { children } = &read[0].kind else {
+        panic!("{:?}", read[0].kind);
+    };
+    assert_eq!(children.len(), 2);
+    assert!(
+        matches!(children[0].kind, ShapeKind::Rect { .. }),
+        "{:?}",
+        children[0].kind
+    );
+    assert_eq!(children[0].effects, vec![push]);
+    // The group's move went into the rectangle when it was written.
+    assert!(near(
+        children[0].bounds(),
+        Rect::new(25.0, 25.0, 65.0, 55.0),
+        0.05
+    ));
+    assert!(children[0].id != children[1].id && children[0].id != read[0].id);
+
+    // The member names the drawn curve's box; a curve moved elsewhere
+    // (another program edited the file) no longer matches it.
+    let mut w = Writer::new(Ver(27), &doc.symbols, &doc.title);
+    let _ = w.document(&doc);
+    assert_eq!(w.effects.len(), 1);
+    let member = crate::kept_effects::encode(&w.effects).expect("member");
+    let mut kept = crate::kept_effects::decode(&member);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].objects.len(), 1);
+    let container = crate::container::detect(&bytes).expect("container");
+    let riff = crate::container::riff_stream(&bytes, &container).expect("riff");
+    let externals = crate::container::external_streams(&bytes, &container);
+    let root = crate::riff::parse_with_externals(&riff, externals, 27).expect("tree");
+    let open = |kept: &[crate::kept_effects::KeptEffect]| {
+        crate::parse::parse_document_kept(&root, &riff, container.version, None, &[], kept).0
+    };
+    let kind_of = |d: &Document| match &d.pages[0].layers[0].shapes[0].kind {
+        ShapeKind::Group { children } => children[0].kind.clone(),
+        k => k.clone(),
+    };
+    assert!(matches!(kind_of(&open(&kept)), ShapeKind::Rect { .. }));
+    kept[0].bounds[0] += 10.0;
+    kept[0].bounds[2] += 10.0;
+    assert!(matches!(kind_of(&open(&kept)), ShapeKind::Path { .. }));
+    assert!(crate::kept_effects::decode(b"{\"format\": 2, \"effects\": []}").is_empty());
+    assert!(crate::kept_effects::decode(b"not json").is_empty());
+}
+
+/// The bitmap objects among `shapes`, in groups and clip frames too.
+fn count_bitmaps(shapes: &[Shape]) -> usize {
+    shapes
+        .iter()
+        .map(|s| match &s.kind {
+            ShapeKind::Bitmap { .. } => 1,
+            ShapeKind::Group { children } => count_bitmaps(children),
+            ShapeKind::ClipFrame { frame, contents } => {
+                count_bitmaps(std::slice::from_ref(frame)) + count_bitmaps(contents)
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+/// A hidden object (kept from version 21) casts no shadow picture, and
+/// from version 14 still comes back with its shadow (#1031).
+#[test]
+fn a_hidden_object_casts_no_shadow_picture() {
+    let shadow = tracedraw_core::Shadow {
+        offset: tracedraw_core::geometry::Vec2::new(3.0, -3.0),
+        opacity: 0.6,
+        blur: 0.0,
+        color: Color::BLACK,
+        ..Default::default()
+    };
+    let mut doc = effect_rect(Vec::new());
+    let s = &mut doc.pages[0].layers[0].shapes[0];
+    s.shadow = Some(shadow);
+    s.visible = false;
+    for v in [21u16, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let shown = open_as_drawn(&bytes);
+        let shapes = &shown.pages[0].layers[0].shapes;
+        assert_eq!(count_bitmaps(shapes), 0, "{v}: {shapes:?}");
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{v}");
+        assert!(!read[0].visible, "{v}");
+        assert_eq!(read[0].shadow, Some(shadow), "{v}");
     }
 }

@@ -2114,6 +2114,7 @@ impl App {
         if response.drag_started_by(PointerButton::Primary) {
             self.curve = None;
             self.drag = Drag::Freehand { points: vec![p] };
+            self.pen_stroke = crate::pen::PenStroke::start(self.pen_pressure);
         }
         if response.dragged_by(PointerButton::Primary) {
             if let Drag::Freehand { points } = &mut self.drag {
@@ -2123,9 +2124,21 @@ impl App {
                     .unwrap_or(true)
                 {
                     points.push(p);
+                    let n = points.len();
+                    self.pen_stroke.record(n, self.pen_pressure);
                 }
             }
         }
+    }
+
+    /// The pressures a pen recorded along the freehand drag of `points`,
+    /// when it had one at every point and Options > Tools > Curve tools
+    /// lets the pressure set the width (#850).
+    pub fn pen_pressures(&self, points: &[Point]) -> Option<&[f32]> {
+        if !self.settings.curves.pen_pressure {
+            return None;
+        }
+        self.pen_stroke.pressures(points.len())
     }
 
     /// Bezier/Pen: click places a node without a handle (the segment to
@@ -2600,6 +2613,8 @@ impl App {
 
     pub fn end_drag(&mut self) {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
+        // The page shows the drawing as it is now (#1259).
+        self.node_drag_shown = None;
         if !matches!(drag, Drag::Move { .. }) {
             self.drop_frame = None;
         }
@@ -2747,7 +2762,11 @@ impl App {
                 self.add_painterly_stroke(&points);
             }
             Drag::Freehand { points } if self.tool == Tool::BrushStrokes => {
-                let shapes = self.media_shapes(&points);
+                // A pen's pressure along the drag sets the width (#850).
+                let pen = self
+                    .pen_pressures(&points)
+                    .and_then(|pr| crate::pen::PressureProfile::new(&points, pr));
+                let shapes = self.media_shapes_pen(&points, pen.as_ref());
                 if let Some(layer) = self.active_layer() {
                     let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
                     let cmds: Vec<Command> = shapes
@@ -2767,7 +2786,15 @@ impl App {
                 let pts = tracedraw_core::geometry::simplify(&points, tol.max(0.02));
                 if pts.len() >= 2 {
                     let path = tracedraw_core::geometry::smooth_path(&pts, false);
-                    self.add_drawn_line(path);
+                    // Drawn with a pen: the outline follows its pressure
+                    // along the stroke (#850); the mouse keeps it even.
+                    let widths = self
+                        .pen_pressures(&points)
+                        .and_then(|pr| crate::pen::PressureProfile::new(&points, pr))
+                        .zip(self.default_stroke())
+                        .map(|(pen, st)| pen.freehand_widths(st.width))
+                        .unwrap_or_default();
+                    self.add_drawn_line_with_widths(path, widths);
                 }
             }
             Drag::FillGradient {
@@ -2931,6 +2958,9 @@ impl App {
     }
 
     pub fn keyboard(&mut self, ctx: &egui::Context) {
+        // The pen's pressure, which the raw input hook read from this
+        // frame's touch events, before the tools see the pointer (#850).
+        self.pen_pressure = crate::pen::pressure(ctx);
         // A macro's message, input box, modal form or error owns the
         // keyboard (see ui/macros_ui.rs); Esc stops a running macro.
         if self.macros.modal() {
@@ -3601,6 +3631,7 @@ impl App {
             }
         }
         // Tool shortcuts: user overrides from Options, then the defaults.
+        let pointer_busy = !matches!(self.drag, Drag::None) || input.pointer.any_down();
         for group in crate::tools::GROUPS {
             for t in group.tools {
                 // Every key the tool has (#822).
@@ -3625,6 +3656,18 @@ impl App {
                             && mods.is_none()
                             && matches!(k, Key::W | Key::K);
                         if pressed(k, mods) && !drop_key {
+                            // The Pick tool's key (Space) on the Pick tool
+                            // goes back to the tool used before it. Not
+                            // during a drag, where Space drops a copy.
+                            if *t == Tool::Pick && pointer_busy {
+                                continue;
+                            }
+                            if *t == Tool::Pick && self.tool == Tool::Pick {
+                                if self.previous_tool != Tool::Pick {
+                                    self.set_tool(self.previous_tool);
+                                }
+                                return;
+                            }
                             self.set_tool(*t);
                         }
                     }

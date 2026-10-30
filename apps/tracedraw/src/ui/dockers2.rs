@@ -70,10 +70,9 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
 }
 
 fn step_and_repeat(app: &mut App, ui: &mut Ui) {
-    app.step_repeat_follow_selection();
     let u = app.units;
     let has = !app.selection.is_empty();
-    // With nothing selected the values stay at their defaults (#1032).
+    // With nothing selected the fields wait, keeping their values (#1198).
     ui.add_enabled_ui(has, |ui| {
         step_and_repeat_fields(&mut app.step_repeat, u, ui)
     });
@@ -1798,56 +1797,123 @@ fn extrude(app: &mut App, ui: &mut Ui) {
 
 fn bevel(app: &mut App, ui: &mut Ui) {
     let cur = current_effect(app, |e| matches!(e, Effect::Bevel { .. }));
+    // The panel shows the selected object's own bevel every frame, so its
+    // sliders edit that bevel (after Undo, or another object picked and
+    // picked back too) instead of the last settings used.
+    if let Some(Effect::Bevel {
+        distance,
+        light_angle,
+        intensity,
+        style,
+        shadow_color,
+        light_color,
+        level,
+        emboss_color,
+    }) = &cur
+    {
+        {
+            app.bevel = crate::effects_ui::BevelSettings {
+                distance: *distance,
+                light_angle: *light_angle,
+                intensity: *intensity,
+                style: *style,
+                shadow_color: *shadow_color,
+                light_color: *light_color,
+                level: *level,
+                emboss_color: *emboss_color,
+            };
+            app.bevel_synced_to = app.selection.first().copied();
+        }
+    }
+    // The colour an own emboss colour starts from: the object's solid fill.
+    let fill_color = app
+        .selected_shapes()
+        .first()
+        .and_then(|s| match &s.fill {
+            tracedraw_core::Fill::Solid(c) => Some(*c),
+            _ => None,
+        })
+        .unwrap_or(Color::rgb8(128, 128, 128));
+    use crate::ui::docker_form::{row, section};
+    use crate::ui::tips::{keyed, pair};
     let b = &mut app.bevel;
     let mut changed = false;
+    // The style: two equal buttons across the panel.
     ui.horizontal(|ui| {
-        changed |= ui
-            .selectable_label(b.style == 0, tr("docker.soft_edge"))
-            .rich_tip(crate::ui::tips::keyed("docker.soft_edge"))
-            .clicked()
-            .then(|| b.style = 0)
-            .is_some();
-        changed |= ui
-            .selectable_label(b.style == 1, tr("docker.emboss"))
-            .rich_tip(crate::ui::tips::keyed("docker.emboss"))
-            .clicked()
-            .then(|| b.style = 1)
-            .is_some();
+        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+        for (style, key) in [(0, "docker.soft_edge"), (1, "docker.emboss")] {
+            let pick = ui
+                .add_sized(
+                    [w, 26.0],
+                    egui::Button::selectable(b.style == style, tr(key)),
+                )
+                .rich_tip(keyed(key))
+                .clicked();
+            if pick && b.style != style {
+                b.style = style;
+                changed = true;
+            }
+        }
     });
     changed |= ui
         .add(
             crate::ui::Slider::new(&mut b.distance, 0.1..=50.0)
-                .text(tr("docker.distance"))
+                .text(tr("docker.depth"))
                 .logarithmic(true),
         )
-        .rich_tip(crate::ui::tips::pair(
-            "docker.distance",
-            "docker.bevel_distance_desc",
-        ))
+        .rich_tip(pair("docker.depth", "docker.bevel_distance_desc"))
         .changed();
+    let mut level = i32::from(b.level);
+    let top = i32::from(tracedraw_core::live::MAX_BEVEL_LEVEL);
+    if ui
+        .add(
+            crate::ui::Slider::new(&mut level, 1..=top)
+                .text(tr("docker.level"))
+                .integer(),
+        )
+        .rich_tip(keyed("docker.level"))
+        .changed()
+    {
+        b.level = level.clamp(1, top) as u8;
+        changed = true;
+    }
+    section(ui, None);
     changed |= ui
         .add(
             crate::ui::Slider::new(&mut b.light_angle, 0.0..=360.0)
                 .text(tr("docker.light_angle"))
                 .suffix("°"),
         )
-        .rich_tip(crate::ui::tips::pair(
-            "docker.light_angle",
-            "extrude.light_angle_desc",
-        ))
+        .rich_tip(pair("docker.light_angle", "extrude.light_angle_desc"))
         .changed();
     changed |= ui
         .add(crate::ui::Slider::new(&mut b.intensity, 0.0..=100.0).text(tr("docker.intensity")))
-        .rich_tip(crate::ui::tips::pair(
-            "docker.intensity",
-            "extrude.light_intensity_desc",
-        ))
+        .rich_tip(pair("docker.intensity", "extrude.light_intensity_desc"))
         .changed();
-    ui.horizontal(|ui| {
-        ui.label(tr("docker.shadow_color"));
-        changed |= color_button(ui, &mut b.shadow_color);
-        ui.label(tr("docker.light_color"));
+    section(ui, None);
+    row(ui, &tr("docker.light_color"), |ui| {
         changed |= color_button(ui, &mut b.light_color);
+    });
+    row(ui, &tr("docker.shadow_color"), |ui| {
+        changed |= color_button(ui, &mut b.shadow_color);
+    });
+    row(ui, &tr("docker.emboss_color"), |ui| {
+        let mut own = b.emboss_color.is_some();
+        if ui
+            .checkbox(&mut own, "")
+            .rich_tip(keyed("docker.emboss_color"))
+            .changed()
+        {
+            // Switched on, it starts from the object's fill, the colour the
+            // band was toned from.
+            b.emboss_color = own.then_some(b.emboss_color.unwrap_or(fill_color));
+            changed = true;
+        }
+        if let Some(c) = &mut b.emboss_color {
+            changed |= color_button(ui, c);
+        } else {
+            dim(ui, tr("docker.emboss_color_off"));
+        }
     });
     let bv = app.bevel.clone();
     let effect = Effect::Bevel {
@@ -1857,6 +1923,8 @@ fn bevel(app: &mut App, ui: &mut Ui) {
         style: bv.style,
         shadow_color: bv.shadow_color,
         light_color: bv.light_color,
+        level: bv.level,
+        emboss_color: bv.emboss_color,
     };
     let has = !app.selection.is_empty();
     if cur.is_some() && changed {
@@ -3149,6 +3217,13 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
         (FitOrder::LargestFirst, "docker.fit_to_path_order_largest"),
         (FitOrder::SmallestFirst, "docker.fit_to_path_order_smallest"),
         (FitOrder::Alternate, "docker.fit_to_path_order_alternate"),
+        (FitOrder::TopToBottom, "docker.fit_to_path_order_ttb"),
+        (FitOrder::BottomToTop, "docker.fit_to_path_order_btt"),
+        (FitOrder::TallToShort, "docker.fit_to_path_order_tall"),
+        (FitOrder::ShortToTall, "docker.fit_to_path_order_short"),
+        (FitOrder::WideToNarrow, "docker.fit_to_path_order_wide"),
+        (FitOrder::NarrowToWide, "docker.fit_to_path_order_narrow"),
+        (FitOrder::Random, "docker.fit_to_path_order_random"),
     ];
     let cur = orders
         .iter()

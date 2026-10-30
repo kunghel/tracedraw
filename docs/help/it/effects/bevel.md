@@ -14,9 +14,19 @@ impostato nel pannello [[docker.bevel]]; aprilo con
    - [[docker.soft_edge]]: il bordo scende in pendenza verso l'interno
      dell'oggetto, illuminato da un lato e ombreggiato dall'altro;
    - [[docker.emboss]]: l'oggetto sembra sbalzato fuori dalla pagina.
-3. Imposta la [[docker.distance]] (fin dove lo smusso arriva dentro
-   l'oggetto), l'[[docker.light_angle]], l'[[docker.intensity]] della luce, il
-   [[docker.shadow_color]] e il [[docker.light_color]].
+3. Imposta l'aspetto dello smusso:
+   - [[docker.depth]]: fin dove lo smusso arriva dal bordo, dentro l'oggetto
+     per il bordo morbido e fuori per il rilievo;
+   - [[docker.level]]: in quanti passi luce e ombra sono suddivise lungo lo
+     smusso. 1 dà due toni piatti, più passi li sfumano dolcemente dal bordo
+     verso l'interno;
+   - [[docker.light_angle]]: la direzione da cui arriva la luce;
+   - [[docker.intensity]]: la forza della luce e dell'ombra;
+   - [[docker.light_color]] e [[docker.shadow_color]]: i colori del lato
+     illuminato e di quello in ombra;
+   - [[docker.emboss_color]]: il colore da cui è tonalizzato lo smusso.
+     Spunta la casella e scegli un colore tuo; disattivato, si usa il
+     riempimento dell'oggetto.
 4. Fai clic su [[docker.apply]].
 
 Per copiare uno smusso da un altro oggetto, usa

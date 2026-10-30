@@ -243,26 +243,88 @@ fn pick_result_id() -> Id {
     Id::new("color_pick_result")
 }
 
+/// A pick request: the picker that asked and the frame its eyedropper
+/// button was last drawn in (#1246).
+#[derive(Clone, Copy, Debug)]
+struct PickRequest {
+    id: Id,
+    frame: u64,
+}
+
 /// A picker's eyedropper is waiting for a click on the drawing.
+///
+/// A request outlives its picker when the picker closes while it
+/// waits (the Edit Fill or Outline Pen dialog closed with OK, a
+/// popup's picker closed by a click beside it): the crosshair pointer
+/// and the colour readout then followed the pointer everywhere and
+/// the next click on the drawing went nowhere (#1246). So a request
+/// counts only while its eyedropper button is being drawn (the button
+/// renews it every frame); a request not renewed since the frame
+/// before is dropped here.
 pub fn picking(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Id>(pick_request_id()).is_some())
+    let now = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| match d.get_temp::<PickRequest>(pick_request_id()) {
+        Some(r) if now.saturating_sub(r.frame) <= 1 => true,
+        Some(_) => {
+            d.remove::<PickRequest>(pick_request_id());
+            false
+        }
+        None => false,
+    })
 }
 
 /// Picker `id` waits for a click on the drawing to give it a colour.
 pub fn start_pick(ctx: &egui::Context, id: Id) {
-    ctx.data_mut(|d| d.insert_temp(pick_request_id(), id));
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| d.insert_temp(pick_request_id(), PickRequest { id, frame }));
+}
+
+/// Is picker `id` the one waiting? Drawn, its button renews the request
+/// so it lives on (see [`picking`]).
+fn waiting(ui: &Ui, id: Id) -> bool {
+    let now = ui.ctx().cumulative_frame_nr();
+    ui.data_mut(|d| match d.get_temp::<PickRequest>(pick_request_id()) {
+        Some(r) if r.id == id => {
+            d.insert_temp(pick_request_id(), PickRequest { id, frame: now });
+            true
+        }
+        _ => false,
+    })
 }
 
 /// The click on the drawing gave `c` (none: the pick was cancelled); the
 /// picker that asked takes it when it is next drawn.
 pub fn finish_pick(ctx: &egui::Context, c: Option<Color>) {
     ctx.data_mut(|d| {
-        let asked = d.get_temp::<Id>(pick_request_id());
-        d.remove::<Id>(pick_request_id());
-        if let (Some(id), Some(c)) = (asked, c) {
-            d.insert_temp(pick_result_id(), (id, c));
+        let asked = d.get_temp::<PickRequest>(pick_request_id());
+        d.remove::<PickRequest>(pick_request_id());
+        if let (Some(r), Some(c)) = (asked, c) {
+            d.insert_temp(pick_result_id(), (r.id, c));
         }
     });
+}
+
+/// For a tool that is not a picker (Remove Background's eyedropper):
+/// keep the request of `id` alive while `on`, drop it when not, and give
+/// back the colour a click on the drawing picked for it, once.
+pub fn pick_for(ctx: &egui::Context, id: Id, on: bool) -> Option<Color> {
+    let now = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| {
+        let picked = match d.get_temp::<(Id, Color)>(pick_result_id()) {
+            Some((asked, c)) if asked == id => {
+                d.remove::<(Id, Color)>(pick_result_id());
+                Some(c)
+            }
+            _ => None,
+        };
+        let ours = matches!(d.get_temp::<PickRequest>(pick_request_id()), Some(r) if r.id == id);
+        if on && picked.is_none() {
+            d.insert_temp(pick_request_id(), PickRequest { id, frame: now });
+        } else if ours {
+            d.remove::<PickRequest>(pick_request_id());
+        }
+        picked
+    })
 }
 
 /// The colour picked from the drawing for the picker `id`, once.
@@ -285,7 +347,7 @@ pub fn eyedropper(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
         *c = p;
         changed = true;
     }
-    let waiting = ui.data(|d| d.get_temp::<Id>(pick_request_id())) == Some(id);
+    let waiting = waiting(ui, id);
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
     if waiting {
         ui.painter().rect_filled(r, 2.0, Tokens::tool_active());
@@ -303,7 +365,7 @@ pub fn eyedropper(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
         .clicked()
     {
         if waiting {
-            ui.data_mut(|d| d.remove::<Id>(pick_request_id()));
+            finish_pick(ui.ctx(), None);
         } else {
             start_pick(ui.ctx(), id);
         }
@@ -325,6 +387,39 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
         Stroke::new(1.0, Tokens::control_border()),
         egui::StrokeKind::Inside,
     );
+    picker_popup(ui, id, swatch, c, resp.clicked())
+}
+
+/// Open picker `id` for `c` (it shows where [`picker_beside`] draws it).
+pub fn open_picker(ctx: &egui::Context, id: Id, c: Color) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            id,
+            Open {
+                hue: viewer_point(c).0,
+                size: FIRST_SIZE,
+                offset: Vec2::ZERO,
+            },
+        )
+    });
+}
+
+/// Picker `id` is open.
+#[cfg(test)]
+pub fn picker_open(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<Open>(id).is_some())
+}
+
+/// The popup of picker `id` beside `anchor` while it is open (opened by
+/// [`open_picker`], from a control that is not its swatch: the Other
+/// colour of a palette menu, which closes when the picker opens, #1262).
+/// True when the colour changed.
+pub fn picker_beside(ui: &mut Ui, id: Id, anchor: Rect, c: &mut Color) -> bool {
+    picker_popup(ui, id, anchor, c, false)
+}
+
+/// The popup of picker `id` beside `swatch`; `clicked` opens or closes it.
+fn picker_popup(ui: &mut Ui, id: Id, swatch: Rect, c: &mut Color, clicked: bool) -> bool {
     let mut open = ui.data(|d| d.get_temp::<Open>(id));
     // A colour its eyedropper asked for, picked from the drawing.
     let mut changed = false;
@@ -333,7 +428,7 @@ pub fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
         changed = true;
     }
     let was_picking = picking(ui.ctx());
-    if resp.clicked() {
+    if clicked {
         open = match open {
             Some(_) => None,
             None => Some(Open {

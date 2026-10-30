@@ -1,15 +1,19 @@
 //! The splash screen. While TraceDraw starts, a small borderless window
 //! centred on the screen shows the application icon, the name, the
 //! tagline and the version over the brand artwork (see `ui/brand.rs`),
-//! with what is loading and a progress bar. The system font list is read
-//! on a worker thread meanwhile; when it is in and the splash has been up
-//! for [`MIN_TIME`], the editor is built (opening the file named on the
-//! command line) and the window becomes the main window, maximized or at
-//! the size it was left. Options > General turns the splash off;
-//! `--no-splash` or `TRACEDRAW_NO_SPLASH=1` skip it for one run.
+//! with what is loading and a progress bar. The splash stays up only as
+//! long as the start takes: nothing holds it back once the editor can be
+//! built (opening the file named on the command line), and the window
+//! becomes the main window, maximized or at the size it was left. The
+//! system fonts are read on a worker thread meanwhile (since the start of
+//! the program, see `main.rs`); the splash waits for them only when the
+//! interface language needs one, the editor takes them in when they arrive
+//! otherwise. Options > General turns the splash off; `--no-splash` or
+//! `TRACEDRAW_NO_SPLASH=1` skip it for one run.
 
 use crate::i18n::{tr, trf};
 use crate::settings::Settings;
+use crate::theme::FontLoad;
 use crate::ui::brand;
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Stroke, TextureHandle, Vec2};
 use std::path::Path;
@@ -22,8 +26,11 @@ pub const DEFAULT_SIZE: Vec2 = Vec2::new(1600.0, 950.0);
 /// Small enough for a 1280 x 720 screen with a taskbar, at any interface
 /// size (see [`min_size_for`]).
 pub const MIN_SIZE: Vec2 = Vec2::new(800.0, 500.0);
-/// The shortest time the splash stays up, so it never just flashes.
-pub const MIN_TIME: Duration = Duration::from_millis(1600);
+/// How fast the progress bar eases towards [`WAITING_FILL`] while the
+/// splash waits for the fonts of the interface language.
+const EASE_TIME: Duration = Duration::from_millis(1600);
+/// How far the bar goes while the splash waits for something.
+const WAITING_FILL: f32 = 0.8;
 
 /// What the shell does after a splash frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +45,10 @@ pub enum Step {
 pub struct Splash {
     started: Instant,
     /// The interface fonts, read on a worker thread.
-    fonts: Option<std::thread::JoinHandle<egui::FontDefinitions>>,
+    fonts: FontLoad,
+    /// The interface language needs a system font: its texts wait for the
+    /// fonts, and so does the start of the editor.
+    wait_for_fonts: bool,
     /// Frames drawn since the full fonts were installed (they apply from
     /// the next frame on).
     frames_with_fonts: Option<u32>,
@@ -58,14 +68,10 @@ impl Splash {
     pub fn start(ctx: &egui::Context, file: Option<&Path>) -> Self {
         ctx.set_fonts(crate::theme::bundled_font_definitions());
         ctx.set_visuals(crate::theme::visuals());
-        let fonts = std::thread::Builder::new()
-            .name("tracedraw-fonts".into())
-            .spawn(crate::theme::font_definitions)
-            .map_err(|e| log::warn!("font thread: {e}"))
-            .ok();
         Splash {
             started: Instant::now(),
-            fonts,
+            fonts: FontLoad::start(),
+            wait_for_fonts: crate::theme::needs_system_font(&crate::i18n::language()),
             frames_with_fonts: None,
             file_name: file
                 .and_then(|p| p.file_name())
@@ -83,21 +89,17 @@ impl Splash {
         if ctx.input(|i| i.key_down(egui::Key::F8)) {
             self.reset_requested = true;
         }
-        if self.frames_with_fonts.is_none() && self.fonts.as_ref().is_none_or(|h| h.is_finished()) {
-            let defs = self
-                .fonts
-                .take()
-                .and_then(|h| h.join().ok())
-                .unwrap_or_else(crate::theme::font_definitions);
-            ctx.set_fonts(defs);
+        if self.frames_with_fonts.is_none() && self.fonts.is_finished() {
+            ctx.set_fonts(self.fonts.finish());
             self.frames_with_fonts = Some(0);
         } else if let Some(n) = self.frames_with_fonts.as_mut() {
             *n = n.saturating_add(1);
         }
         let elapsed = self.started.elapsed();
-        let fonts_ready = self.frames_with_fonts.is_some();
-        let texts = !crate::theme::needs_system_font(&crate::i18n::language())
-            || self.frames_with_fonts.is_some_and(|n| n >= 1);
+        // The editor starts without the system fonts unless its texts
+        // need one; they are installed when they arrive.
+        let fonts_ready = self.frames_with_fonts.is_some() || !self.wait_for_fonts;
+        let texts = !self.wait_for_fonts || self.frames_with_fonts.is_some_and(|n| n >= 1);
         let status = status_text(fonts_ready, self.file_name.as_deref());
         paint(
             ui,
@@ -106,7 +108,7 @@ impl Splash {
             texts,
             self.icon.as_ref(),
         );
-        if fonts_ready && elapsed >= MIN_TIME {
+        if fonts_ready {
             if self.last_frame_drawn {
                 return Step::Start;
             }
@@ -114,6 +116,12 @@ impl Splash {
         }
         ctx.request_repaint_after(Duration::from_millis(16));
         Step::Wait
+    }
+
+    /// The fonts still being read when the editor starts: the shell
+    /// installs them when they are in.
+    pub fn take_fonts(&mut self) -> FontLoad {
+        std::mem::take(&mut self.fonts)
     }
 }
 
@@ -128,12 +136,15 @@ pub fn status_text(fonts_ready: bool, file: Option<&str>) -> String {
 }
 
 /// The progress bar's fill, 0 to 1: it eases towards 80 % over
-/// [`MIN_TIME`] while the fonts load and reaches the end once they are in.
+/// [`EASE_TIME`] while the fonts load and is full once they are in (the
+/// editor is built right after).
 pub fn progress(elapsed: Duration, fonts_ready: bool) -> f32 {
-    let t = (elapsed.as_secs_f32() / MIN_TIME.as_secs_f32()).clamp(0.0, 1.0);
+    if fonts_ready {
+        return 1.0;
+    }
+    let t = (elapsed.as_secs_f32() / EASE_TIME.as_secs_f32()).clamp(0.0, 1.0);
     let eased = 1.0 - (1.0 - t) * (1.0 - t);
-    let cap = if fonts_ready { 1.0 } else { 0.8 };
-    cap * eased
+    WAITING_FILL * eased
 }
 
 /// Paint the splash over the whole of `ui`. `texts` draws the tagline and
@@ -956,15 +967,15 @@ mod tests {
     }
 
     #[test]
-    fn progress_waits_for_the_fonts_and_the_minimum_time() {
+    fn progress_waits_for_the_fonts_and_holds_nothing_back() {
         assert_eq!(progress(Duration::ZERO, false), 0.0);
-        let half = progress(MIN_TIME / 2, false);
+        let half = progress(EASE_TIME / 2, false);
         assert!(half > 0.4 && half < 0.8, "{half}");
         // Without the fonts the bar stops at 80 %.
-        assert!((progress(MIN_TIME * 3, false) - 0.8).abs() < 1e-6);
-        // With them it fills once the minimum time is over.
-        assert!((progress(MIN_TIME, true) - 1.0).abs() < 1e-6);
-        assert!(progress(MIN_TIME / 2, true) < 1.0);
+        assert!((progress(EASE_TIME * 3, false) - WAITING_FILL).abs() < 1e-6);
+        // With them it is full at once: no minimum time keeps the splash.
+        assert!((progress(Duration::ZERO, true) - 1.0).abs() < 1e-6);
+        assert!((progress(EASE_TIME / 2, true) - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1003,35 +1014,75 @@ mod tests {
         assert_eq!(centred_position(Vec2::new(10.0, 10.0), None), None);
     }
 
+    fn input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SIZE)),
+            ..Default::default()
+        }
+    }
+
+    /// Splash frames until the editor starts (at most `max`); the steps.
+    fn run_frames(ctx: &egui::Context, splash: &mut Splash, max: usize) -> Vec<Step> {
+        let mut steps = Vec::new();
+        for _ in 0..max {
+            let mut out = ctx.run_ui(input(), |ui| steps.push(splash.update(ui)));
+            out.textures_delta.clear();
+            if steps.last() == Some(&Step::Start) {
+                break;
+            }
+        }
+        steps
+    }
+
     #[test]
     fn a_splash_frame_draws_and_then_starts_the_editor() {
         crate::i18n::set_language("en");
         let ctx = egui::Context::default();
         let mut splash = Splash::start(&ctx, Some(Path::new("/tmp/a.cdr")));
-        // Let the font thread finish and pretend the minimum time is over.
-        for _ in 0..3000 {
-            if splash.fonts.as_ref().is_none_or(|h| h.is_finished()) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        splash.started = Instant::now()
-            .checked_sub(MIN_TIME * 2)
-            .unwrap_or_else(Instant::now);
-        let input = || egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SIZE)),
-            ..Default::default()
-        };
+        // No minimum time: the editor starts as soon as the last status
+        // has been drawn once, with the fonts in or not.
+        let steps = run_frames(&ctx, &mut splash, 4);
+        assert_eq!(steps, vec![Step::Wait, Step::Start]);
+        assert!(!splash.reset_requested);
+    }
+
+    #[test]
+    fn the_editor_does_not_wait_for_system_fonts_the_language_does_not_need() {
+        crate::i18n::set_language("en");
+        let ctx = egui::Context::default();
+        let mut splash = Splash::start(&ctx, None);
+        assert!(!splash.wait_for_fonts);
+        // Whatever the font thread has done, the editor starts in two
+        // frames, and the load it leaves is the shell's to install.
+        let steps = run_frames(&ctx, &mut splash, 4);
+        assert_eq!(steps, vec![Step::Wait, Step::Start]);
+        let mut load = splash.take_fonts();
+        let defs = load.finish();
+        assert!(!load.pending());
+        assert!(defs.families.contains_key(&egui::FontFamily::Proportional));
+        // Nothing is left to install afterwards.
+        assert!(!load.poll(&ctx));
+    }
+
+    #[test]
+    fn a_language_that_needs_a_system_font_waits_for_it() {
+        crate::i18n::set_language("en");
+        let ctx = egui::Context::default();
+        let mut splash = Splash::start(&ctx, None);
+        splash.wait_for_fonts = true;
         let mut steps = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..3000 {
             let mut out = ctx.run_ui(input(), |ui| steps.push(splash.update(ui)));
             out.textures_delta.clear();
+            if steps.last() == Some(&Step::Start) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // The first frame installs the fonts, the next shows the last
-        // status, then the editor starts.
-        assert_eq!(steps[0], Step::Wait);
-        assert!(steps.contains(&Step::Start));
-        assert!(!splash.reset_requested);
+        assert_eq!(steps.last(), Some(&Step::Start));
+        // The fonts were installed first and nothing is left to hand over.
+        assert!(splash.frames_with_fonts.is_some());
+        assert!(!splash.take_fonts().pending());
     }
 
     #[test]

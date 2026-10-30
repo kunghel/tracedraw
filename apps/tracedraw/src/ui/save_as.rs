@@ -53,6 +53,10 @@ pub struct SaveAsState {
     pub fonts_size: u64,
     /// The fonts go into the file (`.cdr` from version 16).
     pub embed_fonts: bool,
+    /// The families embedding leaves out of a `.cdr` file, with the
+    /// reason, named under the box so the user knows why a font is not
+    /// in the file (#1219).
+    pub fonts_left_out: Vec<(String, tracedraw_cdr::write::LeftOut)>,
     /// What embedding the installed fonts the text uses adds to a
     /// `.tdraw` file, in bytes (0: none may be).
     pub tdraw_fonts_size: u64,
@@ -105,6 +109,7 @@ impl SaveAsState {
             .map(Path::to_path_buf)
             .filter(|d| files::is_dir(d))
             .or_else(|| app.settings.last_dir.clone().filter(|d| files::is_dir(d)))
+            .or_else(files::save_dir)
             .or_else(|| {
                 files::places()
                     .into_iter()
@@ -131,6 +136,7 @@ impl SaveAsState {
         let cdr = file.is_some_and(|f| crate::app::is_cdr_path(f))
             || app.cdr_version.is_some()
             || (file.is_none() && app.settings.formats.save_new_as_cdr);
+        let cdr_faces = crate::app::cdr_font_faces(doc);
         let mut st = SaveAsState {
             dir_text: dir.display().to_string(),
             dir: dir.clone(),
@@ -155,8 +161,9 @@ impl SaveAsState {
                 .map(|p| (p.name.clone(), p.data.len()))
                 .or_else(|| app.settings_cmyk_profile().map(|p| (p.name, p.data.len()))),
             embed_profile: app.cdr_embed_profile,
-            fonts_size: tracedraw_cdr::write::embedded_size(&crate::app::cdr_font_faces(doc)),
+            fonts_size: tracedraw_cdr::write::embedded_size(&cdr_faces),
             embed_fonts: app.cdr_embed_fonts,
+            fonts_left_out: tracedraw_cdr::write::left_out(&cdr_faces),
             tdraw_fonts_size: tracedraw_text::fonts()
                 .fonts_to_embed(doc)
                 .iter()
@@ -406,17 +413,10 @@ impl SaveAsState {
 }
 
 /// "v22 (2020)" for the version lists: the file version and the release
-/// that writes it; versions whose files are not yet known to open in other
-/// programs say they are experimental.
+/// that writes it.
 pub fn version_label(version: u16) -> String {
-    let checked = tracedraw_cdr::write::CHECKED_SINCE..=tracedraw_cdr::write::CHECKED_UNTIL;
-    let key = if !checked.contains(&version) {
-        "dialog.cdr_version_item_experimental"
-    } else {
-        "dialog.cdr_version_item"
-    };
     trf(
-        key,
+        "dialog.cdr_version_item",
         &[("v", &version.to_string()), ("name", release_name(version))],
     )
 }
@@ -473,10 +473,8 @@ pub fn tdraw_version_label(version: u32) -> String {
     format!("v{version} (TraceDraw {release})")
 }
 
-/// The `.cdr` versions offered, newest first: from the oldest checked to
-/// open in other programs (14; the other program's own list stops at 15).
-/// Older versions are still written by the command line and the MCP
-/// server, and Save keeps the version of a drawing opened from one.
+/// The `.cdr` versions offered, newest first: every version saved, 27
+/// down to 7.
 pub fn version_choices() -> Vec<u16> {
     (tracedraw_cdr::write::CHECKED_SINCE..=tracedraw_cdr::write::NEWEST_VERSION)
         .rev()
@@ -503,7 +501,7 @@ impl App {
         }
         // A folder typed in the path bar counts without Enter: Save
         // writes where the bar says (#900).
-        if !files::WEB {
+        if !files::WEB && !files::ANDROID {
             let typed = PathBuf::from(st.dir_text.trim());
             if st.dir_text.trim() != st.dir.display().to_string() && !st.dir_text.trim().is_empty()
             {
@@ -514,29 +512,42 @@ impl App {
                     return false;
                 }
             }
+            if !files::is_dir(&st.dir) {
+                st.note = Some(tr("dialog.no_such_folder"));
+                return false;
+            }
         }
-        if !files::WEB && !files::is_dir(&st.dir) {
-            st.note = Some(tr("dialog.no_such_folder"));
-            return false;
+        // On Android the system's picker chooses the place (and asks
+        // about replacing): the drawing is written when it answers, on
+        // a later frame, with the name and type chosen here.
+        if files::ANDROID {
+            self.apply_save_as_properties(st);
+            let cdr = st.cdr;
+            let version = st.version;
+            let (embed_profile, embed_fonts) = (st.embed_profile, st.embed_fonts);
+            let (tdraw_embed_fonts, tdraw_version) = (st.tdraw_embed_fonts, st.tdraw_version);
+            files::Dialog::new()
+                .add_filter(st.extension().to_uppercase(), &[st.extension()])
+                .set_file_name(st.file_name())
+                .save_file(self, move |app, path| {
+                    if cdr {
+                        app.cdr_embed_profile = embed_profile;
+                        app.cdr_embed_fonts = embed_fonts;
+                        app.save_cdr_to(path, version);
+                    } else {
+                        app.tdraw_embed_fonts = tdraw_embed_fonts;
+                        app.tdraw_version = Some(tdraw_version);
+                        app.save_to(path);
+                    }
+                });
+            return true;
         }
         let path = st.target();
         if files::exists(&path) && st.replace.as_ref() != Some(&path) {
             st.replace = Some(path);
             return false;
         }
-        // The properties go with the file (one undo step each).
-        if st.title.trim() != self.doc().title {
-            self.run(Command::SetTitle {
-                title: st.title.trim().to_string(),
-            });
-        }
-        let md = &self.doc().metadata;
-        if md.subject != st.subject || md.rating != st.rating {
-            let mut metadata = md.clone();
-            metadata.subject = st.subject.clone();
-            metadata.rating = st.rating.min(5);
-            self.run(Command::SetMetadata { metadata });
-        }
+        self.apply_save_as_properties(st);
         if !files::WEB {
             self.settings.last_dir = Some(st.dir.clone());
         }
@@ -555,6 +566,23 @@ impl App {
         }
         true
     }
+
+    /// The properties of the Save Drawing dialog go with the file (one
+    /// undo step each).
+    fn apply_save_as_properties(&mut self, st: &SaveAsState) {
+        if st.title.trim() != self.doc().title {
+            self.run(Command::SetTitle {
+                title: st.title.trim().to_string(),
+            });
+        }
+        let md = &self.doc().metadata;
+        if md.subject != st.subject || md.rating != st.rating {
+            let mut metadata = md.clone();
+            metadata.subject = st.subject.clone();
+            metadata.rating = st.rating.min(5);
+            self.run(Command::SetMetadata { metadata });
+        }
+    }
 }
 
 /// The shortcut's name.
@@ -569,6 +597,29 @@ fn place_name(place: Place, path: &Path) -> String {
     }
 }
 
+/// The note under Embed fonts naming the families the `.cdr` file will
+/// not carry and why ("Not embedded: Raj 50 (its licence forbids
+/// embedding)"); none when every face may be embedded (#1219).
+pub fn fonts_left_out_text(left_out: &[(String, tracedraw_cdr::write::LeftOut)]) -> Option<String> {
+    if left_out.is_empty() {
+        return None;
+    }
+    let fonts: Vec<String> = left_out
+        .iter()
+        .map(|(family, why)| {
+            let key = match why {
+                tracedraw_cdr::write::LeftOut::Licence => "dialog.embed_font_licence",
+                tracedraw_cdr::write::LeftOut::NoFile => "dialog.embed_font_no_file",
+            };
+            trf(key, &[("font", family)])
+        })
+        .collect();
+    Some(trf(
+        "dialog.embed_fonts_left_out",
+        &[("fonts", &fonts.join(", "))],
+    ))
+}
+
 /// A size as the list shows it: KB from 1 KB, MB from 1 MB.
 pub fn size_text(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
@@ -581,7 +632,9 @@ pub fn size_text(bytes: u64) -> String {
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bool) {
     window(ctx, tr("dialog.save_drawing")).show(ctx, |ui| {
         ui.set_width(WIDTH);
-        if !files::WEB {
+        // No folders in a browser (a download) or on Android (the
+        // system's picker chooses the place when Save is pressed).
+        if !files::WEB && !files::ANDROID {
             folder_bar(ui, st);
             ui.add_space(4.0);
             // The shortcuts and the list keep a fixed height (a vertical
@@ -603,6 +656,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
         }
         if files::WEB {
             ui.label(RichText::new(tr("dialog.download_hint")).color(Tokens::text_dim()));
+        }
+        if files::ANDROID {
+            ui.label(RichText::new(tr("dialog.android_save_hint")).color(Tokens::text_dim()));
         }
         ui.add_space(6.0);
         if let Some(path) = st.replace.clone() {
@@ -1055,6 +1111,11 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                         .changed()
                     {
                         st.embed_fonts = on;
+                    }
+                    // The fonts the file will not carry, and why, so a
+                    // box without a size is not a mystery (#1219).
+                    if let Some(note) = fonts_left_out_text(&st.fonts_left_out) {
+                        ui.label(RichText::new(note).small().color(Tokens::text_dim()));
                     }
                 });
             });
@@ -1519,47 +1580,34 @@ mod tests {
         app.save(false);
         assert!(state(&mut app).cdr);
         app.dialog = Dialog::None;
-        // An older version: Save does not write it, it says so and Save As
-        // opens on the oldest version saved.
+        // Versions 7 to 13 are saved like the others: a version 9 drawing
+        // keeps its version and Save As offers it.
         let old = dir.join("old.cdr");
         std::fs::write(&old, tracedraw_cdr::write::document_to_cdr_version(&doc, 9))
             .expect("written");
         app.open_path(old.clone());
-        assert_eq!(app.cdr_unsaved_version, Some(9));
-        assert_eq!(app.cdr_version, Some(tracedraw_cdr::write::CHECKED_SINCE));
-        assert!(app.status.contains("14"), "{}", app.status);
-        app.save(false);
-        assert!(
-            matches!(app.dialog, Dialog::OldCdrVersion { version: 9 }),
-            "{:?}",
-            app.dialog
-        );
-        assert_eq!(version_of(&old), Some(9), "the file is not written");
-        app.save_as_from_old_cdr();
+        assert_eq!(app.cdr_unsaved_version, None);
+        assert_eq!(app.cdr_version, Some(9));
+        app.save_as_dialog();
         let st = state(&mut app);
-        assert!(st.cdr && st.version == 14, "{st:?}");
+        assert!(st.cdr && st.version == 9, "{st:?}");
         st.open_dir(dir.clone());
         st.name = "copy".into();
         let mut st = st.clone();
         assert!(app.finish_save_as(&mut st));
         app.dialog = Dialog::None;
-        assert_eq!(version_of(&dir.join("copy.cdr")), Some(14));
-        // From then on Save writes that version without asking.
-        assert_eq!(app.cdr_unsaved_version, None);
-        app.engine.mark_unsaved();
-        app.save(false);
-        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(version_of(&dir.join("copy.cdr")), Some(9));
         // Versions too old or too new become the nearest saved.
         app.cdr_version = Some(3);
         assert_eq!(app.cdr_save_version(), tracedraw_cdr::write::CHECKED_SINCE);
         app.cdr_version = Some(99);
         assert_eq!(app.cdr_save_version(), tracedraw_cdr::write::CHECKED_UNTIL);
         assert_eq!(version_choices().first(), Some(&27));
-        assert_eq!(version_choices().last(), Some(&14));
+        assert_eq!(version_choices().last(), Some(&7));
         assert!(version_label(15).contains("15"));
         assert!(version_label(13).contains("X3"));
         assert!(version_label(27).contains("2026"));
-        // Versions not yet checked in other programs say so.
+        // Every version is labelled the same way.
         let plain = |v: u16| {
             version_label(21)
                 .replace("21", &v.to_string())
@@ -1569,7 +1617,8 @@ mod tests {
         assert_eq!(version_label(16), plain(16));
         assert_eq!(version_label(15), plain(15));
         assert_eq!(version_label(14), plain(14));
-        assert_ne!(version_label(13), plain(13));
+        assert_eq!(version_label(13), plain(13));
+        assert_eq!(version_label(7), plain(7));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1800,5 +1849,27 @@ mod tests {
         st.cdr = true;
         assert!(!st.packaged());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The note under Embed fonts names each family left out with its
+    /// reason, and is absent when every face may be embedded (#1219).
+    #[test]
+    fn the_fonts_left_out_are_named_with_their_reason() {
+        use tracedraw_cdr::write::LeftOut;
+        assert_eq!(fonts_left_out_text(&[]), None);
+        let note = fonts_left_out_text(&[
+            ("Raj 50".to_string(), LeftOut::Licence),
+            ("Missing Sans".to_string(), LeftOut::NoFile),
+        ])
+        .expect("a note");
+        assert!(
+            note.contains("Raj 50 (its licence forbids embedding)"),
+            "{note}"
+        );
+        assert!(
+            note.contains("Missing Sans (no font file to embed)"),
+            "{note}"
+        );
+        assert!(note.starts_with("Not embedded: "), "{note}");
     }
 }

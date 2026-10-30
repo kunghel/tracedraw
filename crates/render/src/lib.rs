@@ -3228,6 +3228,50 @@ mod tests {
         (doc, page)
     }
 
+    /// A bevel drawn over a mid-grey square: the band on the light side is
+    /// lighter than the fill and the one opposite darker, and with more
+    /// levels the tone fades from the edge inwards (#1135).
+    #[test]
+    fn a_bevel_is_lit_on_one_side_and_fades_with_its_levels() {
+        use tracedraw_core::geometry::Rect;
+        use tracedraw_core::live::Effect;
+        let bevelled = |style: u8, level: u8| {
+            let mut s = rect(
+                1,
+                Rect::new(20.0, 20.0, 80.0, 80.0),
+                Color::rgb8(128, 128, 128),
+            );
+            s.effects.push(Effect::Bevel {
+                distance: 12.0,
+                light_angle: 180.0,
+                intensity: 100.0,
+                style,
+                shadow_color: Color::BLACK,
+                light_color: Color::WHITE,
+                level,
+                emboss_color: None,
+            });
+            let (doc, page) = doc_with(vec![s]);
+            let pm = render_page_image(&doc, page, 25.4).expect("render");
+            if let Ok(dir) = std::env::var("TRACEDRAW_TEST_PNG") {
+                let _ = pm.save_png(format!("{dir}/bevel-{style}-{level}.png"));
+            }
+            pm
+        };
+        // Light from the left (angle 180): the left band is lit, the right shaded.
+        let flat = bevelled(0, 1);
+        assert!(px(&flat, 22, 50).0 > 200, "{:?}", px(&flat, 22, 50));
+        assert!(px(&flat, 78, 50).0 < 60, "{:?}", px(&flat, 78, 50));
+        assert_eq!(px(&flat, 50, 50), (128, 128, 128));
+        let soft = bevelled(0, 4);
+        let (edge, inner) = (px(&soft, 21, 50).0, px(&soft, 30, 50).0);
+        assert!(edge > inner && inner > 128, "{edge} {inner}");
+        // Emboss lies outside the square.
+        let emboss = bevelled(1, 1);
+        assert!(px(&emboss, 12, 50).0 > 200, "{:?}", px(&emboss, 12, 50));
+        assert_eq!(px(&emboss, 50, 50), (128, 128, 128));
+    }
+
     /// A white-to-black gradient on a wide rectangle, turned half a turn,
     /// mirrored or turned a quarter turn through the engine, is drawn
     /// turned, mirrored and turned with it (#775).

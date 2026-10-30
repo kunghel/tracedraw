@@ -14,9 +14,19 @@ dynamiczny, ustawiany w panelu [[docker.bevel]]; otwórz go poleceniem
    - [[docker.soft_edge]]: krawędź opada ku wnętrzu obiektu, oświetlona z jednej
      strony i zacieniona z drugiej;
    - [[docker.emboss]]: obiekt wydaje się wytłoczony ze strony.
-3. Ustaw wartości [[docker.distance]] (jak daleko fazowanie sięga w głąb
-   obiektu), [[docker.light_angle]], [[docker.intensity]] światła,
-   [[docker.shadow_color]] i [[docker.light_color]].
+3. Ustaw wygląd fazowania:
+   - [[docker.depth]]: jak daleko fazowanie sięga od krawędzi, w głąb
+     obiektu przy miękkiej krawędzi i na zewnątrz przy płaskorzeźbie;
+   - [[docker.level]]: na ile kroków światło i cień są podzielone wzdłuż
+     fazowania. 1 daje dwa płaskie odcienie, więcej kroków płynnie je
+     przechodzi od krawędzi do wnętrza;
+   - [[docker.light_angle]]: kierunek, z którego pada światło;
+   - [[docker.intensity]]: siła światła i cienia;
+   - [[docker.light_color]] i [[docker.shadow_color]]: kolory oświetlonej
+     i zacienionej strony;
+   - [[docker.emboss_color]]: kolor, z którego tonowane jest fazowanie.
+     Zaznacz pole i wybierz własny kolor; wyłączony: używane jest
+     wypełnienie obiektu.
 4. Kliknij [[docker.apply]].
 
 Aby skopiować fazowanie z innego obiektu, użyj

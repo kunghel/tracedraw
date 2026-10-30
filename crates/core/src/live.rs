@@ -107,15 +107,26 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "crate::extrude3d::Solid::is_plain")]
         space: crate::extrude3d::Solid,
     },
-    /// Bevel inside the outline: an inset band lit from `light_angle`.
+    /// Bevel: a band of `distance` lit from `light_angle`, inside the
+    /// outline (soft edge) or around it (emboss).
     Bevel {
         distance: f64,
         light_angle: f64,
         intensity: f64,
-        /// Soft edge (0) or emboss (1).
+        /// Soft edge (0, the band inside the outline) or emboss (1, the
+        /// band around it, so the object stands out of the page).
         style: u8,
         shadow_color: Color,
         light_color: Color,
+        /// How many steps the band is cut into: 1 is two flat tones, more
+        /// fade the light and the shade across the band, strongest at its
+        /// outer edge. Older files have 1.
+        #[serde(default = "one_level")]
+        level: u8,
+        /// The colour the band is toned from, in place of the object's
+        /// own fill; older files use the fill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emboss_color: Option<Color>,
     },
     /// Block shadow: a solid extrusion behind the object.
     BlockShadow {
@@ -981,22 +992,8 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
                     }
                 }
             }
-            Effect::Bevel {
-                distance,
-                light_angle,
-                intensity,
-                style: _,
-                shadow_color,
-                light_color,
-            } => {
-                above.extend(bevel(
-                    &main,
-                    *distance,
-                    *light_angle,
-                    *intensity,
-                    *shadow_color,
-                    *light_color,
-                ));
+            e @ Effect::Bevel { .. } => {
+                above.extend(bevel(&main, e));
             }
             Effect::BlockShadow { offset, color, gap } => {
                 below.extend(block_shadow(&main, *offset, *color, *gap));
@@ -1167,9 +1164,31 @@ pub struct ContourParams {
     pub accel_colors: f64,
 }
 
+/// Where the middle step of a blend with acceleration `a` (-1 to 1)
+/// lands, as a share of the way from the start: `0.5 - 0.45 a`, so at
+/// +1 it is 5 % from the start and at -1 5 % from the end, the same
+/// distance either way (#1261: the exponent `1 + a` put it 25 % from
+/// the start at +1 and 3 % from the end at -1, so the slider went all
+/// the way on one side only).
+pub fn blend_middle(a: f64) -> f64 {
+    let a = if a.is_finite() {
+        a.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    0.5 - 0.45 * a
+}
+
+/// The exponent a blend's steps take for acceleration `a`: step `t` is
+/// placed at `t ^ blend_exponent(a)`, the middle step at
+/// [`blend_middle`]`(a)`.
+pub fn blend_exponent(a: f64) -> f64 {
+    blend_middle(a).ln() / 0.5f64.ln()
+}
+
 /// `t` (0 to 1) bent by an acceleration `a` (-1 to 1): `t ^ 4^a`, so a
 /// positive acceleration packs the steps toward the start and a negative
-/// one toward the end.
+/// one toward the end (contours).
 pub fn accelerate(t: f64, a: f64) -> f64 {
     let a = if a.is_finite() {
         a.clamp(-1.0, 1.0)
@@ -1322,8 +1341,8 @@ fn blend(
         } else {
             (i + 1) as f64 / (n + 1) as f64
         };
-        let to = t.powf((1.0 + accel_objects).max(0.05));
-        let tc = t.powf((1.0 + accel_colors).max(0.05));
+        let to = t.powf(blend_exponent(accel_objects));
+        let tc = t.powf(blend_exponent(accel_colors));
         let mut s = start.clone();
         s.effects.clear();
         s.shadow = None;
@@ -1530,28 +1549,63 @@ pub fn extrude_body(
     })
 }
 
-fn bevel(
-    shape: &Shape,
-    distance: f64,
-    light_angle: f64,
-    intensity: f64,
-    shadow: Color,
-    light: Color,
-) -> Vec<Shape> {
-    let outer = shape.local_path();
-    let inner = crate::shaping::offset(&outer, -distance.abs());
-    if inner.elements().is_empty() {
+/// The most steps a bevel band is cut into.
+pub const MAX_BEVEL_LEVEL: u8 = 8;
+
+fn one_level() -> u8 {
+    1
+}
+
+/// The shapes a [`Effect::Bevel`] draws over `shape`: the band cut into
+/// `level` steps, each split into a lit and a shaded half by the light
+/// direction. Soft edge puts the band inside the outline, emboss around it.
+fn bevel(shape: &Shape, effect: &Effect) -> Vec<Shape> {
+    let Effect::Bevel {
+        distance,
+        light_angle,
+        intensity,
+        style,
+        shadow_color,
+        light_color,
+        level,
+        emboss_color,
+    } = effect
+    else {
         return Vec::new();
-    }
-    // The band between outer and inner, split into lit and shaded halves
-    // by the light direction: approximate with two overlapping bands.
-    let band = crate::shaping::overlay(&outer, &inner, crate::shaping::Op::Trim);
-    let base = shape.fill.preview_color().unwrap_or(Color::WHITE);
+    };
+    let path = shape.local_path();
+    let width = if distance.is_finite() {
+        distance.abs()
+    } else {
+        return Vec::new();
+    };
+    let steps = (*level).clamp(1, MAX_BEVEL_LEVEL) as usize;
+    // Offsets of the step boundaries, from the band's outer edge in.
+    let reach = |j: usize| {
+        let t = j as f64 / steps as f64;
+        if *style == 1 {
+            width * (1.0 - t)
+        } else {
+            -width * t
+        }
+    };
+    let edge = |j: usize| {
+        let d = reach(j);
+        if d == 0.0 {
+            path.clone()
+        } else {
+            crate::shaping::offset(&path, d)
+        }
+    };
+    let base = emboss_color
+        .or_else(|| shape.fill.preview_color())
+        .unwrap_or(Color::WHITE);
     let k = (intensity / 100.0).clamp(0.0, 1.0);
     let ldir = Vec2::new(
         light_angle.to_radians().cos(),
         light_angle.to_radians().sin(),
     );
+    let mut outer = edge(0);
     let b = outer.bounding_box();
     let c = b.center();
     // Lit half: the part of the band on the light side of the centre line.
@@ -1562,26 +1616,36 @@ fn bevel(
         c + Vec2::new(ldir.y, -ldir.x) * big.width() * 2.0 + ldir * big.width() * 2.0,
         c + Vec2::new(-ldir.y, ldir.x) * big.width() * 2.0 + ldir * big.width() * 2.0,
     ]);
-    let lit = crate::shaping::overlay(&band, &half, crate::shaping::Op::Intersect);
-    let dark = crate::shaping::overlay(&band, &half, crate::shaping::Op::Trim);
     let mut out = Vec::new();
-    for (p, col) in [
-        (lit, lerp_color(base, light, k as f32)),
-        (dark, lerp_color(base, shadow, k as f32)),
-    ] {
-        if p.elements().is_empty() {
-            continue;
+    for i in 0..steps {
+        let inner = edge(i + 1);
+        if outer.elements().is_empty() || inner.elements().is_empty() {
+            break;
         }
-        let mut s = shape.clone();
-        s.effects.clear();
-        s.shadow = None;
-        s.stroke = None;
-        s.kind = ShapeKind::Path {
-            path: p,
-            closed: true,
-        };
-        s.fill = Fill::Solid(col);
-        out.push(s);
+        let band = crate::shaping::overlay(&outer, &inner, crate::shaping::Op::Trim);
+        // The light fades from the band's outer edge inwards.
+        let strength = (k * (steps - i) as f64 / steps as f64) as f32;
+        let lit = crate::shaping::overlay(&band, &half, crate::shaping::Op::Intersect);
+        let dark = crate::shaping::overlay(&band, &half, crate::shaping::Op::Trim);
+        for (p, col) in [
+            (lit, lerp_color(base, *light_color, strength)),
+            (dark, lerp_color(base, *shadow_color, strength)),
+        ] {
+            if p.elements().is_empty() {
+                continue;
+            }
+            let mut s = shape.clone();
+            s.effects.clear();
+            s.shadow = None;
+            s.stroke = None;
+            s.kind = ShapeKind::Path {
+                path: p,
+                closed: true,
+            };
+            s.fill = Fill::Solid(col);
+            out.push(s);
+        }
+        outer = inner;
     }
     out
 }
@@ -2201,6 +2265,138 @@ mod tests {
         s
     }
 
+    fn bevelled(style: u8) -> Evaluated {
+        let mut s = rect_shape();
+        s.effects.push(Effect::Bevel {
+            distance: 2.0,
+            light_angle: 135.0,
+            intensity: 50.0,
+            style,
+            shadow_color: Color::BLACK,
+            light_color: Color::WHITE,
+            level: 1,
+            emboss_color: None,
+        });
+        evaluate(&s)
+    }
+
+    #[test]
+    fn soft_edge_bevel_stays_inside_the_outline() {
+        let ev = bevelled(0);
+        assert!(!ev.above.is_empty());
+        for part in &ev.above {
+            let b = part.bounds();
+            assert!(
+                b.x0 >= -1e-6 && b.x1 <= 20.0 + 1e-6 && b.y0 >= -1e-6 && b.y1 <= 20.0 + 1e-6,
+                "{b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn emboss_bevel_surrounds_the_outline() {
+        let soft = bevelled(0);
+        let emboss = bevelled(1);
+        assert!(!emboss.above.is_empty());
+        let mut reach = Rect::new(0.0, 0.0, 20.0, 20.0);
+        for part in &emboss.above {
+            reach = reach.union(part.bounds());
+        }
+        // The band stands out of the object by the distance.
+        assert!(
+            (reach.x0 + 2.0).abs() < 0.1 && (reach.x1 - 22.0).abs() < 0.1,
+            "{reach:?}"
+        );
+        // And it differs from the soft edge.
+        assert_ne!(
+            emboss.above.iter().map(|p| p.bounds()).collect::<Vec<_>>(),
+            soft.above.iter().map(|p| p.bounds()).collect::<Vec<_>>()
+        );
+    }
+
+    fn bevel_with(level: u8, emboss_color: Option<Color>) -> Evaluated {
+        let mut s = rect_shape();
+        s.effects.push(Effect::Bevel {
+            distance: 3.0,
+            light_angle: 135.0,
+            intensity: 80.0,
+            style: 0,
+            shadow_color: Color::BLACK,
+            light_color: Color::WHITE,
+            level,
+            emboss_color,
+        });
+        evaluate(&s)
+    }
+
+    fn colours(ev: &Evaluated) -> Vec<Color> {
+        ev.above
+            .iter()
+            .filter_map(|p| p.fill.preview_color())
+            .collect()
+    }
+
+    #[test]
+    fn bevel_levels_fade_the_light_across_the_band() {
+        let flat = colours(&bevel_with(1, None));
+        let stepped = colours(&bevel_with(4, None));
+        assert_eq!(flat.len(), 2, "one lit and one shaded tone");
+        assert!(stepped.len() > flat.len());
+        let mut distinct = stepped.clone();
+        distinct.dedup();
+        assert!(distinct.len() > 2, "{stepped:?}");
+        // The steps stay inside the first level's band.
+        for part in &bevel_with(4, None).above {
+            let b = part.bounds();
+            assert!(b.x0 >= -1e-6 && b.x1 <= 20.0 + 1e-6, "{b:?}");
+        }
+    }
+
+    #[test]
+    fn bevel_level_is_clamped() {
+        let many = bevel_with(200, None);
+        assert!(many.above.len() <= 2 * usize::from(MAX_BEVEL_LEVEL));
+        assert_eq!(
+            bevel_with(0, None).above.len(),
+            bevel_with(1, None).above.len()
+        );
+    }
+
+    #[test]
+    fn the_emboss_colour_replaces_the_fill_as_the_base_of_the_band() {
+        let own = colours(&bevel_with(1, None));
+        let blue = Color::rgb8(0, 0, 255);
+        let set = colours(&bevel_with(1, Some(blue)));
+        assert_eq!(own.len(), set.len());
+        assert_ne!(own, set);
+    }
+
+    #[test]
+    fn older_bevels_load_as_one_level_on_the_fill() {
+        let json = serde_json::to_string(&Effect::Bevel {
+            distance: 2.0,
+            light_angle: 135.0,
+            intensity: 50.0,
+            style: 0,
+            shadow_color: Color::BLACK,
+            light_color: Color::WHITE,
+            level: 1,
+            emboss_color: None,
+        })
+        .unwrap_or_default();
+        // The new fields are left out while they hold their defaults ...
+        assert!(!json.contains("emboss_color"), "{json}");
+        // ... and a bevel saved without them reads back with them.
+        match serde_json::from_str::<Effect>(&json.replace(",\"level\":1", "")) {
+            Ok(Effect::Bevel {
+                level,
+                emboss_color,
+                ..
+            }) => assert_eq!((level, emboss_color), (1, None)),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn block_shadow_keeps_corners_sharp() {
         let mut s = rect_shape();
@@ -2405,6 +2601,52 @@ mod tests {
         );
         assert!((accelerate(0.5, 0.0) - 0.5).abs() < 1e-12);
         assert!(accelerate(0.5, 1.0) < 0.1 && accelerate(0.5, -1.0) > 0.8);
+    }
+
+    /// A blend's acceleration moves its middle step as far toward the
+    /// start at +1 as toward the end at -1 (#1261).
+    #[test]
+    fn blend_acceleration_goes_as_far_either_way() {
+        assert!((blend_exponent(0.0) - 1.0).abs() < 1e-12);
+        let at = |a: f64| 0.5f64.powf(blend_exponent(a));
+        assert!((at(1.0) - 0.05).abs() < 1e-9);
+        assert!((at(-1.0) - 0.95).abs() < 1e-9);
+        assert!((at(0.5) + at(-0.5) - 1.0).abs() < 1e-9);
+        assert!((blend_exponent(f64::NAN) - 1.0).abs() < 1e-12);
+        assert!((at(7.0) - 0.05).abs() < 1e-9, "held to the range");
+        // Two squares 100 mm apart blended with one step: the step's
+        // centre lands where the middle step should, either way.
+        let square = |id: u64, x: f64| {
+            let mut s = Shape::new(
+                crate::ShapeId(id),
+                ShapeKind::Rect {
+                    rect: Rect::new(x, 0.0, x + 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(Color::BLACK);
+            s
+        };
+        let steps_at = |accel: f64| -> f64 {
+            let start = square(1, 0.0);
+            let end = square(2, 100.0);
+            let steps = blend(
+                &start,
+                &end,
+                1,
+                (accel, 0.0),
+                0.0,
+                None,
+                false,
+                &BlendOptions::default(),
+            );
+            assert_eq!(steps.len(), 1);
+            steps[0].bounds().center().x
+        };
+        assert!((steps_at(0.0) - 55.0).abs() < 1e-6, "{}", steps_at(0.0));
+        assert!((steps_at(1.0) - 10.0).abs() < 1e-6, "{}", steps_at(1.0));
+        assert!((steps_at(-1.0) - 100.0).abs() < 1e-6, "{}", steps_at(-1.0));
     }
 
     #[test]
@@ -3160,7 +3402,9 @@ mod tests {
         let plain = blend(BlendOptions::default(), None, 90.0);
         let turned = blend(looped, None, 90.0);
         let (p0, t0) = (plain[0].bounds().center(), turned[0].bounds().center());
-        assert!((p0.y - t0.y).abs() > 3.0, "{p0:?} {t0:?}");
+        // (At acceleration 0.5 the first step turns by a sixth of the
+        // way, so its centre moves about 3 mm.)
+        assert!((p0.y - t0.y).abs() > 2.0, "{p0:?} {t0:?}");
         // Sizing: toward a bigger end object, acceleration 0.5 keeps the
         // steps smaller than the even blend makes them.
         let mut big = b.clone();

@@ -2,16 +2,40 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>TraceDraw: open-source vector editor</title>
   <meta name="description" content="TraceDraw is an open-source vector editor written in Rust that opens .cdr files, here running in the browser. Alpha.">
+  <!-- Installable as an app on tablets and desktops (web/manifest.webmanifest,
+       web/sw.js; docs/behavior/web.md, "Installing on a tablet"). -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#1a3158">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="TraceDraw">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="icon" type="image/png" href="icon-256.png">
+  <!-- The script and the module start downloading together, not the module
+       after the script has run. -->
+  <link rel="modulepreload" href="./tracedraw.js">
+  <link rel="preload" href="./tracedraw_bg.wasm" as="fetch" type="application/wasm" crossorigin>
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #d4d4d4; }
-    canvas#tracedraw { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    /* The canvas keeps clear of a tablet's rounded corners, camera notch
+       and status bar when the page fills the screen as an installed app
+       (viewport-fit=cover): eframe sizes the editor from the canvas's
+       box, so the editor's bars stay where a finger can reach them. */
+    canvas#tracedraw {
+      position: absolute; outline: none;
+      top: env(safe-area-inset-top, 0px); left: env(safe-area-inset-left, 0px);
+      width: calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+      height: calc(100% - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    }
     #loading {
       position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 14px; box-sizing: border-box; padding: 16px; overflow: auto;
+      justify-content: center; gap: 14px; box-sizing: border-box; overflow: auto;
+      padding: calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px))
+        calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
       font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #3a3a3a; text-align: center;
     }
     #splash {
@@ -107,53 +131,54 @@
       bar.setAttribute("width", (FULL * Math.max(0, Math.min(1, fraction))).toFixed(1));
     };
 
-    // The module, downloaded here rather than by init() so the splash can
+    // The module, fetched here rather than by init() so the splash can
     // show how far along it is. The download fills the bar to 90 %; the
-    // start fills the rest.
+    // start fills the rest. The bytes go on to the browser as they come, in
+    // a response of their own, so that it compiles the module while it
+    // downloads instead of after (init() takes a response and streams it).
     async function download() {
       const res = await fetch(new URL("tracedraw_bg.wasm", import.meta.url));
       if (!res.ok) {
         throw new Error("the editor could not be downloaded (HTTP " + res.status + ")");
       }
       if (!res.body || !res.body.getReader) {
-        return new Uint8Array(await res.arrayBuffer());
+        return res;
       }
       const reader = res.body.getReader();
-      const parts = [];
       let got = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        parts.push(value);
-        got += value.length;
-        if (total) {
-          const pct = Math.min(100, Math.floor((got * 100) / total));
-          fill(0.9 * got / total);
-          say("Loading TraceDraw: " + mb(got) + " of " + mb(total) + " MB (" + pct + "%)");
-        } else {
-          // Without the size, the bar creeps towards 90 % as the
-          // megabytes come in.
-          fill(0.9 * (1 - Math.exp(-got / 20971520)));
-          say("Loading TraceDraw: " + mb(got) + " MB");
-        }
-      }
-      const bytes = new Uint8Array(got);
-      let at = 0;
-      for (const p of parts) {
-        bytes.set(p, at);
-        at += p.length;
-      }
-      return bytes;
+      const counted = new ReadableStream({
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) {
+            say("Preparing the workspace...");
+            fill(0.95);
+            controller.close();
+            return;
+          }
+          got += value.length;
+          if (total) {
+            const pct = Math.min(100, Math.floor((got * 100) / total));
+            fill(0.9 * got / total);
+            say("Loading TraceDraw: " + mb(got) + " of " + mb(total) + " MB (" + pct + "%)");
+          } else {
+            // Without the size, the bar creeps towards 90 % as the
+            // megabytes come in.
+            fill(0.9 * (1 - Math.exp(-got / 20971520)));
+            say("Loading TraceDraw: " + mb(got) + " MB");
+          }
+          controller.enqueue(value);
+        },
+        cancel(reason) {
+          return reader.cancel(reason);
+        },
+      });
+      return new Response(counted, { headers: { "Content-Type": "application/wasm" } });
     }
 
     async function start() {
       try {
-        const bytes = await download();
-        say("Preparing the workspace...");
-        fill(0.95);
-        await init({ module_or_path: bytes });
+        const response = await download();
+        await init({ module_or_path: response });
       } catch (e) {
         say("TraceDraw could not start");
         bar.setAttribute("fill", "#e0533d");
@@ -163,6 +188,20 @@
     }
 
     start();
+
+    // The service worker (sw.js) keeps this deploy's page, script and
+    // module, so the editor starts without a network once it has been
+    // opened once and the page can be installed as an app. Registered once
+    // the page has loaded, so it does not compete with the module's
+    // download; a page served from disk, or over plain http away from
+    // localhost, gets none and works as before.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch((e) => {
+          console.warn("TraceDraw: no service worker: " + e);
+        });
+      });
+    }
   </script>
 </body>
 </html>

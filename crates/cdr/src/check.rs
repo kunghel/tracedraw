@@ -16,7 +16,12 @@
 //! - text: every text object has a `txsm` record with at least one
 //!   paragraph, and every paragraph and run holds at least one letter;
 //! - references: every fill id, outline id and style id an object or a
-//!   text paragraph names exists in the tables.
+//!   text paragraph names exists in the tables, and a clip container's
+//!   argument 8005 names a group of the document's `LIST clpt` (whose
+//!   objects carry no `usdn`, as files have them);
+//! - blends: a blend's linked group (`LIST lnkg` of object type 7 with a
+//!   step argument) stands between two objects of its list, its ends,
+//!   has a `usdn` of its own and a step count of 1 to 999 (#1192).
 //!
 //! Files of other programs may show findings on purpose (the `obbx` of a
 //! turned object, a text the reader cannot decode); the checker is tuned
@@ -65,12 +70,16 @@ pub fn check_bytes(bytes: &[u8]) -> Result<Vec<Finding>> {
         fills: HashSet::new(),
         outlines: HashSet::new(),
         styles: HashSet::new(),
+        images: HashSet::new(),
         usdn: HashMap::new(),
         spnd: HashMap::new(),
         objects: 0,
+        clip_groups: HashSet::new(),
+        in_clip: HashSet::new(),
     };
     c.tables();
     c.objects();
+    c.linked_groups();
     Ok(c.findings)
 }
 
@@ -82,10 +91,16 @@ struct Checker<'a> {
     fills: HashSet<u32>,
     outlines: HashSet<u32>,
     styles: HashSet<u32>,
+    /// The ids of the `bmp ` records.
+    images: HashSet<u32>,
     /// `usdn` number to the place that holds it.
     usdn: HashMap<u32, String>,
     spnd: HashMap<u32, String>,
     objects: usize,
+    /// The `spnd` numbers of the groups of `LIST clpt` (clip contents).
+    clip_groups: HashSet<u32>,
+    /// The lists inside `LIST clpt`, whose objects carry no `usdn`.
+    in_clip: HashSet<*const Chunk>,
 }
 
 fn u32_at(d: &[u8], at: usize) -> Option<u32> {
@@ -158,10 +173,10 @@ impl std::fmt::Display for Box {
 }
 
 /// A `loda` record's arguments: (type, body).
-type Args<'a> = Vec<(u32, &'a [u8])>;
+pub(crate) type Args<'a> = Vec<(u32, &'a [u8])>;
 
 /// A `loda` record's object kind and arguments.
-fn loda_args(d: &[u8]) -> Option<(u32, Args<'_>)> {
+pub(crate) fn loda_args(d: &[u8]) -> Option<(u32, Args<'_>)> {
     let count = u32_at(d, 4)? as usize;
     let offsets = u32_at(d, 8)? as usize;
     let types = u32_at(d, 12)? as usize;
@@ -232,20 +247,32 @@ impl<'a> Checker<'a> {
         self.tree.data(self.main, c)
     }
 
-    /// The fill, outline and style tables.
+    /// The fill, outline, style and bitmap tables.
     fn tables(&mut self) {
         let mut fills = Vec::new();
         let mut outlines = Vec::new();
+        let mut images = Vec::new();
         let mut stlt = None;
         self.tree.root.walk(&mut |c, _| {
             if c.is(b"fild") {
                 fills.push(self.data(c));
             } else if c.is(b"outl") {
                 outlines.push(self.data(c));
+            } else if c.is(b"bmp ") {
+                images.push(self.data(c));
             } else if c.is(b"stlt") && stlt.is_none() {
                 stlt = Some(self.data(c));
             }
         });
+        for d in images {
+            match u32_at(d, 0) {
+                Some(id) if !self.images.insert(id) => {
+                    self.note("bmp ", format!("image id {id} used by two records"));
+                }
+                Some(_) => {}
+                None => self.note("bmp ", "record shorter than its id"),
+            }
+        }
         for (name, records) in [("fild", &fills), ("outl", &outlines)] {
             let mut seen = HashSet::new();
             for d in records {
@@ -282,11 +309,26 @@ impl<'a> Checker<'a> {
     /// Every object and group list of every page.
     fn objects(&mut self) {
         let mut lists = Vec::new();
+        let mut clips = Vec::new();
         self.tree.root.walk(&mut |c, _| {
             if c.is(b"obj ") || c.is(b"grp ") {
                 lists.push(c);
+            } else if c.is(b"clpt") {
+                clips.push(c);
             }
         });
+        for clip in clips {
+            for g in clip.children.iter().filter(|g| g.is(b"grp ")) {
+                if let Some(n) = g.find(b"spnd").and_then(|s| u32_at(self.data(s), 0)) {
+                    self.clip_groups.insert(n);
+                }
+            }
+            clip.walk(&mut |c, _| {
+                if c.is(b"obj ") || c.is(b"grp ") {
+                    self.in_clip.insert(c as *const Chunk);
+                }
+            });
+        }
         for c in lists {
             self.objects += 1;
             let n = self.objects;
@@ -299,6 +341,71 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Every blend's linked group of every page (#1192): an empty `LIST
+    /// lnkg` whose `loda` is of object type 7 with a step argument. A
+    /// reader takes the objects just before and after it in the list as
+    /// its ends, so both must be there; the step count is 1 to 999 (what
+    /// the program saves; another value reads as another layout); its
+    /// `usdn` counts among the objects'.
+    fn linked_groups(&mut self) {
+        fn collect<'a>(c: &'a Chunk, out: &mut Vec<(&'a Chunk, usize)>) {
+            for (i, k) in c.children.iter().enumerate() {
+                if k.is(b"lnkg") {
+                    out.push((c, i));
+                }
+                collect(k, out);
+            }
+        }
+        let mut found = Vec::new();
+        collect(&self.tree.root, &mut found);
+        let mut n = 0;
+        for (parent, i) in found {
+            let c = &parent.children[i];
+            let Some(loda) = c.find(b"lgob").and_then(|l| l.find(b"loda")) else {
+                continue;
+            };
+            let Some((kind, args)) = loda_args(self.data(loda)) else {
+                continue;
+            };
+            if kind != 7 {
+                continue;
+            }
+            let Some((_, body)) = args
+                .iter()
+                .find(|(ty, _)| *ty == crate::parse::ARG_BLEND_STEPS)
+            else {
+                continue;
+            };
+            n += 1;
+            let place = format!("lnkg {n}");
+            match c.find(b"usdn").and_then(|u| u32_at(self.data(u), 0)) {
+                Some(u) => {
+                    if let Some(other) = self.usdn.insert(u, place.clone()) {
+                        self.note(&place, format!("usdn {u} is also {other}'s"));
+                    }
+                }
+                None => self.note(&place, "no usdn chunk"),
+            }
+            let is_object = |k: &Chunk| k.is(b"obj ") || k.is(b"grp ");
+            let before = i
+                .checked_sub(1)
+                .and_then(|j| parent.children.get(j))
+                .is_some_and(is_object);
+            let after = parent.children.get(i + 1).is_some_and(is_object);
+            if !(before && after) {
+                self.note(
+                    &place,
+                    "a blend's linked group without an object before and after it (its ends)",
+                );
+            }
+            match body.get(0..2).map(|b| u16::from_le_bytes([b[0], b[1]])) {
+                Some(1..=999) => {}
+                Some(x) => self.note(&place, format!("blend step count {x}, not 1 to 999")),
+                None => self.note(&place, "blend argument shorter than a step count"),
+            }
+        }
+    }
+
     fn object(&mut self, c: &'a Chunk, place: &str) {
         let is_group = c.is(b"grp ");
         // Ids.
@@ -306,7 +413,7 @@ impl<'a> Checker<'a> {
             if let Some(other) = self.usdn.insert(u, place.to_string()) {
                 self.note(place, format!("usdn {u} is also {other}'s"));
             }
-        } else {
+        } else if !self.in_clip.contains(&(c as *const Chunk)) {
             self.note(place, "no usdn chunk");
         }
         if let Some(s) = c.find(b"spnd").and_then(|u| u32_at(self.data(u), 0)) {
@@ -358,6 +465,16 @@ impl<'a> Checker<'a> {
                     _ => {}
                 },
                 crate::parse::ARG_COORDS => coords = Some(body),
+                crate::parse::ARG_CLIP_CONTENTS => match u32_at(body, 0) {
+                    Some(n) if !self.clip_groups.contains(&n) => {
+                        self.note(
+                            place,
+                            format!("clip container names group {n}, not in LIST clpt"),
+                        );
+                    }
+                    Some(_) => {}
+                    None => self.note(place, "clip contents argument shorter than a number"),
+                },
                 _ => {}
             }
         }
@@ -367,6 +484,10 @@ impl<'a> Checker<'a> {
         // Geometry.
         // The box the object's nodes span (inside its bbox) and the box
         // all its points span (around its bbox); an arc has no node box.
+        // A bitmap's crop outline is taken through the matrix point by
+        // point (a turned outline's box is not its box's turn).
+        let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mut through = &matrix;
         let geometry: Option<(Option<Box>, Box)> = match kind {
             crate::parse::OBJ_CURVE => coords
                 .and_then(|d| self.curve(d, place))
@@ -382,17 +503,115 @@ impl<'a> Checker<'a> {
                 let h = i32_at(d, 4)? as f64 * MM_PER_UNIT;
                 let b = Box::of([(0.0, 0.0), (w, h)])?;
                 let whole = i32_at(d, 8)? == i32_at(d, 12)?;
-                Some((whole.then_some(b), b))
+                // The corners of a whole ellipse's box stand for its
+                // nodes only while the box is not turned or slanted: a
+                // turned ellipse (the frame of a clip container, #1222)
+                // reaches less far than its box's corners.
+                let turned = matrix[1].abs() > 1e-9 || matrix[2].abs() > 1e-9;
+                Some(((whole && !turned).then_some(b), b))
             }),
+            crate::parse::OBJ_BITMAP => {
+                through = &identity;
+                coords.and_then(|d| self.bitmap(d, place, &matrix))
+            }
             _ => None,
         };
         if let Some((inner, outer)) = geometry {
-            self.boxes(c, place, &matrix, inner, outer, outline_mm);
+            self.boxes(c, place, through, inner, outer, outline_mm);
         }
         // Text.
         if kind == crate::parse::OBJ_ARTISTIC_TEXT || kind == crate::parse::OBJ_PARAGRAPH_TEXT {
             self.text(c, place);
         }
+    }
+
+    /// A bitmap object's coordinates argument, as files of versions 14,
+    /// 18, 19 and 27 hold it (the origin and the number checked only from 14): the
+    /// image's box from the origin (top left, bottom
+    /// right) twice, 2 and the bits per pixel, the pixel size, the
+    /// image's number (never 0), the id of a `bmp ` record, 0, 0, -1, 0,
+    /// 0, then the crop outline (count, i32 points, a node byte each) and
+    /// from version 14 four zero bytes. Returns the outline's boxes (the
+    /// nodes', the points') taken through `m`, which the object's `bbox`
+    /// holds, when the record reads.
+    fn bitmap(&mut self, d: &[u8], place: &str, m: &[f64; 6]) -> Option<(Option<Box>, Box)> {
+        let Some(corners) = (0..4)
+            .map(|k| i32_at(d, k * 4))
+            .collect::<Option<Vec<i32>>>()
+        else {
+            self.note(place, "bitmap record shorter than its corners");
+            return None;
+        };
+        // Only files of versions 14, 18, 19 and 27 were seen to hold the box at
+        // the origin and a non-zero number; older ones are not held to it.
+        let seen = self.v >= 14;
+        if seen && (corners[0] != 0 || corners[3] != 0) {
+            self.note(
+                place,
+                format!(
+                    "bitmap box starts at ({}, {}), not at the origin",
+                    corners[0], corners[3]
+                ),
+            );
+        }
+        if corners[2] <= corners[0] || corners[1] <= corners[3] {
+            self.note(place, "bitmap box has no size");
+        }
+        if (0..4).any(|k| i32_at(d, 16 + k * 4) != Some(corners[k])) {
+            self.note(place, "bitmap image box differs from its corners");
+        }
+        if u32_at(d, 36).is_none_or(|w| w == 0) || u32_at(d, 40).is_none_or(|h| h == 0) {
+            self.note(place, "bitmap pixel size is zero");
+        }
+        if seen && u32_at(d, 44) == Some(0) {
+            self.note(place, "bitmap image number is 0");
+        }
+        match u32_at(d, 48) {
+            Some(id) if !self.images.contains(&id) => {
+                self.note(
+                    place,
+                    format!("bitmap names image {id}, which has no record"),
+                );
+            }
+            Some(_) => {}
+            None => self.note(place, "bitmap record shorter than its image id"),
+        }
+        let tail_at = if self.v == 8 { 64 } else { 72 };
+        let Some(n) = u32_at(d, tail_at) else {
+            self.note(place, "bitmap record has no crop outline");
+            return None;
+        };
+        let n = n as usize;
+        if !(3..=100_000).contains(&n) {
+            self.note(place, format!("bitmap crop outline of {n} points"));
+            return None;
+        }
+        let points_at = tail_at + 4;
+        let types_at = points_at + n * 8;
+        let end = types_at + n + if self.v >= 14 { 4 } else { 0 };
+        if d.len() != end {
+            self.note(
+                place,
+                format!(
+                    "bitmap record is {} bytes, {end} expected for {n} points",
+                    d.len()
+                ),
+            );
+        } else if self.v >= 14 && u32_at(d, types_at + n) != Some(0) {
+            self.note(place, "bitmap record does not end with 4 zero bytes");
+        }
+        // Nodes inside the box, control points (type bits 7-6 set) around.
+        let point = |k: usize| {
+            Some(apply(
+                m,
+                i32_at(d, points_at + k * 8)? as f64 * MM_PER_UNIT,
+                i32_at(d, points_at + k * 8 + 4)? as f64 * MM_PER_UNIT,
+            ))
+        };
+        let control = |k: usize| d.get(types_at + k).is_some_and(|t| t >> 6 == 3);
+        let outer = Box::of((0..n).filter_map(point))?;
+        let inner = Box::of((0..n).filter(|k| !control(*k)).filter_map(point));
+        Some((inner, outer))
     }
 
     /// The width of an outline of the table, in millimetres (0 when it is
@@ -617,7 +836,7 @@ impl<'a> Checker<'a> {
         };
         let d = self.data(t);
         let mut warnings = Vec::new();
-        let parsed = text::read_txsm(d, self.v, &mut |w| warnings.push(w));
+        let parsed = text::read_txsm(d, self.v, 0, &mut |w| warnings.push(w));
         for w in warnings {
             self.note(place, format!("txsm: {w}"));
         }
@@ -773,6 +992,12 @@ mod tests {
         for o in objects {
             page.extend(obj(o));
         }
+        file_of_page(page)
+    }
+
+    /// A file whose only layer holds `page` (object lists and linked
+    /// groups).
+    fn file_of_page(page: Vec<u8>) -> Vec<u8> {
         let body = [
             chunk(b"vrsn", &u16s(&[1300])),
             chunk(b"mcfg", &mcfg(V, 2_540_000, 2_540_000)),
@@ -847,6 +1072,68 @@ mod tests {
     #[test]
     fn a_sound_file_has_no_findings() {
         assert_eq!(findings(&[square(), text()]), Vec::<String>::new());
+    }
+
+    /// A blend's linked group as the writer lays it out from version 9
+    /// (#1192): `usdn` 9, a `loda` of type 7 with the link argument and
+    /// the step argument holding `count`.
+    fn blend_group(count: u16) -> Vec<u8> {
+        let mut arg = u16s(&[count, 0]);
+        arg.extend_from_slice(&i32s(&[254_000]));
+        arg.resize(88, 0);
+        let mut body = chunk(b"spnd", &u32s(&[1]));
+        body.extend(chunk(b"flgs", &[1, 0, 0, 0x18]));
+        body.extend(chunk(b"bbox", &box_bytes(5.0, 5.0, 40.0, 40.0)));
+        body.extend(chunk(b"obbx", &box_bytes(5.0, 5.0, 40.0, 40.0)));
+        body.extend(chunk(b"usdn", &u32s(&[9])));
+        body.extend(list(
+            b"lgob",
+            &chunk(b"loda", &loda(7, &[(12020, u32s(&[2, 0, 0])), (3000, arg)])),
+        ));
+        list(b"lnkg", &body)
+    }
+
+    /// A blend's linked group stands between its two ends, with a `usdn`
+    /// of its own and a step count the program can save (#1192).
+    #[test]
+    fn a_blend_group_stands_between_its_ends() {
+        let mut second = square();
+        second.usdn = 2;
+        second.at = (30.0, 30.0);
+        second.bbox = box_bytes(30.0, 30.0, 40.0, 40.0);
+        second.obbx = [second.bbox.clone(), box_bytes(29.5, 29.5, 40.5, 40.5)].concat();
+        let strings = |bytes: Vec<u8>| -> Vec<String> {
+            check_bytes(&bytes)
+                .expect("checked")
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        let sound = [obj(&square()), blend_group(20), obj(&second)].concat();
+        assert_eq!(strings(file_of_page(sound)), Vec::<String>::new());
+        let last = [obj(&square()), obj(&second), blend_group(20)].concat();
+        let f = strings(file_of_page(last));
+        assert!(
+            f.iter()
+                .any(|f| f
+                    .contains("lnkg 1: a blend's linked group without an object before and after")),
+            "{f:?}"
+        );
+        let none = [obj(&square()), blend_group(0), obj(&second)].concat();
+        let f = strings(file_of_page(none));
+        assert!(
+            f.iter()
+                .any(|f| f.contains("blend step count 0, not 1 to 999")),
+            "{f:?}"
+        );
+        let mut taken = square();
+        taken.usdn = 9;
+        let shared = [obj(&taken), blend_group(1), obj(&second)].concat();
+        let f = strings(file_of_page(shared));
+        assert!(
+            f.iter().any(|f| f.contains("usdn 9 is also obj 1's")),
+            "{f:?}"
+        );
     }
 
     #[test]

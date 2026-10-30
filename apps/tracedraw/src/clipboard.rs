@@ -126,7 +126,7 @@ pub fn change_count() -> Option<u32> {
     None
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_system_text_and_files() -> ClipboardContent {
     read_text_and_files()
 }
@@ -136,12 +136,22 @@ fn read_system_text_and_files() -> ClipboardContent {
     ClipboardContent::default()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The system clipboard's text on Android, through the activity's
+/// clipboard service (files and pictures are not read there yet).
+#[cfg(target_os = "android")]
+fn read_system_text_and_files() -> ClipboardContent {
+    ClipboardContent {
+        text: crate::android::clipboard::text(),
+        ..Default::default()
+    }
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_system_image() -> Option<image::RgbaImage> {
     read_image()
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn read_system_image() -> Option<image::RgbaImage> {
     None
 }
@@ -153,9 +163,15 @@ pub fn read_system() -> ClipboardContent {
     ClipboardContent::default()
 }
 
+/// The system clipboard on Android: its text (`android.rs`).
+#[cfg(target_os = "android")]
+pub fn read_system() -> ClipboardContent {
+    read_system_text_and_files()
+}
+
 /// Read text, files and image from the system clipboard; failures yield
 /// `None` fields (headless sessions have no clipboard).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn read_system() -> ClipboardContent {
     let mut content = read_text_and_files();
     content.image = read_image();
@@ -164,7 +180,7 @@ pub fn read_system() -> ClipboardContent {
 
 /// The clipboard's text and files, not its picture (decoding one costs
 /// far more).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_text_and_files() -> ClipboardContent {
     let Ok(mut cb) = arboard::Clipboard::new() else {
         return ClipboardContent::default();
@@ -185,7 +201,7 @@ fn read_text_and_files() -> ClipboardContent {
 }
 
 /// The clipboard's picture, decoded.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_image() -> Option<image::RgbaImage> {
     let mut cb = arboard::Clipboard::new().ok()?;
     let img = cb.get_image().ok()?;
@@ -195,7 +211,7 @@ fn read_image() -> Option<image::RgbaImage> {
 /// A path from a copied file list without the carriage return its line
 /// may keep: the list's lines end in CR LF and the clipboard library
 /// splits it at LF only.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn without_line_end(path: std::path::PathBuf) -> std::path::PathBuf {
     match path.to_str() {
         Some(s) if s.ends_with(['\r', '\n']) => s.trim_end_matches(['\r', '\n']).into(),
@@ -204,9 +220,16 @@ fn without_line_end(path: std::path::PathBuf) -> std::path::PathBuf {
 }
 
 /// Put text on the system clipboard (best effort); whether it went there.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn write_text(text: &str) -> bool {
     arboard::Clipboard::new().is_ok_and(|mut cb| cb.set_text(text.to_string()).is_ok())
+}
+
+/// Put text on the system clipboard through the activity's clipboard
+/// service (Android); whether it went there.
+#[cfg(target_os = "android")]
+pub fn write_text(text: &str) -> bool {
+    crate::android::clipboard::set_text(text)
 }
 
 /// Put text on the system clipboard through egui (browser build).

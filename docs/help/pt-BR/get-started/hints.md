@@ -17,6 +17,11 @@ abra-o de novo com [[menu.help > menu.help.hints]] ou em
   página.
 - A página de uma **ferramenta** diz como usá-la, uma instrução por linha com as
   teclas em negrito, e tem um link para o tema que lista a ferramenta.
+- Uma página de **objeto** aparece quando você seleciona algo: ela diz o que
+  você escolheu (uma curva, um retângulo, um texto, um bitmap, um grupo, uma
+  moldura de recorte, uma mistura, uma cota e assim por diante, ou vários
+  objetos), o que você pode fazer com ele, as ferramentas que servem para ele
+  e o que a barra de propriedades oferece.
 
 Toda página termina com [[hint.learn_more]], um link para a página desta Ajuda
 que explica a ferramenta ou o tema por completo.
@@ -26,3 +31,9 @@ que explica a ferramenta ou o tema por completo.
 Quando você escolhe outra ferramenta, o painel mostra a página dela. A barra
 embaixo do painel tem [[hint.home]] à esquerda e [[hint.back]] e avançar à
 direita, como num navegador.
+
+Selecionar um objeto mostra a página dele; um clique em um lugar vazio, para
+não deixar nada selecionado, traz de volta a página da ferramenta em uso.
+Enquanto você desenha com uma ferramenta de desenho, o objeto que acabou de
+desenhar mantém a página da ferramenta; clique no objeto para ver a página
+dele.

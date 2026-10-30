@@ -82,6 +82,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbb4e440d04be07da1f1bf44fb4495ebd58669372fe0cffa6e48595ac5bd88a3"
+dependencies = [
+ "android_log-sys",
+ "env_filter 0.1.4",
+ "log",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1079,6 +1096,16 @@ dependencies = [
 
 [[package]]
 name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
@@ -1095,7 +1122,7 @@ checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
 dependencies = [
  "anstream",
  "anstyle",
- "env_filter",
+ "env_filter 2.0.0",
  "jiff",
  "log",
 ]
@@ -4097,8 +4124,10 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tracedraw"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
+ "android-activity",
+ "android_logger",
  "arboard",
  "base64 0.22.1",
  "boa_engine",
@@ -4113,6 +4142,7 @@ dependencies = [
  "i_overlay",
  "image",
  "jiff",
+ "jni",
  "js-sys",
  "kurbo",
  "log",
@@ -4145,7 +4175,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cdr"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -4156,12 +4186,13 @@ dependencies = [
  "tracedraw-cdr-format",
  "tracedraw-core",
  "ttf-parser",
+ "web-time",
  "zip",
 ]
 
 [[package]]
 name = "tracedraw-cdr-format"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "flate2",
  "log",
@@ -4172,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cli"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "env_logger",
  "flate2",
@@ -4188,7 +4219,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-core"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "base64 0.22.1",
  "i_overlay",
@@ -4200,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-io"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -4226,7 +4257,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-render"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "log",
  "tiny-skia",
@@ -4235,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-text"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "encoding_rs",
  "fontdb",
@@ -4251,14 +4282,14 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-vba"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "boa_engine",
 ]
 
 [[package]]
 name = "tracedraw-vba-project"
-version = "0.25.0"
+version = "0.28.0"
 dependencies = [
  "cfb",
  "chardetng",
@@ -5242,8 +5273,6 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
  "ahash",
  "android-activity",

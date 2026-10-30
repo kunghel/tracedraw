@@ -814,6 +814,44 @@ struct AutoBackupJob {
     thread: std::thread::JoinHandle<Vec<(String, Result<(), String>)>>,
 }
 
+/// What the page shows while nodes are dragged (see
+/// [`App::node_drag_shown`]): the drawing's revision before the drag.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeDragShown {
+    pub revision: u64,
+}
+
+impl App {
+    /// A step of a node, handle, segment or node transform drag is about
+    /// to change the drawing: the page keeps showing the drawing as it
+    /// was before the drag until the button is released (#1259).
+    /// `begun`: a step of this drag was recorded before (its first step
+    /// takes the revision to show).
+    pub(crate) fn note_node_drag_step(&mut self, begun: bool) {
+        if begun && self.node_drag_shown.is_some() {
+            return;
+        }
+        self.node_drag_shown = Some(NodeDragShown {
+            revision: self.engine.revision(),
+        });
+    }
+
+    /// The revision of the drawing the page shows: during a node drag
+    /// the one before the drag; `None` when no such drag is under way.
+    pub fn node_drag_revision(&self) -> Option<u64> {
+        let dragging = matches!(
+            self.drag,
+            Drag::NodeMove { begun: true, .. }
+                | Drag::SegmentBend { begun: true, .. }
+                | Drag::NodeTransform { begun: true, .. }
+                | Drag::Handle { .. }
+        );
+        self.node_drag_shown
+            .filter(|_| dragging)
+            .map(|s| s.revision)
+    }
+}
+
 pub struct App {
     pub engine: Engine,
     pub page: PageId,
@@ -922,9 +960,11 @@ pub struct App {
     /// `.tdraw` files (faces whose licence allows it).
     pub tdraw_embed_fonts: bool,
     pub status: String,
-    /// The status message that opens Options > General when clicked, while
-    /// it is the one shown: the hint that hardware acceleration is off.
-    pub status_opens_options: Option<String>,
+    /// The status message that opens the Options dialog at a page when
+    /// clicked, while it is the one shown: the hint that hardware
+    /// acceleration is off (General), the note of missing fonts when the
+    /// Missing Fonts dialog is turned off (Warnings, #1243).
+    pub status_opens_options: Option<(String, crate::ui::dialogs::OptionsPage)>,
     pub fit_pending: bool,
     /// Set the view of Options > Display > View when a drawing opens
     /// with the next fit (a drawing just opened or made, #1134).
@@ -1067,6 +1107,13 @@ pub struct App {
     /// All colours of a palette at once (the expand button): which row.
     pub palette_expanded: Option<crate::ui::palette::Row>,
     pub raster: std::cell::RefCell<crate::raster::Raster>,
+    /// The page's picture while nodes or a segment are dragged with the
+    /// Shape tool (#1259): the drawing as it was before the drag is
+    /// what the page shows, the edited curve following the pointer as
+    /// the thin line the Shape tool draws over it, so the outline (its
+    /// width nodes, brush, arrowheads, effects) is not made again every
+    /// frame; it is made once when the drag ends.
+    pub node_drag_shown: Option<NodeDragShown>,
     /// The visual bounds of objects with live effects, for the document
     /// revision they were measured at (see [`App::visual_bounds`]).
     pub visual_cache: std::cell::RefCell<(u64, std::collections::HashMap<ShapeId, Rect>)>,
@@ -1308,6 +1355,9 @@ pub struct App {
     /// The choices of the last File > Export of this session, which the
     /// next one starts with (#617).
     pub last_export: Option<crate::ui::dialogs::ExportState>,
+    /// The settings of this session's last Remove Background (its list
+    /// of colours too), which the next one starts with.
+    pub last_bg_remove: Option<crate::bg_remove::BgSettings>,
     /// The choices of this session's last export of each format (#617).
     pub export_by_format: Vec<crate::prefs::ExportPreset>,
     /// Print Merge's Place Inside Frame waiting for a click on the shape
@@ -1348,6 +1398,8 @@ pub struct App {
     /// closed.
     pub objects_page_closed: bool,
     pub objects_master_closed: bool,
+    /// Objects docker: the cached thumbnails of the objects.
+    pub object_thumbs: crate::object_thumbs::ObjectThumbs,
     /// When `autosave_settings` last wrote the preferences, and the
     /// preferences as last saved or looked at (JSON), to save them only
     /// when they changed.
@@ -1469,6 +1521,8 @@ pub struct App {
     /// The Color docker's views, hue and palette.
     pub color_docker: crate::ui::color_docker::ColorDockerState,
     pub lens_synced_to: Option<ShapeId>,
+    /// The object whose bevel the Bevel panel last took its settings from.
+    pub bevel_synced_to: Option<ShapeId>,
     pub pending_blend_path: bool,
     /// Text > Fit Text to Path waits for a click on the path.
     pub pending_text_path: bool,
@@ -1480,6 +1534,12 @@ pub struct App {
     pub media_spacing: f64,
     pub media_pressure: f64,
     pub media_smoothing: f64,
+    /// The pen's pressure right now (0 to 1), from the stylus of a
+    /// graphics tablet; `None` with the mouse, or where the platform
+    /// gives no pressure (#850, see `pen.rs`).
+    pub pen_pressure: Option<f32>,
+    /// The pressures along the freehand drag in progress.
+    pub pen_stroke: crate::pen::PenStroke,
     /// The Bitmap Mask docker: its colour slots, the slot picked, hide or
     /// show the colours, and the eyedropper filling the picked slot.
     pub mask: crate::bitmap_fx::MaskSettings,
@@ -1986,6 +2046,11 @@ pub enum Repeatable {
     /// Copies of the selection transformed by the affine (a drag ended
     /// with a right click), made again from the selection of the time.
     Copy(Affine),
+    /// A move, turn, resize or slant of objects whose box was `before`:
+    /// repeated about the same place of the box of the selection of the
+    /// time (its centre, a side, a corner), so a turn or a resize does not
+    /// also move what it is repeated on (#1289).
+    Transform { transform: Affine, before: Rect },
 }
 
 /// Where a docker lies: the default column (the right side of the
@@ -2274,6 +2339,7 @@ impl App {
             palette_shades: None,
             palette_expanded: None,
             raster: std::cell::RefCell::new(crate::raster::Raster::default()),
+            node_drag_shown: None,
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
             fill_preview: false,
             outline_preview: false,
@@ -2390,6 +2456,7 @@ impl App {
             pending_merge_frame: false,
             autofit_preview: None,
             last_export: None,
+            last_bg_remove: None,
             export_by_format: Vec::new(),
             pending_copy_effect: None,
             pending_copy_envelope: false,
@@ -2411,6 +2478,7 @@ impl App {
             settings_looked: None,
             settings_pending: false,
             objects_page_closed: false,
+            object_thumbs: Default::default(),
             objects_master_closed: false,
             picked_layer: None,
             navigator_tex: None,
@@ -2473,6 +2541,7 @@ impl App {
             mixer_color: Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
             color_docker: Default::default(),
             lens_synced_to: None,
+            bevel_synced_to: None,
             pending_blend_path: false,
             pending_text_path: false,
             pending_palette_sample: false,
@@ -2481,6 +2550,8 @@ impl App {
             media_preset: 0,
             media_spacing: 8.0,
             media_pressure: 0.5,
+            pen_pressure: None,
+            pen_stroke: crate::pen::PenStroke::default(),
             media_smoothing: 25.0,
             mask: Default::default(),
             font_filter: String::new(),
@@ -2642,9 +2713,10 @@ impl App {
         }
     }
 
-    /// The Options dialog at its General page (hardware acceleration).
-    pub fn open_general_options(&mut self) {
-        self.options_page = crate::ui::dialogs::OptionsPage::General;
+    /// The Options dialog at `page` (General for the hardware
+    /// acceleration note, Warnings for the missing fonts one).
+    pub fn open_options_page(&mut self, page: crate::ui::dialogs::OptionsPage) {
+        self.options_page = page;
         self.dialog = crate::ui::dialogs::Dialog::Options;
     }
 
@@ -3814,6 +3886,17 @@ impl App {
                 self.copy_selection_by(t);
                 return;
             }
+            Some(Repeatable::Transform { transform, before }) => {
+                let Some(now) = self.selection_bounds() else {
+                    return;
+                };
+                let shapes = self.selection.clone();
+                self.run(Command::TransformShapes {
+                    shapes,
+                    transform: repeated_transform(transform, before, now),
+                });
+                return;
+            }
             None => return,
         };
         let shapes = self.selection.clone();
@@ -4201,6 +4284,18 @@ impl App {
     }
 
     pub fn run(&mut self, cmd: Command) {
+        // The box a move, turn or resize starts from, for its Repeat.
+        let before = match &cmd {
+            Command::TransformShapes { shapes, .. } if *shapes == self.selection => {
+                self.selection_bounds()
+            }
+            Command::TransformShapes { shapes, .. } => shapes
+                .iter()
+                .filter_map(|id| self.doc().find_shape(*id))
+                .map(|s| self.visual_bounds(s))
+                .reduce(|a, b| a.union(b)),
+            _ => None,
+        };
         self.break_clone_links_for(&cmd);
         let keep = self.edited_lines_kept(std::slice::from_ref(&cmd));
         if let Err(e) = self.engine.run(&cmd) {
@@ -4214,7 +4309,12 @@ impl App {
         }
         self.sync_effect_clones_for(&cmd);
         self.sync_object_clones();
-        if matches!(
+        if let (Command::TransformShapes { transform, .. }, Some(before)) = (&cmd, before) {
+            self.note_repeatable(Repeatable::Transform {
+                transform: *transform,
+                before,
+            });
+        } else if matches!(
             cmd,
             Command::TransformShapes { .. }
                 | Command::SetFill { .. }
@@ -4285,11 +4385,22 @@ impl App {
     // ----- object creation ---------------------------------------------------
 
     pub fn new_shape(&mut self, kind: ShapeKind) -> Option<ShapeId> {
+        self.new_shape_styled(kind, |_| {})
+    }
+
+    /// `new_shape`, with `style` applied to the shape after its default
+    /// fill and outline, before it is added (one undo step).
+    pub fn new_shape_styled(
+        &mut self,
+        kind: ShapeKind,
+        style: impl FnOnce(&mut Shape),
+    ) -> Option<ShapeId> {
         let layer = self.active_layer()?;
         let id = self.engine.new_shape_id();
         let mut shape = Shape::new(id, kind);
         // The fill and outline of its kind (Default Properties).
         self.doc().defaults.apply_to(&mut shape);
+        style(&mut shape);
         self.run(Command::AddShape { layer, shape });
         // Drawn while a symmetry is edited: part of it.
         if self.symmetry_edit.is_some() {
@@ -6225,7 +6336,9 @@ impl App {
     /// `backup_of_<name>`, next to it or in the chosen folder.
     fn backup_before_save(&mut self, path: &std::path::Path) {
         let b = &self.settings.backup;
-        if !b.before_save || !crate::files::exists(path) {
+        // A document the Android picker returned has no folder to copy
+        // into (the system holds it).
+        if !b.before_save || !crate::files::exists(path) || crate::files::is_document_path(path) {
             return;
         }
         let Some(name) = path.file_name() else {
@@ -6654,8 +6767,11 @@ impl App {
         }
         let w = &self.settings.warnings;
         // The windowed application asks which font draws each missing
-        // one (#936); the note about unread objects follows.
-        if self.ask_missing_fonts && w.missing_fonts && !self.missing_fonts.is_empty() {
+        // one (#936), as long as Options > Global > Warnings asks for the
+        // dialog itself (its own choice, not the plain note's: a "Do not
+        // show again" ticked on the note before the dialog existed left
+        // the dialog unseen, #1243); the note about unread objects follows.
+        if self.ask_missing_fonts && w.ask_missing_fonts && !self.missing_fonts.is_empty() {
             self.dialog = crate::ui::dialogs::Dialog::MissingFonts(
                 crate::ui::missing_fonts::MissingFontsState::new(
                     name,
@@ -6664,6 +6780,16 @@ impl App {
                 ),
             );
             return;
+        }
+        // Without the dialog, the status line's note of the fonts (set
+        // when they were checked) opens the Warnings page when clicked,
+        // so the dialog can be turned on again from where its absence is
+        // noticed.
+        if self.ask_missing_fonts && !self.missing_fonts.is_empty() {
+            self.status_opens_options = Some((
+                self.status.clone(),
+                crate::ui::dialogs::OptionsPage::Warnings,
+            ));
         }
         let notes = crate::ui::dialogs::OpenNotes {
             name,
@@ -7780,9 +7906,8 @@ pub(crate) fn is_cdr_path(path: &std::path::Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("cdr"))
 }
 
-/// The `.cdr` version saving writes for `version`: only versions checked
-/// to open in other programs are saved, so older ones become the oldest
-/// of those and newer ones the newest.
+/// The `.cdr` version saving writes for `version`: versions older than 7
+/// become 7 and newer than 27 become 27.
 pub(crate) fn writable_cdr_version(version: u16) -> u16 {
     version.clamp(
         tracedraw_cdr::write::CHECKED_SINCE,
@@ -7823,7 +7948,29 @@ pub(crate) fn cdr_previews(doc: &tracedraw_core::Document) -> tracedraw_cdr::wri
         pages,
         fonts: cdr_font_faces(doc),
         embed_fonts: false,
+        shadows: cdr_shadow_pictures(doc),
     }
+}
+
+/// The drop shadows of the drawing's objects as the pictures the `.cdr`
+/// writer draws beneath them (#1031).
+pub(crate) fn cdr_shadow_pictures(
+    doc: &tracedraw_core::Document,
+) -> Vec<tracedraw_cdr::write::ShadowPicture> {
+    tracedraw_io::shadow_pictures(doc, tracedraw_io::SHADOW_PICTURE_DPI)
+        .into_iter()
+        .map(
+            |(shape, rect, data, width, height)| tracedraw_cdr::write::ShadowPicture {
+                shape,
+                rect,
+                png: tracedraw_cdr::write::Png {
+                    data,
+                    width,
+                    height,
+                },
+            },
+        )
+        .collect()
 }
 
 /// The faces the drawing's text uses, with their font files where
@@ -7922,6 +8069,69 @@ fn three_point_arc(a: Point, b: Point, c: Point) -> Option<tracedraw_core::BezPa
         path.curve_to(p0 + tangent(t0) * k, p1 - tangent(t1) * k, p1);
     }
     Some(path)
+}
+
+/// `t`, done to objects whose box was `before`, redone about the same
+/// place of the box `now`: a turn about the old box's centre turns about
+/// the new box's centre, a resize from a side or a corner resizes from the
+/// same side or corner, a move moves as far (#1289). The place is the
+/// point `t` leaves where it is: the only one for a turn or a resize both
+/// ways, else the box's centre, side or corner it keeps. Without one (a
+/// resize and a move at once) `t` is used as it is.
+pub(crate) fn repeated_transform(t: Affine, before: Rect, now: Rect) -> Affine {
+    let [a, b, c, d, e, f] = t.as_coeffs();
+    let size = before.width().max(before.height()).max(1e-9);
+    let eps = 1e-9 * size.max(1.0);
+    let linear_is_identity =
+        (a - 1.0).abs() < 1e-12 && b.abs() < 1e-12 && c.abs() < 1e-12 && (d - 1.0).abs() < 1e-12;
+    if linear_is_identity {
+        return t;
+    }
+    // (I - L) p = (e, f).
+    let (m00, m01, m10, m11) = (1.0 - a, -c, -b, 1.0 - d);
+    let det = m00 * m11 - m01 * m10;
+    let fixed = if det.abs() > 1e-9 {
+        Some(Point::new(
+            (e * m11 - m01 * f) / det,
+            (m00 * f - m10 * e) / det,
+        ))
+    } else {
+        // The centre, a side's middle or a corner it keeps in place.
+        let (x0, y0, x1, y1) = (before.x0, before.y0, before.x1, before.y1);
+        let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        [
+            (xm, ym),
+            (x0, ym),
+            (x1, ym),
+            (xm, y0),
+            (xm, y1),
+            (x0, y0),
+            (x1, y0),
+            (x0, y1),
+            (x1, y1),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new(x, y))
+        .find(|p| (t * *p - *p).hypot() <= eps.max(1e-6 * size))
+    };
+    let Some(p0) = fixed.filter(|p| p.x.is_finite() && p.y.is_finite()) else {
+        return t;
+    };
+    let rel = |v: f64, lo: f64, len: f64| {
+        if len.abs() > 1e-12 {
+            (v - lo) / len
+        } else {
+            0.5
+        }
+    };
+    let u = rel(p0.x, before.x0, before.width());
+    let v = rel(p0.y, before.y0, before.height());
+    let p = Point::new(now.x0 + u * now.width(), now.y0 + v * now.height());
+    if !(p.x.is_finite() && p.y.is_finite()) {
+        return t;
+    }
+    let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+    Affine::translate(p.to_vec2()) * linear * Affine::translate(-p.to_vec2())
 }
 
 #[cfg(test)]

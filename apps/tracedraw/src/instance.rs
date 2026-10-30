@@ -201,8 +201,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let mut f = opts.open(&tmp)?;
     f.write_all(bytes)?;
-    f.sync_all()?;
     drop(f);
+    // No flush to the disk: the file names a running window and is useless
+    // after a power loss anyway, and waiting for the disk here held the
+    // window back at every start.
     std::fs::rename(&tmp, path)
 }
 

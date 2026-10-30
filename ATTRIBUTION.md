@@ -17,6 +17,7 @@ libwebp (Copyright Google Inc., BSD 3-Clause licence, through the
 | Noto Sans Tamil (test font) | `crates/text/testdata/` | Copyright 2022 The Noto Project Authors (https://github.com/notofonts/tamil), from the Google Fonts collection | SIL Open Font License 1.1, see `NotoSansTamil-OFL.txt` next to the font |
 | Devanagari corpus PDF (test file) | `crates/io/testdata/devanagari-corpus.pdf` | Written by TraceDraw's contributors from `crates/text/testdata/devanagari-corpus.txt` with an office suite; it embeds a subset of FreeMono from GNU FreeFont | The document is ours; the embedded font subset is GNU GPL 3 with the FreeFont font exception, which leaves documents that embed it outside the GPL |
 | Quicksand (variable, test font) | `crates/text/testdata/` | Copyright 2011 The Quicksand Project Authors, from the google/fonts collection | SIL Open Font License 1.1, see `Quicksand-OFL.txt` next to the font |
+| Roboto Flex (variable, test font: a subset of five glyphs with all 13 axes) | `crates/text/testdata/RobotoFlex-subset.ttf` | Copyright 2011 The Roboto Flex Project Authors (https://github.com/googlefonts/roboto-flex) | SIL Open Font License 1.1, see `RobotoFlex-OFL.txt` next to the font |
 | Fonts of the browser build (bundled into the module and placed in the published page's font folder when it is built; not stored in this repository) | `web/fonts.txt`, `apps/tracedraw/build.rs` | Liberation, DejaVu, Noto, TeX Gyre and the google/fonts families listed in `web/FONTS.md` | Their own free licences (SIL Open Font License 1.1, Apache License 2.0, Ubuntu Font Licence 1.0, GUST Font License, Bitstream Vera), copied into the font folder's `licences/` |
 | Application icon (PNG sizes and `.ico`) | `assets/icon/` | Made for TraceDraw | MIT OR Apache-2.0 |
 | Microsoft Store tiles | `packaging/windows/msix/Assets/` | Made for TraceDraw from the application icon | MIT OR Apache-2.0 |
@@ -27,6 +28,7 @@ libwebp (Copyright Google Inc., BSD 3-Clause licence, through the
 | Hyphenation patterns | `crates/text/src/hyphen.rs` | Made for TraceDraw (a small Liang-style set) | MIT OR Apache-2.0 |
 | Interface translations | `apps/tracedraw/lang/*.toml` | Made for TraceDraw | MIT OR Apache-2.0 |
 | eframe 0.36.2 (patched copy of the crate, its OpenGL context fallback backported from 0.37.0, #616) | `vendor/eframe/` | Copyright Emil Ernerfeldt and the egui contributors, from crates.io; the change is listed in `vendor/README.md` | MIT OR Apache-2.0 |
+| winit 0.30.13 (patched copy of the crate, a pen's pressure on X11 and macOS, #850) | `vendor/winit/` | Copyright the winit contributors, from crates.io; the change is listed in `vendor/README.md` | Apache-2.0 |
 | Sample drawing | `sample.tdraw` | Made for TraceDraw | MIT OR Apache-2.0 |
 | Screenshots | `docs/images/` | TraceDraw itself, captured with `scripts/visual/readme_shots.sh` from drawings made for TraceDraw by `apps/tracedraw-cli/examples/showcase.rs`; their text is set in Inter and Lora (SIL Open Font License 1.1), fonts installed on the capture machine and not bundled | MIT OR Apache-2.0 |
 

@@ -452,7 +452,11 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     // the picture is not taken for the full one.
     let without_copies = app.symmetry_without_copies();
     let doc: &Document = without_copies.as_deref().unwrap_or(app.doc());
-    let revision = app.engine.revision()
+    // Nodes being dragged: the drawing as it was before the drag, its
+    // picture already made, until the button is released (#1259).
+    let revision = app
+        .node_drag_revision()
+        .unwrap_or_else(|| app.engine.revision())
         ^ if without_copies.is_some() {
             1u64 << 62
         } else {

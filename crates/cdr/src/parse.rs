@@ -128,9 +128,10 @@ pub(crate) const ARG_STYLE_STRING: u32 = 201;
 pub(crate) const ARG_NAME: u32 = 1000;
 pub(crate) const ARG_OPACITY: u32 = 8000;
 const ARG_POLYGON: u32 = 11000;
-/// The contents of a clip container (version 12): the `spnd` number of a
-/// group in the document's `LIST clpt`, then three u32 (1, 0, 1 seen).
-const ARG_CLIP_CONTENTS: u32 = 8005;
+/// The contents of a clip container (versions 12, 25 and 27 seen): the
+/// `spnd` number of a group in the document's `LIST clpt`, then three
+/// u32 (1, 0, 1).
+pub(crate) const ARG_CLIP_CONTENTS: u32 = 8005;
 const ARG_PAGE_SIZE: u32 = 19130;
 /// Master page `loda` argument holding the document's page background.
 const ARG_PAGE_BACKGROUND: u32 = 17000;
@@ -262,7 +263,7 @@ const OBJ_GUIDE: u32 = 0x16;
 const ARG_GUIDE_LINE: u32 = 16000;
 /// The step count of a blend's linked group (its `lgob` `loda`, object
 /// type 7): the first u32 of this argument.
-const ARG_BLEND_STEPS: u32 = 3000;
+pub(crate) const ARG_BLEND_STEPS: u32 = 3000;
 
 /// Little-endian cursor over a chunk payload. `v16` selects the 16-bit
 /// layouts of versions before 6 for integers, coordinates and angles.
@@ -367,6 +368,9 @@ struct BitmapDef {
     width_px: u32,
     height_px: u32,
     png: tracedraw_core::SharedBytes,
+    /// A CMYK image (colour model 3, 32 bits): the object keeps that
+    /// colour mode (`Shape::cmyk_bitmap`, #1254).
+    cmyk: bool,
 }
 
 // One entry of a `loda` argument table (type, payload start and end) and
@@ -430,6 +434,8 @@ struct Ctx<'a> {
     arrows: HashMap<u32, Arrowhead>,
     /// Crop outline of the bitmap object being read (local coordinates).
     pending_crop: Option<BezPath>,
+    /// The bitmap object being read shows a CMYK image.
+    pending_cmyk: bool,
     /// Groups of `LIST clpt` by their `spnd` number: the contents of clip
     /// containers.
     clip_groups: HashMap<u32, &'a Chunk>,
@@ -514,6 +520,7 @@ impl<'a> Ctx<'a> {
             styles: HashMap::new(),
             arrows: HashMap::new(),
             pending_crop: None,
+            pending_cmyk: false,
             clip_groups: HashMap::new(),
             pending_clip: None,
             guides: Vec::new(),
@@ -551,20 +558,23 @@ pub fn parse_document_with(
     version: Version,
     cmyk_profile: Option<&[u8]>,
 ) -> (Document, ParseReport) {
-    parse_document_kept(tree, main, version, cmyk_profile, &[])
+    parse_document_kept(tree, main, version, cmyk_profile, &[], &[])
 }
 
 /// [`parse_document_with`] that turns the groups `kept` names back into
-/// live blends (see [`crate::kept_blends`]).
+/// live blends (see [`crate::kept_blends`]) and the objects
+/// `kept_effects` names back into objects with their effects and shadows
+/// (see [`crate::kept_effects`]).
 pub(crate) fn parse_document_kept(
     tree: &Tree,
     main: &[u8],
     version: Version,
     cmyk_profile: Option<&[u8]>,
     kept: &[crate::kept_blends::KeptBlend],
+    kept_effects: &[crate::kept_effects::KeptEffect],
 ) -> (Document, ParseReport) {
     let mut ctx = Ctx::new(main, tree, version.0);
-    if !kept.is_empty() {
+    if !kept.is_empty() || !kept_effects.is_empty() {
         ctx.static_ids = Some(HashMap::new());
     }
     ctx.report.version = Some(version);
@@ -777,6 +787,16 @@ pub(crate) fn parse_document_kept(
     }
 
     if let Some(ids) = ctx.static_ids.take() {
+        // Objects first: a blend's end may be one, and the blend then
+        // takes its copy from the object put back.
+        let n = crate::kept_effects::restore(&mut doc, kept_effects, &ids);
+        if n < kept_effects.len() {
+            log::warn!(
+                "{} of the file's {} objects with effects open as drawn: they changed",
+                kept_effects.len() - n,
+                kept_effects.len()
+            );
+        }
         let n = crate::kept_blends::restore(&mut doc, kept, &ids);
         if n < kept.len() {
             log::warn!(
@@ -865,6 +885,17 @@ impl<'a> Ctx<'a> {
         } else {
             Some(name)
         }
+    }
+
+    /// A group's name from its own `lgob` (not a child object's).
+    fn group_name(&mut self, gc: &Chunk) -> Option<String> {
+        let lgob = gc.children.iter().find(|k| k.is(b"lgob"))?;
+        let loda = lgob.children.iter().find(|k| k.is(b"loda"))?;
+        let d = self.data(loda);
+        let l = self.read_loda(d)?;
+        let arg = l.args.iter().find(|a| a.ty == ARG_NAME)?;
+        let name = self.read_name(d.get(arg.off..arg.end)?);
+        (!name.is_empty()).then_some(name)
     }
 
     fn page_own_size(&mut self, pc: &Chunk) -> Option<Size> {
@@ -1902,7 +1933,7 @@ impl<'a> Ctx<'a> {
         };
         let td = self.data(tc);
         let mut warnings = Vec::new();
-        let parsed = text::read_txsm(td, self.v, &mut |w| warnings.push(w));
+        let parsed = text::read_txsm(td, self.v, self.name_charset, &mut |w| warnings.push(w));
         for w in warnings {
             self.report.warn(w);
         }
@@ -2280,7 +2311,8 @@ impl<'a> Ctx<'a> {
         Some(if self.v < 17 {
             text::decode_utf16le(s)
         } else {
-            String::from_utf8_lossy(s).into_owned()
+            // UTF-8, else the code page of the file's fonts (#898).
+            text::decode_style_bytes(s, self.name_charset)
         })
     }
 
@@ -3425,6 +3457,9 @@ impl<'a> Ctx<'a> {
                         if std::mem::take(&mut self.pending_renumber) {
                             renumber(&mut shape, ids);
                         }
+                        if std::mem::take(&mut self.pending_cmyk) {
+                            shape.cmyk_bitmap = true;
+                        }
                         if let Some(crop) = self.pending_crop.take() {
                             shape = crop_to_clip_frame(shape, crop, ids);
                         }
@@ -3464,6 +3499,9 @@ impl<'a> Ctx<'a> {
                         let mut g = Shape::new(ids.shape(), ShapeKind::Group { children });
                         g.fill = Fill::None;
                         g.stroke = None;
+                        // The group's own name (argument 1000 of its
+                        // `loda`), as objects carry theirs.
+                        g.name = self.group_name(c);
                         self.note_static_id(c, g.id);
                         out.push(g);
                     }
@@ -3948,6 +3986,7 @@ impl<'a> Ctx<'a> {
                         .warn(format!("bitmap object refers to unknown image {image_id}"));
                     return None;
                 };
+                self.pending_cmyk = bm.cmyk;
                 Some(ShapeKind::Bitmap {
                     rect,
                     width_px: bm.width_px,
@@ -4000,6 +4039,7 @@ impl<'a> Ctx<'a> {
                     self.pending_crop = None;
                     return None;
                 };
+                self.pending_cmyk = bm.cmyk;
                 Some(ShapeKind::Bitmap {
                     rect,
                     width_px: bm.width_px,
@@ -4188,6 +4228,7 @@ fn decode_bitmap(
             width_px: width,
             height_px: height,
             png: png.into(),
+            cmyk,
         },
     )))
 }
@@ -7167,6 +7208,8 @@ pub(crate) mod tests {
         .concat();
         let (doc, rep) = parse(&riff(b"CDRD", &body), 13);
         assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        // The object keeps the CMYK colour mode (#1254).
+        assert!(first_shape(&doc).cmyk_bitmap);
         let ShapeKind::Bitmap { png, .. } = &first_shape(&doc).kind else {
             panic!("a bitmap");
         };
@@ -9021,7 +9064,7 @@ pub(crate) mod tests {
     fn version_14_ring_text_cut_short_never_panics() {
         let t = txsm14_ring(&[('a', 0, 10, 10), ('b', 90_000_000, 20, 20)]);
         for cut in 0..t.len() {
-            let _ = text::read_txsm(&t[..cut], 14, &mut |_| {});
+            let _ = text::read_txsm(&t[..cut], 14, 0, &mut |_| {});
         }
     }
 
@@ -9679,7 +9722,7 @@ pub(crate) mod tests {
         let wide = txsm7(12, false, &styles, "Next");
         let mut warn = |_: String| {};
         let read = |d: &[u8], warn: &mut dyn FnMut(String)| {
-            text::read_txsm(d, 12, warn).map(|t| {
+            text::read_txsm(d, 12, 0, warn).map(|t| {
                 t.paragraphs[0]
                     .runs
                     .iter()
@@ -9933,7 +9976,7 @@ pub(crate) mod tests {
         d.extend_from_slice(&bytes);
         d.push(0);
         let mut warnings = Vec::new();
-        let t = text::read_txsm(&d, 12, &mut |w| warnings.push(w)).expect("txsm");
+        let t = text::read_txsm(&d, 12, 0, &mut |w| warnings.push(w)).expect("txsm");
         let got: String = t.paragraphs[0]
             .runs
             .iter()
@@ -9949,7 +9992,7 @@ pub(crate) mod tests {
         d.extend_from_slice(&u32s(&[5]));
         d.extend_from_slice(&[b'a', 0xe7, b'a', 0xed, b'!']);
         d.push(0);
-        let t = text::read_txsm(&d, 12, &mut |_| {}).expect("txsm");
+        let t = text::read_txsm(&d, 12, 0, &mut |_| {}).expect("txsm");
         let got: String = t.paragraphs[0]
             .runs
             .iter()

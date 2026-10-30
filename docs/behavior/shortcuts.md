@@ -17,6 +17,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+D, Ctrl+Shift+D | Duplicate, Step and Repeat panel |
 | + (Pick tool, with a selection) | Duplicate in place |
 | Ctrl+Space | the Pick tool, from any tool |
+| Space | the Pick tool (not while a text or table cell is edited, where it types a space, nor during a drag, where it drops a copy); on the Pick tool, back to the tool used before it (`App::previous_tool`); Shift+Space and other combinations leave the tool alone |
 | Ctrl+0 to Ctrl+9, 0 to 9, Alt+0 to Alt+9 | store, select (twice: zoom to) and add to selection groups |
 | Ctrl+A, Delete or Backspace | Select all, Delete |
 | Ctrl+F, Ctrl+J, Ctrl+W | Find and Replace panel, Options, Refresh window |
@@ -28,7 +29,13 @@ Edit > Repeat (Ctrl+R) does again, on the selection of the time, the
 last repeatable action still in effect: a move, scale, rotation or
 skew, a fill, an outline, a transparency, or a copy made with a right
 click during a drag (which makes another copy, transformed as far again
-from the new selection). Each action is kept with the undo step it made
+from the new selection). A move, scale, rotation or skew is kept with
+the box of what it was done to and repeated about the same place of the
+box of the selection of the time: a rotation about the old box's centre
+(or a centre of rotation moved inside it) turns about the new box's
+centre, a resize from a side or corner handle resizes from the same
+side or corner, and a move moves as far; the object it is repeated on
+no longer moves away (#1289, `app::repeated_transform`). Each action is kept with the undo step it made
 (`Engine::last_step_id`, `App::repeatables`): an action undone is never
 repeated, the one before it is (#366); redone, it is the last again; and
 an undone step replaced by another change is gone for good. A copy made

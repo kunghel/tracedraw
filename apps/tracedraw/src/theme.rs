@@ -644,6 +644,79 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
+/// The full interface fonts ([`font_definitions`]) being read on a worker
+/// thread while the window already draws with the bundled ones. Reading the
+/// system fonts for Chinese, Japanese, Arabic, Hindi and Bengali copies
+/// tens of megabytes, which the editor need not wait for when the
+/// interface language is not one of those.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub struct FontLoad {
+    handle: Option<std::thread::JoinHandle<egui::FontDefinitions>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FontLoad {
+    /// Read the fonts on a worker thread. Where no thread can be made the
+    /// load is empty: [`FontLoad::finish`] then reads them on the caller.
+    pub fn start() -> Self {
+        FontLoad {
+            handle: std::thread::Builder::new()
+                .name("tracedraw-fonts".into())
+                .spawn(font_definitions)
+                .map_err(|e| log::warn!("font thread: {e}"))
+                .ok(),
+        }
+    }
+
+    /// Whether the fonts are read (or there is no thread to wait for).
+    pub fn is_finished(&self) -> bool {
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
+    }
+
+    /// Whether a load is still under way.
+    #[cfg(test)]
+    pub fn pending(&self) -> bool {
+        self.handle.is_some()
+    }
+
+    /// The fonts, waiting for the thread if it is not done (read on the
+    /// caller when there was none).
+    pub fn finish(&mut self) -> egui::FontDefinitions {
+        self.handle
+            .take()
+            .and_then(|h| h.join().ok())
+            .unwrap_or_else(font_definitions)
+    }
+
+    /// Install the fonts once they are read; true while they are still
+    /// being read (ask for a repaint a little later and call again).
+    pub fn poll(&mut self, ctx: &egui::Context) -> bool {
+        if self.handle.is_none() {
+            return false;
+        }
+        if !self.is_finished() {
+            return true;
+        }
+        ctx.set_fonts(self.finish());
+        false
+    }
+}
+
+/// The fonts of a window that opens at once: the bundled ones now and
+/// the system ones read in the background, or all of them before it
+/// opens when the interface language needs a system font (its texts
+/// would show as boxes meanwhile). Call [`FontLoad::poll`] each frame.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn install_fonts_in_background(ctx: &egui::Context) -> FontLoad {
+    if needs_system_font(&crate::i18n::language()) {
+        install_fonts(ctx);
+        return FontLoad::default();
+    }
+    ctx.set_fonts(bundled_font_definitions());
+    FontLoad::start()
+}
+
 /// The interface fonts: the bundled UI font first, then egui's own and
 /// the system fonts covering the scripts of the supported UI languages
 /// (CJK, Arabic, Devanagari, Bengali), so menus render in every language

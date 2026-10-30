@@ -1,9 +1,11 @@
 # Bitmap colour modes
 
 Bitmaps > Mode converts the selected bitmaps; every selected bitmap
-changes in one undo step. The dialogs show the first selected bitmap
-before and after (a copy at most 240 px across; the copy's pixel sizes
-follow its scale). Alpha is kept in every mode.
+changes in one undo step. The dialogs are windows the user sizes that
+show the first selected bitmap before and after in the shared preview
+(`before-after-preview.md`: the Preview list, zoom and pan, the copy as
+large as the panes show; the copy's pixel sizes follow its scale), the
+settings at the right. Alpha is kept in every mode.
 
 | Item | Result |
 |---|---|
@@ -11,9 +13,9 @@ follow its scale). Alpha is kept in every mode.
 | Grayscale (8-bit) | luminance `0.299 R + 0.587 G + 0.114 B` |
 | Duotone (8-bit)... | dialog below |
 | Paletted (8-bit)... | dialog below |
-| RGB Color (24-bit) | pixels unchanged |
+| RGB Color (24-bit) | the bitmap's colour mode becomes RGB (`Shape::cmyk_bitmap` off); pixels unchanged. Ticked while every selected bitmap is RGB |
 | Lab Color (24-bit) | each pixel through CIE Lab (D65) and back, unchanged within one level |
-| CMYK Color (32-bit) | pixels unchanged (the document's colour management converts on output) |
+| CMYK Color (32-bit) | the colour mode becomes CMYK and the pixels show as the inks print them (through the colour management profiles and back), as Tools > Convert Colors does (#1254, `colour-management.md`). Ticked while every selected bitmap is CMYK |
 
 ## Black and White (1-bit)
 

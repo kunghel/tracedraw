@@ -1,5 +1,7 @@
 # Organizar objetos e camadas
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 O painel [[docker.objects]] mostra como a página atual está organizada: as
 camadas, os objetos de cada camada, os grupos e as camadas mestras que aparecem
 em todas as páginas. Use-o para selecionar, nomear, ocultar, bloquear e ordenar
@@ -12,8 +14,9 @@ objetos e camadas. Objetos mais acima na lista são desenhados na frente.
 O painel lista a página com as camadas, a de cima primeiro, depois a
 [[docker.master_page]] com as camadas mestras, as linhas-guia
 ([[docker.guides]]) e a [[menu.view.document_grid]]. Cada objeto mostra uma
-amostra do preenchimento emoldurada na cor do contorno e o nome, ou o que ele é
-quando não tem nome ("Retângulo", "Curva com 8 nós").
+miniatura, o próprio objeto desenhado em tamanho pequeno com o preenchimento e
+o contorno, e o nome, ou o que ele é quando não tem nome ("Retângulo", "Curva
+com 8 nós").
 
 - Clique em um objeto para selecioná-lo; <kbd>Shift</kbd>+clique o acrescenta à
   seleção. A camada dele passa a ser a camada ativa.
@@ -21,7 +24,12 @@ quando não tem nome ("Retângulo", "Curva com 8 nós").
 - Cada camada tem três botões: [[docker.show_hide]], [[docker.print_layer]] e
   [[docker.lock_layer]]. Uma camada oculta ou bloqueada não pode ser editada. O
   cadeado de [[docker.guides]] bloqueia todas as linhas-guia da página.
-- Objetos ocultos mostram o nome esmaecido.
+- Objetos ocultos mostram o nome e a miniatura esmaecidos.
+- Para aumentar ou diminuir as miniaturas, arraste o controle deslizante entre
+  o quadrado pequeno e o grande na parte de baixo do painel, gire a roda do
+  mouse sobre ele ou segure <kbd>Ctrl</kbd> e gire a roda sobre a lista. O
+  tamanho é lembrado. Uma miniatura só é desenhada de novo quando o objeto
+  muda, então listas longas continuam rápidas.
 
 ## Camadas {#layers}
 
@@ -94,6 +102,12 @@ ou atrás do qual eles devem ir) e [[menu.object.reverse_order]].
   [[menu.object.unlock_object]] e [[menu.object.unlock_all]] os liberam.
 - [[menu.object > menu.object.hide > menu.object.hide_object]] oculta os objetos
   selecionados; [[menu.object.show_all]] os mostra de novo.
+- No painel [[docker.objects]], a linha de cada objeto tem o próprio olho e
+  cadeado, para ocultar ou mostrar e bloquear ou desbloquear o objeto pela
+  lista, mesmo um objeto bloqueado.
+
+Selecionar um objeto na página rola a lista até a linha dele, então um objeto
+lá embaixo numa lista longa aparece.
 
 Para tirar objetos do caminho enquanto trabalha em outros, veja também o
 [Modo de foco](focus-mode.md).

@@ -30,15 +30,28 @@ the screen shows the same artwork as the About banner at a larger size
 status line, a thin progress bar and the footer (copyright on the left,
 the version on the right).
 
-- The bundled interface font is installed at once; the system font list
-  (and the system fonts for Chinese, Japanese, Arabic, Hindi and Bengali)
-  is read on a worker thread. Texts in those languages appear once their
-  fonts are in; the name and version always show.
-- Status: "Loading fonts..." while the thread works, then "Opening
-  <file>..." for a file named on the command line, else "Preparing the
-  workspace...".
-- The bar eases towards 80 % over 1.6 s while the fonts load and fills
-  once they are in. The splash stays up at least 1.6 s.
+- The bundled interface font is installed at once. The system font list
+  is read on a worker thread that starts with the program, before the
+  window and the graphics driver are set up, so the two run side by side;
+  whoever needs the list first (the editor's font lists, text in a
+  drawing) waits for that same read. The system fonts for Chinese,
+  Japanese, Arabic, Hindi and Bengali are read on a second worker thread.
+  When the interface language is one of those, its texts appear once
+  those fonts are in and the splash waits for them; in every other
+  language the editor starts without waiting and takes the fonts in when
+  they arrive (a name in those scripts, in the recent drawings, shows as
+  boxes for a moment). The name and version always show.
+- Status: "Loading fonts..." while a language that needs a system font
+  waits for it, else "Opening <file>..." for a file named on the command
+  line, or "Preparing the workspace...".
+- The bar is full as soon as nothing is waited for; while the fonts of
+  the language load it eases towards 80 % over 1.6 s. Nothing holds the
+  splash back: it stays up for as long as the start takes (it used to
+  stay at least 1.6 s), one frame with the last status after the fonts it
+  waits for are in, and goes with the editor built.
+- Each start logs `the editor was built in N ms` and `first frame N s
+  after the start` (the start of the program to the first frame of the
+  editor), the numbers to compare when a start seems slower.
 - Then the editor is built and the window becomes the main window:
   decorations, resizable, the maximize button, a minimum of 800 x 500
   (never more than four fifths of the monitor, so it fits a 1366 x 768
@@ -56,6 +69,12 @@ the version on the right).
 - Options > General > Show the splash screen at start-up turns it off.
   `--no-splash` or `TRACEDRAW_NO_SPLASH=1` skip it for one run and open a
   plain 1600 x 950 window (automation and the visual checks use this).
+- `--x11` (Linux) opens the window through the windowing layer's X11
+  backend (XWayland on a Wayland desktop), where a graphics tablet's pen
+  moves the pointer and reports its pressure (#850, see
+  `pen-pressure.md`); the environment is left unchanged. With no
+  `DISPLAY` it prints that `--x11` needs XWayland or an X11 session and
+  exits with status 2 instead of trying every renderer.
 - The browser build has no splash: the page shows its own loader.
 
 ## One window for every start (#646)
@@ -335,11 +354,13 @@ screen, and after 6 requests; each request is logged (#787,
 - `ui::brand::tests::the_embedded_icon_decodes`
 - `ui::brand::tests::cubic_helpers_follow_the_curve`
 - `ui::brand::tests::the_main_curve_spans_the_right_part`
-- `splash::tests::progress_waits_for_the_fonts_and_the_minimum_time`
+- `splash::tests::progress_waits_for_the_fonts_and_holds_nothing_back`
 - `splash::tests::the_status_names_the_file_being_opened`
 - `splash::tests::the_main_window_keeps_a_sensible_size`
 - `splash::tests::the_main_window_is_centred`
 - `splash::tests::a_splash_frame_draws_and_then_starts_the_editor`
+- `splash::tests::the_editor_does_not_wait_for_system_fonts_the_language_does_not_need`
+- `splash::tests::a_language_that_needs_a_system_font_waits_for_it`
 
 ## Recent drawings on the Welcome Screen
 

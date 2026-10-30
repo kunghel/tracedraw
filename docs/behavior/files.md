@@ -55,7 +55,15 @@ One window, 760 px wide, the same on every system:
   faces drawn by a stand-in and faces in collection files are left out
   (before #1009 only a face of exactly that name, weight and slant was
   embedded, so most text kept no font). It is
-  greyed below version 16 and when no face may be embedded. Both
+  greyed below version 16 and when no face may be embedded. Under the
+  box a small note names the families the file will not carry and why
+  ("Not embedded: Raj 50 (its licence forbids embedding), Missing Sans
+  (no font file to embed)"): a font whose licence bits (OS/2 `fsType`)
+  are restricted or bitmaps only, a face drawn by a stand-in, a face in
+  a collection file; a family with one face that may be embedded is not
+  listed. No note when every face goes in. Before, the box simply showed
+  no size and the user took the font for lost (#1219;
+  `tracedraw_cdr::write::left_out`, `save_as::fonts_left_out_text`). Both
   choices stay for the next Save As and for Save. Embed fonts starts
   off, so that drawings saved one after another do not each carry a copy
   of the same fonts (#886).
@@ -97,25 +105,36 @@ version decides who can open a file:
   `pick_drag_tests::the_cdr_version_chosen_in_options_survives_a_restart_and_starts_save_as`).
 - The version chosen stays with the drawing: Save writes the same
   version again without asking. Each open drawing keeps its own.
-- TraceDraw saves only the versions checked in other programs, 14 to 27.
-  A drawing opened from an older `.cdr` (versions 1 to 13) keeps its
+- TraceDraw saves every version from 7 to 27 (#1139).
+  A drawing opened from an older `.cdr` (versions 1 to 6) keeps its
   file, but Save does not write that version: the status line says
-  which version Save writes ("Save writes version 14."), and Save opens
+  which version Save writes ("Save writes version 7."), and Save opens
   "Older file version": the drawing came from version N, TraceDraw does
-  not save in it, choose a version from 14 to 27; Choose Version...
-  (or Enter) opens Save As on version 14, Cancel saves nothing. Once
+  not save in it, choose a version from 7 to 27; Choose Version...
+  (or Enter) opens Save As on version 7, Cancel saves nothing. Once
   saved in a checked version, Save writes it without asking. A file
   newer than 27 is saved as 27. Options > Global > File Formats (version
   27 at first) is used for a drawing saved to a `.cdr` file without a
   version of its own.
 - `tracedraw-cli convert in.svg out.cdr` writes version 27, or the
-  version in `TRACEDRAW_CDR_VERSION` (14 to 27; another version is
-  refused with exit code 2). Versions 7 to 13 are experimental and are
-  written only with `TRACEDRAW_CDR_EXPERIMENTAL=1`, for testing them in
-  other programs. The MCP `save` tool takes an optional `version`, 14 to
-  27 (`mcp.md`).
+  version in `TRACEDRAW_CDR_VERSION` (7 to 27; another version is
+  refused with exit code 2). The MCP `save` tool takes an optional
+  `version`, 7 to 27 (`mcp.md`).
 
 What each version's file holds is in `docs/cdr-format.md`, Writing.
+
+Live effects and drop shadows are saved as what they draw (a distorted
+rectangle as its curve, a contour as its steps, a shadow as a picture
+of it beneath the object), which any program shows. From version 14
+the file also carries the objects themselves, so opened again in
+TraceDraw a distortion, contour, envelope, perspective, extrusion,
+bevel, block shadow, symmetry or drop shadow is live again (#1031), as
+blends are (#986); an object another program moved or changed in
+between opens as it was drawn. The objects themselves are kept whole in
+`tracedraw/effects.json` (each object as TraceDraw stores it, its
+pictures and the end objects of its blends included), so the member grows
+with them; a member that inflates past 64 MB is not read, and its
+objects open as drawn.
 
 ## Checks
 

@@ -1,6 +1,8 @@
 //! Bitmaps > Mode dialogs: Black and White (1-bit), Duotone (8-bit) and
-//! Paletted (8-bit), each with a before and after preview of the selected
-//! bitmap. OK converts every selected bitmap in one undo step.
+//! Paletted (8-bit), and Bitmaps > Remove Background, each a window the
+//! user sizes with the shared Before and After preview of the selected
+//! bitmap (`before_after.rs`) at the left and its settings at the right.
+//! OK converts every selected bitmap in one undo step.
 
 use crate::app::App;
 use crate::bitmap_modes::{
@@ -8,9 +10,42 @@ use crate::bitmap_modes::{
     DuotoneSettings, DuotoneType, PaletteType, PalettedSettings, Screen,
 };
 use crate::i18n::tr;
-use crate::ui::bitmap_preview::{before_after, settings_key};
+use crate::ui::before_after::{self, View, BOTTOM_H, RIGHT_W};
+use crate::ui::bitmap_preview::{settings_key, Source};
 use crate::ui::tips::RichTip;
 use egui::{Color32, Context, Ui};
+use image::RgbaImage;
+
+/// The shared preview of the selected bitmap through `f`, in the dialog
+/// `id` whose view state is kept between frames; the copy and the pixel
+/// picked (while `picking`) come back.
+fn preview(
+    ui: &mut Ui,
+    app: &App,
+    id: &'static str,
+    key: u64,
+    picking: &mut bool,
+    f: impl FnOnce(&RgbaImage, f32) -> RgbaImage,
+) -> Option<before_after::Live> {
+    let id = egui::Id::new(id);
+    let ctx = ui.ctx().clone();
+    let mut view = before_after::state(&ctx, id);
+    let out = before_after::live(
+        ui,
+        app,
+        id,
+        &mut view,
+        &Source::Shown,
+        key,
+        &View::PLAIN,
+        picking,
+        0.0,
+        |_, _, _| {},
+        f,
+    );
+    before_after::keep(&ctx, id, view);
+    out
+}
 
 /// The Duotone dialog's state: the settings, the ink whose curve is shown
 /// and whether every ink's curve is drawn.
@@ -53,15 +88,34 @@ fn combo<T: Copy + PartialEq>(
 /// Black and White (1-bit): conversion method, threshold or intensity,
 /// and the halftone screen.
 pub fn bw_dialog(app: &mut App, ctx: &Context, s: &mut BwSettings, close: &mut bool) {
-    super::dialogs::window(ctx, tr("dialog.mode_bw")).show(ctx, |ui| {
+    before_after::window(ctx, tr("dialog.mode_bw")).show(ctx, |ui| {
         let dpi = crate::ui::bitmap_preview::selected_bitmap(app)
             .map(|b| b.1)
             .unwrap_or(300.0);
         let settings = *s;
-        before_after(ui, app, settings_key(&settings), 220.0, |img, scale| {
-            black_and_white(img, &settings, dpi * scale)
+        before_after::columns(ui, RIGHT_W, BOTTOM_H, |left, right| {
+            preview(
+                left,
+                app,
+                "bw_preview",
+                settings_key(&settings),
+                &mut false,
+                |img, scale| black_and_white(img, &settings, dpi * scale),
+            );
+            bw_settings(right, s);
         });
-        ui.add_space(6.0);
+        if super::dialogs::ok_cancel(ui, close) {
+            let settings = *s;
+            app.apply_to_bitmaps("Black and White", move |img, dpi| {
+                black_and_white(img, &settings, dpi)
+            });
+        }
+    });
+}
+
+/// The Black and White settings: the method and what it needs.
+fn bw_settings(ui: &mut Ui, s: &mut BwSettings) {
+    {
         egui::Grid::new("bw_grid").num_columns(2).show(ui, |ui| {
             ui.label(tr("dialog.conversion_method"));
             combo(
@@ -121,13 +175,7 @@ pub fn bw_dialog(app: &mut App, ctx: &Context, s: &mut BwSettings, close: &mut b
                 }
             }
         });
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = *s;
-            app.apply_to_bitmaps("Black and White", move |img, dpi| {
-                black_and_white(img, &settings, dpi)
-            });
-        }
-    });
+    }
 }
 
 fn screen_key(s: Screen) -> &'static str {
@@ -150,7 +198,7 @@ pub fn duotone_dialog(app: &mut App, ctx: &Context, st: &mut DuotoneState, close
             st.ink = 0;
         }
     }
-    super::dialogs::window(ctx, tr("dialog.mode_duotone")).show(ctx, |ui| {
+    before_after::window(ctx, tr("dialog.mode_duotone")).show(ctx, |ui| {
         // Four inks always exist; the type uses the first ones.
         while st.settings.inks.len() < 4 {
             let d = DuotoneSettings::default();
@@ -158,7 +206,30 @@ pub fn duotone_dialog(app: &mut App, ctx: &Context, st: &mut DuotoneState, close
             st.settings.inks.push(d.inks[i].clone());
         }
         let settings = st.settings.clone();
-        ui.horizontal(|ui| {
+        before_after::columns(ui, RIGHT_W, BOTTOM_H, |left, right| {
+            preview(
+                left,
+                app,
+                "duotone_preview",
+                settings_key(&settings),
+                &mut false,
+                |img, _| duotone(img, &settings),
+            );
+            duotone_settings(right, app, st);
+        });
+        if super::dialogs::ok_cancel(ui, close) {
+            let settings = st.settings.clone();
+            app.apply_to_bitmaps("Duotone", move |img, _| duotone(img, &settings));
+        }
+    });
+}
+
+/// The Duotone settings: the type, the inks and their curves, Load and
+/// Save.
+fn duotone_settings(ui: &mut Ui, app: &mut App, st: &mut DuotoneState) {
+    egui::ScrollArea::vertical()
+        .id_salt("duotone_settings")
+        .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.type"));
@@ -274,14 +345,6 @@ pub fn duotone_dialog(app: &mut App, ctx: &Context, st: &mut DuotoneState, close
                 );
             });
         });
-        before_after(ui, app, settings_key(&settings), 200.0, |img, _| {
-            duotone(img, &settings)
-        });
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = st.settings.clone();
-            app.apply_to_bitmaps("Duotone", move |img, _| duotone(img, &settings));
-        }
-    });
 }
 
 /// Paletted (8-bit): palette type and colour count, dithering and its
@@ -290,12 +353,30 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
     if s.palette == PaletteType::Custom && s.custom.is_empty() {
         s.custom = app.document_palette_rgb();
     }
-    super::dialogs::window(ctx, tr("dialog.mode_paletted")).show(ctx, |ui| {
+    before_after::window(ctx, tr("dialog.mode_paletted")).show(ctx, |ui| {
         let settings = s.clone();
-        let thumb = before_after(ui, app, settings_key(&settings), 220.0, |img, _| {
-            paletted(img, &settings)
+        before_after::columns(ui, RIGHT_W, BOTTOM_H, |left, right| {
+            let thumb = preview(
+                left,
+                app,
+                "paletted_preview",
+                settings_key(&settings),
+                &mut false,
+                |img, _| paletted(img, &settings),
+            )
+            .map(|p| p.img);
+            paletted_settings(right, s, thumb.as_deref());
         });
-        ui.add_space(6.0);
+        if super::dialogs::ok_cancel(ui, close) {
+            let settings = s.clone();
+            app.apply_to_bitmaps("Paletted", move |img, _| paletted(img, &settings));
+        }
+    });
+}
+
+/// The Paletted settings and the processed palette of the copy `thumb`.
+fn paletted_settings(ui: &mut Ui, s: &mut PalettedSettings, thumb: Option<&RgbaImage>) {
+    {
         egui::Grid::new("pal_grid").num_columns(2).show(ui, |ui| {
             ui.label(tr("dialog.palette"));
             combo(
@@ -341,7 +422,7 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
             let pal = match ui.ctx().data(|d| d.get_temp::<(u64, Vec<[u8; 3]>)>(id)) {
                 Some((k, p)) if k == key => p,
                 _ => {
-                    let p = build_palette(&t, s);
+                    let p = build_palette(t, s);
                     ui.ctx().data_mut(|d| d.insert_temp(id, (key, p.clone())));
                     p
                 }
@@ -365,24 +446,81 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
                 ui.painter().rect_filled(r, 0.0, rgb32(*c));
             }
         }
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = s.clone();
-            app.apply_to_bitmaps("Paletted", move |img, _| paletted(img, &settings));
-        }
-    });
+    }
 }
 
-/// The Remove Background dialog's state: the settings and whether a click
-/// on the preview picks a background colour.
+/// The Remove Background dialog's state: the settings, whether a click
+/// on the preview picks a colour, and what a plain click picks: the
+/// colour of list entry `row`, or a new entry while `adding`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BgRemoveState {
     pub settings: crate::bg_remove::BgSettings,
     pub picking: bool,
+    pub adding: bool,
+    pub row: usize,
 }
 
-/// Bitmaps > Remove Background: tolerance, edge softness, Contiguous,
-/// Remove specks and Clean edge colors, with the background colours
-/// learnt from the border or picked on the preview.
+/// Open Remove Background with this session's last settings (the list
+/// of colours too), or the defaults the first time.
+pub fn open_remove_background(app: &mut App) {
+    let settings = app.last_bg_remove.clone().unwrap_or_default();
+    app.dialog = crate::ui::dialogs::Dialog::RemoveBackground(BgRemoveState {
+        settings,
+        ..Default::default()
+    });
+}
+
+/// What a click on the preview does with the eyedropper on: Shift adds
+/// the colour under it to the list, Alt removes the listed colour
+/// nearest to it (both keep the eyedropper on), a plain click sets the
+/// entry the eyedropper was taken for (or adds one after "+") and puts
+/// the eyedropper down. `at` is the point as fractions of the picture,
+/// where the fill starts too (none for a colour picked on the drawing);
+/// `img` is the copy, for Automatic's colours.
+pub fn bg_pick_click(
+    st: &mut BgRemoveState,
+    c: [u8; 3],
+    at: Option<[f32; 2]>,
+    modifiers: egui::Modifiers,
+    img: Option<&RgbaImage>,
+) {
+    use crate::bg_remove::BgPick;
+    let s = &mut st.settings;
+    if s.colors.is_empty() {
+        s.colors.push(BgPick::AUTO);
+    }
+    if modifiers.alt {
+        let learnt = match img {
+            Some(img) if s.colors.iter().any(|p| p.color.is_none()) => {
+                crate::bg_remove::learn_background(img)
+            }
+            _ => Vec::new(),
+        };
+        s.remove_nearest(c, &learnt);
+        st.row = st.row.min(s.colors.len() - 1);
+        return;
+    }
+    if modifiers.shift || st.adding {
+        s.add_color(c, at);
+        if !modifiers.shift {
+            st.adding = false;
+            st.picking = false;
+        }
+        return;
+    }
+    let row = st.row.min(s.colors.len() - 1);
+    let tolerance = s.colors[row].tolerance;
+    s.colors[row] = BgPick {
+        color: Some(c),
+        tolerance,
+        seed: at,
+    };
+    st.picking = false;
+}
+
+/// Bitmaps > Remove Background: the list of colours to remove (each
+/// Automatic or picked, with its own tolerance), tolerance, edge
+/// softness, Contiguous, Remove specks and Clean edge colors.
 pub fn remove_background_dialog(
     app: &mut App,
     ctx: &Context,
@@ -390,154 +528,304 @@ pub fn remove_background_dialog(
     close: &mut bool,
 ) {
     use crate::bg_remove::remove_background;
-    super::dialogs::window(ctx, tr("dialog.remove_background_title")).show(ctx, |ui| {
+    before_after::window(ctx, tr("dialog.remove_background_title")).show(ctx, |ui| {
         let settings = st.settings.clone();
-        let preview = crate::ui::bitmap_preview::before_after_pick(
-            ui,
-            app,
-            &crate::ui::bitmap_preview::Source::Shown,
-            settings_key(&settings),
-            220.0,
-            st.picking,
-            |img, scale| remove_background(img, &settings, scale),
-        );
-        // A click on a picture adds the colour under it (taken from the
-        // picture as it was, so a removed pixel can be picked too).
-        if let (true, Some(p)) = (st.picking, preview.as_ref()) {
-            if let Some((x, y)) = p.picked {
-                let before = crate::ui::bitmap_preview::copy_of(
-                    app,
-                    ui.ctx(),
-                    &crate::ui::bitmap_preview::Source::Shown,
-                    crate::ui::bitmap_preview::THUMB,
-                );
-                if let Some(t) = before {
-                    let (w, h) = t.img.dimensions();
-                    let c = t
-                        .img
-                        .get_pixel(x.min(w.saturating_sub(1)), y.min(h.saturating_sub(1)))
-                        .0;
-                    let c = [c[0], c[1], c[2]];
-                    if !st.settings.colors.contains(&c) {
-                        st.settings.colors.push(c);
-                    }
+        before_after::columns(ui, RIGHT_W, BOTTOM_H, |left, right| {
+            let p = preview(
+                left,
+                app,
+                "bg_remove_preview",
+                settings_key(&settings),
+                &mut st.picking,
+                |img, scale| remove_background(img, &settings, scale),
+            );
+            // A click on a picture takes the colour under it from the
+            // picture as it was, so a removed pixel can be picked too.
+            if let (true, Some(p)) = (st.picking, &p) {
+                if let Some((x, y)) = p.picked {
+                    let (w, h) = p.img.dimensions();
+                    let (x, y) = (x.min(w.saturating_sub(1)), y.min(h.saturating_sub(1)));
+                    let c = p.img.get_pixel(x, y).0;
+                    let at = [
+                        (x as f32 + 0.5) / w.max(1) as f32,
+                        (y as f32 + 0.5) / h.max(1) as f32,
+                    ];
+                    let modifiers = left.input(|i| i.modifiers);
+                    bg_pick_click(st, [c[0], c[1], c[2]], Some(at), modifiers, Some(&p.img));
                 }
-                st.picking = false;
             }
-        }
-        ui.add_space(6.0);
-        egui::Grid::new("bg_remove_grid")
-            .num_columns(2)
-            .show(ui, |ui| {
-                ui.label(tr("dialog.bg_colors"));
-                ui.horizontal(|ui| {
-                    if st.settings.colors.is_empty() {
-                        ui.label(tr("dialog.bg_colors_auto"));
-                    }
-                    let mut gone = None;
-                    for (i, c) in st.settings.colors.iter().enumerate() {
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                        ui.painter().rect_filled(rect, 2.0, rgb32(*c));
-                        ui.painter().rect_stroke(
-                            rect,
-                            2.0,
-                            egui::Stroke::new(1.0, crate::theme::Tokens::border()),
-                            egui::StrokeKind::Inside,
-                        );
-                        if resp
-                            .rich_tip(crate::ui::tips::pair(
-                                "dialog.bg_color_remove",
-                                "dialog.bg_color_remove_tip",
-                            ))
-                            .clicked()
-                        {
-                            gone = Some(i);
-                        }
-                    }
-                    if let Some(i) = gone {
-                        st.settings.colors.remove(i);
-                    }
-                    let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-                    crate::ui::propbar::frame(ui, rect, resp.hovered(), st.picking);
-                    crate::ui::icons::draw(
-                        ui.painter(),
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)),
-                        crate::tools::Tool::ColorEyedropper,
-                        crate::theme::Tokens::icon(),
-                    );
-                    if resp
-                        .rich_tip(crate::ui::tips::pair(
-                            "dialog.bg_pick",
-                            "dialog.bg_pick_tip",
-                        ))
-                        .clicked()
-                    {
-                        st.picking = !st.picking;
-                    }
-                    if !st.settings.colors.is_empty()
-                        && ui
-                            .small_button(tr("dialog.bg_colors_auto_button"))
-                            .rich_tip(crate::ui::tips::pair(
-                                "dialog.bg_colors_auto_button",
-                                "dialog.bg_colors_auto_tip",
-                            ))
-                            .clicked()
-                    {
-                        st.settings.colors.clear();
-                    }
-                });
-                ui.end_row();
-                ui.label(tr("dialog.tolerance"));
-                crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("dialog.tolerance"), |ui| {
-                    ui.add(crate::ui::Slider::new(
-                        &mut st.settings.tolerance,
-                        0.0..=100.0,
-                    ))
-                });
-                ui.end_row();
-                ui.label(tr("dialog.edge_softness"));
-                crate::ui::tips::tip_over(
-                    ui,
-                    crate::ui::tips::keyed("dialog.edge_softness"),
-                    |ui| {
-                        ui.add(
-                            crate::ui::Slider::new(&mut st.settings.softness, 0.0..=20.0)
-                                .suffix(" px"),
-                        )
-                    },
-                );
-                ui.end_row();
-            });
-        ui.checkbox(&mut st.settings.contiguous, tr("dialog.bg_contiguous"))
-            .rich_tip(crate::ui::tips::pair(
-                "dialog.bg_contiguous",
-                "dialog.bg_contiguous_tip",
-            ));
-        ui.checkbox(&mut st.settings.despeckle, tr("dialog.bg_despeckle"))
-            .rich_tip(crate::ui::tips::pair(
-                "dialog.bg_despeckle",
-                "dialog.bg_despeckle_tip",
-            ));
-        ui.checkbox(&mut st.settings.clean_edges, tr("dialog.bg_clean_edges"))
-            .rich_tip(crate::ui::tips::pair(
-                "dialog.bg_clean_edges",
-                "dialog.bg_clean_edges_tip",
-            ));
-        if ui
-            .button(tr("dialog.reset"))
-            .rich_tip(crate::ui::tips::keyed("dialog.reset"))
-            .clicked()
-        {
-            st.settings = Default::default();
-            st.picking = false;
-        }
+            // With the eyedropper on, a click on the drawing picks there
+            // too (no seed point: it may be outside the bitmap).
+            let on = st.picking;
+            if let Some(c) =
+                crate::ui::color_picker::pick_for(ctx, egui::Id::new("bg_remove_pick"), on)
+            {
+                let modifiers = ctx.input(|i| i.modifiers);
+                let img = p.as_ref().map(|p| &*p.img);
+                bg_pick_click(st, c.to_rgb8(), None, modifiers, img);
+            }
+            bg_remove_settings(right, st);
+        });
         if super::dialogs::ok_cancel(ui, close) {
             let settings = st.settings.clone();
+            // Remembered for the session; the points picked belong to
+            // this bitmap, so they are not.
+            let mut kept = settings.clone();
+            for p in &mut kept.colors {
+                p.seed = None;
+            }
+            app.last_bg_remove = Some(kept);
             app.apply_to_bitmaps("Remove Background", move |img, _| {
                 remove_background(img, &settings, 1.0)
             });
         }
     });
+}
+
+/// The test names of the list's controls, row by row.
+const BG_PICK_MARKS: [&str; 4] = ["bg_pick_0", "bg_pick_1", "bg_pick_2", "bg_pick_3"];
+const BG_DROP_MARKS: [&str; 4] = ["bg_drop_0", "bg_drop_1", "bg_drop_2", "bg_drop_3"];
+const BG_TOL_MARKS: [&str; 4] = ["bg_tol_0", "bg_tol_1", "bg_tol_2", "bg_tol_3"];
+
+/// A small square button drawing `glyph`, pressed while `on`.
+fn bg_icon_button(
+    ui: &mut Ui,
+    on: bool,
+    enabled: bool,
+    glyph: impl FnOnce(&egui::Painter, egui::Rect, Color32),
+) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), sense);
+    crate::ui::propbar::frame(ui, rect, enabled && resp.hovered(), on);
+    let colour = if enabled {
+        crate::theme::Tokens::icon()
+    } else {
+        crate::theme::Tokens::icon().gamma_multiply(0.4)
+    };
+    glyph(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)),
+        colour,
+    );
+    resp
+}
+
+/// One colour's swatch: the colour, or for Automatic a square half
+/// light, half dark.
+fn bg_swatch(ui: &mut Ui, color: Option<[u8; 3]>) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let p = ui.painter();
+    match color {
+        Some(c) => {
+            p.rect_filled(rect, 2.0, rgb32(c));
+        }
+        None => {
+            // Automatic: a diagonal half light, half dark.
+            p.rect_filled(rect, 2.0, Color32::WHITE);
+            p.add(egui::Shape::convex_polygon(
+                vec![rect.right_top(), rect.right_bottom(), rect.left_bottom()],
+                Color32::from_gray(150),
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    p.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, crate::theme::Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    resp
+}
+
+/// The list of colours to remove: each row its swatch, its eyedropper,
+/// Automatic for the first, its tolerance and a remove button; "+" adds
+/// a colour picked on the preview.
+fn bg_color_list(ui: &mut Ui, st: &mut BgRemoveState) {
+    use crate::bg_remove::BgPick;
+    if st.settings.colors.is_empty() {
+        st.settings.colors.push(BgPick::AUTO);
+    }
+    let global = st.settings.tolerance;
+    let alone = st.settings.colors.len() == 1;
+    let mut gone = None;
+    for i in 0..st.settings.colors.len() {
+        let entry = st.settings.colors[i];
+        ui.horizontal(|ui| {
+            let swatch = bg_swatch(ui, entry.color);
+            match entry.color {
+                Some(c) => swatch.rich_tip(format!(
+                    "{}\n#{:02X}{:02X}{:02X}",
+                    tr("dialog.bg_color_remove"),
+                    c[0],
+                    c[1],
+                    c[2]
+                )),
+                None => swatch.rich_tip(crate::ui::tips::pair(
+                    "dialog.bg_colors_auto_button",
+                    "dialog.bg_colors_auto",
+                )),
+            };
+            let picking_here = st.picking && !st.adding && st.row == i;
+            let pick = bg_icon_button(ui, picking_here, true, |p, r, c| {
+                crate::ui::icons::draw(p, r, crate::tools::Tool::ColorEyedropper, c)
+            });
+            if let Some(m) = BG_PICK_MARKS.get(i) {
+                before_after::mark(ui, m, pick.rect);
+            }
+            if pick
+                .rich_tip(crate::ui::tips::pair(
+                    "dialog.bg_pick",
+                    "dialog.bg_pick_tip",
+                ))
+                .clicked()
+            {
+                st.picking = !picking_here;
+                st.adding = false;
+                st.row = i;
+            }
+            if i == 0 {
+                if entry.color.is_none() {
+                    ui.label(tr("dialog.bg_colors_auto_button"));
+                } else if ui
+                    .small_button(tr("dialog.bg_colors_auto_button"))
+                    .rich_tip(crate::ui::tips::pair(
+                        "dialog.bg_colors_auto_button",
+                        "dialog.bg_colors_auto_tip",
+                    ))
+                    .clicked()
+                {
+                    st.settings.colors[0] = BgPick {
+                        tolerance: entry.tolerance,
+                        ..BgPick::AUTO
+                    };
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let drop = bg_icon_button(ui, false, !alone, |p, r, c| {
+                    let r = r.shrink(4.0);
+                    let s = egui::Stroke::new(1.5, c);
+                    p.line_segment([r.left_top(), r.right_bottom()], s);
+                    p.line_segment([r.right_top(), r.left_bottom()], s);
+                });
+                if let Some(m) = BG_DROP_MARKS.get(i) {
+                    before_after::mark(ui, m, drop.rect);
+                }
+                if drop
+                    .rich_tip(crate::ui::tips::pair(
+                        "dialog.bg_row_remove",
+                        "dialog.bg_row_remove_tip",
+                    ))
+                    .clicked()
+                {
+                    gone = Some(i);
+                }
+                let mut t = entry.tolerance_or(global);
+                let field = crate::ui::tips::tip_over(
+                    ui,
+                    crate::ui::tips::pair("dialog.tolerance", "dialog.bg_row_tolerance_tip"),
+                    |ui| {
+                        ui.add(
+                            crate::ui::field::NumField::new(&mut t)
+                                .range(0.0..=100.0)
+                                .fixed_decimals(0)
+                                .width(56.0),
+                        )
+                    },
+                );
+                if let Some(m) = BG_TOL_MARKS.get(i) {
+                    before_after::mark(ui, m, field.rect);
+                }
+                if field.changed() {
+                    st.settings.colors[i].tolerance = Some(t.round().clamp(0.0, 100.0));
+                }
+            });
+        });
+    }
+    if let Some(i) = gone {
+        st.settings.remove(i);
+        st.row = st.row.min(st.settings.colors.len() - 1);
+        st.picking &= st.adding;
+    }
+    let adding = st.picking && st.adding;
+    ui.horizontal(|ui| {
+        let add = bg_icon_button(ui, adding, true, |p, r, c| {
+            let r = r.shrink(3.0);
+            let s = egui::Stroke::new(1.5, c);
+            p.line_segment([r.center_top(), r.center_bottom()], s);
+            p.line_segment([r.left_center(), r.right_center()], s);
+        });
+        before_after::mark(ui, "bg_add", add.rect);
+        if add
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.bg_add_color",
+                "dialog.bg_add_color_tip",
+            ))
+            .clicked()
+        {
+            st.picking = !adding;
+            st.adding = !adding;
+        }
+        ui.label(tr("dialog.bg_add_color"));
+    });
+    ui.label(
+        egui::RichText::new(tr("dialog.bg_colors_hint"))
+            .weak()
+            .small(),
+    );
+}
+
+/// The Remove Background settings.
+fn bg_remove_settings(ui: &mut Ui, st: &mut BgRemoveState) {
+    ui.label(tr("dialog.bg_colors"));
+    bg_color_list(ui, st);
+    ui.add_space(4.0);
+    egui::Grid::new("bg_remove_grid")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(tr("dialog.tolerance"));
+            let tol =
+                crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("dialog.tolerance"), |ui| {
+                    // Whole numbers, the box and the thumb alike.
+                    ui.add(
+                        crate::ui::Slider::new(&mut st.settings.tolerance, 0.0..=100.0).integer(),
+                    )
+                });
+            before_after::mark(ui, "bg_tolerance", tol.rect);
+            ui.end_row();
+            ui.label(tr("dialog.edge_softness"));
+            crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("dialog.edge_softness"), |ui| {
+                ui.add(crate::ui::Slider::new(&mut st.settings.softness, 0.0..=20.0).suffix(" px"))
+            });
+            ui.end_row();
+        });
+    ui.checkbox(&mut st.settings.contiguous, tr("dialog.bg_contiguous"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.bg_contiguous",
+            "dialog.bg_contiguous_tip",
+        ));
+    ui.checkbox(&mut st.settings.despeckle, tr("dialog.bg_despeckle"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.bg_despeckle",
+            "dialog.bg_despeckle_tip",
+        ));
+    ui.checkbox(&mut st.settings.clean_edges, tr("dialog.bg_clean_edges"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.bg_clean_edges",
+            "dialog.bg_clean_edges_tip",
+        ));
+    if ui
+        .button(tr("dialog.reset"))
+        .rich_tip(crate::ui::tips::keyed("dialog.reset"))
+        .clicked()
+    {
+        st.settings = Default::default();
+        st.picking = false;
+        st.adding = false;
+        st.row = 0;
+    }
 }

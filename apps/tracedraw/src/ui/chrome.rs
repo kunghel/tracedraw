@@ -710,11 +710,17 @@ fn message_box_with(
             ui.vertical(|ui| {
                 ui.add_space(6.0);
                 ui.set_max_width(380.0);
-                let mut rich = egui::RichText::new(text).size(13.5);
-                if icon == MessageIcon::Busy {
-                    rich = rich.strong();
+                if text.contains("**") {
+                    // A warning marked **so** in the message is red and
+                    // underlined.
+                    ui.add(egui::Label::new(message_job(ui, text)).wrap());
+                } else {
+                    let mut rich = egui::RichText::new(text).size(13.5);
+                    if icon == MessageIcon::Busy {
+                        rich = rich.strong();
+                    }
+                    ui.add(egui::Label::new(rich).wrap());
                 }
-                ui.add(egui::Label::new(rich).wrap());
             });
         });
         if let Some((label, checked)) = check {
@@ -731,6 +737,33 @@ fn message_box_with(
         picked = Some(buttons.len().saturating_sub(1));
     }
     picked
+}
+
+/// The red of a warning marked in a message.
+const WARNING_RED: egui::Color32 = egui::Color32::from_rgb(0xD9, 0x1E, 0x18);
+
+/// `text` laid out for a message box: the parts between `**` marks red
+/// and underlined, the rest in the text colour.
+fn message_job(ui: &Ui, text: &str) -> egui::text::LayoutJob {
+    let font = egui::FontId::proportional(13.5);
+    let normal = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
+    let marked = egui::TextFormat {
+        color: WARNING_RED,
+        underline: egui::Stroke::new(1.0, WARNING_RED),
+        ..egui::TextFormat::simple(font, WARNING_RED)
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (i, part) in text.split("**").enumerate() {
+        if !part.is_empty() {
+            let format = if i % 2 == 1 {
+                marked.clone()
+            } else {
+                normal.clone()
+            };
+            job.append(part, 0.0, format);
+        }
+    }
+    job
 }
 
 /// The white title bar: title at the left, the close button at the right.
@@ -1089,6 +1122,47 @@ pub fn parse_number(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A message's part marked `**` is laid out red and underlined, the
+    /// rest in the text colour.
+    #[test]
+    fn a_marked_warning_is_red_and_underlined() {
+        let ctx = crate::theme::ui_context();
+        let mut job = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            job = Some(message_job(ui, "**Slow:** rest\n\nmore"));
+        });
+        out.textures_delta.clear();
+        let job = job.expect("job");
+        assert_eq!(job.text, "Slow: rest\n\nmore");
+        assert_eq!(job.sections.len(), 2);
+        let (warn, rest) = (&job.sections[0].format, &job.sections[1].format);
+        assert_eq!(warn.color, WARNING_RED);
+        assert_eq!(warn.underline.width, 1.0);
+        assert_ne!(rest.color, WARNING_RED);
+        assert_eq!(rest.underline.width, 0.0);
+    }
+
+    /// The browser notice opens with its warning, marked, in every
+    /// language, then the WebAssembly and the desktop paragraphs.
+    #[test]
+    fn the_browser_notice_leads_with_its_marked_warning_in_every_language() {
+        for (code, _) in crate::i18n::LANGUAGES {
+            crate::i18n::with_thread_language(code, || {
+                let text = crate::i18n::tr("web.notice_text");
+                assert!(text.starts_with("**"), "{code}: {text}");
+                assert_eq!(text.matches("**").count(), 2, "{code}: {text}");
+                assert_eq!(text.split("\n\n").count(), 3, "{code}: {text}");
+                assert!(
+                    text.split("\n\n")
+                        .nth(1)
+                        .unwrap_or("")
+                        .contains("WebAssembly"),
+                    "{code}"
+                );
+            });
+        }
+    }
 
     /// The screen less the holes is covered once, and no piece reaches
     /// into a hole (#563).

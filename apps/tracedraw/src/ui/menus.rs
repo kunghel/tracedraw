@@ -2989,7 +2989,7 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
     }
     // On this computer, no AI service needed.
     if item(ui, "menu.bitmaps.remove_background_local", "", has_bitmap) {
-        app.dialog = Dialog::RemoveBackground(Default::default());
+        crate::ui::bitmap_dialogs::open_remove_background(app);
     }
     // AI: greyed until the AI service makes pictures (Tools > Options >
     // AI > Service); the tip says why.
@@ -3027,13 +3027,35 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.bitmaps.mode_paletted", "", has_bitmap) {
             app.dialog = Dialog::BitmapPaletted(Default::default());
         }
-        if item(ui, "menu.bitmaps.mode_rgb", "", has_bitmap) {
+        // RGB and CMYK are the bitmaps' colour mode: the mode of every
+        // selected bitmap is ticked (#1254).
+        let modes: Vec<bool> = app
+            .selected_rc()
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
+            .map(|s| s.cmyk_bitmap)
+            .collect();
+        let all_rgb = has_bitmap && modes.iter().all(|c| !c);
+        let all_cmyk = has_bitmap && modes.iter().all(|c| *c);
+        if mark_item_if(
+            ui,
+            "menu.bitmaps.mode_rgb",
+            "",
+            Mark::Check(all_rgb),
+            has_bitmap,
+        ) {
             app.set_bitmap_mode(crate::bitmap_fx::ColorMode::Rgb);
         }
         if item(ui, "menu.bitmaps.mode_lab", "", has_bitmap) {
             app.apply_to_bitmaps("Lab Color", |img, _| crate::bitmap_modes::lab_mode(img));
         }
-        if item(ui, "menu.bitmaps.mode_cmyk", "", has_bitmap) {
+        if mark_item_if(
+            ui,
+            "menu.bitmaps.mode_cmyk",
+            "",
+            Mark::Check(all_cmyk),
+            has_bitmap,
+        ) {
             app.set_bitmap_mode(crate::bitmap_fx::ColorMode::Cmyk);
         }
     });
@@ -3275,7 +3297,9 @@ fn table_menu(app: &mut App, ui: &mut Ui) {
             .iter()
             .any(|s| matches!(s.kind, ShapeKind::Text { .. })),
     ) {
-        app.convert_text_to_table();
+        if let Some(text) = app.selected_text_for_table() {
+            app.dialog = Dialog::TextToTable(crate::table::TextToTable::detect(&text));
+        }
     }
     if item(ui, "menu.table.convert_table_to_text", "", in_table) {
         app.convert_table_to_text();
