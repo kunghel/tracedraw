@@ -52,6 +52,8 @@ a direita, e as seleções sombreiam cada letra selecionada. Teclados e métodos
 de entrada que enviam caracteres (como os de tâmil e outras escritas indianas
 no Windows) digitam no texto e nos campos, e códigos <kbd>Alt</kbd> digitados
 no teclado numérico dão o caractere uma vez só.
+Letras digitadas com <kbd>AltGr</kbd> (polonês ą ę ł, alemão @ € { }) entram
+no texto e nos campos, inclusive no Windows.
 
 Tudo o que você digita em uma sessão de edição é um passo de desfazer.
 
@@ -65,8 +67,9 @@ justificado), marcadores e capitular para texto de parágrafo,
 botão ao lado do tamanho da fonte abre os controles dos eixos de uma fonte
 variável (veja [Fontes variáveis](fonts.md#variable-fonts)).
 Durante a edição, elas agem sobre os caracteres selecionados; senão, sobre os
-textos selecionados inteiros. Sua escolha também passa a ser o padrão do
-próximo texto.
+textos selecionados inteiros, e só a opção que você muda: uma fonte nova para
+vários textos mantém o tamanho, o negrito e o itálico de cada um. Sua escolha
+também passa a ser o padrão do próximo texto.
 
 A lista de fontes mostra cada família na própria fonte, com as usadas por
 último no alto. Digite para filtrar a lista. Uma família com vários estilos tem
@@ -122,7 +125,14 @@ cabe não é desenhado, impresso nem exportado. Para fazê-lo caber:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] desfaz a ligação.
   Ou clique na pequena aba sob a borda de baixo do quadro e depois clique
   em outro quadro (nesta página ou em outra) ou clique ou arraste num lugar
-  vazio para um quadro novo: o texto continua nele.
+  vazio para um quadro novo: o texto continua nele. Também dá para
+  arrastar a partir da aba e soltar sobre outro quadro ou num lugar vazio.
+- um quadro selecionado também tem uma pequena aba sobre a borda de cima:
+  clique nela e depois clique no quadro cujo texto deve fluir para este, ou
+  clique num lugar vazio para um quadro novo, onde o texto começa. A aba de
+  cima mostra dois elos quando entra texto, e a de baixo quando o texto
+  continua; enquanto você escolhe, uma linha tracejada vai da aba até o
+  ponteiro.
 
 [[menu.text > menu.text.show_text_frames]] mostra ou oculta as molduras.
 

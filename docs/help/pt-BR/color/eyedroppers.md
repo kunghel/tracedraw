@@ -26,8 +26,9 @@ A barra de propriedades mostra a cor amostrada.
 
 Enquanto você move o ponteiro para pegar uma cor, uma pequena caixa ao lado
 mostra a cor embaixo dele: uma amostra, o nome da cor quando é uma cor da
-paleta ou uma tinta especial, seus valores no modo de cor do desenho (CMYK ou
-RGB) e seu valor hexadecimal. O conta-gotas de um seletor de cores mostra a
+paleta ou uma tinta especial, seus valores (CMYK ou RGB: no modelo da própria
+cor, então uma cor convertida com Converter cores mostra o modelo para o qual
+foi; outras cores no modo de cor do desenho) e seu valor hexadecimal. O conta-gotas de um seletor de cores mostra a
 mesma caixa.
 
 ## Conta-gotas de atributos {#attributes-eyedropper}
@@ -37,8 +38,10 @@ de um objeto para outros.
 
 1. Escolha a ferramenta [[tool.attributes_eyedropper]].
 2. Na barra de propriedades, escolha o que copiar:
-   - **Propriedades**: contorno, preenchimento e texto (a fonte, o tamanho e o
-     estilo; o texto em si é mantido). Todas ativadas de início.
+   - **Propriedades**: contorno, preenchimento, texto (a fonte, o tamanho e o
+     estilo; o texto em si é mantido) e transparência (uniforme, ou um
+     gradiente, padrão ou textura com o seu modo de mesclagem). Todas
+     ativadas de início.
    - **Transformações**: tamanho, rotação e posição. Desativadas de início.
    - **Efeitos**: transparência, sombra e efeitos vivos. Desativados de início.
 3. Clique no objeto de onde copiar.

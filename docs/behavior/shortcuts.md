@@ -70,7 +70,8 @@ original, #471). Checks:
 | Ctrl+Home, Ctrl+End | To front and back of the page |
 | Shift+PgUp, Shift+PgDn | To front and back of the layer |
 | Ctrl+PgUp, Ctrl+PgDn | Forward one, back one |
-| Alt+Enter, Ctrl+Shift+A | Properties, Align and Distribute panels |
+| Alt+Enter | Properties panel |
+| Ctrl+Shift+A | Copy Properties From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`) |
 | Alt+F7, Alt+F8, Alt+F9, Alt+F10 | Transformations panel on Position, Rotate, Scale and Mirror, Size |
 | Ctrl+M | Merge table cells |
 | Alt+Shift+F8, Alt+F11 | Run Macro, Macro Editor (Tools > Macros) |
@@ -108,6 +109,15 @@ Media; the Bezier, Pen, Crop and Knife tools have no key.
   dockers, tabs and the drawing; only the dialog (and the lists it
   opens) can be used until it closes
   (`ui::dialogs::tests::an_open_dialog_takes_the_clicks_outside_it`).
+- Tab and Shift+Tab move between the dialog's controls and stay in
+  it: Tab with nothing focused (a dialog just opened) or from its last
+  control goes to its first input box (its first control when it has
+  none), Shift+Tab from its first control to its last input box. egui
+  moves the focus in drawing order, so the menu bar, drawn first, took
+  it and the File menu opened on the next keys (#1258,
+  `chrome::keep_tab_in`, run for every dialog window, active only in
+  the three frames after a Tab;
+  `pick_drag_tests::tab_in_a_dialog_focuses_its_first_input_box`).
 - Esc with a menu or a drop-down list open closes it and changes
   nothing else (the selection stays).
 - Tools keep their own keys (see `pick-tool.md`, `shape-tool.md` and

@@ -22,6 +22,8 @@ hodnoty. Tlačítko nabídky palety na levém konci otevře nabídku palety.
 Paletu lze přesunout k jinému okraji okna nebo ji nechat plovoucí: táhněte ji
 za tečkovaný úchyt.
 
+Na každé straně může ležet u okraje okna nebo vedle kresby, mezi kresbou a panely nebo panelem nástrojů na té straně. Při tažení ukazuje modrý pruh, kam se umístí; klepnutím pravým tlačítkem na úchyt vyberete místo ze seznamu.
+
 ## Paleta dokumentu {#document-palette}
 
 Každá barva, kterou použijete na objekt, se přidá do palety dokumentu, která
@@ -42,6 +44,7 @@ Otevřete jej příkazem
 
 - Zaškrtnutím paletu zobrazíte pod oknem kresby.
 - [[docker.edit]] ji otevře v editoru palet.
+- [[docker.palette_lock]] zamkne paletu, kterou jste otevřeli nebo vytvořili, aby ji editor palet nemohl změnit; [[docker.palette_unlock]] úpravy znovu povolí.
 - [[menu.window.palette_open]] otevře soubor palety (`.tdpal`, `.gpl`,
   `.ase` nebo `.aco`).
 - [[menu.window.palette_from_document]] a

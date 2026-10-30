@@ -566,6 +566,14 @@ impl App {
                 };
                 return;
             }
+            // Alt: a freehand marquee whatever the bar's selection mode,
+            // also over a curve; Shift keeps the nodes chosen already
+            // (#1341).
+            if mods.alt {
+                self.node_lasso_keeps = mods.shift;
+                self.drag = Drag::NodeLasso { points: vec![p] };
+                return;
+            }
             // A segment of a selected curve bends.
             if let Some((shape, index, t)) = self.segment_at(p) {
                 if let Some((path, closed, _)) = self.path_of(shape) {
@@ -587,6 +595,7 @@ impl App {
                     self.select(vec![id]);
                 }
             }
+            self.node_lasso_keeps = false;
             self.drag = if self.node_lasso {
                 Drag::NodeLasso { points: vec![p] }
             } else {
@@ -755,7 +764,13 @@ impl App {
                     begun,
                     mut turn,
                 } => {
+                    // Ctrl as it is held now, not only at the press: one
+                    // corner of a rectangle, an ellipse's angle in steps of
+                    // the constrain angle, a star's points keeping their
+                    // turn, from the first drag on (#1325, #1331, #1340).
+                    let ctrl = mods.ctrl || mods.command;
                     let q = self.snap_point_excluding(p, &[shape]);
+                    let step = self.settings.constrain_angle;
                     let cmd = match node {
                         crate::kind_nodes::KindNode::Spline { index } => {
                             let chosen: Vec<usize> = self
@@ -771,8 +786,10 @@ impl App {
                             }
                             .map(|points| Command::SetSpline { shape, points })
                         }
-                        _ => crate::kind_nodes::drag(&start, node, q, single, chosen, &mut turn)
-                            .map(|kind| Command::SetShapeKind { shape, kind }),
+                        _ => crate::kind_nodes::drag_constrained(
+                            &start, node, q, ctrl, chosen, &mut turn, step,
+                        )
+                        .map(|kind| Command::SetShapeKind { shape, kind }),
                     };
                     if let Some(cmd) = cmd {
                         // One undo step for the whole drag.

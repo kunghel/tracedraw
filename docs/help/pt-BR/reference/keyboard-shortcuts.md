@@ -61,7 +61,7 @@ comando ao lado dele, e você pode acrescentar os seus; veja
 | Teclas | Painel |
 |---|---|
 | <kbd>Alt+Enter</kbd> | Propriedades |
-| <kbd>Ctrl+Shift+A</kbd> | Alinhar e distribuir |
+| <kbd>Ctrl+Shift+A</kbd> | Copiar propriedades de |
 | <kbd>Alt+F7</kbd>, <kbd>Alt+F8</kbd>, <kbd>Alt+F9</kbd>, <kbd>Alt+F10</kbd> | Transformações: posição, girar, escala e espelhar, tamanho |
 | <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd> | Texto, Glifos |
 | <kbd>F11</kbd>, <kbd>Shift+F11</kbd> | preenchimento (Propriedades), Cor |
@@ -110,3 +110,6 @@ dela; para a ferramenta [[tool.shape]], veja
 <kbd>Enter</kbd> pressiona [[dialog.ok]] e <kbd>Esc</kbd> fecha uma caixa de
 diálogo sem aplicá-la. Enquanto uma caixa de diálogo está aberta, os atalhos
 acima não são usados, exceto <kbd>F1</kbd>.
+<kbd>Tab</kbd> vai para a primeira caixa em que se pode digitar e segue pelos
+controles da caixa de diálogo; <kbd>Shift</kbd>+<kbd>Tab</kbd> volta. As teclas
+ficam na caixa de diálogo.

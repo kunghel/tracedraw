@@ -31,9 +31,14 @@ button with the alignment's picture dropping Left, Center, Right and
 Full justify), Bullets and Drop Cap (for paragraph text; they open their
 dialogs), Text Properties (the Text docker, Ctrl+T) and Edit Text
 (Ctrl+Shift+T). Each change applies to the
-selected text objects at once (every span takes the font, size and
-style) as one "Text Style" undo step, and becomes the default for the
-next text. The size is the size as seen: a text scaled with the Pick
+selected text objects at once as one "Text Style" undo step, and
+becomes the default for the next text. Only what was changed goes to
+them: the fields show the first selected text, and a field left as it
+showed leaves each text's own value, so a new font for texts of 9 and
+11 pt keeps both sizes, their weights and slants (#1304,
+`text_editing::tests::a_font_for_several_texts_keeps_each_ones_size`);
+a font or a size picked from its list goes to all of them even when it
+is the one shown. The size is the size as seen: a text scaled with the Pick
 tool shows its font size times its vertical scale (24 pt doubled reads
 48 pt), and a size typed for it is the size it then shows (the
 characters keep it before the text's scale); a field left as it was
@@ -130,8 +135,13 @@ Text and Glyphs dockers and Options (default font):
   - Embedding rights: Installable, Editable, Preview and print,
     Restricted, Bitmap only, from OS/2 `fsType`; a family counts by its
     most restrictive face.
-  - Folders: the folders the installed font files are in (the folder's
-    name, its path as the tip).
+  - Folders: the folders the fonts are in, as the Font Manager has them:
+    each folder added to the libraries, and the operating system's font
+    folders, once each, whatever subfolder a file lies in (the folder's
+    name, its path as the tip; `FontSystem::folder_of`, the deepest
+    library or system folder a file lies under, else its own folder;
+    `font_folders::fonts_count_as_in_their_library_folder`). Until
+    0.27.0 every subfolder was listed on its own (#867).
 
   In each section a family needs one of the choices ticked; of the
   OpenType features it needs every one ticked; it needs what every
@@ -299,14 +309,32 @@ system's CJK fonts), for each character
 (`text_effect_tests::an_input_method_composes_then_commits_cjk_text`,
 `text_effect_tests::the_canvas_asks_for_the_input_method_while_text_is_typed`).
 
+**AltGr** (#1271): on Windows the right Alt key, which types the extra
+letters of many layouts (Polish ą ć ę ł ń ś ź ż, Czech, Croatian,
+Hungarian and Turkish letters, German @ € { } [ ] \ ~), reaches the
+program as Ctrl and Alt held together. While text is edited a key
+pressed with both is a character, never a Ctrl shortcut (AltGr+A
+selected all and the letter replaced the text, AltGr+E, L or N aligned
+it, AltGr+8 or 2 resized it), never the digit of an Alt code, and the
+copy, cut and paste the windowing layer makes of AltGr+C, X and V do
+nothing. The windowing layer drops the character of every key pressed
+with Ctrl; the message hook that keeps the characters input methods
+send (#1151) keeps those typed while Ctrl and Alt are held too, and the
+next frame types them, in artistic text, paragraph text and fields
+(`input_method_tests::letters_typed_with_altgr_type_into_text`,
+`system_chars::tests::characters_typed_with_altgr_are_kept`).
+
 **Break Apart** (Ctrl+K) on artistic text makes separate text objects of
 its lines when it has more than one line, else of its words, else of its
 letters (a text without spaces, like CJK text, breaks into its
 characters). Each piece keeps the text's look (font, size, styles, fill,
 outline, transformation) and sits where its letters were; the first
 piece keeps the object, the others go just above it, all selected, in one
-"Break Apart" undo step. A single letter, paragraph text and text on a
-path stay as they are
+"Break Apart" undo step. Vertical text stays vertical: its words and
+letters go down their column and its columns stay side by side, right
+to left, as they were (#1303,
+`text_effect_tests::break_apart_keeps_vertical_text_in_its_columns`).
+A single letter, paragraph text and text on a path stay as they are
 (`text_effect_tests::break_apart_splits_text_into_lines_words_then_letters`).
 Text with an envelope, perspective or distortion breaks instead into
 one curve per letter (an accent stays with its letter, underlines and
@@ -389,7 +417,21 @@ on its own line, which is why the lines are joined first.
   space a new frame the size of the first one takes the text, its top
   left corner at the click; a drag makes the new frame the dragged
   rectangle. Esc or a right click cancels
-  (`the_flow_tab_links_to_a_new_frame_on_another_page`).
+  (`the_flow_tab_links_to_a_new_frame_on_another_page`). A drag that
+  starts on the tab does the same where it is let go (a release over a
+  frame links to it, over empty space makes the new frame there).
+- The top tab: a picked paragraph frame also has a tab over its top
+  edge's middle, above the selection's top handle (two links when
+  another frame flows into it, empty otherwise). A click (or a drag) on
+  the empty top tab of a frame no other frame flows into waits for the
+  next click, with its own hint on the status bar: on another paragraph
+  frame (one that flows on into no frame yet), that frame flows into
+  this one; on empty space (or a dragged rectangle) a new frame the size
+  of this one is made and flows into it, so the text starts in the new
+  frame.
+- While a link waits for its second click, a dashed blue line runs from
+  the middle of the tab it came from to the pointer
+  (`pick_drag_tests::text_frame_tabs_link_frames_by_drag_and_by_click`).
 - A copy of a frame (Duplicate, a right click during a move, Paste,
   stamping) is a frame of its own, in no chain: typing in it does not
   flow into the original's next frame. Frames of a chain copied together

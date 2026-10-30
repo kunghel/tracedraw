@@ -25,8 +25,9 @@ The property bar shows the sampled color.
 
 While you move the pointer to take a color, a small box beside it shows the
 color under it: a swatch, the color's name when it is a palette color or a
-spot ink, its values in the drawing's color mode (CMYK or RGB) and its hex
-value. The eyedropper button of a color picker shows the same box.
+spot ink, its values (CMYK or RGB: in the color's own model, so a color
+converted with Convert Colors shows the model it went to; other colors in the
+drawing's color mode) and its hex value. The eyedropper button of a color picker shows the same box.
 
 ## Attributes Eyedropper {#attributes-eyedropper}
 
@@ -35,8 +36,9 @@ from one object to others.
 
 1. Choose the [[tool.attributes_eyedropper]] tool.
 2. On the property bar, choose what to copy:
-   - **Properties**: outline, fill and text (the font, size and style; the
-     text itself is kept). All on at first.
+   - **Properties**: outline, fill, text (the font, size and style; the
+     text itself is kept) and transparency (uniform, or a gradient, pattern
+     or texture with its merge mode). All on at first.
    - **Transformations**: size, rotation and position. Off at first.
    - **Effects**: transparency, drop shadow and live effects. Off at first.
 3. Click the object to copy from.

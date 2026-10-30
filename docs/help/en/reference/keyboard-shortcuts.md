@@ -59,7 +59,7 @@ shortcut beside it, and you can add your own; see
 | Keys | Panel |
 |---|---|
 | <kbd>Alt+Enter</kbd> | Properties |
-| <kbd>Ctrl+Shift+A</kbd> | Align and Distribute |
+| <kbd>Ctrl+Shift+A</kbd> | Copy Properties From |
 | <kbd>Alt+F7</kbd>, <kbd>Alt+F8</kbd>, <kbd>Alt+F9</kbd>, <kbd>Alt+F10</kbd> | Transformations: position, rotate, scale and mirror, size |
 | <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd> | Text, Glyphs |
 | <kbd>F11</kbd>, <kbd>Shift+F11</kbd> | fill (Properties), Color |
@@ -106,3 +106,6 @@ while you use it, explained on its page; for the [[tool.shape]] tool, see
 <kbd>Enter</kbd> presses [[dialog.ok]] and <kbd>Esc</kbd> closes a dialog box
 without applying it. While a dialog box is open, the shortcuts above are not
 used, except <kbd>F1</kbd>.
+<kbd>Tab</kbd> goes to the first box you can type in, and on through the
+dialog box's controls; <kbd>Shift</kbd>+<kbd>Tab</kbd> goes back. The keys stay
+in the dialog box.

@@ -166,6 +166,16 @@ impl ExportState {
         (self.dpi * self.scale_or_one()).clamp(MIN_EXPORT_DPI, 2400.0)
     }
 
+    /// The formats one file holds every page in (PDF, PostScript, PRN):
+    /// they export the whole document unless their last export, or the
+    /// person, chose the current page alone (#1161).
+    pub fn pages_by_default(format: usize) -> bool {
+        matches!(
+            EXPORT_FORMATS.get(format).map(|f| f.1),
+            Some("pdf" | "ps" | "prn")
+        )
+    }
+
     pub fn web() -> Self {
         ExportState {
             format: 2,
@@ -920,6 +930,8 @@ pub enum Dialog {
     ConfirmClose,
     /// A font or size picked with no text selected: make it the default
     /// of new text? (as the reference program asks)
+    /// Edit > Copy Properties From (Ctrl+Shift+A): what to copy.
+    CopyProperties(crate::ops2::CopyProperties),
     TextDefaults {
         font: Option<String>,
         style: Option<(bool, bool)>,
@@ -2257,6 +2269,18 @@ pub fn show(app: &mut App, ctx: &Context) {
             });
         }
         Dialog::Barcode(st) => crate::ui::barcode_wizard::dialog(app, ctx, st, &mut close),
+        Dialog::CopyProperties(c) => {
+            window(ctx, tr("dialog.copy_properties")).show(ctx, |ui| {
+                ui.checkbox(&mut c.outline_pen, tr("dialog.copy_outline_pen"));
+                ui.checkbox(&mut c.outline_color, tr("dialog.copy_outline_color"));
+                ui.checkbox(&mut c.fill, tr("dialog.copy_fill"));
+                ui.checkbox(&mut c.text, tr("dialog.copy_text_properties"));
+                ui.add_space(6.0);
+                if ok_cancel(ui, &mut close) {
+                    app.start_copy_properties(*c);
+                }
+            });
+        }
         Dialog::ConvertToBitmap(o) => {
             window(ctx, tr("dialog.convert_to_bitmap")).show(ctx, |ui| {
                 convert_fields(app, ui, o);
@@ -6286,11 +6310,15 @@ fn palette_editor_dialog(
                 st.palette = app.palettes.len() - 1;
             }
         });
+        // A locked palette shows as a built-in one does: nothing changes
+        // it until it is unlocked in the Palette Manager (#1343).
+        let locked = app.palette_locked(st.palette);
         let Some(pal) = app.palettes.get_mut(st.palette) else {
             *close = true;
             return;
         };
-        if !pal.builtin {
+        let read_only = pal.builtin || locked;
+        if !read_only {
             ui.horizontal(|ui| {
                 ui.label(tr("dialog.name"));
                 ui.text_edit_singleline(&mut pal.name)
@@ -6336,7 +6364,10 @@ fn palette_editor_dialog(
         if let Some(i) = st.selected {
             if let Some((name, c)) = pal.colors.get_mut(i) {
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(name)
+                    // A built-in or locked palette's names stay as they are.
+                    let mut shown = name.clone();
+                    let name = if read_only { &mut shown } else { name };
+                    ui.add_enabled(!read_only, egui::TextEdit::singleline(name))
                         .rich_tip(crate::ui::tips::pair(
                             "dialog.color_name",
                             "dialog.color_name_desc",
@@ -6347,14 +6378,14 @@ fn palette_editor_dialog(
                         crate::ui::tips::pair("dialog.color_value", "dialog.color_value_desc"),
                         |ui| crate::ui::color_picker::color_button(ui, &mut edited),
                     );
-                    if changed && !pal.builtin {
+                    if changed && !read_only {
                         *c = edited;
                     }
                     ui.label(crate::app::color_description(*c));
                 });
             }
         }
-        if !pal.builtin {
+        if !read_only {
             ui.horizontal(|ui| {
                 if ui
                     .button(tr("dialog.add_color"))
@@ -6400,9 +6431,13 @@ fn palette_editor_dialog(
             });
         } else {
             ui.label(
-                egui::RichText::new(tr("dialog.builtin_palette_hint"))
-                    .color(Tokens::text_dim())
-                    .size(11.0),
+                egui::RichText::new(tr(if pal.builtin {
+                    "dialog.builtin_palette_hint"
+                } else {
+                    "dialog.locked_palette_hint"
+                }))
+                .color(Tokens::text_dim())
+                .size(11.0),
             );
         }
         if ui

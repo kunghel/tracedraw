@@ -2115,9 +2115,8 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.edit.copy", "Ctrl+C", has || guides_picked) {
         app.copy_with_system();
     }
-    if item(ui, "menu.edit.copy_properties_from", "", has) {
-        app.pending_copy_properties = true;
-        app.status = tr("status.click_source_object");
+    if item(ui, "menu.edit.copy_properties_from", "Ctrl+Shift+A", has) {
+        app.open_copy_properties();
     }
     sep(ui);
     if item(ui, "menu.edit.paste", "Ctrl+V", true) {
@@ -2685,12 +2684,7 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
             }
         }
         sep(ui);
-        if item(
-            ui,
-            "menu.object.align_distribute_docker",
-            "Ctrl+Shift+A",
-            true,
-        ) {
+        if item(ui, "menu.object.align_distribute_docker", "", true) {
             app.show_dockers = true;
             app.docker_tab = DockerTab::AlignDistribute;
         }
@@ -2700,10 +2694,10 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
     }
     sub(ui, "menu.object.order", |ui| {
         if item(ui, "menu.object.to_front_of_page", "Ctrl+Home", has) {
-            app.order(0);
+            app.order_page(true);
         }
         if item(ui, "menu.object.to_back_of_page", "Ctrl+End", has) {
-            app.order(3);
+            app.order_page(false);
         }
         if item(ui, "menu.object.to_front_of_layer", "Shift+PgUp", has) {
             app.order(0);

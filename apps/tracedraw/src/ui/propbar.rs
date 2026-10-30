@@ -3150,7 +3150,7 @@ pub fn arrange_part(app: &mut App, ui: &mut Ui) -> bool {
     if pic_button(
         ui,
         Pic::AlignDistribute,
-        &tip("menu.object.align_distribute_docker", "Ctrl+Shift+A"),
+        &tip("menu.object.align_distribute_docker", ""),
         true,
         false,
     )
@@ -3276,10 +3276,10 @@ pub fn order_part(app: &mut App, ui: &mut Ui) {
     }
     wrap_style_list(app, ui);
     if pic_button(ui, Pic::ToFront, &tr("toolbar.to_front"), true, false).clicked() {
-        app.order(0);
+        app.order_page(true);
     }
     if pic_button(ui, Pic::ToBack, &tr("toolbar.to_back"), true, false).clicked() {
-        app.order(3);
+        app.order_page(false);
     }
     let curves_ok = app.can_convert_to_curves();
     if pic_button(

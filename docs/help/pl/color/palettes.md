@@ -22,6 +22,8 @@ i wartości. Przycisk menu palety na lewym końcu otwiera menu palety.
 Paletę można przenieść na inną krawędź okna lub uczynić pływającą: przeciągnij
 ją za kropkowany uchwyt.
 
+Z każdej strony może leżeć przy krawędzi okna albo obok rysunku, między rysunkiem a panelami lub przybornikiem po tej stronie. Podczas przeciągania niebieski pas pokazuje, gdzie trafi; kliknij uchwyt prawym przyciskiem, aby wybrać miejsce z listy.
+
 ## Paleta dokumentu {#document-palette}
 
 Każdy kolor zastosowany do obiektu trafia do palety dokumentu, która jest
@@ -42,6 +44,7 @@ w każdej z nich. Otwórz go poleceniem
 
 - Zaznacz paletę, aby wyświetlić ją pod oknem rysunku.
 - [[docker.edit]] otwiera ją w edytorze palet.
+- [[docker.palette_lock]] blokuje otwartą lub utworzoną paletę, aby edytor palet nie mógł jej zmienić; [[docker.palette_unlock]] ponownie pozwala ją edytować.
 - [[menu.window.palette_open]] otwiera plik palety (`.tdpal`, `.gpl`, `.ase`
   lub `.aco`).
 - [[menu.window.palette_from_document]] i

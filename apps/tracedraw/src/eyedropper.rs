@@ -66,8 +66,10 @@ pub struct Reading {
     pub lines: Vec<String>,
 }
 
-/// The readout for `c` in a drawing of `mode`: its values in that model
-/// (CMYK or RGB, a spot ink as its tint) and its hex value.
+/// The readout for `c` in a drawing of `mode`: a CMYK or RGB colour's
+/// values in its own model (so a colour converted to RGB reads as RGB,
+/// #1254), another model's in the drawing's (CMYK or RGB), a spot ink as
+/// its tint; then its hex value.
 pub fn reading_of(
     c: Color,
     name: String,
@@ -76,6 +78,7 @@ pub fn reading_of(
     use tracedraw_core::document::PrimaryColorMode;
     let shown = match (c, mode) {
         (Color::Spot { .. }, _) | (Color::Registration, _) => c,
+        (Color::Cmyk { .. }, _) | (Color::Rgb { .. }, _) => c,
         (_, PrimaryColorMode::Cmyk) => c.convert_to("CMYK"),
         (_, PrimaryColorMode::Rgb) => c.convert_to("RGB"),
     };
@@ -168,6 +171,10 @@ pub struct AttrGroups {
     pub outline: bool,
     pub fill: bool,
     pub text: bool,
+    /// The transparency (uniform, or a fountain, pattern or texture
+    /// mask, with its merge mode), also without the other effects
+    /// (#1338).
+    pub transparency: bool,
     pub size: bool,
     pub rotation: bool,
     pub position: bool,
@@ -180,6 +187,7 @@ impl Default for AttrGroups {
             outline: true,
             fill: true,
             text: true,
+            transparency: true,
             size: false,
             rotation: false,
             position: false,
@@ -297,7 +305,15 @@ impl App {
                     if let (Some(r), Some(g), Some(b)) =
                         (r.checked_div(cnt), g.checked_div(cnt), b.checked_div(cnt))
                     {
-                        return Some(Color::rgb8(r as u8, g as u8, b as u8));
+                        // A bitmap in CMYK mode gives its colour in CMYK,
+                        // so a picture converted with Convert Colors reads
+                        // in the model it went to (#1254).
+                        let c = Color::rgb8(r as u8, g as u8, b as u8);
+                        return Some(if s.cmyk_bitmap {
+                            c.convert_to("CMYK")
+                        } else {
+                            c
+                        });
                     }
                 }
             }
@@ -399,6 +415,29 @@ impl App {
                 }
                 cmds.push(Command::SetShapeKind { shape: id, kind });
             }
+        }
+        if g.transparency && !g.effects {
+            // The sampled transparency in place of the object's own; its
+            // other effects stay.
+            let mut effects: Vec<Effect> = s
+                .effects
+                .iter()
+                .filter(|e| !matches!(e, Effect::Transparency { .. }))
+                .cloned()
+                .collect();
+            effects.extend(
+                a.effects
+                    .iter()
+                    .filter(|e| matches!(e, Effect::Transparency { .. }))
+                    .cloned(),
+            );
+            if effects != s.effects {
+                cmds.push(Command::SetEffects { shape: id, effects });
+            }
+            cmds.push(Command::SetOpacity {
+                shapes: shapes.clone(),
+                opacity: a.opacity,
+            });
         }
         if g.effects {
             cmds.push(Command::SetOpacity {
@@ -597,11 +636,15 @@ mod tests {
         app.select(Vec::new());
         app.eyedropper_click(Point::new(5.0, 5.0), true, false);
         assert!(app.eyedropper_attrs.is_some());
-        // Defaults: fill and outline, no transformations, no effects.
+        // Defaults: fill, outline and transparency, no transformations,
+        // no effects.
         app.eyedropper_click(Point::new(45.0, 5.0), true, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(sb.fill, Fill::Solid(Color::rgb8(0, 0, 250)));
-        assert!((sb.opacity - 1.0).abs() < 1e-9);
+        assert!(
+            (sb.opacity - 0.5).abs() < 1e-9,
+            "the transparency comes too"
+        );
         assert!((sb.bounds().width() - 10.0).abs() < 1e-9);
         // Tick size and effects: b takes a's size about its own centre.
         app.eyedropper_groups.size = true;
@@ -616,6 +659,85 @@ mod tests {
         app.eyedropper_click(Point::new(45.0, 5.0), true, true);
         let s = app.eyedropper_attrs.as_ref().expect("sample");
         assert!((s.height - 20.0).abs() < 1e-6);
+    }
+
+    /// The attributes eyedropper copies transparency by default, a
+    /// fountain mask with its merge mode too, in place of the target's
+    /// own and keeping its other effects; unticked, the target keeps its
+    /// own (#1338: only the colour came across).
+    #[test]
+    fn attributes_eyedropper_copies_transparency() {
+        use tracedraw_core::live::MergeMode;
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(40.0, 0.0, 50.0, 10.0));
+        let c = rect(&mut app, Rect::new(80.0, 0.0, 90.0, 10.0));
+        let mask = Effect::Transparency {
+            mask: Fill::Fountain(Default::default()),
+            merge: MergeMode::Multiply,
+            target: 2,
+        };
+        app.run(Command::SetEffects {
+            shape: a,
+            effects: vec![mask.clone()],
+        });
+        let warp = Effect::Perspective {
+            corners: [
+                Point::new(40.0, 0.0),
+                Point::new(50.0, 0.0),
+                Point::new(50.0, 10.0),
+                Point::new(40.0, 10.0),
+            ],
+        };
+        app.run(Command::SetEffects {
+            shape: b,
+            effects: vec![warp.clone()],
+        });
+        app.select(Vec::new());
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(45.0, 5.0), true, false);
+        let sb = app.doc().find_shape(b).expect("b");
+        assert_eq!(sb.effects, vec![warp, mask.clone()]);
+        // Unticked: c keeps having none.
+        app.eyedropper_groups.transparency = false;
+        app.eyedropper_click(Point::new(85.0, 5.0), true, false);
+        let sc = app.doc().find_shape(c).expect("c");
+        assert!(sc.effects.is_empty(), "{:?}", sc.effects);
+        // A sample without transparency clears the target's.
+        app.eyedropper_groups.transparency = true;
+        app.eyedropper_click(Point::new(85.0, 5.0), true, true);
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false);
+        assert!(app.doc().find_shape(a).expect("a").effects.is_empty());
+    }
+
+    /// Clear Transparency takes a fountain transparency and a uniform one
+    /// away in one step, and is greyed with nothing to clear (#1338).
+    #[test]
+    fn clear_transparency_removes_masks_and_opacity() {
+        use tracedraw_core::live::MergeMode;
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(40.0, 0.0, 50.0, 10.0));
+        app.run(Command::SetEffects {
+            shape: a,
+            effects: vec![Effect::Transparency {
+                mask: Fill::Fountain(Default::default()),
+                merge: MergeMode::Normal,
+                target: 2,
+            }],
+        });
+        app.run(Command::SetOpacity {
+            shapes: vec![b],
+            opacity: 0.4,
+        });
+        app.select(vec![a, b]);
+        assert!(app.can_clear_transparency());
+        let steps = app.engine.history_labels().0.len();
+        app.clear_transparency();
+        assert!(app.doc().find_shape(a).expect("a").effects.is_empty());
+        assert!((app.doc().find_shape(b).expect("b").opacity - 1.0).abs() < 1e-9);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert!(!app.can_clear_transparency());
     }
 
     /// Pictures give their pixels: placed alone, in a group, inside a clip
@@ -698,6 +820,30 @@ mod tests {
             .expect("a colour")
             .to_rgb8();
         assert!(c[0] < 20 && c[1] > 180 && c[2] < 20, "{c:?}");
+        // Converted to CMYK: the picture gives CMYK colours, and the
+        // readout shows C, M, Y, K; back to RGB, RGB again (#1254).
+        app.select(vec![id]);
+        let to = |target| crate::ui::convert_colors::ConvertColorsState {
+            to: target,
+            whole: false,
+            spots: false,
+        };
+        assert!(app.convert_colors(&to(tracedraw_core::color_convert::ColorTarget::Cmyk)));
+        let c = app.sample_color_at(left, false).expect("a colour");
+        assert_eq!(c.model_name(), "CMYK", "{c:?}");
+        let r = app
+            .hover_reading(left, false, false)
+            .cloned()
+            .expect("read");
+        assert!(r.lines[0].starts_with("C:"), "{:?}", r.lines);
+        assert!(app.convert_colors(&to(tracedraw_core::color_convert::ColorTarget::Rgb)));
+        let c = app.sample_color_at(left, false).expect("a colour");
+        assert_eq!(c.model_name(), "RGB", "{c:?}");
+        let r = app
+            .hover_reading(left, false, false)
+            .cloned()
+            .expect("read");
+        assert!(r.lines[0].starts_with("R:"), "{:?}", r.lines);
     }
 
     /// The readout names a palette colour and gives its values in the
@@ -728,12 +874,18 @@ mod tests {
         assert!(r.lines[0].starts_with("C:"), "{:?}", r.lines);
         assert_eq!(r.lines.len(), 5, "C, M, Y, K, hex: {:?}", r.lines);
         assert_eq!(r.lines[4], c.to_hex().to_uppercase());
-        // In an RGB drawing the values are RGB.
-        let rgb = reading_of(c, String::new(), PrimaryColorMode::Rgb);
+        // A CMYK or RGB colour reads in its own model whatever the
+        // drawing's (#1254); another model's in the drawing's.
+        let cmyk = reading_of(c, String::new(), PrimaryColorMode::Rgb);
+        assert!(cmyk.lines[0].starts_with("C:"), "{:?}", cmyk.lines);
+        let hsb = Color::rgb8(200, 30, 30).convert_to("HSB");
+        let rgb = reading_of(hsb, String::new(), PrimaryColorMode::Rgb);
         assert!(rgb.lines[0].starts_with("R:"), "{:?}", rgb.lines);
+        let in_cmyk = reading_of(hsb, String::new(), PrimaryColorMode::Cmyk);
+        assert!(in_cmyk.lines[0].starts_with("C:"), "{:?}", in_cmyk.lines);
         // A colour of no palette has no name.
         let odd = reading_of(Color::rgb8(1, 2, 3), String::new(), PrimaryColorMode::Cmyk);
-        assert!(odd.lines[0].starts_with("C:"));
+        assert!(odd.lines[0].starts_with("R:"), "{:?}", odd.lines);
         assert_eq!(odd.lines.last().map(String::as_str), Some("#010203"));
         // Nothing worked out again while nothing changes.
         let n = app.eyedropper_hover.computed;

@@ -76,7 +76,7 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
 
 | Action | Result |
 |---|---|
-| Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects) |
+| Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects); every click counts: one whose pointer slipped a few pixels but was let go on the same swatch, and the first click after a hold that opened the shades (#1336, `pick_drag_tests::every_click_on_a_palette_colour_applies_it`) |
 | Right click | Outline colour (Options > Customization > Color Palette can make it open the palette menu instead) |
 | Ctrl+click | A tenth of the colour mixes into the selection's uniform fill (CMYK with CMYK, else in RGB) |
 | Click and hold (0.5 s) | A 5 x 5 pop-up of the colour's shades: lighter tints upwards, more black downwards, less colourful to the left, more to the right; click one (right click for the outline) |
@@ -120,10 +120,23 @@ Open Palette... (files of `.tdpal`, `.xml`, `.gpl`, `.ase`, `.aco` and
 the document palette of a `.cdr` file, its CMYK, RGB, grey, Lab and the
 other colour models with their names, spot colours skipped, and a file
 with no colour that can be read says so in the status bar, #882,
-`palette::tests::xml_palettes_open_with_names_and_values`), Palette Editor..., Palette Manager, the Document
+`palette::tests::xml_palettes_open_with_names_and_values`; the palette
+opened gets a strip of its own next to the default palette, which stays
+first, and the same file opened again replaces the copy already open
+instead of adding another, #1343), Palette Editor..., Palette Manager, the Document
 Palette switch, and Rows > 1 Row, 2 Rows, 3 Rows (a radio choice, kept
 in the preferences, the same setting as in Options). A right click on a row outside the swatches opens the
 same menu.
+
+## Palette Manager lock
+
+Each palette that is not built in has a Lock button in the Palette
+Manager (Unlock while locked, shown pressed). A locked palette opens in
+the Palette Editor as a built-in one does: its name, colours and values
+cannot be changed, Add, Remove and Save are gone, and a line says to
+unlock it in the Palette Manager. Opening its file again keeps its
+colours. Locks last for the session (#1343,
+`palette::tests::opening_a_palette_adds_one_and_a_locked_one_keeps_its_colours`).
 
 ## Options > Customization > Color Palette
 
@@ -144,6 +157,7 @@ update the document palette (on).
 - `ui::palette::tests::the_default_palette_can_show_several_rows`
 - `ui::palette::tests::every_colour_opens_clear_of_all_the_rows`
 - `pick_drag_tests::every_palette_shown_gets_a_strip`
+- `pick_drag_tests::every_click_on_a_palette_colour_applies_it`
 - `ui::dockers::tests::a_fill_dragged_in_the_picker_is_one_step_and_one_palette_colour`
 - `color_drop::tests` (fill inside, outline on the edge, No Color, an
   object without a fill, the document palette)

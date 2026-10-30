@@ -25,8 +25,9 @@ fn frame(ctx: &egui::Context, app: &mut App, events: Vec<Event>, modifiers: Modi
         events: all,
         ..Default::default()
     };
-    // As the window's raw input hook does (main.rs).
+    // As the window's raw input hook does (lib.rs).
     crate::pen::filter_raw_input(ctx, &mut input);
+    crate::interaction::release_chorded_left(ctx, &mut input);
     let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
     out.textures_delta.clear();
 }
@@ -331,6 +332,109 @@ fn space_while_moving_drops_a_copy() {
         "{copy:?} {moved:?}"
     );
     assert_eq!(app.tool, Tool::Pick);
+}
+
+/// A Free Transform drag is one undo step: Undo puts the object back as
+/// it was before the drag, not one pointer step back; with Apply to
+/// Duplicate it takes the copy away too (#1342).
+#[test]
+fn a_free_transform_drag_is_one_undo_step() {
+    let (ctx, mut app, id) = setup();
+    let before = app
+        .doc()
+        .find_shape(id)
+        .map(|s| s.transform)
+        .expect("shape");
+    let count = shape_count(&app);
+    app.set_tool(Tool::FreeTransform);
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    for mods in [Modifiers::NONE, Modifiers::CTRL, Modifiers::ALT] {
+        drag(
+            &ctx,
+            &mut app,
+            from,
+            from + egui::vec2(120.0, 60.0),
+            mods,
+            Vec::new(),
+        );
+        let after = app
+            .doc()
+            .find_shape(id)
+            .map(|s| s.transform)
+            .expect("shape");
+        assert_ne!(after, before, "{mods:?}: transformed");
+        assert_eq!(app.engine.undo_label(), Some("Free Transform"));
+        app.undo();
+        let undone = app
+            .doc()
+            .find_shape(id)
+            .map(|s| s.transform)
+            .expect("shape");
+        let d: f64 = undone
+            .as_coeffs()
+            .iter()
+            .zip(before.as_coeffs())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(d < 1e-9, "{mods:?}: {undone:?} is not {before:?}");
+    }
+    // Apply to Duplicate: one Undo takes the turned copy away.
+    app.free_transform_duplicate = true;
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(120.0, 60.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    assert_eq!(shape_count(&app), count + 1);
+    app.undo();
+    assert_eq!(shape_count(&app), count);
+    assert_eq!(app.doc().find_shape(id).map(|s| s.transform), Some(before));
+}
+
+/// Free Skew (Ctrl with Free Transform) never mirrors, however far one
+/// pointer step goes on both axes: a text skewed by a quick diagonal
+/// stroke stays readable (#1342).
+#[test]
+fn free_skew_never_mirrors_text() {
+    let (ctx, mut app, _) = setup();
+    app.start_text(Point::new(20.0, 100.0), None);
+    app.text_insert("Skew");
+    app.finish_text();
+    let t = app.selection[0];
+    app.set_tool(Tool::FreeTransform);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let from = app
+        .view
+        .to_screen(app.doc().find_shape(t).expect("text").bounds().center());
+    let mods = Modifiers::CTRL;
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], mods);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(from, true, PointerButton::Primary, mods)],
+        mods,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(from + egui::vec2(10.0, 0.0))],
+        mods,
+    );
+    let far = from + egui::vec2(500.0, -500.0);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(far)], mods);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(far, false, PointerButton::Primary, mods)],
+        mods,
+    );
+    let m = app.doc().find_shape(t).map(|s| s.transform).expect("text");
+    assert!(m.determinant() > 0.0, "mirrored: {m:?}");
 }
 
 #[test]
@@ -805,6 +909,107 @@ fn every_palette_shown_gets_a_strip() {
     assert_eq!(app.extra_palettes[0].index, gray);
 }
 
+/// Where the default palette's swatch of `name` is drawn.
+fn swatch_of(ctx: &egui::Context, app: &mut App, name: &str) -> Pos2 {
+    let c = app
+        .palette
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, c)| *c)
+        .expect("colour");
+    let want = crate::canvas::to_color32(c);
+    frame_shapes(ctx, app, Vec::new())
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Rect(r)
+                if r.fill == want && r.rect.width() > 8.0 && r.rect.width() < 30.0 =>
+            {
+                Some(r.rect.center())
+            }
+            _ => None,
+        })
+        .last()
+        .unwrap_or_else(|| panic!("no swatch of {name}"))
+}
+
+/// The selected object's fill is the default palette's `name`.
+fn filled_with(app: &App, id: ShapeId, name: &str) -> bool {
+    let want = app
+        .palette
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, c)| *c)
+        .expect("colour");
+    app.doc().find_shape(id).map(|s| s.fill.clone()) == Some(tracedraw_core::Fill::Solid(want))
+}
+
+/// Every click on a palette colour applies it (#1336): one whose
+/// pointer slipped a few pixels on the swatch before the release (egui
+/// takes that for a drag, which dropped the colour nowhere), and the
+/// click after a hold that opened the shades and was let go past a
+/// click's time (its mark stayed and took that click).
+#[test]
+fn every_click_on_a_palette_colour_applies_it() {
+    let (ctx, mut app, id) = setup();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let none = Modifiers::NONE;
+    // A slipped click.
+    let blue = swatch_of(&ctx, &mut app, "Blue");
+    let slip = blue + egui::vec2(0.0, 7.0);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(blue)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(blue, true, PointerButton::Primary, none)],
+        none,
+    );
+    frame(&ctx, &mut app, vec![Event::PointerMoved(slip)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(slip, false, PointerButton::Primary, none)],
+        none,
+    );
+    for _ in 0..20 {
+        frame(&ctx, &mut app, Vec::new(), none);
+    }
+    assert!(filled_with(&app, id, "Blue"), "the slipped click");
+    // A hold of more than a second opens the shades; the release over
+    // them is no click; a shade picked closes them.
+    let red = swatch_of(&ctx, &mut app, "Red");
+    frame(&ctx, &mut app, vec![Event::PointerMoved(red)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(red, true, PointerButton::Primary, none)],
+        none,
+    );
+    for _ in 0..70 {
+        frame(&ctx, &mut app, Vec::new(), none);
+    }
+    assert!(app.palette_shades.is_some(), "the shades opened");
+    let above = red - egui::vec2(0.0, 40.0);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(above)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(above, false, PointerButton::Primary, none)],
+        none,
+    );
+    for _ in 0..20 {
+        frame(&ctx, &mut app, Vec::new(), none);
+    }
+    app.palette_shades = None;
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), none);
+    }
+    let yellow = swatch_of(&ctx, &mut app, "Yellow");
+    click_at(&ctx, &mut app, yellow, none);
+    assert!(filled_with(&app, id, "Yellow"), "the click after a hold");
+}
+
 fn click_at(ctx: &egui::Context, app: &mut App, at: Pos2, mods: Modifiers) {
     frame(ctx, app, vec![Event::PointerMoved(at)], mods);
     frame(
@@ -1011,6 +1216,146 @@ fn alt_click_digs_to_the_object_beneath() {
     click_at(&ctx, &mut app, both, Modifiers::ALT);
     assert_eq!(app.selection, vec![top]);
     assert!(!app.rotate_mode);
+}
+
+/// Alt+drag selects by touching also when it starts over an object that
+/// is not selected, such as a background under the objects (it moved
+/// that object instead), with the Pick and the Freehand Pick tools
+/// (#1341, #1350). Alt+drag on the selection still moves it.
+#[test]
+fn alt_drag_selects_also_when_it_starts_over_an_object() {
+    for tool in [Tool::Pick, Tool::FreeformPick] {
+        let (ctx, mut app, id) = setup();
+        let bg = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(-20.0, -20.0, 200.0, 150.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("background");
+        app.select(vec![bg]);
+        app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            220, 220, 220,
+        )));
+        app.order(3);
+        app.set_tool(tool);
+        app.select(Vec::new());
+        let bg_before = bounds(&app, bg);
+        // A frame to (30, 20), or a loop through it for the lasso.
+        let pts: Vec<Point> = if tool == Tool::Pick {
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(15.0, 10.0),
+                Point::new(30.0, 20.0),
+            ]
+        } else {
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(30.0, 0.0),
+                Point::new(30.0, 20.0),
+                Point::new(0.0, 20.0),
+                Point::new(0.0, 1.0),
+            ]
+        };
+        let alt = Modifiers::ALT;
+        let s = app.view.to_screen(pts[0]);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(s)], alt);
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(s, true, PointerButton::Primary, alt)],
+            alt,
+        );
+        for p in &pts[1..] {
+            let q = app.view.to_screen(*p);
+            frame(&ctx, &mut app, vec![Event::PointerMoved(q)], alt);
+        }
+        let e = app.view.to_screen(*pts.last().expect("point"));
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(e, false, PointerButton::Primary, alt)],
+            alt,
+        );
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        assert_eq!(bounds(&app, bg), bg_before, "{tool:?}: nothing moved");
+        assert!(app.selection.contains(&id), "{tool:?}: {:?}", app.selection);
+        // Alt+drag on the selection moves it.
+        app.select(vec![id]);
+        let from = app.view.to_screen(Point::new(35.0, 25.0));
+        drag(
+            &ctx,
+            &mut app,
+            from,
+            from + egui::vec2(60.0, 0.0),
+            alt,
+            Vec::new(),
+        );
+        assert!(bounds(&app, id).x0 > 11.0, "{tool:?}: moved");
+    }
+}
+
+/// With the Shape tool Alt+drag draws a freehand marquee whatever the
+/// bar's selection mode, and Alt+Shift adds the nodes it takes to the
+/// chosen ones (#1341).
+#[test]
+fn alt_drag_with_the_shape_tool_is_a_freehand_node_marquee() {
+    let (ctx, mut app, id) = setup();
+    app.convert_to_curves();
+    app.set_tool(Tool::Shape);
+    app.node_lasso = false;
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let loop_through = |ctx: &egui::Context, app: &mut App, pts: &[Point], m: Modifiers| {
+        let screen = lasso_path(app, pts);
+        let s = screen[0];
+        frame(ctx, app, vec![Event::PointerMoved(s)], m);
+        frame(
+            ctx,
+            app,
+            vec![button(s, true, PointerButton::Primary, m)],
+            m,
+        );
+        for q in &screen[1..] {
+            frame(ctx, app, vec![Event::PointerMoved(*q)], m);
+            assert!(
+                !matches!(app.drag, Drag::NodeMarquee { .. }),
+                "not the rectangle"
+            );
+        }
+        let e = *screen.last().expect("point");
+        frame(
+            ctx,
+            app,
+            vec![button(e, false, PointerButton::Primary, m)],
+            m,
+        );
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    // Round the two left corners (x = 10).
+    let left = [
+        Point::new(5.0, 5.0),
+        Point::new(15.0, 5.0),
+        Point::new(15.0, 45.0),
+        Point::new(5.0, 45.0),
+        Point::new(5.0, 6.0),
+    ];
+    loop_through(&ctx, &mut app, &left, Modifiers::ALT);
+    let mut got = app.node_selection.clone();
+    got.sort();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got.iter().all(|(s, _)| *s == id));
+    // Alt+Shift round the lower right corner (60, 10): added.
+    let corner = [
+        Point::new(55.0, 5.0),
+        Point::new(65.0, 5.0),
+        Point::new(65.0, 15.0),
+        Point::new(55.0, 15.0),
+        Point::new(55.0, 6.0),
+    ];
+    loop_through(&ctx, &mut app, &corner, Modifiers::ALT | Modifiers::SHIFT);
+    assert_eq!(app.node_selection.len(), 3, "{:?}", app.node_selection);
 }
 
 #[test]
@@ -3995,6 +4340,81 @@ fn dropping_on_a_clip_frame_with_w_or_k_puts_the_objects_in() {
     assert_eq!(app.tool, Tool::Pick);
 }
 
+/// Editing a clip frame's contents ends with a Ctrl+click off the
+/// contents, on bare canvas or on a faded object outside; a plain click
+/// there keeps editing (#1337: only the bar's Finish left it).
+/// Alt held while objects are dropped on a frame puts them in, as W does.
+#[test]
+fn a_ctrl_click_off_the_contents_finishes_editing_a_clip_frame_and_alt_drops_inside() {
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    let (rect, text) = text_and_frame(&mut app, true, false);
+    app.place_inside(vec![text], rect);
+    let clip = app.doc().top_level_of(text).expect("clip frame");
+    let inside = app.view.to_screen(text_middle(&app, text));
+    let none = Modifiers::NONE;
+    let enter = |ctx: &egui::Context, app: &mut App| {
+        app.select(Vec::new());
+        click_at(ctx, app, inside, Modifiers::CTRL);
+        assert_eq!(app.clip_frame_edit.as_ref().map(|e| e.0), Some(clip));
+    };
+    // Ctrl+click on bare canvas: finished, the contents back inside.
+    enter(&ctx, &mut app);
+    let outside = app.view.to_screen(Point::new(180.0, 150.0));
+    click_at(&ctx, &mut app, outside, Modifiers::CTRL);
+    assert!(app.clip_frame_edit.is_none(), "Ctrl+click outside");
+    assert_eq!(app.doc().top_level_of(text), Some(clip));
+    assert_eq!(app.selection, vec![clip]);
+    // A plain click off the contents, inside the frame's box or out of
+    // it: still editing; then Ctrl+click inside the box, off the text.
+    enter(&ctx, &mut app);
+    let in_box = app.view.to_screen(Point::new(140.0, 15.0));
+    click_at(&ctx, &mut app, in_box, none);
+    assert!(
+        app.clip_frame_edit.is_some(),
+        "a plain click inside the box"
+    );
+    click_at(&ctx, &mut app, outside, none);
+    assert!(app.clip_frame_edit.is_some(), "a plain click outside");
+    click_at(&ctx, &mut app, in_box, Modifiers::CTRL);
+    assert!(app.clip_frame_edit.is_none(), "Ctrl+click off the contents");
+    assert_eq!(app.doc().top_level_of(text), Some(clip));
+    // Alt held during a move onto the frame: into it.
+    app.settings.clip_frame.auto_center = crate::settings::AutoCenter::Never;
+    let sq = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(200.0, 20.0, 220.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("square");
+    app.select(vec![sq]);
+    let from = app.view.to_screen(Point::new(210.0, 30.0));
+    let to = app.view.to_screen(Point::new(60.0, 45.0));
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(from, true, PointerButton::Primary, none)],
+        none,
+    );
+    let alt = Modifiers::ALT;
+    for i in 1..=4 {
+        let p = from + (to - from) * (i as f32 / 4.0);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(p)], alt);
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(to, false, PointerButton::Primary, alt)],
+        alt,
+    );
+    frame(&ctx, &mut app, Vec::new(), none);
+    assert_eq!(app.doc().top_level_of(sq), Some(clip), "Alt put it in");
+    assert_eq!(app.selection, vec![clip]);
+}
+
 /// Ctrl+click on a clip frame edits its contents (#982): the contents
 /// come out of the frame, the one under the pointer selected, and only
 /// they can be picked; Finish puts them back. Off the contents the click
@@ -4777,6 +5197,111 @@ fn the_shape_tool_takes_the_nearest_node_of_a_scaled_curve() {
     // A segment is found on the page too: the middle of the last one.
     let (_, seg, _) = app.segment_at(page(4.0, 2.5)).expect("segment");
     assert_eq!(seg, 3);
+}
+
+/// A browser sends the pointer's release only when its last button goes
+/// up: with a right click made during a move and the left button let go
+/// first, egui never heard of the left release and the object stayed on
+/// the pointer until Esc (#1334). The browser build notes the mouse
+/// event and the raw input hook gives egui the release: the move ends
+/// there with its copy, and the pointer moving on moves nothing.
+#[test]
+fn a_left_release_while_the_right_button_is_held_ends_the_drag() {
+    assert!(crate::interaction::is_chorded_left_release(0, 2));
+    assert!(
+        !crate::interaction::is_chorded_left_release(0, 0),
+        "no right button held"
+    );
+    assert!(
+        !crate::interaction::is_chorded_left_release(2, 1),
+        "the right button"
+    );
+    let (ctx, mut app, id) = setup();
+    let none = Modifiers::NONE;
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    let to = from + egui::vec2(150.0, 0.0);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(from, true, PointerButton::Primary, none)],
+        none,
+    );
+    let mid = from + (to - from) * 0.5;
+    frame(&ctx, &mut app, vec![Event::PointerMoved(mid)], none);
+    // The right press, as the browser build notes it.
+    crate::interaction::note_chorded_right_press();
+    frame(&ctx, &mut app, vec![Event::PointerMoved(to)], none);
+    assert!(app.drag_copy);
+    // The left button goes up first: only the mouse event tells.
+    crate::interaction::note_chorded_left_release();
+    frame(&ctx, &mut app, Vec::new(), none);
+    assert!(matches!(app.drag, Drag::None), "the drag ended");
+    assert_eq!(shape_count(&app), 2, "the copy was made");
+    assert!(close(bounds(&app, id).x0, 10.0), "the original stays");
+    // Then the right button: the pointer's release in the browser.
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(to, false, PointerButton::Secondary, none)],
+        none,
+    );
+    let copy = app.selection.clone();
+    let before: Vec<Rect> = copy.iter().map(|c| bounds(&app, *c)).collect();
+    for i in 1..=5 {
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(to + egui::vec2(0.0, 20.0 * i as f32))],
+            none,
+        );
+    }
+    let after: Vec<Rect> = copy.iter().map(|c| bounds(&app, *c)).collect();
+    assert_eq!(before, after, "nothing follows the pointer");
+    assert!(matches!(app.drag, Drag::None));
+    // Noted with no button held, it adds nothing.
+    crate::interaction::note_chorded_left_release();
+    frame(&ctx, &mut app, Vec::new(), none);
+    assert_eq!(shape_count(&app), 2);
+}
+
+/// Space while a handle is dragged drops a copy also in a frame with no
+/// pointer movement, as a browser sends the key on its own (#1334).
+#[test]
+fn space_alone_in_a_frame_drops_a_copy_while_scaling() {
+    let (ctx, mut app, id) = setup();
+    let none = Modifiers::NONE;
+    let e = handle(&app, Handle::E);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(e)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(e, true, PointerButton::Primary, none)],
+        none,
+    );
+    for i in 1..=3 {
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(e + egui::vec2(20.0 * i as f32, 0.0))],
+            none,
+        );
+    }
+    frame(&ctx, &mut app, vec![key(egui::Key::Space, none)], none);
+    assert_eq!(shape_count(&app), 2, "a copy at the size of the moment");
+    let end = e + egui::vec2(120.0, 0.0);
+    frame(&ctx, &mut app, vec![Event::PointerMoved(end)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(end, false, PointerButton::Primary, none)],
+        none,
+    );
+    frame(&ctx, &mut app, Vec::new(), none);
+    assert_eq!(shape_count(&app), 2);
+    assert!(matches!(app.drag, Drag::None));
+    assert_eq!(app.tool, Tool::Pick, "Space kept the tool");
+    assert!(bounds(&app, id).width() > 60.0);
 }
 
 /// A browser gives a right button pressed while the left one is held as
@@ -6610,6 +7135,94 @@ fn font_sizes_show_and_type_in_the_text_units() {
     );
 }
 
+/// Ctrl+Shift+A opens Copy Properties From: its boxes say what to copy,
+/// OK waits for a click on the object to copy from, and only the ticked
+/// properties come across (#1345: the shortcut did nothing).
+#[test]
+fn ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked() {
+    use crate::ops2::CopyProperties;
+    use crate::ui::dialogs::Dialog;
+    use tracedraw_core::{Color, Fill, Stroke};
+    let (ctx, mut app, id) = setup();
+    let src = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(100.0, 10.0, 150.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("source");
+    let blue = Fill::Solid(Color::rgb8(0, 0, 255));
+    let pen = Stroke {
+        color: Color::rgb8(0, 160, 0),
+        width: 2.0,
+        ..Stroke::default()
+    };
+    app.run(tracedraw_core::Command::SetFill {
+        shapes: vec![src],
+        fill: blue.clone(),
+    });
+    app.run(tracedraw_core::Command::SetStroke {
+        shapes: vec![src],
+        stroke: Some(pen.clone()),
+    });
+    let own = Stroke {
+        color: Color::rgb8(250, 0, 0),
+        width: 0.5,
+        ..Stroke::default()
+    };
+    app.run(tracedraw_core::Command::SetStroke {
+        shapes: vec![id],
+        stroke: Some(own.clone()),
+    });
+    app.select(vec![id]);
+    let none = Modifiers::NONE;
+    let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+    frame(&ctx, &mut app, vec![key(egui::Key::A, cs)], cs);
+    frame(&ctx, &mut app, Vec::new(), none);
+    assert!(
+        matches!(app.dialog, Dialog::CopyProperties(_)),
+        "Ctrl+Shift+A opens the dialog"
+    );
+    // Untick Fill and Outline color, then OK.
+    if let Dialog::CopyProperties(c) = &mut app.dialog {
+        *c = CopyProperties {
+            fill: false,
+            outline_color: false,
+            ..CopyProperties::default()
+        };
+    }
+    let texts = texts_drawn(&ctx, &mut app, Vec::new());
+    let ok = text_at(&texts, &crate::i18n::tr("dialog.ok")).expect("OK");
+    click_at(&ctx, &mut app, ok, none);
+    assert!(matches!(app.dialog, Dialog::None));
+    assert!(app.pending_copy_properties, "waiting for the click");
+    let on_src = app.view.to_screen(Point::new(125.0, 25.0));
+    click_at(&ctx, &mut app, on_src, none);
+    assert!(!app.pending_copy_properties);
+    let s = app.doc().find_shape(id).expect("target").clone();
+    assert_ne!(s.fill, blue, "the fill was not ticked");
+    let got = s.stroke.expect("an outline");
+    assert!((got.width - 2.0).abs() < 1e-9, "the pen: {got:?}");
+    assert_eq!(got.color, own.color, "its own colour");
+    // The boxes are kept; the colour alone next time.
+    assert!(!app.copy_properties_choice.fill);
+    app.copy_properties_choice = CopyProperties {
+        outline_color: true,
+        outline_pen: false,
+        fill: false,
+        text: false,
+    };
+    app.copy_properties_from(src);
+    let got = app
+        .doc()
+        .find_shape(id)
+        .and_then(|s| s.stroke.clone())
+        .expect("outline");
+    assert_eq!(got.color, pen.color);
+    // Align and Distribute keeps its menu and button, no longer the key.
+    assert_eq!(crate::app::DockerTab::AlignDistribute.shortcut(), "");
+}
+
 /// Print Merge's Place Inside Frame with nothing selected waits for a
 /// click on the shape, the pointer the Place Inside arrow; the click
 /// takes the shape under it, Esc cancels (#577).
@@ -8341,6 +8954,91 @@ fn the_hints_panel_shows_the_page_of_the_picked_object() {
     drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
     assert_eq!(app.selection.len(), 1, "the new rectangle is selected");
     assert_eq!(app.hints.current(), HintPage::Tool(Tool::Rectangle));
+}
+
+/// The tabs of paragraph text frames, with the pointer: a drag from a
+/// frame's bottom tab onto another frame flows its text on into it; a
+/// click on a picked frame's top tab and then a click on another frame
+/// makes that frame flow into it, and a click on empty space draws a new
+/// frame there that the text starts in.
+#[test]
+fn text_frame_tabs_link_frames_by_drag_and_by_click() {
+    tracedraw_text::install();
+    let (ctx, mut app, _) = setup();
+    let long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+    let frame_at = |app: &mut App, text: &str, x: f64, y: f64, w: f64, h: f64| {
+        app.new_shape(ShapeKind::Text {
+            spans: vec![tracedraw_core::TextSpan::new(text, "DejaVu Sans", 12.0)],
+            origin: Point::new(x, y),
+            frame: Some(tracedraw_core::Size::new(w, h)),
+            align: tracedraw_core::TextAlign::Left,
+            para: Default::default(),
+            on_path: None,
+        })
+        .expect("frame")
+    };
+    let a = frame_at(&mut app, long, 20.0, 250.0, 30.0, 8.0);
+    let b = frame_at(&mut app, "", 20.0, 150.0, 60.0, 40.0);
+    let c = frame_at(&mut app, "c", 110.0, 150.0, 60.0, 40.0);
+    let d = frame_at(&mut app, long, 110.0, 250.0, 30.0, 8.0);
+    let e = frame_at(&mut app, "e", 20.0, 60.0, 60.0, 40.0);
+    let corners = |app: &App, id: ShapeId| {
+        app.doc()
+            .find_shape(id)
+            .and_then(|s| s.text_frame_corners())
+            .expect("a frame")
+            .map(|p| app.view.to_screen(p))
+    };
+    let middle = |app: &App, id: ShapeId| app.view.to_screen(bounds(app, id).center());
+    // A drag from the overflowing frame's tab onto the empty frame.
+    app.select(vec![a]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let k = corners(&app, a);
+    let tab = crate::canvas::flow_tab_rect(k[0], k[1]);
+    let to = middle(&app, b);
+    drag(
+        &ctx,
+        &mut app,
+        tab.center(),
+        to,
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    assert_eq!(app.next_frame(a), Some(b), "{}", app.status);
+    assert!(app.pending_text_link.is_none());
+    // The top tab of a picked frame, then a click on another frame: that
+    // frame's text flows into it.
+    app.select(vec![c]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let k = corners(&app, c);
+    let top = crate::canvas::flow_in_tab_rect(k[3], k[2]);
+    assert!(
+        top.bottom() < k[3].y.min(k[2].y),
+        "the tab is over the frame"
+    );
+    click_at(&ctx, &mut app, top.center(), Modifiers::NONE);
+    assert_eq!(app.pending_text_link, Some(c));
+    assert!(app.text_link_incoming);
+    let at = middle(&app, d);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.next_frame(d), Some(c), "{}", app.status);
+    assert_eq!(app.prev_frame(c), Some(d));
+    // A frame that already takes text in has no top tab to click.
+    app.select(vec![c]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(app.flow_in_tab_at(top.center()), None);
+    // The top tab, then empty space: a new frame there, flowing into it.
+    app.select(vec![e]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let k = corners(&app, e);
+    let top = crate::canvas::flow_in_tab_rect(k[3], k[2]);
+    click_at(&ctx, &mut app, top.center(), Modifiers::NONE);
+    let before = shape_count(&app);
+    click_page(&ctx, &mut app, Point::new(150.0, 60.0));
+    assert_eq!(shape_count(&app), before + 1, "a new frame");
+    let new = app.prev_frame(e).expect("the new frame flows into it");
+    assert_eq!(app.chain_head(e), new);
+    assert!(app.pending_text_link.is_none() && !app.text_link_incoming);
 }
 
 /// The Welcome Screen tab closes to its house while a drawing is open;
@@ -12775,6 +13473,15 @@ fn merge_adjacent_and_group_by_color_change_the_result() {
     }));
     let merged = trace_wait(&ctx, &mut app);
     assert_eq!(merged.stats.curves, 1, "one curve for the colour");
+    // With Merge adjacent on, Group by color is greyed: a click does
+    // nothing.
+    click_at(
+        &ctx,
+        &mut app,
+        trace_rect(&ctx, "group_by_color").center(),
+        Modifiers::NONE,
+    );
+    assert!(!trace_state(&app).settings.group_by_color, "greyed");
     click_at(
         &ctx,
         &mut app,
@@ -13698,6 +14405,59 @@ fn the_remove_background_eyedropper_picks_on_the_shared_preview() {
         assert!(!st.picking);
         assert_eq!(st.settings.colors.len(), 1);
     }
+    // The settings sit in the shared panel with the Reset, undo and
+    // redo row: the pick was a step, undone and redone; Reset forgets
+    // the colour and the tolerance slider's click.
+    let bg = |app: &App| match &app.dialog {
+        crate::ui::dialogs::Dialog::RemoveBackground(st) => st.settings.clone(),
+        other => panic!("{other:?}"),
+    };
+    for name in [
+        "settings_panel",
+        "reset",
+        "undo",
+        "redo",
+        "tolerance",
+        "edge_softness",
+    ] {
+        assert!(
+            crate::ui::before_after::rects(&ctx).0.contains_key(name),
+            "no {name}"
+        );
+    }
+    let press = |ctx: &egui::Context, app: &mut App, name: &str| {
+        click_at(ctx, app, preview_rect(ctx, name).center(), Modifiers::NONE);
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    press(&ctx, &mut app, "undo");
+    assert_eq!(
+        bg(&app).colors,
+        vec![crate::bg_remove::BgPick::AUTO],
+        "the pick undone"
+    );
+    press(&ctx, &mut app, "redo");
+    assert_eq!(bg(&app).colors.len(), 1);
+    assert_eq!(bg(&app).colors[0].color, Some([200, 30, 30]), "redone");
+    let rail = preview_rect(&ctx, "tolerance");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.6, rail.bottom() - 10.0),
+        Modifiers::NONE,
+    );
+    let defaults = crate::bg_remove::BgSettings::default();
+    assert!(
+        bg(&app).tolerance > defaults.tolerance + 20.0,
+        "{}",
+        bg(&app).tolerance
+    );
+    press(&ctx, &mut app, "reset");
+    assert_eq!(bg(&app), defaults, "Reset");
+    press(&ctx, &mut app, "undo");
+    assert!(
+        bg(&app).tolerance > defaults.tolerance + 20.0,
+        "the Reset undone"
+    );
 }
 
 fn bg_state(app: &App) -> crate::ui::bitmap_dialogs::BgRemoveState {
@@ -13951,8 +14711,8 @@ fn frame_times_of_the_remove_background_dialog() {
         frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     }
     eprintln!("idle frame: {:?}", t.elapsed() / 30);
-    let rail = preview_rect(&ctx, "bg_tolerance");
-    let from = egui::pos2(rail.left() + rail.width() * 0.1, rail.center().y);
+    let rail = preview_rect(&ctx, "tolerance");
+    let from = egui::pos2(rail.left() + rail.width() * 0.1, rail.bottom() - 10.0);
     frame(
         &ctx,
         &mut app,
@@ -14042,6 +14802,296 @@ fn the_split_views_divider_drags() {
         assert!(st.lab.view.centre.is_some());
         assert!((st.lab.view.split - split.split).abs() < 1e-6);
     }
+}
+
+/// Open the shared preview's Preview list and click its item `key`.
+fn choose_preview(ctx: &egui::Context, app: &mut App, key: &str) {
+    let list = preview_rect(ctx, "trace_view");
+    click_at(ctx, app, list.center(), Modifiers::NONE);
+    let label = crate::i18n::tr(key);
+    // The list's item (not the list's own text): under the list.
+    let item = texts_drawn(ctx, app, Vec::new())
+        .into_iter()
+        .filter(|(t, r)| *t == label && r.top() > list.bottom() && r.left() >= list.left())
+        .min_by(|a, b| a.1.top().total_cmp(&b.1.top()))
+        .map(|(_, r)| r.center())
+        .unwrap_or_else(|| panic!("the item {key}"));
+    click_at(ctx, app, item, Modifiers::NONE);
+}
+
+/// The Trace dialog's Preview list: Large Preview shows the trace alone
+/// in the whole area; Wireframe Overlay shows the Overlay slider in the
+/// preview bar (80 at first), a click on it sets how strongly the picture
+/// shows under the curves, and the slider goes with the other views; an
+/// idle dialog in the overlay view asks for no frame.
+#[test]
+fn the_trace_preview_list_offers_large_preview_and_the_wireframe_overlay() {
+    use crate::ui::before_after::View;
+    let (ctx, mut app, _) = trace_setup(black_white_image(160, |x, y| x > 40 && y > 40));
+    trace_wait(&ctx, &mut app);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let stacked = preview_rect(&ctx, "view_pane");
+    let has_overlay = |ctx: &egui::Context| {
+        crate::ui::before_after::rects(ctx)
+            .0
+            .contains_key("overlay")
+    };
+    assert!(
+        !has_overlay(&ctx),
+        "no Overlay slider with Before and After"
+    );
+    choose_preview(&ctx, &mut app, "dialog.trace_view_large");
+    assert_eq!(trace_state(&app).view.view, View::Large);
+    let large = preview_rect(&ctx, "view_pane");
+    assert!(
+        large.height() > stacked.height() * 1.5,
+        "the trace alone takes the area: {large:?} vs {stacked:?}"
+    );
+    assert!(!has_overlay(&ctx), "no Overlay slider with Large Preview");
+    choose_preview(&ctx, &mut app, "dialog.trace_view_wireframe");
+    assert_eq!(trace_state(&app).view.view, View::Overlay);
+    assert!(has_overlay(&ctx), "the Overlay slider is in the bar");
+    assert_eq!(
+        trace_state(&app).view.overlay,
+        crate::ui::before_after::OVERLAY_DEFAULT
+    );
+    assert_eq!(crate::ui::before_after::OVERLAY_DEFAULT, 80.0);
+    let rail = preview_rect(&ctx, "overlay");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.1, rail.center().y),
+        Modifiers::NONE,
+    );
+    let low = trace_state(&app).view.overlay;
+    assert!((1.0..30.0).contains(&low), "overlay {low}");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.95, rail.center().y),
+        Modifiers::NONE,
+    );
+    let high = trace_state(&app).view.overlay;
+    assert!(high > 85.0, "overlay {high}");
+    // The Overlay value is no setting of the trace: nothing is traced
+    // again, and the idle dialog asks for no frame.
+    let started = app.trace_live.started;
+    for _ in 0..5 {
+        idle_frame_asks_for_another(&ctx, &mut app);
+    }
+    for i in 0..10 {
+        assert!(
+            !idle_frame_asks_for_another(&ctx, &mut app),
+            "idle frame {i} in the overlay view asked for another ({:?})",
+            ctx.repaint_causes()
+        );
+    }
+    assert_eq!(app.trace_live.started, started);
+    choose_preview(&ctx, &mut app, "dialog.trace_view_before_after");
+    assert_eq!(trace_state(&app).view.view, View::Stacked);
+    assert!(!has_overlay(&ctx));
+}
+
+/// The Black and White settings in the app's dialog.
+fn bw_settings_of(app: &App) -> crate::bitmap_modes::BwSettings {
+    match &app.dialog {
+        crate::ui::dialogs::Dialog::BitmapBw(s) => *s,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The settings panel's Reset, undo and redo row in the dialogs whose
+/// state is their settings alone (Black and White here): a click on a
+/// slider is a step, a drag one step on release, Reset a step of its
+/// own; the arrows step back and forward, and the idle dialog asks for
+/// no frame.
+#[test]
+fn the_settings_panel_steps_undo_and_redo_in_the_mode_dialogs() {
+    let img = image::RgbaImage::from_fn(200, 120, |x, y| {
+        let v = ((x + y) * 255 / 320) as u8;
+        image::Rgba([v, v, v, 255])
+    });
+    let (ctx, mut app, _) = trace_setup(img);
+    app.dialog = crate::ui::dialogs::Dialog::BitmapBw(Default::default());
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let defaults = crate::bitmap_modes::BwSettings::default();
+    assert_eq!(bw_settings_of(&app), defaults);
+    for name in ["settings_panel", "reset", "undo", "redo", "bw_slider"] {
+        assert!(
+            crate::ui::before_after::rects(&ctx).0.contains_key(name),
+            "no {name}"
+        );
+    }
+    // Nothing to undo yet: the arrow does nothing.
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "undo").center(),
+        Modifiers::NONE,
+    );
+    assert_eq!(bw_settings_of(&app), defaults);
+    // A click on the Angle slider (the halftone screen's) is a step.
+    let rail = preview_rect(&ctx, "bw_slider");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.7, rail.center().y),
+        Modifiers::NONE,
+    );
+    let clicked = bw_settings_of(&app);
+    assert!(clicked.angle > 60.0, "angle {}", clicked.angle);
+    // A drag is one step, taken on release.
+    let rail = preview_rect(&ctx, "bw_slider");
+    drag(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.7, rail.center().y),
+        egui::pos2(rail.left() + rail.width() * 0.2, rail.center().y),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let dragged = bw_settings_of(&app);
+    assert!(
+        dragged.angle < clicked.angle - 30.0,
+        "angle {}",
+        dragged.angle
+    );
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "reset").center(),
+        Modifiers::NONE,
+    );
+    assert_eq!(bw_settings_of(&app), defaults, "Reset");
+    let undo = |ctx: &egui::Context, app: &mut App| {
+        click_at(
+            ctx,
+            app,
+            preview_rect(ctx, "undo").center(),
+            Modifiers::NONE,
+        );
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    undo(&ctx, &mut app);
+    assert_eq!(bw_settings_of(&app), dragged, "the Reset undone");
+    undo(&ctx, &mut app);
+    assert_eq!(bw_settings_of(&app), clicked, "the drag undone in one step");
+    undo(&ctx, &mut app);
+    assert_eq!(bw_settings_of(&app), defaults, "the click undone");
+    undo(&ctx, &mut app);
+    assert_eq!(bw_settings_of(&app), defaults, "nothing more to undo");
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "redo").center(),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(bw_settings_of(&app), clicked, "redone");
+    // A change after an undo drops the steps undone.
+    let rail = preview_rect(&ctx, "bw_slider");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(rail.left() + rail.width() * 0.5, rail.center().y),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let again = bw_settings_of(&app);
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "redo").center(),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(bw_settings_of(&app), again, "no step to redo");
+    // Idle, the dialog asks for no frame.
+    for _ in 0..5 {
+        idle_frame_asks_for_another(&ctx, &mut app);
+    }
+    for i in 0..10 {
+        assert!(
+            !idle_frame_asks_for_another(&ctx, &mut app),
+            "idle frame {i} asked for another ({:?})",
+            ctx.repaint_causes()
+        );
+    }
+    // Opened again, the history starts afresh.
+    app.dialog = crate::ui::dialogs::Dialog::None;
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    app.dialog = crate::ui::dialogs::Dialog::BitmapBw(again);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    undo(&ctx, &mut app);
+    assert_eq!(bw_settings_of(&app), again, "a fresh history");
+}
+
+/// The effect dialogs draw their settings in the panel with the Reset,
+/// undo and redo row: a click on a slider is undone and redone.
+#[test]
+fn the_effect_dialog_steps_undo_and_redo_its_settings() {
+    let img = image::RgbaImage::from_fn(120, 80, |x, _| image::Rgba([(x * 2) as u8, 90, 160, 255]));
+    let (ctx, mut app, _) = trace_setup(img);
+    app.dialog = crate::ui::dialogs::Dialog::Effect(crate::ui::effect_dialog::EffectState::new(
+        "gaussian_blur",
+    ));
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let params = |app: &App| match &app.dialog {
+        crate::ui::dialogs::Dialog::Effect(st) => st.effect.params.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(params(&app).is_empty());
+    for name in ["settings_panel", "reset", "undo", "redo", "radius"] {
+        assert!(
+            crate::ui::before_after::rects(&ctx).0.contains_key(name),
+            "no {name}"
+        );
+    }
+    // The slider lies at the bottom of the setting's block, left of the
+    // number box.
+    let block = preview_rect(&ctx, "radius");
+    click_at(
+        &ctx,
+        &mut app,
+        egui::pos2(block.left() + block.width() * 0.5, block.bottom() - 10.0),
+        Modifiers::NONE,
+    );
+    let set = params(&app);
+    assert!(set.contains_key("radius"), "{set:?}");
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "undo").center(),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(params(&app).is_empty(), "undone");
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "redo").center(),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(params(&app), set, "redone");
+    click_at(
+        &ctx,
+        &mut app,
+        preview_rect(&ctx, "reset").center(),
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(params(&app).is_empty(), "Reset");
+    app.dialog = crate::ui::dialogs::Dialog::None;
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
 }
 
 /// A primary drag from `from` to `to` with a graphics tablet's pen: the
@@ -14444,5 +15494,211 @@ fn repeat_turns_and_resizes_in_place() {
     assert!(
         close(after.x0, before.x0) && close(after.y0, before.y0) && close(after.y1, before.y1),
         "the anchor side stays: {after:?} {before:?}"
+    );
+}
+
+/// #1258: Tab in a dialog puts the focus on its first input box, not on
+/// the File menu; tabbing on, the focus stays in the dialog and comes
+/// round to that box again; Shift+Tab from it goes to the last box.
+#[test]
+fn tab_in_a_dialog_focuses_its_first_input_box() {
+    let (ctx, mut app, _) = setup();
+    app.dialog = crate::ui::dialogs::Dialog::CreateTable {
+        rows: 3,
+        cols: 4,
+        width: 80.0,
+        height: 50.0,
+    };
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let tab = |ctx: &egui::Context, app: &mut App, mods: Modifiers| {
+        frame(ctx, app, vec![key(egui::Key::Tab, mods)], mods);
+        for _ in 0..4 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+    };
+    // The focused widget and the order of the layer it is drawn on.
+    let focus = |ctx: &egui::Context| {
+        let f = ctx.memory(|m| m.focused())?;
+        let order = ctx.viewport(|v| v.prev_pass.widgets.get(f).map(|w| w.layer_id.order))?;
+        Some((f, order))
+    };
+    let is_box = |ctx: &egui::Context, id: egui::Id| egui::TextEdit::load_state(ctx, id).is_some();
+    tab(&ctx, &mut app, Modifiers::NONE);
+    let (first, order) = focus(&ctx).expect("a focused widget");
+    assert_eq!(
+        order,
+        egui::Order::Foreground,
+        "in the dialog, not the menu bar"
+    );
+    assert!(is_box(&ctx, first), "an input box");
+    let mut round = false;
+    for _ in 0..20 {
+        tab(&ctx, &mut app, Modifiers::NONE);
+        let (f, order) = focus(&ctx).expect("a focused widget");
+        assert_eq!(
+            order,
+            egui::Order::Foreground,
+            "the focus stays in the dialog"
+        );
+        if f == first {
+            round = true;
+            break;
+        }
+    }
+    assert!(round, "Tab comes round to the first box");
+    tab(&ctx, &mut app, Modifiers::SHIFT);
+    let (last, order) = focus(&ctx).expect("a focused widget");
+    assert_eq!(order, egui::Order::Foreground);
+    assert!(is_box(&ctx, last) && last != first, "the last box");
+}
+
+/// The Smart Fill bar's Fill and Outline lists offer Specify first, then
+/// Use default, then None, read from the open list in the window; a
+/// choice still sets what it names.
+#[test]
+fn smart_fill_lists_offer_specify_then_default_then_none() {
+    crate::i18n::set_language("en");
+    let (ctx, mut app, _) = setup();
+    app.set_tool(Tool::AreaFill);
+    // The outline list shows None, so the fill list's "Use default" is
+    // the only one on the bar.
+    app.area_outline_mode = 2;
+    let texts = |shapes: &[egui::Shape]| -> Vec<(String, egui::Rect)> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) => Some((
+                    t.galley.text().to_string(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let shapes = frame_shapes(&ctx, &mut app, Vec::new());
+    let shapes = if texts(&shapes).iter().any(|(t, _)| t == "Use default") {
+        shapes
+    } else {
+        frame_shapes(&ctx, &mut app, Vec::new())
+    };
+    let button = texts(&shapes)
+        .into_iter()
+        .find(|(t, _)| t == "Use default")
+        .map(|(_, r)| r)
+        .expect("the Fill list on the bar");
+    click_at(&ctx, &mut app, button.center(), Modifiers::NONE);
+    let shapes = frame_shapes(&ctx, &mut app, Vec::new());
+    let mut listed: Vec<(String, egui::Rect)> = texts(&shapes)
+        .into_iter()
+        .filter(|(t, r)| {
+            ["Specify", "Use default", "None"].contains(&t.as_str())
+                && r.top() > button.bottom()
+                && (r.left() - button.left()).abs() < 60.0
+        })
+        .collect();
+    listed.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+    let order: Vec<&str> = listed.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(order, ["Specify", "Use default", "None"]);
+    // The first entry gives the new objects a colour of their own.
+    click_at(&ctx, &mut app, listed[0].1.center(), Modifiers::NONE);
+    assert_eq!(app.area_fill_mode, 1);
+}
+
+/// The Shape tool reads Ctrl while a node is dragged, not only at the
+/// press, and on every kind of node: Ctrl held only after the press snaps
+/// an ellipse's arc to the constrain angle (#1340, #1325) and keeps a
+/// star's points from turning (#1331).
+#[test]
+fn ctrl_held_after_the_press_constrains_ellipse_and_star_nodes() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    let ell = app
+        .new_shape(ShapeKind::Ellipse {
+            rect: Rect::new(100.0, 100.0, 140.0, 140.0),
+            arc: None,
+        })
+        .expect("ellipse");
+    app.select(vec![ell]);
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // A press on the node at the top with no key, then Ctrl while moving
+    // to 37 degrees outside the ellipse.
+    let drag_ctrl_later = |app: &mut App, from: Point, to: Point| {
+        let (a, b) = (app.view.to_screen(from), app.view.to_screen(to));
+        frame(&ctx, app, vec![Event::PointerMoved(a)], Modifiers::NONE);
+        frame(
+            &ctx,
+            app,
+            vec![button(a, true, PointerButton::Primary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        for i in 1..=4 {
+            let p = a + (b - a) * (i as f32 / 4.0);
+            frame(&ctx, app, vec![Event::PointerMoved(p)], Modifiers::CTRL);
+        }
+        frame(
+            &ctx,
+            app,
+            vec![button(b, false, PointerButton::Primary, Modifiers::CTRL)],
+            Modifiers::CTRL,
+        );
+        frame(&ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    let at = 37f64.to_radians();
+    drag_ctrl_later(
+        &mut app,
+        Point::new(120.0, 140.0),
+        Point::new(120.0 + 26.0 * at.cos(), 120.0 + 26.0 * at.sin()),
+    );
+    let Some(ShapeKind::Ellipse { arc: Some(arc), .. }) =
+        app.doc().find_shape(ell).map(|s| s.kind.clone())
+    else {
+        panic!("no arc");
+    };
+    let step = app.settings.constrain_angle;
+    for deg in [arc.start_deg, arc.end_deg] {
+        let k = deg / step;
+        assert!((k - k.round()).abs() < 1e-6, "{arc:?}");
+    }
+    assert!((arc.end_deg - 30.0).abs() < 1e-6, "{arc:?}");
+    // A star's point between two vertices, Ctrl after the press: in or
+    // out only, no turn.
+    let star = app
+        .new_shape(ShapeKind::Polygon {
+            rect: Rect::new(150.0, 100.0, 190.0, 140.0),
+            points: 5,
+            sharpness: 0.5,
+            complex: None,
+            twist: 0.0,
+        })
+        .expect("star");
+    app.select(vec![star]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let node = app
+        .doc()
+        .find_shape(star)
+        .cloned()
+        .and_then(|s| {
+            crate::kind_nodes::nodes(&s)
+                .into_iter()
+                .find(|(n, _)| {
+                    matches!(n, crate::kind_nodes::KindNode::Polygon { outer: false, .. })
+                })
+                .map(|(_, q)| s.transform * q)
+        })
+        .expect("an inner node");
+    let c = Point::new(170.0, 120.0);
+    let v = node - c;
+    let turned = Point::new(c.x + v.x * 0.9 - v.y * 0.4, c.y + v.y * 0.9 + v.x * 0.4);
+    drag_ctrl_later(&mut app, node, turned);
+    assert!(
+        matches!(
+            app.doc().find_shape(star).map(|s| &s.kind),
+            Some(ShapeKind::Polygon { twist, .. }) if twist.abs() < 1e-9
+        ),
+        "{:?}",
+        app.doc().find_shape(star).map(|s| &s.kind)
     );
 }

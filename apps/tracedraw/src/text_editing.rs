@@ -246,12 +246,19 @@ impl App {
         // Ctrl+Space leaves the text for the Pick tool, as in the
         // reference program (Space alone types a space), before any space
         // the key would type (#478).
-        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::Space)) {
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && !altgr(&i.modifiers)
+                && i.key_pressed(Key::Space)
+        }) {
             self.finish_text();
             self.set_tool(crate::tools::Tool::Pick);
             return;
         }
         let events = ctx.input(|i| i.events.clone());
+        // AltGr held: the windowing layer turns its letters into copy,
+        // cut and paste (Polish ć, ź), but they are characters (#1271).
+        let altgr_held = ctx.input(|i| altgr(&i.modifiers));
         // Alt let go after digits: the character they number (0 first: code
         // page 1252, as the Glyphs docker shows; else the Unicode number).
         if !self.alt_code.is_empty() && !ctx.input(|i| i.modifiers.alt) {
@@ -287,6 +294,7 @@ impl App {
                     self.alt_composed = None;
                     self.text_insert(t);
                 }
+                Event::Paste(_) | Event::Copy | Event::Cut if altgr_held => {}
                 Event::Paste(t) => self.text_insert(t),
                 Event::Copy => {
                     let sel = self.text_selected();
@@ -310,12 +318,16 @@ impl App {
                 } => {
                     self.alt_composed = None;
                     let shift = modifiers.shift;
-                    let ctrl = modifiers.command;
+                    // AltGr types characters (Polish ą ę ł ś ż, German
+                    // @ € { }): its keys are neither Ctrl shortcuts (they
+                    // selected all, aligned or resized the text instead)
+                    // nor the digits of an Alt code (#1271).
+                    let ctrl = modifiers.command && !altgr(modifiers);
                     // Alt and digits: a character by its number, typed when
                     // Alt is let go. On Windows too: the windowing layer
                     // drops the character the system makes of them (#469).
                     // The physical key reads the keypad with Num Lock off.
-                    if modifiers.alt && !ctrl {
+                    if modifiers.alt && !modifiers.command && !modifiers.ctrl {
                         if let Some(d) = physical_key.and_then(digit_of).or_else(|| digit_of(*key))
                         {
                             self.alt_code.push(d);
@@ -985,6 +997,12 @@ fn digit_of(key: egui::Key) -> Option<char> {
     })
 }
 
+/// AltGr held: Windows reports the key as Ctrl and Alt together. Keys
+/// pressed with it type characters (#1271).
+pub(crate) fn altgr(m: &egui::Modifiers) -> bool {
+    m.ctrl && m.alt
+}
+
 /// The character an Alt code names: with a leading zero a code page 1252
 /// number (Alt+0169 is ©), else a Unicode number.
 pub fn alt_code_char(code: &str) -> Option<char> {
@@ -1054,6 +1072,81 @@ mod tests {
         app.transform_selection(Affine::scale_non_uniform(3.0, 1.0));
         app.sync_text_defaults_from(id);
         assert!((app.text_size_pt - 36.0).abs() < 1e-9);
+    }
+
+    /// A new font for several text objects of different sizes, weights
+    /// and fonts changes only their font: each keeps its own size and
+    /// weight (#1304). A size picked from the list goes to all of them.
+    #[test]
+    fn a_font_for_several_texts_keeps_each_ones_size() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let mut ids = Vec::new();
+        for (x, size, bold, font) in [(10.0, 11.0, false, "Calibri"), (60.0, 9.0, true, "Arial")] {
+            app.text_size_pt = size;
+            app.text_bold = bold;
+            app.text_font = font.into();
+            app.start_text(Point::new(x, 10.0), None);
+            app.text_insert("Text");
+            app.finish_text();
+            ids.push(*app.selection.first().expect("text selected"));
+        }
+        let looks = |app: &App| -> Vec<(String, f64, bool)> {
+            ids.iter()
+                .flat_map(|id| match app.doc().find_shape(*id).map(|s| &s.kind) {
+                    Some(ShapeKind::Text { spans, .. }) => spans
+                        .iter()
+                        .map(|s| (s.font_family.clone(), s.size_pt, s.bold))
+                        .collect::<Vec<_>>(),
+                    other => panic!("not a text: {other:?}"),
+                })
+                .collect()
+        };
+        app.select(ids.clone());
+        // The bar reads the first text (Calibri, 11 pt), as the property
+        // bar does every frame, then a font is picked.
+        app.sync_text_defaults_from(ids[0]);
+        app.text_font = "Times New Roman".into();
+        app.apply_text_style();
+        let after = looks(&app);
+        assert!(
+            after.iter().all(|(f, _, _)| f == "Times New Roman"),
+            "{after:?}"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|(_, s, b)| (*s - 11.0).abs() < 1e-9 && !*b),
+            "{after:?}"
+        );
+        assert!(
+            after.iter().any(|(_, s, b)| (*s - 9.0).abs() < 1e-9 && *b),
+            "{after:?}"
+        );
+        // The font the bar shows (the first text's) picked again from the
+        // list goes to all, also to the one with another font.
+        app.select(vec![ids[1]]);
+        app.sync_text_defaults_from(ids[1]);
+        app.text_font = "Arial".into();
+        app.apply_text_style();
+        app.select(ids.clone());
+        app.sync_text_defaults_from(ids[0]);
+        if let Some(t) = app.text_shown.as_mut() {
+            t.font = None;
+        }
+        app.apply_text_style();
+        assert!(looks(&app).iter().all(|(f, _, _)| f == "Times New Roman"));
+        // A size changed: every text takes it, the font stays.
+        app.sync_text_defaults_from(ids[0]);
+        app.text_size_pt = 14.0;
+        app.apply_text_style();
+        let after = looks(&app);
+        assert!(
+            after
+                .iter()
+                .all(|(f, s, _)| f == "Times New Roman" && (*s - 14.0).abs() < 1e-9),
+            "{after:?}"
+        );
     }
 
     /// Options > Text > Autocorrect > Automatically create hyperlinks: a

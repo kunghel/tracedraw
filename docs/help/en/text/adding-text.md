@@ -49,6 +49,8 @@ selected letter. Keyboards and input methods that send characters (such as
 those for Tamil and other Indian scripts on Windows) type into text and
 fields, and <kbd>Alt</kbd> codes typed on the keypad give their character
 once.
+Letters typed with <kbd>AltGr</kbd> (Polish ą ę ł, German @ € { }) type into
+text and fields, also on Windows.
 
 All your typing in one editing session is one undo step.
 
@@ -60,8 +62,9 @@ the alignment (left, center, right, full justify), bullets and drop cap for
 paragraph text, [[menu.text.text_docker]] (<kbd>Ctrl+T</kbd>) and
 [[menu.text.edit_text]]. The button beside the font size opens the sliders of
 a variable font's axes (see [Variable fonts](fonts.md#variable-fonts)). While editing, they act on the selected characters;
-otherwise on the whole selected texts. Your choice also becomes the default
-for the next text.
+otherwise on the whole selected texts, and only the setting you change: a new
+font for several texts keeps each one's size, bold and italic. Your choice
+also becomes the default for the next text.
 
 The font list shows each family in its own font, with the ones you used last
 at the top. Type to narrow the list. A family with several styles has an arrow
@@ -114,7 +117,13 @@ drawn, printed or exported. To make it fit:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] breaks the link.
   Or click the small tab under the frame's bottom edge, then click another
   frame (on this page or another one) or click or drag on an empty spot
-  for a new frame: the text flows on into it.
+  for a new frame: the text flows on into it. You can also drag from the
+  tab and let go over another frame or an empty spot.
+- a picked frame also has a small tab over its top edge: click it, then
+  click the frame whose text should flow into this one, or click an empty
+  spot for a new frame that the text starts in. The top tab shows two
+  links when text flows in, and the bottom tab when the text flows on;
+  while you choose, a dashed line runs from the tab to the pointer.
 
 [[menu.text > menu.text.show_text_frames]] shows or hides the frames.
 

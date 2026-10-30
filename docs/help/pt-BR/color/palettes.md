@@ -29,6 +29,8 @@ Cada paleta marcada em [[menu.window > menu.window.color_palettes]] ou no
 Gerenciador de paletas aparece numa faixa própria ao lado da paleta padrão,
 com **Fechar paleta** no menu dela.
 
+Em cada lado, ela pode ficar na borda da janela ou ao lado do desenho, entre o desenho e os painéis ou a caixa de ferramentas daquele lado. Enquanto você a arrasta, uma faixa azul mostra onde ela vai ficar; clique com o botão direito na alça para escolher um lugar em uma lista.
+
 ## A paleta do documento {#document-palette}
 
 Toda cor aplicada a um objeto entra na paleta do documento, que é salva com o
@@ -52,8 +54,12 @@ cores de cada uma. Abra-o com
 
 - Marque uma paleta para mostrá-la abaixo da janela de desenho.
 - [[docker.edit]] a abre no editor de paletas.
+- [[docker.palette_lock]] bloqueia uma paleta que você abriu ou criou, para
+  que o editor de paletas não possa alterá-la; [[docker.palette_unlock]]
+  permite editá-la de novo.
 - [[menu.window.palette_open]] abre um arquivo de paleta (`.tdpal`, `.gpl`,
-  `.ase` ou `.aco`).
+  `.ase` ou `.aco`) e a mostra numa linha própria ao lado da paleta padrão.
+  Abrir o mesmo arquivo de novo não acrescenta uma segunda cópia.
 - [[menu.window.palette_from_document]] e
   [[menu.window.palette_from_selection]] criam uma paleta com as cores usadas
   no desenho ou na seleção.

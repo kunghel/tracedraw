@@ -1567,6 +1567,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                     ui.checkbox(&mut g.outline, tr("toolbar.attr_outline"));
                     ui.checkbox(&mut g.fill, tr("toolbar.attr_fill"));
                     ui.checkbox(&mut g.text, tr("toolbar.attr_text"));
+                    ui.checkbox(&mut g.transparency, tr("toolbar.attr_transparency"));
                 })
                 .response
                 .rich_tip(crate::ui::tips::keyed("toolbar.attr_properties"));
@@ -2264,6 +2265,23 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
             app.patch_transparency(&set, &[f]);
         }
     }
+    // Clear Transparency, as a button of its own beside the settings
+    // (#1338).
+    part_row(ui, stacked, |ui| {
+        if !stacked {
+            vsep(ui);
+        }
+        if ui
+            .add_enabled(
+                app.can_clear_transparency(),
+                egui::Button::new(tr("toolbar.clear_transparency")),
+            )
+            .rich_tip(crate::ui::tips::keyed("toolbar.clear_transparency"))
+            .clicked()
+        {
+            app.clear_transparency();
+        }
+    });
 }
 
 /// The font size: a field and an arrow dropping the usual sizes.
@@ -2376,6 +2394,11 @@ pub(crate) fn text_size_list(app: &mut App, ui: &mut Ui) -> bool {
             return false;
         }
         app.text_size_pt = s;
+        // A size picked from the list goes to every selected text, also
+        // when it is the one the bar showed.
+        if let Some(t) = app.text_shown.as_mut() {
+            t.size_pt = None;
+        }
         return true;
     }
     // The field reports a change once a value is applied (Enter, leaving
@@ -3315,10 +3338,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         changed = true;
     }
     if changed {
-        app.shadow_default = sh;
-        if first.is_some() {
-            app.set_shadow(Some(sh), true);
-        }
+        app.shadow_bar_changed(sh, first.is_some());
     }
     vsep(ui);
     if ui

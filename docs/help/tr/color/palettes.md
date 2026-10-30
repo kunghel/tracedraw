@@ -23,6 +23,8 @@ tutun. Sol uçtaki palet menüsü düğmesi palet menüsünü açar.
 Palet pencerenin başka bir kenarına taşınabilir veya kayan hâle
 getirilebilir: onu noktalı tutamacından sürükleyin.
 
+Her kenarda pencerenin kenarına ya da çizimin yanına, çizim ile o taraftaki paneller veya araç kutusu arasına yerleşebilir. Sürüklerken mavi bir şerit nereye gideceğini gösterir; bir listeden yer seçmek için tutamacına sağ tıklayın.
+
 ## Belge paleti {#document-palette}
 
 Bir nesneye uyguladığınız her renk, çizimle birlikte kaydedilen belge
@@ -44,6 +46,7 @@ ile açın.
 
 - Çizim penceresinin altında göstermek için bir paleti işaretleyin.
 - [[docker.edit]] onu palet düzenleyicide açar.
+- [[docker.palette_lock]] açtığınız veya oluşturduğunuz bir paleti kilitler, böylece palet düzenleyici onu değiştiremez; [[docker.palette_unlock]] yeniden düzenlemeye izin verir.
 - [[menu.window.palette_open]] bir palet dosyası (`.tdpal`, `.gpl`, `.ase`
   veya `.aco`) açar.
 - [[menu.window.palette_from_document]] ve

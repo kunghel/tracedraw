@@ -215,6 +215,64 @@ fn take_chorded_right_press() -> bool {
     CHORDED_RIGHT.with(|c| c.replace(false))
 }
 
+thread_local! {
+    /// The left button let go while the right one is still held, reported
+    /// by the windowing layer outside egui's events (see
+    /// [`note_chorded_left_release`]).
+    static CHORDED_LEFT_UP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a mouse button event is the left button going up while the
+/// right one is still held: `button` and `buttons` as the browser's mouse
+/// events give them (button 0 is the left one, bit 2 of `buttons` the
+/// right one held, bit 1 the left one).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn is_chorded_left_release(button: i16, buttons: u16) -> bool {
+    button == 0 && buttons & 1 == 0 && buttons & 2 != 0
+}
+
+/// Note the left button let go while the right one is held. A browser
+/// sends the pointer's release only when its last button goes up, so the
+/// left release of a right click made during a drag never reached egui:
+/// it took the left button for held, and the moved object stayed on the
+/// pointer until Esc (#1334). The browser build listens for the mouse
+/// event itself (`web.rs`); [`release_chorded_left`] gives egui the
+/// release.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn note_chorded_left_release() {
+    CHORDED_LEFT_UP.with(|c| c.set(true));
+}
+
+/// The raw input hook's part: a noted left release (see
+/// [`note_chorded_left_release`]) becomes egui's release of the primary
+/// button, at the latest pointer position, while egui still has it held.
+pub fn release_chorded_left(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    if !CHORDED_LEFT_UP.with(|c| c.replace(false)) {
+        return;
+    }
+    if !ctx.input(|i| i.pointer.primary_down()) {
+        return;
+    }
+    let pos = raw
+        .events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            egui::Event::PointerMoved(p) => Some(*p),
+            _ => None,
+        })
+        .or_else(|| ctx.pointer_latest_pos());
+    let Some(pos) = pos else {
+        return;
+    };
+    raw.events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: ctx.input(|i| i.modifiers),
+    });
+}
+
 impl App {
     pub fn hit_test(&self, p: Point) -> Option<ShapeId> {
         self.hit_test_where(p, |_| false)
@@ -1169,6 +1227,18 @@ impl App {
         }
 
         if self.pending_text_link.is_some() {
+            // A drag that began on the tab: the release says where the
+            // text flows, as a click there would.
+            if self.text_link_from_tab {
+                if response.drag_stopped_by(PointerButton::Primary) {
+                    let now = self.pointer_page.unwrap_or(p);
+                    self.finish_text_link(now, None);
+                } else if !response.ctx.input(|i| i.pointer.primary_down()) {
+                    // Let go without a drag: the next click says.
+                    self.text_link_from_tab = false;
+                }
+                return;
+            }
             if response.drag_started_by(PointerButton::Primary) {
                 self.text_link_drag = Some(p);
             } else if response.drag_stopped_by(PointerButton::Primary) {
@@ -1180,8 +1250,7 @@ impl App {
                 self.finish_text_link(p, None);
             }
             if response.secondary_clicked() {
-                self.pending_text_link = None;
-                self.text_link_drag = None;
+                self.cancel_text_link();
             }
             return;
         }
@@ -1455,12 +1524,19 @@ impl App {
             || response.drag_started_by(PointerButton::Primary)
         {
             // A handle comes first: the tab never takes a drag of one.
-            if let Some(id) = self
-                .flow_tab_at(screen)
-                .filter(|_| self.handle_at(screen).is_none())
-            {
-                self.start_text_link(id);
-                return;
+            // A drag from the tab ends where the text flows.
+            let from_tab = response.drag_started_by(PointerButton::Primary);
+            if self.handle_at(screen).is_none() {
+                if let Some(id) = self.flow_tab_at(screen) {
+                    self.start_text_link(id);
+                    self.text_link_from_tab = from_tab;
+                    return;
+                }
+                if let Some(id) = self.flow_in_tab_at(screen) {
+                    self.start_text_link_in(id);
+                    self.text_link_from_tab = from_tab;
+                    return;
+                }
             }
         }
         // Resting over the selection (not over a handle or the centre of
@@ -1563,7 +1639,12 @@ impl App {
             // Ctrl takes the object inside a group, unless the press is on
             // what is selected already (Ctrl then keeps the move straight);
             // an object chosen inside a group moves alone (#849).
-            let hit = self.press_target(p, mods.ctrl);
+            // Alt starts a selection by touching anywhere, also over an
+            // object that is not selected (a background under the objects
+            // to pick), as a press beside it would (#1341, #1350).
+            let hit = self
+                .press_target(p, mods.ctrl)
+                .filter(|id| !mods.alt || self.selection.contains(id));
             match hit {
                 Some(id) => {
                     if mods.shift {
@@ -1647,6 +1728,12 @@ impl App {
                     }
                     return;
                 }
+            }
+            // Editing a clip frame's contents: a Ctrl+click off them
+            // finishes (#1337).
+            if mods.ctrl && !mods.shift && self.ctrl_click_finishes_clip_edit(p) {
+                self.finish_clip_frame_edit();
+                return;
             }
             // Ctrl+click on a clip frame: editing its contents (#982).
             if mods.ctrl && !mods.shift && self.ctrl_click_edits_clip_frame(p) {
@@ -1745,7 +1832,9 @@ impl App {
     /// frame does (they are not tool shortcuts then).
     fn note_drop_keys(&mut self, ctx: &egui::Context) {
         if matches!(self.drag, Drag::Move { .. }) {
-            self.drop_keys = ctx.input(|i| (i.key_down(Key::W), i.key_down(Key::K)));
+            // Alt adds to the frame as W does (#1337).
+            self.drop_keys =
+                ctx.input(|i| (i.key_down(Key::W) || i.modifiers.alt, i.key_down(Key::K)));
         }
     }
 
@@ -3038,8 +3127,7 @@ impl App {
             return;
         }
         if self.pending_text_link.is_some() && ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.pending_text_link = None;
-            self.text_link_drag = None;
+            self.cancel_text_link();
             return;
         }
         if self.transforming() && ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -3260,6 +3348,11 @@ impl App {
         if pressed(Key::L, cmd) {
             self.combine();
         }
+        // Copy Properties From: its dialog, then a click on the object
+        // to copy from (#1345).
+        if pressed(Key::A, cmd | Modifiers::SHIFT) {
+            self.open_copy_properties();
+        }
         if pressed(Key::J, cmd) {
             self.dialog = crate::ui::dialogs::Dialog::Options;
         }
@@ -3349,10 +3442,14 @@ impl App {
         }
         // Order: Ctrl+Home/End to the front/back of the page, Shift+PgUp/PgDn
         // within the layer, Ctrl+PgUp/PgDn one step.
-        if pressed(Key::Home, cmd) || pressed(Key::PageUp, Modifiers::SHIFT) {
+        if pressed(Key::Home, cmd) {
+            self.order_page(true);
+        } else if pressed(Key::PageUp, Modifiers::SHIFT) {
             self.order(0);
         }
-        if pressed(Key::End, cmd) || pressed(Key::PageDown, Modifiers::SHIFT) {
+        if pressed(Key::End, cmd) {
+            self.order_page(false);
+        } else if pressed(Key::PageDown, Modifiers::SHIFT) {
             self.order(3);
         }
         if pressed(Key::PageUp, cmd) {

@@ -852,6 +852,20 @@ impl App {
     }
 }
 
+/// The text fields of the property bar as read from a text object (see
+/// [`App::text_shown`]). A field set to `None` was picked again by hand
+/// (the font list, the size list), so it goes to every selected text even
+/// when it equals what was shown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextShown {
+    pub shape: ShapeId,
+    pub font: Option<String>,
+    pub size_pt: Option<f64>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+}
+
 pub struct App {
     pub engine: Engine,
     pub page: PageId,
@@ -1059,6 +1073,9 @@ pub struct App {
     /// The Distort tool's values (its bar) and its drag under way.
     pub distort: crate::distort_tool::DistortSettings,
     pub distort_drag: Option<crate::distort_tool::DistortDrag>,
+    /// How long each object's Twister handle was last dragged (page mm):
+    /// the handle is free, it ends where it was let go (#1263).
+    pub twister_handles: std::collections::HashMap<ShapeId, f64>,
     pub brush_radius: f64,
     /// Eraser nib: thickness in mm and shape.
     pub eraser_width: f64,
@@ -1073,6 +1090,10 @@ pub struct App {
     pub text_bold: bool,
     pub text_italic: bool,
     pub text_underline: bool,
+    /// What the text fields above showed when they were last read from a
+    /// text object: with several text objects selected, only the fields
+    /// changed since then go to all of them (#1304).
+    pub text_shown: Option<TextShown>,
     pub text_align: tracedraw_core::TextAlign,
     pub eyedropper_color: Option<Color>,
     pub eyedropper_attrs: Option<crate::eyedropper::SampledAttrs>,
@@ -1225,6 +1246,12 @@ pub struct App {
     pub pdf_text_chosen: bool,
     /// Where a drag for the new frame of a flow began.
     pub text_link_drag: Option<Point>,
+    /// The pending link came from a frame's top tab: the frame clicked
+    /// next flows into `pending_text_link` (not out of it).
+    pub text_link_incoming: bool,
+    /// The press that started the pending link is still held on its tab:
+    /// releasing it says where the text flows (a drag from the tab).
+    pub text_link_from_tab: bool,
     /// Clip frame being edited in place: (frame id, the page's other
     /// objects when editing began; see `clip_edit_contents`).
     pub clip_frame_edit: Option<(ShapeId, std::collections::HashSet<ShapeId>)>,
@@ -1349,6 +1376,8 @@ pub struct App {
     /// The property bar keeps width and height proportional.
     pub scale_locked: bool,
     pub pending_copy_properties: bool,
+    /// What Copy Properties From copies (its dialog's boxes, kept).
+    pub copy_properties_choice: crate::ops2::CopyProperties,
     /// Autofit Page's popup open: the margin shown and the frame it was
     /// drawn in, for the outline of the page it would make (#594).
     pub autofit_preview: Option<(f64, u64)>,
@@ -1434,6 +1463,9 @@ pub struct App {
     pub workspace: Workspace,
     pub palettes: Vec<crate::palette::Palette>,
     pub visible_palettes: Vec<usize>,
+    /// The palettes locked in the Palette Manager (indices into
+    /// `palettes`): the Palette Editor does not change them (#1343).
+    pub locked_palettes: Vec<usize>,
     pub show_standard_toolbar: bool,
     pub show_property_bar: bool,
     pub show_toolbox: bool,
@@ -1569,6 +1601,10 @@ pub struct App {
     pub free_transform_mode: FreeTransformMode,
     pub free_transform_duplicate: bool,
     pub free_transform_reflected: bool,
+    /// The undo group a Free Transform drag runs in (from
+    /// `Engine::begin_group`): the drag's steps, and the copy Apply to
+    /// Duplicate makes, are one undo step (#1342).
+    pub free_transform_group: Option<Option<u64>>,
     pub roughen_amount: f64,
     /// The shaping brushes' settings (see `ui::brush_bars`), 1 to 100 where
     /// a percentage: Smooth's rate, Smear's and Smudge's pressure, Twirl's
@@ -1651,6 +1687,9 @@ pub struct App {
     pub reflect_nodes: (bool, bool),
     /// Shape tool: the freehand marquee for nodes (else rectangular).
     pub node_lasso: bool,
+    /// The Shape tool's freehand marquee started with Alt+Shift adds to
+    /// the nodes chosen already (#1341).
+    pub node_lasso_keeps: bool,
     /// Shape tool: the last run of nodes Shift+click selected.
     pub node_run: Option<crate::node_edit::NodeRun>,
     /// The Coordinates docker's fields, the "Set ... interactively" pick
@@ -1997,7 +2036,6 @@ impl DockerTab {
     pub fn shortcut(self) -> &'static str {
         match self {
             DockerTab::Properties => "Alt+Enter",
-            DockerTab::AlignDistribute => "Ctrl+Shift+A",
             DockerTab::Text => "Ctrl+T",
             DockerTab::Glyphs => "Ctrl+F11",
             DockerTab::Color => "Shift+F11",
@@ -2309,6 +2347,7 @@ impl App {
             extrude_measure_object: false,
             distort: Default::default(),
             distort_drag: None,
+            twister_handles: std::collections::HashMap::new(),
             brush_radius: 10.0,
             eraser_width: 6.35,
             eraser_square: false,
@@ -2320,6 +2359,7 @@ impl App {
             text_bold: false,
             text_italic: false,
             text_underline: false,
+            text_shown: None,
             text_align: tracedraw_core::TextAlign::Left,
             eyedropper_color: None,
             eyedropper_attrs: None,
@@ -2386,6 +2426,8 @@ impl App {
             dialog_return: None,
             pdf_text_chosen: false,
             text_link_drag: None,
+            text_link_incoming: false,
+            text_link_from_tab: false,
             clip_frame_edit: None,
             clip_edit_marks: Vec::new(),
             symmetry_edit: None,
@@ -2452,6 +2494,7 @@ impl App {
             object_origin: (1, 1),
             scale_locked: false,
             pending_copy_properties: false,
+            copy_properties_choice: Default::default(),
             pending_shaping: None,
             pending_merge_frame: false,
             autofit_preview: None,
@@ -2494,6 +2537,7 @@ impl App {
             workspace: Workspace::Default,
             palettes: crate::palette::builtin_palettes(),
             visible_palettes: vec![0],
+            locked_palettes: Vec::new(),
             show_standard_toolbar: true,
             show_property_bar: true,
             show_toolbox: true,
@@ -2568,6 +2612,7 @@ impl App {
             free_transform_mode: FreeTransformMode::Rotation,
             free_transform_duplicate: false,
             free_transform_reflected: false,
+            free_transform_group: None,
             roughen_amount: 2.0,
             brush: Default::default(),
             brush_stepped: false,
@@ -2604,6 +2649,7 @@ impl App {
             node_transform: Default::default(),
             reflect_nodes: (false, false),
             node_lasso: false,
+            node_lasso_keeps: false,
             node_run: None,
             coords: Default::default(),
             vector_mosaic: Default::default(),
@@ -4347,6 +4393,7 @@ impl App {
     pub fn set_tool(&mut self, tool: Tool) {
         if self.tool != tool {
             self.zoom_one_shot = false;
+            self.end_free_transform_group();
             self.finish_curve();
             self.finish_text();
             self.table_edit = None;
@@ -4886,6 +4933,14 @@ impl App {
                 self.text_bold = sp.bold;
                 self.text_italic = sp.italic;
                 self.text_underline = sp.underline;
+                self.text_shown = Some(TextShown {
+                    shape: id,
+                    font: Some(self.text_font.clone()),
+                    size_pt: Some(self.text_size_pt),
+                    bold: Some(sp.bold),
+                    italic: Some(sp.italic),
+                    underline: Some(sp.underline),
+                });
             }
             // The alignment of the paragraph at the caret.
             let index = self.paragraph_range(id).map_or(0, |(a, _)| {
@@ -5212,6 +5267,46 @@ impl App {
 
     /// Order: 0 = to front, 1 = forward one, 2 = back one, 3 = to back.
     pub fn order(&mut self, op: u8) {
+        let cmds = self.order_commands(op);
+        self.run_order(cmds);
+    }
+
+    /// To Front of Page (`front`) or To Back of Page: the selected objects
+    /// to the front or back of their layers, and a master layer holding
+    /// one of them in front of the page's own layers or behind them, so a
+    /// master object can come over the page's objects (#1132).
+    pub fn order_page(&mut self, front: bool) {
+        let doc = self.doc();
+        let mut cmds = Vec::new();
+        for id in &self.selection {
+            let Ok((layer, _)) = doc.locate(*id) else {
+                continue;
+            };
+            let master = doc.master.iter().find(|l| l.id == layer);
+            let moves = master.is_some_and(|l| l.in_front != front);
+            let set = Command::SetLayerInFront {
+                layer,
+                in_front: front,
+            };
+            if moves && !cmds.contains(&set) {
+                cmds.push(set);
+            }
+        }
+        cmds.extend(self.order_commands(if front { 0 } else { 3 }));
+        self.run_order(cmds);
+    }
+
+    fn run_order(&mut self, cmds: Vec<Command>) {
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.run_batch("Order", &cmds) {
+                self.status = e.to_string();
+            }
+        }
+    }
+
+    /// The moves of [`Self::order`]: 0 to the front of the layer, 1 one
+    /// forward, 2 one back, else to the back.
+    fn order_commands(&self, op: u8) -> Vec<Command> {
         let doc = self.doc();
         let mut cmds = Vec::new();
         for id in &self.selection {
@@ -5232,11 +5327,7 @@ impl App {
                 }
             }
         }
-        if !cmds.is_empty() {
-            if let Err(e) = self.engine.run_batch("Order", &cmds) {
-                self.status = e.to_string();
-            }
-        }
+        cmds
     }
 
     pub fn apply_fill(&mut self, fill: Fill) {
@@ -6307,7 +6398,17 @@ impl App {
         };
         self.backup_before_save(&path);
         let result = bytes.and_then(|b| crate::files::write(&path, b).map_err(|e| e.to_string()));
+        let ok = result.is_ok();
         self.saved_to(path, result);
+        // Guidelines are not written to `.cdr` files (#1161): say so, so
+        // they are not lost without a word.
+        if ok && self.engine.document().pages.iter().any(|p| !p.guides.is_empty()) {
+            self.status = format!(
+                "{} {}",
+                self.status,
+                crate::i18n::tr("status.cdr_guides_not_saved")
+            );
+        }
     }
 
     /// After writing the drawing to `path`: its state, the status line and
@@ -6753,8 +6854,9 @@ impl App {
                     })
                     .flatten()
             });
-        if let Some(p) = saved {
-            p.recall(st);
+        match saved {
+            Some(p) => p.recall(st),
+            None => st.all_pages = crate::ui::dialogs::ExportState::pages_by_default(format),
         }
     }
 
@@ -8973,6 +9075,86 @@ mod tests {
             .map(|d| d.flatten().collect())
             .unwrap_or_default();
         assert!(left.is_empty(), "{left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// To Front of Page on an object of a master layer brings that layer
+    /// in front of the page's own objects, one undo step; To Back of Page
+    /// sends it behind again (#1132).
+    #[test]
+    fn to_front_of_page_brings_a_master_object_over_the_page() {
+        let mut app = App::headless();
+        let page_obj = rect_shape(&mut app, Rect::new(0.0, 0.0, 100.0, 100.0), true);
+        app.run(Command::AddMasterLayer {
+            name: "Master Layer 1".into(),
+            scope: tracedraw_core::MasterScope::All,
+        });
+        let master = app.doc().master[0].id;
+        app.picked_layer = Some(master);
+        let master_obj = rect_shape(&mut app, Rect::new(20.0, 20.0, 60.0, 60.0), true);
+        assert_eq!(app.doc().locate(master_obj).map(|l| l.0).ok(), Some(master));
+        let top = |app: &App| {
+            app.doc()
+                .layers_for_page(app.page)
+                .unwrap()
+                .last()
+                .and_then(|l| l.shapes.last())
+                .map(|s| s.id)
+        };
+        assert_eq!(top(&app), Some(page_obj), "behind the page at first");
+        app.select(vec![master_obj]);
+        app.order_page(true);
+        assert!(app.doc().master[0].in_front);
+        assert_eq!(top(&app), Some(master_obj));
+        let _ = app.undo();
+        assert!(!app.doc().master[0].in_front, "one undo step");
+        app.order_page(true);
+        app.order_page(false);
+        assert!(!app.doc().master[0].in_front);
+        assert_eq!(top(&app), Some(page_obj));
+        // Objects of the page's own layers leave the master layers alone.
+        app.order_page(true);
+        app.select(vec![page_obj]);
+        app.order_page(false);
+        assert!(app.doc().master[0].in_front);
+    }
+
+    #[test]
+    fn guidelines_come_back_after_saving_and_reopening() {
+        use tracedraw_core::document::{Guide, GuideLine};
+        let dir = std::env::temp_dir().join(format!("tracedraw-guides-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::headless();
+        app.add_guide(Guide::from(GuideLine::Horizontal { y: 40.0 }));
+        app.add_guide(Guide::from(GuideLine::Vertical { x: 25.0 }));
+        let path = dir.join("guides.tdraw");
+        app.save_to(path.clone());
+        let mut back = App::headless();
+        back.open_path(path);
+        let lines: Vec<GuideLine> = back.page_guides().iter().map(|g| g.line).collect();
+        assert_eq!(
+            lines,
+            [
+                GuideLine::Horizontal { y: 40.0 },
+                GuideLine::Vertical { x: 25.0 }
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_guidelines_to_cdr_says_they_are_not_kept() {
+        use tracedraw_core::document::{Guide, GuideLine};
+        let dir = std::env::temp_dir().join(format!("tracedraw-cdr-guides-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::headless();
+        app.save_to(dir.join("plain.cdr"));
+        assert!(!app.status.contains(&crate::i18n::tr("status.cdr_guides_not_saved")));
+        app.add_guide(Guide::from(GuideLine::Horizontal { y: 40.0 }));
+        app.save_to(dir.join("guides.cdr"));
+        assert!(app.status.contains(&crate::i18n::tr("status.cdr_guides_not_saved")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

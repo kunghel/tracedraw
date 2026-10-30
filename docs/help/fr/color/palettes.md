@@ -24,6 +24,8 @@ gauche ouvre le menu de la palette.
 La palette peut être déplacée vers un autre bord de la fenêtre, ou rendue
 flottante : faites-la glisser par sa poignée en pointillés.
 
+De chaque côté, elle peut se placer au bord de la fenêtre ou contre le dessin, entre le dessin et les panneaux ou la boîte à outils de ce côté. Pendant que vous la faites glisser, une bande bleue montre où elle ira ; un clic droit sur sa poignée propose la liste des places.
+
 ## La palette du document {#document-palette}
 
 Chaque couleur que vous appliquez à un objet rejoint la palette du document,
@@ -46,6 +48,7 @@ couleurs de chacune. Ouvrez-le avec
 
 - Cochez une palette pour l'afficher sous la fenêtre de dessin.
 - [[docker.edit]] l'ouvre dans l'éditeur de palette.
+- [[docker.palette_lock]] verrouille une palette que vous avez ouverte ou créée, pour que l'éditeur de palette ne puisse pas la modifier ; [[docker.palette_unlock]] permet de la modifier à nouveau.
 - [[menu.window.palette_open]] ouvre un fichier de palette (`.tdpal`,
   `.gpl`, `.ase` ou `.aco`).
 - [[menu.window.palette_from_document]] et
