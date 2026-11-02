@@ -324,7 +324,7 @@ pub(crate) fn item_label(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool
 
 /// A menu item with a ready label and an optional icon; `id` names it for
 /// the test replay.
-/// Help > Highlight What's New: the menu rows new in this version and the
+/// Help > Mark New Features: the menu rows new in this version and the
 /// submenus that lead to them, by their keys. Each version replaces the
 /// list with its own.
 pub const NEW_IN_THIS_VERSION: &[&str] = &[
@@ -345,13 +345,13 @@ pub const NEW_IN_THIS_VERSION: &[&str] = &[
 ];
 
 thread_local! {
-    /// Whether Help > Highlight What's New is on (set from the app each
+    /// Whether Help > Mark New Features is on (set from the app each
     /// frame the menus draw).
     static HIGHLIGHT_NEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Centerline Trace's presets, as the Bitmaps menu and a bitmap's
-/// right-click menu list them.
+/// The Centerline presets, as Image > Trace and a bitmap's right-click
+/// menu list them.
 pub const CENTERLINE_TRACES: [(&str, crate::trace::Preset); 2] = [
     (
         "menu.bitmaps.trace_technical",
@@ -363,8 +363,8 @@ pub const CENTERLINE_TRACES: [(&str, crate::trace::Preset); 2] = [
     ),
 ];
 
-/// Outline Trace's presets.
-pub const OUTLINE_TRACES: [(&str, crate::trace::Preset); 6] = [
+/// The Outline presets.
+pub const OUTLINE_TRACES: [(&str, crate::trace::Preset); 7] = [
     ("menu.bitmaps.trace_line_art", crate::trace::Preset::LineArt),
     ("menu.bitmaps.trace_logo", crate::trace::Preset::Logo),
     (
@@ -379,6 +379,10 @@ pub const OUTLINE_TRACES: [(&str, crate::trace::Preset); 6] = [
     (
         "menu.bitmaps.trace_high_quality",
         crate::trace::Preset::HighQualityImage,
+    ),
+    (
+        "menu.bitmaps.trace_optimized",
+        crate::trace::Preset::Optimized,
     ),
 ];
 
@@ -1088,18 +1092,20 @@ pub(crate) mod invoke {
     }
 }
 
-/// The menus of the menu bar in order, with their title keys.
-fn all_menus() -> [(&'static str, fn(&mut App, &mut Ui)); 12] {
+/// The menus of the menu bar in order, with their title keys: File, Edit,
+/// View, Object, Text (with Table as a submenu), Image, Effects, Page,
+/// Tools, Window, Help. The keys keep their historical names (`layout`
+/// for Page, `bitmaps` for Image) so saved shortcuts keep working.
+pub(crate) fn all_menus() -> [(&'static str, fn(&mut App, &mut Ui)); 11] {
     [
         ("menu.file", file_menu),
         ("menu.edit", edit_menu),
         ("menu.view", view_menu),
-        ("menu.layout", layout_menu),
         ("menu.object", object_menu),
-        ("menu.effects", effects_menu),
-        ("menu.bitmaps", bitmaps_menu),
         ("menu.text", text_menu),
-        ("menu.table", table_menu),
+        ("menu.bitmaps", bitmaps_menu),
+        ("menu.effects", effects_menu),
+        ("menu.layout", layout_menu),
         ("menu.tools", tools_menu),
         ("menu.window", window_menu),
         ("menu.help", help_menu),
@@ -1271,20 +1277,89 @@ mod tests {
     }
 
     fn menus() -> Vec<(&'static str, fn(&mut App, &mut Ui))> {
-        vec![
-            ("file", file_menu),
-            ("edit", edit_menu),
-            ("view", view_menu),
-            ("layout", layout_menu),
-            ("object", object_menu),
-            ("effects", effects_menu),
-            ("bitmaps", bitmaps_menu),
-            ("text", text_menu),
-            ("table", table_menu),
-            ("tools", tools_menu),
-            ("window", window_menu),
-            ("help", help_menu),
-        ]
+        all_menus().to_vec()
+    }
+
+    /// The menu bar holds eleven menus in this order: File, Edit, View,
+    /// Object, Text, Image, Effects, Page, Tools, Window, Help. Table is
+    /// a submenu of Text and the trace commands sit under Image > Trace;
+    /// the command keys stay as they were, so saved shortcuts still work.
+    #[test]
+    fn the_menu_bar_lists_eleven_menus_in_order() {
+        let keys: Vec<&str> = all_menus().iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            keys,
+            [
+                "menu.file",
+                "menu.edit",
+                "menu.view",
+                "menu.object",
+                "menu.text",
+                "menu.bitmaps",
+                "menu.effects",
+                "menu.layout",
+                "menu.tools",
+                "menu.window",
+                "menu.help",
+            ]
+        );
+        let titles: Vec<String> = keys.iter().map(|k| tr(k)).collect();
+        assert_eq!(
+            titles,
+            [
+                "File", "Edit", "View", "Object", "Text", "Image", "Effects", "Page", "Tools",
+                "Window", "Help",
+            ]
+        );
+        for key in MENUS_WITHOUT_DRAWING {
+            assert!(keys.contains(&key), "{key} is not a menu");
+        }
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        let mut entries = Vec::new();
+        run_frame(&ctx, |ui| entries = commands(&mut app, ui.ctx()));
+        let find = |key: &str| entries.iter().find(|e| e.key == key).cloned();
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.path.first() == Some(&"menu.table".to_string())),
+            "Table is no menu of its own"
+        );
+        let table = find("menu.table.create_new_table").expect("Create New Table");
+        assert_eq!(table.path, ["menu.text", "menu.table"]);
+        assert_eq!(
+            find("menu.table.merge_cells")
+                .expect("Merge Cells")
+                .shortcut,
+            "Ctrl+M"
+        );
+        let trace = find("menu.bitmaps.quick_trace").expect("Automatic trace");
+        assert_eq!(trace.path, ["menu.bitmaps", "menu.bitmaps.trace"]);
+        assert_eq!(
+            find("menu.bitmaps.trace_logo").expect("Logo preset").path,
+            [
+                "menu.bitmaps",
+                "menu.bitmaps.trace",
+                "menu.bitmaps.outline_trace"
+            ]
+        );
+        assert_eq!(
+            find("menu.layout.insert_page").expect("Insert Page").path,
+            ["menu.layout"]
+        );
+        assert!(find("menu.text.grammar").is_some(), "the grammar checker");
+        assert!(find("menu.text.grammatik").is_none(), "the old key is gone");
+        // The commands come in menu order: a File command before an
+        // Object one, that before a Text one, and Page's last but for
+        // Tools, Window and Help.
+        let first = |menu: &str| {
+            entries
+                .iter()
+                .position(|e| e.path.first().map(String::as_str) == Some(menu))
+                .unwrap_or_else(|| panic!("{menu} has no command"))
+        };
+        let order: Vec<usize> = keys.iter().map(|k| first(k)).collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
     }
 
     fn run_frame(ctx: &Context, f: impl FnOnce(&mut Ui)) {
@@ -1346,7 +1421,7 @@ mod tests {
         assert_eq!(all.shortcut, "Ctrl+A");
         assert!(find("menu.window.new_window").is_some());
         assert!(find("menu.window.cascade").is_some());
-        // Every row Highlight What's New marks is a command, or a menu or
+        // Every row Mark New Features marks is a command, or a menu or
         // submenu on the way to one.
         // (Window > Dockers lists the panels, which are not commands.)
         for key in NEW_IN_THIS_VERSION {
@@ -1435,6 +1510,11 @@ mod tests {
             ["menu.object.create_arrowhead", "menu.object.create_pattern"]
         );
         assert!(find("menu.table.create_new_table").is_some());
+        // Table's commands sit in a submenu of Text.
+        assert_eq!(
+            find("menu.table.create_new_table").expect("table").path,
+            ["menu.text", "menu.table"]
+        );
         // The panels: checked while their tab is in the shown column.
         app.show_dockers = false;
         assert!(!effect_docker_open(&app, DockerTab::Blend));
@@ -1584,13 +1664,7 @@ mod tests {
         let mut app = mixed_app();
         let mut taken = Vec::new();
         let mut letter = ' ';
-        for key in [
-            "menu.file",
-            "menu.edit",
-            "menu.view",
-            "menu.layout",
-            "menu.object",
-        ] {
+        for key in ["menu.file", "menu.edit", "menu.view", "menu.object"] {
             let c = access::choose(&tr(key), &taken).map(|a| a.1).unwrap_or(' ');
             taken.push(c);
             letter = c;
@@ -1836,21 +1910,16 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                 }
                 r
             };
-            let mut titles = vec![menu(ui, "menu.file", &mut |ui| file_menu(app, ui))];
-            // With no drawing open only File, Tools, Window and Help remain.
-            if app.has_document() {
-                titles.push(menu(ui, "menu.edit", &mut |ui| edit_menu(app, ui)));
-                titles.push(menu(ui, "menu.view", &mut |ui| view_menu(app, ui)));
-                titles.push(menu(ui, "menu.layout", &mut |ui| layout_menu(app, ui)));
-                titles.push(menu(ui, "menu.object", &mut |ui| object_menu(app, ui)));
-                titles.push(menu(ui, "menu.effects", &mut |ui| effects_menu(app, ui)));
-                titles.push(menu(ui, "menu.bitmaps", &mut |ui| bitmaps_menu(app, ui)));
-                titles.push(menu(ui, "menu.text", &mut |ui| text_menu(app, ui)));
-                titles.push(menu(ui, "menu.table", &mut |ui| table_menu(app, ui)));
+            // The menus in their order; with no drawing open only File,
+            // Tools, Window and Help remain.
+            let has_document = app.has_document();
+            let mut titles = Vec::new();
+            for (key, body) in all_menus() {
+                if !has_document && !MENUS_WITHOUT_DRAWING.contains(&key) {
+                    continue;
+                }
+                titles.push(menu(ui, key, &mut |ui| body(app, ui)));
             }
-            titles.push(menu(ui, "menu.tools", &mut |ui| tools_menu(app, ui)));
-            titles.push(menu(ui, "menu.window", &mut |ui| window_menu(app, ui)));
-            titles.push(menu(ui, "menu.help", &mut |ui| help_menu(app, ui)));
             switch_on_hover(ui.ctx(), &titles);
             open_with_alt(ui.ctx(), &titles, &keys, &blocked);
         });
@@ -2017,7 +2086,10 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
             ("menu.file.send_to_documents", SendTarget::Documents),
             ("menu.file.send_to_mail", SendTarget::Mail),
         ] {
-            if item(ui, key, "", doc) {
+            // Greyed with the reason where the platform has no such place
+            // (Android has no desktop folder, #1398).
+            let why = t.why_not().map(tr);
+            if item_tip(ui, key, "", doc && why.is_none(), why.as_deref()) {
                 app.send_to(t);
             }
         }
@@ -2109,10 +2181,17 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     // Guidelines selected (no objects) are cut and copied too.
     let guides_picked = !app.selected_guides.is_empty();
-    if item(ui, "menu.edit.cut", "Ctrl+X", has || guides_picked) {
+    // While a text is being edited they act on its selected characters
+    // (#1377).
+    let can_copy = if app.editing_text() {
+        app.text_selection_active()
+    } else {
+        has || guides_picked
+    };
+    if item(ui, "menu.edit.cut", "Ctrl+X", can_copy) {
         app.cut();
     }
-    if item(ui, "menu.edit.copy", "Ctrl+C", has || guides_picked) {
+    if item(ui, "menu.edit.copy", "Ctrl+C", can_copy) {
         app.copy_with_system();
     }
     if item(ui, "menu.edit.copy_properties_from", "Ctrl+Shift+A", has) {
@@ -2134,7 +2213,17 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         app.dialog = Dialog::PasteSpecial(Default::default());
     }
     sep(ui);
-    if item(ui, "menu.edit.delete", "Delete", has) {
+    if app.editing_text() {
+        // The selected characters, as the Delete key does.
+        if item(
+            ui,
+            "menu.edit.delete",
+            "Delete",
+            app.text_selection_active(),
+        ) {
+            app.text_delete_forward();
+        }
+    } else if item(ui, "menu.edit.delete", "Delete", has) {
         app.delete_selection();
     }
     sep(ui);
@@ -2949,6 +3038,9 @@ pub(crate) fn effect_docker_open(app: &App, tab: DockerTab) -> bool {
     match app.docker_place(tab) {
         Some(crate::app::DockerPlace::Right) => app.show_dockers,
         Some(crate::app::DockerPlace::Left) => app.show_left_dockers,
+        Some(p @ (crate::app::DockerPlace::RightInner | crate::app::DockerPlace::LeftInner)) => {
+            app.docker_column(p).2
+        }
         Some(crate::app::DockerPlace::Floating) => true,
         // Brought to the front and joining the default column.
         None => app.show_dockers && app.docker_tab == tab,
@@ -3054,7 +3146,7 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sub(ui, "menu.bitmaps.inflate", |ui| {
-        // The same switch as Document Options > General: effects that
+        // The same switch as Document Setup > General: effects that
         // spread past the edges grow the bitmap first.
         let auto = app.doc().metadata.auto_inflate_bitmaps();
         if check(ui, "menu.bitmaps.inflate_auto", "", auto) {
@@ -3073,34 +3165,39 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         app.update_bitmap_from_link();
     }
     sep(ui);
-    if item(ui, "menu.bitmaps.quick_trace", "", has_bitmap) {
-        app.quick_trace();
-    }
-    let last = app.last_trace.is_some();
-    if item(ui, "menu.bitmaps.repeat_last_trace", "", has_bitmap && last) {
-        app.repeat_last_trace();
-    }
-    if item(
-        ui,
-        "menu.bitmaps.last_trace_settings",
-        "",
-        has_bitmap && last,
-    ) {
-        app.open_last_trace_settings();
-    }
-    sub_if(ui, "menu.bitmaps.centerline_trace", has_bitmap, |ui| {
-        for (key, preset) in CENTERLINE_TRACES {
-            if item(ui, key, "", has_bitmap) {
-                app.open_trace(preset);
-            }
+    // Image > Trace: the automatic trace, the last trace again or its
+    // settings, and the Centerline and Outline presets.
+    sub_if(ui, "menu.bitmaps.trace", has_bitmap, |ui| {
+        if item(ui, "menu.bitmaps.quick_trace", "", has_bitmap) {
+            app.quick_trace();
         }
-    });
-    sub_if(ui, "menu.bitmaps.outline_trace", has_bitmap, |ui| {
-        for (key, preset) in OUTLINE_TRACES {
-            if item(ui, key, "", has_bitmap) {
-                app.open_trace(preset);
-            }
+        let last = app.last_trace.is_some();
+        if item(ui, "menu.bitmaps.repeat_last_trace", "", has_bitmap && last) {
+            app.repeat_last_trace();
         }
+        if item(
+            ui,
+            "menu.bitmaps.last_trace_settings",
+            "",
+            has_bitmap && last,
+        ) {
+            app.open_last_trace_settings();
+        }
+        sep(ui);
+        sub_if(ui, "menu.bitmaps.centerline_trace", has_bitmap, |ui| {
+            for (key, preset) in CENTERLINE_TRACES {
+                if item(ui, key, "", has_bitmap) {
+                    app.open_trace(preset);
+                }
+            }
+        });
+        sub_if(ui, "menu.bitmaps.outline_trace", has_bitmap, |ui| {
+            for (key, preset) in OUTLINE_TRACES {
+                if item(ui, key, "", has_bitmap) {
+                    app.open_trace(preset);
+                }
+            }
+        });
     });
     sep(ui);
     todo_sub(ui, "menu.bitmaps.plugins");
@@ -3197,6 +3294,8 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
             app.unlink_text_frames();
         }
     });
+    // Tables: a submenu of Text (its keys keep the `menu.table` prefix).
+    sub(ui, "menu.table", |ui| table_menu(app, ui));
     sep(ui);
     // With a text and a path selected they go together; otherwise the
     // next click picks the path.
@@ -3237,7 +3336,7 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
             app.dialog =
                 Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(0));
         }
-        if item(ui, "menu.text.grammatik", "", true) {
+        if item(ui, "menu.text.grammar", "", true) {
             app.dialog =
                 Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(1));
         }
@@ -3773,10 +3872,10 @@ fn help_menu(app: &mut App, ui: &mut Ui) {
         app.options_page = crate::ui::dialogs::OptionsPage::General;
     }
     if item(ui, "menu.help.community", "", true) {
-        app.open_url("https://github.com/igtoth/tracedraw/discussions");
+        app.open_url("https://github.com/tracedraw/tracedraw/discussions");
     }
     if item(ui, "menu.help.support", "", true) {
-        app.open_url("https://github.com/igtoth/tracedraw/issues");
+        app.open_url("https://github.com/tracedraw/tracedraw/issues");
     }
     sep(ui);
     if item(ui, "menu.help.about", "", true) {

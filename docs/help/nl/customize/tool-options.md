@@ -17,6 +17,13 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
   objecten die het alleen raakt; <kbd>Alt</kbd> selecteert dan alleen de
   objecten die er helemaal binnen liggen.
 
+## Gum {#eraser}
+
+![De opties van het gereedschap Gum](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (in het begin 6,35 mm), en [[options.eraser_round]] of
+[[options.eraser_square]].
+
 ## Zoomen en pannen {#zoom-pan}
 
 ![De opties voor zoomen en pannen](../../img/customize-tool-options-zoom-pan.png)
@@ -24,10 +31,15 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (in het begin) of het
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] of [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (aan): zoom 100% is de echte grootte bij de
+  gekalibreerde schermresolutie; uit is het 96 pixels per inch.
+- [[options.wheel_center_mouse]] (uit): zoomen met het wiel brengt de plek onder de
+  aanwijzer naar het midden van de weergave, en de aanwijzer mee.
+- [[options.pan_right_button]] [[options.zoom_out]] of het [[options.context_menu]] (eerst).
 
-## Curven {#curves}
+## Vrije hand/Bézier {#curves}
 
-![De opties van de curvegereedschappen](../../img/customize-tool-options-curves.png)
+![De opties van de gereedschappen Vrije hand/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: 0 tot 100 (in het begin 50).
 - [[options.join_within]]: hoe dicht bij een eindknooppunt een lijn moet
@@ -38,6 +50,13 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
   het gereedschap [[tool.pen]]; zie [Pen](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (aan); zie
   [Tekenen met een tekentablet](../lines-shapes/pen-pressure.md).
+
+## Vormherkenning {#shape-recognition}
+
+![De opties van het gereedschap Vormherkenning](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] en [[recognize.smoothing]] van het gereedschap
+Vormherkenning, van uit tot hoogste, zoals op de eigenschappenbalk.
 
 ## Rechthoek {#rectangle}
 
@@ -61,6 +80,12 @@ hoekgrootten en [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.number_of_points]] en [[options.sharpness]].
 
+## Ruitjespapier {#graph-paper}
+
+![De opties van het gereedschap Ruitjespapier](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] en [[options.columns]] van het raster.
+
 ## Spiraal {#spiral}
 
 ![De opties van het gereedschap Spiraal](../../img/customize-tool-options-spiral.png)
@@ -68,21 +93,30 @@ hoekgrootten en [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], en [[options.symmetrical_spiral]] of
 [[options.logarithmic_spiral]].
 
-## Ruitjespapier {#graph-paper}
-
-![De opties van het gereedschap Ruitjespapier](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] en [[options.columns]] van het raster.
-
 ## Tabel {#table}
 
 ![De opties van het gereedschap Tabel](../../img/customize-tool-options-table.png)
 
 [[options.rows]] en [[options.columns]] van nieuwe tabellen.
 
-## Gum {#eraser}
+## Maatlijn {#dimension}
 
-![De opties van het gereedschap Gum](../../img/customize-tool-options-eraser.png)
+![De opties van het gereedschap Maatlijn](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (in het begin 6,35 mm), en [[options.eraser_round]] of
-[[options.eraser_square]].
+Hoe het label van nieuwe maatlijnen luidt: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] en
+[[dimension.suffix]]. Al getekende maatlijnen houden hun label; selecteer er
+een en gebruik de eigenschappenbalk om het te wijzigen.
+
+## Verbindingslijn {#connector}
+
+![De opties van het gereedschap Verbindingslijn](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] van nieuwe afgeronde verbindingslijnen (eerst 3 mm).
+
+## Meshvulling {#mesh-fill}
+
+![De opties van het gereedschap Meshvulling](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] en [[options.rows]] van het raster waarmee een nieuwe
+meshvulling begint (eerst 2 bij 2).

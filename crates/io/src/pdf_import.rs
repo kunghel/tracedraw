@@ -245,7 +245,7 @@ fn decrypt_as_read(id: lopdf::ObjectId, object: &mut Object) -> Option<(lopdf::O
             if stream.content.is_empty() && stream.start_position.is_some() {
                 pass.late.push(id);
             } else if stream.dict.has_type(b"ObjStm") {
-                if let Ok(objects) = lopdf::ObjectStream::new(&mut stream.clone()) {
+                if let Ok(objects) = lopdf::ObjectStream::new(stream) {
                     pass.members = objects.objects.keys().copied().collect();
                 }
             }
@@ -263,12 +263,8 @@ fn load(bytes: &[u8], password: &str) -> Result<PdfDoc, ImportError> {
         return PdfDoc::load_mem(bytes).map_err(|e| ImportError::Failed(format!("PDF: {e}")));
     };
     let read = |filter: fn(lopdf::ObjectId, &mut Object) -> Option<(lopdf::ObjectId, Object)>| {
-        lopdf::Reader {
-            buffer: &hidden,
-            document: PdfDoc::new(),
-        }
-        .read(Some(filter))
-        .map_err(|e| ImportError::Failed(format!("PDF: {e}")))
+        PdfDoc::load_mem_with_options(&hidden, lopdf::LoadOptions::with_filter(filter))
+            .map_err(|e| ImportError::Failed(format!("PDF: {e}")))
     };
     let probe = read(dictionaries_only)?;
     let hidden_key = &HIDDEN_ENCRYPT[1..];
@@ -887,7 +883,7 @@ impl<'a> Importer<'a> {
             .and_then(|o| self.dict_of(o))
             .cloned()
             .unwrap_or_default();
-        let content = self.doc.get_page_content(page_id).unwrap_or_default();
+        let content = self.doc.get_page_content(page_id);
         let mut gs = GState {
             ctm: base,
             ..GState::default()
@@ -1069,14 +1065,25 @@ impl<'a> Importer<'a> {
                         path.move_to(gs.ctm * current);
                     }
                 }
+                // A segment before any start point (a damaged stream)
+                // starts its subpath where the segment starts: a path
+                // cannot take a segment first.
                 "l" => {
                     if operands.len() >= 2 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         current = Point::new(n(0), n(1));
                         path.line_to(gs.ctm * current);
                     }
                 }
                 "c" => {
                     if operands.len() >= 6 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = Point::new(n(0), n(1));
                         let p2 = Point::new(n(2), n(3));
                         current = Point::new(n(4), n(5));
@@ -1085,6 +1092,10 @@ impl<'a> Importer<'a> {
                 }
                 "v" => {
                     if operands.len() >= 4 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = current;
                         let p2 = Point::new(n(0), n(1));
                         current = Point::new(n(2), n(3));
@@ -1093,6 +1104,10 @@ impl<'a> Importer<'a> {
                 }
                 "y" => {
                     if operands.len() >= 4 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = Point::new(n(0), n(1));
                         current = Point::new(n(2), n(3));
                         path.curve_to(gs.ctm * p1, gs.ctm * current, gs.ctm * current);
@@ -1200,7 +1215,7 @@ impl<'a> Importer<'a> {
                     let vals: Vec<f64> = operands.iter().filter_map(Self::num).collect();
                     if *cs == ColorSpace::Pattern {
                         if let Some(name) = operands.last().and_then(|o| o.as_name().ok()) {
-                            let pat = self.pattern_fill(resources, name, gs);
+                            let pat = self.pattern_fill(resources, name, gs, depth);
                             if is_fill {
                                 gs.fill_pattern = pat.clone();
                                 gs.fill = match pat {
@@ -1968,7 +1983,19 @@ impl<'a> Importer<'a> {
 
     // ----- shadings and patterns --------------------------------------------
 
-    fn pattern_fill(&mut self, resources: &Dictionary, name: &[u8], gs: &GState) -> Option<Fill> {
+    /// The fill a pattern resource gives: a fountain for a shading
+    /// pattern, a vector pattern of the tile's shapes for a tiling
+    /// pattern. `depth` is the nesting of the content stream asking, as
+    /// [`Self::run_content`] counts it: a tile is content too, and one
+    /// that paints with its own pattern (a damaged or hostile file) would
+    /// otherwise go round without end.
+    fn pattern_fill(
+        &mut self,
+        resources: &Dictionary,
+        name: &[u8],
+        gs: &GState,
+        depth: usize,
+    ) -> Option<Fill> {
         let pat = self
             .get(resources, b"Pattern")
             .and_then(|o| self.dict_of(o))
@@ -1993,6 +2020,10 @@ impl<'a> Importer<'a> {
         // Tiling pattern: the tile content is rendered into a vector
         // pattern fill when it is small enough, else its average colour.
         if let Object::Stream(tile) = self.deref(&pat).clone() {
+            if depth >= MAX_FORM_DEPTH {
+                self.warn("pattern tiles nested too deep; the pattern was left out");
+                return None;
+            }
             let bbox = self
                 .get(&tile.dict, b"BBox")
                 .and_then(|o| self.rect_of(o))?;
@@ -2012,7 +2043,7 @@ impl<'a> Importer<'a> {
                 ..GState::default()
             };
             let before = self.ops;
-            self.draw_form(&tile, &mut inner, MAX_FORM_DEPTH - 2);
+            self.draw_form(&tile, &mut inner, depth + 1);
             self.ops = before + 1;
             let shapes = std::mem::replace(&mut self.shapes, saved);
             if shapes.is_empty() {
@@ -2966,7 +2997,16 @@ fn dedup_stops(mut stops: Vec<Stop>) -> Vec<Stop> {
 }
 
 fn color_from_components(v: &[f64], cs: &ColorSpace) -> Option<Color> {
-    let c = |i: usize| v.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+    // A component that is not a number (a function's 0 times infinity)
+    // is no ink; `clamp` would keep it.
+    let c = |i: usize| {
+        let x = v.get(i).copied().unwrap_or(0.0);
+        if x.is_finite() {
+            x.clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        }
+    };
     match (cs, v.len()) {
         (ColorSpace::Gray, 1) | (ColorSpace::N(1), 1) => Some(Color::Gray { v: c(0) }),
         (ColorSpace::Rgb, 3) | (ColorSpace::N(3), 3) => Some(Color::Rgb {
@@ -4389,6 +4429,50 @@ mod tests {
         }
     }
 
+    /// A tiling pattern whose tile paints with the pattern itself (a
+    /// damaged or hostile file) is bounded like forms inside forms: the
+    /// tile was drawn with a fixed depth whatever asked for it, so the
+    /// pattern drew its tile, whose content asked for the pattern again,
+    /// without end, until the stack ran out and the program closed. The
+    /// tile's shapes still come through, once per level up to the bound.
+    #[test]
+    fn a_pattern_painting_with_itself_is_bounded() {
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << /Pattern << /P 5 0 R >> >>",
+            "0 0 1 rg 0 0 5 5 re f /Pattern cs /P scn 0 0 10 10 re f",
+        );
+        let bytes = one_page(
+            "/Pattern cs /P scn 0 0 100 100 re f",
+            "<< /Pattern << /P 5 0 R >> >>",
+            &[tile],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert!(
+            matches!(p.shapes[0].fill, Fill::Pattern(_)),
+            "{:?}",
+            p.shapes[0].fill
+        );
+        assert!(imp.warnings.iter().any(|w| w.contains("nested too deep")));
+        // A pattern used from a form inside a form is still read.
+        let form = stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /Pattern << /P 6 0 R >> >>",
+            "/Pattern cs /P scn 0 0 100 100 re f",
+        );
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10",
+            "0 0 1 rg 0 0 5 5 re f",
+        );
+        let bytes = one_page("/Fx Do", "<< /XObject << /Fx 5 0 R >> >>", &[form, tile]);
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert!(matches!(p.shapes[0].fill, Fill::Pattern(_)));
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    }
+
     #[test]
     fn axial_shading_pattern_becomes_a_fountain() {
         let bytes = one_page(
@@ -4415,6 +4499,43 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A damaged file opens without taking the program down: a gradient
+    /// whose function gives no number (a negative exponent at 0 makes 0
+    /// times infinity) has its colours read as no ink, so every output
+    /// has a colour for them (the screen colour conversion went round
+    /// for ever on a component that is not a number); segments before
+    /// any start point begin their path where they start, instead of a
+    /// path that cannot hold them.
+    #[test]
+    fn a_damaged_file_opens_without_a_crash() {
+        let bytes = one_page(
+            "/Pattern cs /P1 scn 0 0 100 100 re f 1 0 0 RG 10 10 l 60 10 l 60 40 l S 20 20 30 30 40 40 c S 5 5 6 6 v 7 7 8 8 y S",
+            "<< /Pattern << /P1 << /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [1 0 1] /N -1 >> >> >> >> >>",
+            &[],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let page = &imp.pages[0];
+        assert!(page.shapes.len() >= 2, "{:?}", imp.warnings);
+        let Fill::Fountain(f) = &page.shapes[0].fill else {
+            panic!("{:?}", page.shapes[0].fill);
+        };
+        for stop in &f.stops {
+            let Color::Rgb { r, g, b } = stop.color else {
+                panic!("{:?}", stop.color);
+            };
+            assert!(
+                r.is_finite() && g.is_finite() && b.is_finite(),
+                "{:?}",
+                stop.color
+            );
+            let _ = stop.color.to_rgb8();
+        }
+        let doc = to_document(imp, "damaged");
+        let _ = crate::svg::page_to_svg(&doc, 0);
+        let _ = crate::pdf::document_to_pdf(&doc);
     }
 
     #[test]
@@ -4503,6 +4624,36 @@ mod tests {
         let mut ids = IdSource::default();
         assert!(parse(b"hello", &mut ids).is_err());
         assert!(parse(b"%PDF-1.4 garbage", &mut ids).is_err());
+    }
+
+    /// A file nested far deeper than any real one (RUSTSEC-2026-0187: about
+    /// 10 000 levels took the whole program down with a stack overflow, which
+    /// cannot be caught) opens with an error or a document, never a crash. Each
+    /// way in is tried: an array and a dictionary in the catalog, an array in
+    /// the page's drawing and a string of nested parentheses.
+    #[test]
+    fn deeply_nested_objects_do_not_overflow_the_stack() {
+        const DEPTH: usize = 50_000;
+        let arrays = format!("{}{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
+        let dicts = format!("{}{}", "<< /A ".repeat(DEPTH), ">>".repeat(DEPTH));
+        let parens = format!("({}{})", "(".repeat(DEPTH), ")".repeat(DEPTH));
+        let files = [
+            pdf(&[
+                format!("<< /Type /Catalog /Pages 2 0 R /X {arrays} >>"),
+                "<< /Type /Pages /Kids [] /Count 0 >>".to_string(),
+            ]),
+            pdf(&[
+                format!("<< /Type /Catalog /Pages 2 0 R /X {dicts} >>"),
+                "<< /Type /Pages /Kids [] /Count 0 >>".to_string(),
+            ]),
+            one_page(&format!("BT {arrays} TJ ET"), "<< >>", &[]),
+            one_page(&format!("BT {parens} Tj ET"), "<< >>", &[]),
+        ];
+        for bytes in files {
+            let mut ids = IdSource::default();
+            // Either answer is fine; reaching the next line is the test.
+            let _ = parse(&bytes, &mut ids);
+        }
     }
 
     // ----- Protected files -----

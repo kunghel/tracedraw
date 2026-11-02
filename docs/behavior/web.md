@@ -14,15 +14,47 @@ refuse to load modules from `file://`).
 |---|---|---|
 | Open, Import, scripts, palettes, CSV, ICC profiles, thesaurus | system file dialog | the browser's file picker; the file is read into memory under `/upload/<name>` and opened from there |
 | Save, Save As | the Save Drawing dialog with folders, name, type, `.cdr` version and properties (`files.md`) | the same dialog without folders (name, type, version, properties), then a download under that name |
-| Export, Publish to PDF, Save as Template, palette and script saves | system save dialog | a download named after the document |
+| Export, Export as PDF, Save as Template, palette and script saves | system save dialog | a download named after the document |
 | Print | PDF opened in the system viewer | PDF downloaded; print it from the browser's viewer |
 | Send To | PDF written to Desktop, Documents or a mail folder | PDF downloaded |
 | Edit Bitmap (external editor) | system image editor | not available (a browser cannot hand files to programs) |
-| Settings | `settings.json` in the configuration folder, saved as they change | browser local storage (key `tracedraw.settings`), saved as they change: they stay in that browser on that computer, until its site data is cleared |
+| Settings | `settings.json` in the configuration folder, saved as they change | browser local storage (key `tracedraw.settings`), saved as they change: they stay in that browser on that computer, until its site data is cleared (see Storage below) |
+| Shelf | `shelf.json` in the configuration folder | the page's IndexedDB database `tracedraw-kept` (see Storage below) |
+| Auto-backup and session recovery | backups and session markers in the auto-backup folder (`recovery.md`) | backups in the page's IndexedDB database and markers in its local storage; leaving the page with unsaved drawings asks first (`recovery.md`, "In the browser") |
 | Recent documents | listed on the Welcome screen | not recorded (uploads have no path to reopen) |
-| Fonts | installed system fonts | bundled at build time: Liberation Sans, Serif and Mono, DejaVu Sans, Noto Sans Devanagari and Bengali; the published page's font folder adds about a hundred free families (stand-ins of the same widths for common office faces, popular families, Chinese, Japanese, Korean, Arabic, Hebrew and Thai) and its font catalog every other family of the google/fonts collection (about 2,000), each fetched the first time a drawing's text needs it or a font list's pointer rests on it (see `web/FONTS.md`); Chinese and Japanese UI text needs a font the build machine had |
-| System clipboard | text, images and copied files (arboard) | text through the browser; pasting images or files from other programs is not available |
+| Fonts | installed system fonts | bundled at build time: Liberation Sans, Serif and Mono, DejaVu Sans, Noto Sans Devanagari and Bengali; the published page's font folder adds about a hundred free families (stand-ins of the same widths for common office faces, popular families, Chinese, Japanese, Korean, Arabic, Hebrew and Thai) and its font catalog every other family of the google/fonts collection (about 2,000), each fetched the first time a drawing's text needs it or a font list's pointer rests on it (see `web/FONTS.md`); Chinese and Japanese UI text needs a font the build machine had. A font added with Font Manager > Add Font is kept in the page's IndexedDB (`tracedraw-fonts`) and installed again at the next visit (#1400) |
+| System clipboard | text, images and copied files (arboard) | Ctrl+V takes text, pictures and files copied in other programs from the browser's paste event; Edit > Paste reads the clipboard with the browser's clipboard API, which asks once for permission, and pastes the copy made here when the browser refuses (see `clipboard.md`) |
 | Help links | system browser | a new tab |
+
+## Storage
+
+What the browser version keeps between visits lives in the page's
+storage, which the browser may refuse (#1414):
+
+- The shelf goes to an IndexedDB database of its own
+  (`tracedraw-kept`, store `kept`, key `tracedraw-shelf`), which takes
+  far more than local storage, so a shelf of pictures fits. Earlier
+  versions kept it in local storage (key `tracedraw-shelf`): it is
+  read from there when the database has none, and removed from there
+  once the database holds it, which also frees local storage for the
+  settings. The database is read when the page opens; the Shelf docker
+  waits for it (a few milliseconds), and an item added before it was
+  read is kept after the stored ones. A browser without IndexedDB keeps
+  the shelf in local storage as before.
+- The settings and the auto-backups' session markers stay in local
+  storage, the auto-backups in their own database (`tracedraw`).
+- Every write is checked: when the browser refuses one (its quota for
+  the page is full, `QuotaExceededError`, or storage is turned off, as
+  in some private windows), a message says what was not saved (the
+  shelf, the settings or the auto-backup) and why, once per kind and
+  visit, and the status bar repeats its first line. Nothing is lost
+  from the tab: the shelf, the settings and the drawings stay in memory
+  until the tab is closed or reloaded, and the previously stored shelf
+  stays as it was.
+- At the first write to a database the page asks the browser to keep
+  its storage when the disk runs low (`navigator.storage.persist()`):
+  browsers grant it by themselves for an installed app or a site used
+  often, and some ask the user.
 
 ## Loading
 
@@ -46,7 +78,7 @@ splash, small: "TraceDraw (alpha): open-source vector editor that opens
 which screens it suits (a desktop browser with a mouse and keyboard; on
 a tablet the Touch workspace; a phone screen is too small for editing)
 and links to the desktop downloads
-(`https://github.com/igtoth/tracedraw/releases/latest`), the source
+(`https://github.com/tracedraw/tracedraw/releases/latest`), the source
 code and the issues. When the editor cannot start, the splash says so,
 its bar turns red and the reason shows under it, with the links.
 
@@ -55,8 +87,16 @@ this is the same Rust program as the desktop app compiled to
 WebAssembly, that a browser is slower (large drawings, heavy effects,
 big files), has only the bundled fonts and opens and saves files by
 upload and download, and that the desktop app runs natively at full
-speed. OK closes it (Enter too); Download the desktop app opens the
-latest release (`app::tests::the_browser_notice_shows_at_every_visit`).
+speed. OK closes it (Enter too, and its close button); Download the
+desktop app opens the latest release
+(`app::tests::the_browser_notice_shows_at_every_visit`). When the
+browser runs on Windows (the navigator's platform or user agent,
+`web_page::windows_platform`), a third button, Get it from the Microsoft
+Store, opens TraceDraw's Store page, and a last paragraph says that the
+Store version may be one or more releases behind the latest download
+because the Store certifies each version first. The macro message
+offers the same buttons
+(`ui::dialogs::desktop_message_tests`).
 Nothing is added to the menu bar, and the Welcome Screen's Get Started
 page leaves out the recent documents a browser cannot keep.
 
@@ -75,7 +115,7 @@ Android or iPadOS program and no app store listing: the installed app is
 the same WebAssembly build, run by the system's browser engine.
 
 - Android tablet (Chrome, Edge, Samsung Internet): open
-  `https://igtoth.github.io/tracedraw/`, then the browser's menu and
+  `https://tracedraw.github.io/tracedraw/`, then the browser's menu and
   "Install app" or "Add to Home screen". Chrome may also show an install
   bar under the address bar.
 - iPad (Safari): open the page, tap Share, then "Add to Home Screen".
@@ -97,6 +137,16 @@ already asks for every file (`*/*`). A file of a type TraceDraw does not
 open gets the usual message.
 - Desktop (Chrome, Edge): the install icon at the right end of the
   address bar, or the menu's "Install TraceDraw".
+
+The installed app is offered by the system for `.tdraw`, `.cdr`, `.svg`
+and `.pdf` files (the manifest's `file_handlers`, where the browser
+supports them: Chrome and Edge on the desktop): a file opened with it goes
+to the TraceDraw window already open (`launch_handler` `focus-existing`)
+and opens in a tab of its own (#646). The page reads the files from the
+launch queue into `window.tracedrawLaunched` and sends a
+`tracedraw-launched` event; the editor takes them between frames
+(`web::take_launched_files`), only after such an event, and waits while a
+dialog is up.
 
 Once opened, choose Window > Workspace > Touch for the larger interface
 (`workspaces.md`). The installed app stays at the version it was last
@@ -168,6 +218,31 @@ page: use the browser's reload button
 (`web_page::tests::the_browser_keeps_only_the_clipboard_and_developer_keys`).
 Ctrl+N, Ctrl+T and Ctrl+W stay with the browser because no page can take
 them; use the File menu for New and Close.
+
+AltGr types its characters (`€ @ [ ] { } \`, the Polish, Czech and
+other letters of many keyboard layouts) in text and in every field.
+Browsers on Windows report AltGr as Ctrl and Alt held together, with the
+`AltGraph` modifier state set: such a key is not kept from the browser,
+so its character reaches the text, and the editor sees neither Ctrl nor
+Alt held for it, so it is no Ctrl shortcut (AltGr+A does not select all,
+AltGr+E does not export), as in the desktop app, where the windowing
+layer does the same (#1408;
+`web_page::tests::characters_typed_with_altgr_are_left_to_the_browser`).
+On Linux and macOS AltGr (Option) never sets Ctrl, and Android keyboards
+report it as the right Alt.
+
+Alt pressed and let go alone does not give the keyboard focus to the
+browser's menu (browsers on Windows and Linux do so otherwise, and the
+editor then gets no keys until the canvas is clicked again), and Alt with
+a letter, a digit or a named key (Alt+F, Alt+Shift+K, Alt+Enter,
+Alt+Left) goes to the editor instead of opening a browser menu or going
+back a page. Alt+drag and Alt+click keep working. Left to the browser and
+the system: AltGr and its characters, the number pad with Alt (Alt+0169
+types ©), dead keys, Alt+Tab, and Option on macOS and iPadOS, which types
+characters there (#1407;
+`web_page::tests::a_lone_alt_never_reaches_the_browser_menu`). The
+desktop apps need none of this: their windows have no system menu bar to
+focus.
 
 ## Building
 

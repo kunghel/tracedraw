@@ -2,11 +2,11 @@
 
 A table is an object made of rows and columns of cells, each of which can
 hold text and a fill. Draw tables with the [[tool.table]] tool and change them
-with the [[menu.table]] menu.
+with the [[menu.text > menu.table]] submenu.
 
 ## Creating a table {#create-table}
 
-- Choose [[menu.table > menu.table.create_new_table]] (or
+- Choose [[menu.text > menu.table > menu.table.create_new_table]] (or
   [[menu.object > menu.object.create > menu.object.create_table]]). In the
   [[dialog.create_table]] dialog box, set the [[dialog.table_rows]], the
   [[dialog.table_columns]] and the height and width (100 by 75 mm at first),
@@ -34,7 +34,7 @@ selection.
 
 ## Changing rows and columns {#table-menu}
 
-The [[menu.table]] menu acts on the active cell and the selected cells:
+The [[menu.text > menu.table]] submenu acts on the active cell and the selected cells:
 
 - [[menu.table.insert]]: [[menu.table.insert_row_above]],
   [[menu.table.insert_row_below]], [[menu.table.insert_column_left]] and

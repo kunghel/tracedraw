@@ -20,7 +20,7 @@ the app.
 - The Hints docker's "Learn more" link opens the page of the tool or
   topic it shows; its first page links to the first page of the Help.
 - Pages open in the browser (a new tab in the browser version), at
-  `https://igtoth.github.io/tracedraw/help/<language>/<page>.html#<anchor>`
+  `https://tracedraw.github.io/tracedraw/help/<language>/<page>.html#<anchor>`
   in the interface language (Options > Global > General > Language). Every
   page exists in every language: a page not translated yet is published
   from the English page with a notice at the top, so a link never breaks.

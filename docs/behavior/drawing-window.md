@@ -9,9 +9,9 @@
   drawn behind the page, so a 6 px band shows on the right and a 4 px
   band at the bottom. The page rectangle is snapped to whole pixels.
   View > Page > Page Border hides the border and the shadow.
-- View > Mask Outside Page, right after the view modes (Pixels), as in
-  the reference program (off by default, kept with the other view
-  settings): an opaque colour covers everything outside the page
+- View > Mask Outside Page, right after the view modes (Pixels; off by
+  default, kept with the other view settings): an opaque colour covers
+  everything outside the page
   (outside every page in Multipage View) over the objects, and the page
   border is drawn over the objects, so the page shows as it will print
   or export. The colour is the desktop colour, or a near-black `#222222`
@@ -26,7 +26,7 @@
   `canvas::tests::the_mask_covers_everything_outside_the_pages`).
 - Double-clicking the page border (within 3 px) or its shadow with the
   Pick tool, where no object is hit, opens the page size options
-  (Layout > Document Options at Page Size).
+  (Page > Document Setup at Page Size).
 
 ## Scrollbars
 
@@ -67,7 +67,7 @@ From the left, after the ruler's width:
    Page dialog, see [pages.md](pages.md)), Delete Page (a page with a red
    cross; greyed when it is the only page) and Switch Page Orientation.
    Only the rows that open a dialog end in an ellipsis. Page size and
-   background are in the Layout menu
+   background are in the Page menu
    (`ui::window_bars::tests::the_page_tab_menu_has_six_rows_in_order_each_with_a_picture`,
    `the_page_tab_menu_has_no_separators`,
    `the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages`).
@@ -82,7 +82,7 @@ the vertical scrollbar; see `zoom-and-pan.md`.
 
 With drawings open, Window > Cascade, Tile Horizontally and Tile
 Vertically put every drawing in a window of its own inside the drawing
-area (`ui/windows.rs`); Combine Windows and Dock Window bring the tabs
+area (`ui/windows.rs`); Merge Windows and Dock Window bring the tabs
 back. The tabs stay above the area and still choose the active drawing.
 
 - Tile Horizontally: the windows one above the other, each as wide as

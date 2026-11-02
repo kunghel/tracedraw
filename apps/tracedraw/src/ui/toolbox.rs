@@ -24,8 +24,11 @@ const SEPARATE_AFTER: [Tool; 6] = [
     Tool::AreaFill,
 ];
 
-/// Toolbox groups followed by a separator line.
-const GROUP_BREAKS: [usize; 7] = [1, 3, 8, 9, 11, 13, 15];
+/// Toolbox groups followed by a separator line: the Shape, Zoom, Polygon,
+/// Text, Connector, Transparency and Fill groups. The Variable Outline
+/// button sits in the drawing block, under the brush tools, with no line
+/// between them.
+const GROUP_BREAKS: [usize; 7] = [1, 3, 9, 10, 12, 14, 16];
 
 /// Whether group `gi` is shown (the Outline flyout is hidden by default).
 pub fn group_visible(app: &App, gi: usize) -> bool {
@@ -302,7 +305,7 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock, fitted: Option
         crate::ui::bars::bar_menu(app, &resp, crate::ui::bars::Bar::Toolbox);
         // A plain click picks the shown tool (not when it opened the flyout).
         if resp.clicked() && !(has_flyout && on_arrow) && app.flyout_open != Some(gi) {
-            app.set_tool(shown);
+            app.choose_tool(shown);
         }
         // Double-clicking a tool button: Pick selects every object, Shape
         // every node, Zoom fits the drawing, Rectangle adds a frame around
@@ -460,7 +463,7 @@ fn flyout(app: &mut App, ui: &mut Ui, gi: usize, button: Rect, dock: crate::ui::
                             );
                         }
                         if rr.on_hover_ui(|ui| tool_tooltip(ui, *t)).clicked() {
-                            app.set_tool(*t);
+                            app.choose_tool(*t);
                             close = true;
                         }
                         if SEPARATE_AFTER.contains(t) {
@@ -615,6 +618,46 @@ mod tests {
         assert!(group_visible(&app, outline));
         set_group_visible(&mut app, 2, true);
         assert!(group_visible(&app, 2));
+    }
+
+    /// The group that holds `tool`.
+    fn group_of(tool: Tool) -> usize {
+        GROUPS
+            .iter()
+            .position(|g| g.tools.contains(&tool))
+            .expect("in a group")
+    }
+
+    /// The Variable Outline tool has a button of its own, right under the
+    /// brush tools' flyout, inside the drawing block: no separator line
+    /// between the two, and the Rectangle flyout follows it.
+    #[test]
+    fn the_variable_outline_button_sits_under_the_brush_tools() {
+        let brushes = group_of(Tool::BrushStrokes);
+        let vo = group_of(Tool::VariableOutline);
+        assert_eq!(vo, brushes + 1);
+        assert_eq!(GROUPS[vo].tools, &[Tool::VariableOutline]);
+        assert!(!GROUPS[vo].hidden);
+        assert_eq!(group_of(Tool::Rectangle), vo + 1);
+        assert!(!GROUP_BREAKS.contains(&brushes));
+        assert!(!GROUP_BREAKS.contains(&vo));
+    }
+
+    /// The separator lines follow the Shape, Zoom, Polygon, Text,
+    /// Connector, Transparency and Fill groups, whatever their indices.
+    #[test]
+    fn separator_lines_follow_the_same_groups() {
+        let after = [
+            Tool::Shape,
+            Tool::Zoom,
+            Tool::Polygon,
+            Tool::Text,
+            Tool::Connector,
+            Tool::Transparency,
+            Tool::InteractiveFill,
+        ]
+        .map(group_of);
+        assert_eq!(GROUP_BREAKS, after);
     }
 
     #[test]

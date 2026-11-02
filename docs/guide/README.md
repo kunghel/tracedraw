@@ -33,7 +33,7 @@ same program runs in a web browser with nothing to install.
 > place, but expect bugs and rough edges. The
 > [feature status](../features.md) page lists every capability and how
 > far along it is. If a file does not open right, the project welcomes a
-> sample in an [issue](https://github.com/igtoth/tracedraw/issues/new/choose).
+> sample in an [issue](https://github.com/tracedraw/tracedraw/issues/new/choose).
 
 ## Who this guide is for
 
@@ -57,11 +57,11 @@ same program runs in a web browser with nothing to install.
 | [Selecting and transforming](selecting-and-transforming.md) | The Pick tool, marquee and lasso selection, groups, handles, rotating and skewing, snapping, nudging, the Transformations panel and alignment |
 | [Drawing](drawing.md) | Rectangles, ellipses, polygons and stars, other shapes, the curve tools, brush strokes, connectors, dimensions and callouts |
 | [Shape editing](shape-editing.md) | The Shape tool, nodes and their types, shaping operations, corners and joins, the shape brushes, Crop, Knife, Segment Delete and Eraser |
-| [Text](text.md) | Artistic and paragraph text, fonts, the Text panel, frames, text on a path, tables and the writing tools |
+| [Text](text.md) | Artistic and paragraph text, fonts, the Text panel, frames, text on a path, tables and proofing |
 | [Colour and fills](color-and-fills.md) | The Colour panel, palettes, every kind of fill, outlines, spot colours, transparency, eyedroppers and styles |
 | [Effects](effects.md) | Blend, Contour, Envelope, Distort, Extrude, Drop Shadow, Block Shadow, Lens, Symmetry, clip frames and copying effects |
 | [Files](files.md) | Opening and saving `.tdraw` and `.cdr` files, importing and exporting, auto-backup and recovery, updates |
-| [Printing](printing.md) | Printing, preview, imposition, marks, separations, preflight and Publish to PDF |
+| [Printing](printing.md) | Printing, preview, imposition, marks, separations, preflight and Export as PDF |
 | [Customizing](customizing.md) | Options, workspaces, keyboard shortcuts, languages, scripts and AI helpers |
 
 ## Conventions in this guide

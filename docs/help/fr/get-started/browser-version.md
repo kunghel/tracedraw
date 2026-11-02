@@ -2,7 +2,7 @@
 
 > *Traduction automatique : cette page peut être en retard sur la version anglaise.*
 
-Vous pouvez [utiliser TraceDraw dans un navigateur web](https://igtoth.github.io/tracedraw/)
+Vous pouvez [utiliser TraceDraw dans un navigateur web](https://tracedraw.github.io/tracedraw/)
 sans rien installer. C'est le même programme que la version de bureau,
 compilé pour le navigateur : les menus, les outils et les fichiers sont donc
 les mêmes.
@@ -14,7 +14,10 @@ les mêmes.
 À chaque ouverture de la page, un message explique que la version pour
 navigateur est le même programme que la version de bureau, et ce qui
 diffère. [[dialog.ok]] (ou <kbd>Entrée</kbd>) le ferme ; un second bouton
-ouvre la page de téléchargement de la version de bureau.
+ouvre la page de téléchargement de la version de bureau. Sous Windows, un
+troisième bouton ouvre TraceDraw dans le Microsoft Store, et le message
+précise que la version du Store peut avoir une ou plusieurs versions de retard
+sur le dernier téléchargement, car le Store certifie d'abord chaque version.
 
 ## Ce qui diffère de la version de bureau {#differences}
 
@@ -43,8 +46,12 @@ ouvre la page de téléchargement de la version de bureau.
   la version de bureau. Dans le navigateur, chaque commande de macro l'indique
   par un message, avec un bouton vers les téléchargements.
 - **Mises à jour.** La version pour navigateur est toujours la plus récente ;
-  il n'y a rien à installer. La sauvegarde automatique et la récupération de
-  session sont des fonctions de la version de bureau.
+  il n'y a rien à installer. Dessins non enregistrés : fermer ou recharger
+  l'onglet, ou quitter la page, avec des modifications non enregistrées
+  demande d'abord confirmation par la question du navigateur. Les
+  sauvegardes automatiques sont gardées dans le stockage du navigateur pour
+  le site, et la visite suivante propose ce qu'un onglet fermé, rechargé ou
+  planté a laissé.
   Installée comme application, elle garde la version utilisée en dernier et
   prend la nouvelle au démarrage suivant, une fois toutes ses fenêtres
   fermées ; voir [Tablettes et l'application Android](tablets-and-android.md).

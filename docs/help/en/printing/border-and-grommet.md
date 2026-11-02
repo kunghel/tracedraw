@@ -1,10 +1,10 @@
-# Border and grommets
+# Banner hems and eyelets
 
 [[menu.tools > menu.tools.border_and_grommet]] finishes large prints such as
 banners and canvases: it grows the page by a border and places grommet marks,
 where the eyelets will be punched, along its edge.
 
-![The Border and Grommet dialog box](../../img/printing-border-and-grommet.png)
+![The Banner Hems and Eyelets dialog box](../../img/printing-border-and-grommet.png)
 
 The preview on the left shows the final page, the border band, the original
 area (dashed) and the grommets, with the final height and width.

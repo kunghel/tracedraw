@@ -163,6 +163,15 @@ pub fn about_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
             .size(12.0)
             .color(Tokens::text_dim()),
         );
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(tr("dialog.about_trademark"))
+                    .size(11.0)
+                    .color(Tokens::text_dim()),
+            )
+            .wrap(),
+        );
         if crate::ui::chrome::button_row(ui, &[&tr("dialog.close")], false).is_some() {
             *close = true;
         }

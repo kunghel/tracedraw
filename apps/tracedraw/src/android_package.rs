@@ -12,6 +12,8 @@ mod tests {
     const CARGO: &str = include_str!("../Cargo.toml");
     const CI: &str = include_str!("../../../.github/workflows/build.yml");
     const BRIDGE: &str = include_str!("android.rs");
+    const TEXT_VIEW: &str =
+        include_str!("../../../packaging/android/java/dev/tracedraw/app/TextInputView.java");
     const PLAY: &str = include_str!("../../../docs/android-play.md");
 
     /// The manifest names the activity the Java code defines, the
@@ -245,6 +247,7 @@ mod tests {
                 "setClipboardText",
                 "(Ljava/lang/String;)Z",
             ),
+            ("public void readyForDocuments()", "readyForDocuments", "()V"),
         ] {
             assert!(ACTIVITY.contains(java), "the activity lacks {java:?}");
             assert!(
@@ -280,5 +283,280 @@ mod tests {
         }
         let short = std::fs::read_to_string(meta.join("short_description.txt")).unwrap_or_default();
         assert!(!short.is_empty() && short.chars().count() <= 80);
+    }
+
+    const SHARED_FILES: &str =
+        include_str!("../../../packaging/android/java/dev/tracedraw/app/SharedFiles.java");
+
+    /// Print, Send To, Edit Bitmap and opening files or pages (#1398) go
+    /// through the system: each Java method the bridge calls exists with
+    /// the bridge's signature; the print PDF goes to the print service, a
+    /// file to the share sheet (mail apps only for a mail) or to an
+    /// editing app with the right to write it back, served by the app's
+    /// own provider, which the manifest declares unexported with grants
+    /// and which serves the app's own folders only.
+    #[test]
+    fn print_share_and_open_with_go_through_the_system() {
+        for (java, name, sig) in [
+            (
+                "public boolean printFile(final String path, final String job)",
+                "printFile",
+                "(Ljava/lang/String;Ljava/lang/String;)Z",
+            ),
+            (
+                "public boolean shareFile(final String path, final String mime, final String subject, final boolean mail)",
+                "shareFile",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Z",
+            ),
+            (
+                "public boolean editFile(final String path, final String mime)",
+                "editFile",
+                "(Ljava/lang/String;Ljava/lang/String;)Z",
+            ),
+            (
+                "public boolean viewTarget(final String target, final String mime)",
+                "viewTarget",
+                "(Ljava/lang/String;Ljava/lang/String;)Z",
+            ),
+        ] {
+            assert!(ACTIVITY.contains(java), "the activity lacks {java:?}");
+            assert!(
+                BRIDGE.contains(&format!("jni_str!(\"{name}\")")),
+                "the bridge does not call {name}"
+            );
+            assert!(
+                BRIDGE.contains(&format!("jni_sig!(\"{sig}\")")),
+                "the bridge does not use the signature {sig:?}"
+            );
+        }
+        for needed in [
+            "PrintManager",
+            "Context.PRINT_SERVICE",
+            "extends PrintDocumentAdapter",
+            "onWriteFinished(new PageRange[] {PageRange.ALL_PAGES})",
+            "Intent.ACTION_SEND",
+            "Intent.EXTRA_STREAM",
+            "Intent.createChooser",
+            "Uri.parse(\"mailto:\")",
+            "Intent.ACTION_EDIT",
+            "Intent.FLAG_GRANT_WRITE_URI_PERMISSION",
+            "Intent.ACTION_VIEW",
+            "ActivityNotFoundException",
+        ] {
+            assert!(ACTIVITY.contains(needed), "the activity lacks {needed:?}");
+        }
+        assert!(SHARED_FILES.contains("public class SharedFiles extends ContentProvider"));
+        assert!(
+            SHARED_FILES.contains("static final String AUTHORITY = \"dev.tracedraw.app.files\";")
+        );
+        assert!(SHARED_FILES.contains("getFilesDir()") && SHARED_FILES.contains("getCacheDir()"));
+        // Paths never lead out of the served folders.
+        assert!(SHARED_FILES.contains("getCanonicalFile()"));
+        assert!(SHARED_FILES.contains("ParcelFileDescriptor.parseMode(mode)"));
+        let provider = MANIFEST
+            .split("<provider")
+            .nth(1)
+            .and_then(|p| p.split("/>").next())
+            .expect("the manifest declares the provider");
+        for needed in [
+            "android:name=\"dev.tracedraw.app.SharedFiles\"",
+            "android:authorities=\"dev.tracedraw.app.files\"",
+            "android:exported=\"false\"",
+            "android:grantUriPermissions=\"true\"",
+        ] {
+            assert!(provider.contains(needed), "the provider lacks {needed:?}");
+        }
+        assert!(!SHARED_FILES.contains('\u{2014}'));
+    }
+
+    /// The system's font scale and contrast (#1412): the activity answers
+    /// them as the bridge reads them, a font scale change reaches the
+    /// running activity, and the settings reader parses the answer.
+    #[test]
+    fn the_font_scale_and_contrast_reach_the_editor() {
+        assert!(ACTIVITY.contains("public String getAccessibility()"));
+        assert!(BRIDGE.contains("jni_str!(\"getAccessibility\")"));
+        assert!(BRIDGE.contains("jni_sig!(\"()Ljava/lang/String;\")"));
+        for needed in [
+            "config.fontScale",
+            "UI_MODE_NIGHT_YES",
+            "getContrast()",
+            "high_text_contrast_enabled",
+        ] {
+            assert!(ACTIVITY.contains(needed), "the activity lacks {needed:?}");
+        }
+        let changes = MANIFEST
+            .split("android:configChanges=\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .expect("configChanges");
+        assert!(changes.split('|').any(|c| c == "fontScale"), "{changes}");
+        let prefs = include_str!("system_prefs.rs");
+        assert!(prefs.contains("crate::android::accessibility::read()"));
+        assert!(prefs.contains("parse_android(&a)"));
+    }
+
+    /// The on-screen keyboard (#1309): the bridge shows it with the
+    /// activity's method, registers the native methods the activity
+    /// declares with their signatures, and the view the keyboard types
+    /// into hands over what it composes, commits and deletes.
+    #[test]
+    fn the_keyboard_view_and_the_bridge_agree() {
+        assert!(
+            ACTIVITY.contains("public void showTextInput(final boolean on, final boolean again)")
+        );
+        assert!(BRIDGE.contains("jni_str!(\"showTextInput\")"));
+        assert!(BRIDGE.contains("jni_sig!(\"(ZZ)V\")"));
+        for (java, name, sig) in [
+            (
+                "private native void nativeImeCompose(String text);",
+                "nativeImeCompose",
+                "(Ljava/lang/String;)V",
+            ),
+            (
+                "private native void nativeImeCommit(String text);",
+                "nativeImeCommit",
+                "(Ljava/lang/String;)V",
+            ),
+            (
+                "private native void nativeImeDelete(int before, int after);",
+                "nativeImeDelete",
+                "(II)V",
+            ),
+        ] {
+            assert!(ACTIVITY.contains(java), "the activity lacks {java:?}");
+            assert!(BRIDGE.contains(&format!("jni_str!(\"{name}\")")));
+            assert!(BRIDGE.contains(&format!("jni_str!(\"{sig}\")")));
+        }
+        assert!(BRIDGE.contains("keyboard::register_natives();"));
+        assert!(ACTIVITY.contains("addContentView(textInput"));
+        assert!(TEXT_VIEW.contains("final class TextInputView extends View"));
+        assert!(
+            TEXT_VIEW.contains("public InputConnection onCreateInputConnection(EditorInfo out)")
+        );
+        for call in [
+            "activity.imeCompose(",
+            "activity.imeCommit(",
+            "activity.imeDelete(",
+        ] {
+            assert!(TEXT_VIEW.contains(call), "the view never calls {call}");
+        }
+        assert!(BUILD.contains("find packaging/android/java -name '*.java'"));
+    }
+
+    /// A relaunch of the activity by the system (Android 14 emulators in
+    /// CI switch a resource overlay right after booting, which relaunches
+    /// every activity whatever its manifest declares) froze
+    /// the app for good: `NativeActivity.onDestroy` waits for
+    /// `android_main` to return, which it never does. The manifest
+    /// declares every configuration change the editor follows and keeps
+    /// the activity when its process ends (`stateNotNeeded`); the
+    /// activity ends the process once the editor's thread has given up
+    /// the window, which it does after the backup; the bridge registers
+    /// that wait; the emulator check relaunches the app on purpose and
+    /// wants it back.
+    #[test]
+    fn a_relaunch_ends_the_process_after_the_backup() {
+        const EMULATOR_CHECK: &str = include_str!("../../../scripts/android/emulator_check.sh");
+        assert!(MANIFEST.contains("android:stateNotNeeded=\"true\""));
+        let changes = MANIFEST
+            .split("android:configChanges=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the activity declares its configuration changes");
+        for change in [
+            "orientation",
+            "screenSize",
+            "smallestScreenSize",
+            "screenLayout",
+            "keyboard",
+            "keyboardHidden",
+            "navigation",
+            "touchscreen",
+            "uiMode",
+            "locale",
+            "layoutDirection",
+            "mcc",
+            "mnc",
+            "fontScale",
+            "fontWeightAdjustment",
+            "colorMode",
+            "grammaticalGender",
+        ] {
+            assert!(
+                changes.split('|').any(|c| c == change),
+                "configChanges lacks {change:?}"
+            );
+        }
+        assert!(ACTIVITY.contains("private native void nativeAwaitWindowGone(long timeoutMs);"));
+        let end = ACTIVITY
+            .split("protected void onDestroy() {")
+            .nth(1)
+            .expect("the activity has its own onDestroy");
+        let waits = end.find("nativeAwaitWindowGone(BACKUP_WAIT_MS)");
+        let kills = end.find("Process.killProcess(Process.myPid())");
+        let destroys = end.find("super.onDestroy();");
+        assert!(waits.is_some() && kills.is_some() && destroys.is_some());
+        // The wait and the end run on a thread of their own, started
+        // before NativeActivity's onDestroy blocks the activity's thread.
+        assert!(end.contains("end.start();"));
+        assert!(end.find("end.start();") < destroys);
+        assert!(end.contains("the activity is relaunched: the process ends"));
+        assert!(EMULATOR_CHECK.contains("the activity is relaunched: the process ends"));
+        assert!(BRIDGE.contains("jni_str!(\"nativeAwaitWindowGone\")"));
+        assert!(BRIDGE.contains("jni_str!(\"(J)V\")"));
+        assert!(BRIDGE.contains("ending::keep(&app);"));
+        assert!(BRIDGE.contains("ending::register_natives();"));
+        assert!(BRIDGE.contains("app.native_window().is_none()"));
+        for needed in [
+            "cmd overlay list android",
+            "relaunch_with enable",
+            "relaunch_with disable",
+            "cmd overlay \"$1\" --user 0 \"$overlay\"",
+        ] {
+            assert!(
+                EMULATOR_CHECK.contains(needed),
+                "scripts/android/emulator_check.sh lacks {needed:?}"
+            );
+        }
+    }
+
+    /// A document another app opens with TraceDraw (a file manager's Open
+    /// with, Share) reaches the editor (#646): the manifest offers the app
+    /// for VIEW, EDIT and SEND of drawings, the activity takes the intent
+    /// that started it and the ones that come while it runs (singleTask),
+    /// keeps the first until the editor is ready, and hands the documents
+    /// over under the request code the bridge opens in tabs.
+    #[test]
+    fn documents_opened_from_other_apps_reach_the_editor() {
+        for needed in [
+            "android:launchMode=\"singleTask\"",
+            "android.intent.action.VIEW",
+            "android.intent.action.EDIT",
+            "android.intent.action.SEND",
+            "android.intent.action.SEND_MULTIPLE",
+            "android.intent.category.DEFAULT",
+            "<data android:scheme=\"content\" />",
+            "<data android:mimeType=\"application/octet-stream\" />",
+            "<data android:mimeType=\"application/x-cdr\" />",
+            "<data android:mimeType=\"image/*\" />",
+        ] {
+            assert!(MANIFEST.contains(needed), "the manifest lacks {needed:?}");
+        }
+        for needed in [
+            "private static final int OPENED_ELSEWHERE = 0;",
+            "protected void onCreate(Bundle savedInstanceState)",
+            "pendingOpen = start;",
+            "Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY",
+            "protected void onNewIntent(Intent intent)",
+            "if (editorReady) {",
+            "sendDocuments(OPENED_ELSEWHERE, uris, 0);",
+            "Intent.EXTRA_STREAM",
+        ] {
+            assert!(ACTIVITY.contains(needed), "the activity lacks {needed:?}");
+        }
+        assert!(BRIDGE.contains("pub const OPENED_ELSEWHERE: i32 = 0;"));
+        let files = include_str!("files.rs");
+        assert!(files.contains("answer.request == documents::OPENED_ELSEWHERE"));
     }
 }

@@ -8,10 +8,10 @@ fn main() {
         res.set_icon("../../assets/icon/tracedraw.ico");
         res.set("ProductName", "TraceDraw");
         res.set("FileDescription", "TraceDraw vector editor");
-        res.set("CompanyName", "Ighor Toth");
+        res.set("CompanyName", "TraceDraw");
         res.set(
             "LegalCopyright",
-            "Copyright \u{a9} 2026 Ighor Toth and the TraceDraw contributors",
+            "Copyright \u{a9} 2026 TraceDraw members and contributors",
         );
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed Windows resources: {e}");

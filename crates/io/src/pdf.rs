@@ -847,7 +847,14 @@ impl PageWriter<'_> {
         }
         if let ShapeKind::Group { children } = &shape.kind {
             for c in children {
-                self.shape(c, transform);
+                // The group's uniform transparency goes on each member.
+                if shape.opacity < 1.0 && self.pdf.allow_alpha {
+                    let mut c = c.clone();
+                    c.absorb_opacity(shape.opacity);
+                    self.shape(&c, transform);
+                } else {
+                    self.shape(c, transform);
+                }
             }
             return;
         }
@@ -3424,7 +3431,7 @@ mod pdfx_tests {
         let opts = PdfOptions {
             bookmarks: true,
             show_bookmarks: true,
-            author: Some("Ighor".into()),
+            author: Some("Ada".into()),
             keywords: Some("poster, test".into()),
             ..Default::default()
         };
@@ -3435,7 +3442,7 @@ mod pdfx_tests {
         // Non-Latin names as UTF-16 with a byte order mark.
         assert!(text.contains("/Title <FEFF65E5672C>"));
         assert!(text.contains("/PageMode /UseOutlines"));
-        assert!(text.contains("/Author (Ighor)") && text.contains("/Keywords (poster, test)"));
+        assert!(text.contains("/Author (Ada)") && text.contains("/Keywords (poster, test)"));
         // An independent reader finds two bookmarks.
         let parsed = lopdf::Document::load_mem(&bytes).expect("parse");
         let outlines = parsed
@@ -3479,8 +3486,13 @@ mod pdfx_tests {
         assert!(doc.clone().decrypt("wrong").is_err());
         // With the owner password it decrypts everything: the document
         // information and the page content.
-        let mut d = doc.clone();
-        d.decrypt("owner").expect("decrypt");
+        // (That reader keeps the objects of a file opened without its
+        // password aside, so the password is given when it opens.)
+        let d = lopdf::Document::load_mem_with_options(
+            &bytes,
+            lopdf::LoadOptions::with_password("owner"),
+        )
+        .expect("decrypt");
         let info = d
             .trailer
             .get(b"Info")
@@ -3493,8 +3505,7 @@ mod pdfx_tests {
             .expect("title");
         assert_eq!(title, b"Secret plan");
         let page = *d.get_pages().values().next().expect("page");
-        let content =
-            String::from_utf8_lossy(&d.get_page_content(page).expect("content")).into_owned();
+        let content = String::from_utf8_lossy(&d.get_page_content(page)).into_owned();
         assert!(content.contains(" rg") && content.contains(" l\n"));
         // The user password unwraps the same file key from /UE, and /Perms
         // decrypts with it to the permissions. (That reader's own check of

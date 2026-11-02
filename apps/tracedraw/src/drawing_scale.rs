@@ -1,4 +1,4 @@
-//! Drawing scale (Document Options > Rulers > Drawing scale): a distance
+//! Drawing scale (Document Setup > Rulers > Drawing scale): a distance
 //! on the page stands for a distance in the world, so a plan drawn at
 //! 1:100 shows real sizes on the rulers, in the coordinates, the sizes and
 //! the dimension labels. The scale lives in the drawing

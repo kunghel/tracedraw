@@ -12,7 +12,7 @@
   الفرعية المؤدية إليه، وفوق عنوان القائمة التي تحتويه. تختفي العلامات عند
   إيقاف الأمر، ويعود الأمر متوقفًا في المرة التالية التي يبدأ فيها TraceDraw.
 - القائمة الكاملة لتغييرات كل إصدار موجودة في
-  [سجل التغييرات](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [سجل التغييرات](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   الخاص بالمشروع.
 
 ## أبرز ما في الإصدارات الأخيرة {#highlights}

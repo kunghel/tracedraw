@@ -12,7 +12,7 @@ TraceDraw 的每个版本都会增加功能和修复。本页介绍如何了解�
   上方都会出现一个小圆点。关闭该命令后标记消失，下次启动 TraceDraw 时该命令
   又会关闭。
 - 每个版本的完整更改列表在项目的
-  [更改日志](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md) 中。
+  [更改日志](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md) 中。
 
 ## 最近版本的亮点 {#highlights}
 

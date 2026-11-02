@@ -1,4 +1,4 @@
-//! File > Publish to PDF: the PDF Settings dialog. Its tabs choose the
+//! File > Export as PDF: the PDF Settings dialog. Its tabs choose the
 //! file, what goes in (the drawing, every open drawing, the selection,
 //! the current page or a list of pages), the page size, a preset and the
 //! compatibility (General), the output intent (Color), the document

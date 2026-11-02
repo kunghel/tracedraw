@@ -72,7 +72,7 @@ A ferramenta [[tool.outline_color]] (<kbd>Shift+F12</kbd>) abre o painel
 
 ## Contorno variável {#variable-outline}
 
-A ferramenta [[tool.variable_outline]], no submenu Forma, torna um contorno mais
+A ferramenta [[tool.variable_outline]], cujo botão fica abaixo das ferramentas de pincel na caixa de ferramentas, torna um contorno mais
 grosso ou mais fino ao longo do comprimento com nós de largura.
 
 1. Selecione um objeto com contorno, como uma curva, um retângulo ou uma

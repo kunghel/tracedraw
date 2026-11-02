@@ -40,35 +40,53 @@ downwards.
 - The No Color well comes first: white with a red diagonal.
 - The swatch under the pointer gets a white frame; the document palette's
   current swatch (the one clicked last) keeps it.
-- An empty document palette shows "Drag colors (or objects) here to store
-  these colors with your document".
+- An empty document palette shows "Drop colors or objects here to keep
+  them with the document".
 
 ## Default palette
 
-The default CMYK palette, 99 named colours in this
-order: Black, 90% to 10% Black, White, Blue, Cyan, Green, Yellow, Red,
-Magenta, then tints in 20% steps (Purple 20 80 0 20, Orange 0 60 100 0,
-Pink 0 40 20 0, Dark Brown 0 20 20 60, Powder Blue 20 20 0 0 and so on,
-to Deep Blue 60 60 0 60).
+The default CMYK palette, 94 named colours, is made by a rule
+(`palette::default_cmyk`), every ink a whole percentage:
+
+1. The basics (22), first in the strip: Black, 90% Black to 10% Black,
+   White, the process colours Blue, Cyan, Green, Yellow, Red, Magenta,
+   then Purple (20 80 0 20), Orange (0 60 100 0), Pink (0 40 20 0), Dark
+   Brown (0 20 20 60) and Powder Blue (20 20 0 0).
+2. The classic mixes after them (72), in 20% steps of the inks and going
+   from the blues through the greens, yellows and browns, reds and pinks
+   to the violets and purples and the deep blues. Every one has a plain
+   descriptive name ("Dusty Blue", "Slate Blue", "Pale Slate", "Olive
+   Green", "Dark Red", "Lilac"), none of them repeated.
+
+The list is the classic palette with five swatches taken out of its first
+50: after the basics, one swatch in every fourth or fifth (4 kept, 1
+out, 5 kept, 1 out and so on; the 27th, 33rd, 38th, 44th and 49th
+swatches of the classic list). Swatches after the 50th are unchanged.
+
+The palette only decides what a new window shows. A drawing keeps the
+colours it stores, so changing the palette never changes a saved
+drawing, and the `.cdr` writer's document palette is separate (written
+empty).
 
 In a drawing whose primary colour mode is RGB (New Document's colour
-mode, Document Properties) the default palette shows and applies its
+mode, Document Info) the default palette shows and applies its
 colours as clean RGB values (names kept; spot inks and registration stay
 as they are). The default palette's colours come from the RGB default
 palette, a table of RGB values defined directly
-(`palette::default_rgb`, the same 99 names in the same order, also the
+(`palette::default_rgb`, the same 94 names in the same order, also the
 Palette Manager's built-in Default RGB palette), found by name and colour
 so a default palette edited in the Palette Editor keeps them, and worked
 out when the palette changes rather than every frame: 10%
-greys (90% Black 26 26 26, 50% Black 128 128 128) and multiples of 51
-otherwise (Black 0 0 0, Red 255 0 0, Orange 255 102 0, Purple 153 0 204,
-Navy Blue 0 51 153, Dark Brown 102 51 51, Ruby Red 153 0 0, Crimson
-153 51 102, Plum 102 0 102, Deep Blue 51 0 204). Any other CMYK colour
+greys (90% Black 26 26 26, 50% Black 128 128 128) and multiples of 17
+otherwise, the plain ink formula below rounded to the nearest multiple
+(Black 0 0 0, Red 255 0 0, Orange 255 102 0, Sky Blue 0 204 255, Dark Green
+0 51 51, Dusty Blue 102 102 204; no two swatches share a value, Deep Blue is 0 0 68). Any other CMYK colour
 takes the plain RGB of its inks, R = 255 (1 - min(1, C + K)) and so on,
 not the press simulation; other colours are converted as the colour
 management converts. A CMYK drawing keeps them CMYK (#483, #620,
 `ui::palette::tests::an_rgb_drawing_gets_an_rgb_palette`,
 `ui::palette::tests::the_default_palette_of_an_rgb_drawing_is_clean_rgb`,
+`palette::tests::the_default_palette_follows_its_rule`,
 `ui::palette::tests::inks_with_black_become_rgb_by_adding_the_black`,
 `ui::palette::tests::edited_default_palettes_keep_their_rgb_values`).
 
@@ -77,10 +95,10 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
 | Action | Result |
 |---|---|
 | Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects); every click counts: one whose pointer slipped a few pixels but was let go on the same swatch, and the first click after a hold that opened the shades (#1336, `pick_drag_tests::every_click_on_a_palette_colour_applies_it`) |
-| Right click | Outline colour (Options > Customization > Color Palette can make it open the palette menu instead) |
+| Right click | Outline colour (Options > Customization > Color Palette can make it open the palette menu instead); a right click that slipped a few pixels on the swatch counts too (#1336) |
 | Ctrl+click | A tenth of the colour mixes into the selection's uniform fill (CMYK with CMYK, else in RGB) |
 | Click and hold (0.5 s) | A 5 x 5 pop-up of the colour's shades: lighter tints upwards, more black downwards, less colourful to the left, more to the right; click one (right click for the outline) |
-| Drag a swatch onto an object | Inside it (also inside a closed object with no fill): its uniform fill; within 4 points of its outline: the outline's colour (an object with no outline gets the default pen in that colour); No Color takes the fill or the outline away. The object need not be selected and the selection stays; one undo step; the colour joins the document palette as with a click |
+| Drag a swatch onto an object (left button) | Inside it (also inside a closed object with no fill): its uniform fill; within 4 points of its outline: the outline's colour (an object with no outline gets the default pen in that colour); No Color takes the fill or the outline away. The object need not be selected and the selection stays; one undo step; the colour joins the document palette as with a click |
 | Drag a swatch onto the document palette | The colour joins it |
 | Drag objects (Pick tool) onto the document palette | Their fill and outline colours join it (as Add from Selection); the objects stay where they were; the pointer shows a copy sign there |
 | While dragging a swatch | A chip of the colour follows the pointer: filled over a fill, a ring over an outline; the pointer shows whether letting go changes anything; Esc drops nothing |

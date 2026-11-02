@@ -53,7 +53,7 @@ Some effects, such as blurs, spread past the edges of a bitmap.
   the width and height, type the new size in pixels or a percentage (100 to
   1000%), with **Maintain aspect ratio**. The picture stays centered.
 
-![The Manually Inflate Bitmap dialog box](../../img/bitmaps-resample-and-straighten-inflate.png)
+![The Bitmap Padding Custom dialog box](../../img/bitmaps-resample-and-straighten-inflate.png)
 
 ## Other bitmap commands {#other}
 

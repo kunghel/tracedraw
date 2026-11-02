@@ -50,6 +50,7 @@
     }
     #loading a { color: #0b5cad; }
     #loading .links a { white-space: nowrap; }
+    #loading .notice { font-size: 12px; color: #5a6b80; }
     #loading-error { color: #a1260d; font-weight: 600; }
   </style>
 </head>
@@ -101,23 +102,45 @@
         <text id="loading-status" x="44" y="315" font-size="13" fill="#c9d7ec">Loading TraceDraw...</text>
         <rect x="44" y="326" width="552" height="3" rx="1.5" fill="#fff" fill-opacity="0.12"/>
         <rect id="loading-bar" x="44" y="326" width="0" height="3" rx="1.5" fill="#5caeff"/>
-        <text x="44" y="357" font-size="11.5" fill="#8fa3c0">Copyright &#169; 2026 Ighor Toth and the TraceDraw contributors</text>
+        <text x="44" y="357" font-size="11.5" fill="#8fa3c0">Copyright &#169; 2026 TraceDraw members and contributors</text>
         <text x="596" y="357" font-size="11.5" fill="#8fa3c0" text-anchor="end">v@VERSION@</text>
       </g>
       <rect x="0.5" y="0.5" width="639" height="379" fill="none" stroke="#fff" stroke-opacity="0.157"/>
     </svg>
     <p id="loading-error" role="alert" hidden></p>
     <p><b>TraceDraw</b> <span class="alpha">alpha</span>: open-source vector editor that opens .cdr files. Written in Rust, free under the MIT or Apache-2.0 license.</p>
+    <p class="notice">TraceDraw is an independent project, not affiliated with, endorsed by or sponsored by Corel Corporation or Alludo. CorelDRAW is a registered trademark of Corel Corporation. .cdr support is implemented independently, for interoperability.</p>
     <p>Works best in a desktop browser with a mouse and keyboard. On a tablet choose Window &gt; Workspace &gt; Touch; a phone screen is too small for editing.</p>
     <p class="links">
-      <a href="https://github.com/igtoth/tracedraw/releases/latest">Download the desktop app</a> &middot;
-      <a href="https://github.com/igtoth/tracedraw">Source code</a> &middot;
-      <a href="https://github.com/igtoth/tracedraw/issues">Report a problem</a>
+      <a href="https://github.com/tracedraw/tracedraw/releases/latest">Download the desktop app</a> &middot;
+      <a href="https://github.com/tracedraw/tracedraw">Source code</a> &middot;
+      <a href="https://github.com/tracedraw/tracedraw/issues">Report a problem</a>
     </p>
     <noscript><p>TraceDraw needs JavaScript, WebAssembly and WebGL 2 to run in the browser.</p></noscript>
   </div>
   <script type="module">
     import init from "./tracedraw.js";
+
+    // Files the system opens with the installed app (its file manager's
+    // Open with, #646; manifest.webmanifest file_handlers): read here and
+    // queued for the editor, which opens each in a tab of its own
+    // (web.rs, take_launched_files). launch_handler focus-existing sends
+    // them to the window already open.
+    window.tracedrawLaunched = [];
+    if ("launchQueue" in window) {
+      window.launchQueue.setConsumer(async (params) => {
+        for (const handle of params.files || []) {
+          try {
+            const file = await handle.getFile();
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            window.tracedrawLaunched.push({ name: file.name, bytes });
+          } catch (e) {
+            console.warn("TraceDraw: a launched file could not be read: " + e);
+          }
+        }
+        window.dispatchEvent(new Event("tracedraw-launched"));
+      });
+    }
 
     const status = document.getElementById("loading-status");
     const bar = document.getElementById("loading-bar");

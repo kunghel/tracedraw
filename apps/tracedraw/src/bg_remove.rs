@@ -1,4 +1,4 @@
-//! Bitmaps > Remove Background: makes the background of a picture
+//! Image > Remove Background: makes the background of a picture
 //! transparent on this computer, without an AI service.
 //!
 //! 1. The background colours are a list: each entry is Automatic (the

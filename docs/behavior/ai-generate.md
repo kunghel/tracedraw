@@ -13,7 +13,7 @@ the user asks. The work is in `apps/tracedraw/src/ai_image.rs`.
 - Tools > AI Generate, the AI Generate button on the standard toolbar
   (its arrow lists AI Generate, Draw with Words, Remove Background and
   Options > AI) and Window > Dockers open the AI Generate docker.
-- Bitmaps > Remove Background, the Remove Background button on the
+- Image > Remove Background, the Remove Background button on the
   property bar of a selected bitmap, and Remove Background and Remix with
   AI at the top of a bitmap's context menu.
 - Every AI picture command is greyed out while AI features are off, the
@@ -114,7 +114,7 @@ result inserts it. Pictures are named "AI-generated bitmap", vectors
 Object > AI Generate opens the docker in each mode (Create Image, Remix
 Image, Create Vector Graphic) and has Remove Background; a bitmap's
 context menu starts with Edit Bitmap, Remove Background... (on this
-computer), Remove Background, Quick Trace,
+computer), Remove Background, Automatic trace,
 Crop Bitmap and Remix with AI (the bitmap becomes the source).
 
 ## Remove Background
@@ -175,7 +175,7 @@ text).
 
 ## AI Art Styles
 
-Bitmaps > AI Art Styles repaints the selection (a bitmap as it is,
+Image > AI Art Styles repaints the selection (a bitmap as it is,
 other objects drawn as a picture first) in one of eight styles: Oil
 Painting, Watercolour, Pencil Sketch, Ink Drawing, Chalk Pastel, Pop
 Art, Woodcut and Stained Glass. Each is a Remix with a fixed request

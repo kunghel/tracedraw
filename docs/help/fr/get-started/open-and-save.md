@@ -33,6 +33,13 @@ affichés pendant le glissement indiquent ce qui va se passer. Là où le
 système n'indique pas où se trouve le pointeur (Linux, macOS), les dessins
 s'ouvrent dans un onglet et les images sont importées.
 
+Un dessin ouvert depuis le système pendant que TraceDraw tourne (un double
+clic dans le gestionnaire de fichiers ou le Finder, Ouvrir avec, ou Partager
+sous Android) s'ouvre dans un onglet de la fenêtre déjà ouverte, qui passe
+au premier plan. La version navigateur installée comme application fait de
+même pour les fichiers `.tdraw`, `.cdr`, `.svg` et `.pdf` dans les
+navigateurs qui laissent les applications installées ouvrir des fichiers.
+
 La façon dont un dessin s'affiche d'abord (la page entière, ses objets, la
 largeur de la page, la taille réelle, ou la page, la position et le zoom
 qu'il avait à l'enregistrement) se règle avec [[options.open_view]], dans la
@@ -159,7 +166,7 @@ arrête.
 
 ## Sauvegarde automatique et récupération {#recovery}
 
-Sur le bureau, TraceDraw conserve des sauvegardes de vos dessins ouverts
+TraceDraw conserve des sauvegardes de vos dessins ouverts
 tant que la sauvegarde automatique est active (la page [[options.save]] de
 [[menu.tools > menu.tools.options > menu.tools.options_app]] règle la
 fréquence et l'emplacement ; toutes les 20 minutes au départ). Fermer
@@ -171,3 +178,9 @@ courant, il propose les sauvegardes au démarrage suivant :
 (Enregistrer demande alors où l'enregistrer), et [[dialog.discard]] laisse
 les sauvegardes dans leur dossier. Deux fenêtres TraceDraw ouvertes en même
 temps ne se proposent jamais les dessins l'une de l'autre.
+
+Dans la version pour navigateur, les sauvegardes sont gardées dans le
+stockage du navigateur pour le site, un dossier par onglet. Fermer ou
+recharger un onglet avec des dessins non enregistrés demande d'abord
+confirmation, et la visite suivante propose ce que l'onglet a laissé ;
+[[dialog.discard]] supprime ces sauvegardes.

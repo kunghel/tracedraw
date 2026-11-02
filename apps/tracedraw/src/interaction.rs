@@ -445,6 +445,13 @@ impl App {
                     self.shape_hit(&part, p, tol)
                 });
         }
+        // A dimension is picked on its lines, arrowheads and label only,
+        // never in the empty part of its box: an object under it (the
+        // circle a diameter is measured across) is picked there (#1493).
+        // "Treat all objects as filled" leaves its lines as lines.
+        if crate::dimensions::is_dimension(s) {
+            return self.dimension_hit(s, p, tol);
+        }
         if matches!(
             s.kind,
             ShapeKind::Text { .. }
@@ -464,6 +471,25 @@ impl App {
             return true;
         }
         crate::canvas::distance_to_path(&path, p) <= tol * 1.5
+    }
+
+    /// A part of dimension `s` (in page space) is under `p`: its label
+    /// anywhere in its box, its arrowheads inside, its lines near them.
+    fn dimension_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64) -> bool {
+        let ShapeKind::Group { children } = &s.kind else {
+            return false;
+        };
+        children.iter().filter(|c| c.visible).any(|c| {
+            let mut c = c.clone();
+            c.transform_by(s.transform);
+            if matches!(c.kind, ShapeKind::Text { .. }) {
+                return self.visual_bounds(&c).inflate(tol, tol).contains(p);
+            }
+            let path = c.page_path();
+            let closed = !matches!(c.kind, ShapeKind::Path { closed: false, .. });
+            (closed && !matches!(c.fill, Fill::None) && path.contains(p))
+                || crate::canvas::distance_to_path(&path, p) <= tol * 1.5
+        })
     }
 
     /// The children of a group (`g` in page space) that are under `p`, top
@@ -1009,7 +1035,22 @@ impl App {
     /// Space while the selection is moved, scaled, turned or slanted drops
     /// a copy where the outline is, and the drag goes on.
     fn stamp_on_space(&mut self, response: &Response) {
-        if !response.ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        // One copy a press: a key held sends its press again and again
+        // (`repeat`), which left a trail of copies (#1502).
+        let pressed = response.ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })
+        });
+        if !pressed {
             return;
         }
         let t = match &self.drag {
@@ -1110,6 +1151,15 @@ impl App {
                 None
             }
         });
+        // A finger's tap: the windowing layer lets the pointer go with the
+        // finger (the release comes with PointerGone), so the frame of the
+        // click has no hover position and no tool saw the tap: the Text
+        // tool placed no text and the keyboard never came (#1496, #1489).
+        // Where the click happened stands in.
+        let hover = hover.or_else(|| {
+            let clicked = response.ctx.input(|i| i.pointer.any_click());
+            response.interact_pointer_pos().filter(|_| clicked)
+        });
         let pointer = hover.map(|h| self.view.to_page(h));
         self.pointer_page = pointer;
         // A colour picker's eyedropper waits for a click: the colour there
@@ -1196,10 +1246,11 @@ impl App {
             return;
         }
 
-        // With the Zoom tool a right click zooms out by default.
+        // With the Zoom tool a right click zooms out by default; with the
+        // Pan tool when Options > Tools > Zoom/Pan says so.
         if response.secondary_clicked()
-            && self.tool == Tool::Zoom
-            && self.settings.zoom_right_click_out
+            && ((self.tool == Tool::Zoom && self.settings.zoom_right_click_out)
+                || (self.tool == Tool::Pan && self.settings.pan_right_click_out))
         {
             self.view.zoom_at(screen, 0.5);
             self.end_zoom_one_shot();
@@ -1708,19 +1759,19 @@ impl App {
                 return;
             }
             self.deselect_guides();
-            // Alt digs: the object beneath the selected one there (with
-            // Ctrl among the objects inside groups).
+            // Alt digs: the object beneath the selected one there, or,
+            // with none of the selection under the pointer, beneath the
+            // topmost one (the hidden object behind the one clicked,
+            // #1350); after the bottom one, the top again (with Ctrl
+            // among the objects inside groups).
             if mods.alt {
                 let hits = self.hits_at(p, mods.ctrl);
                 if !hits.is_empty() {
-                    let below = match self.selection.as_slice() {
-                        [one] => hits
-                            .iter()
-                            .position(|h| h == one)
-                            .map(|i| (i + 1) % hits.len()),
+                    let from = match self.selection.as_slice() {
+                        [one] => hits.iter().position(|h| h == one),
                         _ => None,
                     };
-                    let id = hits[below.unwrap_or(0)];
+                    let id = hits[(from.unwrap_or(0) + 1) % hits.len()];
                     if mods.shift {
                         self.select_add(id);
                     } else {
@@ -2183,6 +2234,16 @@ impl App {
     }
 
     fn freehand_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
+        // Resting before the first click: the pointer shows the point the
+        // line would start at, as it does for the next node once the line
+        // has begun (the preview snaps it then) (#1538).
+        if self.tool == Tool::Freehand
+            && self.curve.is_none()
+            && matches!(self.drag, Drag::None)
+            && response.hovered()
+        {
+            let _ = self.snap_point(p);
+        }
         // A click, then another: a straight line between them (Ctrl keeps
         // it to steps of the constrain angle); Esc drops the first click.
         if response.clicked_by(PointerButton::Primary) && self.tool == Tool::Freehand {
@@ -2818,6 +2879,12 @@ impl App {
             }
             Drag::AlongPath { start, current } => self.finish_along_path(start, current),
             Drag::Pivot => {}
+            // A Free Transform drag applied its steps as the pointer
+            // moved (a release off the canvas ends it here): nothing is
+            // left to apply, its undo step is closed (#1342).
+            Drag::Rotate { .. } if self.tool == Tool::FreeTransform => {
+                self.end_free_transform_group();
+            }
             Drag::Scale { .. } | Drag::Rotate { .. } | Drag::Skew { .. } => {
                 if let Some(t) = self.preview_transform_of(&drag) {
                     self.finish_transform(t);
@@ -3046,6 +3113,23 @@ impl App {
         }
     }
 
+    /// Pick `t` by its key. The Pick tool's key (Space) on the Pick tool
+    /// goes back to the tool used before it, not during a drag, where
+    /// Space drops a copy; true then, the key having done its work.
+    fn pick_tool_by_key(&mut self, t: Tool, pointer_busy: bool) -> bool {
+        if t == Tool::Pick && pointer_busy {
+            return false;
+        }
+        if t == Tool::Pick && self.tool == Tool::Pick {
+            if self.previous_tool != Tool::Pick {
+                self.choose_tool(self.previous_tool);
+            }
+            return true;
+        }
+        self.choose_tool(t);
+        false
+    }
+
     pub fn keyboard(&mut self, ctx: &egui::Context) {
         // The pen's pressure, which the raw input hook read from this
         // frame's touch events, before the tools see the pointer (#850).
@@ -3140,6 +3224,9 @@ impl App {
         // Ctrl+E can be released before the frame that sees it). Shortcuts
         // match the modifiers exactly, so Ctrl+Shift+Z is not also Ctrl+Z;
         // only + and - ignore Shift, which some layouts need to type them.
+        // A key held sends its press again and again (`repeat`); the
+        // presses a held key makes are kept apart for what must happen
+        // once a press, such as picking a tool (#1502).
         let presses: Vec<(Key, Modifiers)> = input
             .events
             .iter()
@@ -3153,7 +3240,21 @@ impl App {
                 _ => None,
             })
             .collect();
-        let pressed = |k: Key, m: Modifiers| {
+        let first_presses: Vec<(Key, Modifiers)> = input
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+            .collect();
+        let matches = |presses: &[(Key, Modifiers)], k: Key, m: Modifiers| {
             presses.iter().any(|(key, mods)| {
                 *key == k
                     && if matches!(k, Key::Plus | Key::Equals | Key::Minus) {
@@ -3163,21 +3264,38 @@ impl App {
                     }
             })
         };
+        let pressed = |k: Key, m: Modifiers| matches(&presses, k, m);
+        let first_pressed = |k: Key, m: Modifiers| matches(&first_presses, k, m);
         let cmd = Modifiers::COMMAND;
 
-        // Menu commands with a shortcut of the user's (Options >
+        let pointer_busy = !matches!(self.drag, Drag::None) || input.pointer.any_down();
+        // Menu commands and tools with a shortcut of the user's (Options >
         // Customization > Commands) come first: they may take a built-in
-        // shortcut over.
+        // shortcut over (#1595).
         for (key, mods) in &presses {
             let text = crate::shortcuts::format(*mods, *key);
-            if let Some(id) = self
+            let Some(id) = self
                 .settings
                 .shortcuts
                 .iter()
-                .find(|(id, v)| id.starts_with("menu.") && crate::shortcuts::same(v, &text))
+                .find(|(_, v)| crate::shortcuts::same(v, &text))
                 .map(|(id, _)| id.clone())
-            {
+            else {
+                continue;
+            };
+            if id.starts_with("menu.") {
                 self.pending_command = Some(id);
+                return;
+            }
+            if let Some(t) = Tool::ALL.iter().find(|t| t.id() == id) {
+                // A key held picks its tool once (#1502); W and K during a
+                // move say what a drop on a clip frame does and pick none.
+                let drop_key = matches!(self.drag, Drag::Move { .. })
+                    && mods.is_none()
+                    && matches!(key, Key::W | Key::K);
+                if first_pressed(*key, *mods) && !drop_key {
+                    self.pick_tool_by_key(*t, pointer_busy);
+                }
                 return;
             }
         }
@@ -3728,7 +3846,6 @@ impl App {
             }
         }
         // Tool shortcuts: user overrides from Options, then the defaults.
-        let pointer_busy = !matches!(self.drag, Drag::None) || input.pointer.any_down();
         for group in crate::tools::GROUPS {
             for t in group.tools {
                 // Every key the tool has (#822).
@@ -3752,27 +3869,23 @@ impl App {
                         let drop_key = matches!(self.drag, Drag::Move { .. })
                             && mods.is_none()
                             && matches!(k, Key::W | Key::K);
-                        if pressed(k, mods) && !drop_key {
-                            // The Pick tool's key (Space) on the Pick tool
-                            // goes back to the tool used before it. Not
-                            // during a drag, where Space drops a copy.
+                        // A key held picks its tool once: the presses it
+                        // repeats would send Space back and forth between
+                        // the Pick tool and the tool before it (#1502).
+                        if first_pressed(k, mods) && !drop_key {
                             if *t == Tool::Pick && pointer_busy {
                                 continue;
                             }
-                            if *t == Tool::Pick && self.tool == Tool::Pick {
-                                if self.previous_tool != Tool::Pick {
-                                    self.set_tool(self.previous_tool);
-                                }
+                            if self.pick_tool_by_key(*t, pointer_busy) {
                                 return;
                             }
-                            self.set_tool(*t);
                         }
                     }
                 }
             }
         }
         // Arrow nudge: plain, Shift super nudge, Ctrl micro nudge
-        // (Document Options > Rulers).
+        // (Document Setup > Rulers).
         let mut d = Vec2::ZERO;
         for (key, mods) in &presses {
             let step = if mods.matches_exact(Modifiers::NONE) {

@@ -5,13 +5,16 @@
 //! of the objects it came from, with new nodes only where their outlines
 //! cross.
 
-use crate::geometry::{BezPath, PathEl, Point};
+use crate::geometry::{BezPath, PathEl, Point, Vec2};
 use i_overlay::core::fill_rule::FillRule as IFill;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::single::SingleFloatOverlay;
 use kurbo::{ParamCurve as _, ParamCurveArclen as _};
 
 const TOL: f64 = 0.02;
+
+/// Vertices of a result closer than this (mm) are one node.
+const SAME_POINT: f64 = 1e-7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -67,8 +70,29 @@ fn from_shapes(shapes: Vec<Vec<Vec<[f64; 2]>>>) -> BezPath {
     path
 }
 
-/// Combine `subject` and `clip` (both in the same coordinate space).
+/// How the overlapping contours of an input fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillRule {
+    /// A place inside an odd number of contours is filled (how curves
+    /// fill): overlapping contours make holes.
+    #[default]
+    EvenOdd,
+    /// A place the contours wind round is filled (how text fills):
+    /// overlapping contours turning the same way stay filled.
+    NonZero,
+}
+
+/// Combine `subject` and `clip` (both in the same coordinate space), each
+/// read with the even-odd rule.
 pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
+    overlay_with(subject, clip, op, FillRule::EvenOdd)
+}
+
+/// Combine `subject` and `clip` like [`overlay`], each read with `fill`:
+/// with [`FillRule::NonZero`] outlines meant for the nonzero rule (text,
+/// glyphs drawn as overlapping strokes, traced logos) need no clean-up
+/// first. The result covers the same area under the even-odd rule.
+pub fn overlay_with(subject: &BezPath, clip: &BezPath, op: Op, fill: FillRule) -> BezPath {
     let subj = contours(subject);
     let clp = contours(clip);
     let rule = match op {
@@ -77,7 +101,11 @@ pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
         Op::Trim => OverlayRule::Difference,
         Op::Exclude => OverlayRule::Xor,
     };
-    let result = subj.overlay(&clp, rule, IFill::EvenOdd);
+    let fill = match fill {
+        FillRule::EvenOdd => IFill::EvenOdd,
+        FillRule::NonZero => IFill::NonZero,
+    };
+    let result = subj.overlay(&clp, rule, fill);
     recover_curves(&from_shapes(result), &[subject, clip])
 }
 
@@ -703,6 +731,29 @@ fn recover_curves(result: &BezPath, sources: &[&BezPath]) -> BezPath {
                 places[k] = v;
             }
         }
+        // Where outlines cross at a shallow angle, several vertices of the
+        // flattening lie near the crossing and all land on it: keep one, or
+        // the contour gets lines of no length there (repeated nodes).
+        let mut k = 1;
+        while k < pts.len() {
+            if (pts[k] - pts[k - 1]).hypot() < SAME_POINT {
+                pts.remove(k);
+                let gone = places.remove(k);
+                if places[k - 1].len() < gone.len() {
+                    places[k - 1] = gone;
+                }
+            } else {
+                k += 1;
+            }
+        }
+        while pts.len() > 1 && (pts[pts.len() - 1] - pts[0]).hypot() < SAME_POINT {
+            pts.pop();
+            places.pop();
+        }
+        if pts.len() < 3 {
+            continue;
+        }
+        let n = pts.len();
         // The contour starts where a run would end anyway (a crossing, a
         // vertex on no source, or a source's own node), so a stretch of
         // one source is not cut in two at an arbitrary vertex.
@@ -806,10 +857,26 @@ pub enum Enclosed {
 /// #899), not a gap anyone drew.
 const GAP: f64 = 0.01;
 
+/// How far a bridge runs on past the outline it meets, and back behind
+/// the end it starts from, as a share of the outlines' extent. The overlay
+/// library cuts the faces on an integer grid of about a thousand
+/// millionth of the extent per unit, twice that at the coarsest. An end
+/// that stops within a unit of
+/// an outline, as the pieces an opaque fill cuts away do (they come back
+/// rounded to another grid, #1281), may land on either side of it once
+/// rounded, so a bridge that merely runs on from the end can miss the
+/// outline: one that runs this far through the end from behind crosses
+/// it by hundreds of units whichever way the end rounds, and stays far
+/// too short to see.
+const CROSS: f64 = 1e-6;
+
 /// The short lines that close the gaps of at most [`GAP`] between the ends
 /// of the open `lines` (`open[i]`: line `i` is open) and the lines
-/// themselves, each running from the end to the nearest point of the
-/// outline it nearly meets and a little beyond, so that it crosses it.
+/// themselves, each running through the end, from a little behind it to
+/// the nearest point of the outline it nearly meets and on beyond it, so
+/// that it crosses it. An end already on an outline gets a short line
+/// across it through the end, so the crossing holds on the grid the faces
+/// are cut on.
 fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
     // A grid over the segments, each in the cells its box (widened by the
     // gap) covers, so an end finds its neighbours without a look at all.
@@ -848,6 +915,7 @@ fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
             }
         }
     }
+    let cross = (bounds.width().max(bounds.height()) * CROSS).max(f64::MIN_POSITIVE);
     let mut out = Vec::new();
     for (i, l) in lines.iter().enumerate() {
         if !open[i] || l.len() < 2 {
@@ -858,7 +926,7 @@ fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
         for (end, own) in [(l[0], 0), (l[l.len() - 1], l.len() - 2)] {
             let p = Point::new(end[0], end[1]);
             let (cx, cy) = cell_of(end[0], end[1]);
-            let mut best: Option<(f64, Point)> = None;
+            let mut best: Option<(f64, Point, kurbo::Line)> = None;
             for n in &cells[cy * nx + cx] {
                 let (j, k) = segs[*n];
                 if j == i && k == own {
@@ -871,17 +939,29 @@ fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
                 use kurbo::ParamCurveNearest as _;
                 let nearest = seg.nearest(p, 1e-9);
                 let d = nearest.distance_sq.sqrt();
-                if d < GAP && best.is_none_or(|(b, _)| d < b) {
-                    best = Some((d, seg.eval(nearest.t)));
+                if d < GAP && best.as_ref().is_none_or(|(b, _, _)| d < *b) {
+                    best = Some((d, seg.eval(nearest.t), seg));
                 }
             }
-            if let Some((d, q)) = best {
-                // Already touching: nothing to close.
-                if d > 1e-9 {
-                    let past = q + (q - p) * 0.5;
-                    out.push(vec![end, [past.x, past.y]]);
+            let Some((d, q, seg)) = best else {
+                continue;
+            };
+            // Toward the outline; straight across it when the end is on
+            // it already.
+            let u = if d > 1e-9 {
+                (q - p) / d
+            } else {
+                let along = seg.p1 - seg.p0;
+                if along.hypot() < 1e-12 {
+                    continue;
                 }
-            }
+                kurbo::Vec2::new(-along.y, along.x).normalize()
+            };
+            // Past the outline by half the gap, and never by less than
+            // the grid allows; through the end from as far behind it.
+            let over = (d * 0.5).max(cross);
+            let (back, past) = (p - u * cross, q + u * over);
+            out.push(vec![[back.x, back.y], end, [past.x, past.y]]);
         }
     }
     out
@@ -895,6 +975,93 @@ fn gap_bridges(lines: &[Vec<[f64; 2]>], open: &[bool]) -> Vec<Vec<[f64; 2]>> {
 /// ([`recover_curves`]), so the area meets them exactly and has nodes
 /// only where they cross.
 pub fn enclosed_area(paths: &[BezPath], p: Point) -> Enclosed {
+    enclosed_area_within(paths, paths, p)
+}
+
+/// [`enclosed_area`] among what shows of a drawing: `parts` bottom to
+/// top, each outline with whether its fill hides what lies beneath it.
+/// An outline (or the part of it) under an opaque fill is no wall, so an
+/// area is cut only by the lines that show; outlines under an object
+/// without a fill all count (#1281).
+pub fn enclosed_visible_area(parts: &[(BezPath, bool)], p: Point) -> Enclosed {
+    let walls = visible_walls(parts);
+    let sources: Vec<BezPath> = parts.iter().map(|(path, _)| path.clone()).collect();
+    enclosed_area_within(&walls, &sources, p)
+}
+
+/// The outlines of `parts` (bottom to top, each with whether its fill
+/// hides what lies beneath) as far as they show: each opaque fill cuts
+/// away the lines below it inside its area, its own outline stays.
+pub fn visible_walls(parts: &[(BezPath, bool)]) -> Vec<BezPath> {
+    use i_overlay::float::clip::FloatClip as _;
+    use i_overlay::string::clip::ClipRule;
+    let bbox = |pts: &[[f64; 2]]| {
+        pts.iter()
+            .map(|q| kurbo::Rect::from_points((q[0], q[1]), (q[0], q[1])))
+            .reduce(|a, b| a.union(b))
+    };
+    let mut walls: Vec<(Vec<[f64; 2]>, kurbo::Rect)> = Vec::new();
+    for (path, covers) in parts {
+        if *covers {
+            let area: Vec<Vec<[f64; 2]>> = contours(path)
+                .into_iter()
+                .filter(|c| c.iter().all(|q| q[0].is_finite() && q[1].is_finite()))
+                .collect();
+            if let Some(ab) = area
+                .iter()
+                .filter_map(|c| bbox(c))
+                .reduce(|a, b| a.union(b))
+            {
+                // Only the lines that reach into the fill's box are cut.
+                let mut kept = Vec::with_capacity(walls.len());
+                for (line, lb) in walls.drain(..) {
+                    if !lb.overlaps(ab) {
+                        kept.push((line, lb));
+                        continue;
+                    }
+                    let rule = ClipRule {
+                        invert: true,
+                        boundary_included: true,
+                    };
+                    for piece in line.clip_by(&area, IFill::EvenOdd, rule) {
+                        if piece.len() >= 2 {
+                            if let Some(b) = bbox(&piece) {
+                                kept.push((piece, b));
+                            }
+                        }
+                    }
+                }
+                walls = kept;
+            }
+        }
+        for (pts, _) in polylines(path, TOL) {
+            let line: Vec<[f64; 2]> = pts.iter().map(|q| [q.x, q.y]).collect();
+            if line.iter().all(|q| q[0].is_finite() && q[1].is_finite()) {
+                if let Some(b) = bbox(&line) {
+                    walls.push((line, b));
+                }
+            }
+        }
+    }
+    walls
+        .into_iter()
+        .map(|(line, _)| {
+            let mut path = BezPath::new();
+            for (i, q) in line.iter().enumerate() {
+                if i == 0 {
+                    path.move_to((q[0], q[1]));
+                } else {
+                    path.line_to((q[0], q[1]));
+                }
+            }
+            path
+        })
+        .collect()
+}
+
+/// [`enclosed_area`] with the walls `paths` and the curves the area's
+/// sides are fitted back onto taken from `sources`.
+fn enclosed_area_within(paths: &[BezPath], sources: &[BezPath], p: Point) -> Enclosed {
     use i_overlay::float::slice::FloatSlice as _;
     use kurbo::Shape as _;
     let mut lines: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -943,7 +1110,7 @@ pub fn enclosed_area(paths: &[BezPath], p: Point) -> Enclosed {
         if open {
             return Enclosed::Open;
         }
-        let sources: Vec<&BezPath> = paths.iter().collect();
+        let sources: Vec<&BezPath> = sources.iter().collect();
         return Enclosed::Area(recover_curves(&area, &sources));
     }
     Enclosed::OnOutline
@@ -1004,6 +1171,12 @@ const STRAIGHT_RATIO: f64 = 4.0;
 /// to be a corner [`fit_polygon_curves`] keeps.
 const CORNER_DEG: f64 = 35.0;
 
+/// A straight side is tangent to the curve it meets when the polygon
+/// turns no more at the join than this many times its turn at the
+/// curve's next point: the first piece of a curve leaving a side along
+/// it turns by half a step, the pieces after it by a whole one.
+const TANGENT_TURN_RATIO: f64 = 1.5;
+
 /// A path of straight pieces (an offset, as the overlay library gives it)
 /// as curves: each contour split at its corners, and every smooth stretch
 /// between them fitted with as few curves as keep within `accuracy` mm
@@ -1035,6 +1208,16 @@ pub fn fit_polygon_curves(path: &BezPath, accuracy: f64) -> BezPath {
             continue;
         }
         let limit = CORNER_DEG.to_radians();
+        // How sharply the polygon turns at point `i`, radians.
+        let turn = |i: usize| {
+            let a = pts[i] - pts[(i + n - 1) % n];
+            let b = pts[(i + 1) % n] - pts[i];
+            let (la, lb) = (a.hypot(), b.hypot());
+            if la < 1e-12 || lb < 1e-12 {
+                return std::f64::consts::PI;
+            }
+            (a.dot(b) / (la * lb)).clamp(-1.0, 1.0).acos()
+        };
         let corner = |i: usize| {
             let a = pts[i] - pts[(i + n - 1) % n];
             let b = pts[(i + 1) % n] - pts[i];
@@ -1042,14 +1225,23 @@ pub fn fit_polygon_curves(path: &BezPath, accuracy: f64) -> BezPath {
             // Where a long straight side meets short pieces (a curve), the
             // side stays a line.
             let side = la > STRAIGHT_RATIO * lb || lb > STRAIGHT_RATIO * la;
-            la < 1e-12
-                || lb < 1e-12
-                || side
-                || (a.dot(b) / (la * lb)).clamp(-1.0, 1.0).acos() > limit
+            la < 1e-12 || lb < 1e-12 || side || turn(i) > limit
         };
+        // A corner the polygon hardly turns at, kept only because a
+        // straight side meets a curve there, and turning no more than
+        // the curve turns at its next point: the side is tangent to the
+        // curve, which leaves the side along it, as a round contour
+        // corner follows the side it rounds off (#1542). Where the join
+        // turns more than the curve does after it, the side meets the
+        // curve at an angle (a gentle corner of a warped outline), and
+        // the curve keeps its own direction.
+        let tangent_into =
+            |i: usize| turn(i) <= limit && turn(i) <= TANGENT_TURN_RATIO * turn((i + 1) % n);
+        let tangent_out_of =
+            |i: usize| turn(i) <= limit && turn(i) <= TANGENT_TURN_RATIO * turn((i + n - 1) % n);
         let corners: Vec<usize> = (0..n).filter(|i| corner(*i)).collect();
         if corners.is_empty() {
-            let fitted = fit_run(&pts, true, accuracy);
+            let fitted = fit_run(&pts, true, accuracy, (None, None));
             out.extend(
                 fitted
                     .elements()
@@ -1078,7 +1270,11 @@ pub fn fit_polygon_curves(path: &BezPath, accuracy: f64) -> BezPath {
                 out.line_to(run[run.len() - 1]);
                 continue;
             }
-            let fitted = fit_run(&run, false, accuracy);
+            // The curve starts along the side before it and ends along
+            // the side after it, where those sides are straight.
+            let start_along = tangent_into(c).then(|| pts[c] - pts[(c + n - 1) % n]);
+            let end_along = tangent_out_of(next).then(|| pts[(next + 1) % n] - pts[next]);
+            let fitted = fit_run(&run, false, accuracy, (start_along, end_along));
             out.extend(
                 fitted
                     .elements()
@@ -1112,10 +1308,21 @@ fn polygons(path: &BezPath) -> Vec<Vec<Point>> {
 /// A run of points (a whole ring when `closed`) as a smooth curve
 /// through them, fitted with as few curves as keep within `accuracy`
 /// (kurbo's fitter merges curves, not lines); straight pieces when the
-/// fit fails.
-fn fit_run(pts: &[Point], closed: bool, accuracy: f64) -> BezPath {
+/// fit fails. An open run leaves its first point along `ends.0` and
+/// arrives at its last along `ends.1`, where given: the directions of
+/// the straight sides it joins, so the curve runs on from the side
+/// instead of setting off at an angle to it (#1542).
+fn fit_run(
+    pts: &[Point],
+    closed: bool,
+    accuracy: f64,
+    ends: (Option<Vec2>, Option<Vec2>),
+) -> BezPath {
     use kurbo::simplify::{simplify_bezpath, SimplifyOptions};
-    let smooth = crate::geometry::smooth_path(pts, closed);
+    let mut smooth = crate::geometry::smooth_path(pts, closed);
+    if !closed {
+        aim_ends(&mut smooth, ends);
+    }
     let options = SimplifyOptions::default();
     let fitted = simplify_bezpath(smooth.elements().iter().copied(), accuracy, &options);
     let sane = fitted.elements().len() > 1
@@ -1134,6 +1341,32 @@ fn fit_run(pts: &[Point], closed: bool, accuracy: f64) -> BezPath {
         rest.iter().for_each(|p| line.line_to(*p));
     }
     line
+}
+
+/// Turn the first curve of an open smooth path to leave along `ends.0`
+/// and its last to arrive along `ends.1`, where given, each handle kept
+/// at its length (a third of the piece, as `smooth_path` lays them). A
+/// direction too short to point anywhere is left alone.
+fn aim_ends(path: &mut BezPath, ends: (Option<Vec2>, Option<Vec2>)) {
+    let mut els: Vec<PathEl> = path.elements().to_vec();
+    let unit = |v: Vec2| (v.hypot() > 1e-12).then(|| v / v.hypot());
+    if let Some(t) = ends.0.and_then(unit) {
+        let from = els.first().and_then(|e| match e {
+            PathEl::MoveTo(p) => Some(*p),
+            _ => None,
+        });
+        if let (Some(from), Some(PathEl::CurveTo(c1, _, _))) = (from, els.get_mut(1)) {
+            let len = (*c1 - from).hypot();
+            *c1 = from + t * len;
+        }
+    }
+    if let Some(t) = ends.1.and_then(unit) {
+        if let Some(PathEl::CurveTo(_, c2, p)) = els.last_mut() {
+            let len = (*p - *c2).hypot();
+            *c2 = *p - t * len;
+        }
+    }
+    *path = BezPath::from_vec(els);
 }
 
 /// The area swept by a round or square nib of width `width` along a
@@ -2236,6 +2469,64 @@ mod tests {
         );
     }
 
+    /// A round contour corner runs on from the straight side it rounds
+    /// off: each corner curve leaves its side along it and arrives at the
+    /// next side along it, and stays at the contour's distance all the
+    /// way round. The curves set off at an angle to the sides (14
+    /// degrees at 1 mm) and pinched toward the corner, so the rounded
+    /// corners of a contoured text looked bent and, small, crossed
+    /// each other (#1542).
+    #[test]
+    fn a_round_offset_corner_runs_on_from_its_sides() {
+        use super::{offset_with, Join};
+        use crate::geometry::{BezPath, PathEl, Point};
+        let mut sq = BezPath::new();
+        sq.move_to(Point::new(0.0, 0.0));
+        sq.line_to(Point::new(10.0, 0.0));
+        sq.line_to(Point::new(10.0, 10.0));
+        sq.line_to(Point::new(0.0, 10.0));
+        sq.close_path();
+        // Off an axis by this share of the handle's length at most: about
+        // two degrees.
+        let askew = 2f64.to_radians().sin();
+        for d in [0.5, 1.0, 3.0] {
+            let q = offset_with(&sq, d, Join::Round);
+            let mut prev = Point::ZERO;
+            let mut corners = 0;
+            for el in q.elements() {
+                match *el {
+                    PathEl::MoveTo(p) | PathEl::LineTo(p) => prev = p,
+                    PathEl::CurveTo(c1, c2, p) => {
+                        corners += 1;
+                        for (name, t) in [("leaves", c1 - prev), ("arrives", p - c2)] {
+                            let off = t.x.abs().min(t.y.abs()) / t.hypot().max(1e-12);
+                            assert!(off < askew, "{d}: the curve {name} {off} off its side");
+                        }
+                        prev = p;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(corners, 4, "{d}: {:?}", q.elements());
+            // At the contour's distance from the square everywhere.
+            let outside = |p: Point| {
+                let dx = (-p.x).max(p.x - 10.0).max(0.0);
+                let dy = (-p.y).max(p.y - 10.0).max(0.0);
+                dx.hypot(dy)
+            };
+            for seg in q.segments() {
+                for i in 0..=20 {
+                    let p = seg.eval(i as f64 / 20.0);
+                    assert!(
+                        (outside(p) - d).abs() < 0.03,
+                        "{d}: {p:?} is {} off",
+                        outside(p)
+                    );
+                }
+            }
+        }
+    }
+
     fn glyph_square(path: &mut crate::geometry::BezPath, x: f64, y: f64, w: f64, clockwise: bool) {
         use crate::geometry::Point;
         let pts = [(x, y), (x + w, y), (x + w, y + w), (x, y + w)];
@@ -2450,6 +2741,84 @@ mod tests {
             panic!("ring not closed");
         };
         assert!((a.bounding_box().width() - 10.0).abs() < 1e-3);
+    }
+
+    /// #1281: a line whose ends stop within a unit of the overlay grid
+    /// of the frame's sloped sides (a few hundred millionths of a
+    /// millimetre short of them or past them, as the pieces an opaque
+    /// fill cuts away come back) divides the frame all the same,
+    /// whichever side the ends round to.
+    #[test]
+    fn enclosed_area_closes_gaps_below_the_grid() {
+        use super::{enclosed_area, Enclosed};
+        use crate::geometry::{Affine, BezPath, Point, Rect};
+        use kurbo::Shape as _;
+        for turn in [0.3, 1.1, 2.0] {
+            let rot = Affine::rotate(turn);
+            let frame = rot * crate::geometry::rect_path(Rect::new(0.0, 0.0, 40.0, 20.0), 0.0);
+            for gap in [0.0, 1e-9, 5e-9, 1e-8, 2e-8, 4e-8, 8e-8, 1.6e-7] {
+                for (top, bottom) in [
+                    (gap, 20.0 - gap),
+                    (-gap, 20.0 + gap),
+                    (gap, 20.0 + gap),
+                    (-gap, 20.0 - gap),
+                ] {
+                    let mut divider = BezPath::new();
+                    divider.move_to(rot * Point::new(20.0, top));
+                    divider.line_to(rot * Point::new(20.0, bottom));
+                    let click = rot * Point::new(10.0, 10.0);
+                    let r = enclosed_area(&[frame.clone(), divider], click);
+                    let Enclosed::Area(a) = r else {
+                        panic!("turn {turn} gap {gap} ({top}, {bottom}): {r:?}");
+                    };
+                    let area = a.area().abs();
+                    assert!(
+                        (area - 400.0).abs() < 1e-2,
+                        "turn {turn} gap {gap} ({top}, {bottom}): {area}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// #1281: the outline of a filled object hidden under another filled
+    /// object is no wall; under an empty one it still is.
+    #[test]
+    fn enclosed_visible_area_ignores_hidden_outlines() {
+        use super::{enclosed_visible_area, Enclosed};
+        use kurbo::Shape as _;
+        let back = kurbo::Rect::new(0.0, 0.0, 20.0, 20.0).to_path(0.01);
+        let front = kurbo::Rect::new(10.0, 10.0, 40.0, 40.0).to_path(0.01);
+        // Inside the front square, over the corner of the one behind: the
+        // whole front square.
+        let Enclosed::Area(a) = enclosed_visible_area(
+            &[(back.clone(), true), (front.clone(), true)],
+            Point::new(15.0, 15.0),
+        ) else {
+            panic!("an area");
+        };
+        let b = a.bounding_box();
+        assert!(
+            (b.x0 - 10.0).abs() < 1e-3 && (b.x1 - 40.0).abs() < 1e-3,
+            "{b:?}"
+        );
+        assert!((a.area().abs() - 900.0).abs() < 0.5, "{}", a.area());
+        // What shows of the back square: an L, its corner cut away.
+        let Enclosed::Area(a) = enclosed_visible_area(
+            &[(back.clone(), true), (front.clone(), true)],
+            Point::new(5.0, 5.0),
+        ) else {
+            panic!("an area");
+        };
+        assert!((a.area().abs() - 300.0).abs() < 0.5, "{}", a.area());
+        // The front square without a fill: the back square's corner shows
+        // through and cuts the area.
+        let Enclosed::Area(a) =
+            enclosed_visible_area(&[(back, true), (front, false)], Point::new(15.0, 15.0))
+        else {
+            panic!("an area");
+        };
+        assert!((a.area().abs() - 100.0).abs() < 0.5, "{}", a.area());
     }
 
     #[test]
@@ -3106,6 +3475,49 @@ mod tests {
             .count()
     }
 
+    /// Two squares overlapping in one path, both turning the same way, as
+    /// the strokes of a glyph: even-odd leaves their overlap out, nonzero
+    /// keeps it; `overlay` stays even-odd.
+    #[test]
+    fn overlay_reads_its_inputs_with_the_fill_rule_given() {
+        use kurbo::Shape as _;
+        let rect =
+            |x0: f64, y0: f64, x1: f64, y1: f64| kurbo::Rect::new(x0, y0, x1, y1).to_path(0.01);
+        // 20 x 10 and 10 x 20 crossing in a 10 x 10 square.
+        let mut cross = rect(0.0, 5.0, 20.0, 15.0);
+        cross.extend(rect(5.0, 0.0, 15.0, 20.0));
+        let far = rect(100.0, 100.0, 101.0, 101.0);
+        let middle = rect(5.0, 5.0, 15.0, 15.0);
+        let area = |p: &BezPath| p.area().abs();
+        // Weld with a far square: the cross itself, plus 1.
+        let even = overlay_with(&cross, &far, Op::Weld, FillRule::EvenOdd);
+        let nonzero = overlay_with(&cross, &far, Op::Weld, FillRule::NonZero);
+        assert!(
+            (area(&even) - (400.0 - 200.0 + 1.0)).abs() < 1e-6,
+            "{}",
+            area(&even)
+        );
+        assert!(
+            (area(&nonzero) - (300.0 + 1.0)).abs() < 1e-6,
+            "{}",
+            area(&nonzero)
+        );
+        assert_eq!(overlay(&cross, &far, Op::Weld), even);
+        // Intersect with the middle square: nothing, or all of it.
+        let even = overlay_with(&cross, &middle, Op::Intersect, FillRule::EvenOdd);
+        let nonzero = overlay_with(&cross, &middle, Op::Intersect, FillRule::NonZero);
+        assert!(area(&even) < 1e-6, "{even:?}");
+        assert!((area(&nonzero) - 100.0).abs() < 1e-6, "{nonzero:?}");
+        // A hole turning the other way stays a hole under both rules.
+        let mut ring = rect(0.0, 0.0, 30.0, 30.0);
+        let hole = rect(10.0, 10.0, 20.0, 20.0);
+        ring.extend(crate::nodes::reverse(&hole).elements().iter().copied());
+        for fill in [FillRule::EvenOdd, FillRule::NonZero] {
+            let w = overlay_with(&ring, &far, Op::Weld, fill);
+            assert!((area(&w) - (900.0 - 100.0 + 1.0)).abs() < 1e-6, "{fill:?}");
+        }
+    }
+
     /// Welding two circles keeps their arcs: the result is a few curve
     /// segments with nodes only at the circles' own nodes and where they
     /// cross, not hundreds of tiny lines.
@@ -3137,6 +3549,58 @@ mod tests {
         assert!(count(&i, true) <= 7, "{} {i:?}", count(&i, true));
         // The last piece ends at the start: no node is repeated.
         assert_eq!(nodes(&i).len(), count(&i, true) + 1, "{i:?}");
+    }
+
+    /// The first index of two consecutive end points at the same place
+    /// within a subpath (a segment of no length), if any.
+    fn repeated_node(p: &BezPath) -> Option<usize> {
+        let els = p.elements();
+        (1..els.len()).find(|&i| {
+            !matches!(els[i], PathEl::MoveTo(_))
+                && match (els[i - 1].end_point(), els[i].end_point()) {
+                    (Some(a), Some(b)) => (a - b).hypot() < 1e-6,
+                    _ => false,
+                }
+        })
+    }
+
+    /// Circles crossing at a shallow angle: the flattening has several
+    /// vertices near each crossing, and they become one node, not a node
+    /// followed by lines of no length.
+    #[test]
+    fn shallow_crossings_give_one_node_each() {
+        let ellipse = |cx: f64, cy: f64, r: f64| {
+            crate::geometry::ellipse_path(crate::geometry::Rect::new(
+                cx - r,
+                cy - r,
+                cx + r,
+                cy + r,
+            ))
+        };
+        // Crossing at (75, +-6.6892).
+        let r = (2.0f64.powi(2) + 6.6892f64.powi(2)).sqrt();
+        for (a, b) in [
+            (ellipse(73.0, 0.0, r), ellipse(77.0, 0.0, r)),
+            (ellipse(50.0, 50.0, 5.0), ellipse(53.75, 57.0, 5.0)),
+            (ellipse(50.0, 50.0, 5.0), ellipse(56.25, 50.3, 5.0)),
+        ] {
+            for op in [Op::Weld, Op::Intersect, Op::Trim, Op::Exclude] {
+                for (s, c) in [(&a, &b), (&b, &a)] {
+                    let out = overlay(s, c, op);
+                    assert!(!out.elements().is_empty(), "{op:?}");
+                    assert_eq!(repeated_node(&out), None, "{op:?} {out:?}");
+                    assert_eq!(count(&out, false), 0, "{op:?}: no lines {out:?}");
+                }
+            }
+        }
+        let w = overlay(&ellipse(73.0, 0.0, r), &ellipse(77.0, 0.0, r), Op::Weld);
+        // The circles' nodes outside the lens and the two crossings.
+        assert_eq!(count(&w, true), 8, "{w:?}");
+        let crossings = nodes(&w)
+            .into_iter()
+            .filter(|q| (q.x - 75.0).abs() < 1e-6)
+            .count();
+        assert_eq!(crossings, 2, "{w:?}");
     }
 
     /// A square and a circle: the result has the square's straight sides

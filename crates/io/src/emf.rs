@@ -1000,10 +1000,14 @@ fn parse_emf(b: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
     } else {
         96.0
     };
-    let bw = (bounds[2] - bounds[0] + 1).max(1) as f64;
-    let bh = (bounds[3] - bounds[1] + 1).max(1) as f64;
-    let fw = (frame[2] - frame[0]).max(1) as f64 / 100.0;
-    let fh = (frame[3] - frame[1]).max(1) as f64 / 100.0;
+    // The bounds and frame are i32 each way: a damaged header with the
+    // extremes of the range overflows their difference in i32, so it is
+    // taken in i64.
+    let span = |lo: i32, hi: i32| (i64::from(hi) - i64::from(lo)).max(0) as f64;
+    let bw = (span(bounds[0], bounds[2]) + 1.0).max(1.0);
+    let bh = (span(bounds[1], bounds[3]) + 1.0).max(1.0);
+    let fw = span(frame[0], frame[2]).max(1.0) / 100.0;
+    let fh = span(frame[1], frame[3]).max(1.0) / 100.0;
     let (page_w, page_h) = if fw > 0.0 && fh > 0.0 {
         (fw, fh)
     } else {
@@ -2246,6 +2250,36 @@ mod tests {
             let _ = parse(&file[..cut], &mut ids);
         }
     }
+
+    /// A header whose bounds and frame span the whole i32 range (a
+    /// damaged file) opens: their width and height overflowed in i32
+    /// and the reader panicked, which took the program down. The record
+    /// after it, claiming a thousand million points, is bounded by its
+    /// size as before.
+    #[test]
+    fn extreme_header_bounds_do_not_overflow() {
+        let mut file = emf_file(&[
+            rec(2, &[0, 0, 1, 1, 1_000_000_000, 0, 0, 0, 0]),
+            rec(43, &[0, 0, 10, 10]),
+        ]);
+        for (at, v) in [i32::MIN, i32::MIN, i32::MAX, i32::MAX]
+            .iter()
+            .chain([i32::MIN, i32::MIN, i32::MAX, i32::MAX].iter())
+            .enumerate()
+        {
+            file[8 + at * 4..12 + at * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut ids = IdSource::default();
+        let imp = parse(&file, &mut ids).expect("a header of extremes still opens");
+        assert!(imp.size.width.is_finite() && imp.size.height.is_finite());
+        assert!(imp.size.width > 0.0 && imp.size.height > 0.0);
+        // The frame of such a file is a quarter of a kilometre wide.
+        assert!(
+            (imp.size.width - 42_949_672.95).abs() < 0.01,
+            "{:?}",
+            imp.size
+        );
+    }
 }
 
 // ---------------------------------------------------------------- EMF export
@@ -2626,7 +2660,10 @@ impl EmfWriter<'_> {
         let h = self.handle();
         let mut body = Vec::new();
         push_i32(&mut body, h as i32);
-        push_i32(&mut body, -((em_mm * 100.0).round() as i32));
+        // The height is the em negated; a size that is not a number (or
+        // past what a record holds) is clamped first, so the negation
+        // cannot overflow.
+        push_i32(&mut body, -((em_mm * 100.0).round().clamp(0.0, 1e9) as i32));
         push_i32(&mut body, 0);
         push_i32(&mut body, (rot_deg * 10.0).round() as i32);
         push_i32(&mut body, (rot_deg * 10.0).round() as i32);
@@ -3286,7 +3323,10 @@ impl WmfWriter<'_> {
         // underline, strikeout, charset, out/clip precision, quality,
         // pitch, face name (32 bytes).
         let mut lf = Vec::new();
-        lf.extend_from_slice(&(-self.tw(em_mm)).to_le_bytes());
+        // The height is the em negated; `tw` clamps a size that is not
+        // a number to the ends of the range, and the smallest value has
+        // no negation, so the em is clamped to the positive half first.
+        lf.extend_from_slice(&(-self.tw(em_mm.clamp(0.0, 1e6))).to_le_bytes());
         lf.extend_from_slice(&0i16.to_le_bytes());
         lf.extend_from_slice(&((rot_deg * 10.0).round() as i16).to_le_bytes());
         lf.extend_from_slice(&((rot_deg * 10.0).round() as i16).to_le_bytes());
@@ -3464,6 +3504,70 @@ impl WmfWriter<'_> {
 mod wmf_export_tests {
     use super::*;
     use tracedraw_core::{geometry::Rect, Document};
+
+    /// A drawing with coordinates that are not numbers (a division by
+    /// zero somewhere, an import with a number too large to hold) still
+    /// exports as a metafile: the text height, page size, places,
+    /// outline widths and sizes are clamped to what the records hold.
+    /// The LOGFONT height is the em negated, and a text size of minus
+    /// infinity clamped to the smallest value a record holds overflowed
+    /// when negated, so the export panicked.
+    #[test]
+    fn export_of_a_drawing_with_infinite_coordinates_does_not_panic() {
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let mut doc = Document::new("t", Size::new(bad, 50.0));
+            let mut ids = doc.ids().clone();
+            let mut r = Shape::new(
+                ids.shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(10.0, 10.0, bad, 20.0),
+                    radius: bad,
+                    corners: None,
+                },
+            );
+            r.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+            r.stroke = Some(Stroke::new(Color::rgb8(255, 0, 0), bad));
+            r.transform = Affine::new([1.0, 0.0, 0.0, 1.0, bad, 0.0]);
+            let mut t = Shape::new(
+                ids.shape(),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new("Hi", "Arial", bad)],
+                    origin: Point::new(bad, 40.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            t.fill = Fill::Solid(Color::rgb8(0, 128, 0));
+            let mut e = Shape::new(
+                ids.shape(),
+                ShapeKind::Ellipse {
+                    rect: Rect::new(60.0, 5.0, 90.0, bad),
+                    arc: None,
+                },
+            );
+            e.fill = Fill::Fountain(tracedraw_core::Fountain::two(
+                tracedraw_core::style::FountainKind::Radial,
+                Color::BLACK,
+                Color::WHITE,
+                0.0,
+            ));
+            let mut path = tracedraw_core::geometry::BezPath::new();
+            path.move_to((0.0, 0.0));
+            path.line_to((bad, 10.0));
+            path.curve_to((5.0, bad), (bad, bad), (20.0, 20.0));
+            path.close_path();
+            let mut p = Shape::new(ids.shape(), ShapeKind::Path { path, closed: true });
+            p.stroke = Some(Stroke::new(Color::BLACK, 1.0));
+            doc.pages[0].layers[0].shapes.extend([r, t, e, p]);
+            doc.set_ids(ids);
+            let emf = page_to_emf(&doc, 0);
+            assert!(is_emf(&emf));
+            let wmf = page_to_wmf(&doc, 0);
+            assert!(is_wmf(&wmf));
+        }
+    }
 
     #[test]
     fn wmf_export_round_trips_through_the_reader() {

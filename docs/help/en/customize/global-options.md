@@ -47,7 +47,7 @@ of the last print. Under [[options.print_checks]],
 
 ![The Bitmap Tracing page of the global options](../../img/customize-global-options-bitmap-tracing.png)
 
-[[options.quick_trace_with]] one of the presets (Clipart at first).
+[[options.quick_trace_with]] one of the presets (Flat Colors at first).
 [[options.trace_starts_with]] [[dialog.remove_background]] (on) and
 [[dialog.delete_original]] (off). See [Tracing bitmaps](../bitmaps/tracing.md).
 

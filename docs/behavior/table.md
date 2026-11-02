@@ -1,8 +1,8 @@
-# Table tool and Table menu
+# Table tool and Table submenu
 
 ## Drawing
 
-- Table > Create New Table (and Object > Create > New Table): Number of
+- Text > Table > Create New Table (and Object > Create > New Table): Number of
   Rows, Number of Columns, Height and Width in the document's units
   (100 x 75 mm at first; the last values are offered again), "?", OK
   and Cancel. OK places the table at the page centre and selects it
@@ -47,7 +47,7 @@ The reach of its lines and edge pointers is 4 screen points.
   next cell (default) or type a tab character into the cell, where
   Ctrl+Tab still moves on and Shift+Tab moves back.
   (`table_tool::tests::tab_options_insert_a_tab_or_go_down_the_columns`)
-- Table > Select: cell, row, column, table.
+- Text > Table > Select: cell, row, column, table.
 
 ## Moving rows and columns
 
@@ -73,14 +73,14 @@ cell does nothing and says so on the status bar.
   width of the columns and the total height of the rows the selected
   cells cover; a new value is shared out over them in proportion. The
   table grows or shrinks to the right and downwards.
-- Table > Distribute: Rows Evenly and Columns Evenly share the total of
+- Text > Table > Distribute: Rows Evenly and Columns Evenly share the total of
   the selected rows (columns) equally when the selection covers two or
   more; otherwise every row (column) of the table. The table size is
   kept.
   (`table_tool::tests::dragging_lines_resizes_and_undoes_in_one_step`,
   `table_tool::tests::bar_size_insert_n_and_split_n_follow_the_selection`)
 
-## Table menu
+## Table submenu
 
 - Insert: Row Above, Row Below, Column Left, Column Right insert as many
   rows (columns) as the selected cells cover, above the first or below

@@ -415,7 +415,10 @@ pub(crate) fn ime_at_caret(app: &App, painter: &Painter, top: Pos2, bottom: Pos2
     ctx.output_mut(|o| {
         o.ime = Some(egui::output::IMEOutput {
             purpose: egui::IMEPurpose::Normal,
-            rect: painter.clip_rect(),
+            // The windowing layer places the input method's candidate
+            // window beside this area: the caret, not the whole canvas
+            // (whose corner put it far from the letters typed).
+            rect: caret,
             cursor_rect: caret,
             should_interrupt_composition: false,
         })
@@ -850,7 +853,7 @@ fn three_point_preview(
     match tool {
         Tool::ThreePointCurve => crate::app::three_point_curve(a, b, c, arc),
         _ => {
-            let local = Rect::new(0.0, height.min(0.0), len, height.max(0.0));
+            let local = crate::app::three_point_box(tool, len, height);
             let t = Affine::translate(a.to_vec2()) * Affine::rotate(base.atan2());
             let p = if tool == Tool::ThreePointEllipse {
                 tracedraw_core::geometry::ellipse_path(local)
@@ -2524,6 +2527,16 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
         };
         draw_guide_line(app, painter, rect, g.line, color, g.style.pattern());
     }
+    // The other pages' guidelines in the Multipage View, each within its
+    // page (#1448).
+    for (g, page_rect) in app.other_page_guides() {
+        let paper = app.view.rect_to_screen(page_rect).intersect(rect);
+        if paper.width() < 1.0 || paper.height() < 1.0 {
+            continue;
+        }
+        let color = to_color32(app.guide_color(&g));
+        draw_guide_line(app, painter, paper, g.line, color, g.style.pattern());
+    }
     // The copies a right click during the drag will leave.
     if app.drag_copy {
         for (_, g) in &moving {
@@ -2608,7 +2621,7 @@ pub fn draw_docker_preview(app: &App, painter: &Painter) {
 }
 
 /// A polyline drawn in dashes of `on` px with `off` px gaps.
-fn dashed_polyline(painter: &Painter, pts: &[Pos2], stroke: EStroke, on: f32, off: f32) {
+pub(crate) fn dashed_polyline(painter: &Painter, pts: &[Pos2], stroke: EStroke, on: f32, off: f32) {
     let period = on + off;
     let mut walked = 0.0f32;
     for w in pts.windows(2) {

@@ -1,6 +1,6 @@
-# Document Properties
+# Document Info
 
-File > Document Properties opens a dialog of 430 x 780 that edits the
+File > Document Info opens a dialog of 430 x 780 that edits the
 drawing's properties and reports what it holds. The fields change
 nothing until OK; Cancel, Esc and the close button leave them as they
 were. "?" opens the help.
@@ -37,7 +37,7 @@ title and line:
   curves, rectangles, ellipses and polygons), the most points and
   subpaths one of them has, then curves, rectangles, ellipses, polygons,
   groups and tables when there are any.
-- **Text Statistics**: artistic and paragraph texts, characters, words
+- **Word Count**: artistic and paragraph texts, characters, words
   and the fonts used, or "No text objects in this document."
 - **Bitmap Objects**: number of bitmaps, total pixels and the largest
   one, or "No bitmaps in this document."

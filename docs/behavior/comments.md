@@ -6,7 +6,7 @@ are saved with the drawing (`.tdraw`) and never printed or exported.
 ## Adding
 
 - Name: who comments and replies are signed with (kept in the
-  settings); empty, the drawing's author (File > Document Properties),
+  settings); empty, the drawing's author (File > Document Info),
   else "Me".
 - Add: Pin, Box or Arrow, then on the page: a click places a pin; a drag
   draws a box around something or an arrow pointing at it (a click with

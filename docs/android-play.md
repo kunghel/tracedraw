@@ -107,7 +107,7 @@ with this key: Play registers its certificate as the upload certificate.
     - App name (30): TraceDraw
     - Short description (80): the first sentence of the listing.
     - Full description (4000): the listing text; no mention of other
-      products' names.
+      products' names apart from the trademark notice at its end.
     - App icon: 512 x 512 PNG, 32-bit, no transparency, from
       `assets/icon/` (render the SVG at 512).
     - Feature graphic: 1024 x 500 PNG or JPEG (the app's name on a plain

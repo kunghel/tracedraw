@@ -25,6 +25,26 @@ use tracedraw_core::{
 const PT_MM: f64 = 25.4 / 72.0;
 const MAX_OPS: u64 = 6_000_000;
 const MAX_DEPTH: usize = 200;
+/// How deep `{ ... }` procedures may nest in the program text. The
+/// reader of a procedure body calls itself once per level, so a file of
+/// nothing but opening braces (100 000 of them in 100 KB) ran the stack
+/// out, which cannot be caught, and closed the program. Real programs
+/// nest a handful of levels; procedures beyond this depth are read as
+/// empty.
+const MAX_PROC_NESTING: usize = 512;
+/// The stack the interpreter runs on (a thread of its own, outside the
+/// browser) and how much of it a program's recursion may use before it
+/// is stopped as nested too deeply. A counted depth alone cannot keep a
+/// hostile program from running the stack out: one nested `exec` takes
+/// some 70 KB of stack in a debug build (the operator match's frame),
+/// so 150 of them overflowed a 2 MB thread long before [`MAX_DEPTH`].
+#[cfg(not(target_arch = "wasm32"))]
+const INTERP_STACK: usize = 32 << 20;
+#[cfg(not(target_arch = "wasm32"))]
+const STACK_BUDGET: usize = 24 << 20;
+/// In the browser there is one thread, with a stack of about 1 MB.
+#[cfg(target_arch = "wasm32")]
+const STACK_BUDGET: usize = 384 << 10;
 const MAX_STACK: usize = 50_000;
 const MAX_STRING: usize = 64 << 20;
 
@@ -74,8 +94,36 @@ pub fn is_eps(bytes: &[u8]) -> bool {
         || head.starts_with(b"%!")
 }
 
-/// Parse an EPS (or plain PostScript) file into shapes.
+/// Parse an EPS (or plain PostScript) file into shapes. Outside the
+/// browser the program runs on a thread with a stack of its own
+/// ([`INTERP_STACK`]), so its recursion has a known room whatever
+/// thread asks for the import; when that thread cannot be started the
+/// program runs here.
 pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let spawned: Option<Result<Imported, String>> = std::thread::scope(|s| {
+            let handle = std::thread::Builder::new()
+                .name("eps-import".into())
+                .stack_size(INTERP_STACK)
+                .spawn_scoped(s, || parse_here(bytes, ids, STACK_BUDGET))
+                .ok()?;
+            Some(
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("the PostScript reader stopped unexpectedly".into())),
+            )
+        });
+        if let Some(result) = spawned {
+            return result;
+        }
+    }
+    parse_here(bytes, ids, STACK_BUDGET)
+}
+
+/// [`parse`] on the current thread, the program's recursion allowed
+/// `stack_budget` bytes of its stack.
+fn parse_here(bytes: &[u8], ids: &mut IdSource, stack_budget: usize) -> Result<Imported, String> {
     // DOS EPS binary header: PostScript section offset and length.
     let ps: &[u8] = if bytes.starts_with(&[0xc5, 0xd0, 0xd3, 0xc6]) && bytes.len() >= 12 {
         let off = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
@@ -90,6 +138,7 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
     let ps = &ps[start..];
     let bbox = bounding_box(ps);
     let mut interp = Interp::new(ps, ids, bbox);
+    interp.stack_budget = stack_budget;
     interp.install_systemdict();
     interp.run_main();
     let warnings = std::mem::take(&mut interp.warnings);
@@ -770,6 +819,18 @@ struct Interp<'a> {
     pages: Vec<(usize, Option<Size>)>,
     /// The page size `setpagedevice` set, mm.
     page_size: Option<Size>,
+    /// Where the stack stood when the program started running, and how
+    /// many bytes of it the program's recursion may use (see
+    /// [`STACK_BUDGET`]).
+    stack_base: usize,
+    stack_budget: usize,
+}
+
+/// Where the stack stands now: the address of a local variable.
+#[inline(never)]
+fn stack_mark() -> usize {
+    let probe = 0u8;
+    std::hint::black_box(&probe) as *const u8 as usize
 }
 
 impl<'a> Interp<'a> {
@@ -807,6 +868,8 @@ impl<'a> Interp<'a> {
             jpeg_files: Vec::new(),
             pages: Vec::new(),
             page_size: None,
+            stack_base: stack_mark(),
+            stack_budget: usize::MAX,
         }
     }
 
@@ -1174,7 +1237,7 @@ impl<'a> Interp<'a> {
             match self.scanner.next() {
                 Token::Eof => break,
                 Token::ProcStart => {
-                    let p = self.read_proc();
+                    let p = self.read_proc(0);
                     self.push(p);
                 }
                 Token::ProcEnd => {}
@@ -1188,13 +1251,34 @@ impl<'a> Interp<'a> {
     }
 
     /// Read a `{ ... }` body from the scanner into a procedure object.
-    fn read_proc(&mut self) -> Obj {
+    /// `depth` is how many bodies this one is inside; at
+    /// [`MAX_PROC_NESTING`] the body is skipped, braces counted, and an
+    /// empty procedure stands for it.
+    fn read_proc(&mut self, depth: usize) -> Obj {
+        if depth >= MAX_PROC_NESTING {
+            let mut open = 1usize;
+            loop {
+                match self.scanner.next() {
+                    Token::Eof => break,
+                    Token::ProcStart => open += 1,
+                    Token::ProcEnd => {
+                        open -= 1;
+                        if open == 0 {
+                            break;
+                        }
+                    }
+                    Token::Obj(_) => {}
+                }
+            }
+            self.warn("procedures nested too deeply; the innermost were left out");
+            return mk_array(Vec::new(), true);
+        }
         let mut items = Vec::new();
         loop {
             match self.scanner.next() {
                 Token::Eof | Token::ProcEnd => break,
                 Token::ProcStart => {
-                    let inner = self.read_proc();
+                    let inner = self.read_proc(depth + 1);
                     items.push(inner);
                 }
                 Token::Obj(o) => items.push(o),
@@ -1233,6 +1317,10 @@ impl<'a> Interp<'a> {
     fn exec_obj(&mut self, o: Obj) -> Flow {
         self.ops += 1;
         if self.ops > MAX_OPS {
+            return Flow::Stop;
+        }
+        if self.stack_base.abs_diff(stack_mark()) > self.stack_budget {
+            self.warn("procedures nested too deeply");
             return Flow::Stop;
         }
         match o {
@@ -3909,7 +3997,7 @@ impl<'a> Interp<'a> {
         if f.borrow().main {
             return match self.scanner.next() {
                 Token::Eof | Token::ProcEnd => None,
-                Token::ProcStart => Some(self.read_proc()),
+                Token::ProcStart => Some(self.read_proc(0)),
                 Token::Obj(o) => Some(o),
             };
         }
@@ -4883,6 +4971,48 @@ mod tests {
             &mut ids,
         )
         .expect("parse");
+        assert!(imp.shapes.is_empty());
+    }
+
+    /// Procedures nested 100 000 deep in the text (a hostile or damaged
+    /// file of 200 KB) are read without running the stack out: the
+    /// reader of a body called itself once per brace, which overflowed
+    /// the stack and closed the program. The innermost bodies are left
+    /// out with a warning; a program nested a few hundred deep still
+    /// runs whole.
+    #[test]
+    fn deeply_nested_procedures_are_bounded() {
+        let mut ids = IdSource::default();
+        let mut text = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n".to_vec();
+        text.extend(std::iter::repeat_n(b'{', 100_000));
+        text.extend(std::iter::repeat_n(b'}', 100_000));
+        text.extend_from_slice(b" exec 0 0 moveto 10 10 lineto stroke\n");
+        let imp = parse(&text, &mut ids).expect("parse");
+        assert!(
+            imp.warnings.iter().any(|w| w.contains("deeply")),
+            "{:?}",
+            imp.warnings
+        );
+        assert_eq!(imp.shapes.len(), 1, "{:?}", imp.warnings);
+        // Within the bound every level runs: 150 nested bodies, each
+        // running the one inside it, draw the line at the centre.
+        let mut text = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n".to_vec();
+        text.extend(std::iter::repeat_n(b'{', 150));
+        text.extend_from_slice(b" 0 0 moveto 10 10 lineto stroke ");
+        text.extend(std::iter::repeat_n(b"} exec ".as_slice(), 150).flatten());
+        let imp = parse(&text, &mut ids).expect("parse");
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+        assert_eq!(imp.shapes.len(), 1);
+        // The same program with a stack budget of 64 KB stops as nested
+        // too deeply instead of running the stack out: this is what
+        // keeps a program whose frames are bigger than the counted
+        // depth allows for from closing the program.
+        let imp = parse_here(&text, &mut ids, 64 << 10).expect("parse");
+        assert!(
+            imp.warnings.iter().any(|w| w.contains("deeply")),
+            "{:?}",
+            imp.warnings
+        );
         assert!(imp.shapes.is_empty());
     }
 }

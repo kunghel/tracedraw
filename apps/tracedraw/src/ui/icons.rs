@@ -1,287 +1,15 @@
-//! Toolbox icons drawn with the painter, 16x16 design grid, no bitmaps.
+//! Toolbox icons drawn with the painter, no bitmaps: the "bead on a
+//! wire" style of docs/behavior/icons.md on a 24 unit grid. Ink draws
+//! the object, the accent (brand blue) the action, the node motif marks
+//! the live point.
 
 use crate::theme::Tokens;
 use crate::tools::Tool;
+use crate::ui::icon_paint::{polar, ribbon, rrect, spiral, star, Pen, LINE, THIN};
 use egui::{epaint, Color32, Painter, Pos2, Rect, Stroke, Vec2};
 
 fn p(r: Rect, x: f32, y: f32) -> Pos2 {
     r.min + Vec2::new(x, y) * (r.width() / 16.0)
-}
-
-/// Small drawing context for one icon: all coordinates are on the 16x16 design grid.
-struct Ic<'a> {
-    painter: &'a Painter,
-    r: Rect,
-    color: Color32,
-    s: Stroke,
-    thin: Stroke,
-}
-
-impl Ic<'_> {
-    fn at(&self, x: f32, y: f32) -> Pos2 {
-        p(self.r, x, y)
-    }
-
-    fn u(&self, v: f32) -> f32 {
-        self.r.width() / 16.0 * v
-    }
-
-    fn line(&self, x0: f32, y0: f32, x1: f32, y1: f32, st: Stroke) {
-        self.painter
-            .line_segment([self.at(x0, y0), self.at(x1, y1)], st);
-    }
-
-    fn open(&self, pts: &[(f32, f32)], st: Stroke) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.at(x, y)).collect();
-        self.painter.add(epaint::PathShape::line(v, st));
-    }
-
-    fn closed(&self, pts: &[(f32, f32)], st: Stroke) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.at(x, y)).collect();
-        self.painter.add(epaint::PathShape::closed_line(v, st));
-    }
-
-    fn fill(&self, pts: &[(f32, f32)], color: Color32) {
-        let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.at(x, y)).collect();
-        self.painter
-            .add(epaint::PathShape::convex_polygon(v, color, Stroke::NONE));
-    }
-
-    fn rect_s(&self, x0: f32, y0: f32, x1: f32, y1: f32, round: f32, st: Stroke) {
-        self.painter.rect_stroke(
-            Rect::from_min_max(self.at(x0, y0), self.at(x1, y1)),
-            self.u(round),
-            st,
-            epaint::StrokeKind::Middle,
-        );
-    }
-
-    fn rect_f(&self, x0: f32, y0: f32, x1: f32, y1: f32, color: Color32) {
-        self.painter.rect_filled(
-            Rect::from_min_max(self.at(x0, y0), self.at(x1, y1)),
-            0.0,
-            color,
-        );
-    }
-
-    fn circle_s(&self, cx: f32, cy: f32, rad: f32, st: Stroke) {
-        self.painter.circle_stroke(self.at(cx, cy), self.u(rad), st);
-    }
-
-    fn circle_f(&self, cx: f32, cy: f32, rad: f32, color: Color32) {
-        self.painter
-            .circle_filled(self.at(cx, cy), self.u(rad), color);
-    }
-
-    /// Filled dot used for curve nodes and dimension points.
-    fn dot(&self, cx: f32, cy: f32) {
-        self.circle_f(cx, cy, 1.2, self.color);
-    }
-
-    /// Small filled square used as a node handle.
-    fn node(&self, cx: f32, cy: f32) {
-        self.rect_f(cx - 1.2, cy - 1.2, cx + 1.2, cy + 1.2, self.color);
-    }
-
-    /// Small hollow square used as a control point.
-    fn node_hollow(&self, cx: f32, cy: f32) {
-        self.rect_s(cx - 1.2, cy - 1.2, cx + 1.2, cy + 1.2, 0.0, self.thin);
-    }
-
-    /// Points along an elliptical arc, angles in radians.
-    fn arc(
-        &self,
-        cx: f32,
-        cy: f32,
-        rx: f32,
-        ry: f32,
-        a0: f32,
-        a1: f32,
-        n: usize,
-    ) -> Vec<(f32, f32)> {
-        (0..=n)
-            .map(|i| {
-                let a = a0 + (a1 - a0) * i as f32 / n as f32;
-                (cx + rx * a.cos(), cy + ry * a.sin())
-            })
-            .collect()
-    }
-
-    fn ellipse_s(&self, cx: f32, cy: f32, rx: f32, ry: f32, st: Stroke) {
-        let pts = self.arc(cx, cy, rx, ry, 0.0, std::f32::consts::TAU, 40);
-        self.closed(&pts[..40], st);
-    }
-
-    /// Filled arrowhead pointing from (fx, fy) toward (tx, ty), tip at (tx, ty).
-    fn arrow_head(&self, fx: f32, fy: f32, tx: f32, ty: f32, size: f32) {
-        let d = Vec2::new(tx - fx, ty - fy).normalized();
-        let n = Vec2::new(-d.y, d.x);
-        let base_x = tx - d.x * size;
-        let base_y = ty - d.y * size;
-        let w = size * 0.55;
-        self.fill(
-            &[
-                (tx, ty),
-                (base_x + n.x * w, base_y + n.y * w),
-                (base_x - n.x * w, base_y - n.y * w),
-            ],
-            self.color,
-        );
-    }
-
-    /// Dashed straight line with the given dash length on the design grid.
-    fn dashed(&self, x0: f32, y0: f32, x1: f32, y1: f32, dash: f32, st: Stroke) {
-        let d = Vec2::new(x1 - x0, y1 - y0);
-        let len = d.length();
-        if len <= 0.0 {
-            return;
-        }
-        let dir = d / len;
-        let mut t = 0.0;
-        while t < len {
-            let e = (t + dash).min(len);
-            self.line(
-                x0 + dir.x * t,
-                y0 + dir.y * t,
-                x0 + dir.x * e,
-                y0 + dir.y * e,
-                st,
-            );
-            t += dash * 2.0;
-        }
-    }
-
-    /// The classic pick cursor arrow, filled or hollow, offset by (dx, dy).
-    fn cursor(&self, dx: f32, dy: f32, scale: f32, filled: bool) {
-        let base = [
-            (4.0, 2.0),
-            (4.0, 13.0),
-            (7.0, 10.5),
-            (9.0, 14.0),
-            (11.0, 13.0),
-            (9.0, 9.5),
-            (12.5, 9.5),
-        ];
-        let pts: Vec<(f32, f32)> = base
-            .iter()
-            .map(|&(x, y)| (dx + (x - 4.0) * scale, dy + (y - 2.0) * scale))
-            .collect();
-        if filled {
-            self.fill(&pts, self.color);
-        } else {
-            self.closed(&pts, self.s);
-        }
-    }
-
-    /// A pencil drawn diagonally from the top right down to the tip at (tx, ty).
-    fn pencil(&self, tx: f32, ty: f32, len: f32) {
-        let d = Vec2::new(1.0, -1.0).normalized();
-        let n = Vec2::new(-d.y, d.x) * 1.6;
-        let tip = Vec2::new(tx, ty);
-        let neck = tip + d * 2.8;
-        let end = tip + d * len;
-        let body = [
-            (neck.x + n.x, neck.y + n.y),
-            (end.x + n.x, end.y + n.y),
-            (end.x - n.x, end.y - n.y),
-            (neck.x - n.x, neck.y - n.y),
-        ];
-        self.closed(&body, self.thin);
-        self.closed(
-            &[
-                (tip.x, tip.y),
-                (neck.x + n.x, neck.y + n.y),
-                (neck.x - n.x, neck.y - n.y),
-            ],
-            self.thin,
-        );
-        self.fill(
-            &[
-                (tip.x, tip.y),
-                (
-                    tip.x + d.x * 1.2 + n.x * 0.45,
-                    tip.y + d.y * 1.2 + n.y * 0.45,
-                ),
-                (
-                    tip.x + d.x * 1.2 - n.x * 0.45,
-                    tip.y + d.y * 1.2 - n.y * 0.45,
-                ),
-            ],
-            self.color,
-        );
-        let cap = end - d * 1.6;
-        self.line(
-            cap.x + n.x,
-            cap.y + n.y,
-            cap.x - n.x,
-            cap.y - n.y,
-            self.thin,
-        );
-    }
-
-    /// Four-point sparkle centred at (cx, cy).
-    fn sparkle(&self, cx: f32, cy: f32, rad: f32) {
-        let w = rad * 0.3;
-        self.fill(
-            &[
-                (cx, cy - rad),
-                (cx + w, cy - w),
-                (cx + rad, cy),
-                (cx + w, cy + w),
-                (cx, cy + rad),
-                (cx - w, cy + w),
-                (cx - rad, cy),
-                (cx - w, cy - w),
-            ],
-            self.color,
-        );
-    }
-
-    /// Paint bucket tilted to the right with a pouring drop.
-    fn bucket(&self) {
-        self.closed(&[(3.0, 7.0), (8.0, 2.0), (13.0, 7.0), (8.0, 12.0)], self.s);
-        self.fill(
-            &[(3.0, 7.0), (8.0, 12.0), (8.0, 14.5), (3.0, 9.5)],
-            self.color,
-        );
-        self.line(5.5, 4.5, 5.5, 2.0, self.thin);
-        self.circle_f(13.2, 10.5, 1.4, self.color);
-        self.fill(&[(13.2, 7.8), (14.6, 10.5), (11.8, 10.5)], self.color);
-    }
-
-    /// Eyedropper pointing down-left with the tip at (3, 13).
-    fn dropper(&self) {
-        self.painter.line_segment(
-            [self.at(3.0, 13.0), self.at(9.5, 6.5)],
-            Stroke::new(2.2, self.color),
-        );
-        self.line(8.0, 5.0, 11.0, 8.0, self.thin);
-        self.circle_f(11.5, 4.5, 2.2, self.color);
-        self.circle_f(3.0, 13.0, 1.2, self.color);
-    }
-
-    /// Hollow pen nib pointing down with the tip at (tx, ty).
-    fn nib(&self, tx: f32, ty: f32) {
-        self.closed(
-            &[
-                (tx, ty),
-                (tx - 3.5, ty - 5.0),
-                (tx - 2.5, ty - 9.0),
-                (tx + 2.5, ty - 9.0),
-                (tx + 3.5, ty - 5.0),
-            ],
-            self.s,
-        );
-        self.line(tx, ty - 1.5, tx, ty - 5.0, self.thin);
-        self.circle_f(tx, ty - 5.5, 1.0, self.color);
-    }
-
-    /// Dimension line between two points with filled arrowheads at both ends.
-    fn dim_line(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        self.line(x0, y0, x1, y1, self.thin);
-        self.arrow_head(x1, y1, x0, y0, 2.6);
-        self.arrow_head(x0, y0, x1, y1, 2.6);
-    }
 }
 
 static COLORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -297,11 +25,16 @@ pub fn group_color(tool: Tool) -> Color32 {
         .iter()
         .position(|g| g.tools.contains(&tool))
         .unwrap_or(0);
-    // One hue per toolbox group, dark enough for light panels.
+    // One hue per toolbox group, dark enough for light panels: Pick,
+    // Shape, Crop, Zoom, Curve, the brushes and Variable Outline (one
+    // hue, as one block), Rectangle, Ellipse and Polygon (one hue), Text,
+    // Dimension, Connector, Effect, Transparency, Eyedropper, Fill,
+    // Outline.
     const HUES: [u32; 18] = [
-        0x2F6FD0, 0x8A4FD0, 0xD24A43, 0x2A9D9D, 0x2E9E4F, 0xE07B1A, 0x1E88E5, 0x1E88E5, 0x1E88E5,
-        0x5A5A5A, 0x7A8288, 0x16A085, 0xC0398B, 0x5D6D9E, 0xB9770E, 0xE67E22, 0x8A4FD0, 0x34495E,
+        0x2F6FD0, 0x8A4FD0, 0xD24A43, 0x2A9D9D, 0x2E9E4F, 0xE07B1A, 0xE07B1A, 0x1E88E5, 0x1E88E5,
+        0x1E88E5, 0x5A5A5A, 0x7A8288, 0x16A085, 0xC0398B, 0x5D6D9E, 0xB9770E, 0xE67E22, 0x34495E,
     ];
+    const _: () = assert!(HUES.len() == crate::tools::GROUPS.len());
     let v = HUES.get(group).copied().unwrap_or(0x5A5A5A);
     let c = Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
     if crate::theme::theme().is_dark() {
@@ -325,692 +58,606 @@ pub fn tool_color(tool: Tool, plain: Color32) -> Color32 {
     }
 }
 
+/// The accent of the icons: the brand blue, lighter on dark panels.
+pub fn accent() -> Color32 {
+    if crate::theme::theme().is_dark() {
+        Color32::from_rgb(0x5C, 0xAE, 0xFF)
+    } else {
+        Color32::from_rgb(0x2F, 0x6F, 0xD0)
+    }
+}
+
+/// Draw `tool`'s icon in `r` with `color` as its ink, on the panel.
 pub fn draw(painter: &Painter, r: Rect, tool: Tool, color: Color32) {
-    // Stroke weights follow the icon size (1.25 and 0.9 px at 16 px).
-    let k = r.width() / 16.0;
-    let s = Stroke::new(1.25 * k, color);
-    let thin = Stroke::new((0.9 * k).max(1.0), color);
-    // Colour accents (connector ends, the dropper's tip, the bucket's paint)
-    // only on the normal icon colour; dimmed icons stay monochrome.
-    let accent = if color == Tokens::icon() {
-        Color32::from_rgb(0xE8, 0x5A, 0x1C)
-    } else {
-        color
-    };
-    let paint = if color == Tokens::icon() {
-        Color32::from_rgb(0xE0, 0x10, 0x1A)
-    } else {
-        color
-    };
-    let faint = color.gamma_multiply(0.35);
-    let faint_stroke = Stroke::new(1.0, faint);
-    let ic = Ic {
-        painter,
-        r,
-        color,
-        s,
-        thin,
-    };
-    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    draw_on(painter, r, tool, color, Tokens::panel());
+}
+
+/// Draw `tool`'s icon in `r` with `color` as its ink, on a surface of
+/// colour `bg` (the opaque bodies take it). A dimmed icon (the theme's
+/// disabled icon colour or a translucent ink) stays monochrome; the high
+/// contrast theme keeps its one icon colour.
+pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color32) {
+    let plain = color == Tokens::icon_off()
+        || color.a() < 255
+        || crate::theme::theme() == crate::theme::Theme::HighContrast;
+    let acc = if plain { color } else { accent() };
+    let pen = Pen::new(painter, r, color, acc, bg);
+    let ink = color;
+    let a = |f: f32| Pen::alpha(ink, f);
+    let b = |f: f32| Pen::alpha(acc, f);
+    let pt = |x: f32, y: f32| Pos2::new(x, y);
     match tool {
-        // Pick group: arrow, arrow with lasso, arrow with rotate arc.
-        Tool::Pick => ic.cursor(4.0, 2.0, 1.0, true),
+        // Pick group.
+        Tool::Pick => pen.pointer(5.4, 3.4, 1.0, true),
         Tool::FreeformPick => {
-            ic.cursor(2.5, 1.5, 0.75, true);
-            let loop_pts = ic.arc(10.5, 11.0, 4.0, 3.0, 0.0, TAU, 24);
-            ic.closed(&loop_pts[..24], thin);
-            ic.line(7.0, 13.0, 9.5, 14.5, thin);
+            // A lasso closing on the live node, with a small pointer.
+            pen.ghost("M5 12c-2-6 4-9 9-8s7 5 5 9-6 4-9 3", ink);
+            pen.line("M5 12c0 3 2 5 4 7", ink);
+            pen.node(9.0, 19.0, true);
+            pen.pointer(13.5, 12.5, 0.58, false);
         }
         Tool::FreeTransform => {
-            ic.cursor(2.5, 3.5, 0.8, true);
-            let a = ic.arc(10.0, 6.0, 4.5, 4.5, PI * 1.05, PI * 1.95, 12);
-            ic.open(&a, thin);
-            ic.arrow_head(13.2, 1.9, 14.6, 5.0, 2.4);
+            // A tilted box, the rotation arc and the node on the pivot.
+            pen.rotated(-14.0, 11.0, 13.0)
+                .body(&rrect(5.0, 7.0, 12.0, 12.0, 1.5));
+            pen.line("M14.5 4.5a6 6 0 0 1 6 4.5", acc);
+            pen.arrow_head(20.8, 10.2, 0.3, 1.0, 3.2, acc);
+            pen.node(3.73, 8.63, true);
         }
 
         // Shape edit group.
         Tool::Shape => {
-            // A curve with a hollow node and the pointer reshaping it.
-            let a = ic.arc(11.0, 9.0, 8.0, 7.5, PI * 0.78, PI * 1.32, 14);
-            ic.open(&a, s);
-            ic.node_hollow(a[5].0, a[5].1);
-            ic.cursor(8.0, 6.5, 0.62, true);
+            // A node with its two handles on a curve, the pointer on it.
+            pen.line("M3 8C6 16 9 16 12 12", ink);
+            pen.line("M12 12c3-4 6-5 9-9", ink);
+            pen.thin("M15.5 7.3L8.5 16.7", acc);
+            pen.handle(15.5, 7.3, 1.8);
+            pen.handle(8.5, 16.7, 1.8);
+            pen.node(12.0, 12.0, true);
+            pen.pointer(12.8, 12.9, 0.58, false);
         }
         Tool::Smooth => {
-            let pts: Vec<(f32, f32)> = (0..=20)
-                .map(|i| {
-                    let t = i as f32 / 20.0;
-                    let amp = 3.5 * (1.0 - t).powi(2);
-                    (2.0 + 12.0 * t, 8.0 + amp * (t * 14.0).sin())
-                })
-                .collect();
-            ic.open(&pts, s);
+            // Jagged ink becomes a smooth wave from the node on.
+            pen.line("M3 16l3-7 3 7 3-7", ink);
+            pen.line("M12 9c2.5 0 3 7 5.5 7s3-7 4.5-7", acc);
+            pen.node(12.0, 9.0, true);
         }
         Tool::Smear => {
-            ic.circle_f(5.5, 8.0, 3.0, color);
-            ic.fill(&[(5.5, 5.0), (14.5, 7.4), (14.5, 8.6), (5.5, 11.0)], color);
+            // A blob pulled into a tail, the node on the pulled tip.
+            pen.body("M8 5a6.5 6.5 0 0 0 0 13c3 0 4-2.5 7-3.5l5.5-2.5-5.5-2.5C12 8.5 11 5 8 5z");
+            pen.node(20.5, 12.0, true);
         }
         Tool::Twirl => {
-            // Three curved blades spun around the centre.
-            for k in 0..3 {
-                let off = k as f32 * TAU / 3.0;
-                let pts: Vec<(f32, f32)> = (0..=10)
-                    .map(|i| {
-                        let t = i as f32 / 10.0;
-                        let a = off + t * 2.2;
-                        let rad = 1.0 + 5.5 * t;
-                        (8.0 + rad * a.cos(), 8.0 + rad * a.sin())
-                    })
-                    .collect();
-                ic.open(&pts, s);
-            }
-            ic.circle_f(8.0, 8.0, 1.1, color);
+            // A shape with a spiral winding inside, the node at its end.
+            pen.body(&rrect(3.0, 3.0, 18.0, 18.0, 4.0));
+            pen.stroke_pts(
+                &spiral(12.0, 12.0, 1.75, 0.5, 6.2, 50, -40.0),
+                false,
+                LINE,
+                acc,
+            );
+            let (x, y) = polar(12.0, 12.0, 6.2, -40.0 + 1.75 * 360.0);
+            pen.node(x, y, true);
         }
         Tool::AttractRepel => {
-            ic.circle_s(8.0, 8.0, 2.6, s);
+            // Four arrows converging on a shape.
+            pen.circle(12.0, 12.0, 3.2, pen.wash(), LINE, ink);
             for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let (fx, fy) = (8.0 + 6.3 * dx, 8.0 + 6.3 * dy);
-                let (tx, ty) = (8.0 + 3.4 * dx, 8.0 + 3.4 * dy);
-                ic.line(fx, fy, tx, ty, thin);
-                ic.arrow_head(fx, fy, tx, ty, 2.2);
+                let (fx, fy) = (12.0 + 7.2 * dx, 12.0 + 7.2 * dy);
+                let (tx, ty) = (12.0 + 4.6 * dx, 12.0 + 4.6 * dy);
+                pen.stroke_pts(
+                    &[pt(fx, fy), pt(tx + 1.2 * dx, ty + 1.2 * dy)],
+                    false,
+                    THIN,
+                    acc,
+                );
+                pen.arrow_head(tx, ty, -dx, -dy, 2.6, acc);
             }
         }
         Tool::Smudge => {
-            // Brush handle with a bristle tip and a trailing smear.
-            ic.painter
-                .line_segment([ic.at(13.5, 2.5), ic.at(8.5, 7.5)], Stroke::new(2.2, color));
-            ic.fill(&[(8.5, 6.0), (10.0, 7.5), (6.5, 11.0), (5.0, 9.5)], color);
-            ic.open(&[(5.0, 11.0), (4.0, 13.0), (2.0, 14.0)], s);
-            ic.open(&[(6.5, 12.0), (6.0, 14.5)], thin);
+            // A round brush dragging paint into a tapered smear.
+            pen.stroke("M20 4l-7.5 7.5", 3.0, ink);
+            pen.fill(
+                "M12.5 11.5c-1.5-.5-3.5.5-4 2.5s0 3.5 2 3 3.2-2.5 3.5-4z",
+                ink,
+                true,
+            );
+            let smear = ribbon(
+                [pt(9.0, 15.0), pt(7.0, 17.0), pt(5.5, 18.0), pt(3.0, 20.5)],
+                |t| 0.3 + 1.7 * (1.0 - t),
+                16,
+            );
+            pen.fill_pts(&smear, acc, true);
         }
         Tool::Roughen => {
-            // A rectangle whose top edge has been roughened into a zigzag.
-            let mut pts = vec![(2.0, 13.5), (2.0, 7.0)];
-            for i in 0..6 {
-                let x = 2.0 + i as f32 * 2.0;
-                pts.push((x + 1.0, 4.5));
-                pts.push((x + 2.0, 7.0));
-            }
-            pts.push((14.0, 13.5));
-            ic.closed(&pts, s);
+            // A body in ink, its top edge sawn into a zigzag.
+            pen.body("M4 9v10a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19V9");
+            pen.line("M4 9l2-4 2 4 2-4 2 4 2-4 2 4 2-4 2 4", acc);
         }
 
         Tool::VariableOutline => {
-            // A curve that swells in the middle, with a width node on it.
-            let top: Vec<(f32, f32)> = (0..=12)
-                .map(|j| {
-                    let u = j as f32 / 12.0;
-                    let x = 1.5 + 13.0 * u;
-                    let y = 11.0 - 6.0 * (u * PI).sin();
-                    let w = 0.4 + 2.4 * (u * PI).sin();
-                    (x, y - w)
-                })
-                .collect();
-            let mut band = top.clone();
-            band.extend((0..=12).rev().map(|j| {
-                let u = j as f32 / 12.0;
-                let x = 1.5 + 13.0 * u;
-                let y = 11.0 - 6.0 * (u * PI).sin();
-                let w = 0.4 + 2.4 * (u * PI).sin();
-                (x, y + w)
-            }));
-            ic.fill(&band, color);
-            ic.painter
-                .circle_stroke(ic.at(8.0, 5.0), 1.6 * k, Stroke::new(1.0 * k, color));
+            // An ink ribbon swelling in the middle, the width handle
+            // pulled off the curve.
+            let band = ribbon(
+                [pt(3.0, 18.0), pt(7.0, 6.0), pt(17.0, 6.0), pt(21.0, 18.0)],
+                |t| 0.5 + 2.6 * (std::f32::consts::PI * t).sin(),
+                28,
+            );
+            pen.fill_pts(&band, pen.wash(), false);
+            pen.stroke_pts(&band, true, LINE, ink);
+            pen.thin("M12 9V3.5", acc);
+            pen.handle(12.0, 3.5, 1.8);
+            pen.node(12.0, 9.0, true);
         }
 
         // Crop group.
         Tool::Crop => {
-            // Two crop marks.
-            let w = Stroke::new(1.9 * k, color);
-            ic.line(5.0, 1.5, 5.0, 11.0, w);
-            ic.line(5.0, 11.0, 14.5, 11.0, w);
-            ic.line(1.5, 5.0, 11.0, 5.0, w);
-            ic.line(11.0, 5.0, 11.0, 14.5, w);
+            // A corner cut off a shape; the removed piece floats away as
+            // a ghost, the node on the cut corner.
+            pen.body("M3 5a2 2 0 0 1 2-2h8v8h8v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
+            pen.ghost(&rrect(15.0, 2.5, 6.5, 6.5, 1.0), acc);
+            pen.line("M13 11h-2M13 11v-2", acc);
+            pen.node(13.0, 11.0, true);
         }
         Tool::Knife => {
-            // Blade with a straight spine and a curved cutting edge, handle at lower left.
-            ic.fill(&[(2.0, 14.0), (4.5, 11.5), (6.5, 13.5), (4.0, 15.0)], color);
-            let mut blade = vec![(5.5, 10.5), (13.5, 2.5), (14.5, 3.5)];
-            blade.extend(ic.arc(14.5, 10.5, 7.0, 7.0, -FRAC_PI_2, -PI * 0.85, 6));
-            blade.push((7.5, 12.5));
-            ic.closed(&blade, s);
+            // A circle split in two, the halves pushed apart, the blade.
+            pen.body("M16.2 4.9A8 8 0 0 0 4.9 16.2Z");
+            pen.body("M19.1 7.8A8 8 0 0 1 7.8 19.1Z");
+            pen.fill("M17 2.5l4.5 4.5-2.5 1-3-3z", acc, false);
+            pen.stroke("M17 2.5l4.5 4.5-2.5 1-3-3z", 1.0, bg);
+            pen.thin("M3 21l3.2-3.2", acc);
         }
         Tool::SegmentDelete => {
-            // Curve with its middle segment faded out and marked with an X.
-            let a = ic.arc(8.0, 14.0, 9.0, 8.0, PI * 1.08, PI * 1.35, 6);
-            let b = ic.arc(8.0, 14.0, 9.0, 8.0, PI * 1.35, PI * 1.65, 6);
-            let c = ic.arc(8.0, 14.0, 9.0, 8.0, PI * 1.65, PI * 1.92, 6);
-            ic.open(&a, s);
-            ic.open(&b, faint_stroke);
-            ic.open(&c, s);
-            ic.dot(a[a.len() - 1].0, a[a.len() - 1].1);
-            ic.dot(c[0].0, c[0].1);
-            ic.line(6.0, 10.0, 10.0, 14.0, s);
-            ic.line(10.0, 10.0, 6.0, 14.0, s);
+            // A curve with the doomed segment a ghost, crossed out.
+            pen.line("M3 17C7 5 10 5 12 11", ink);
+            pen.ghost("M12 11c2 6 5 6 9-6", acc);
+            pen.line("M14.5 13.5l4 4M18.5 13.5l-4 4", acc);
+            pen.node(3.0, 17.0, false);
+            pen.node(12.0, 11.0, false);
+            pen.node(21.0, 5.0, false);
         }
         Tool::Eraser => {
-            // Tilted eraser block with a darker rubbing end and the surface line.
-            ic.closed(&[(3.0, 10.0), (10.0, 3.0), (14.0, 7.0), (7.0, 14.0)], s);
-            ic.fill(&[(3.0, 10.0), (6.0, 7.0), (10.0, 11.0), (7.0, 14.0)], color);
-            ic.line(2.0, 15.0, 14.0, 15.0, thin);
+            // A tilted block, rubbed-out marks on the ground.
+            pen.body("M14.5 3.5L21 10l-8.5 8.5a2 2 0 0 1-2.8 0L5.5 14.3a2 2 0 0 1 0-2.8z");
+            pen.thin("M9 8l7 7", ink);
+            pen.line("M3 20.5h6M6 17.5l-2 3", acc);
         }
 
         // Zoom group.
         Tool::Zoom => {
-            // A magnifying glass.
-            ic.circle_s(6.8, 6.8, 5.0, s);
-            ic.painter.line_segment(
-                [ic.at(10.4, 10.4), ic.at(14.8, 14.8)],
-                Stroke::new(1.9 * k, color),
-            );
+            // A lens showing a magnified curve and node.
+            pen.circle(10.0, 10.0, 7.5, pen.wash(), LINE, ink);
+            pen.stroke("M15.5 15.5L21 21", 3.0, ink);
+            pen.line("M4.5 12.5c3 0 4.5-6 9-5.5", acc);
+            pen.node(13.5, 7.0, true);
         }
         Tool::Pan => {
-            // Open hand: four fingers, thumb and palm.
-            let mut pts = vec![(4.0, 14.5), (4.0, 9.0), (2.0, 7.0), (3.5, 6.0), (5.0, 7.5)];
-            pts.extend([(5.0, 2.5), (6.5, 2.5), (6.5, 7.0)]);
-            pts.extend([(7.5, 1.5), (9.0, 1.5), (9.0, 7.0)]);
-            pts.extend([(10.0, 2.5), (11.5, 2.5), (11.5, 7.5)]);
-            pts.extend([(12.5, 4.0), (14.0, 4.0), (14.0, 10.0), (12.0, 14.5)]);
-            ic.closed(&pts, thin);
+            // A page shifted from its ghost, the drag arrow.
+            pen.ghost(&rrect(3.0, 3.0, 13.0, 13.0, 1.5), a(0.4));
+            pen.solid(&rrect(8.0, 8.0, 13.0, 13.0, 1.5));
+            pen.line("M6 6l5.5 5.5", acc);
+            pen.arrow_head(13.5, 13.5, 1.0, 1.0, 3.0, acc);
+            pen.node(6.0, 6.0, true);
         }
 
         // Curve group.
         Tool::Freehand => {
-            // The drawing cursor and a freehand scribble.
-            ic.line(1.0, 3.5, 6.0, 3.5, thin);
-            ic.line(3.5, 1.0, 3.5, 6.0, thin);
-            let pts: Vec<(f32, f32)> = (0..=28)
-                .map(|i| {
-                    let t = i as f32 / 28.0;
-                    let x = 3.5 + 11.5 * t;
-                    let y = if t < 0.18 {
-                        7.5 + 30.0 * t
-                    } else {
-                        13.0 - 3.0 * ((t - 0.18) * 26.0).sin().abs()
-                    };
-                    (x, y)
-                })
-                .collect();
-            ic.open(&pts, s);
+            // A pencil drawing a scribble; the live end is a node.
+            pen.body("M9.2 14.2l9.4-9.4a1.6 1.6 0 0 1 2.3 0l.3.3a1.6 1.6 0 0 1 0 2.3l-9.4 9.4z");
+            pen.fill("M9.2 14.2l2.6 2.6-5.3 1.4 1.3-5.3z", ink, false);
+            pen.stroke("M9.2 14.2l2.6 2.6-5.3 1.4 1.3-5.3z", 1.2, ink);
+            pen.thin("M17.2 6.2l1.4 1.4", ink);
+            pen.line("M6.5 18.2c1.5 2.5 3 3 5 1.5s3-2 5-.5 3 1.5 4.5.5", acc);
+            pen.node(21.0, 19.7, true);
         }
         Tool::TwoPointLine => {
-            ic.line(3.0, 13.0, 13.0, 3.0, s);
-            ic.dot(3.0, 13.0);
-            ic.dot(13.0, 3.0);
+            pen.line("M4 19L20 5", ink);
+            pen.node(4.0, 19.0, false);
+            pen.node(20.0, 5.0, true);
         }
         Tool::Bezier => {
-            let pts: Vec<(f32, f32)> = (0..=16)
-                .map(|i| {
-                    let t = i as f32 / 16.0;
-                    let x = 3.0 + 10.0 * t;
-                    let y = 12.0 - 8.0 * (3.0 * t * t - 2.0 * t * t * t);
-                    (x, y)
-                })
-                .collect();
-            ic.open(&pts, s);
-            ic.line(3.0, 12.0, 7.5, 12.0, thin);
-            ic.line(13.0, 4.0, 8.5, 4.0, thin);
-            ic.node(3.0, 12.0);
-            ic.node(13.0, 4.0);
-            ic.node_hollow(7.5, 12.0);
-            ic.node_hollow(8.5, 4.0);
+            // An S curve with vertical handles, the live end node.
+            pen.line("M4 19C4 7 20 17 20 5", ink);
+            pen.thin("M4 19v-6M20 5v6", acc);
+            pen.handle(4.0, 13.0, 1.8);
+            pen.handle(20.0, 11.0, 1.8);
+            pen.node(4.0, 19.0, false);
+            pen.node(20.0, 5.0, true);
         }
         Tool::Pen => {
-            ic.nib(8.0, 14.0);
+            // A nib drawing a segment to a node.
+            pen.body("M9 15l2.5-8.5L19 3l2 2-3.5 7.5z");
+            pen.thin("M9 15l5-5", ink);
+            pen.circle(15.0, 9.0, 1.3, ink, 0.0, ink);
+            pen.line("M9 15c-2 1-4 3-5 5", acc);
+            pen.node(4.0, 20.0, true);
         }
         Tool::BSpline => {
-            // Smooth curve hugging a dashed control polygon with hollow control points.
-            let ctrl = [(2.0, 12.0), (5.0, 3.0), (11.0, 13.0), (14.0, 4.0)];
-            for w in ctrl.windows(2) {
-                ic.dashed(w[0].0, w[0].1, w[1].0, w[1].1, 1.0, faint_stroke);
+            // A ghost control polygon with round handles, the node on
+            // the curve.
+            pen.ghost("M3 19L7 4 15 20 21 5", a(0.4));
+            pen.line("M5 11.5Q7 4 11 12Q15 20 18 12.5", ink);
+            for (x, y) in [(3.0, 19.0), (7.0, 4.0), (15.0, 20.0), (21.0, 5.0)] {
+                pen.handle(x, y, 1.8);
             }
-            let pts: Vec<(f32, f32)> = (0..=20)
-                .map(|i| {
-                    let t = i as f32 / 20.0;
-                    // Quadratic B-spline evaluated through the two inner spans.
-                    let seg = if t < 0.5 { 0 } else { 1 };
-                    let u = if seg == 0 { t * 2.0 } else { (t - 0.5) * 2.0 };
-                    let (p0, p1, p2) = (ctrl[seg], ctrl[seg + 1], ctrl[seg + 2]);
-                    let b0 = (1.0 - u) * (1.0 - u) * 0.5;
-                    let b1 = -u * u + u + 0.5;
-                    let b2 = u * u * 0.5;
-                    (
-                        p0.0 * b0 + p1.0 * b1 + p2.0 * b2,
-                        p0.1 * b0 + p1.1 * b1 + p2.1 * b2,
-                    )
-                })
-                .collect();
-            ic.open(&pts, s);
-            for &(x, y) in &ctrl {
-                ic.node_hollow(x, y);
-            }
+            pen.node(11.0, 12.0, true);
         }
         Tool::Polyline => {
-            let pts = [
-                (2.0, 12.0),
-                (5.0, 4.0),
-                (8.5, 11.0),
-                (11.0, 5.0),
-                (14.0, 12.0),
-            ];
-            ic.open(&pts, s);
-            for &(x, y) in &pts {
-                ic.node(x, y);
-            }
+            pen.line("M3 19L7 6 13 15 20 4", ink);
+            pen.node(3.0, 19.0, false);
+            pen.node(7.0, 6.0, false);
+            pen.node(13.0, 15.0, false);
+            pen.node(20.0, 4.0, true);
         }
         Tool::ThreePointCurve => {
-            let a = ic.arc(8.0, 12.0, 6.0, 8.0, PI * 1.1, PI * 1.9, 14);
-            ic.open(&a, s);
-            ic.dot(a[0].0, a[0].1);
-            ic.dot(a[7].0, a[7].1);
-            ic.dot(a[14].0, a[14].1);
+            // An arc with hollow ends and the live apex.
+            pen.line("M3 18A9.5 9.5 0 0 1 21 18", ink);
+            pen.node(3.0, 18.0, false);
+            pen.node(21.0, 18.0, false);
+            pen.node(12.0, 11.5, true);
+        }
+
+        // Drawing group.
+        Tool::BrushStrokes => {
+            // A calligraphic S swash: the accent ribbon on a thin ink
+            // path, thick in the middle, tapered ends, the node at the
+            // live end.
+            pen.thin("M4.5 20C3 8 21 16 19.5 4", ink);
+            let swash = ribbon(
+                [pt(4.5, 20.0), pt(3.0, 8.0), pt(21.0, 16.0), pt(19.5, 4.0)],
+                |t| 0.4 + 3.1 * (std::f32::consts::PI * t).sin().powf(0.9),
+                36,
+            );
+            pen.fill_pts(&swash, acc, true);
+            pen.node(19.5, 4.0, true);
+        }
+        Tool::PainterlyBrush => {
+            // A round brush head and three dabs.
+            pen.stroke("M20 4l-7.5 7.5", 3.0, ink);
+            pen.fill(
+                "M12.5 11.5c-1.5-.5-3.5.5-4 2.5s0 3.5 2 3 3.2-2.5 3.5-4z",
+                ink,
+                true,
+            );
+            pen.circle(6.0, 18.0, 2.6, acc, 0.0, acc);
+            pen.circle(11.0, 20.0, 1.8, b(0.7), 0.0, acc);
+            pen.circle(3.5, 13.0, 1.3, b(0.7), 0.0, acc);
         }
         Tool::ShapeRecognition => {
-            ic.pencil(2.5, 13.5, 11.0);
-            ic.sparkle(12.5, 3.5, 3.0);
+            // A faint sketched square recognised as a clean shape, the
+            // node on its corner.
+            pen.thin(
+                "M4.5 5.5c3-1.2 7 1 10.5-.8 1.2 3-1 7 .8 10.5-3 1.2-7-1-10.5.8-1.2-3 1-7-.8-10.5z",
+                a(0.5),
+            );
+            pen.rect(8.5, 8.5, 12.0, 12.0, 1.5, b(0.14), LINE, acc);
+            pen.node(20.5, 20.5, true);
         }
         Tool::Sketch => {
-            // Several overlapping sketchy strokes that read as one line.
-            for (k, off) in [(0usize, -1.2f32), (1, 0.0), (2, 1.2)] {
-                let pts: Vec<(f32, f32)> = (0..=12)
-                    .map(|i| {
-                        let t = i as f32 / 12.0;
-                        let wob = ((t * 9.0) + k as f32).sin() * 0.6;
-                        (2.0 + 12.0 * t, 11.0 - 6.0 * t + off + wob)
-                    })
-                    .collect();
-                ic.open(&pts, if k == 1 { s } else { faint_stroke });
-            }
-        }
-
-        Tool::PainterlyBrush => {
-            // A round brush with its handle, and a speckled stroke.
-            ic.painter.line_segment(
-                [ic.at(14.5, 1.5), ic.at(9.0, 7.0)],
-                Stroke::new(ic.u(2.0), color),
-            );
-            ic.fill(&[(9.5, 5.5), (10.5, 6.5), (7.5, 10.0), (6.0, 8.5)], color);
-            for (x, y, r) in [
-                (5.5, 10.5, 1.1),
-                (3.8, 12.0, 0.9),
-                (2.2, 13.6, 0.7),
-                (5.0, 13.2, 0.6),
-                (7.2, 12.4, 0.5),
-                (1.8, 11.4, 0.45),
-            ] {
-                ic.circle_f(x, y, r, color);
-            }
-        }
-
-        // Brush strokes: a tapered brush stroke.
-        Tool::BrushStrokes => {
-            // A brush stroke shaped like an S, thickening towards a heavy,
-            // rounded end at the bottom left.
-            let mut pts = ic.arc(7.5, 5.0, 3.0, 3.2, -PI * 0.15, -PI * 1.5, 12);
-            pts.extend(ic.arc(8.0, 11.4, 4.2, 3.2, -PI * 0.5, PI * 0.85, 14));
-            for (i, w) in pts.windows(2).enumerate() {
-                let t = i as f32 / pts.len() as f32;
-                ic.painter.line_segment(
-                    [ic.at(w[0].0, w[0].1), ic.at(w[1].0, w[1].1)],
-                    Stroke::new(ic.u(0.9 + 1.4 * t), color),
-                );
-            }
-            if let Some(&(x, y)) = pts.last() {
-                ic.circle_f(x, y, 1.5, color);
-            }
+            // Several sketchy strokes that read as one line, the live
+            // end a node.
+            pen.line("M3 17.5C8 9 14 9 21 6", a(0.4));
+            pen.line("M3 15C8 7 14 7.5 21 4", a(0.4));
+            pen.line("M3 16.3C8 8 14 8.2 21 5", ink);
+            pen.node(21.0, 5.0, true);
         }
 
         // Rectangle group.
-        Tool::Rectangle => ic.rect_s(1.8, 1.8, 14.2, 14.2, 0.0, s),
+        Tool::Rectangle => {
+            pen.body(&rrect(4.0, 5.0, 16.0, 15.0, 2.0));
+            pen.node(20.0, 5.0, true);
+        }
         Tool::ThreePointRectangle => {
-            let pts = [(3.0, 6.0), (9.5, 2.0), (13.5, 8.5), (7.0, 12.5)];
-            ic.closed(&pts, s);
-            ic.dot(3.0, 6.0);
-            ic.dot(9.5, 2.0);
-            ic.dot(13.5, 8.5);
+            // A tilted box: two hollow base points, the live third.
+            let ang = (-24.0f32).to_radians();
+            let d = Vec2::new(ang.cos(), ang.sin());
+            let n = Vec2::new(-d.y, d.x);
+            let p0 = pt(3.5, 15.5);
+            let p1 = p0 + d * 14.0;
+            let p2 = p1 + n * 8.0;
+            let p3 = p0 + n * 8.0;
+            let quad = [p0, p1, p2, p3];
+            pen.fill_pts(&quad, pen.wash(), false);
+            pen.stroke_pts(&quad, true, LINE, ink);
+            pen.node(p0.x, p0.y, false);
+            pen.node(p1.x, p1.y, false);
+            pen.node(p2.x, p2.y, true);
         }
 
         // Ellipse group.
-        Tool::Ellipse => ic.ellipse_s(8.0, 8.0, 6.4, 6.4, s),
+        Tool::Ellipse => {
+            pen.circle(12.0, 12.0, 8.5, pen.wash(), LINE, ink);
+            let (x, y) = polar(12.0, 12.0, 8.5, -45.0);
+            pen.node(x, y, true);
+        }
         Tool::ThreePointEllipse => {
-            // Tilted ellipse built from a rotated parametric curve.
-            let ang = -0.6f32;
-            let (rx, ry) = (5.5f32, 3.2f32);
-            let pts: Vec<(f32, f32)> = (0..40)
+            // A tilted ellipse, the axis ends hollow, the width point live.
+            let (rx, ry) = (9.0f32, 5.5f32);
+            let oval: Vec<Pos2> = (0..48)
                 .map(|i| {
-                    let a = i as f32 / 40.0 * TAU;
-                    let (ex, ey) = (rx * a.cos(), ry * a.sin());
-                    (
-                        8.0 + ex * ang.cos() - ey * ang.sin(),
-                        8.0 + ex * ang.sin() + ey * ang.cos(),
-                    )
+                    let t = i as f32 / 48.0 * std::f32::consts::TAU;
+                    pt(12.0 + rx * t.cos(), 12.0 + ry * t.sin())
                 })
                 .collect();
-            ic.closed(&pts, s);
-            let tip = |a: f32| {
-                let (ex, ey) = (rx * a.cos(), ry * a.sin());
-                (
-                    8.0 + ex * ang.cos() - ey * ang.sin(),
-                    8.0 + ex * ang.sin() + ey * ang.cos(),
-                )
-            };
-            for a in [0.0, PI, FRAC_PI_2] {
-                let (x, y) = tip(a);
-                ic.dot(x, y);
-            }
+            let turned = pen.rotated(-30.0, 12.0, 12.0);
+            turned.fill_pts(&oval, pen.wash(), false);
+            turned.stroke_pts(&oval, true, LINE, ink);
+            let (x, y) = polar(12.0, 12.0, 9.0, 150.0);
+            pen.node(x, y, false);
+            let (x, y) = polar(12.0, 12.0, 9.0, -30.0);
+            pen.node(x, y, false);
+            let (x, y) = polar(12.0, 12.0, 5.5, 60.0);
+            pen.node(x, y, true);
         }
 
         // Polygon group.
         Tool::Polygon => {
-            // A hexagon with flat top and bottom.
-            let pts: Vec<(f32, f32)> = (0..6)
-                .map(|i| {
-                    let a = i as f32 * TAU / 6.0;
-                    (8.0 + 6.8 * a.cos(), 8.0 + 6.2 * a.sin())
+            let hex: Vec<Pos2> = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0]
+                .iter()
+                .map(|&a| {
+                    let (x, y) = polar(12.0, 12.5, 9.0, a);
+                    pt(x, y)
                 })
                 .collect();
-            ic.closed(&pts, s);
+            pen.fill_pts(&hex, pen.wash(), false);
+            pen.stroke_pts(&hex, true, LINE, ink);
+            pen.node(hex[0].x, hex[0].y, true);
         }
         Tool::Star => {
-            let pts: Vec<(f32, f32)> = (0..10)
-                .map(|i| {
-                    let a = -FRAC_PI_2 + i as f32 * TAU / 10.0;
-                    let rad = if i % 2 == 0 { 6.5 } else { 2.8 };
-                    (8.0 + rad * a.cos(), 8.5 + rad * a.sin())
-                })
-                .collect();
-            ic.closed(&pts, s);
+            let s = star(12.0, 13.0, 9.5, 4.3, 5, -90.0);
+            pen.fill_pts(&s, pen.wash(), false);
+            pen.stroke_pts(&s, true, LINE, ink);
+            pen.node(s[0].x, s[0].y, true);
         }
         Tool::Spiral => {
-            let pts: Vec<(f32, f32)> = (0..=48)
-                .map(|i| {
-                    let t = i as f32 / 48.0;
-                    let a = t * TAU * 2.5;
-                    let rad = 0.5 + 6.0 * t;
-                    (8.0 + rad * a.cos(), 8.0 + rad * a.sin())
-                })
-                .collect();
-            ic.open(&pts, s);
+            let s = spiral(12.0, 12.5, 2.25, 0.7, 8.8, 80, -90.0);
+            pen.stroke_pts(&s, false, LINE, ink);
+            if let Some(end) = s.last() {
+                pen.node(end.x, end.y, true);
+            }
         }
         Tool::CommonShapes => {
-            // Heart: two arcs meeting at the bottom point.
-            let mut pts = ic.arc(5.0, 6.0, 3.2, 3.2, PI, TAU, 10);
-            pts.extend(ic.arc(11.0, 6.0, 3.2, 3.2, PI, TAU, 10));
-            pts.push((13.8, 7.5));
-            pts.push((8.0, 14.0));
-            pts.push((2.2, 7.5));
-            ic.closed(&pts, s);
+            // An arrow shape with the node on its tip.
+            pen.body("M3 8.5L12.5 8.5 12.5 3.5 21 12 12.5 20.5 12.5 15.5 3 15.5z");
+            pen.node(21.0, 12.0, true);
         }
         Tool::ActionLines => {
-            // A small filled shape rushing right with speed lines trailing left.
-            ic.fill(&[(10.0, 5.0), (14.5, 8.0), (10.0, 11.0)], color);
-            ic.line(2.0, 5.5, 8.5, 5.5, s);
-            ic.line(4.0, 8.0, 8.5, 8.0, s);
-            ic.line(2.0, 10.5, 8.5, 10.5, s);
+            // A shape rushing right, speed lines trailing left.
+            pen.circle(16.0, 12.0, 4.8, pen.wash(), LINE, ink);
+            pen.line("M3 7.5h6.5M2 12h6M3 16.5h6.5", acc);
         }
         Tool::GraphPaper => {
-            ic.rect_s(2.5, 2.5, 13.5, 13.5, 0.0, s);
-            for v in [6.17, 9.83] {
-                ic.line(v, 2.5, v, 13.5, thin);
-                ic.line(2.5, v, 13.5, v, thin);
-            }
+            // A grid of cells, the node on its corner.
+            pen.body(&rrect(3.0, 3.0, 18.0, 18.0, 2.0));
+            pen.thin("M9 3v18M15 3v18M3 9h18M3 15h18", ink);
+            pen.node(21.0, 21.0, true);
         }
 
         // Text group.
         Tool::Text => {
-            // A capital A.
-            ic.open(&[(2.0, 15.0), (8.0, 1.0), (14.0, 15.0)], s);
-            ic.line(4.6, 10.2, 11.4, 10.2, s);
+            // A bold T inside the dashed text frame.
+            pen.dashed(&rrect(2.5, 2.5, 19.0, 19.0, 3.0), LINE, acc, 2.7, 2.2);
+            pen.stroke("M7.6 7.5h8.8M12 7.5v10", 3.0, ink);
         }
         Tool::Table => {
-            ic.rect_s(2.0, 3.0, 14.0, 13.0, 0.0, s);
-            ic.rect_f(2.0, 3.0, 14.0, 6.0, color);
-            ic.line(2.0, 9.5, 14.0, 9.5, thin);
-            ic.line(6.0, 6.0, 6.0, 13.0, thin);
-            ic.line(10.0, 6.0, 10.0, 13.0, thin);
+            // A grid with an accent header row.
+            pen.body(&rrect(3.0, 4.0, 18.0, 16.0, 2.0));
+            pen.fill("M3 8.5V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2.5z", acc, false);
+            pen.thin("M3 8.5h18M3 14.25h18M9 8.5V20M15 8.5V20", ink);
         }
 
         // Dimension group.
         Tool::ParallelDimension => {
-            // A slanted dimension line with ticks across both ends.
-            ic.line(2.5, 13.5, 13.5, 2.5, s);
-            ic.line(0.8, 11.8, 4.2, 15.2, s);
-            ic.line(11.8, 0.8, 15.2, 4.2, s);
+            // The measured edge in ink, the offset dimension line with
+            // ticks in the accent.
+            pen.line("M3 12L12 3", ink);
+            pen.node(3.0, 12.0, false);
+            pen.node(12.0, 3.0, false);
+            pen.thin("M5.5 14.5l2.5 2.5M14.5 5.5l2.5 2.5", a(0.45));
+            pen.line("M9 20L20 9", acc);
+            pen.line("M7 18l4 4M18 7l4 4", acc);
         }
         Tool::HorizontalVerticalDimension => {
-            ic.dim_line(4.5, 13.0, 14.5, 13.0);
-            ic.dim_line(3.0, 11.5, 3.0, 1.5);
-            ic.line(4.5, 11.0, 4.5, 14.5, thin);
-            ic.line(14.5, 11.0, 14.5, 14.5, thin);
+            // A box measured across the top and down the right side.
+            pen.body(&rrect(4.0, 9.5, 10.5, 10.5, 1.5));
+            pen.node(4.0, 9.5, false);
+            pen.node(14.5, 20.0, false);
+            pen.line("M4 5h10.5M4 3v4M14.5 3v4", acc);
+            pen.line("M19 9.5V20M17 9.5h4M17 20h4", acc);
         }
         Tool::AngularDimension => {
-            ic.line(2.5, 13.5, 14.0, 13.5, s);
-            ic.line(2.5, 13.5, 11.5, 3.0, s);
-            let a = ic.arc(2.5, 13.5, 8.0, 8.0, -0.85, 0.0, 8);
-            ic.open(&a, thin);
-            ic.arrow_head(a[1].0, a[1].1, a[0].0, a[0].1, 2.2);
-            ic.arrow_head(a[7].0, a[7].1, a[8].0, a[8].1, 2.2);
+            // Two rays and the arrowed arc.
+            pen.line("M4 20h17M4 20L14.5 4.5", ink);
+            pen.node(4.0, 20.0, false);
+            pen.line("M15 20A11 11 0 0 0 10.2 10.9", acc);
+            pen.arrow_head(15.6, 20.0, 1.0, 0.0, 2.8, acc);
+            pen.arrow_head(9.85, 10.4, -0.55, -0.83, 2.8, acc);
         }
         Tool::SegmentDimension => {
-            ic.line(2.5, 11.0, 13.5, 11.0, s);
-            ic.dot(2.5, 11.0);
-            ic.dot(8.0, 11.0);
-            ic.dot(13.5, 11.0);
-            ic.line(2.5, 8.5, 2.5, 4.5, thin);
-            ic.line(8.0, 8.5, 8.0, 4.5, thin);
-            ic.dim_line(2.5, 5.5, 8.0, 5.5);
+            // An open path with hollow nodes, one segment measured.
+            pen.line("M3 19L8 11h8l5 8", ink);
+            pen.node(3.0, 19.0, false);
+            pen.node(8.0, 11.0, false);
+            pen.node(16.0, 11.0, false);
+            pen.node(21.0, 19.0, false);
+            pen.line("M8 5.5h8M8 3.5v4M16 3.5v4", acc);
         }
         Tool::Callout => {
-            ic.rect_s(6.0, 2.0, 14.5, 7.5, 0.5, s);
-            ic.line(7.5, 4.0, 13.0, 4.0, thin);
-            ic.line(7.5, 5.7, 11.0, 5.7, thin);
-            ic.line(7.5, 7.5, 3.0, 13.0, s);
-            ic.dot(3.0, 13.0);
+            // A text box with a tail ending in a node.
+            pen.body(&rrect(3.0, 3.0, 18.0, 11.5, 2.5));
+            pen.thin("M7 7h10M7 10.5h6", ink);
+            pen.line("M10 14.5l-4.5 5.5", ink);
+            pen.node(5.5, 20.0, true);
         }
 
-        // Connector group.
-        Tool::Connector => {
-            // A line joining two coloured anchor squares.
-            ic.line(3.5, 3.5, 12.5, 12.5, s);
-            for (x, y) in [(3.5, 3.5), (12.5, 12.5)] {
-                ic.rect_f(x - 2.2, y - 2.2, x + 2.2, y + 2.2, accent);
-                ic.rect_s(x - 2.2, y - 2.2, x + 2.2, y + 2.2, 0.0, thin);
-            }
-        }
-        Tool::RightAngleConnector => {
-            ic.rect_s(1.5, 1.5, 6.5, 6.5, 0.0, thin);
-            ic.rect_s(9.5, 9.5, 14.5, 14.5, 0.0, thin);
-            ic.line(6.5, 4.0, 12.0, 4.0, s);
-            ic.line(12.0, 4.0, 12.0, 9.5, s);
-        }
-        Tool::RoundedConnector => {
-            ic.rect_s(1.5, 1.5, 6.5, 6.5, 0.0, thin);
-            ic.rect_s(9.5, 9.5, 14.5, 14.5, 0.0, thin);
-            ic.line(6.5, 4.0, 9.5, 4.0, s);
-            let a = ic.arc(9.5, 6.5, 2.5, 2.5, -FRAC_PI_2, 0.0, 6);
-            ic.open(&a, s);
-            ic.line(12.0, 6.5, 12.0, 9.5, s);
+        // Connector group: two boxes joined by a link with round anchors.
+        Tool::Connector | Tool::RightAngleConnector | Tool::RoundedConnector => {
+            pen.body(&rrect(3.0, 3.0, 7.0, 7.0, 1.5));
+            pen.body(&rrect(14.0, 14.0, 7.0, 7.0, 1.5));
+            let link = match tool {
+                Tool::Connector => "M10 6.5C15 6.5 9 17.5 14 17.5",
+                Tool::RightAngleConnector => "M10 6.5h3v11h1",
+                _ => "M10 6.5h.5a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 0 2.5 2.5h.5",
+            };
+            pen.line(link, acc);
+            pen.handle(10.0, 6.5, 1.8);
+            pen.handle(14.0, 17.5, 1.8);
         }
         Tool::AnchorEditing => {
-            // Box with its anchor points on the edges, one being dragged.
-            ic.rect_s(3.0, 3.0, 12.0, 12.0, 0.0, s);
-            ic.node_hollow(7.5, 3.0);
-            ic.node_hollow(3.0, 7.5);
-            ic.node_hollow(7.5, 12.0);
-            ic.node(12.0, 7.5);
-            ic.line(12.0, 7.5, 15.0, 7.5, thin);
-            ic.line(13.5, 6.0, 13.5, 9.0, thin);
+            // A box with its anchors on the edges, the right one live
+            // under the pointer.
+            pen.body(&rrect(4.0, 4.0, 14.0, 14.0, 1.5));
+            pen.node(11.0, 4.0, false);
+            pen.node(4.0, 11.0, false);
+            pen.node(11.0, 18.0, false);
+            pen.node(18.0, 11.0, true);
+            pen.pointer(18.6, 11.8, 0.58, false);
         }
 
         // Effects group.
         Tool::DropShadow => {
-            // A square casting a shadow down and to the right.
-            let shade = if color == Tokens::icon() {
-                Color32::from_rgb(0x55, 0x55, 0x55)
-            } else {
-                color
-            };
-            ic.rect_f(4.0, 4.0, 14.5, 14.5, shade);
-            ic.rect_f(1.5, 1.5, 12.0, 12.0, Color32::WHITE);
-            ic.rect_s(1.5, 1.5, 12.0, 12.0, 0.0, s);
+            // The shadow as accent hatching behind an opaque box.
+            // (The hatching, cut to the shadow's box 7 to 20.)
+            pen.thin("M7 9L9 7M7 15L15 7M8 20L20 8M14 20L20 14", acc);
+            pen.solid(&rrect(3.0, 3.0, 12.5, 12.5, 2.0));
         }
         Tool::Contour => {
-            ic.rect_s(2.0, 2.0, 14.0, 14.0, 0.0, thin);
-            ic.rect_s(4.5, 4.5, 11.5, 11.5, 0.0, thin);
-            ic.rect_f(6.75, 6.75, 9.25, 9.25, color);
+            // A triangle with two offset outlines fading outward.
+            let base = [pt(12.0, 6.0), pt(19.0, 18.0), pt(5.0, 18.0)];
+            let (cx, cy) = (12.0, 14.0);
+            for (sc, op) in [(1.55, 0.35), (1.28, 0.6)] {
+                let pts: Vec<Pos2> = base
+                    .iter()
+                    .map(|q| pt(cx + (q.x - cx) * sc, cy + (q.y - cy) * sc))
+                    .collect();
+                pen.stroke_pts(&pts, true, LINE, b(op));
+            }
+            pen.fill_pts(&base, pen.wash(), false);
+            pen.stroke_pts(&base, true, LINE, ink);
         }
         Tool::Blend => {
-            // Square at the left morphing into a circle at the right via a faint midstep.
-            ic.rect_s(1.5, 5.0, 6.5, 11.0, 0.0, s);
-            ic.rect_s(6.0, 5.5, 10.5, 10.5, 1.3, faint_stroke);
-            ic.circle_s(12.0, 8.0, 2.6, s);
+            // A square morphs into an accent circle along a diagonal.
+            pen.body(&rrect(3.0, 14.0, 7.0, 7.0, 0.5));
+            pen.rect(7.8, 9.5, 6.5, 6.5, 1.6, Color32::TRANSPARENT, LINE, b(0.45));
+            pen.rect(12.5, 5.0, 6.0, 6.0, 2.4, Color32::TRANSPARENT, LINE, b(0.7));
+            pen.circle(18.5, 5.5, 2.8, acc, 0.0, acc);
         }
         Tool::Distort => {
-            // Square with its four sides pushed inward into a pinched shape.
-            let mut pts = Vec::new();
-            let corners = [(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5)];
-            for i in 0..4 {
-                let (ax, ay) = corners[i];
-                let (bx, by) = corners[(i + 1) % 4];
-                let horizontal = ay == by;
-                for k in 0..6 {
-                    let t = k as f32 / 6.0;
-                    let (x, y) = (ax + (bx - ax) * t, ay + (by - ay) * t);
-                    let pinch = (PI * t).sin() * 2.2;
-                    if horizontal {
-                        pts.push((x, y + (8.0 - y).signum() * pinch));
-                    } else {
-                        pts.push((x + (8.0 - x).signum() * pinch, y));
-                    }
-                }
-            }
-            ic.closed(&pts, s);
+            // A square with bowed sides, the corner node pulled.
+            pen.body("M4 4c5 3 11 3 16 0c-3 5-3 11 0 16c-5-3-11-3-16 0c3-5 3-11 0-16z");
+            pen.dashed("M20 4l-5 5", THIN, acc, 1.5, 1.5);
+            pen.node(20.0, 4.0, true);
         }
         Tool::Envelope => {
-            // Square outline with one corner pulled by a node, others still square.
-            ic.closed(
-                &[
-                    (3.0, 3.0),
-                    (12.0, 3.0),
-                    (14.5, 10.0),
-                    (12.0, 13.0),
-                    (3.0, 13.0),
-                ],
-                s,
-            );
-            ic.dashed(12.0, 3.0, 12.0, 13.0, 1.0, faint_stroke);
-            ic.node(3.0, 3.0);
-            ic.node(12.0, 3.0);
-            ic.node(3.0, 13.0);
-            ic.node(12.0, 13.0);
-            ic.node(14.5, 10.0);
+            // A wavy box with four live corner nodes.
+            pen.body("M4 5c3 2 5 2 8 0s5-2 8 0v14c-3-2-5-2-8 0s-5 2-8 0z");
+            for (x, y) in [(4.0, 5.0), (20.0, 5.0), (4.0, 19.0), (20.0, 19.0)] {
+                pen.node(x, y, true);
+            }
         }
         Tool::Extrude => {
-            // Isometric cube.
-            ic.rect_s(2.5, 5.5, 10.5, 13.5, 0.0, s);
-            ic.open(
-                &[
-                    (2.5, 5.5),
-                    (5.5, 2.5),
-                    (13.5, 2.5),
-                    (13.5, 10.5),
-                    (10.5, 13.5),
-                ],
-                s,
-            );
-            ic.line(10.5, 5.5, 13.5, 2.5, s);
+            // The front face opaque in ink, the depth faces in the accent.
+            pen.fill("M3 9l6-6h12v12l-6 6z", b(0.3), false);
+            pen.line("M3 9l6-6h12v12l-6 6z", acc);
+            pen.line("M15 9l6-6", acc);
+            pen.solid(&rrect(3.0, 9.0, 12.0, 12.0, 1.0));
         }
         Tool::BlockShadow => {
-            // Square with a solid block extruded behind it.
-            ic.fill(
-                &[(10.5, 3.5), (14.0, 7.0), (14.0, 14.5), (10.5, 11.0)],
-                faint,
-            );
-            ic.fill(
-                &[(3.0, 11.0), (10.5, 11.0), (14.0, 14.5), (6.5, 14.5)],
-                faint,
-            );
-            ic.rect_f(3.0, 3.5, 10.5, 11.0, color);
+            // A circle with a solid accent block cast behind it.
+            pen.stroke("M9.5 9.5L15 15", 12.0, acc);
+            pen.circle(9.5, 9.5, 6.0, bg, LINE, ink);
         }
 
         Tool::Transparency => {
-            // A checkerboard.
-            let n = 6;
-            let cell = 13.0 / n as f32;
-            for i in 0..n {
-                for j in 0..n {
-                    if (i + j) % 2 == 0 {
-                        let (x, y) = (1.5 + i as f32 * cell, 1.5 + j as f32 * cell);
-                        ic.rect_f(x, y, x + cell, y + cell, color);
+            // Dither dots fading across a circle, the node to handle
+            // gradient bar.
+            for (i, x) in (4..=19).step_by(3).enumerate() {
+                let rad = (1.5 - i as f32 * 0.22).max(0.25);
+                for y in (4..=19).step_by(3) {
+                    let yy = y as f32 + if i % 2 == 1 { 1.5 } else { 0.0 };
+                    let (dx, dy) = (x as f32 - 12.0, yy - 12.0);
+                    if (dx * dx + dy * dy).sqrt() + rad <= 8.5 {
+                        pen.circle(x as f32, yy, rad, acc, 0.0, acc);
                     }
                 }
             }
-            ic.rect_s(1.5, 1.5, 14.5, 14.5, 0.0, thin);
+            pen.circle(12.0, 12.0, 8.5, Color32::TRANSPARENT, LINE, ink);
+            pen.thin("M5.5 18.5L18.5 5.5", acc);
+            pen.node(5.5, 18.5, true);
+            pen.handle(18.5, 5.5, 1.8);
         }
 
-        // Eyedropper group.
-        Tool::ColorEyedropper => {
-            ic.dropper();
-            // The tip holds the picked colour.
-            ic.painter.line_segment(
-                [ic.at(3.0, 13.0), ic.at(6.5, 9.5)],
-                Stroke::new(2.4 * k, accent),
-            );
-        }
-        Tool::AttributesEyedropper => {
-            ic.dropper();
-            ic.rect_s(10.0, 10.0, 14.5, 14.5, 0.0, s);
-            ic.line(10.0, 12.25, 14.5, 12.25, thin);
+        // Eyedropper group: the diagonal pipette with the drop drawn
+        // into its tip.
+        Tool::ColorEyedropper | Tool::AttributesEyedropper => {
+            if tool == Tool::ColorEyedropper {
+                // The tip on a swatch.
+                pen.rect(2.0, 15.5, 6.5, 6.5, 1.5, acc, 0.0, acc);
+            }
+            let t = pen.rotated(45.0, 12.0, 12.0);
+            t.body(&rrect(9.5, 2.5, 5.0, 5.5, 2.2));
+            t.line("M10 8.5h4", ink);
+            t.solid("M10.6 9v6.5L12 19.5l1.4-4V9z");
+            t.fill("M11.4 14v1.4l.6 2.2.6-2.2V14z", acc, false);
+            if tool == Tool::AttributesEyedropper {
+                // A property card.
+                pen.rect(13.5, 13.5, 8.0, 8.0, 1.6, acc, 0.0, acc);
+                pen.stroke("M15.5 16h4.2M15.5 18h2.8M15.5 20h3.6", 1.2, bg);
+            }
         }
 
         // Fill group.
         Tool::InteractiveFill => {
-            ic.bucket();
-            // Paint in the bucket and a drop of it at the corner.
-            ic.fill(&[(4.2, 8.2), (11.8, 8.2), (8.0, 12.0)], paint);
-            ic.fill(&[(15.0, 11.0), (15.0, 15.0), (11.0, 15.0)], paint);
+            // A pail tilted over a box filling up, the node on the box.
+            pen.body(&rrect(2.5, 13.0, 9.5, 8.5, 2.0));
+            pen.fill(
+                "M3 17h8.5v2.5a1.5 1.5 0 0 1-1.5 1.5H4.5A1.5 1.5 0 0 1 3 19.5z",
+                acc,
+                false,
+            );
+            let t = pen.rotated(-35.0, 15.5, 9.0);
+            t.body("M11.5 5.5h8l-1 7.5h-6z");
+            t.thin("M12 5.5a3.5 3.5 0 0 1 7 0", ink);
+            pen.stroke("M10 8.5c-1.5 1-3 2.5-4 4.5", 3.0, acc);
+            pen.node(12.0, 13.0, true);
         }
         Tool::AreaFill => {
-            ic.bucket();
-            ic.sparkle(13.0, 3.0, 2.6);
+            // Two rings, the enclosed lens filled.
+            pen.fill("M12 6.4A7 7 0 0 0 12 17.6A7 7 0 0 0 12 6.4z", acc, true);
+            pen.circle(8.5, 12.0, 7.0, Color32::TRANSPARENT, LINE, ink);
+            pen.circle(15.5, 12.0, 7.0, Color32::TRANSPARENT, LINE, ink);
         }
         Tool::MeshFill => {
-            ic.rect_s(2.5, 2.5, 13.5, 13.5, 0.0, s);
-            let hor: Vec<(f32, f32)> = (0..=10)
-                .map(|i| {
-                    let t = i as f32 / 10.0;
-                    (2.5 + 11.0 * t, 8.0 + 1.8 * (t * PI).sin())
-                })
-                .collect();
-            let ver: Vec<(f32, f32)> = (0..=10)
-                .map(|i| {
-                    let t = i as f32 / 10.0;
-                    (8.0 - 1.8 * (t * PI).sin(), 2.5 + 11.0 * t)
-                })
-                .collect();
-            ic.open(&hor, thin);
-            ic.open(&ver, thin);
-            ic.node(hor[5].0, ver[5].1);
-            ic.node_hollow(2.5, 8.0);
-            ic.node_hollow(13.5, 8.0);
-            ic.node_hollow(8.0, 2.5);
-            ic.node_hollow(8.0, 13.5);
+            // A curved mesh with four small handles and the live node.
+            pen.body(&rrect(3.0, 3.0, 18.0, 18.0, 2.5));
+            pen.thin("M3 11c6 4 12-4 18 0M11 3c4 6-4 12 0 18", ink);
+            pen.thin("M7 8.5l9 7M16 8.5l-9 7", acc);
+            for (x, y) in [(7.0, 8.5), (16.0, 8.5), (7.0, 15.5), (16.0, 15.5)] {
+                pen.handle(x, y, 1.5);
+            }
+            pen.node(11.5, 11.5, true);
         }
 
         // Outline group.
         Tool::OutlinePen => {
-            ic.nib(8.0, 11.5);
-            ic.line(3.0, 14.5, 13.0, 14.5, Stroke::new(1.8, color));
+            // A ring with a thick accent outline segment ending in a node.
+            pen.circle(12.0, 12.0, 8.0, pen.wash(), LINE, ink);
+            let (x0, y0) = polar(12.0, 12.0, 8.0, -20.0);
+            let (x1, y1) = polar(12.0, 12.0, 8.0, -150.0);
+            pen.stroke(
+                &format!("M{x0:.2} {y0:.2}A8 8 0 0 0 {x1:.2} {y1:.2}"),
+                4.0,
+                acc,
+            );
+            pen.node(x0, y0, true);
         }
         Tool::OutlineColor => {
-            ic.rect_s(2.5, 2.5, 11.5, 11.5, 0.0, Stroke::new(1.8, color));
-            ic.rect_f(8.5, 8.5, 14.5, 14.5, Tokens::ACCENT);
-            ic.rect_s(8.5, 8.5, 14.5, 14.5, 0.0, thin);
+            // A ring with a thick ink outline and the colour swatch.
+            pen.circle(10.0, 10.0, 7.5, pen.wash(), 3.0, ink);
+            pen.rect(13.5, 13.5, 8.0, 8.0, 1.6, acc, 0.0, acc);
         }
     }
 }
-
 /// Standard toolbar actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -1469,6 +1116,7 @@ mod tests {
     #[test]
     fn coloured_icons_follow_the_toolbox_groups_and_can_be_off() {
         let plain = Color32::from_rgb(1, 2, 3);
+        crate::theme::set_theme(crate::theme::Theme::Light);
         set_colored(false);
         assert_eq!(tool_color(Tool::Crop, plain), plain);
         set_colored(true);
@@ -1478,6 +1126,112 @@ mod tests {
         );
         assert_ne!(tool_color(Tool::Pick, plain), tool_color(Tool::Crop, plain));
         assert_eq!(crate::tools::GROUPS.len(), 18);
+        // Each group keeps its colour: the Variable Outline button, under
+        // the brush tools, shares theirs; the groups after it keep the
+        // hues they had.
+        assert_eq!(
+            tool_color(Tool::VariableOutline, plain),
+            tool_color(Tool::BrushStrokes, plain)
+        );
+        assert_ne!(
+            tool_color(Tool::VariableOutline, plain),
+            tool_color(Tool::Rectangle, plain)
+        );
+        assert_eq!(
+            tool_color(Tool::Rectangle, plain),
+            tool_color(Tool::Polygon, plain)
+        );
+        assert_ne!(
+            tool_color(Tool::Text, plain),
+            tool_color(Tool::Polygon, plain)
+        );
+        assert_ne!(
+            tool_color(Tool::InteractiveFill, plain),
+            tool_color(Tool::OutlinePen, plain)
+        );
         set_colored(false);
+    }
+
+    /// The shapes `draw` adds for `tool` in a 22 px box.
+    fn shapes_of(tool: Tool, color: Color32) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(40.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let r = Rect::from_min_size(Pos2::new(4.0, 4.0), Vec2::splat(22.0));
+            draw(ui.painter(), r, tool, color);
+        });
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    /// The colours a shape is drawn in.
+    fn colors(s: &egui::Shape, out: &mut Vec<Color32>) {
+        match s {
+            egui::Shape::Path(p) => {
+                out.push(p.fill);
+                if let epaint::ColorMode::Solid(c) = p.stroke.color {
+                    out.push(c);
+                }
+            }
+            egui::Shape::Circle(c) => {
+                out.push(c.fill);
+                out.push(c.stroke.color);
+            }
+            egui::Shape::Rect(r) => {
+                out.push(r.fill);
+                out.push(r.stroke.color);
+            }
+            egui::Shape::LineSegment { stroke, .. } => out.push(stroke.color),
+            egui::Shape::Mesh(m) => out.extend(m.vertices.iter().map(|v| v.color)),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| colors(s, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn every_tool_icon_draws_in_its_box() {
+        crate::theme::set_theme(crate::theme::Theme::Light);
+        for tool in Tool::ALL {
+            let shapes = shapes_of(tool, Tokens::icon());
+            assert!(shapes.len() > 1, "{tool:?} draws nothing");
+            let bounds = shapes
+                .iter()
+                .map(|s| s.visual_bounding_rect())
+                .filter(|b| b.is_positive())
+                .reduce(|a, b| a.union(b))
+                .expect("something visible");
+            // Inside the box, a stroke's width of slack.
+            let box_ = Rect::from_min_size(Pos2::new(4.0, 4.0), Vec2::splat(22.0)).expand(2.5);
+            assert!(box_.contains_rect(bounds), "{tool:?} spills: {bounds:?}");
+            assert!(
+                bounds.width() > 8.0 && bounds.height() > 8.0,
+                "{tool:?} too small: {bounds:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_accent_marks_the_live_point_and_dimmed_icons_stay_plain() {
+        crate::theme::set_theme(crate::theme::Theme::Light);
+        let mut cs = Vec::new();
+        shapes_of(Tool::Rectangle, Tokens::icon())
+            .iter()
+            .for_each(|s| colors(s, &mut cs));
+        assert!(cs.contains(&accent()), "no accent in the Rectangle icon");
+        assert!(cs.contains(&Tokens::icon()), "no ink in the Rectangle icon");
+        let mut cs = Vec::new();
+        shapes_of(Tool::Rectangle, Tokens::icon_off())
+            .iter()
+            .for_each(|s| colors(s, &mut cs));
+        assert!(!cs.contains(&accent()), "a dimmed icon carries the accent");
+        // The accent follows the theme: lighter on dark panels.
+        let light = accent();
+        crate::theme::set_theme(crate::theme::Theme::Dark);
+        assert_ne!(accent(), light);
+        assert!(accent().r() > light.r());
+        crate::theme::set_theme(crate::theme::Theme::Light);
     }
 }

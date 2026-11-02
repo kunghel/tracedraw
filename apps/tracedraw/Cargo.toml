@@ -38,7 +38,7 @@ boa_engine = "0.20"
 sha2 = "0.10"
 base64 = "0.22"
 qrcode = { version = "0.14", default-features = false }
-rqrr = "0.9"
+rqrr = "0.11"
 csv = "1"
 i_overlay = "9"
 eframe.workspace = true
@@ -47,6 +47,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 log.workspace = true
 env_logger.workspace = true
 flate2 = "1"
+# File > Package as one zip file where the system's picker says (Android, #1401).
+zip.workspace = true
 web-time = "1"
 # Local dates and times (Time Tracker), with the system time zone.
 jiff = "0.2"
@@ -74,6 +76,12 @@ webp = { version = "0.3", default-features = false }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
+# The X11 clipboard's picture read with its list of types and time for a
+# picture sent in parts (#1488, x11_clipboard.rs): the X11 library the
+# clipboard library already uses.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
+x11rb = "0.13"
+
 # The Android app (docs/behavior/android.md): the system loads the library
 # into the app's activity, eframe drives egui through winit's Android
 # backend and draws with wgpu; the document picker, content URIs and the
@@ -88,7 +96,8 @@ jni = "=0.22.4"
 # Where the pointer is while files are dragged over the window: the
 # system drag sends no pointer moves (#1142).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# The spell checker of Windows (COM, #1405).
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Com"] }
 # The window's message hook: characters input methods send that the
 # windowing layer drops (#1151). The same winit eframe uses.
 winit = { version = "0.30", default-features = false }
@@ -98,13 +107,18 @@ winit = { version = "0.30", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
+# Files opened from Finder arrive as an event of the windowing layer
+# (#646). The same winit eframe uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30", default-features = false }
+
 # The browser build: WebGL canvas, file pickers and downloads through the
 # DOM, randomness and time from JavaScript.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "Storage", "Event", "EventTarget", "KeyboardEvent", "MouseEvent", "Response", "Request", "RequestInit", "RequestMode", "Headers"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "Storage", "Event", "EventTarget", "KeyboardEvent", "MouseEvent", "Response", "Request", "RequestInit", "RequestMode", "Headers", "BeforeUnloadEvent", "PageTransitionEvent", "IdbFactory", "IdbOpenDbRequest", "IdbRequest", "IdbDatabase", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "Navigator", "Clipboard", "ClipboardItem", "ClipboardEvent", "DataTransfer", "FileList", "File", "MediaQueryList", "CssStyleDeclaration"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 boa_engine = { version = "0.20", features = ["js"] }
@@ -112,13 +126,13 @@ jiff = { version = "0.2", features = ["js"] }
 
 # Reads back the PDFs the tests publish; ICC profiles built for tests.
 [dev-dependencies]
-lopdf = { version = "0.36", default-features = false }
+lopdf = { version = "0.46", default-features = false }
 tracedraw-core = { workspace = true, features = ["test-profiles"] }
 
 [package.metadata.deb]
 name = "tracedraw"
-maintainer = "TraceDraw contributors <noreply@tracedraw.dev>"
-copyright = "2026, Ighor Toth and the TraceDraw contributors"
+maintainer = "TraceDraw contributors <contact@tracedraw.org>"
+copyright = "2026, TraceDraw members and contributors"
 license-file = ["../../LICENSE-MIT", "0"]
 extended-description = "Open-source vector illustration editor with a classic desktop workflow and a .cdr reader."
 section = "graphics"

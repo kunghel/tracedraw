@@ -1,6 +1,6 @@
-# Print Merge
+# Data Merge
 
-File > Print Merge > Create/Load Print Merge opens the dialog; Edit Print
+File > Data Merge > Create/Load Data Merge opens the dialog; Edit Data
 Merge reopens the records kept with the session, Perform Merge runs them
 again. `print_merge.rs` holds the model and the merge.
 
@@ -84,11 +84,10 @@ Record); Save Data Source, Finish and Cancel.
   copy never changes the template.
 - The placeholder buttons insert `<Field>` into the text being edited.
 
-## The Print Merge docker
+## The Data Merge docker
 
-Finish keeps the records and opens the Print Merge docker (also Window >
-Panels > Print Merge), as in the reference program; it no longer merges
-at once (#437). From top to bottom:
+Finish keeps the records and opens the Data Merge docker (also Window >
+Panels > Data Merge); it no longer merges at once (#437). From top to bottom:
 
 - Create (greyed while records are loaded) opens the dialog on new
   records, Edit on the ones kept.
@@ -165,7 +164,7 @@ at once (#437). From top to bottom:
   With it on, Create Merged Document and Print Merged Document fill the
   open drawing's own pages instead of making a new drawing: record 1 on
   the first page, record 2 on the second, and so on, as one undo step
-  "Print Merge"; pages past the last record keep their fields, records
+  "Data Merge"; pages past the last record keep their fields, records
   past the last page are left out, and a picture frame whose cell is
   empty or whose picture does not load keeps the picture it holds (#618,
   `print_merge_docker::tests::on_every_page_merges_onto_the_drawings_own_pages`).
@@ -191,7 +190,7 @@ they keep its name.
 
 ## Merge
 
-File > Print Merge > Perform Merge copies the current page once per
+File > Data Merge > Perform Merge copies the current page once per
 record, right after it, in the records' order, names the copies
 "<page> 1", "<page> 2", ... and fills them. It is two undo steps (the
 copies, then the fills).

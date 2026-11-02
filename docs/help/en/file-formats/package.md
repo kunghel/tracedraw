@@ -48,7 +48,7 @@ then on you work on the package's drawing.
 | The drawing | `<name>.tdraw` | The drawing, with the fonts it already carries. |
 | Linked pictures | `Pictures` folder | Every picture the drawing links to, in groups, clip frames and symbols too, each file once. Two files of the same name are kept apart as `logo.png` and `logo-2.png`. |
 | Fonts | `Fonts` folder | One font file for each face the text uses, but only fonts whose licence allows them to go with a document. |
-| A PDF (optional) | `<name>.pdf` | Written with the choices you made last in Publish to PDF, with the drawing's bleed. |
+| A PDF (optional) | `<name>.pdf` | Written with the choices you made last in Export as PDF, with the drawing's bleed. |
 | A report | `<name> report.txt` | What went in, and what could not: pictures not found, fonts left out because of their licence, and fonts that are not installed with the font that draws their text. |
 
 The links of the drawing in the package point to the copies as paths relative

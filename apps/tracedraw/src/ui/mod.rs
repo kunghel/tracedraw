@@ -60,6 +60,7 @@ pub mod github_dialogs;
 pub mod glyphs_docker;
 pub mod hint_pics;
 pub mod hints;
+pub mod icon_paint;
 pub mod icons;
 pub mod lab_dialog;
 pub mod layout_options;
@@ -107,6 +108,7 @@ pub mod tips;
 pub mod toolbar;
 pub mod toolbox;
 pub mod transform_docker;
+pub mod transparency_docker;
 pub mod vector_mosaic_docker;
 pub mod welcome;
 pub mod window_bars;
@@ -140,7 +142,9 @@ pub(crate) fn apply_ui_scale(ctx: &egui::Context, size: f32) {
 pub(crate) fn apply_theme(ctx: &egui::Context, id: &str) {
     let wanted = crate::theme::Theme::from_id(id);
     let pinned = ctx.options(|o| o.theme_preference) == egui::ThemePreference::Light;
-    if wanted != crate::theme::theme() || !pinned {
+    // The system's high contrast colours changed (#1412).
+    let recolored = wanted == crate::theme::Theme::HighContrast && crate::theme::contrast_changed();
+    if wanted != crate::theme::theme() || !pinned || recolored {
         crate::theme::set_theme(wanted);
         ctx.set_theme(egui::ThemePreference::Light);
         ctx.set_visuals_of(egui::Theme::Dark, crate::theme::visuals());
@@ -247,6 +251,9 @@ fn set_window_title(ctx: &egui::Context, title: String) {
 
 pub fn root(app: &mut App, ui: &mut Ui) {
     root_frame(app, ui);
+    // The copies of the last Duplicate deselected: the next one takes the
+    // offset again (#1494).
+    app.forget_duplicate_unless_selected();
     // A fill or an outline dragged in a colour picker ends with the
     // button (after this frame's last change).
     if !ui.ctx().input(|i| i.pointer.any_down()) {
@@ -261,6 +268,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // Dockers set their canvas previews again each frame they are shown;
     // the document palette says where it is when it is drawn.
     app.docker_preview.clear();
+    app.step_preview_shown = false;
     app.doc_palette_rect = None;
     app.docker_preview_point = None;
     let ctx = ui.ctx().clone();
@@ -300,6 +308,9 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     };
     set_window_title(&ctx, format!("TraceDraw - {doc_name}"));
 
+    // Leaving the page with unsaved drawings: the browser asks first.
+    #[cfg(target_arch = "wasm32")]
+    crate::web::backups::set_unsaved(app.has_unsaved());
     // Closing the window with unsaved drawings asks about each first.
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -323,6 +334,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // are dragged over it.
     app.take_dropped_files(&ctx);
     app.draw_drop_hint(&ctx);
+    app.drop_question_window(&ctx);
     // Options > Display > Show tooltips.
     let delay = if app.settings.show_tooltips {
         0.5
@@ -333,8 +345,14 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = delay);
     }
     // Session recovery: this session's marker, and what one that ended
-    // without closing left.
+    // without closing left. An idle window still checks in, with a frame
+    // a minute, so another window never takes it for gone.
     app.session_tick(crate::recovery::now_secs());
+    if app.session.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_secs(
+            crate::recovery::HEARTBEAT_SECS,
+        ));
+    }
     if app.debug_tick() {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
@@ -413,18 +431,21 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
 
     // The default palette at the window's edge lies outermost (a row
     // inside the toolbars, a column outside the toolbox and the dockers);
-    // beside the drawing it comes after the dockers, between them and the
-    // drawing (at the bottom by default). The document palette is a row
-    // under the drawing window (over it when the palette is docked at
-    // the top).
+    // between a side's two docker columns it comes after the column at
+    // the edge; beside the drawing it comes after the dockers, between
+    // them and the drawing (at the bottom by default). The document
+    // palette is a row under the drawing window (over it when the
+    // palette is docked at the top).
     let palette_frame = Frame::new().fill(Tokens::panel());
-    let (palette_dock, palette_beside) = bars_layout.palette_place();
+    let (palette_dock, palette_spot) = bars_layout.palette_place();
+    let palette_beside = palette_spot == bars::PaletteSpot::Beside;
+    let palette_edge = palette_spot == bars::PaletteSpot::Edge;
     let show_palette = app.settings.palette.show_palette;
     let show_doc_palette = show_palette && app.settings.palette.show_document;
     if show_palette && !palette_beside && palette_dock.horizontal() {
         palette_rows(app, ui, palette_dock == Dock::Top, palette_frame);
     }
-    if !palette_beside && matches!(palette_dock, Dock::Left | Dock::Right) {
+    if palette_edge && matches!(palette_dock, Dock::Left | Dock::Right) {
         let panel = |id: &'static str| {
             if palette_dock == Dock::Left {
                 Panel::left(id)
@@ -482,45 +503,29 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // The docker columns: the default one at the right (right-to-left
     // languages mirror the workspace: it sits on the left), the other at
     // the other side, each a tab strip and, when open, the docker in
-    // front. The other column exists only while it holds a docker.
+    // front. The other column exists only while it holds a docker. Each
+    // side can hold a second column, between its column at the edge and
+    // the drawing, and the palette can lie between the two. Where the
+    // columns are is kept for the frame (`dockers::DOCKER_COLUMNS`), for
+    // the drop bands of a dragged docker or palette.
     app.reconcile_dockers();
-    let rtl = crate::i18n::is_rtl();
     use crate::app::DockerPlace;
+    let mut columns: Vec<(DockerPlace, egui::Rect)> = Vec::new();
     for place in [DockerPlace::Right, DockerPlace::Left] {
-        if place == DockerPlace::Left && app.left_dockers.is_empty() {
-            continue;
+        let at_left = dockers::strip_at_left(place);
+        if place == DockerPlace::Right || !app.left_dockers.is_empty() {
+            columns.push((place, docker_column(app, ui, place, at_left)));
         }
-        let at_left = (place == DockerPlace::Left) != rtl;
-        let id = if place == DockerPlace::Left {
-            ("docker_tabs_left", "dockers_left")
-        } else {
-            ("docker_tabs", "dockers")
-        };
-        let docker_tabs = if at_left {
-            Panel::left(id.0)
-        } else {
-            Panel::right(id.0)
-        };
-        docker_tabs
-            .exact_size(dockers::STRIP_W)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(Frame::new().fill(crate::theme::Tokens::tab_strip()))
-            .show(ui, |ui| dockers::tab_strip(app, ui, place));
-        let (_, _, shown) = app.docker_column(place);
-        if shown {
-            let dockers_panel = if at_left {
-                Panel::left(id.1)
-            } else {
-                Panel::right(id.1)
-            };
-            dockers_panel
-                .default_size(340.0)
-                .resizable(true)
-                .frame(Frame::new().fill(crate::theme::Tokens::field()))
-                .show(ui, |ui| dockers::dockers(app, ui, place));
+        let side = if at_left { Dock::Left } else { Dock::Right };
+        if show_palette && palette_spot == bars::PaletteSpot::Between && palette_dock == side {
+            palette_columns(app, ui, at_left, palette_frame);
+        }
+        let inner = place.inner();
+        if !app.docker_column(inner).0.is_empty() {
+            columns.push((inner, docker_column(app, ui, inner, at_left)));
         }
     }
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(dockers::DOCKER_COLUMNS), columns));
 
     if show_palette && palette_beside && matches!(palette_dock, Dock::Left | Dock::Right) {
         palette_columns(app, ui, palette_dock == Dock::Left, palette_frame);
@@ -641,6 +646,51 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if app.engine.revision() != before {
         ctx.request_repaint();
     }
+}
+
+/// The docker column at `place` (its side's edge at the left when
+/// `at_left`): the tab strip and, while open, the docker in front, a
+/// panel the user can widen or narrow. Returns where it lies.
+fn docker_column(
+    app: &mut App,
+    ui: &mut Ui,
+    place: crate::app::DockerPlace,
+    at_left: bool,
+) -> egui::Rect {
+    use crate::app::DockerPlace;
+    let id = match place {
+        DockerPlace::Left => ("docker_tabs_left", "dockers_left"),
+        DockerPlace::RightInner => ("docker_tabs_inner", "dockers_inner"),
+        DockerPlace::LeftInner => ("docker_tabs_left_inner", "dockers_left_inner"),
+        _ => ("docker_tabs", "dockers"),
+    };
+    let panel = |id: &'static str| {
+        if at_left {
+            Panel::left(id)
+        } else {
+            Panel::right(id)
+        }
+    };
+    let mut rect = panel(id.0)
+        .exact_size(dockers::STRIP_W)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(crate::theme::Tokens::tab_strip()))
+        .show(ui, |ui| dockers::tab_strip(app, ui, place))
+        .response
+        .rect;
+    let (_, _, shown) = app.docker_column(place);
+    if shown {
+        let r = panel(id.1)
+            .default_size(340.0)
+            .resizable(true)
+            .frame(Frame::new().fill(crate::theme::Tokens::field()))
+            .show(ui, |ui| dockers::dockers(app, ui, place))
+            .response
+            .rect;
+        rect = rect.union(r);
+    }
+    rect
 }
 
 /// The default palette and each further palette shown as rows, at the top
@@ -791,6 +841,28 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
         };
         if let Some(h) = response.hover_pos() {
             let zoom_factor = 1.15f32.powf(notches);
+            // Options > Tools > Zoom/Pan > Center mouse when zooming with
+            // the mouse wheel: a notch brings the point under the pointer
+            // to the middle of the view, and the pointer with it, and the
+            // zoom (its whole glide) goes about the middle.
+            let wheel_zooms = if app.settings.wheel_zooms {
+                !mods.alt && !mods.ctrl
+            } else {
+                mods.ctrl
+            };
+            let anchor = if app.settings.wheel_zoom_centers && zoom_delta == 1.0 && wheel_zooms {
+                let center = canvas_rect.center();
+                if notches != 0.0 && h != center {
+                    app.view.pan(center - h);
+                    if !crate::files::WEB {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::CursorPosition(center));
+                    }
+                }
+                center
+            } else {
+                h
+            };
             if zoom_delta != 1.0 {
                 app.view.zoom_at(h, zoom_delta);
             } else if app.settings.wheel_zooms {
@@ -810,10 +882,10 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                         ui.ctx().content_rect().height(),
                         cfg!(target_arch = "wasm32"),
                     );
-                    app.view.zoom_at(h, 1.15f32.powf(scroll.y / per_notch));
+                    app.view.zoom_at(anchor, 1.15f32.powf(scroll.y / per_notch));
                 }
             } else if mods.ctrl && notches != 0.0 {
-                app.view.zoom_at(h, zoom_factor);
+                app.view.zoom_at(anchor, zoom_factor);
             } else if scroll != egui::Vec2::ZERO {
                 app.view.pan(if mods.shift {
                     egui::vec2(scroll.y, scroll.x)
@@ -872,6 +944,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     extrude_bar::draw_handles(app, &painter);
     crop_bar::draw_area(app, &painter, canvas_rect);
     canvas::draw_docker_preview(app, &painter);
+    crate::step_repeat::draw_preview(app, &painter);
     canvas::draw_live_guides(app, &painter, canvas_rect);
     canvas::draw_snap_mark(app, &painter);
     app.draw_right_drag(&painter);

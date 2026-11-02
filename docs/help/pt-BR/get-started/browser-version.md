@@ -2,7 +2,7 @@
 
 > *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
 
-Você pode [usar o TraceDraw no navegador](https://igtoth.github.io/tracedraw/)
+Você pode [usar o TraceDraw no navegador](https://tracedraw.github.io/tracedraw/)
 sem instalar nada. É o mesmo programa da versão para computador, compilado para
 o navegador, então os menus, as ferramentas e os arquivos são os mesmos.
 
@@ -13,7 +13,9 @@ o navegador, então os menus, as ferramentas e os arquivos são os mesmos.
 Cada vez que a página abre, uma mensagem explica que a versão para navegador é
 o mesmo programa da versão para computador e o que muda. [[dialog.ok]] (ou
 <kbd>Enter</kbd>) a fecha; um segundo botão abre os downloads da versão para
-computador.
+computador. No Windows, um terceiro botão abre o TraceDraw na Microsoft Store,
+e a mensagem avisa que a versão da Store pode estar uma ou mais versões atrás
+do download mais recente, porque a Store certifica cada versão antes.
 
 ## O que muda em relação ao computador {#differences}
 
@@ -39,10 +41,16 @@ computador.
   No navegador, qualquer comando de macro mostra uma mensagem avisando, com um
   botão para baixar o aplicativo.
 - **Atualizações.** A versão para navegador é sempre a mais recente; não há
-  nada para instalar. Backup automático e recuperação de sessão são recursos
-  do computador.
+  nada para instalar.
   Instalada como app, ela mantém a versão usada por último e pega uma nova na
   próxima vez que abrir depois de todas as suas janelas terem sido fechadas;
   veja [Tablets e o app para Android](tablets-and-android.md).
+- **Desenhos não salvos.** Fechar ou recarregar a aba, ou sair da página,
+  com alterações não salvas pergunta antes, com a pergunta do próprio
+  navegador. Os backups automáticos ficam no armazenamento do navegador para
+  o site, e a próxima visita oferece o que uma aba fechada, recarregada ou
+  travada deixou, como a versão para computador faz depois de uma falha (veja
+  [Backup automático e recuperação](open-and-save.md#recovery)). Limpar os
+  dados do site os remove.
 - **Pressão da caneta.** Uma caneta funciona como mouse, mas o navegador não
   repassa a pressão, então os traços têm largura uniforme.

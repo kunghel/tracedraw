@@ -28,6 +28,7 @@ not change keep their formatting.
 | Keys | What they do |
 |---|---|
 | Typing, <kbd>Ctrl+V</kbd> | insert at the caret, replacing the selection |
+| <kbd>Ctrl+C</kbd>, <kbd>Ctrl+X</kbd>, <kbd>Ctrl+V</kbd> | copy, cut and paste the selected characters; the [[menu.edit]] menu, the toolbar and the right-click menu do the same while you edit. Pasted here, they keep their font, size and colors; other programs get their plain text |
 | <kbd>Backspace</kbd>, <kbd>Delete</kbd> | delete the selection, else the character before or after |
 | <kbd>Enter</kbd>, <kbd>Shift+Enter</kbd> | new paragraph, new line |
 | Arrow keys, with <kbd>Ctrl</kbd> | move by a character or a word; <kbd>Shift</kbd> selects |
@@ -36,7 +37,7 @@ not change keep their formatting.
 | <kbd>Ctrl+B</kbd>, <kbd>Ctrl+I</kbd>, <kbd>Ctrl+U</kbd> | bold, italic, underline |
 | <kbd>Ctrl+L</kbd>, <kbd>Ctrl+E</kbd>, <kbd>Ctrl+R</kbd> | align left, center, right |
 | <kbd>Ctrl+J</kbd>, <kbd>Ctrl+H</kbd>, <kbd>Ctrl+N</kbd> | full justify, force justify, no alignment |
-| <kbd>Shift+F3</kbd> | change case (see [Writing tools](writing-tools.md#change-case)) |
+| <kbd>Shift+F3</kbd> | change case (see [Proofing](writing-tools.md#change-case)) |
 | Double-click | select a word |
 
 A new alignment keeps artistic text in place at the reference point of the X
@@ -51,6 +52,10 @@ fields, and <kbd>Alt</kbd> codes typed on the keypad give their character
 once.
 Letters typed with <kbd>AltGr</kbd> (Polish ą ę ł, German @ € { }) type into
 text and fields, also on Windows.
+On Android the on-screen keyboard types every script its input methods
+compose (Chinese, Japanese, Korean, Tamil). Older fonts that set the letters
+of a script at the places of Latin ones (some Tamil fonts) type as their
+keyboards expect: Autocorrect does not change the letters typed in them.
 
 All your typing in one editing session is one undo step.
 

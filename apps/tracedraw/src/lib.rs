@@ -20,6 +20,8 @@ mod ai_image;
 mod anchors;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(any(target_os = "android", test))]
+mod android_end;
 #[cfg(test)]
 mod android_package;
 mod app;
@@ -52,6 +54,7 @@ mod defaults;
 mod describe;
 #[cfg(test)]
 mod devanagari_join_tests;
+mod dictionary_download;
 mod dimensions;
 mod distort_tool;
 mod doc_stats;
@@ -67,6 +70,7 @@ mod export;
 mod export_assets;
 mod extrude_tool;
 mod eyedropper;
+mod file_presence;
 mod files;
 mod fill_tool;
 mod fit_path;
@@ -149,11 +153,16 @@ mod shelf;
 mod shortcuts;
 mod snap;
 mod snap_points;
+mod soft_keyboard;
 mod spell;
+#[cfg(windows)]
+mod spell_windows;
 #[cfg(not(target_arch = "wasm32"))]
 mod splash;
 #[cfg(not(target_arch = "wasm32"))]
 mod startup_log;
+mod step_repeat;
+mod storage_full;
 mod straighten;
 mod styles;
 mod symbol_paste;
@@ -189,11 +198,17 @@ mod view;
 mod web;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_page;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod x11_clipboard;
 // The pen pressure helper of the patched winit copy, with its tests
 // (vendor/README.md), so that the gate runs them.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/pen_pressure.rs"]
 mod winit_pen_pressure;
+// The queue of files macOS asks to open, of the same copy (#646).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/opened_files.rs"]
+mod winit_opened_files;
 mod workspace_file;
 
 /// The desktop program: the window, with the command line's files and
@@ -251,8 +266,10 @@ pub fn run() -> eframe::Result<()> {
     }
     // The system font list is read while the window and the graphics
     // driver start up, not after them: the editor needs it (the font
-    // lists, the text in drawings) and used to wait for it alone.
-    warm_up_fonts();
+    // lists, the text in drawings). The window never waits for it on its
+    // own thread: the splash screen (or a plain window) is drawn until it
+    // is in (#1388).
+    tracedraw_text::load_in_background();
     // `--no-splash` or TRACEDRAW_NO_SPLASH (automation, the visual
     // checks): straight into a plain window at the default size.
     let plain = args.iter().any(|a| a == "--no-splash")
@@ -265,6 +282,19 @@ pub fn run() -> eframe::Result<()> {
         let _ = inbox.send(rest);
     }
     let wake = primary.as_ref().map(|p| p.wake.clone());
+    // macOS sends the files opened from Finder (double click, Open With,
+    // the Dock icon) as an "open documents" event, at launch and while
+    // TraceDraw runs, never on the command line (#646): they join the
+    // files handed over and open in tabs of this window.
+    #[cfg(target_os = "macos")]
+    let wake = {
+        let wake = wake.unwrap_or_default();
+        let (sink, ctx) = (inbox.clone(), wake.clone());
+        winit::platform::macos::set_open_files_handler(move |files| {
+            instance::deliver_opened(&sink, ctx.get(), files);
+        });
+        Some(wake)
+    };
     let mut settings = settings::Settings::load();
     // `--reset-settings`: every preference back to how TraceDraw comes
     // (the recent drawings and the window's size are kept).
@@ -410,22 +440,6 @@ pub fn run() -> eframe::Result<()> {
     Err(e)
 }
 
-/// Read the system fonts on a worker thread, so that this takes place
-/// while the window opens. Whoever needs the fonts first waits for the
-/// same read (`tracedraw_text::fonts` starts once), so nothing is read
-/// twice and a failed thread costs nothing but the overlap.
-#[cfg(not(target_arch = "wasm32"))]
-fn warm_up_fonts() {
-    if let Err(e) = std::thread::Builder::new()
-        .name("tracedraw-font-scan".into())
-        .spawn(|| {
-            tracedraw_text::fonts();
-        })
-    {
-        log::warn!("font scan thread: {e}");
-    }
-}
-
 /// The browser build starts from `web::start` (the page loads the module,
 /// which runs the program's `main`, which calls this).
 #[cfg(target_arch = "wasm32")]
@@ -467,6 +481,11 @@ struct Shell {
     /// bundled ones until they are in.
     #[cfg(not(target_arch = "wasm32"))]
     fonts: theme::FontLoad,
+    /// Without the splash screen: the editor, with the file it opens,
+    /// waits for the system font list, which it cannot be built without;
+    /// the window is drawn plain meanwhile, never held (#1388).
+    #[cfg(not(target_arch = "wasm32"))]
+    deferred: Option<Option<std::path::PathBuf>>,
 }
 
 /// Where the check of the OpenGL renderer stands (`Shell::check_renderer`).
@@ -483,14 +502,36 @@ enum RendererCheck {
 }
 
 impl Shell {
-    /// The editor at once (the browser build, or no splash screen).
+    /// The editor at once (the browser build, or no splash screen); on
+    /// the desktop as soon as the system font list is in (see
+    /// `deferred`).
     fn new(cc: &eframe::CreationContext<'_>, open: Option<std::path::PathBuf>) -> Self {
+        // The system's text size and contrast, followed from now on (#1412).
+        system_prefs::watch(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
         theme::install_fonts(&cc.egui_ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        let fonts = theme::install_fonts_in_background(&cc.egui_ctx);
+        let wait = !tracedraw_text::fonts_loaded() && tracedraw_text::load_in_background();
+        #[cfg(not(target_arch = "wasm32"))]
+        let fonts = if wait {
+            // The bundled fonts now, the full ones once read.
+            cc.egui_ctx.set_fonts(theme::bundled_font_definitions());
+            cc.egui_ctx.set_visuals(theme::visuals());
+            theme::FontLoad::start()
+        } else {
+            theme::install_fonts_in_background(&cc.egui_ctx)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let (app, deferred) = if wait {
+            log::info!("the editor waits for the system font list");
+            (None, Some(open))
+        } else {
+            (Some(app::App::new(&cc.egui_ctx, open)), None)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let app = Some(app::App::new(&cc.egui_ctx, open));
         Shell {
-            app: Some(app::App::new(&cc.egui_ctx, open)),
+            app,
             #[cfg(not(target_arch = "wasm32"))]
             splash: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -509,6 +550,8 @@ impl Shell {
             check_frames: 0,
             #[cfg(not(target_arch = "wasm32"))]
             fonts,
+            #[cfg(not(target_arch = "wasm32"))]
+            deferred,
         }
     }
 
@@ -526,7 +569,35 @@ impl Shell {
             blind_reads: 0,
             check_frames: 0,
             fonts: theme::FontLoad::default(),
+            deferred: None,
         }
+    }
+
+    /// Without the splash screen: build the editor once the system font
+    /// list (and, for a language that needs one, the system font of its
+    /// script) is in; until then draw the plain window and look again a
+    /// little later. True while the editor is still waited for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_deferred(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(open) = self.deferred.as_mut() else {
+            return false;
+        };
+        let script = theme::needs_system_font(&i18n::language());
+        if !editor_can_start(tracedraw_text::fonts_loaded(), script, &self.fonts) {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+            return true;
+        }
+        let open = open.take();
+        self.deferred = None;
+        if script {
+            ui.ctx().set_fonts(self.fonts.finish());
+        }
+        self.app = Some(app::App::new(ui.ctx(), open));
+        ui.ctx().request_repaint();
+        false
     }
 
     /// The OpenGL renderer is checked once it draws: a frame of the main
@@ -623,6 +694,44 @@ impl Shell {
     }
 }
 
+/// Whether the editor can be built without waiting on the window's
+/// thread: the system font list is in (`fonts_loaded`), and when the
+/// interface language needs a system font for its `script`, the
+/// interface fonts are read too (#1388).
+#[cfg(not(target_arch = "wasm32"))]
+fn editor_can_start(fonts_loaded: bool, script: bool, ui_fonts: &theme::FontLoad) -> bool {
+    fonts_loaded && (!script || ui_fonts.is_finished())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod start_tests {
+    use super::*;
+
+    /// Without the splash screen the editor is built only once the
+    /// system font list is in, and for a language that needs a system
+    /// font once the interface fonts are read too; until then the window
+    /// is drawn plain instead of waiting on its thread (#1388).
+    #[test]
+    fn the_editor_starts_once_the_fonts_are_in() {
+        let done = theme::FontLoad::default();
+        assert!(done.is_finished());
+        assert!(!editor_can_start(false, false, &done));
+        assert!(!editor_can_start(false, true, &done));
+        assert!(editor_can_start(true, false, &done));
+        assert!(editor_can_start(true, true, &done));
+        // Interface fonts still being read hold back only a language that
+        // needs them.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let pending = theme::FontLoad::from_thread(std::thread::spawn(move || {
+            let _ = rx.recv();
+            egui::FontDefinitions::default()
+        }));
+        assert!(editor_can_start(true, false, &pending));
+        assert!(!editor_can_start(true, true, &pending));
+        let _ = tx.send(());
+    }
+}
+
 /// Draw the probe of `Shell::check_renderer`, a light square
 /// `gpu::PROBE_SIDE` points wide near the window's bottom right corner,
 /// on the topmost layer, so that it is the last mesh of the frame; the
@@ -648,12 +757,15 @@ const RENDERER_CHECK: &str = "renderer-check";
 
 impl eframe::App for Shell {
     /// Characters the windowing layer lost (input methods on Windows,
-    /// #1151) join the frame's input as typed text. A graphics tablet's
+    /// #1151) and what Android's on-screen keyboard typed (#1309) join the
+    /// frame's input. A graphics tablet's
     /// pressure is read from the touch events, and the pen's touches that
     /// only move are taken out, so egui never takes the pen for a touch
     /// screen (#850, see `pen.rs`).
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         system_chars::take_into(raw_input);
+        // What Android's on-screen keyboard typed (#1309).
+        soft_keyboard::take_into(raw_input);
         pen::filter_raw_input(ctx, raw_input);
         interaction::release_chorded_left(ctx, raw_input);
     }
@@ -685,6 +797,10 @@ impl eframe::App for Shell {
             ui.ctx().request_repaint();
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.build_deferred(ui) {
+            return;
+        }
         if self.app.is_none() {
             return;
         }
@@ -703,20 +819,39 @@ impl eframe::App for Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Spelling dictionaries being downloaded (#1405).
+        dictionary_download::fetch_kept(&app.settings.spelling.downloaded_dictionaries);
+        for finished in dictionary_download::poll() {
+            app.status = dictionary_download::status(&finished);
+        }
         // Fonts text asked for (browser build), and fonts that arrived.
         #[cfg(target_arch = "wasm32")]
         web::sync_ui_fonts(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         web::fetch_requested_fonts();
+        // Fonts the browser kept from earlier visits (#1400).
+        #[cfg(target_arch = "wasm32")]
+        ui::font_manager::take_stored_fonts(app);
         app.sync_fonts();
+        // What the browser could not keep (#1414).
+        app.tell_storage_refusals();
         app.sync_document_colors();
         // File dialogs that finished in the background (browser build).
         files::run_finished(app);
+        // Pictures, files and text a browser handed over for a paste.
+        app.take_handed_pastes();
         // Files a later start handed over (one try_recv when none came).
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(rx) = &self.handed_over {
             if instance::open_handed_over(app, ui.ctx(), rx) {
                 ui.ctx().request_repaint();
+            }
+        }
+        // Files the system opened with the installed browser app (#646).
+        #[cfg(target_arch = "wasm32")]
+        if !app.closing_all && matches!(app.dialog, crate::ui::dialogs::Dialog::None) {
+            for path in web::take_launched_files() {
+                app.open_path(path);
             }
         }
         // Requests of AI agents for the open drawing (MCP).
@@ -745,6 +880,9 @@ impl eframe::App for Shell {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         ui::root(app, ui);
+        // The emulator check's typing test (Android, soft_keyboard.rs).
+        #[cfg(target_os = "android")]
+        soft_keyboard::check::frame(app);
         // Dimensions moved or scaled this frame show their new values.
         app.bake_dimensions();
         // Bitmap effects on vector objects follow what changed them.
@@ -768,15 +906,53 @@ impl eframe::App for Shell {
         app.autosave_settings(Some(ui.ctx()));
         // Bitmaps edited outside follow their files.
         app.watch_linked_bitmaps(Some(ui.ctx()), web_time::Instant::now());
+        // A pointer left hidden shows as a blank image on Windows, where
+        // hiding it waits for the mouse to move (#1124).
+        ui::cursors::finish_frame(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         frame_stats::end(ui.ctx(), began);
     }
 
-    /// Keep the toolbox, dockers and other preferences for the next session.
+    /// Back up the drawings with unsaved changes at once (#1395). eframe
+    /// calls this when the Android app goes to the background (its window
+    /// goes, and the system may end the process there without another
+    /// word), when the program closes, and in a browser when the page
+    /// loses the focus, is hidden or is about to be left: a page about to
+    /// be left backs up while the browser asks, a hidden one (another
+    /// tab, a minimized window, a phone's home screen, a tab being
+    /// closed) because it may be discarded with no other event, and a
+    /// page left for good ends its session as a closing program does.
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        let Some(app) = self.app.as_mut() else {
+            return;
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            if web::backups::left() {
+                app.leave_session();
+                return;
+            }
+            // Both asked: the flag is cleared either way.
+            let unloading = web::backups::take_unloading();
+            if !(unloading || web::backups::page_hidden()) {
+                return;
+            }
+        }
+        app.backup_now();
+    }
+
+    /// No saves on a timer: `save` is for the moments above only, and
+    /// the auto-backup keeps its own minutes.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::MAX
+    }
+
+    /// Keep the toolbox, dockers and other preferences for the next
+    /// session; drawings left unsaved stay backed up for it.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Some(app) = self.app.as_mut() {
             app.save_settings();
-            app.end_session();
+            app.leave_session();
         }
     }
 }

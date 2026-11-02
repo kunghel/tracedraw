@@ -1,6 +1,6 @@
 # Straighten Image
 
-Bitmaps > Straighten Image corrects lens distortion, rotation and
+Image > Straighten Image corrects lens distortion, rotation and
 perspective of the selected bitmaps. OK
 changes every selected bitmap in one undo step ("Straighten Image"); each
 keeps its centre and its resolution, so a cropped result is smaller on

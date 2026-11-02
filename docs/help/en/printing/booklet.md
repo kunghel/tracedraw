@@ -19,7 +19,8 @@ zine. TraceDraw pairs the pages for you; you choose how the booklet is bound.
    paper.
 
 To make a booklet of only some pages, list them in the pages to print on the
-[[print.tab_general]] tab first.
+[[print.tab_general]] tab first. The sketch and the counts under it are then
+for those pages only.
 
 ## Choosing the binding {#binding}
 

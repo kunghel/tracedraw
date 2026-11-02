@@ -290,6 +290,12 @@ impl App {
                 let t = free_transform_step(mode, center, last, p, first);
                 if t != Affine::IDENTITY {
                     self.transform_selection(t);
+                    // The steps so far become one at once: the drag keeps
+                    // one copy of the drawing from before it, not one a
+                    // pointer move.
+                    if let Some(mark) = self.free_transform_group {
+                        self.engine.join_group(mark, "Free Transform");
+                    }
                 }
             }
         }
@@ -388,10 +394,11 @@ impl App {
         }
     }
 
-    /// Area Fill: find the enclosed area under the click (all visible
-    /// outlines count as walls) and create a filled object from it. The
-    /// area can be anywhere, on the page or off it on the desktop, and a
-    /// drawing of any size (#499).
+    /// Area Fill: find the enclosed area under the click (the outlines
+    /// that show count as walls: a line hidden under an object's opaque
+    /// fill does not cut the area, #1281) and create a filled object from
+    /// it. The area can be anywhere, on the page or off it on the desktop,
+    /// and a drawing of any size (#499).
     pub fn area_fill_at(&mut self, p: Point) {
         let shapes: Vec<Shape> = self
             .doc()
@@ -401,32 +408,45 @@ impl App {
             .filter(|l| l.visible)
             .flat_map(|l| l.shapes.clone())
             .collect();
-        fn collect(s: &Shape, parent: Affine, out: &mut Vec<BezPath>) {
+        // Bottom to top: each outline and whether its fill hides what
+        // lies beneath it.
+        fn collect(s: &Shape, parent: Affine, out: &mut Vec<(BezPath, bool)>) {
             let t = parent * s.transform;
             if !s.effects.is_empty() {
-                // What the object draws: its warped outline and the
-                // objects its effects add.
+                // What the object draws, in drawing order: the objects its
+                // effects add below it, its warped outline, those above.
                 let mut on_page = s.clone();
                 on_page.transform_by(parent);
                 let ev = tracedraw_core::live::evaluate(&on_page);
-                for part in std::iter::once(ev.main).chain(ev.below).chain(ev.above) {
-                    out.push(part.page_path());
+                let see_through = s
+                    .effects
+                    .iter()
+                    .any(|e| matches!(e, Effect::Transparency { .. } | Effect::Lens(_)));
+                for part in ev.below {
+                    let covers = hides_below(&part);
+                    out.push((part.page_path(), covers));
+                }
+                let covers = !see_through && hides_below(&ev.main);
+                out.push((ev.main.page_path(), covers));
+                for part in ev.above {
+                    let covers = hides_below(&part);
+                    out.push((part.page_path(), covers));
                 }
                 return;
             }
             match &s.kind {
                 ShapeKind::Group { children } => children.iter().for_each(|c| collect(c, t, out)),
-                _ => out.push(t * s.local_path()),
+                _ => out.push((t * s.local_path(), hides_below(s))),
             }
         }
-        let mut paths = Vec::new();
+        let mut parts = Vec::new();
         for s in &shapes {
-            collect(s, Affine::IDENTITY, &mut paths);
+            collect(s, Affine::IDENTITY, &mut parts);
         }
         // The area the outlines close off around the click, its sides
         // their own curves (#734); a click in an open area or on an
         // outline makes nothing.
-        let path = match tracedraw_core::shaping::enclosed_area(&paths, p) {
+        let path = match tracedraw_core::shaping::enclosed_visible_area(&parts, p) {
             tracedraw_core::shaping::Enclosed::Area(path) => path,
             tracedraw_core::shaping::Enclosed::Open => {
                 self.status = tr("status.area_fill_open");
@@ -670,9 +690,14 @@ pub fn free_transform_step(
         |t: Affine| Affine::translate(center.to_vec2()) * t * Affine::translate(-center.to_vec2());
     match mode {
         M::Scale => {
-            // Scale about the press point by the ratio of distances.
-            let d0 = (last - center).hypot().max(1e-6);
-            let d1 = (p - center).hypot().max(1e-6);
+            // Scale about the press point by the ratio of distances. The
+            // first move away from the press point has no distance to
+            // scale from: it sets it.
+            let d0 = (last - center).hypot();
+            let d1 = (p - center).hypot();
+            if d0 < 1e-3 || d1 < 1e-3 {
+                return Affine::IDENTITY;
+            }
             about(Affine::scale(d1 / d0))
         }
         M::Skew => {
@@ -702,6 +727,20 @@ pub fn free_transform_step(
             let a1 = (p - center).atan2();
             Affine::rotate_about(a1 - a0, center)
         }
+    }
+}
+
+/// The object's fill hides what lies beneath it: an opaque fill at full
+/// opacity, with no transparency mask (Area Fill, #1281).
+fn hides_below(s: &Shape) -> bool {
+    if s.opacity < 1.0 || s.opacity_mask.is_some() {
+        return false;
+    }
+    match &s.fill {
+        Fill::None => false,
+        Fill::Solid(_) | Fill::Pattern(_) | Fill::Texture(_) => true,
+        Fill::Fountain(f) => f.stops.iter().all(|st| st.opacity >= 1.0),
+        Fill::Mesh(m) => m.nodes.iter().all(|n| n.alpha >= 1.0),
     }
 }
 
@@ -762,5 +801,9 @@ mod free_transform_tests {
             true,
         );
         assert!(close(t * Point::new(15.0, 5.0), Point::new(5.0, 15.0)));
+        // The first move of a Free Scale starts at the press point: no
+        // distance to scale from, so nothing happens (#1342).
+        let t = free_transform_step(M::Scale, c, c, Point::new(6.0, 5.0), true);
+        assert_eq!(t, tracedraw_core::Affine::IDENTITY);
     }
 }

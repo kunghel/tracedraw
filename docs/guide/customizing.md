@@ -58,14 +58,14 @@ rectangle corners, polygon points and table rows and columns.
 - **Printing**: what the Print dialog starts with.
 - **File Formats**: what Export starts with, where imported objects go,
   and the `.cdr` version for new drawings.
-- **Bitmap Tracing**: the Quick Trace preset and the defaults of every
+- **Bitmap Tracing**: the Automatic trace preset and the defaults of every
   trace.
 - **Warnings**: which messages to show.
 
-**Layout > Document Options** holds the settings of the drawing itself:
+**Page > Document Setup** holds the settings of the drawing itself:
 page size, layout, background, bleed, rulers, grid and guidelines. Its
 **Save as Default** keeps the grid, ruler and guideline settings for new
-drawings, and **Tools > Save Settings as Default** keeps the default
+drawings, and **Tools > Save as Defaults** keeps the default
 properties of new objects.
 
 Detail: [the Options notes](../behavior/options.md).
@@ -74,8 +74,8 @@ Detail: [the Options notes](../behavior/options.md).
 
 A workspace is how the window is set up: which bars show and where, the
 toolbox, shortcuts, palette options and the interface's look. To pick a
-built-in one: **Window > Workspace**, then **Default**, **Lite**,
-**Classic**, **Illustration**, **Page Layout** or **Touch**.
+built-in one: **Window > Workspace**, then **Standard**, **Minimal**,
+**Compact**, **Drawing**, **Publishing** or **Touch**.
 
 **Touch** is for touch screens: the interface is drawn 1.4 times larger,
 and two fingers pan and pinch to zoom with any tool.
@@ -207,8 +207,9 @@ tracedraw-cli convert poster.cdr poster.pdf
 TRACEDRAW_DPI=300 tracedraw-cli convert poster.tdraw poster.png
 ```
 
-A file opened while TraceDraw runs (from the file manager or the command
-line) opens in a tab of the running window; `tracedraw --new-instance
+A file opened while TraceDraw runs (from the file manager, Finder on
+macOS, Open with or Share on Android, or the command line) opens in a tab
+of the running window; `tracedraw --new-instance
 file.cdr` opens a window of its own.
 
 ### AI agents

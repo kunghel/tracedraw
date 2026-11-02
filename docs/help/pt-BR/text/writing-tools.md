@@ -10,7 +10,7 @@ comandos ficam em [[menu.text > menu.text.writing_tools]] e no menu
 ## A caixa de diálogo Ferramentas de escrita {#writing-tools}
 
 [[menu.text > menu.text.writing_tools > menu.text.spell_check]],
-[[menu.text.grammatik]] e [[menu.text.thesaurus]] abrem a caixa de diálogo
+[[menu.text.grammar]] e [[menu.text.thesaurus]] abrem a caixa de diálogo
 [[writing.title]] nessa guia. [[writing.check]] escolhe se verifica todo texto
 da página ([[writing.scope_document]]) ou só os textos selecionados
 ([[writing.scope_selection]]).

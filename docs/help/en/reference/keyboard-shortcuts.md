@@ -21,7 +21,7 @@ shortcut beside it, and you can add your own; see
 | <kbd>Ctrl+F4</kbd>, <kbd>Alt+F4</kbd> | close the drawing, exit |
 | <kbd>Ctrl+Z</kbd>, <kbd>Ctrl+Shift+Z</kbd>, <kbd>Ctrl+R</kbd> | undo, redo, repeat |
 | <kbd>Ctrl+X</kbd>, <kbd>Ctrl+C</kbd>, <kbd>Ctrl+V</kbd>, <kbd>Ctrl+Shift+V</kbd> | cut, copy, paste, paste in view |
-| <kbd>Ctrl+D</kbd>, <kbd>Ctrl+Shift+D</kbd> | duplicate, Step and Repeat panel |
+| <kbd>Ctrl+D</kbd>, <kbd>Ctrl+Shift+D</kbd> | duplicate, Repeat Copies panel |
 | <kbd>+</kbd> | duplicate the selection in place |
 | <kbd>Ctrl+A</kbd>, <kbd>Delete</kbd> | select all, delete |
 | <kbd>Ctrl+0</kbd> to <kbd>Ctrl+9</kbd>, <kbd>0</kbd> to <kbd>9</kbd>, <kbd>Alt+0</kbd> to <kbd>Alt+9</kbd> | store, select (twice: zoom to) and add to selection groups |
@@ -59,7 +59,7 @@ shortcut beside it, and you can add your own; see
 | Keys | Panel |
 |---|---|
 | <kbd>Alt+Enter</kbd> | Properties |
-| <kbd>Ctrl+Shift+A</kbd> | Copy Properties From |
+| <kbd>Ctrl+Shift+A</kbd> | Paste Style From |
 | <kbd>Alt+F7</kbd>, <kbd>Alt+F8</kbd>, <kbd>Alt+F9</kbd>, <kbd>Alt+F10</kbd> | Transformations: position, rotate, scale and mirror, size |
 | <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd> | Text, Glyphs |
 | <kbd>F11</kbd>, <kbd>Shift+F11</kbd> | fill (Properties), Color |

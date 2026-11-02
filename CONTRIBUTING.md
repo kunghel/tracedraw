@@ -43,7 +43,10 @@ Reports without what it takes to repeat the problem are marked
 - TraceDraw stands on its own: do not name other vendors or their
   products in code, comments, docs, commit messages or file names, and do
   not describe a feature as modelled on another program. Give features
-  descriptive names of their own.
+  descriptive names of their own. The one exception is the trademark
+  notice (README, `PRIVACY.md`, About box, web page, store listings),
+  which names the owner of the `.cdr` trademark to say that TraceDraw is
+  independent of it.
 
 ## Sign-off (DCO)
 
@@ -61,6 +64,12 @@ your sign-off are public and kept with the project.
 
 Pull requests with unsigned commits, or with material whose origin is
 unclear, are not merged.
+
+Everyone commits and signs off under their own name, maintainers
+included. The one exception is the project's own account (the
+organization's owner), whose commits are authored and signed off as
+`TraceDraw Maintainers <contact@tracedraw.org>`; that address reaches the
+people who answer for them.
 
 ## Workflow
 
@@ -88,6 +97,35 @@ unclear, are not merged.
   them.
 - Once merged, you are listed in [`CONTRIBUTORS.md`](CONTRIBUTORS.md)
   with what you contributed.
+
+## Roles
+
+TraceDraw lives in the [`tracedraw`](https://github.com/tracedraw)
+GitHub organization (team pages are visible to its members only). Everyone starts as a contributor; reviewers and
+maintainers are invited from the people who contribute code. How
+reviewers and maintainers work is in [`MAINTAINING.md`](MAINTAINING.md).
+
+| Role | On GitHub | Can | Cannot |
+|---|---|---|---|
+| Contributor | anyone, from a fork | open issues and pull requests, comment, send sample files | label, close or merge |
+| Reviewer | the `reviewers` team (Triage) | label, assign, close and reopen issues and pull requests; review and approve pull requests | push, merge, release, change settings |
+| Maintainer | the `maintainers` team (Maintain) | everything a reviewer can, and merge approved pull requests, manage labels and milestones, prepare releases | change settings or branch protection, see secrets, sign or publish builds |
+| Owner | the organization's owners | everything, including settings, secrets, signing and the store listings | |
+
+- **Becoming a reviewer:** at least two merged pull requests of your own,
+  signed off by you, that follow `AGENTS.md` without needing to be
+  redone.
+- **Becoming a maintainer:** some weeks as a reviewer with careful
+  reviews.
+- **Every member of the organization uses two-factor authentication**;
+  GitHub removes members without it.
+- `main` is protected for everyone, owners included: every change comes
+  through a pull request with one approval from someone other than its
+  author and a green build, so no single person, and no single mistake,
+  reaches `main` alone. A bad merge is reverted, never rewritten.
+- Roles are for people who are active. A member who has not been active
+  for six months is thanked and moved back to contributor, and can come
+  back at any time.
 
 ## License
 

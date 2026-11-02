@@ -28,6 +28,12 @@ label shown while you drag say which will happen. Where the system does not
 say where the pointer is (Linux, macOS), drawings open in a tab and pictures
 are imported.
 
+A drawing opened from the system while TraceDraw runs (a double click in
+the file manager or in Finder, Open with, or Share on Android) opens in a
+tab of the running window, which comes to the front. The browser version
+installed as an app does the same for `.tdraw`, `.cdr`, `.svg` and `.pdf`
+files in browsers that let installed apps open files.
+
 How a drawing is first shown (the whole page, its objects, the page's width,
 real size, or the page, place and zoom it had when it was saved) is set by
 [[options.open_view]] on the [[options.display]] page of
@@ -101,7 +107,7 @@ To save a drawing under a new name:
 6. Optionally fill in [[dialog.title]], [[dialog.subject]] and a
    [[dialog.rating]] (click the lit last star again to take it off). They
    are the drawing's properties, also shown in
-   [Document properties](../pages-layout/document-properties.md).
+   [Document info](../pages-layout/document-properties.md).
 7. Click [[dialog.save]] or press <kbd>Enter</kbd>. If the file exists,
    TraceDraw asks whether to [[dialog.replace]] it.
 
@@ -148,7 +154,7 @@ When several drawings have changes, it asks about each one; Cancel stops.
 
 ## Auto-backup and recovery {#recovery}
 
-On the desktop, TraceDraw keeps backups of your open drawings while
+TraceDraw keeps backups of your open drawings while
 auto-backup is on (the [[options.save]] page of
 [[menu.tools > menu.tools.options > menu.tools.options_app]] sets how often
 and where; every 20 minutes at first). Closing TraceDraw normally removes
@@ -158,4 +164,12 @@ If TraceDraw ended without closing, for example after a power cut, it offers
 the backups the next time it starts: [[dialog.recover]] opens each one as an
 unsaved drawing (Save then asks where to save it), and [[dialog.discard]]
 leaves the backups in their folder. Two TraceDraw windows running at once
-never offer each other's drawings.
+never offer each other's drawings. When the system quits TraceDraw without
+asking about unsaved drawings (the Quit of the macOS menu, logging out)
+or sends the Android app to the background, their backups are written at
+once, and the next start offers them.
+
+In the browser version the backups are kept in the browser's storage for
+the site, a folder of their own for each tab. Closing or reloading a tab
+with unsaved drawings asks first, and the next visit offers what the tab
+left; [[dialog.discard]] deletes those backups.

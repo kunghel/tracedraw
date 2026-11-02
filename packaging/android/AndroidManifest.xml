@@ -3,7 +3,7 @@
      NativeActivity written in packaging/android/java, loads libtracedraw.so,
      the editor compiled as a shared library, which draws and reads touch
      input itself; the activity's Java methods reach the system's document
-     picker and clipboard for it. The version code and name are filled in
+     picker, clipboard, print service and share sheet for it. The version code and name are filled in
      by scripts/android/build.sh from Cargo.toml. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.tracedraw.app">
@@ -32,20 +32,75 @@
         android:hasCode="true"
         android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <!-- The editor cannot start again inside its process (one winit
+             event loop per process), so the system should not relaunch
+             the activity: the configuration changes the editor follows
+             by itself are declared. The screen density is not (a new
+             density starts the editor afresh at its new scale), and a
+             change of the system's resource overlays (wallpaper colours,
+             icon shapes, display cutout) cannot be declared: either
+             relaunches the activity, which then ends the process once
+             the drawings are backed up (TraceDrawActivity.onDestroy);
+             stateNotNeeded makes the system keep the activity and start
+             it again in a new process instead of closing it. -->
         <activity
             android:name="dev.tracedraw.app.TraceDrawActivity"
             android:label="TraceDraw"
             android:exported="true"
             android:launchMode="singleTask"
+            android:stateNotNeeded="true"
             android:screenOrientation="unspecified"
             android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|navigation">
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|navigation|touchscreen|mcc|mnc|fontScale|fontWeightAdjustment|colorMode|grammaticalGender">
             <!-- The library the activity loads: lib/arm64-v8a/libtracedraw.so. -->
             <meta-data android:name="android.app.lib_name" android:value="tracedraw" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Documents other apps open with TraceDraw (a file manager's
+                 Open with, a mail's attachment, Share): they open in tabs
+                 of the running editor (#646, TraceDrawActivity.onNewIntent).
+                 image/* takes pictures and the types file managers give
+                 .cdr and .svg files; .tdraw and many .cdr files come as
+                 octet-stream. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-tdraw" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-cdr" />
+                <data android:mimeType="application/cdr" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/postscript" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/x-tdraw" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-cdr" />
+                <data android:mimeType="application/cdr" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/postscript" />
+            </intent-filter>
         </activity>
+        <!-- The files the editor hands to another app (a PDF through the
+             share sheet, a picture to edit, #1398), served from the app's
+             private folders under content URIs. Not exported: an app
+             reaches a file only through the grant of the intent naming it. -->
+        <provider
+            android:name="dev.tracedraw.app.SharedFiles"
+            android:authorities="dev.tracedraw.app.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

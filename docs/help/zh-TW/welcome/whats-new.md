@@ -12,7 +12,7 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
   標題上方都會出現一個小圓點。關閉該命令後標記消失，下次啟動 TraceDraw 時該
   命令又會關閉。
 - 每個版本的完整變更清單在專案的
-  [變更記錄](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md) 中。
+  [變更記錄](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md) 中。
 
 ## 最近版本的重點 {#highlights}
 

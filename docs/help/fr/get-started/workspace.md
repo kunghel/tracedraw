@@ -9,9 +9,8 @@ soit clair.
 De haut en bas et de gauche à droite :
 
 - La **barre de menus** contient toutes les commandes, dans les menus
-  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.layout]],
-  [[menu.object]], [[menu.effects]], [[menu.bitmaps]], [[menu.text]],
-  [[menu.table]], [[menu.tools]], [[menu.window]] et [[menu.help]]. Chaque
+  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.object]],
+  [[menu.text]], [[menu.bitmaps]], [[menu.effects]], [[menu.layout]], [[menu.tools]], [[menu.window]] et [[menu.help]]. Chaque
   commande affiche son raccourci à côté. Sans dessin ouvert, seuls
   [[menu.file]], [[menu.tools]], [[menu.window]] et [[menu.help]] sont
   affichés. La page [Commandes des menus](../reference/menus.md) liste toutes

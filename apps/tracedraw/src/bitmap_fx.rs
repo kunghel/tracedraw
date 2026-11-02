@@ -11,7 +11,7 @@ pub enum ColorMode {
     Cmyk,
 }
 
-/// Convert the colour mode (Bitmaps > Mode).
+/// Convert the colour mode (Image > Mode).
 pub fn convert_mode(img: &RgbaImage, mode: ColorMode) -> RgbaImage {
     match mode {
         ColorMode::Grayscale => {
@@ -104,7 +104,7 @@ pub fn encode(img: &RgbaImage) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
-/// Resample to a new pixel size (Bitmaps > Resample).
+/// Resample to a new pixel size (Image > Resample).
 pub fn resample(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     image::imageops::resize(
         img,
@@ -124,7 +124,7 @@ pub fn inflate_to(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     out
 }
 
-/// Grow the canvas by `px` on every side (Inflate Bitmap).
+/// Grow the canvas by `px` on every side (Bitmap Padding).
 pub fn inflate(img: &RgbaImage, px: u32) -> RgbaImage {
     let mut out = ImageBuffer::from_pixel(
         img.width() + 2 * px,
@@ -135,7 +135,7 @@ pub fn inflate(img: &RgbaImage, px: u32) -> RgbaImage {
     out
 }
 
-/// The slots of the Bitmap Mask docker.
+/// The slots of the Color Mask docker.
 pub const MASK_SLOTS: usize = 10;
 
 /// One colour of a bitmap mask: in use, the colour, and how far (in % of
@@ -157,7 +157,7 @@ impl Default for MaskSlot {
     }
 }
 
-/// The Bitmap Mask docker's state.
+/// The Color Mask docker's state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaskSettings {
     pub slots: [MaskSlot; MASK_SLOTS],

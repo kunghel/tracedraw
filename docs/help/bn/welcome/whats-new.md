@@ -13,7 +13,7 @@ TraceDraw-এর প্রতিটি সংস্করণ বৈশিষ্�
   শিরোনামের উপরে একটি ছোট বিন্দু দেখা যায়। কমান্ড বন্ধ করলে চিহ্নগুলি চলে যায়,
   এবং পরের বার TraceDraw চালু হলে কমান্ডটি আবার বন্ধ থাকে।
 - প্রতিটি সংস্করণের পরিবর্তনের সম্পূর্ণ তালিকা প্রকল্পের
-  [পরিবর্তন লগে](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [পরিবর্তন লগে](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   আছে।
 
 ## সাম্প্রতিক সংস্করণগুলির প্রধান বিষয় {#highlights}

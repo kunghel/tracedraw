@@ -2,8 +2,8 @@
 
 A workspace is how the window is set up: which bars show and where they
 sit, the toolbox, keyboard shortcuts, the colour palette options and the
-interface's look. Window > Workspace picks a built-in one (Default, Lite,
-Classic, Illustration, Page Layout, Touch); the user's own setup can be
+interface's look. Window > Workspace picks a built-in one (Standard, Minimal,
+Compact, Drawing, Publishing, Touch); the user's own setup can be
 kept in a file and brought back.
 
 ## Touch

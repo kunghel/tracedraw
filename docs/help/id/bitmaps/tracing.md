@@ -6,22 +6,24 @@ foto.
 
 ## Jiplak cepat {#quick-trace}
 
-Pilih bitmap lalu pilih [[menu.bitmaps > menu.bitmaps.quick_trace]]. Perintah
+Pilih bitmap lalu pilih [[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.quick_trace]]. Perintah
 ini memakai preset yang dipilih di halaman [[options.bitmap_tracing]] pada
-opsi global (awalnya Clipart).
+opsi global (awalnya [[menu.bitmaps.trace_optimized]], yang memilih detail
+untuk setiap gambar: seakurat mungkin dengan simpul sesedikit mungkin).
 
 [[menu.bitmaps.repeat_last_trace]] menjiplak ulang bitmap terpilih seperti jiplakan terakhir, tanpa kotak dialog, dan [[menu.bitmaps.last_trace_settings]] membuka kotak dialog dengan pengaturan jiplakan terakhir. Menu klik kanan bitmap juga memiliki perintah ini, bersama [[menu.bitmaps.centerline_trace]] dan [[menu.bitmaps.outline_trace]].
 
 ## Kotak dialog Jiplak Bitmap {#trace}
 
-[[menu.bitmaps > menu.bitmaps.outline_trace]] dan
+[[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.outline_trace]] dan
 [[menu.bitmaps.centerline_trace]] berisi daftar preset; pilih salah satu untuk
 membuka kotak dialog jiplak.
 
 - **Jiplak garis luar** mengisi area warna dengan bentuk:
   [[menu.bitmaps.trace_line_art]], [[menu.bitmaps.trace_logo]],
   [[menu.bitmaps.trace_detailed_logo]], [[menu.bitmaps.trace_clipart]],
-  [[menu.bitmaps.trace_low_quality]], dan [[menu.bitmaps.trace_high_quality]].
+  [[menu.bitmaps.trace_low_quality]], [[menu.bitmaps.trace_high_quality]], dan
+  [[menu.bitmaps.trace_optimized]].
 - **Jiplak garis tengah** mengikuti garis dengan kurva terbuka:
   [[menu.bitmaps.trace_technical]] dan [[menu.bitmaps.trace_line_drawing]].
 
@@ -33,7 +35,8 @@ sebelah kanan, dan jiplakan dibuat ulang setiap kali Anda mengubah pengaturan:
 tidak ada yang perlu ditekan untuk melihat hasilnya. Di bawah pratinjau,
 sebuah baris menghitung **kurva**, **simpul**, dan **warna** jiplakan. Klik
 [[dialog.ok]] untuk meletakkan bentuk-bentuk di atas bitmap, yang paling gelap
-lebih dahulu, atau [[dialog.cancel]] untuk membiarkan bitmap apa adanya.
+lebih dahulu, atau [[dialog.cancel]] untuk membiarkan bitmap apa adanya;
+keduanya berada di kanan bawah kotak dialog.
 
 ## Pratinjau {#preview}
 
@@ -53,6 +56,11 @@ dan menggeser. Roda tetikus memperbesar di sekitar penunjuk dan seretan
 memindahkan gambar; kedua panel bergerak bersama. Bagian yang transparan
 menampilkan papan catur.
 
+Di peramban, gambar yang besar dipratinjau dari salinan yang lebih kecil, dan
+sebuah catatan berwarna merah di bawah pratinjau menyebutkannya: detail halus
+dapat tampak kasar di sana, tetapi [[dialog.ok]] menjiplak seluruh gambar.
+Aplikasi desktop menampilkan pratinjau dengan tepat.
+
 ## Pengaturan {#settings}
 
 Tab [[dialog.trace_tab_settings]] berisi:
@@ -62,7 +70,8 @@ Tab [[dialog.trace_tab_settings]] berisi:
   bawahnya ke nilai yang cocok untuk jenis gambar itu.
 - [[dialog.detail]] (0 sampai 100): detail lebih banyak mempertahankan area
   yang lebih kecil dan garis yang lebih halus; detail lebih sedikit
-  menghaluskan bintik dan butiran.
+  menghaluskan bintik dan butiran. Dengan [[menu.bitmaps.trace_optimized]],
+  detail dipilih untuk setiap gambar dan penggesernya ditampilkan abu-abu.
 - [[dialog.smoothing]] (0 sampai 100, awalnya 25): kurva lebih halus dengan
   simpul lebih sedikit.
 - [[dialog.corner_smoothness]] (0 sampai 100): sudut lebih bulat.
@@ -76,14 +85,24 @@ Tab [[dialog.trace_tab_settings]] berisi:
 - [[dialog.trace_objects]]: [[dialog.trace_merge_adjacent]] (awalnya aktif)
   membuat satu kurva dari setiap area sewarna; jika nonaktif, setiap bidang
   terpisah menjadi kurva sendiri. [[dialog.trace_remove_overlap]] menjaga
-  setiap bentuk pada pikselnya sendiri; jika nonaktif, bentuk-bentuk sedikit
-  masuk ke bawah bentuk di atasnya, sehingga tidak ada celah di antara
-  tetangga. [[dialog.trace_group_by_color]] menaruh kurva-kurva setiap warna
-  dalam grup sendiri; tersedia bila area sewarna belum digabungkan.
+  setiap bentuk pada pikselnya sendiri, termasuk lubangnya; jika nonaktif,
+  bentuk digambar utuh di bawah bentuk di dalamnya (kepala di bawah
+  matanya). Bagaimanapun, bentuk bertetangga berbagi satu kurva di sepanjang
+  batasnya, sehingga tidak ada celah dan tampilan Rangka Kawat menunjukkan
+  setiap batas sekali. [[dialog.trace_group_by_color]] menaruh kurva-kurva
+  setiap warna dalam grup sendiri; tersedia bila area sewarna belum
+  digabungkan.
 - [[dialog.delete_original]]: bitmap hilang saat jiplakan diletakkan.
 
 Pengaturan yang tidak berlaku untuk jenis jiplakan saat ini ditampilkan
 abu-abu: jiplakan garis tengah hanya membaca detail dan penghalusan.
+
+[[dialog.trace_optimize]], di kiri bawah kotak dialog, mencoba beberapa
+tingkat detail pada gambar, membandingkan setiap jiplakan dengan gambar itu,
+dan menaruh detail yang menggambarnya paling akurat dengan simpul paling
+sedikit ke penggeser [[dialog.detail]]. Ini adalah satu langkah yang dapat
+Anda urungkan. Jika Anda mengubah pengaturan sebelum prosesnya selesai,
+hasilnya tidak dipakai.
 
 ## Warna {#colors}
 

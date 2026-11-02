@@ -1,4 +1,4 @@
-//! Dialogs: pages, layers, Options (multi-page), Document Properties,
+//! Dialogs: pages, layers, Options (multi-page), Document Info,
 //! Export, Print, Print Merge, Find and Replace, tables, QR codes,
 //! bitmaps (convert, straighten, resample, inflate, trace),
 //! text (tabs, columns, bullets, drop cap, statistics, spell check),
@@ -45,11 +45,19 @@ pub struct ExportState {
     pub remember: bool,
     pub format: usize,
     pub dpi: f64,
+    /// More than the current page: every page, or with `page_list` the
+    /// pages listed in `pages` (#1382).
     pub all_pages: bool,
+    /// With `all_pages`: only the pages of `pages`, a list such as
+    /// "1-3, 5" (#1382).
+    pub page_list: bool,
+    pub pages: String,
     pub selection_only: bool,
     pub transparent: bool,
     pub quality: u8,
     pub web: bool,
+    /// PDF: every text as curves, so the file needs no fonts (#1382).
+    pub text_as_curves: bool,
     /// PDF only: 0 plain, 1 X-1a, 2 X-3, 3 X-4.
     pub pdf_standard: usize,
     pub bleed_mm: f64,
@@ -81,10 +89,13 @@ impl Default for ExportState {
             format: 0,
             dpi: 300.0,
             all_pages: false,
+            page_list: false,
+            pages: String::new(),
             selection_only: false,
             transparent: true,
             quality: 90,
             web: false,
+            text_as_curves: false,
             pdf_standard: 0,
             bleed_mm: 0.0,
             output_condition: "FOGRA39".into(),
@@ -145,7 +156,8 @@ pub fn set_export_size(st: &mut ExportState, side_mm: f64, typed: f64) {
 }
 
 /// Where a `.cdr` file that does not open right is sent in.
-pub const CDR_ISSUE: &str = "https://github.com/igtoth/tracedraw/issues/new?template=cdr_file.yml";
+pub const CDR_ISSUE: &str =
+    "https://github.com/tracedraw/tracedraw/issues/new?template=cdr_file.yml";
 
 pub const PDF_STANDARDS: [&str; 4] = ["PDF 1.4", "PDF/X-1a:2003", "PDF/X-3:2003", "PDF/X-4"];
 
@@ -164,6 +176,31 @@ impl ExportState {
     /// times the scale.
     pub fn render_dpi(&self) -> f64 {
         (self.dpi * self.scale_or_one()).clamp(MIN_EXPORT_DPI, 2400.0)
+    }
+
+    /// The indexes of the pages to export among `count` pages, the
+    /// current one being `current`: that page alone, every page, or the
+    /// pages listed, in the order listed (every page when the list names
+    /// none of them, as Print does). The selection is exported from the
+    /// current page (#1382).
+    pub fn page_indexes(&self, count: usize, current: usize) -> Vec<usize> {
+        let current = vec![current.min(count.saturating_sub(1))];
+        if self.selection_only || !self.all_pages {
+            return current;
+        }
+        if self.page_list {
+            let picked = parse_page_list(&self.pages, count);
+            if !picked.is_empty() {
+                return picked;
+            }
+        }
+        (0..count).collect()
+    }
+
+    /// The export format `ext` writes one file holding every page; the
+    /// others write one file per page (#1382).
+    pub fn one_file_for_all_pages(ext: &str) -> bool {
+        matches!(ext, "pdf" | "ai" | "ps" | "prn" | "html")
     }
 
     /// The formats one file holds every page in (PDF, PostScript, PRN):
@@ -859,11 +896,11 @@ pub enum Dialog {
     LineStyle(crate::ui::line_style::State),
     /// File > New From Template.
     NewFromTemplate(Box<crate::ui::template_dialog::TemplateState>),
-    /// Bitmaps > Mode > Black and White, Duotone and Paletted.
+    /// Image > Mode > Black and White, Duotone and Paletted.
     BitmapBw(crate::bitmap_modes::BwSettings),
     BitmapDuotone(crate::ui::bitmap_dialogs::DuotoneState),
     BitmapPaletted(crate::bitmap_modes::PalettedSettings),
-    /// Bitmaps > Remove Background (on this computer, no AI service).
+    /// Image > Remove Background (on this computer, no AI service).
     RemoveBackground(crate::ui::bitmap_dialogs::BgRemoveState),
     /// The Shape tool's Align Nodes: on a common horizontal and/or
     /// vertical.
@@ -881,14 +918,14 @@ pub enum Dialog {
         count: u32,
         after: bool,
     },
-    /// Layout > Delete Page: the page (1 = the first) and, with `through`,
+    /// Page > Delete Page: the page (1 = the first) and, with `through`,
     /// the last one of a range to delete with it (#500).
     DeletePage {
         from: usize,
         to: usize,
         through: bool,
     },
-    /// Layout > Duplicate Page and the page tab menu: where the copy goes
+    /// Page > Duplicate Page and the page tab menu: where the copy goes
     /// and whether the layers keep their objects.
     DuplicatePage {
         before: bool,
@@ -1011,6 +1048,9 @@ pub enum Dialog {
     /// The browser version, at any macro command: macros run in the
     /// desktop app only, with a button to its downloads.
     MacrosDesktopOnly,
+    /// The browser version: the browser did not keep the shelf, the
+    /// settings or an auto-backup (#1414).
+    StorageRefused(crate::storage_full::Refusal),
     TimeTracker(crate::ui::time_tracker::TrackerDialog),
     Preflight(crate::ui::preflight_dialog::PreflightState),
     PublishPdf(Box<crate::ui::publish_pdf::PublishState>),
@@ -1023,6 +1063,77 @@ pub enum Dialog {
     /// After opening a drawing with fonts that are not installed: the
     /// font drawing each, to choose (#936).
     MissingFonts(crate::ui::missing_fonts::MissingFontsState),
+}
+
+/// What a button of a browser-version message about the desktop app does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopChoice {
+    Close,
+    /// The release downloads on GitHub.
+    Downloads,
+    /// TraceDraw in the Microsoft Store, offered on Windows only.
+    Store,
+}
+
+/// The buttons of a browser-version message about the desktop app, with
+/// their labels: OK, the downloads and, when the browser runs on Windows,
+/// the Microsoft Store.
+fn desktop_choices(windows: bool) -> Vec<(String, DesktopChoice)> {
+    let mut choices = vec![
+        (tr("dialog.ok"), DesktopChoice::Close),
+        (tr("web.notice_download"), DesktopChoice::Downloads),
+    ];
+    if windows {
+        choices.push((tr("web.notice_store"), DesktopChoice::Store));
+    }
+    choices
+}
+
+/// Whether the browser version runs on Windows; never in the desktop app.
+fn browser_on_windows() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web::on_windows()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
+    }
+}
+
+/// The text of a browser-version message about the desktop app: on
+/// Windows a last paragraph says the Microsoft Store version may trail
+/// the latest download while the Store certifies each version.
+fn desktop_message_text(text: &str, windows: bool) -> String {
+    if windows {
+        format!("{text}\n\n{}", tr("web.notice_store_note"))
+    } else {
+        text.to_string()
+    }
+}
+
+/// A browser-version message about the desktop app: OK closes it, the
+/// other buttons open the downloads or, on Windows, the Microsoft Store.
+/// Its close button and Esc only close it.
+fn desktop_app_message(app: &mut App, ctx: &egui::Context, text: &str, close: &mut bool) {
+    let windows = browser_on_windows();
+    let choices = desktop_choices(windows);
+    let labels: Vec<&str> = choices.iter().map(|(l, _)| l.as_str()).collect();
+    let Some(i) = crate::ui::chrome::message_box_closing_with(
+        ctx,
+        crate::ui::chrome::MessageIcon::Info,
+        &desktop_message_text(text, windows),
+        &labels,
+        0,
+    ) else {
+        return;
+    };
+    match choices.get(i).map(|(_, c)| *c) {
+        Some(DesktopChoice::Downloads) => app.open_url(crate::updates::RELEASES_PAGE),
+        Some(DesktopChoice::Store) => app.open_url(crate::updates::MICROSOFT_STORE_PAGE),
+        Some(DesktopChoice::Close) | None => {}
+    }
+    *close = true;
 }
 
 /// Convert to Bitmap: Resolution (a list and a value), Color mode,
@@ -1113,7 +1224,7 @@ fn convert_fields(app: &App, ui: &mut Ui, o: &mut crate::bitmap_modes::ConvertOp
     }
 }
 
-/// Manually Inflate Bitmap: the first selected bitmap's pixel size and
+/// Bitmap Padding > Custom: the first selected bitmap's pixel size and
 /// the new size as percentages (Inflate by), shown in pixels too
 /// (Inflate to).
 #[derive(Debug, Clone, PartialEq)]
@@ -1271,10 +1382,31 @@ pub(crate) fn window(_ctx: &Context, title: String) -> crate::ui::chrome::Window
 /// Enter presses OK (unless a multi-line field has the focus); Esc is
 /// handled by the keyboard handler, which closes any dialog.
 pub(crate) fn ok_cancel(ui: &mut Ui, close: &mut bool) -> bool {
+    ok_cancel_placed(ui, close, None)
+}
+
+/// [`ok_cancel`] at the right end of a row of other buttons (a dialog
+/// the user sizes, with "?" and more at the left): the row's room left
+/// over goes before OK, so OK and Cancel sit in the bottom right corner
+/// whatever the dialog's width.
+pub(crate) fn ok_cancel_at_right(ui: &mut Ui, close: &mut bool) -> bool {
+    // The row adds 10 points before the buttons, and the spacing of the
+    // row they are in before and after that.
+    let gaps = 10.0 + 2.0 * ui.spacing().item_spacing.x;
+    let left = (ui.available_width() - crate::ui::chrome::row_width(2) - gaps).max(0.0);
+    ok_cancel_placed(ui, close, Some(left))
+}
+
+fn ok_cancel_placed(ui: &mut Ui, close: &mut bool, left: Option<f32>) -> bool {
     let mut ok = false;
     let ok_label = tr("dialog.ok");
     let cancel_label = tr("dialog.cancel");
-    match crate::ui::chrome::button_row(ui, &[&ok_label, &cancel_label], false) {
+    let labels = [ok_label.as_str(), cancel_label.as_str()];
+    let picked = match left {
+        Some(left) => crate::ui::chrome::button_row_after(ui, &labels, false, left),
+        None => crate::ui::chrome::button_row(ui, &labels, false),
+    };
+    match picked {
         Some(0) => {
             ok = true;
             *close = true;
@@ -1928,7 +2060,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                     close = true;
                 }
                 Some(_) => {
-                    crate::recovery::dismiss(found, false);
+                    // A browser's backups cannot be reached outside the
+                    // page: they go with the marker.
+                    crate::recovery::dismiss(found, crate::files::WEB);
                     close = true;
                 }
                 None => {}
@@ -2631,18 +2765,19 @@ pub fn show(app: &mut App, ctx: &Context) {
         Dialog::About => crate::ui::about::about_dialog(app, ctx, &mut close),
         Dialog::WebNotice => {
             let text = format!("{}\n\n{}", tr("web.notice_title"), tr("web.notice_text"));
-            match crate::ui::chrome::message_box(
+            desktop_app_message(app, ctx, &text, &mut close);
+        }
+        Dialog::StorageRefused(r) => {
+            let text = crate::storage_full::message(*r);
+            if crate::ui::chrome::message_box(
                 ctx,
                 crate::ui::chrome::MessageIcon::Info,
                 &text,
-                &[&tr("dialog.ok"), &tr("web.notice_download")],
-            ) {
-                Some(1) => {
-                    app.open_url(crate::updates::RELEASES_PAGE);
-                    close = true;
-                }
-                Some(_) => close = true,
-                None => {}
+                &[&tr("dialog.ok")],
+            )
+            .is_some()
+            {
+                close = true;
             }
         }
         Dialog::MacrosDesktopOnly => {
@@ -2651,19 +2786,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                 tr("macros.desktop_only"),
                 tr("macros.desktop_only_text")
             );
-            match crate::ui::chrome::message_box(
-                ctx,
-                crate::ui::chrome::MessageIcon::Info,
-                &text,
-                &[&tr("dialog.ok"), &tr("web.notice_download")],
-            ) {
-                Some(1) => {
-                    app.open_url(crate::updates::RELEASES_PAGE);
-                    close = true;
-                }
-                Some(_) => close = true,
-                None => {}
-            }
+            desktop_app_message(app, ctx, &text, &mut close);
         }
     }
     // A dialog's close button closes it like Esc.
@@ -3051,7 +3174,7 @@ pub(crate) fn delete_page_size(app: &mut App, name: &str) {
     app.save_settings();
 }
 
-/// Document Options > Page Size, laid out.
+/// Document Setup > Page Size, laid out.
 pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.radio_value(
@@ -3469,6 +3592,9 @@ fn export_preview_key(app: &App, st: &ExportState) -> u64 {
     st.transparent.hash(&mut h);
     st.selection_only.hash(&mut h);
     st.all_pages.hash(&mut h);
+    st.page_list.hash(&mut h);
+    st.pages.hash(&mut h);
+    st.text_as_curves.hash(&mut h);
     st.quality.hash(&mut h);
     st.dpi.to_bits().hash(&mut h);
     st.scale_or_one().to_bits().hash(&mut h);
@@ -3955,6 +4081,11 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     );
                 }
                 if !scripted && st.format == 1 {
+                    ui.checkbox(&mut st.text_as_curves, tr("publish.text_as_curves"))
+                        .rich_tip(crate::ui::tips::pair(
+                            "publish.text_as_curves",
+                            "dialog.export_text_as_curves_desc",
+                        ));
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.pdf_standard"));
                         egui::ComboBox::from_id_salt("pdf_standard")
@@ -3995,12 +4126,8 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         "dialog.selected_only",
                         "dialog.export_selected_desc",
                     ));
-                if !st.selection_only && st.format != 1 && st.format != 11 {
-                    ui.checkbox(&mut st.all_pages, tr("dialog.all_pages"))
-                        .rich_tip(crate::ui::tips::pair(
-                            "dialog.all_pages",
-                            "dialog.export_all_pages_desc",
-                        ));
+                if !st.selection_only {
+                    export_range_fields(app, ui, st);
                 }
                 if !st.web {
                     ui.checkbox(
@@ -4071,6 +4198,59 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
             app.keep_export_choices(st);
         }
     });
+}
+
+/// Export: the pages to export (the current page, every page or a list
+/// of them) and what that writes: one numbered file per page, or one file
+/// holding them all for the formats that keep pages (#1382).
+fn export_range_fields(app: &App, ui: &mut Ui, st: &mut ExportState) {
+    use crate::ui::tips::pair;
+    let count = app.doc().pages.len();
+    let mut range = match (st.all_pages, st.page_list) {
+        (false, _) => 0,
+        (true, false) => 1,
+        (true, true) => 2,
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(tr("dialog.export_range"));
+        ui.radio_value(&mut range, 0, tr("print.range_page"))
+            .rich_tip(pair("print.range_page", "dialog.export_current_page_desc"));
+        ui.radio_value(&mut range, 1, tr("dialog.all_pages"))
+            .rich_tip(pair("dialog.all_pages", "dialog.export_every_page_desc"));
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut range, 2, tr("print.range_pages"))
+            .rich_tip(pair("print.range_pages", "dialog.export_page_list_desc"));
+        let field = ui.add_enabled(
+            range == 2,
+            egui::TextEdit::singleline(&mut st.pages)
+                .hint_text(format!("1-{count}"))
+                .desired_width(110.0),
+        );
+        field
+            .rich_tip(pair("print.range_pages", "dialog.export_page_list_desc"))
+            .rich_disabled_tip(pair("print.range_pages", "dialog.export_page_list_desc"));
+    });
+    st.all_pages = range != 0;
+    st.page_list = range == 2;
+    let current = app
+        .doc()
+        .pages
+        .iter()
+        .position(|p| p.id == app.page)
+        .unwrap_or(0);
+    let n = st.page_indexes(count, current).len();
+    if n > 1 && st.script.is_none() {
+        let ext = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1;
+        let key = if ExportState::one_file_for_all_pages(ext) {
+            "dialog.export_pages_in_one_file"
+        } else {
+            "dialog.export_file_per_page"
+        };
+        ui.label(
+            egui::RichText::new(trf(key, &[("count", &n.to_string())])).color(Tokens::text_dim()),
+        );
+    }
 }
 
 /// The pages Delete Page deletes, as indices (0 = the first): `from`
@@ -4264,18 +4444,9 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
             }
         });
         ui.add_space(8.0);
-        // A sketch of the first sheet and the sheet count.
-        let mut doc_pages: Vec<Size> = app.doc().pages.iter().map(|p| p.size).collect();
-        if !st.all_pages {
-            doc_pages = vec![app.page_size()];
-        }
-        // The selection prints as a page the size of the area it covers
-        // (#1001).
-        if st.range == 3 {
-            if let Some(size) = selection_print_size(app) {
-                doc_pages = vec![size];
-            }
-        }
+        // A sketch of the first sheet and the sheet count, for the pages
+        // the print puts on the sheets.
+        let doc_pages = printed_page_sizes(app, st);
         let options = crate::export::print_layout(app, st, app.doc());
         let plan = crate::imposition::plan(&doc_pages, &options);
         ui.vertical_centered(|ui| {
@@ -4342,6 +4513,26 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
             }
         });
     });
+}
+
+/// The sizes of the pages the print puts on the sheets, in printing
+/// order: the pages of the chosen range, list or odd or even choice
+/// (`export::printed_pages`, the same set `export::print_sheets`
+/// imposes), or the selection as one page the size of the area it covers
+/// (#1001). The Layout sketch, its sheet count and the booklet summary
+/// count these, so a booklet of pages 1 to 20 of a hundred reports twenty
+/// pages, not a hundred (#788).
+pub(crate) fn printed_page_sizes(app: &App, st: &PrintState) -> Vec<Size> {
+    if st.range == 3 {
+        if let Some(size) = selection_print_size(app) {
+            return vec![size];
+        }
+    }
+    let pages = &app.doc().pages;
+    crate::export::printed_pages(app, st)
+        .into_iter()
+        .filter_map(|i| pages.get(i).map(|p| p.size))
+        .collect()
 }
 
 /// The Booklet layout's fields under the layout grid: the binding (two
@@ -4619,6 +4810,16 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
     });
 }
 
+/// The name of the destination that leaves the printer to the system:
+/// the PDF viewer, or on Android the system's print service (#1398).
+pub fn print_service_key() -> &'static str {
+    if crate::files::ANDROID {
+        "print.dest_android"
+    } else {
+        "print.dest_viewer"
+    }
+}
+
 /// The destination list (the system's printers in name order, then the
 /// PDF viewer and the file destinations), `width` wide, and the button
 /// of the chosen printer's own settings; the printer whose Properties
@@ -4626,7 +4827,7 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
 /// show it (#614, #792).
 pub fn destination_row(ui: &mut Ui, st: &mut PrintState, width: f32) -> Option<String> {
     let mut properties = None;
-    let dests = ["print.dest_viewer", "print.dest_pdf", "print.dest_ps"];
+    let dests = [print_service_key(), "print.dest_pdf", "print.dest_ps"];
     let on_printer = st.destination == 0 && st.printer.is_some();
     let selected = match (&st.printer, st.destination) {
         (Some(p), 0) => p.clone(),
@@ -4877,7 +5078,7 @@ fn print_tab_composite(ui: &mut Ui, st: &mut PrintState) {
     });
 }
 
-fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
+pub(crate) fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
     print_group(ui, &tr("print.position_size"), |ui| {
         let mut mode = if st.fit_to_page {
             1
@@ -4902,7 +5103,15 @@ fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 st.fit_to_page = false;
                 st.scale = 100.0;
             }
-            1 => st.fit_to_page = true,
+            1 => {
+                // Chosen: a page moved or stretched in Print Preview
+                // comes back onto the sheet, fitted (#1577).
+                if !st.fit_to_page {
+                    st.art_offset = (0.0, 0.0);
+                    st.art_stretch = (1.0, 1.0);
+                }
+                st.fit_to_page = true;
+            }
             _ => {
                 st.fit_to_page = false;
                 if (st.scale - 100.0).abs() < 1e-9 {
@@ -6656,6 +6865,10 @@ pub(crate) mod tests {
             Dialog::About,
             Dialog::WebNotice,
             Dialog::MacrosDesktopOnly,
+            Dialog::StorageRefused(crate::storage_full::Refusal {
+                what: crate::storage_full::Kept::Shelf,
+                full: true,
+            }),
             Dialog::GithubOpen(Default::default()),
             Dialog::GithubSave(Default::default()),
         ]
@@ -7096,5 +7309,175 @@ mod booklet_fields_tests {
         let o = crate::export::print_layout(&app, &st, app.doc());
         assert_eq!(o.booklet.binding, crate::imposition::Binding::PerfectBound);
         assert_eq!(o.layout, crate::imposition::Layout::Booklet);
+    }
+
+    /// The summary under the sketch counts the pages that print, not the
+    /// whole drawing: a booklet of pages 1 to 3 of six reports three
+    /// pages, one blank and one sheet, as the print makes; the sketch's
+    /// sheet count is the print's for a page list, odd pages only, the
+    /// current page and the selection (#788).
+    #[test]
+    fn the_summary_counts_the_pages_of_the_range() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        for _ in 0..5 {
+            app.add_page();
+        }
+        assert_eq!(app.doc().pages.len(), 6);
+        let mut st = PrintState {
+            layout_kind: 2,
+            all_pages: true,
+            range: 2,
+            pages: "1-3".into(),
+            ..Default::default()
+        };
+        let texts = |st: &mut PrintState| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| print_layout_fields(&app, ui, st));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let shown = texts(&mut st);
+        let of_range = booklet_summary(3, &st.booklet());
+        let of_drawing = booklet_summary(6, &st.booklet());
+        assert_ne!(of_range, of_drawing);
+        assert!(shown.contains(&of_range), "{shown:?}");
+        assert!(!shown.contains(&of_drawing), "{shown:?}");
+        let info = crate::imposition::booklet_info(3, &st.booklet());
+        assert_eq!((info.pages, info.blanks, info.sheets), (3, 1, 1));
+        // The sketch's sheet count is the print's.
+        let printed = crate::export::print_sheets(&app, &st).pages.len();
+        assert_eq!(printed, 2, "two sides of one sheet");
+        assert!(shown.contains(&trf("print.sheets", &[("n", &printed.to_string())])));
+        // The sketch and the print share their page set whatever the
+        // range: odd pages of the drawing, the current page, a list of
+        // even pages, the selection.
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.selection = vec![id];
+        for (range, pages, parity, expect) in [
+            (0, "", 1, 3),
+            (1, "", 0, 1),
+            (2, "2, 5, 6", 2, 2),
+            (3, "", 0, 1),
+        ] {
+            st.range = range;
+            st.pages = pages.into();
+            st.parity = parity;
+            let sizes = printed_page_sizes(&app, &st);
+            assert_eq!(
+                sizes.len(),
+                expect,
+                "range {range} {pages:?} parity {parity}"
+            );
+            let plan =
+                crate::imposition::plan(&sizes, &crate::export::print_layout(&app, &st, app.doc()));
+            let printed = crate::export::print_sheets(&app, &st);
+            assert_eq!(plan.len(), printed.pages.len(), "range {range}");
+            assert_eq!(
+                plan.first().map(|s| s.size),
+                printed.pages.first().map(|p| p.size),
+                "range {range}"
+            );
+        }
+        // The selection prints as a page the size of the area it covers
+        // (the outline included), not the page's.
+        let area = crate::export::print_area(app.selected_rc().iter())
+            .map(|r| r.size())
+            .expect("the selection prints");
+        assert_eq!(printed_page_sizes(&app, &st), vec![area]);
+        assert!(area.width < app.page_size().width);
+    }
+}
+
+#[cfg(test)]
+mod desktop_message_tests {
+    use super::*;
+
+    /// OK and the downloads everywhere; the Microsoft Store button only
+    /// on Windows, last, named in every language.
+    #[test]
+    fn the_store_button_is_offered_on_windows_only() {
+        let kinds = |w| {
+            desktop_choices(w)
+                .into_iter()
+                .map(|(_, c)| c)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(false),
+            [DesktopChoice::Close, DesktopChoice::Downloads]
+        );
+        assert_eq!(
+            kinds(true),
+            [
+                DesktopChoice::Close,
+                DesktopChoice::Downloads,
+                DesktopChoice::Store
+            ]
+        );
+        for (code, _) in crate::i18n::LANGUAGES {
+            crate::i18n::with_thread_language(code, || {
+                let choices = desktop_choices(true);
+                let store = &choices[2].0;
+                assert!(store.contains("Microsoft Store"), "{code}: {store}");
+                assert_ne!(store, &choices[1].0, "{code}");
+            });
+        }
+    }
+
+    /// On Windows the message ends with a paragraph saying the Store
+    /// version may trail the latest download; elsewhere it is unchanged.
+    #[test]
+    fn the_store_note_is_added_on_windows_only() {
+        for (code, _) in crate::i18n::LANGUAGES {
+            crate::i18n::with_thread_language(code, || {
+                let text = tr("web.notice_text");
+                assert_eq!(desktop_message_text(&text, false), text, "{code}");
+                let with = desktop_message_text(&text, true);
+                let note = tr("web.notice_store_note");
+                assert!(note.contains("Microsoft Store"), "{code}: {note}");
+                assert!(!note.contains("**"), "{code}: {note}");
+                assert_eq!(with, format!("{text}\n\n{note}"), "{code}");
+            });
+        }
+    }
+
+    /// The close button of the message only closes it: it answers OK,
+    /// never a button that opens a page.
+    #[test]
+    fn closing_the_message_answers_ok() {
+        let ctx = crate::theme::ui_context();
+        let labels = ["OK", "Downloads", "Store"];
+        let mut picked = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            crate::ui::chrome::request_close(ui.ctx());
+            picked = crate::ui::chrome::message_box_closing_with(
+                ui.ctx(),
+                crate::ui::chrome::MessageIcon::Info,
+                "text",
+                &labels,
+                0,
+            );
+        });
+        out.textures_delta.clear();
+        assert_eq!(picked, Some(0));
     }
 }

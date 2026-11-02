@@ -32,7 +32,7 @@ New objects take the fill and outline of their kind:
 - The Properties panel with nothing selected edits the Graphic defaults.
 - Object > Create > Pattern Fill and Vector Pattern Fill make the
   pattern the Graphic default fill.
-- Tools > Save Settings as Default keeps the defaults for new drawings.
+- Tools > Save as Defaults keeps the defaults for new drawings.
   Drawings saved before default properties existed open with a new
   drawing's.
 - The text defaults' black is the drawing's own: in a CMYK drawing new

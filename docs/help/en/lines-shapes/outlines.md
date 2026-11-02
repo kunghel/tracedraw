@@ -66,8 +66,9 @@ The [[tool.outline_color]] tool (<kbd>Shift+F12</kbd>) opens the
 
 ## Variable Outline {#variable-outline}
 
-The [[tool.variable_outline]] tool, in the Shape flyout, makes an outline
-thicker or thinner along its length with width nodes.
+The [[tool.variable_outline]] tool, whose button sits under the brush
+tools in the toolbox, makes an outline thicker or thinner along its length
+with width nodes.
 
 1. Select an object with an outline, such as a curve, a rectangle or an
    ellipse. An object with no outline gets a thin one.

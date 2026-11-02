@@ -15,7 +15,7 @@ listeler.
   kapattığınızda işaretler kaybolur ve TraceDraw bir sonraki başlatılışında
   komut yine kapalıdır.
 - Her sürümün değişikliklerinin tam listesi projenin
-  [değişiklik günlüğündedir](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md).
+  [değişiklik günlüğündedir](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md).
 
 ## Son sürümlerin öne çıkanları {#highlights}
 

@@ -19,8 +19,8 @@ baselines can sit on the page's baseline grid. Code: `crates/core/src/text_flow.
   ("Text flows around it"), the seven wrap styles (the one in use marked
   while the object wraps) and the text wrap offset field; a style or an
   offset turns wrapping on.
-- The arrow beside the button lists the styles as the reference
-  program's list does (#661): the title Wrap style, None, then under a
+- The arrow beside the button lists the styles (#661): the title
+  Wrap style, None, then under a
   Contour heading and a Square heading their sides (text flows left,
   text flows right, straddle text; and above/below for Square), then the
   text wrap offset (in the ruler unit). None is marked while no selected

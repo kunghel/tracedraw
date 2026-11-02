@@ -3,25 +3,27 @@
 Tracing turns a bitmap into vector shapes that you can edit, recolor and
 scale without losing quality: a scanned logo, a sketch, a photo.
 
-## Quick trace {#quick-trace}
+## Automatic trace {#quick-trace}
 
-Select a bitmap and choose [[menu.bitmaps > menu.bitmaps.quick_trace]]. It uses
+Select a bitmap and choose [[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.quick_trace]]. It uses
 the preset chosen on the [[options.bitmap_tracing]] page of the global options
-(Clipart at first).
+([[menu.bitmaps.trace_optimized]] at first, which chooses the detail for each
+picture: as faithful to it as it can be in the fewest nodes).
 
 [[menu.bitmaps.repeat_last_trace]] traces the selected bitmap again as the last trace did, without the dialog box, and [[menu.bitmaps.last_trace_settings]] opens the dialog box with the last trace's settings. A bitmap's right-click menu has these commands too, with [[menu.bitmaps.centerline_trace]] and [[menu.bitmaps.outline_trace]].
 
 ## The Trace Bitmap dialog box {#trace}
 
-[[menu.bitmaps > menu.bitmaps.outline_trace]] and
+[[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.outline_trace]] and
 [[menu.bitmaps.centerline_trace]] list presets; choose one to open the trace
 dialog box.
 
-- **Outline trace** fills areas of color with shapes:
+- **Outline** fills areas of color with shapes:
   [[menu.bitmaps.trace_line_art]], [[menu.bitmaps.trace_logo]],
   [[menu.bitmaps.trace_detailed_logo]], [[menu.bitmaps.trace_clipart]],
-  [[menu.bitmaps.trace_low_quality]] and [[menu.bitmaps.trace_high_quality]].
-- **Centerline trace** follows lines with open curves:
+  [[menu.bitmaps.trace_low_quality]], [[menu.bitmaps.trace_high_quality]] and
+  [[menu.bitmaps.trace_optimized]].
+- **Centerline** follows lines with open curves:
   [[menu.bitmaps.trace_technical]] and [[menu.bitmaps.trace_line_drawing]].
 
 ![The Trace Bitmap dialog box](../../img/bitmaps-tracing.png)
@@ -31,7 +33,8 @@ its left side, the settings sit in a panel at the right, and the trace is
 made again whenever you change a setting: there is nothing to press to see
 the result. Under the preview a line counts the **curves**, **nodes** and
 **colors** of the trace. Click [[dialog.ok]] to place the shapes over the
-bitmap, darkest first, or [[dialog.cancel]] to leave the bitmap as it is.
+bitmap, darkest first, or [[dialog.cancel]] to leave the bitmap as it is;
+both sit at the bottom right of the dialog box.
 
 ## The preview {#preview}
 
@@ -49,6 +52,11 @@ The buttons after the list zoom to fit, zoom out, zoom in and pan. The
 wheel zooms around the pointer and a drag moves the picture; both panes
 move together. Transparent parts show a checkerboard.
 
+In the browser a large picture is previewed from a smaller copy, and a note
+in red under the preview says so: fine detail can look coarse there, but
+[[dialog.ok]] traces the whole picture. The desktop app shows the preview
+exactly.
+
 ## Settings {#settings}
 
 The [[dialog.trace_tab_settings]] tab holds:
@@ -57,7 +65,9 @@ The [[dialog.trace_tab_settings]] tab holds:
   the preset. Choosing one sets the sliders below to the values that suit
   that kind of picture.
 - [[dialog.detail]] (0 to 100): more detail keeps smaller areas and finer
-  lines; less detail smooths specks and grain away.
+  lines; less detail smooths specks and grain away. With
+  [[menu.bitmaps.trace_optimized]] the detail is chosen for each picture and
+  the slider is grayed.
 - [[dialog.smoothing]] (0 to 100, 25 at first): smoother curves with fewer
   nodes.
 - [[dialog.corner_smoothness]] (0 to 100): rounder corners.
@@ -70,15 +80,23 @@ The [[dialog.trace_tab_settings]] tab holds:
   the eyedropper beside it.
 - [[dialog.trace_objects]]: [[dialog.trace_merge_adjacent]] (on at first)
   makes one curve of every area of a color; off, each separate patch is a
-  curve of its own. [[dialog.trace_remove_overlap]] keeps every shape to
-  its own pixels; off, shapes reach a little under the ones above them, so
-  no gaps show between neighbors. [[dialog.trace_group_by_color]] puts the
-  curves of each color in a group of their own; it is available when the
-  areas of a color are not merged already.
+  curve of its own. [[dialog.trace_remove_overlap]] keeps every shape to its
+  own pixels, holes and all; off, a shape is drawn whole under the shapes
+  inside it (a head under its eyes). Either way, neighbors share one curve
+  along their border, so no gaps show and the wireframe shows each border
+  once. [[dialog.trace_group_by_color]] puts the curves of each color in a
+  group of their own; it is available when the areas of a color are not
+  merged already.
 - [[dialog.delete_original]]: the bitmap goes when the trace is placed.
 
 Settings that do not apply to the current trace type are grayed out: a
 centerline trace reads only the detail and the smoothing.
+
+[[dialog.trace_optimize]], at the bottom left of the dialog box, tries several
+details on the picture, compares each trace with it, and puts the detail
+that draws it most faithfully in the fewest nodes into the [[dialog.detail]]
+slider. It is a step you can undo. If you change the settings before it is
+done, its result is left out.
 
 ## Colors {#colors}
 
@@ -99,6 +117,6 @@ Reset is one step. A change made after undoing drops the steps that were
 undone.
 
 [[dialog.trace_options]] opens the [[options.bitmap_tracing]] page of the
-global options, where you choose the quick trace preset and the choices
+global options, where you choose the automatic trace preset and the choices
 every trace starts with, and then returns to the dialog box. The
 [[dialog.help_button]] button opens this page.

@@ -6,7 +6,7 @@ TraceDraw 視窗包含您的繪圖，以及處理繪圖所需的一切。本頁�
 
 由上到下、由左到右：
 
-- **選單列**包含所有指令，分布在 [[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.layout]]、[[menu.object]]、[[menu.effects]]、[[menu.bitmaps]]、[[menu.text]]、[[menu.table]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]] 選單中。每個指令旁邊都會顯示其快速鍵。沒有開啟任何繪圖時，只會顯示 [[menu.file]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]]。[選單指令](../reference/menus.md)頁面列出了所有指令。
+- **選單列**包含所有指令，分布在 [[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.object]]、[[menu.text]]、[[menu.bitmaps]]、[[menu.effects]]、[[menu.layout]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]] 選單中。每個指令旁邊都會顯示其快速鍵。沒有開啟任何繪圖時，只會顯示 [[menu.file]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]]。[選單指令](../reference/menus.md)頁面列出了所有指令。
 - **標準工具列**包含常用指令（請參閱下文）。
 - **屬性列**顯示您目前操作的設定。
 - **文件分頁**為每個開啟的繪圖顯示一個分頁。

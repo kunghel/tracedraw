@@ -1,10 +1,19 @@
 # Toolbox
 
-- One button per flyout, top to bottom (the last one, the Variable
-  Outline tool, after the Fill flyout), with
-  separator lines after the Shape, Zoom, Polygon, Text, Connector,
-  Transparency and Fill groups (before the "+"). A button shows the tool last used from its flyout
-  (kept in the settings); the active tool's button is tinted.
+- One button per flyout, top to bottom, with separator lines after the
+  Shape, Zoom, Polygon, Text, Connector, Transparency and Fill groups
+  (before the "+"). The Variable Outline tool has a button of its own,
+  right under the brush tools' flyout (Brush Strokes, Painterly Brush,
+  Shape Recognition, Sketch) and over the Rectangle flyout, inside the
+  drawing block, with no line between the brushes and it; it was at the
+  bottom, after the Fill flyout, before
+  (`ui::toolbox::tests::the_variable_outline_button_sits_under_the_brush_tools`).
+  A button shows the tool last used from its flyout (kept in the
+  settings as one tool id per group, in the groups' order; each id goes
+  to the group that holds its tool, so a list saved with the groups in
+  an older order still applies,
+  `ops::smoke_tests::toolbox_picks_saved_in_the_old_group_order_still_apply`);
+  the active tool's button is tinted.
 - A right click on a tool button or on the toolbox's empty part opens the
   bars' menu (Customize, button size, the bars), as on the other bars.
 - Buttons with a flyout have a small arrow at the bottom-right. Clicking
@@ -47,8 +56,12 @@ their size (#494, `ui::toolbox::tests::a_column_toolbox_fits_the_window`).
 ## Checks
 
 - `ui::toolbox::tests::flyout_groups_can_be_hidden_and_reset`
-- `ui::toolbox::tests::separators_split_the_reference_subgroups`
+- `ui::toolbox::tests::separators_split_the_toolbox_subgroups`
+- `ui::toolbox::tests::separator_lines_follow_the_same_groups`
+- `ui::toolbox::tests::the_variable_outline_button_sits_under_the_brush_tools`
+- `ui::icons::tests::coloured_icons_follow_the_toolbox_groups_and_can_be_off`
 - `ops::smoke_tests::toolbox_groups_remember_the_last_tool_used`
+- `ops::smoke_tests::toolbox_picks_saved_in_the_old_group_order_still_apply`
 
 ## The pointer over the drawing
 
@@ -75,6 +88,15 @@ halo, with the system pointer hidden, so they show on a page of any
 colour: the system's invert what is under them, and on Windows they can
 show white on a white page (#655,
 `cursors::tests::the_cross_hair_and_the_i_beam_are_drawn_black_on_white`).
+On Windows the system pointer is not hidden but swapped for a fully
+transparent pointer image: Windows hides and shows the pointer only at
+the next mouse move, so a tool picked with its shortcut over a still
+mouse kept the old pointer, or none at all after a tool with a drawn
+pointer, until the mouse moved, while a new pointer image shows at once.
+Whatever the frame last asked for decides, so a system pointer asked for
+after a drawn one in the same frame (a text box's I-beam) is never
+replaced by the blank image (#1124,
+`cursors::tests::a_drawn_pointer_hides_the_system_one_with_a_blank_image_on_windows`).
 The cross hair's lines cross on the middle of the pixel under the hot
 spot; the icons, nibs and drawn pointers are painted beside it, above
 the drawing. A tool's icon sits 4 points below and right of the cross

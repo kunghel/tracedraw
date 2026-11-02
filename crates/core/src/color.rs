@@ -315,9 +315,11 @@ impl Color {
     /// Screen colour as 8-bit sRGB. Uses the registered converter or ICC
     /// engine when there is one, else the built-in conversions.
     pub fn to_rgb8(self) -> [u8; 3] {
-        let s = self.process();
-        if s != self {
-            return s.to_rgb8();
+        // A spot ink as its process colour. (Not "if process() differs":
+        // a component that is not a number differs from itself, and the
+        // call went round for ever until the stack ran out.)
+        if let Color::Spot { .. } = self {
+            return self.process().to_rgb8();
         }
         if let Some(conv) = engine::get() {
             if matches!(self, Color::Cmyk { .. } | Color::Lab { .. }) {
@@ -651,6 +653,55 @@ pub fn lab_to_rgb(l: f32, a: f32, b: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A colour with a component that is not a number (one a damaged
+    /// file's gradient function gave) still has a screen colour: the
+    /// conversion used to call itself for ever, as such a colour differs
+    /// from itself, and the program went down with the stack.
+    #[test]
+    fn a_colour_with_a_component_that_is_not_a_number_still_converts() {
+        let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+        for v in bad {
+            assert_eq!(
+                Color::Rgb {
+                    r: v,
+                    g: 0.5,
+                    b: 0.0
+                }
+                .to_rgb8()[1],
+                128
+            );
+            let _ = Color::Cmyk {
+                c: v,
+                m: 0.0,
+                y: 0.0,
+                k: 0.0,
+            }
+            .to_rgb8();
+            let _ = Color::Gray { v }.to_rgb8();
+            let _ = Color::Lab {
+                l: v,
+                a: 0.0,
+                b: 0.0,
+            }
+            .to_rgb8();
+            let _ = Color::Hsb {
+                h: v,
+                s: 1.0,
+                b: 1.0,
+            }
+            .to_rgb8();
+            let _ = Color::Spot {
+                ink: 1,
+                tint: v,
+                c: v,
+                m: 0.0,
+                y: 0.0,
+                k: 0.0,
+            }
+            .to_rgb8();
+        }
+    }
 
     #[test]
     fn spot_colors_show_and_convert_through_their_stand_in() {

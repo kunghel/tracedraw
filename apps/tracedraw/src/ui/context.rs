@@ -1,5 +1,5 @@
 //! Right-click context menus: object menu (Pick tool), node menu (Shape
-//! tool), page menu (empty area), text menu.
+//! tool), page menu (empty area), text editing menu.
 
 use crate::app::{App, DockerTab};
 use crate::i18n::tr;
@@ -61,6 +61,8 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
                 && app.guide_at(p).is_some();
             if let Some(locked) = app.context_locked {
                 locked_menu(app, ui, locked, &mut close);
+            } else if app.editing_text() {
+                text_edit_menu(app, ui, &mut close);
             } else if app.tool == Tool::Shape {
                 node_menu(app, ui, &mut close);
             } else if on_guide {
@@ -121,6 +123,43 @@ fn guide_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     }
 }
 
+/// Right-click while a text is being edited: the editing commands act on
+/// its characters (#1377), and the Properties docker.
+fn text_edit_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
+    let picked = app.text_selection_active();
+    if ci(
+        ui,
+        close,
+        "menu.edit.undo",
+        "Ctrl+Z",
+        app.engine.undo_label().is_some(),
+    ) {
+        app.undo();
+    }
+    sep(ui);
+    if ci(ui, close, "menu.edit.cut", "Ctrl+X", picked) {
+        app.text_cut();
+    }
+    if ci(ui, close, "menu.edit.copy", "Ctrl+C", picked) {
+        app.text_copy();
+    }
+    if ci(ui, close, "menu.edit.paste", "Ctrl+V", true) {
+        app.text_paste(None);
+    }
+    if ci(ui, close, "menu.edit.delete", "Delete", picked) {
+        app.text_delete_forward();
+    }
+    sep(ui);
+    if ci(ui, close, "menu.edit.select_all", "Ctrl+A", true) {
+        app.text_select_all();
+    }
+    sep(ui);
+    if ci(ui, close, "menu.object.properties", "Alt+Enter", true) {
+        app.show_dockers = true;
+        app.docker_tab = DockerTab::Properties;
+    }
+}
+
 /// Right-click on a locked object: only unlocking it (it is selected
 /// once unlocked) or every locked object of the page.
 fn locked_menu(app: &mut App, ui: &mut Ui, id: ShapeId, close: &mut bool) {
@@ -137,9 +176,10 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     let is_text = shapes
         .iter()
         .any(|s| matches!(s.kind, ShapeKind::Text { .. }));
+    // A clip frame whose frame is a group ungroups too (#1605).
     let is_group = shapes
         .iter()
-        .any(|s| matches!(s.kind, ShapeKind::Group { .. }));
+        .any(|s| matches!(s.kind, ShapeKind::Group { .. }) || s.is_clip_frame_of_group());
     let is_curve = shapes
         .iter()
         .any(|s| matches!(s.kind, ShapeKind::Path { .. }));
@@ -205,32 +245,35 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
         ) {
             app.save_bitmap_as();
         }
-        // The trace commands of the reference program's bitmap menu
-        // (#452): Quick Trace, the last trace again or its settings, and
-        // the Centerline and Outline presets.
-        if ci(ui, close, "menu.bitmaps.quick_trace", "", true) {
-            app.quick_trace();
-        }
-        let last = app.last_trace.is_some();
-        if ci(ui, close, "menu.bitmaps.repeat_last_trace", "", last) {
-            app.repeat_last_trace();
-        }
-        if ci(ui, close, "menu.bitmaps.last_trace_settings", "", last) {
-            app.open_last_trace_settings();
-        }
-        sub(ui, "menu.bitmaps.centerline_trace", |ui| {
-            for (key, preset) in crate::ui::menus::CENTERLINE_TRACES {
-                if ci(ui, close, key, "", true) {
-                    app.open_trace(preset);
-                }
+        // The trace commands of the Image menu (#452), under Trace: the
+        // automatic trace, the last trace again or its settings, and the
+        // Centerline and Outline presets.
+        sub(ui, "menu.bitmaps.trace", |ui| {
+            if ci(ui, close, "menu.bitmaps.quick_trace", "", true) {
+                app.quick_trace();
             }
-        });
-        sub(ui, "menu.bitmaps.outline_trace", |ui| {
-            for (key, preset) in crate::ui::menus::OUTLINE_TRACES {
-                if ci(ui, close, key, "", true) {
-                    app.open_trace(preset);
-                }
+            let last = app.last_trace.is_some();
+            if ci(ui, close, "menu.bitmaps.repeat_last_trace", "", last) {
+                app.repeat_last_trace();
             }
+            if ci(ui, close, "menu.bitmaps.last_trace_settings", "", last) {
+                app.open_last_trace_settings();
+            }
+            sep(ui);
+            sub(ui, "menu.bitmaps.centerline_trace", |ui| {
+                for (key, preset) in crate::ui::menus::CENTERLINE_TRACES {
+                    if ci(ui, close, key, "", true) {
+                        app.open_trace(preset);
+                    }
+                }
+            });
+            sub(ui, "menu.bitmaps.outline_trace", |ui| {
+                for (key, preset) in crate::ui::menus::OUTLINE_TRACES {
+                    if ci(ui, close, key, "", true) {
+                        app.open_trace(preset);
+                    }
+                }
+            });
         });
         if ci(ui, close, "menu.bitmaps.crop_bitmap", "", true) {
             app.set_tool(Tool::Crop);
@@ -550,16 +593,9 @@ fn page_menu(app: &mut App, ui: &mut Ui, p: tracedraw_core::Point, close: &mut b
         close,
         "menu.edit.paste",
         "Ctrl+V",
-        app.clipboard.is_some(),
+        app.clipboard.is_some() || app.text_clip.is_some(),
     ) {
-        app.paste_any();
-        if let Some(b) = app.selection_bounds() {
-            let shapes = app.selection.clone();
-            app.run(Command::TransformShapes {
-                shapes,
-                transform: tracedraw_core::Affine::translate(p - b.center()),
-            });
-        }
+        app.paste_any_at(Some(p));
     }
     if ci(ui, close, "menu.edit.select_all_objects", "Ctrl+A", true) {
         app.select_all();

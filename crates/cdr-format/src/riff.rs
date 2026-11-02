@@ -173,7 +173,7 @@ pub fn parse_with_shared(main: &[u8], externals: Vec<SharedBytes>, version: u16)
     let _declared = u32le(main, 4).ok_or(Error::Truncated(4))?;
     let end = main.len();
     let list_type: [u8; 4] = main[8..12].try_into().map_err(|_| Error::Truncated(8))?;
-    let children = parse_children(main, 0, 12, end, &mut streams, &ctx, None);
+    let children = parse_children(main, 0, 12, end, &mut streams, &ctx, None, 1);
     Ok(Tree {
         root: Chunk {
             id: *b"RIFF",
@@ -187,9 +187,20 @@ pub fn parse_with_shared(main: &[u8], externals: Vec<SharedBytes>, version: u16)
     })
 }
 
+/// How deep lists may nest inside the `RIFF` chunk. Real files nest a
+/// few dozen levels (the document, a page, a layer, then one level per
+/// group inside a group); a damaged or hostile file can nest a `LIST`
+/// at every 12 bytes, and the walker recurses once per level, so without
+/// a bound a few hundred kilobytes of nested lists ran the stack out and
+/// closed the program. A list beyond this depth is kept as a leaf.
+pub const MAX_LIST_DEPTH: usize = 256;
+
 /// Parse sibling chunks in `buf[pos..end]`. Malformed data ends the list
 /// quietly; whatever was parsed before is kept. Inside a compressed stream
 /// `sizes` is the pool of chunk sizes that the size fields index into.
+/// `depth` counts the lists above these chunks, the `RIFF` chunk being
+/// depth 1; a list at [`MAX_LIST_DEPTH`] gets no children.
+#[allow(clippy::too_many_arguments)]
 fn parse_children(
     buf: &[u8],
     stream: usize,
@@ -198,8 +209,13 @@ fn parse_children(
     streams: &mut Vec<SharedBytes>,
     ctx: &Ctx,
     sizes: Option<&[u32]>,
+    depth: usize,
 ) -> Vec<Chunk> {
     let mut out = Vec::new();
+    if depth >= MAX_LIST_DEPTH {
+        log::warn!("lists nested {depth} deep at {pos}: the ones inside are not read");
+        return out;
+    }
     while pos + 8 <= end {
         let id: [u8; 4] = match buf.get(pos..pos + 4) {
             Some(s) => [s[0], s[1], s[2], s[3]],
@@ -259,11 +275,22 @@ fn parse_children(
                 .get(bstart..bstart + 4)
                 .map(|s| [s[0], s[1], s[2], s[3]]);
             let children = match lt {
-                Some(t) if &t == b"cmpr" => inflate_cmpr(bbuf, bstart + 4, bend, streams, ctx),
+                Some(t) if &t == b"cmpr" => {
+                    inflate_cmpr(bbuf, bstart + 4, bend, streams, ctx, depth + 1)
+                }
                 // From version 7 the `stlt` list body is one record, not
                 // sub-chunks (the parser reads it from the list's data).
                 Some(t) if &t == b"stlt" && (ctx.version >= 7 || ctx.version == 0) => Vec::new(),
-                Some(_) => parse_children(bbuf, bstream, bstart + 4, bend, streams, ctx, sizes),
+                Some(_) => parse_children(
+                    bbuf,
+                    bstream,
+                    bstart + 4,
+                    bend,
+                    streams,
+                    ctx,
+                    sizes,
+                    depth + 1,
+                ),
                 None => Vec::new(),
             };
             out.push(Chunk {
@@ -301,6 +328,7 @@ fn inflate_cmpr(
     end: usize,
     streams: &mut Vec<SharedBytes>,
     ctx: &Ctx,
+    depth: usize,
 ) -> Vec<Chunk> {
     let (Some(c0), Some(c1)) = (u32le(buf, pos), u32le(buf, pos + 8)) else {
         return Vec::new();
@@ -335,7 +363,16 @@ fn inflate_cmpr(
     streams.push(inflated.clone());
     let idx = streams.len();
     let len = inflated.len();
-    let children = parse_children(&inflated, idx, 0, len, streams, ctx, Some(&sizes));
+    let children = parse_children(
+        &inflated,
+        idx,
+        0,
+        len,
+        streams,
+        ctx,
+        Some(&sizes),
+        depth + 1,
+    );
     vec![Chunk {
         id: *b"cmpr",
         list_type: Some(*b"cmpr"),
@@ -495,6 +532,46 @@ mod tests {
         file.extend_from_slice(b"LIST\xff\xff\xff\xffpage");
         let tree = parse(&file).unwrap();
         assert!(tree.root.find(b"page").is_some());
+    }
+
+    /// Lists nested beyond [`MAX_LIST_DEPTH`] are kept as leaves: a file
+    /// made of 10 000 nested lists (120 KB) ran the walker's recursion
+    /// out of stack, which cannot be caught, and closed the program.
+    /// The lists above the limit are read, those below it are not.
+    #[test]
+    fn deeply_nested_lists_stop_at_the_limit() {
+        let mut body = list(b"grp ", &chunk(b"loda", &[1, 2, 3, 4]));
+        for _ in 0..10_000 {
+            body = list(b"grp ", &body);
+        }
+        let mut riff_body = b"CDRC".to_vec();
+        riff_body.extend_from_slice(&chunk(b"vrsn", &1200u16.to_le_bytes()));
+        riff_body.extend_from_slice(&body);
+        let file = chunk(b"RIFF", &riff_body);
+        let tree = parse(&file).unwrap();
+        assert!(tree.root.find(b"vrsn").is_some());
+        let mut depth = 0;
+        let mut c = tree.root.find(b"grp ").expect("the outer group");
+        while let Some(inner) = c.find(b"grp ") {
+            c = inner;
+            depth += 1;
+        }
+        // The outermost group is depth 2 (the RIFF chunk is 1).
+        assert_eq!(depth + 2, MAX_LIST_DEPTH, "{depth}");
+        assert!(c.children.is_empty());
+        // A file nested within the limit is read whole.
+        let mut body = list(b"grp ", &chunk(b"loda", &[1, 2, 3, 4]));
+        for _ in 0..100 {
+            body = list(b"grp ", &body);
+        }
+        let mut riff_body = b"CDRC".to_vec();
+        riff_body.extend_from_slice(&body);
+        let tree = parse(&chunk(b"RIFF", &riff_body)).unwrap();
+        let mut c = tree.root.find(b"grp ").expect("the outer group");
+        while let Some(inner) = c.find(b"grp ") {
+            c = inner;
+        }
+        assert!(c.find(b"loda").is_some());
     }
 }
 

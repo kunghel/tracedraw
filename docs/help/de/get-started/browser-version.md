@@ -2,7 +2,7 @@
 
 > *Maschinelle Übersetzung: Diese Seite kann hinter der englischen Fassung zurückliegen.*
 
-Sie können [TraceDraw in einem Webbrowser verwenden](https://igtoth.github.io/tracedraw/),
+Sie können [TraceDraw in einem Webbrowser verwenden](https://tracedraw.github.io/tracedraw/),
 ohne etwas zu installieren. Es ist dasselbe Programm wie die Desktopversion,
 für den Browser erstellt, sodass Menüs, Werkzeuge und Dateien dieselben sind.
 
@@ -13,7 +13,10 @@ für den Browser erstellt, sodass Menüs, Werkzeuge und Dateien dieselben sind.
 Bei jedem Öffnen der Seite erklärt eine Meldung, dass die Browserversion
 dasselbe Programm wie die Desktopversion ist und was sich unterscheidet.
 [[dialog.ok]] (oder <kbd>Enter</kbd>) schließt sie; eine zweite Schaltfläche
-öffnet die Downloads der Desktopversion.
+öffnet die Downloads der Desktopversion. Unter Windows öffnet eine dritte
+Schaltfläche TraceDraw im Microsoft Store, und die Meldung ergänzt, dass die
+Store-Version eine oder mehrere Versionen hinter dem neuesten Download liegen
+kann, weil der Store jede Version zuerst zertifiziert.
 
 ## Unterschiede zur Desktopversion {#differences}
 
@@ -41,8 +44,11 @@ dasselbe Programm wie die Desktopversion ist und was sich unterscheidet.
   ausgeführt. Im Browser zeigt jeder Makrobefehl einen Hinweis darauf, mit
   einer Schaltfläche zu den Desktop-Downloads.
 - **Aktualisierungen.** Die Browserversion ist immer die neueste; es gibt
-  nichts zu installieren. Automatische Sicherung und Sitzungswiederherstellung
-  sind Funktionen der Desktopversion.
+  nichts zu installieren. Ungespeicherte Zeichnungen: Wer den Tab mit
+  ungespeicherten Änderungen schließt, neu lädt oder die Seite verlässt, wird
+  zuerst vom Browser gefragt. Automatische Sicherungen liegen im Speicher des
+  Browsers für die Seite, und der nächste Besuch bietet an, was ein
+  geschlossener, neu geladener oder abgestürzter Tab hinterlassen hat.
   Als App installiert, behält sie die zuletzt verwendete Version und übernimmt
   eine neue beim nächsten Start, nachdem alle ihre Fenster geschlossen waren;
   siehe [Tablets und die Android-App](tablets-and-android.md).

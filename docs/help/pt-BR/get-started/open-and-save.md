@@ -29,6 +29,13 @@ aberto. A moldura e o rótulo mostrados durante o arraste dizem o que vai
 acontecer. Onde o sistema não informa onde está o ponteiro (Linux, macOS),
 desenhos abrem em uma guia e imagens são importadas.
 
+Um desenho aberto pelo sistema enquanto o TraceDraw está em execução (um
+clique duplo no gerenciador de arquivos ou no Finder, Abrir com, ou
+Compartilhar no Android) abre em uma guia da janela já aberta, que vem para
+a frente. A versão para navegador instalada como aplicativo faz o mesmo com
+arquivos `.tdraw`, `.cdr`, `.svg` e `.pdf` nos navegadores que deixam
+aplicativos instalados abrir arquivos.
+
 Como um desenho aparece primeiro (a página inteira, seus objetos, a largura da
 página, o tamanho real, ou a página, a posição e o zoom que tinha ao ser salvo)
 é definido em [[options.open_view]], na página [[options.display]] de
@@ -153,7 +160,7 @@ um; Cancelar interrompe.
 
 ## Backup automático e recuperação {#recovery}
 
-No computador, o TraceDraw guarda cópias de segurança dos desenhos abertos
+O TraceDraw guarda cópias de segurança dos desenhos abertos
 enquanto o backup automático estiver ativado (a página [[options.save]] de
 [[menu.tools > menu.tools.options > menu.tools.options_app]] define a
 frequência e o local; a cada 20 minutos de início). Fechar o TraceDraw
@@ -163,4 +170,12 @@ Se o TraceDraw terminou sem fechar, por exemplo depois de uma queda de energia,
 ele oferece as cópias na próxima vez que iniciar: [[dialog.recover]] abre cada
 uma como um desenho não salvo (Salvar então pergunta onde salvá-lo), e
 [[dialog.discard]] deixa as cópias na pasta. Duas janelas do TraceDraw abertas
-ao mesmo tempo nunca oferecem os desenhos uma da outra.
+ao mesmo tempo nunca oferecem os desenhos uma da outra. Quando o sistema fecha
+o TraceDraw sem perguntar sobre desenhos não salvos (o Encerrar do menu do
+macOS, sair da sessão) ou manda o app para Android para o segundo plano, as
+cópias são gravadas na hora, e o próximo início as oferece.
+
+Na versão para navegador as cópias ficam no armazenamento do navegador para o
+site, numa pasta própria de cada aba. Fechar ou recarregar uma aba com
+desenhos não salvos pergunta antes, e a próxima visita oferece o que a aba
+deixou; [[dialog.discard]] apaga essas cópias.

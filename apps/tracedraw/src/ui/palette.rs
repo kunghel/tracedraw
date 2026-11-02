@@ -626,7 +626,7 @@ fn swatch(
 
     // Dragging the colour: inside an object it fills it, on its outline
     // it colours the outline, on the document palette it joins it.
-    if resp.drag_started() && app.palette_shades.is_none() {
+    if resp.drag_started_by(egui::PointerButton::Primary) && app.palette_shades.is_none() {
         app.palette_drag = Some(entry.map(|(_, c)| *c));
     }
     if app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -640,14 +640,16 @@ fn swatch(
     // A press that slipped a few pixels but was let go on the swatch it
     // began on is a click, not a drag: egui counts any move past its
     // click distance as a drag, and the colour went nowhere (#1336).
-    let slipped_click = resp.drag_stopped()
-        && ui
-            .ctx()
-            .pointer_latest_pos()
-            .is_some_and(|pos| cell.contains(pos));
+    // The same for the right button, which sets the outline.
+    let on_cell = ui
+        .ctx()
+        .pointer_latest_pos()
+        .is_some_and(|pos| cell.contains(pos));
+    let slipped_click = resp.drag_stopped_by(egui::PointerButton::Primary) && on_cell;
+    let slipped_right = resp.drag_stopped_by(egui::PointerButton::Secondary) && on_cell;
     if resp.drag_stopped() {
         let dragged = app.palette_drag.take();
-        if !slipped_click {
+        if !slipped_click && !slipped_right {
             if let (Some(color), Some(pos)) = (dragged, ui.ctx().pointer_latest_pos()) {
                 app.drop_color(color, pos);
             }
@@ -729,7 +731,7 @@ fn swatch(
             .data_mut(|d| d.remove_temp::<bool>(menu_id))
             .unwrap_or(false);
         // Not a right click that makes a copy during a drag on the canvas.
-        if resp.secondary_clicked() && !hold_open && !app.transforming() {
+        if (resp.secondary_clicked() || slipped_right) && !hold_open && !app.transforming() {
             app.apply_outline_color(entry.map(|(_, c)| *c));
         }
         egui::Popup::menu(&resp)
@@ -1264,7 +1266,7 @@ mod tests {
     #[test]
     fn the_default_palette_has_greys_process_colours_and_tints() {
         let app = App::headless();
-        assert_eq!(app.palette.len(), 99);
+        assert_eq!(app.palette.len(), 94);
         let names: Vec<&str> = app.palette.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(&names[..3], &["Black", "90% Black", "80% Black"]);
         assert_eq!(names[10], "White");
@@ -1272,12 +1274,18 @@ mod tests {
             &names[11..17],
             &["Blue", "Cyan", "Green", "Yellow", "Red", "Magenta"]
         );
-        let (_, mint) = app
+        let (_, peach) = app
             .palette
             .iter()
-            .find(|(n, _)| n == "Mint Green")
-            .expect("mint");
-        assert_eq!(*mint, Color::cmyk_pct(40.0, 0.0, 40.0, 0.0));
+            .find(|(n, _)| n == "Peach")
+            .expect("peach tint");
+        assert_eq!(*peach, Color::cmyk_pct(0.0, 40.0, 60.0, 0.0));
+        let dark = app
+            .palette
+            .iter()
+            .find(|(n, _)| n == "Dark Green")
+            .map(|(_, c)| *c);
+        assert_eq!(dark, Some(Color::cmyk_pct(20.0, 0.0, 0.0, 80.0)));
     }
 
     #[test]
@@ -1696,7 +1704,7 @@ mod tests {
                 .map(|(_, c)| *c)
                 .expect(name)
         };
-        assert_eq!(rgb.len(), 99);
+        assert_eq!(rgb.len(), 94);
         assert_eq!(of("Black"), Color::rgb8(0, 0, 0));
         assert_eq!(of("White"), Color::rgb8(255, 255, 255));
         assert_eq!(of("50% Black"), Color::rgb8(128, 128, 128));
@@ -1707,25 +1715,21 @@ mod tests {
         assert_eq!(of("Magenta"), Color::rgb8(255, 0, 255));
         assert_eq!(of("Orange"), Color::rgb8(255, 102, 0));
         assert!(rgb.iter().all(|(_, c)| c.model_name() == "RGB"));
-        // Swatches of the reference RGB palette (#620): the colours with
-        // black in them are clean RGB values too.
-        assert_eq!(of("Navy Blue"), Color::rgb8(0, 51, 153));
+        // The colours with black in them are clean RGB
+        // values too (#620).
         assert_eq!(of("Purple"), Color::rgb8(153, 0, 204));
+        assert_eq!(of("Dusty Blue"), Color::rgb8(102, 102, 204));
+        assert_eq!(of("Sky Blue"), Color::rgb8(0, 204, 255));
+        assert_eq!(of("Dark Green"), Color::rgb8(0, 51, 51));
+        assert_eq!(of("Powder Blue"), Color::rgb8(204, 204, 255));
         assert_eq!(of("Dark Brown"), Color::rgb8(102, 51, 51));
-        assert_eq!(of("Ruby Red"), Color::rgb8(153, 0, 0));
-        assert_eq!(of("Twilight Blue"), Color::rgb8(102, 102, 204));
-        assert_eq!(of("Forest Green"), Color::rgb8(0, 102, 51));
-        assert_eq!(of("Walnut"), Color::rgb8(102, 51, 0));
         assert_eq!(of("90% Black"), Color::rgb8(26, 26, 26));
-        assert_eq!(of("Crimson"), Color::rgb8(153, 51, 102));
-        assert_eq!(of("Plum"), Color::rgb8(102, 0, 102));
-        assert_eq!(of("Deep Blue"), Color::rgb8(51, 0, 204));
-        // Every channel is a multiple of 51 or a 10% grey.
+        // Every channel is a multiple of 17 or a 10% grey.
         for (n, c) in &rgb {
             let [r, g, b] = c.to_rgb8();
             let grey = r == g && g == b;
             assert!(
-                grey || [r, g, b].iter().all(|v| v % 51 == 0),
+                grey || [r, g, b].iter().all(|v| v % 17 == 0),
                 "{n}: {r} {g} {b}"
             );
         }
@@ -1741,11 +1745,14 @@ mod tests {
         palette.retain(|(n, _)| n != "Black");
         let rgb = as_rgb(&palette);
         let of = |name: &str| rgb.iter().find(|(n, _)| n == name).map(|(_, c)| *c);
-        assert_eq!(of("Crimson"), Some(Color::rgb8(0x99, 0x33, 0x66)));
-        assert_eq!(of("Navy Blue"), Some(Color::rgb8(0, 51, 153)));
+        assert_eq!(of("Hot Pink"), Some(Color::rgb8(255, 51, 153)));
+        assert_eq!(of("Dark Green"), Some(Color::rgb8(0, 51, 51)));
         assert_eq!(of("Mine"), Some(Color::rgb8(230, 255, 255)));
         // A default name with another colour is converted from its inks.
-        let changed = vec![("Crimson".to_string(), Color::cmyk_pct(0.0, 100.0, 0.0, 0.0))];
+        let changed = vec![(
+            "Hot Pink".to_string(),
+            Color::cmyk_pct(0.0, 100.0, 0.0, 0.0),
+        )];
         assert_eq!(as_rgb(&changed)[0].1, Color::rgb8(255, 0, 255));
         let builtin = crate::palette::builtin_palettes()
             .into_iter()

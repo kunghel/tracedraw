@@ -6,22 +6,24 @@ taranmış bir logo, bir eskiz, bir fotoğraf.
 
 ## Hızlı izleme {#quick-trace}
 
-Bir bitmap seçin ve [[menu.bitmaps > menu.bitmaps.quick_trace]] komutunu
+Bir bitmap seçin ve [[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.quick_trace]] komutunu
 seçin. Genel seçeneklerin [[options.bitmap_tracing]] sayfasında seçilen ön
-ayarı kullanır (başlangıçta Küçük Resim).
+ayarı kullanır (başlangıçta [[menu.bitmaps.trace_optimized]]; bu ön ayar
+ayrıntıyı her resim için seçer: en az düğümle olabildiğince aslına uygun).
 
 [[menu.bitmaps.repeat_last_trace]] seçili bit eşlemi iletişim kutusu olmadan son izleme gibi yeniden izler; [[menu.bitmaps.last_trace_settings]] iletişim kutusunu son izlemenin ayarlarıyla açar. Bir bit eşlemin sağ tık menüsünde de [[menu.bitmaps.centerline_trace]] ve [[menu.bitmaps.outline_trace]] ile birlikte bu komutlar vardır.
 
 ## Bitmapi İzle iletişim kutusu {#trace}
 
-[[menu.bitmaps > menu.bitmaps.outline_trace]] ve
+[[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.outline_trace]] ve
 [[menu.bitmaps.centerline_trace]] ön ayarları listeler; izleme iletişim
 kutusunu açmak için birini seçin.
 
 - **Anahat izleme** renk alanlarını şekillerle doldurur:
   [[menu.bitmaps.trace_line_art]], [[menu.bitmaps.trace_logo]],
   [[menu.bitmaps.trace_detailed_logo]], [[menu.bitmaps.trace_clipart]],
-  [[menu.bitmaps.trace_low_quality]] ve [[menu.bitmaps.trace_high_quality]].
+  [[menu.bitmaps.trace_low_quality]], [[menu.bitmaps.trace_high_quality]] ve
+  [[menu.bitmaps.trace_optimized]].
 - **Orta çizgi izleme** çizgileri açık eğrilerle izler:
   [[menu.bitmaps.trace_technical]] ve [[menu.bitmaps.trace_line_drawing]].
 
@@ -34,7 +36,7 @@ görmek için basılacak bir şey yoktur. Önizlemenin altındaki satır izin
 **eğrilerini**, **düğümlerini** ve **renklerini** sayar. Şekilleri bitmapin
 üzerine, en koyusu önce olmak üzere yerleştirmek için [[dialog.ok]]
 düğmesine, bitmapi olduğu gibi bırakmak için [[dialog.cancel]] düğmesine
-tıklayın.
+tıklayın; ikisi de iletişim kutusunun sağ altındadır.
 
 ## Önizleme {#preview}
 
@@ -53,6 +55,11 @@ Listeden sonraki düğmeler sığdırır, uzaklaştırır, yakınlaştırır ve 
 Tekerlek işaretçinin çevresinde yakınlaştırır, sürükleme resmi taşır; iki
 bölme birlikte hareket eder. Saydam kısımlar dama tahtası gösterir.
 
+Tarayıcıda büyük bir resim daha küçük bir kopyadan önizlenir ve önizlemenin
+altındaki kırmızı bir not bunu belirtir: ince ayrıntılar burada kaba
+görünebilir, ancak [[dialog.ok]] tüm resmi izler. Masaüstü uygulaması
+önizlemeyi tam olarak gösterir.
+
 ## Ayarlar {#settings}
 
 [[dialog.trace_tab_settings]] sekmesi şunları içerir:
@@ -62,7 +69,8 @@ bölme birlikte hareket eder. Saydam kısımlar dama tahtası gösterir.
   getirir.
 - [[dialog.detail]] (0 ile 100 arası): daha fazla ayrıntı daha küçük alanları
   ve daha ince çizgileri korur; daha az ayrıntı benekleri ve greni
-  düzleştirir.
+  düzleştirir. [[menu.bitmaps.trace_optimized]] ile ayrıntı her resim için
+  seçilir ve kaydırıcı gri görünür.
 - [[dialog.smoothing]] (0 ile 100 arası, başlangıçta 25): daha az düğümle daha
   düzgün eğriler.
 - [[dialog.corner_smoothness]] (0 ile 100 arası): daha yuvarlak köşeler.
@@ -74,15 +82,24 @@ bölme birlikte hareket eder. Saydam kısımlar dama tahtası gösterir.
   değiştirebilir ya da yanındaki damlalıkla önizlemeden alabilirsiniz.
 - [[dialog.trace_objects]]: [[dialog.trace_merge_adjacent]] (başlangıçta
   açık) bir rengin her alanından tek bir eğri yapar; kapalıyken her ayrı
-  parça kendi eğrisi olur. [[dialog.trace_remove_overlap]] her şekli kendi
-  piksellerinde tutar; kapalıyken şekiller üstlerindekilerin biraz altına
-  uzanır, böylece komşular arasında boşluk görünmez.
-  [[dialog.trace_group_by_color]] her rengin eğrilerini kendi grubuna koyar;
-  bir rengin alanları zaten birleştirilmemişse kullanılabilir.
+  parça kendi eğrisi olur. [[dialog.trace_remove_overlap]] her şekli
+  delikleriyle birlikte kendi piksellerinde tutar; kapalıyken şekil,
+  içindeki şekillerin altına bütün olarak çizilir (gözlerinin altında bir
+  baş). Her iki durumda da komşular sınırları boyunca tek bir eğriyi
+  paylaşır, böylece boşluk görünmez ve tel kafes her sınırı bir kez
+  gösterir. [[dialog.trace_group_by_color]] her rengin eğrilerini kendi
+  grubuna koyar; bir rengin alanları zaten birleştirilmemişse
+  kullanılabilir.
 - [[dialog.delete_original]]: iz yerleştirildiğinde bitmap silinir.
 
 Geçerli iz türüne uymayan ayarlar gri görünür: orta çizgi izi yalnızca
 ayrıntıyı ve düzgünleştirmeyi okur.
+
+İletişim kutusunun sol altındaki [[dialog.trace_optimize]] düğmesi resim
+üzerinde birkaç ayrıntı düzeyi dener, her izi resimle karşılaştırır ve resmi
+en az düğümle en aslına uygun çizen ayrıntıyı [[dialog.detail]]
+kaydırıcısına koyar. Bu, geri alabileceğiniz bir adımdır. Bu işlem bitmeden
+ayarları değiştirirseniz, işlemin sonucu kullanılmaz.
 
 ## Renkler {#colors}
 

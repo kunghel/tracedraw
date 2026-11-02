@@ -39,13 +39,6 @@ if (typeof G.GMSManager === "undefined") {
   };
 }
 
-// Macros also reach the application object by the host's own name.
-if (typeof G.CorelDRAW === "undefined") {
-  try {
-    Object.defineProperty(G, "CorelDRAW", { value: (0, eval)("Application"), configurable: true });
-  } catch (e) { /* no application object */ }
-}
-
 function parse(s) {
   return s === undefined || s === null ? undefined : JSON.parse(s);
 }

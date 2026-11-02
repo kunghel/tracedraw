@@ -1,7 +1,7 @@
 # Align and Distribute
 
 The Align and Distribute panel (no key of its own since Ctrl+Shift+A
-became Copy Properties From, #1345; Options > Shortcuts can give it
+became Paste Style From, #1345; Options > Shortcuts can give it
 one), the Object > Align and
 Distribute menu and the keys L, R, T, B, E, C and P.
 

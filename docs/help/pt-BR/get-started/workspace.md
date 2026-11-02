@@ -11,8 +11,8 @@ desta Ajuda façam sentido.
 De cima para baixo e da esquerda para a direita:
 
 - A **barra de menus** contém todos os comandos, nos menus [[menu.file]],
-  [[menu.edit]], [[menu.view]], [[menu.layout]], [[menu.object]],
-  [[menu.effects]], [[menu.bitmaps]], [[menu.text]], [[menu.table]],
+  [[menu.edit]], [[menu.view]], [[menu.object]], [[menu.text]],
+  [[menu.bitmaps]], [[menu.effects]], [[menu.layout]],
   [[menu.tools]], [[menu.window]] e [[menu.help]]. Cada comando mostra seu
   atalho ao lado. Sem nenhum desenho aberto, só aparecem [[menu.file]],
   [[menu.tools]], [[menu.window]] e [[menu.help]]. A página

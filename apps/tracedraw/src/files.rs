@@ -35,6 +35,18 @@ thread_local! {
 /// True in the browser build: no file system, downloads instead of saves.
 pub const WEB: bool = cfg!(target_arch = "wasm32");
 
+/// The browser's auto-backup folder: the session markers live in the
+/// page's local storage and the backups in its IndexedDB database
+/// (`web::backups`), and [`read`], [`write_creating`],
+/// [`write_creating_with`], [`exists`], [`remove`] and [`list_dir`] reach
+/// them under this path as if they were files.
+pub const WEB_BACKUP_DIR: &str = "/backup";
+
+/// True for a path in [`WEB_BACKUP_DIR`] in the browser build.
+fn in_web_backups(path: &Path) -> bool {
+    WEB && path.starts_with(WEB_BACKUP_DIR)
+}
+
 /// True in the Android app: files come and go through the system's
 /// document picker, named by [`document_path`] (`android.rs`,
 /// docs/behavior/android.md).
@@ -125,6 +137,28 @@ pub fn name_with_extension(name: &str, mime: &str) -> String {
         _ => return name.to_string(),
     };
     format!("{name}.{ext}")
+}
+
+/// `name` as one file name of its own inside a folder: no folder
+/// separators or control characters, no leading dots (nothing hidden, no
+/// `..`), never empty.
+pub fn safe_file_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.').trim();
+    if clean.is_empty() {
+        "file".into()
+    } else {
+        clean.to_string()
+    }
 }
 
 /// The MIME type the system's save picker is told for a file with the
@@ -221,6 +255,11 @@ pub fn plain_path(path: &Path) -> PathBuf {
 /// Read a whole file (or an uploaded one in a browser).
 pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let path = path.as_ref();
+    #[cfg(target_arch = "wasm32")]
+    if in_web_backups(path) {
+        return crate::web::backups::read(path)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound));
+    }
     if WEB {
         return STORE
             .with(|s| s.borrow().get(path).cloned())
@@ -284,15 +323,21 @@ pub fn write_with(
 /// Write a file as `fill` makes it, creating its folder first
 /// (auto-backups). It is written under a `.part` name and renamed when
 /// complete, so a write cut short never leaves half a file under the
-/// real name. Nothing happens in a browser.
+/// real name. In a browser only the auto-backup folder
+/// ([`WEB_BACKUP_DIR`]) is written.
 pub fn write_creating_with(
     path: impl AsRef<Path>,
     fill: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    let path = path.as_ref();
+    if in_web_backups(path) {
+        let mut bytes = Vec::new();
+        fill(&mut bytes)?;
+        return write_creating(path, bytes);
+    }
     if WEB {
         return Ok(());
     }
-    let path = path.as_ref();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -329,15 +374,24 @@ pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()>
 /// Android picker returned counts as existing: the system holds it and
 /// asked about replacing it already.
 pub fn exists(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    #[cfg(target_arch = "wasm32")]
+    if in_web_backups(path) {
+        return crate::web::backups::exists(path);
+    }
     if WEB {
         return false;
     }
-    let path = path.as_ref();
     (ANDROID && is_document_path(path)) || path.is_file()
 }
 
-/// Write a file, creating its folder first (auto-backups).
+/// Write a file, creating its folder first (auto-backups). In a browser
+/// only the auto-backup folder ([`WEB_BACKUP_DIR`]) is written.
 pub fn write_creating(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    if in_web_backups(path.as_ref()) {
+        return crate::web::backups::write(path.as_ref(), bytes.as_ref());
+    }
     if WEB {
         return Ok(());
     }
@@ -347,8 +401,13 @@ pub fn write_creating(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::i
     std::fs::write(path, bytes)
 }
 
-/// Delete a file (nothing in a browser).
+/// Delete a file (in a browser, only in the auto-backup folder).
 pub fn remove(path: impl AsRef<Path>) -> std::io::Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    if in_web_backups(path.as_ref()) {
+        crate::web::backups::remove(path.as_ref());
+        return Ok(());
+    }
     if WEB {
         return Ok(());
     }
@@ -369,8 +428,13 @@ pub fn pick_folder() -> Option<PathBuf> {
 }
 
 /// The files directly inside a folder (not its subfolders), in no
-/// particular order; empty when it cannot be read or in a browser.
+/// particular order; empty when it cannot be read, and in a browser
+/// outside the auto-backup folder.
 pub fn list_dir(path: impl AsRef<Path>) -> Vec<PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    if in_web_backups(path.as_ref()) {
+        return crate::web::backups::list(path.as_ref());
+    }
     if WEB {
         return Vec::new();
     }
@@ -627,6 +691,9 @@ mod android_pickers {
 
     thread_local! {
         static WAITING: RefCell<HashMap<i32, Waiting>> = RefCell::new(HashMap::new());
+        /// Documents other apps opened with TraceDraw, waiting for no
+        /// dialog or question to be up (#646).
+        static OPENED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     }
 
     fn wait(request: i32, waiting: Waiting) {
@@ -689,6 +756,13 @@ mod android_pickers {
     /// waited for; a cancelled picker runs nothing.
     pub fn run_answers(app: &mut App) {
         for answer in documents::take_answers() {
+            // Documents another app opened with TraceDraw: each in a tab
+            // of its own, as a file manager's do on the desktop (#646).
+            if answer.request == documents::OPENED_ELSEWHERE {
+                let paths = paths(&answer);
+                OPENED.with(|o| o.borrow_mut().extend(paths));
+                continue;
+            }
             let Some(waiting) = WAITING.with(|w| w.borrow_mut().remove(&answer.request)) else {
                 continue;
             };
@@ -711,6 +785,14 @@ mod android_pickers {
                         });
                     }
                 }
+            }
+        }
+        // Like the files later starts hand over on the desktop, they wait
+        // while a dialog or a question is up or the drawings are closing
+        // (instance::open_handed_over).
+        if !app.closing_all && matches!(app.dialog, crate::ui::dialogs::Dialog::None) {
+            for path in OPENED.with(|o| std::mem::take(&mut *o.borrow_mut())) {
+                app.open_path(path);
             }
         }
     }

@@ -12,7 +12,7 @@ and about 25 px apart; the open or hovered title is a light blue box
 (`#E0F0FF`) with a blue frame (`#00ADFE`). Menus are white with a 1 px
 `#B2B2B2` border and square corners: a 30 px `#F4F4F4` gutter holds the
 icons, the bold check marks and the dots of exclusive choices (View >
-Wireframe, Normal, Enhanced, Pixels); rows are 26 px with labels from
+Wireframe, Normal, Smooth, Pixels); rows are 26 px with labels from
 38 px and shortcuts right-aligned 28 px from the edge, all black (light
 grey when unavailable); separators are 7 px with a `#D8D8D8` line from
 the gutter; a submenu row ends in a grey triangle and stays highlighted
@@ -60,9 +60,18 @@ a click lower on the tab brings the panel to the front
   column at the right of the window (`open_dockers`, `docker_tab` in
   front, `show_dockers`; at the left in a right-to-left language), the
   column at the other side (`left_dockers`, `left_tab`,
-  `show_left_dockers`; it exists only while it holds a panel) and
-  floating windows (`floating_dockers`, one panel each). Every panel
-  starts in the default column.
+  `show_left_dockers`; it exists only while it holds a panel), a
+  second column on either side (`inner_dockers`, `left_inner_dockers`:
+  `DockerPlace::RightInner` and `DockerPlace::LeftInner`, each with its
+  own tab strip, panel in front, collapse and width, between the side's
+  column at the window's edge and the drawing) and floating windows
+  (`floating_dockers`, one panel each). Every panel starts in the default
+  column. A second column never stands alone: when the column at its
+  side's edge loses its last panel, the second column's panels become
+  that column's (`App::settle_columns`). So a side holds at most two
+  columns, and the colour palette can lie between them (see Colour
+  palette below), as in drawing | Properties | palette | Color Styles |
+  window edge.
 - Dragging a tab, or the title bar of a panel (a column's or a floating
   one's), moves the panel: a light blue band shows where it goes, within
   56 px of a side the column there (the strip and a 340 px panel),
@@ -70,9 +79,28 @@ a click lower on the tab brings the panel to the front
   top left corner where the grab point puts it. Releasing puts the panel
   there, in front of the column it joins (the column it leaves shows the
   tab next to it, or closes when none is left); a release outside the
-  window counts at the last place the pointer was seen. The tab's menu
-  and the title's menu (right click) have Dock at Right, Dock at Left,
-  Floating and Close panel.
+  window counts at the last place the pointer was seen. Over a docked
+  column (its strip or its panel) the band is that column and the panel
+  joins it. Within 56 px of the drawing's side of a side's only column
+  (outside it, over the drawing) the band is a column's width there and
+  the panel makes the side's second column, beside it; a panel alone in
+  its column has nothing to stand beside and stays. The column rects are
+  recorded each frame by the window layout (`dockers::DOCKER_COLUMNS`,
+  like `bars::DRAWING_ROOM`), so the targets cost nothing while
+  dragging. Over a column's tab strip (the part of it on screen) the
+  band gives way to a line between the two tabs the panel would go
+  between, and the release puts the panel's tab there: within its own
+  column the tabs change order and the column keeps the panel it has in
+  front and whether it is open; from elsewhere the panel joins that
+  column at that place, in front (`App::insert_docker`, #1051). Each
+  strip records where its tabs lie each frame
+  (`dockers::StripLayout`), so the line costs nothing while dragging.
+  A panel alone in a side's edge column dropped among the second
+  column's tabs makes one column of them. The tab's menu and the
+  title's menu (right click) have Dock
+  at Right, Dock at Right, Second Column, Dock at Left, Dock at Left,
+  Second Column, Floating and Close panel (a Second Column entry is grey
+  while the column at that side's edge holds no other panel).
 - A floating panel is a window with a grey border and a shadow: the
   panel's title bar (its name and close; no collapse) over its page,
   resizable at its edges; where it is and how large are kept.
@@ -84,10 +112,16 @@ a click lower on the tab brings the panel to the front
   front of an open column or floating (`App::docker_shown`); the plus
   button of a column opens a ticked panel in front of that column.
 - The places are kept in the preferences (`dockers`: `open`, `front`,
-  `left`, `left_front`, `left_shown`, `floating` with each window's
-  corner and size); older preferences with the column alone read as
-  before.
+  `left`, `left_front`, `left_shown`, `inner`, `inner_front`,
+  `inner_shown`, `left_inner`, `left_inner_front`, `left_inner_shown`
+  (the second columns, written only while they hold a panel),
+  `floating` with each window's corner and size); older preferences
+  with the column alone read as before.
 - Checks: `app::tests::dockers_move_between_the_columns_and_float`,
+  `app::tests::a_side_holds_a_second_docker_column`,
+  `ui::dockers::tests::a_docker_dropped_beside_a_column_makes_a_second_column`,
+  `app::tests::insert_docker_puts_a_tab_among_a_columns_tabs`,
+  `ui::dockers::tests::a_docker_tab_dragged_along_its_column_changes_the_order`,
   `ui::dockers::tests::a_docker_dragged_to_a_side_docks_there_and_the_window_draws_them_all`.
 
 ## Standard toolbar
@@ -100,7 +134,7 @@ split by thin lines:
 2. Cut, Copy, Paste.
 3. Undo and Redo, each with its list of steps behind the arrow (choosing
    a step undoes or redoes up to it).
-4. Import, Export, Publish to PDF.
+4. Import, Export, Export as PDF.
 5. The zoom box: the zoom level as text (type a value, Enter applies it)
    and, behind its arrow, Zoom to Selected, to All Objects, to Page, to
    Page Width, to Page Height and levels from 10% to 1600%. Full-screen
@@ -128,10 +162,17 @@ name them (hover for a tooltip), and some fields have spin arrows.
 
 Number fields show their value at the left and are typed into: a click
 selects the value, Enter or leaving the field applies it, Esc puts it
-back. A comma or a point marks decimals; sums work (`10+5`, `2*3,5`,
+back. Tab applies it and goes to the next field's box in one press: the
+spin arrows and the label of a field are no stops on the way (#1537,
+`ui::field::tests::tab_goes_from_box_to_box_in_one_press`). A comma or a point marks decimals; sums work (`10+5`, `2*3,5`,
 brackets); a distance typed with another unit is converted (`1 in` in a
-millimetre field is 25.4 mm). Values outside a field's range are brought
-into it (`ui::field::tests`). Every number field has a pair of spin
+millimetre field is 25.4 mm), also inside a sum, each number in its own
+unit and a number without one in the field's: the value shown with `/ 2`
+added halves it (`60.352 mm / 2`), and `24 mm + 1 in`, `24mm+20pt` and
+`(16mm*2)+4in+2pt` add up in the field's unit (#1495). Percent and degree
+marks are read past (`50 % * 2`). The zoom field of the standard bar reads
+sums too. Values outside a field's range are brought into it
+(`ui::field::tests`). Every number field has a pair of spin
 arrows at its right (11 px): a click on one steps the value by a unit
 (or the step the field was given), as does the mouse wheel over the
 field; Shift steps ten times as much, Ctrl a tenth; a whole-number field
@@ -223,7 +264,7 @@ bar move (`ui/bars.rs`).
 | Bar | Places | First place |
 |---|---|---|
 | Toolbox | top, bottom, left, right, floating | left |
-| Colour palette | top, bottom, left, right (each beside the drawing or at the window's edge), floating | bottom, beside the drawing (on a side at first: the outermost column, beyond the dockers) |
+| Colour palette | top, bottom, left, right (each beside the drawing or at the window's edge; left and right also between two docker columns), floating | bottom, beside the drawing (on a side at first: the outermost column, beyond the dockers) |
 | Standard toolbar | top, bottom, floating | top, first row |
 | Property bar | top, bottom, floating | top, second row |
 | Text, Zoom, Transform toolbars, time tracker | top, bottom, floating | top, a row each under the property bar (hidden at first) |
@@ -293,6 +334,26 @@ bar move (`ui/bars.rs`).
   with it
   (`ui::bars::tests::the_palette_docks_beside_the_drawing_or_at_the_window_edge`,
   `ui::bars::tests::the_palette_dropped_beside_the_drawing_lies_between_it_and_the_dockers`).
+- At the left and the right the palette also docks between the side's
+  two docker columns (`PaletteSpot::Between`): a column of swatches
+  between the column at the window's edge and the second column, each
+  keeping its own tab strip (drawing | Properties | palette | Color
+  Styles | window edge). While it is dragged, the line where the two
+  columns meet (or the palette between them) is a target as the
+  drawing's edges are: within 56 px of it, the nearest target wins, and
+  the band is the palette's width across that line (the gap itself while
+  the palette lies there). The columns keep the widths they were given
+  and can still be widened or narrowed by their inner edges; the drawing
+  takes what is left. Its menu has "Dock at Left, Between the Panels"
+  and "Dock at Right, Between the Panels" after the edge place of that
+  side, grey while the side has one docker column. The place is kept in
+  the preferences (`bars.palette_between`, written only while on;
+  preferences without it read as before) and comes back at the next
+  start. While the side has one column the palette lies after it,
+  beside the drawing, and goes back between the columns once there are
+  two again. Further palettes shown go with it
+  (`ui::bars::tests::the_palette_docks_between_two_docker_columns`,
+  `ui::bars::tests::the_palette_dropped_between_two_docker_columns_lies_between_them`).
 - The palette on a side is a column: the swatches run downwards and the
   arrows sit at its ends; the expanded palette opens beside the column
   (below a palette along the top). Wherever the palette is, the document

@@ -1,4 +1,4 @@
-//! Thesaurus (Text > Writing Tools > Thesaurus). Reads MyThes-format
+//! Thesaurus (Text > Proofing > Thesaurus). Reads MyThes-format
 //! files (`th_*_v2.dat`): the first line names the encoding, then each
 //! entry is `word|n` followed by `n` lines `(pos)|syn1|syn2|...`. Files
 //! are looked up in the usual system folders plus a file the user picked

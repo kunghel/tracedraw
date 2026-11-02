@@ -1,4 +1,4 @@
-//! Bitmaps > Resample: a new pixel size for the selected bitmaps, set as
+//! Image > Resample: a new pixel size for the selected bitmaps, set as
 //! pixels, a percentage or a resolution, with the aspect ratio kept or
 //! not, and the way pixels are worked out (smooth, sharp, hard pixels for
 //! pixel art, or smooth with the detail sharpened again after enlarging).
@@ -137,7 +137,7 @@ impl ResampleState {
 }
 
 impl App {
-    /// Bitmaps > Resample: the dialog, set from the first selected bitmap.
+    /// Image > Resample: the dialog, set from the first selected bitmap.
     pub fn open_resample(&mut self) {
         let Some((_, rect, w, h, _)) = self.bitmap_shapes().into_iter().next() else {
             return;

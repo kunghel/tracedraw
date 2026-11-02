@@ -79,7 +79,7 @@ One window, 760 px wide, the same on every system:
 - Only the versions checked in other programs are offered (14 to 27).
 - **Title**, **Subject** and **Rating** (five stars; clicking the lit
   last star takes it off): the document's properties, also in File >
-  Document Properties; changed ones are set (one undo step each) before
+  Document Info; changed ones are set (one undo step each) before
   the file is written.
 - **Save** (or Enter) writes the file; a file that exists asks "<name>
   already exists. Replace it?" with Replace and Cancel. Cancel closes
@@ -180,15 +180,50 @@ objects open as drawn.
   and 23 (`mcp::tests::export_and_save_write_files`).
 - Every version from 7 to 22 reads back with its pages, layers, objects,
   text runs and alignment (`write::tests` in `crates/cdr`).
-- A line of three colours saved as `.cdr` 16 to 27 marks its three runs
-  as having styles of their own (0x3fff, 0x14), and a text of one run
-  keeps the plain marks (0, 0x04), so the program that reads `.cdr`
-  files keeps the colours (#1297;
-  `write::tests::runs_of_their_own_style_are_marked_as_applying`).
+- A line of several colours saved as `.cdr` 16 to 27 holds a table of
+  its looks: the plain record (0, 0x04, `{"character":{}}`) for the
+  letters in the line's own look and its end, then one record per other
+  colour, complete (fill, angle, outline, the three fonts, shifts) and
+  marked as applying (0x3fff, 0x14); a colour met twice has one record,
+  and a text of one look keeps the plain record alone, so the program
+  that reads `.cdr` files keeps the colours (#1297, #1379;
+  `write::tests::runs_of_their_own_colour_are_a_table_of_looks_marked_as_applying`).
+  With Embed fonts on, the run styles name the embedded face exactly as
+  the paragraph's style does and the font table is the one a text of one
+  colour gets (`two_colours_name_the_embedded_font_as_one_colour_does`).
+  `tracedraw-cli check` reports a run style marked as applying no member.
+- With Embed fonts on, each embedded font is listed and embedded as the
+  face its file holds: the font table entry, the embedding's face block
+  and its font header carry the font's own weight and slant (a bold
+  file drawing regular text is listed bold, an upright light file
+  drawing bold italic text light and upright), one entry per face file
+  however many styles of the text it draws; the text's own style keeps a
+  font record beside it. The kind of the font (2 TrueType, 4 signed
+  TrueType, 5 PostScript outlines) and its version string go into the
+  table, the embedding and every font style that names it, and the
+  records and entries of underlined faces carry the underline bit, as
+  the files the program that reads `.cdr` files saves have them (#1455,
+  #1484; `write::tests::a_face_is_listed_as_the_face_its_font_file_holds`,
+  `write::tests::bold_text_in_a_light_face_is_written_as_the_family_bold`).
+- A version 16+ `.cdr` that the program reading `.cdr` files saved again
+  from a TraceDraw file, with embedded fonts, opens with its texts: its
+  run records marked as applying nothing still carry a style string,
+  which TraceDraw 0.29.0 did not read, skipping every text (#1467, read
+  since 0.30.0; `write::tests::a_run_record_of_no_marks_is_read_with_its_style_string`).
+- A line of more than 128 colours saved as `.cdr` in any version keeps
+  the colours of its first 128 and gives the letters of the others the
+  line's first colour: a letter names its record in 7 bits
+  (`a_line_of_more_looks_than_records_stays_readable`).
 - A picture saved as `.cdr` has its outline nodes marked as a curve's
   (0x0c, 0x44, 0x44, 0x44, 0x48), as the files of the program that reads
   `.cdr` files have them; unmarked, a click on the picture closed that
   program (#1226; `write::tests::bitmap_objects_carry_their_pixel_size`,
   `check::tests::bitmap_outlines_need_node_marks`).
+- A picture or shape without an outline saved as `.cdr` 16 to 27 holds,
+  in its style string, the outline the program's own files give such
+  objects (every member, width 0, no type); the outline type 1 TraceDraw
+  wrote is in no file of that program, and the checker reports it (#1226;
+  `write::tests::objects_without_an_outline_write_the_files_outline_of_width_0`,
+  `check::tests::style_strings_hold_no_outline_type_but_0`).
 - Checked on screen: the dialog with its shortcuts, list, type list,
   version and stars; Save as CDR wrote the file in the folder shown.

@@ -6,6 +6,7 @@
 use crate::app::App;
 use crate::view::View;
 use egui::{Color32, Painter, Pos2, Rect as ERect};
+use tracedraw_core::document::{Guide, GuideLine};
 use tracedraw_core::geometry::{Rect, Size};
 use tracedraw_core::PageId;
 
@@ -135,6 +136,33 @@ impl App {
         }
     }
 
+    /// The guidelines of the other pages in the Multipage View, each moved
+    /// to where its page sits in the grid (the current page's
+    /// coordinates) and given the page's box there, so they can be drawn
+    /// within their page (#1448). None outside the Multipage View; the
+    /// current page's guidelines are drawn as always.
+    pub fn other_page_guides(&self) -> Vec<(Guide, Rect)> {
+        if !self.multipage {
+            return Vec::new();
+        }
+        let doc = self.doc();
+        let mut out = Vec::new();
+        for (id, r) in self.multipage_layout() {
+            if id == self.page {
+                continue;
+            }
+            let Some(page) = doc.pages.iter().find(|p| p.id == id) else {
+                continue;
+            };
+            for g in &page.guides {
+                let mut g = *g;
+                g.line = shifted(g.line, r.x0, r.y0);
+                out.push((g, r));
+            }
+        }
+        out
+    }
+
     /// What Zoom to Fit and a new view fit: the page, or every page in the
     /// Multipage View.
     pub fn fit_rect(&self) -> Rect {
@@ -144,6 +172,20 @@ impl App {
             }
         }
         self.page_rect()
+    }
+}
+
+/// A guideline moved by `(dx, dy)`: a page's guideline where the page
+/// sits in the grid.
+fn shifted(line: GuideLine, dx: f64, dy: f64) -> GuideLine {
+    match line {
+        GuideLine::Horizontal { y } => GuideLine::Horizontal { y: y + dy },
+        GuideLine::Vertical { x } => GuideLine::Vertical { x: x + dx },
+        GuideLine::Angled { x, y, angle } => GuideLine::Angled {
+            x: x + dx,
+            y: y + dy,
+            angle,
+        },
     }
 }
 
@@ -432,6 +474,68 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(renders(&app) >= at_rest + 3);
+    }
+
+    /// The other pages' guidelines show in the Multipage View, each
+    /// where its page sits in the grid and within that page; they used
+    /// to show only while their page was the current one (#1448).
+    #[test]
+    fn the_other_pages_guidelines_show_where_their_pages_sit() {
+        let mut app = App::headless();
+        app.add_page();
+        let first = app.doc().pages[0].id;
+        let second = app.doc().pages[1].id;
+        app.page = second;
+        app.add_guide(Guide::horizontal(10.0));
+        app.add_guide(Guide::vertical(20.0));
+        app.add_guide(
+            GuideLine::Angled {
+                x: 5.0,
+                y: 6.0,
+                angle: 30.0,
+            }
+            .into(),
+        );
+        app.page = first;
+        app.add_guide(Guide::horizontal(40.0));
+        // Off: nothing beyond the current page's own guidelines.
+        app.set_multipage(false);
+        assert!(app.other_page_guides().is_empty());
+        app.set_multipage(true);
+        let r = app
+            .multipage_layout()
+            .into_iter()
+            .find(|(id, _)| *id == second)
+            .map(|(_, r)| r)
+            .expect("the second page's place");
+        assert!(r.x0 > 0.0, "beside the first page: {r:?}");
+        let shown = app.other_page_guides();
+        assert_eq!(shown.len(), 3, "the second page's three, not the first's");
+        assert!(shown.iter().all(|(_, page)| *page == r));
+        let lines: Vec<GuideLine> = shown.iter().map(|(g, _)| g.line).collect();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(matches!(lines[0], GuideLine::Horizontal { y } if near(y, 10.0 + r.y0)));
+        assert!(matches!(lines[1], GuideLine::Vertical { x } if near(x, 20.0 + r.x0)));
+        assert!(matches!(
+            lines[2],
+            GuideLine::Angled { x, y, angle }
+                if near(x, 5.0 + r.x0) && near(y, 6.0 + r.y0) && near(angle, 30.0)
+        ));
+        // The second page current: the first page's guideline, where
+        // that page now sits (to the left of the origin).
+        app.multipage_activate(second);
+        let shown = app.other_page_guides();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].1.x0 < 0.0);
+        assert!(
+            matches!(shown[0].0.line, GuideLine::Horizontal { y } if near(y, 40.0 + shown[0].1.y0))
+        );
+        // A frame draws them within their page without trouble.
+        let ctx = crate::theme::ui_context();
+        app.show_welcome = false;
+        app.show_guides = true;
+        frame_at(&ctx, &mut app, 0.1);
+        frame_at(&ctx, &mut app, 0.2);
     }
 
     #[test]

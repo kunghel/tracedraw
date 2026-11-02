@@ -1,4 +1,4 @@
-//! Grammar check (Text > Writing Tools > Grammar): rule-based checks over
+//! Grammar check (Text > Proofing > Grammar): rule-based checks over
 //! the text of the selected objects, or every text object on the page.
 //! Each finding names the rule and the sentence, and carries a mechanical
 //! fix when one exists (as a replacement of a character range), which the

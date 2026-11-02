@@ -14,7 +14,7 @@ come scoprire cosa è cambiato ed elenca i punti salienti delle ultime versioni.
   disattivate il comando, e il comando torna disattivato al prossimo avvio di
   TraceDraw.
 - L'elenco completo delle modifiche di ogni versione si trova nel
-  [registro delle modifiche](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [registro delle modifiche](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   del progetto.
 
 ## Punti salienti delle ultime versioni {#highlights}

@@ -63,7 +63,7 @@ the fields that changed to every selected object with Overprint fill in
 one step (`App::apply_edit_fill`, `edit_fill_applies_what_was_changed`,
 `nodes_are_added_moved_and_reversed`); with nothing selected it changes
 the default fill. While the dialog is open the selection shows what it
-holds, as in the reference program: each change is applied as an engine
+holds: each change is applied as an engine
 preview (`begin_preview`) and made anew on the next change; OK takes the
 preview back and applies the fill as one step, and Cancel, Esc or the
 close button take it back, leaving the drawing, the undo and redo
@@ -87,7 +87,7 @@ the fields edit it; with nothing selected they set the default fill for
 the next object.
 
 Handles on the canvas (Interactive Fill, gradient-filled selection):
-three nodes placed freely, as the reference program shows them. The
+three nodes placed freely. The
 start node and the end node are squares in the first and last colours,
 joined by a dashed line with an arrow at the end; the skew handle is a
 small round node joined to the start by a thin line. Radial fills draw
@@ -150,6 +150,20 @@ and a shaped fill follows the outline anyway. Before this the gradient
 kept running the same way on the page whatever the object did (#775,
 `command::tests::gradients_turn_and_mirror_with_their_object`,
 `tests::a_gradient_is_drawn_turned_and_mirrored_with_its_object`).
+
+## A new outline cuts the fill
+
+A change of the outline itself (nodes moved, added or deleted with the
+Shape tool, a curve's B-spline edited, an area cut off with the Crop
+tool, an ellipse made a pie) keeps the fill where it lies on the page:
+its nodes are mapped from the old box to the new one, so the part of
+the fill over what is left stays as it was and the rest is cut off. A
+gradient transparency is kept in place the same way. Before this the
+fill and the transparency started again across the new box, squeezed
+into it (#1491, `command::tests::a_new_outline_keeps_gradients_in_place`,
+`crop_tool::tests::crop_cuts_the_gradient_transparency`). Text, groups,
+tables and symbols place their paint their own way and are left as they
+are.
 
 ## Formulas
 

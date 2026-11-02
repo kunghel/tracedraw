@@ -703,10 +703,27 @@ fn access_label(text: &str) -> egui::WidgetText {
 /// is underlined and pressing it (with no field focused) picks it. Returns
 /// the index of the button picked this frame.
 pub fn button_row(ui: &mut Ui, labels: &[&str], access_keys: bool) -> Option<usize> {
+    let left = (ui.min_rect().width() - row_width(labels.len())).max(0.0);
+    button_row_after(ui, labels, access_keys, left)
+}
+
+/// The width of a row of `n` buttons of [`button_row`].
+pub fn row_width(n: usize) -> f32 {
+    n as f32 * 100.0 + (n.saturating_sub(1)) as f32 * ROW_SPACING
+}
+
+const ROW_SPACING: f32 = 8.0;
+
+/// [`button_row`] with the buttons `left` points past where the row
+/// starts.
+pub fn button_row_after(
+    ui: &mut Ui,
+    labels: &[&str],
+    access_keys: bool,
+    left: f32,
+) -> Option<usize> {
     let mut picked = None;
-    let spacing = 8.0;
-    let total = labels.len() as f32 * 100.0 + (labels.len().saturating_sub(1)) as f32 * spacing;
-    let left = (ui.min_rect().width() - total).max(0.0);
+    let spacing = ROW_SPACING;
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing;
@@ -770,7 +787,27 @@ pub fn message_box(
     text: &str,
     buttons: &[&str],
 ) -> Option<usize> {
-    message_box_with(ctx, icon, text, buttons, None)
+    message_box_with(
+        ctx,
+        icon,
+        text,
+        buttons,
+        None,
+        buttons.len().saturating_sub(1),
+    )
+}
+
+/// A [`message_box`] whose close button (and Esc) answers with the button
+/// at `on_close` rather than the last one: for a message whose last
+/// button opens a page, so closing it never does.
+pub fn message_box_closing_with(
+    ctx: &Context,
+    icon: MessageIcon,
+    text: &str,
+    buttons: &[&str],
+    on_close: usize,
+) -> Option<usize> {
+    message_box_with(ctx, icon, text, buttons, None, on_close)
 }
 
 /// A [`message_box`] with a check box under the message ("Do not show
@@ -783,7 +820,14 @@ pub fn message_box_check(
     check: &str,
     checked: &mut bool,
 ) -> Option<usize> {
-    message_box_with(ctx, icon, text, buttons, Some((check, checked)))
+    message_box_with(
+        ctx,
+        icon,
+        text,
+        buttons,
+        Some((check, checked)),
+        buttons.len().saturating_sub(1),
+    )
 }
 
 fn message_box_with(
@@ -792,6 +836,7 @@ fn message_box_with(
     text: &str,
     buttons: &[&str],
     check: Option<(&str, &mut bool)>,
+    on_close: usize,
 ) -> Option<usize> {
     let mut picked = None;
     let before = take_close_request(ctx);
@@ -829,7 +874,7 @@ fn message_box_with(
         picked = button_row(ui, buttons, true);
     });
     if before || take_close_request(ctx) {
-        picked = Some(buttons.len().saturating_sub(1));
+        picked = Some(on_close);
     }
     picked
 }

@@ -56,33 +56,44 @@ curve stays open.
 
 ## The tool
 
-- Drag on an object: the distortion is centred where the drag started
-  and follows the pointer, one undo step for the whole drag. Push and
-  Pull: `amount = 100 * dx / r` (`dx` the drag to the right, `r` half
-  the object's larger side; to the left pulls), rounded to whole
-  percents. Zipper: `amplitude = |drag| / 4`, the bar's frequency and
-  options. Twister: the angle the pointer turned about the start, whole
-  turns counted.
+- Drag on an object, or anywhere with one object selected (off it too):
+  the distortion is centred where the drag started and follows the
+  pointer, one undo step for the whole drag (#1442). The drag goes in
+  any direction: the handle line runs from the start to the pointer,
+  wherever it is, not along an axis (#1442). Push and Pull:
+  `amount = 100 * |drag| / r` (`r` half the object's larger side),
+  rounded to whole percents, pushed when the pointer is right of the
+  start and pulled (negative) when left of it. Zipper:
+  `amplitude = |drag| / 4`, the bar's frequency and options. Twister:
+  the angle the pointer turned about the start, whole turns counted.
 - Each selected distortion shows its handles (#1122): the centre as a
   diamond, a line with an arrow to the end handle, and for the Zipper a
   slider on the line. A drag that starts on one (within 6 pixels; the
   centre first, then the slider, then the end) takes it: the diamond
-  moves the centre; the end handle is a square to the right of the
-  centre at `amount / 100` of `r` for Push and Pull (to the left when
-  negative; dragging it sets the amount from its distance) and at four
-  times the amplitude for the Zipper (the drag's own measure; dragging
-  it sets the amplitude from its distance), or a circle for the Twister
-  in the direction of the angle (dragging it round turns the angle,
-  whole turns counted). The Twister's handle is free: it reaches the
-  pointer during a drag (on the object or on the handle), as far out or
-  as near as it goes, and stays that long when let go, `r` until it has
-  been dragged; its length changes only the handle, not the turn
-  (#1263, `App::twister_handles`); the slider sits
+  moves the centre; the end handle is a square along the line at
+  `amount / 100` of `r` for Push and Pull (the other way when negative;
+  dragging it sets the amount from its distance and the side from
+  where it is) and at four times the amplitude for the Zipper (the
+  drag's own measure; dragging it sets the amplitude from its
+  distance), or a circle for the Twister turned by the angle from the
+  direction its drag began in (dragging it round turns the angle, whole
+  turns counted). The line is free: every handle reaches the pointer
+  during a drag (on the object or on the handle), in whichever
+  direction it goes, and the line stays there when let go, to the right
+  until the object's distortion of that kind has been dragged (#1442,
+  `App::distort_lines`); the Twister's handle is also as far out or as
+  near as the drag made it, `r` until it has been dragged, and its
+  length changes only the handle, not the turn (#1263); the slider sits
   `frequency / 100` of the way from the centre to the Zipper's end and
   dragging it along the line sets the frequency. A handle drag edits the
-  object's distortion in place (its centre kept) as one undo step.
-- A drag replaces the object's distortion (an object has at most one;
-  it stays in its place among the object's other effects).
+  object's distortion in place (its centre kept) as one undo step; a
+  value changed on the bar moves the handle along the same line.
+- A drag that does not start on a handle adds a new distortion over the
+  ones the object has: each is applied to the outline the ones before it
+  made, so distortions build up drag after drag (#1442). The handles and
+  the bar show and edit the newest; Clear Distortion takes the newest
+  off, so a second Clear takes the one before it; Convert to Curves
+  makes all of them, oldest first, the object's outline.
 - A click selects the object under the pointer (or nothing).
 - Groups and bitmaps are not distorted.
 
@@ -125,10 +136,13 @@ curve stays open.
 - `distort::tests::a_twisted_line_is_a_smooth_spiral_to_its_ends`
 - `distort::tests::older_files_and_odd_values_read`
 - `distort_tool::tests::a_drag_distorts_about_where_it_started`
+- `distort_tool::tests::drags_start_anywhere_and_add_distortions`
 - `distort_tool::tests::the_bar_edits_the_selected_distortion`
 - `distort_tool::tests::settings_round_trip_and_stay_in_range`
 - `distort_tool::tests::a_bar_edit_previews_on_an_undistorted_selection`
 - `distort_tool::tests::the_handles_set_the_values_by_dragging`
+- `distort_tool::tests::the_twister_handle_is_as_long_as_it_is_dragged`
+- `distort_tool::tests::the_handles_follow_the_pointer_in_any_direction`
 - `ui::distort_bar::tests::the_bar_draws_for_every_kind_and_shows_the_selection`
 - Given a 20 mm square about its middle and Push and Pull 50, then a
   corner node is 1.5 times as far from the middle and the middle of a
@@ -146,3 +160,7 @@ curve stays open.
 - Given a 20 mm square with Push and Pull 50 selected, then its end
   handle sits 5 mm right of the centre, and dragged to 10 mm left of it
   the amount is -100.
+- Given a 20 mm square and a Push and Pull drag from its middle 6 mm
+  right and 8 mm up, then the amount is 100 and the end handle sits
+  where the drag ended; dragged from there to 8 mm left and 6 mm up of
+  the middle the amount is -100 and the handle is there again.

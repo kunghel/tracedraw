@@ -1,11 +1,11 @@
-# Making copies with Step and Repeat
+# Making copies with Repeat Copies
 
 The [[docker.step_and_repeat]] panel makes several copies of the selection,
 each moved by the same distance from the one before: a row of buttons, a
 column of lines, a grid of tiles. Open it with
 [[menu.edit > menu.edit.step_and_repeat]] (<kbd>Ctrl+Shift+D</kbd>).
 
-![The Step and Repeat panel](../../img/objects-step-and-repeat.png)
+![The Repeat Copies panel](../../img/objects-step-and-repeat.png)
 
 ## To make copies {#copies}
 
@@ -21,6 +21,14 @@ column of lines, a grid of tiles. Open it with
    Then type the distance. 0 keeps the copies in line.
 4. Do the same under [[docker.vertical_settings]].
 5. Click [[docker.apply]].
+
+While you work in the panel (the pointer is on it, you are typing in one of
+its fields, or your last click was in it) the copies [[docker.apply]] would
+make are outlined on the page, dashed in blue, and follow each value as you
+change it. Nothing is added until you click [[docker.apply]], and one
+[[menu.edit.undo]] takes all the copies away again. A click elsewhere, or
+closing or hiding the panel, takes the outlines away. Very many copies of a
+detailed object are outlined as their boxes.
 
 The copies are added to the active layer and selected. Distances are in the
 drawing units.

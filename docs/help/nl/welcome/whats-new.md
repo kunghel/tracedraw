@@ -15,7 +15,7 @@ versies.
   verdwijnen als u de opdracht uitzet, en de opdracht staat weer uit als
   TraceDraw de volgende keer start.
 - De volledige lijst met wijzigingen van elke versie staat in het
-  [wijzigingslogboek](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [wijzigingslogboek](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   van het project.
 
 ## Hoogtepunten van recente versies {#highlights}

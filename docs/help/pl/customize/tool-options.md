@@ -17,6 +17,13 @@ również na pasku właściwości każdego narzędzia.
   obiekty, których tylko dotyka; <kbd>Alt</kbd> zaznacza wtedy tylko obiekty
   całkowicie wewnątrz.
 
+## Gumka {#eraser}
+
+![Opcje narzędzia Gumka](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (domyślnie 6,35 mm) oraz [[options.eraser_round]] lub
+[[options.eraser_square]].
+
 ## Powiększenie i przesuwanie {#zoom-pan}
 
 ![Opcje powiększenia i przesuwania](../../img/customize-tool-options-zoom-pan.png)
@@ -24,10 +31,15 @@ również na pasku właściwości każdego narzędzia.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (domyślnie) lub
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] lub [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (włączone): powiększenie 100% to rzeczywisty rozmiar
+  przy skalibrowanej rozdzielczości ekranu; wyłączone to 96 pikseli na cal.
+- [[options.wheel_center_mouse]] (wyłączone): powiększenie kółkiem przenosi punkt pod
+  wskaźnikiem na środek widoku, razem ze wskaźnikiem.
+- [[options.pan_right_button]] [[options.zoom_out]] lub [[options.context_menu]] (na początku).
 
-## Krzywe {#curves}
+## Odręczne/Bézier {#curves}
 
-![Opcje narzędzi krzywych](../../img/customize-tool-options-curves.png)
+![Opcje narzędzi Odręczne/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: od 0 do 100 (domyślnie 50).
 - [[options.join_within]]: jak blisko węzła końcowego musi zaczynać się linia,
@@ -38,6 +50,13 @@ również na pasku właściwości każdego narzędzia.
   dla narzędzia [[tool.pen]]; zobacz [Pióro](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (włączone); zobacz
   [Rysowanie na tablecie graficznym](../lines-shapes/pen-pressure.md).
+
+## Rozpoznawanie kształtów {#shape-recognition}
+
+![Opcje narzędzia Rozpoznawanie kształtów](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] i [[recognize.smoothing]] narzędzia Rozpoznawanie
+kształtów, od wyłączonego do najwyższego, jak na jego pasku właściwości.
 
 ## Prostokąt {#rectangle}
 
@@ -61,6 +80,12 @@ narożników oraz [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.number_of_points]] i [[options.sharpness]].
 
+## Papier milimetrowy {#graph-paper}
+
+![Opcje narzędzia Papier milimetrowy](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] i [[options.columns]] siatki.
+
 ## Spirala {#spiral}
 
 ![Opcje narzędzia Spirala](../../img/customize-tool-options-spiral.png)
@@ -68,21 +93,30 @@ narożników oraz [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]] oraz [[options.symmetrical_spiral]] lub
 [[options.logarithmic_spiral]].
 
-## Papier milimetrowy {#graph-paper}
-
-![Opcje narzędzia Papier milimetrowy](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] i [[options.columns]] siatki.
-
 ## Tabela {#table}
 
 ![Opcje narzędzia Tabela](../../img/customize-tool-options-table.png)
 
 [[options.rows]] i [[options.columns]] nowych tabel.
 
-## Gumka {#eraser}
+## Wymiar {#dimension}
 
-![Opcje narzędzia Gumka](../../img/customize-tool-options-eraser.png)
+![Opcje narzędzia Wymiar](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (domyślnie 6,35 mm) oraz [[options.eraser_round]] lub
-[[options.eraser_square]].
+Jak wygląda etykieta nowych wymiarów: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] i
+[[dimension.suffix]]. Narysowane już wymiary zachowują swoją etykietę;
+zaznacz jeden i zmień ją na pasku właściwości.
+
+## Łącznik {#connector}
+
+![Opcje narzędzia Łącznik](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] nowych zaokrąglonych łączników (na początku 3 mm).
+
+## Wypełnienie siatkowe {#mesh-fill}
+
+![Opcje narzędzia Wypełnienie siatkowe](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] i [[options.rows]] siatki, od której zaczyna się nowe
+wypełnienie siatkowe (na początku 2 na 2).

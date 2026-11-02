@@ -770,7 +770,11 @@ fn files_are_laid_out_as_the_versions_have_them() {
         }
         if v >= 14 {
             let z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
-            let names: Vec<&str> = z.file_names().collect();
+            let owned: Vec<String> = z
+                .file_names()
+                .map(|n| n.expect("name").into_owned())
+                .collect();
+            let names: Vec<&str> = owned.iter().map(String::as_str).collect();
             if v < 16 {
                 // The RIFF stream first and stored; without pictures the
                 // summary, names and link list follow.
@@ -1121,11 +1125,11 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
         for (pos, thick) in DECORATION_LINES {
             assert_eq!((u(), u() as i32, u() as i32), (0, pos, thick), "{v}");
         }
-        // No tabs, bullets, indents, hyphenation or drop caps; set11 from 8.
+        // No tabs, bullets, indents, hyphenation or drop caps; set11 from 9.
         for _ in 0..5 {
             assert_eq!(u(), 0, "{v}");
         }
-        if v >= 8 {
+        if v >= 9 {
             assert_eq!(u(), 1, "{v}");
             ids.push(u());
             assert_eq!((u(), u()), (0, 0));
@@ -1162,7 +1166,7 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
             }
             at.set(at.get() + len * if v >= 12 { 2 } else { 1 });
             let refs = if style < 5 {
-                6 + usize::from(v >= 8)
+                6 + usize::from(v >= 9)
             } else {
                 2
             };
@@ -1566,7 +1570,7 @@ fn version_16_and_later_files_are_a_complete_package() {
         // open with it.
         {
             let mut first = z.by_index(0).expect("first member");
-            assert_eq!(first.name(), "mimetype", "{v}");
+            assert_eq!(first.name().expect("name"), "mimetype", "{v}");
             assert_eq!(first.compression(), zip::CompressionMethod::Stored, "{v}");
             let mut t = String::new();
             first.read_to_string(&mut t).expect("text");
@@ -1611,7 +1615,9 @@ fn version_16_and_later_files_are_a_complete_package() {
     // root file only.
     let bytes = document_to_cdr_version(&doc, 17);
     let z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
-    assert!(!z.file_names().any(|n| n.starts_with("previews/")));
+    assert!(!z
+        .file_names()
+        .any(|n| n.expect("name").starts_with("previews/")));
 }
 
 #[test]
@@ -1708,7 +1714,10 @@ fn every_version_writes_what_files_of_that_version_hold() {
         }
         assert!(!has("DISP") && !has("uil"), "{v}");
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
-        let names: Vec<String> = z.file_names().map(String::from).collect();
+        let names: Vec<String> = z
+            .file_names()
+            .map(|n| n.expect("name").into_owned())
+            .collect();
         if v < 16 {
             for n in [
                 "content/riffData.cdr",
@@ -2332,7 +2341,7 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
         let bytes = document_to_cdr_version(&doc, v);
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
         let l = &back.pages[0].layers[0];
-        if v >= 12 {
+        if v >= 11 {
             // A clip container: the frame with its look, the contents
             // inside it (the next test).
             let ShapeKind::ClipFrame { frame, contents } = &l.shapes[0].kind else {
@@ -2356,7 +2365,7 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
     }
 }
 
-/// From version 12 a clip frame goes out as a clip container (#1222): the
+/// From version 11 a clip frame goes out as a clip container (#1222): the
 /// frame object names, in argument 8005, a group of the document's `LIST
 /// clpt` holding the contents, laid out as a version 27 file saved by the
 /// program that reads them holds its own (the group's flags, its loda of
@@ -2366,7 +2375,7 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
 /// written as a bitmap with a crop path and other frames as a plain group,
 /// which that program showed without the picture and the frame.
 #[test]
-fn clip_frames_go_out_as_clip_containers_from_version_12() {
+fn clip_frames_go_out_as_clip_containers_from_version_11() {
     let mut doc = doc_with(Vec::new());
     let mut ids = doc.ids().clone();
     let png = {
@@ -2422,7 +2431,7 @@ fn clip_frames_go_out_as_clip_containers_from_version_12() {
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
         let l = &back.pages[0].layers[0];
         assert_eq!(l.shapes.len(), 1, "{v}: {:?}", rep.warnings);
-        if v < 12 {
+        if v < 11 {
             assert!(
                 matches!(l.shapes[0].kind, ShapeKind::Group { .. }),
                 "{v}: {:?}",
@@ -2493,9 +2502,16 @@ fn clip_frames_go_out_as_clip_containers_from_version_12() {
                 .iter()
                 .map(|(t, b)| (*t, b.clone()))
                 .collect::<Vec<_>>(),
-            vec![(3500, vec![2, 0, 0, 0])],
-            "{v}"
+            if v <= 12 {
+                // With the zero rotation of every object of 7 to 12, as
+                // the clip groups of the version 11 file of #896.
+                vec![(12030, vec![0; 4]), (3500, vec![2, 0, 0, 0])]
+            } else {
+                vec![(3500, vec![2, 0, 0, 0])]
+            },
+            "{v}: the group's number plus one"
         );
+        assert_eq!(spnd.as_deref(), Some(&[1u8, 0, 0, 0][..]), "{v}");
         assert_eq!((*objects, *usdns), (2, 0), "{v}: no usdn inside the group");
         assert_eq!(containers.len(), 1, "{v}");
         let (body, cflags, cargs) = &containers[0];
@@ -2506,14 +2522,138 @@ fn clip_frames_go_out_as_clip_containers_from_version_12() {
         );
         assert_eq!(&body[4..], &[1u8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "{v}");
         assert_eq!(cflags[2], 0x10, "{v}");
-        assert!(
+        // The container's id and zero from 12 (the version 11 file's
+        // containers have neither).
+        assert_eq!(
             cargs.iter().any(|(t, b)| *t == 40001 && b.len() == 16),
+            v >= 12,
             "{v}"
         );
-        assert!(
+        assert_eq!(
             cargs.iter().any(|(t, b)| *t == 40200 && *b == [0; 4]),
+            v >= 12,
             "{v}"
         );
+    }
+}
+
+/// Every clip group of the files of versions 11, 14, 25, 26 and 27 holds
+/// its own number (`spnd`) plus one in argument 3500, a number no other
+/// object takes (#1226). TraceDraw wrote 2 for every group, which is
+/// right only for a group numbered 1: here two texts and two frames take
+/// numbers, so at least one group has another. Each container names its own group, each group's
+/// 3500 is its number plus one, no `spnd` repeats or takes one of those,
+/// and the checker passes the file (`check::tests::clip_groups_hold_their_number_plus_one`
+/// reports a group written the old way).
+#[test]
+fn clip_groups_hold_their_number_plus_one_after_text_and_other_clips() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut shapes = vec![
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("first", "Arial", 12.0)],
+            TextAlign::Left,
+        ),
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("second", "Arial", 12.0)],
+            TextAlign::Left,
+        ),
+    ];
+    for k in 0..2 {
+        let dx = 80.0 * k as f64;
+        let mut dot = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0 + dx, 10.0, 40.0 + dx, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        dot.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        dot.stroke = None;
+        let mut frame = Shape::new(
+            ids.shape(),
+            ShapeKind::Ellipse {
+                rect: Rect::new(20.0 + dx, 5.0, 60.0 + dx, 35.0),
+                arc: None,
+            },
+        );
+        frame.fill = Fill::Solid(Color::rgb8(255, 240, 0));
+        frame.stroke = Some(Stroke::new(Color::BLACK, 0.5));
+        shapes.push(Shape::new(
+            ids.shape(),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![dot],
+            },
+        ));
+    }
+    doc.pages[0].layers[0].shapes = shapes;
+    doc.set_ids(ids);
+    for v in versions().into_iter().filter(|v| *v >= 11) {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let u32_of = |b: &[u8]| {
+            b.get(..4)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_le_bytes)
+        };
+        let mut groups = Vec::new();
+        let mut named = Vec::new();
+        let mut spnds = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if let Some(n) = c
+                .find(b"spnd")
+                .and_then(|s| u32_of(tree.data(&riff, s)))
+                .filter(|_| c.is(b"obj ") || c.is(b"grp "))
+            {
+                spnds.push(n);
+            }
+            if c.is(b"clpt") {
+                for g in c.children.iter().filter(|g| g.is(b"grp ")) {
+                    let n = g.find(b"spnd").and_then(|s| u32_of(tree.data(&riff, s)));
+                    let (_, args) = layer_args(&tree, &riff, g);
+                    let link = args
+                        .iter()
+                        .find(|(t, _)| *t == 3500)
+                        .and_then(|(_, b)| u32_of(b));
+                    groups.push((n, link));
+                }
+            } else if c.is(b"obj ") {
+                let (_, args) = layer_args(&tree, &riff, c);
+                if let Some((_, b)) = args.iter().find(|(t, _)| *t == 8005) {
+                    named.push(u32_of(b));
+                }
+            }
+        });
+        assert_eq!(groups.len(), 2, "{v}");
+        // Texts or the other clip take the numbers before at least one
+        // group (the order objects go out in differs between versions).
+        assert!(
+            groups.iter().any(|(n, _)| n.is_some_and(|n| n > 2)),
+            "{v}: {groups:?}"
+        );
+        for (n, link) in &groups {
+            let n = n.unwrap_or_else(|| panic!("{v}: group without a number"));
+            assert_eq!(*link, Some(n + 1), "{v}: group {n}");
+            assert!(named.contains(&Some(n)), "{v}: no container names {n}");
+            assert!(!spnds.contains(&(n + 1)), "{v}: {} taken", n + 1);
+        }
+        let mut sorted = spnds.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), spnds.len(), "{v}: {spnds:?}");
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let clips = back.pages[0].layers[0]
+            .shapes
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }))
+            .count();
+        assert_eq!(clips, 2, "{v}: {:?}", rep.warnings);
     }
 }
 
@@ -2783,6 +2923,88 @@ fn bitmap_objects_carry_their_pixel_size() {
     }
 }
 
+/// A picture and a rectangle without an outline get the outline the
+/// program's own files of version 27 give their pictures and shapes
+/// without one, every member with width 0 and no `type`, in their style
+/// strings (versions 16 to 27). TraceDraw wrote `{"type":"1","width":"0"}`
+/// on every object without an outline, a type no file holds; that
+/// program closed when such a picture, or a group of such curves, was
+/// clicked (#1226). An outlined rectangle keeps its width and colour.
+#[test]
+fn objects_without_an_outline_write_the_files_outline_of_width_0() {
+    let png = {
+        let mut pm = tiny_skia::Pixmap::new(3, 2).expect("pixmap");
+        pm.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        pm.encode_png().expect("png")
+    };
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut bm = Shape::new(
+        ids.shape(),
+        ShapeKind::Bitmap {
+            rect: Rect::new(0.0, 0.0, 30.0, 20.0),
+            width_px: 3,
+            height_px: 2,
+            png: png.into(),
+            fx: None,
+        },
+    );
+    bm.fill = Fill::None;
+    bm.stroke = None;
+    let rect = |stroke: Option<Stroke>, ids: &mut tracedraw_core::id::IdSource| {
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(40.0, 10.0, 60.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        r.stroke = stroke;
+        r
+    };
+    let bare = rect(None, &mut ids);
+    let outlined = rect(Some(Stroke::new(Color::BLACK, 0.5)), &mut ids);
+    let doc = doc_with(vec![bm, bare, outlined]);
+    let no_outline = format!(r#""outline":{}"#, super::NO_OUTLINE_JSON);
+    for v in versions().into_iter().filter(|v| *v >= 16) {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut styles = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"loda") {
+                let d = tree.data(&riff, c);
+                let kind = d.get(16..20).map(|k| k.to_vec());
+                if kind == Some(5u32.to_le_bytes().to_vec())
+                    || kind == Some(3u32.to_le_bytes().to_vec())
+                    || kind == Some(1u32.to_le_bytes().to_vec())
+                {
+                    if let Some((_, b)) = loda_args(d).into_iter().find(|(t, _)| *t == 201) {
+                        styles.push(crate::check::style_text(&b[8..]));
+                    }
+                }
+            }
+        });
+        assert_eq!(styles.len(), 3, "{v}: {styles:?}");
+        // The picture and the bare rectangle (written in either order).
+        let bare: Vec<&String> = styles.iter().filter(|s| s.contains(&no_outline)).collect();
+        assert_eq!(bare.len(), 2, "{v}: {styles:?}");
+        assert!(
+            styles.iter().any(|s| s.contains(r#"{"width":"5000","#)),
+            "{v}: {styles:?}"
+        );
+        for s in &styles {
+            assert!(!s.contains(r#""type":"1","width""#), "{v}: {s}");
+        }
+        assert!(
+            crate::check::check_bytes(&bytes)
+                .expect("checks")
+                .is_empty(),
+            "{v}"
+        );
+    }
+}
+
 /// The coordinates argument of the first bitmap object of `bytes`.
 fn bitmap_coords(bytes: &[u8]) -> Vec<u8> {
     let (_, tree, riff) = chunk_ids(bytes);
@@ -2879,10 +3101,10 @@ fn bitmap_boxes_start_at_the_origin_and_their_transform_places_them() {
         assert_eq!([i(0), i(4), i(8), i(12)], want_box, "{v}");
         let count_at = if v == 8 { 64 } else { 72 };
         let n = i(count_at) as usize;
-        // From version 12 the frame is a clip container and the picture
-        // inside it keeps its whole rectangle as its outline (#1222);
-        // before, the frame is the picture's crop outline.
-        if v >= 12 {
+        // From version 11 the frame is a clip container and the picture
+        // inside it keeps its whole rectangle as its outline (#1222,
+        // #1226); before, the frame is the picture's crop outline.
+        if v >= 11 {
             assert_eq!(n, 5, "{v}: {n} points");
         } else {
             assert!(n > 5, "{v}: {n} points");
@@ -3367,9 +3589,13 @@ fn the_package_lists_the_text_faces_and_embeds_those_allowed() {
         .map(|c| c.unwrap_or('?'))
         .collect();
         assert_eq!(family, "Selawik");
-        let embedded = z.file_names().any(|n| n == "embed/embedding0");
+        let embedded = z
+            .file_names()
+            .any(|n| n.expect("name") == "embed/embedding0");
         assert_eq!(embedded, embed);
-        assert!(!z.file_names().any(|n| n == "embed/embedding1"));
+        assert!(!z
+            .file_names()
+            .any(|n| n.expect("name") == "embed/embedding1"));
         let (back, rep) = crate::open_bytes(&bytes, "fonts").expect("reads back");
         if embed {
             let mut m = Vec::new();
@@ -3391,9 +3617,10 @@ fn the_package_lists_the_text_faces_and_embeds_those_allowed() {
     };
     let bytes = document_to_cdr_version_with(&doc, 15, &previews);
     let z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
-    assert!(!z
-        .file_names()
-        .any(|n| n.starts_with("font/") || n.starts_with("embed/")));
+    assert!(!z.file_names().any(|n| {
+        let n = n.expect("name");
+        n.starts_with("font/") || n.starts_with("embed/")
+    }));
 }
 
 /// The faces embedding leaves out, by family and reason (#1219): a font
@@ -3526,7 +3753,11 @@ fn embedded_fonts_carry_the_drawings_font_ids() {
         let mut expected = vec![selawik, selawik, missing];
         expected.sort_unstable();
         assert_eq!(numbers, expected, "{v}: {font_ids:?}");
-        assert!(!z.file_names().any(|n| n == "embed/embedding2"), "{v}");
+        assert!(
+            !z.file_names()
+                .any(|n| n.expect("name") == "embed/embedding2"),
+            "{v}"
+        );
         for (n, (font, style)) in [(REGULAR, "Regular"), (BOLD, "Bold")].iter().enumerate() {
             let m = read(&mut z, &format!("embed/embedding{n}"));
             let eot = &m[2705..];
@@ -3675,7 +3906,7 @@ fn faces_of_families_the_drawing_does_not_name_get_new_numbers() {
         face("arial", true),
         face("Other", true),
     ];
-    let members = fonts::members(&faces, true, &[(4, "Arial".into())]);
+    let members = fonts::members(&faces, true, &[(4, "Arial".into())], &[]);
     assert_eq!(members.len(), 1, "nothing to embed");
     let table = &members[0].1;
     let mut numbers = Vec::new();
@@ -3715,6 +3946,99 @@ fn a_version_8_style_table_with_set11_is_read() {
     assert_eq!(eight.len(), nine.len());
 }
 
+/// Version 8 files carry the style table of the public notes' usual
+/// variant (800), without the set11 table and the styles' references to
+/// it: written with them, as the program that reads these files saves
+/// both version 8 variants, the file crashed that program's 2010 release
+/// while the same drawing's version 7 and 9 files opened (#1139). The
+/// version 8 table is the version 7 one; version 9 adds set11; and the
+/// whole version 8 file reads back with its texts' styles.
+#[test]
+fn version_8_style_tables_have_no_set11() {
+    let uses = StyleUses {
+        text_fill: 1,
+        graphic_fill: 2,
+        outline: 3,
+        font: 1,
+        formats: Vec::new(),
+    };
+    let seven = stlt(Ver(7), uses.clone());
+    let eight = stlt(Ver(8), uses.clone());
+    let nine = stlt(Ver(9), uses);
+    assert_eq!(eight, seven);
+    // Version 9: the set11 table (count, id, 0, 0) and one reference in
+    // each of the four text styles.
+    assert_eq!(nine.len(), eight.len() + 16 + 4 * 4);
+    let mut notes = Vec::new();
+    let read = crate::text::read_stlt(&eight, 8, &mut |w| notes.push(w));
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(read.len(), 5);
+
+    // A drawing with text, written as version 8: its style table holds
+    // no set11 and every text keeps its size and colour.
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut red = TextSpan::new("red", "Arial", 18.0);
+    red.fill = Some(Fill::Solid(Color::rgb8(204, 0, 0)));
+    let shapes = vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("Plain ", "Arial", 18.0), red],
+        TextAlign::Left,
+    )];
+    doc.pages[0].layers[0].shapes = shapes;
+    doc.set_ids(ids);
+    let bytes = document_to_cdr_version(&doc, 8);
+    let (_, tree, riff) = chunk_ids(&bytes);
+    let mut table = None;
+    tree.root.walk(&mut |ch, _| {
+        if ch.is(b"stlt") && table.is_none() {
+            table = Some(tree.data(&riff, ch).to_vec());
+        }
+    });
+    let table = table.expect("style table");
+    let mut notes = Vec::new();
+    let styles = crate::text::read_stlt(&table, 8, &mut |w| notes.push(w));
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(styles.len(), 6, "five default styles and the text's");
+    // The table is the version 7 one with the same styles.
+    let seven = document_to_cdr_version(&doc, 7);
+    let (_, tree7, riff7) = chunk_ids(&seven);
+    let mut table7 = None;
+    tree7.root.walk(&mut |ch, _| {
+        if ch.is(b"stlt") && table7.is_none() {
+            table7 = Some(tree7.data(&riff7, ch).to_vec());
+        }
+    });
+    assert_eq!(Some(table.clone()), table7);
+    let back = open_as_drawn(&bytes);
+    let spans: Vec<TextSpan> = back
+        .pages
+        .iter()
+        .flat_map(|p| &p.layers)
+        .flat_map(|l| &l.shapes)
+        .filter_map(|s| match &s.kind {
+            ShapeKind::Text { spans, .. } => Some(spans.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        spans.iter().map(|s| s.text.as_str()).collect::<String>(),
+        "Plain red"
+    );
+    assert!(
+        spans.iter().all(|s| (s.size_pt - 18.0).abs() < 0.05),
+        "{spans:?}"
+    );
+    assert!(
+        spans.iter().any(|s| s.text == "red"
+            && s.fill
+                .as_ref()
+                .is_some_and(|f| *f != Fill::Solid(Color::BLACK))),
+        "{spans:?}"
+    );
+}
+
 /// A face named by its family and weight ("Titillium Web SemiBold") is
 /// written as files name it, the family at the weight's style code
 /// ("Titillium Web" at 1024), and reads back as it was in every version
@@ -3750,7 +4074,7 @@ fn faces_named_with_their_weight_round_trip() {
             semi_italic,
         ])
         .expect("renamed");
-    let json = character_json(&file[0], None);
+    let json = character_json(&file[0], None, &Default::default());
     assert!(
         json.contains(r#""font":"Titillium Web""#) && json.contains(r#""weight":"1024""#),
         "{json}"
@@ -3839,13 +4163,13 @@ fn variable_font_weight_axis_round_trips() {
     assert_eq!(weight_code(&at(None, false, false)), 64);
     assert_eq!(weight_code(&at(None, true, true)), 0x2000);
     assert_eq!(style_flags(&at(Some(500.0), false, false)), 256);
-    let json = character_json(&at(Some(600.0), false, true), None);
+    let json = character_json(&at(Some(600.0), false, true), None, &Default::default());
     assert!(
         json.contains(r#""weight":"1024""#) && json.contains(r#""italic":"1""#),
         "{json}"
     );
     // Set on bold text, the axis is what draws it.
-    let json = character_json(&at(Some(400.0), true, false), None);
+    let json = character_json(&at(Some(400.0), true, false), None, &Default::default());
     assert!(json.contains(r#""weight":"64""#), "{json}");
 
     let spans = [
@@ -4329,8 +4653,12 @@ fn a_font_file_two_faces_share_is_embedded_once() {
     };
     let bytes = document_to_cdr_version_with(&doc_with(Vec::new()), NEWEST_VERSION, &previews);
     let z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
-    assert!(z.file_names().any(|n| n == "embed/embedding0"));
-    assert!(!z.file_names().any(|n| n == "embed/embedding1"));
+    assert!(z
+        .file_names()
+        .any(|n| n.expect("name") == "embed/embedding0"));
+    assert!(!z
+        .file_names()
+        .any(|n| n.expect("name") == "embed/embedding1"));
     let (back, _) = crate::open_bytes(&bytes, "shared").expect("reads back");
     assert_eq!(back.fonts.len(), 1);
     assert_eq!(back.fonts[0].data.as_slice(), FONT);
@@ -4374,6 +4702,8 @@ fn the_font_table_lists_weight_named_faces_under_their_family() {
     const FONT: &[u8] =
         include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
     let named = renamed_font(FONT, "X Light");
+    // The SemiBold face's own file, of weight 600: listed as it is.
+    let semi = with_weight(FONT, 600);
     let face = |family: &str, data: &[u8]| FontFace {
         family: family.into(),
         bold: false,
@@ -4381,7 +4711,7 @@ fn the_font_table_lists_weight_named_faces_under_their_family() {
         data: Some(std::sync::Arc::new(data.to_vec())),
     };
     let faces = vec![
-        face("Selawik SemiBold", FONT),
+        face("Selawik SemiBold", &semi),
         face("Selawik", FONT),
         face("X Light", &named),
     ];
@@ -4601,20 +4931,31 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
         embed_fonts: true,
         ..Default::default()
     };
+    // The font's version string and the kind of its outlines (2:
+    // TrueType, not signed), as files name the face drawing a run.
+    let version = ttf_parser::Face::parse(REGULAR, 0)
+        .expect("font")
+        .names()
+        .into_iter()
+        .filter(|n| n.name_id == 5)
+        .find_map(|n| n.to_string())
+        .expect("version");
     let font = |charset: u32| {
         format!(
-            r#"{{"overline":"0","effect":"0","version":"","italic":"0","weight":"64","underline":"0","charset":"{charset}","technology":"4","size":"84667","font":"Selawik","script":"0","strikeout":"0"}}"#
+            r#"{{"overline":"0","effect":"0","version":"{version}","italic":"0","weight":"64","underline":"0","charset":"{charset}","technology":"2","size":"84667","font":"Selawik","script":"0","strikeout":"0"}}"#
         )
     };
+    // The red run has the paragraph's look (its record is the plain
+    // one); the blue one a record of its own.
     let run = |colour: &str| {
         format!(
-            r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}},"latin":{},"RTL":{},"farEast":{}}}}}"#,
-            font(0),
+            r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}},"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
+            character_outline_json(),
             font(178),
+            font(0),
             font(128)
         )
     };
-    let red_spec = colour_spec(Color::rgb8(255, 0, 0));
     let blue_spec = colour_spec(Color::rgb8(0, 0, 255));
     for v in 16..=NEWEST_VERSION {
         let bytes = document_to_cdr_version_with(&doc, v, &previews);
@@ -4630,9 +4971,8 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
         // without the zero bytes both read as the ASCII they hold.
         let ascii: Vec<u8> = recs[0].iter().copied().filter(|b| *b != 0).collect();
         let text = String::from_utf8_lossy(&ascii);
-        for want in [run(&red_spec), run(&blue_spec)] {
-            assert!(text.contains(&want), "{v}: no run style {want}\n{text}");
-        }
+        let want = run(&blue_spec);
+        assert!(text.contains(&want), "{v}: no run style {want}\n{text}");
         // Not the short form of before.
         assert!(!text.contains(r#""latin":{"font":"#), "{v}");
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
@@ -4648,77 +4988,502 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
     }
 }
 
-/// The run records of a text of several colours in one line mark their
-/// styles as applying (members 0x3fff, flags 0x14: a locale and a style),
-/// as the files of the program that reads them hold such runs; written
-/// with 0 and 0x04, the marks of a run with its paragraph's style, the
-/// style was ignored there and the whole line took one colour (#1297,
-/// #1347). A text of one run keeps the plain marks.
+/// One run record of a version 16+ paragraph: its letter count, the
+/// members of its style that apply, its flags and its style string.
+#[derive(Debug, Clone, PartialEq)]
+struct RunRecord {
+    letters: u16,
+    members: u16,
+    flags: u16,
+    style: String,
+}
+
+/// A version 16+ paragraph as the writer lays it out: its default style
+/// string, its run records and the record each letter names.
+#[derive(Debug)]
+struct WrittenParagraph {
+    default: String,
+    records: Vec<RunRecord>,
+    letters: Vec<u8>,
+}
+
+/// The paragraphs of a `txsm` record the writer produced for version
+/// `v` (16 on): frame flag set, one frame not on a path.
+fn written_paragraphs(d: &[u8], v: u16) -> Vec<WrittenParagraph> {
+    let mut p = 0usize;
+    let u8_at = |p: &mut usize| {
+        let x = d[*p];
+        *p += 1;
+        x
+    };
+    let u16_at = |p: &mut usize| {
+        let x = u16::from_le_bytes([d[*p], d[*p + 1]]);
+        *p += 2;
+        x
+    };
+    let u32_at = |p: &mut usize| {
+        let x = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
+        *p += 4;
+        x as usize
+    };
+    let string = |p: &mut usize| {
+        let n = u32_at(p);
+        if v < 17 {
+            let units: Vec<u16> = d[*p..*p + 2 * n]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            *p += 2 * n;
+            String::from_utf16_lossy(&units)
+        } else {
+            let s = String::from_utf8_lossy(&d[*p..*p + n]).into_owned();
+            *p += n;
+            s
+        }
+    };
+    assert_ne!(u32_at(&mut p), 0, "frame flag");
+    p += 32;
+    assert_eq!(u16_at(&mut p), 1700);
+    p += 3;
+    let frames = u32_at(&mut p);
+    for _ in 0..frames {
+        p += 4 + 48;
+        assert_eq!(u32_at(&mut p), 0, "not on a path");
+        p += 8;
+    }
+    let mut out = Vec::new();
+    for _ in 0..u32_at(&mut p) {
+        p += 4 + 1;
+        assert_eq!(u8_at(&mut p), 0);
+        let default = string(&mut p);
+        let mut records = Vec::new();
+        for _ in 0..u32_at(&mut p) {
+            let letters = u16_at(&mut p);
+            let members = u16_at(&mut p);
+            let flags = u16_at(&mut p);
+            assert_ne!(flags & 0x04, 0, "a locale");
+            let locale = u32_at(&mut p);
+            p += 2 * locale;
+            records.push(RunRecord {
+                letters,
+                members,
+                flags,
+                style: string(&mut p),
+            });
+        }
+        let n = u32_at(&mut p);
+        let letters = (0..n).map(|k| d[p + 8 * k + 2] >> 1).collect();
+        p += 8 * n;
+        p += u32_at(&mut p);
+        assert_eq!(u8_at(&mut p), 0, "no letter paths");
+        out.push(WrittenParagraph {
+            default,
+            records,
+            letters,
+        });
+    }
+    assert_eq!(p, d.len(), "the whole record read");
+    out
+}
+
+/// The `txsm` records of a written file.
+fn txsm_records(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let (_, tree, riff) = chunk_ids(bytes);
+    let mut recs = Vec::new();
+    tree.root.walk(&mut |c, _| {
+        if c.is(b"txsm") {
+            recs.push(tree.data(&riff, c).to_vec());
+        }
+    });
+    recs
+}
+
+/// The member `key` of a style string (`"key":{...}` or `"key":"..."`),
+/// as written: the writer's strings hold no braces inside values.
+fn style_member<'s>(style: &'s str, key: &str) -> Option<&'s str> {
+    let at = style.find(&format!(r#""{key}":"#))? + key.len() + 3;
+    let rest = &style[at..];
+    if rest.starts_with('{') {
+        let mut depth = 0;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&rest[..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    } else {
+        let end = rest[1..].find('"')? + 2;
+        Some(&rest[..end])
+    }
+}
+
+/// A text of one line in several colours is written as the files of the
+/// program that reads them hold such a line: its run records are a table
+/// of the line's looks, the plain record first (no members, flags 0x04,
+/// style `{"character":{}}`) counting the letters in the paragraph's look
+/// and the paragraph's end, then a record per other colour marked as
+/// applying (members 0x3fff, flags 0x14: a locale and a style) with its
+/// complete style and the count of its letters; each letter names its
+/// record, and a colour met twice has one record. Written with 0 and 0x04
+/// on every record, the styles were ignored there and the line came out
+/// in one colour (#1297, #1347, #1361, #1379). Checked in every version
+/// from 16; the colours read back in every version from 7.
 #[test]
-fn runs_of_their_own_style_are_marked_as_applying() {
+fn runs_of_their_own_colour_are_a_table_of_looks_marked_as_applying() {
+    let red = Color::rgb8(255, 0, 0);
+    let green = Color::rgb8(0, 160, 0);
+    let blue = Color::rgb8(0, 0, 255);
     let mut doc = doc_with(Vec::new());
     let mut ids = doc.ids().clone();
     let mut spans = Vec::new();
-    for (text, c) in [("R", (255, 0, 0)), ("G", (0, 160, 0)), ("B", (0, 0, 255))] {
+    for (text, c) in [("My ", red), ("Na", green), ("me", blue), ("is", red)] {
         let mut sp = TextSpan::new(text, "Arial", 24.0);
-        sp.fill = Some(Fill::Solid(Color::rgb8(c.0, c.1, c.2)));
+        sp.fill = Some(Fill::Solid(c));
         spans.push(sp);
     }
-    let one = TextSpan::new("One", "Arial", 24.0);
     doc.pages[0].layers[0].shapes = vec![
         text_shape(&mut ids, spans, TextAlign::Left),
-        text_shape(&mut ids, vec![one], TextAlign::Left),
+        text_shape(
+            &mut ids,
+            vec![TextSpan::new("One", "Arial", 24.0)],
+            TextAlign::Left,
+        ),
     ];
     doc.set_ids(ids);
-    // The two fields, then the locale "ENU" (count 3, UTF-16).
-    let marked = |members: u16, flags: u16| {
-        let mut m = Vec::new();
-        m.extend_from_slice(&members.to_le_bytes());
-        m.extend_from_slice(&flags.to_le_bytes());
-        m.extend_from_slice(&[3, 0, 0, 0, b'E', 0, b'N', 0, b'U', 0]);
-        m
-    };
-    let count =
-        |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).filter(|w| *w == needle).count();
-    for v in 16..=NEWEST_VERSION {
+    for v in OLDEST_VERSION..=NEWEST_VERSION {
         let bytes = document_to_cdr_version(&doc, v);
-        let (_, tree, riff) = chunk_ids(&bytes);
-        let mut recs = Vec::new();
-        tree.root.walk(&mut |c, _| {
-            if c.is(b"txsm") {
-                recs.push(tree.data(&riff, c).to_vec());
-            }
-        });
-        assert_eq!(recs.len(), 2, "{v}");
-        let (several, single) = if count(&recs[0], &marked(0x3fff, 0x14)) > 0 {
-            (&recs[0], &recs[1])
-        } else {
-            (&recs[1], &recs[0])
-        };
-        assert_eq!(count(several, &marked(0x3fff, 0x14)), 3, "{v}");
-        assert_eq!(count(several, &marked(0, 4)), 0, "{v}");
-        assert_eq!(count(single, &marked(0, 4)), 1, "{v}");
-        assert_eq!(count(single, &marked(0x3fff, 0x14)), 0, "{v}");
         crate::check::assert_clean(&bytes, v);
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
-        let texts: Vec<Vec<Option<Fill>>> = back.pages[0].layers[0]
+        let colours: Vec<Vec<(String, Option<Fill>)>> = back.pages[0].layers[0]
             .shapes
             .iter()
             .filter_map(|s| match &s.kind {
-                ShapeKind::Text { spans, .. } => {
-                    Some(spans.iter().map(|sp| sp.fill.clone()).collect())
-                }
+                ShapeKind::Text { spans, .. } => Some(
+                    spans
+                        .iter()
+                        .map(|sp| (sp.text.clone(), sp.fill.clone()))
+                        .collect(),
+                ),
                 _ => None,
             })
             .collect();
-        assert!(
-            texts
+        let want: Vec<(String, Option<Fill>)> =
+            [("My ", red), ("Na", green), ("me", blue), ("is", red)]
                 .iter()
-                .any(|f| f.len() == 3 && f.iter().all(Option::is_some)),
-            "{v}: {texts:?} {:?}",
+                .map(|(t, c)| (t.to_string(), Some(Fill::Solid(*c))))
+                .collect();
+        assert!(
+            colours.contains(&want),
+            "{v}: {colours:?} {:?}",
+            rep.warnings
+        );
+        if v < 16 {
+            continue;
+        }
+        let recs = txsm_records(&bytes);
+        assert_eq!(recs.len(), 2, "{v}");
+        let mut paras: Vec<WrittenParagraph> =
+            recs.iter().flat_map(|r| written_paragraphs(r, v)).collect();
+        paras.sort_by_key(|p| p.letters.len());
+        let (one, line) = (&paras[0], &paras[1]);
+        // One look: the plain record alone.
+        assert_eq!(
+            one.records,
+            vec![RunRecord {
+                letters: 4,
+                members: 0,
+                flags: 0x04,
+                style: r#"{"character":{}}"#.into(),
+            }],
+            "{v}"
+        );
+        assert_eq!(one.letters, vec![0; 3], "{v}");
+        // Red (5 letters and the end), green, blue.
+        let marks: Vec<(u16, u16, u16)> = line
+            .records
+            .iter()
+            .map(|r| (r.letters, r.members, r.flags))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![(6, 0, 0x04), (2, 0x3fff, 0x14), (2, 0x3fff, 0x14)],
+            "{v}"
+        );
+        assert_eq!(line.records[0].style, r#"{"character":{}}"#, "{v}");
+        assert_eq!(line.letters, vec![0, 0, 0, 1, 1, 2, 2, 0, 0], "{v}");
+        for (r, c) in line.records[1..].iter().zip([green, blue]) {
+            let fill = style_member(&r.style, "fill").expect("fill");
+            assert!(fill.contains(&colour_spec(c)), "{v}: {fill}");
+            // Every member a run of that program's files holds, the
+            // fonts and the outline as the paragraph's default has them.
+            for key in [
+                "angle", "outline", "RTL", "latin", "farEast", "h_shift", "v_shift",
+            ] {
+                assert_eq!(
+                    style_member(&r.style, key),
+                    style_member(&line.default, key),
+                    "{v}: {key} of {}",
+                    r.style
+                );
+            }
+        }
+    }
+}
+
+/// With Embed fonts on, a text of two colours names its embedded face
+/// in every run style exactly as the paragraph's default style and a
+/// text of one colour do, and the font table and the embedded font are
+/// the same for both: in the program that reads the files, a one-colour
+/// text found its embedded font while a two-colour one asked for it
+/// (#1297, #1009, #1055).
+#[test]
+fn two_colours_name_the_embedded_font_as_one_colour_does() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let previews = Previews {
+        fonts: vec![FontFace {
+            family: "Selawik".into(),
+            bold: false,
+            italic: false,
+            data: Some(std::sync::Arc::new(REGULAR.to_vec())),
+        }],
+        embed_fonts: true,
+        ..Default::default()
+    };
+    let text = |colours: &[Color]| {
+        let mut doc = doc_with(Vec::new());
+        let mut ids = doc.ids().clone();
+        let spans = colours
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut sp = TextSpan::new(["ab", "cd"][i % 2], "Selawik", 30.0);
+                sp.fill = Some(Fill::Solid(*c));
+                sp
+            })
+            .collect();
+        doc.pages[0].layers[0].shapes = vec![text_shape(&mut ids, spans, TextAlign::Left)];
+        doc.set_ids(ids);
+        doc
+    };
+    let black = Color::BLACK;
+    let red = Color::rgb8(255, 0, 0);
+    let one = text(&[black, black]);
+    let two = text(&[black, red]);
+    let fonts = |bytes: &[u8]| {
+        let (_, tree, riff) = chunk_ids(bytes);
+        let mut f = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"font") {
+                f.push(tree.data(&riff, c).to_vec());
+            }
+        });
+        f
+    };
+    for v in 16..=NEWEST_VERSION {
+        let a = document_to_cdr_version_with(&one, v, &previews);
+        let b = document_to_cdr_version_with(&two, v, &previews);
+        crate::check::assert_clean(&b, v);
+        assert_eq!(fonts(&a), fonts(&b), "{v}: the font table");
+        let pa = written_paragraphs(&txsm_records(&a)[0], v);
+        let pb = written_paragraphs(&txsm_records(&b)[0], v);
+        assert_eq!(pa[0].default, pb[0].default, "{v}: the default style");
+        assert_eq!(pb[0].records.len(), 2, "{v}");
+        let styled = &pb[0].records[1];
+        assert_eq!((styled.members, styled.flags), (0x3fff, 0x14), "{v}");
+        for key in ["RTL", "latin", "farEast"] {
+            let f = style_member(&styled.style, key).expect("font");
+            assert!(f.contains(r#""font":"Selawik""#), "{v}: {f}");
+            assert_eq!(Some(f), style_member(&pb[0].default, key), "{v}: {key}");
+        }
+        let (back, rep) = crate::open_bytes(&b, "back").expect("reads back");
+        assert_eq!(back.fonts.len(), 1, "{v}: the font is embedded");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("{v}");
+        };
+        // The black letters may read as the object's own fill (black).
+        let object = back.pages[0].layers[0].shapes[0].fill.clone();
+        let fills: Vec<Fill> = spans
+            .iter()
+            .map(|sp| sp.fill.clone().unwrap_or_else(|| object.clone()))
+            .collect();
+        assert_eq!(
+            fills,
+            vec![Fill::Solid(black), Fill::Solid(red)],
+            "{v}: {:?}",
             rep.warnings
         );
     }
+}
+
+/// A line with more looks than a letter can name (127 besides the
+/// paragraph's) keeps the first 127 and gives the letters of the others
+/// the paragraph's look: no letter names a record that is not there and
+/// no record is empty, which made the program that reads them hang.
+#[test]
+fn a_line_of_more_looks_than_records_stays_readable() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let spans: Vec<TextSpan> = (0..200u32)
+        .map(|i| {
+            let mut sp = TextSpan::new("x", "Arial", 12.0);
+            sp.fill = Some(Fill::Solid(Color::rgb8(i as u8, 0, 255 - i as u8)));
+            sp
+        })
+        .collect();
+    doc.pages[0].layers[0].shapes = vec![text_shape(&mut ids, spans, TextAlign::Left)];
+    doc.set_ids(ids);
+    for v in [16, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        crate::check::assert_clean(&bytes, v);
+        let p = &written_paragraphs(&txsm_records(&bytes)[0], v)[0];
+        assert_eq!(p.records.len(), 128, "{v}");
+        assert!(p.records.iter().all(|r| r.letters > 0), "{v}");
+        assert_eq!(p.records[0].letters, 200 - 127 + 1, "{v}");
+        assert!(p.letters.iter().all(|k| usize::from(*k) < 128), "{v}");
+        assert_eq!(p.letters[127], 127, "{v}");
+        assert_eq!(p.letters[128], 0, "{v}");
+    }
+    // In every version the first 128 letters keep their colours and the
+    // others read back in the first letter's (versions 7 to 15 wrote a
+    // record per look or per run past the 128th, whose letters named the
+    // 128th record and took its colour).
+    let colour = |i: usize| Fill::Solid(Color::rgb8(i as u8, 0, 255 - i as u8));
+    for v in OLDEST_VERSION..=NEWEST_VERSION {
+        let bytes = document_to_cdr_version(&doc, v);
+        crate::check::assert_clean(&bytes, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let shape = &back.pages[0].layers[0].shapes[0];
+        let ShapeKind::Text { spans, .. } = &shape.kind else {
+            panic!("{v}");
+        };
+        let letters: Vec<Fill> = spans
+            .iter()
+            .flat_map(|sp| {
+                let f = sp.fill.clone().unwrap_or_else(|| shape.fill.clone());
+                std::iter::repeat_n(f, sp.text.chars().count())
+            })
+            .collect();
+        let want: Vec<Fill> = (0..200)
+            .map(|i| colour(if i < 128 { i } else { 0 }))
+            .collect();
+        assert_eq!(letters, want, "{v}: {:?}", rep.warnings);
+    }
+}
+
+/// A version 16+ package with the first `from` in its members replaced
+/// by `to`, every member stored.
+fn repack(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a package");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut done = false;
+    for i in 0..archive.len() {
+        let mut m = archive.by_index(i).expect("a member");
+        let name = m.name().expect("name").into_owned();
+        let mut data = Vec::new();
+        m.read_to_end(&mut data).expect("reads");
+        if !done {
+            if let Some(at) = data.windows(from.len()).position(|w| w == from) {
+                data.splice(at..at + from.len(), to.iter().copied());
+                done = true;
+            }
+        }
+        out.start_file(name, stored).expect("member");
+        out.write_all(&data).expect("writes");
+    }
+    assert!(done, "the bytes to replace");
+    out.finish().expect("package").into_inner()
+}
+
+/// `check` reports a version 16+ run record whose style is marked as
+/// applying no member (the program that reads the files ignores it), as
+/// TraceDraw wrote the runs of a text of several colours until 0.28.
+#[test]
+fn check_reports_run_styles_marked_as_not_applying() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut a = TextSpan::new("ab", "Arial", 24.0);
+    a.fill = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
+    let mut b = TextSpan::new("cd", "Arial", 24.0);
+    b.fill = Some(Fill::Solid(Color::rgb8(0, 0, 255)));
+    doc.pages[0].layers[0].shapes = vec![text_shape(&mut ids, vec![a, b], TextAlign::Left)];
+    doc.set_ids(ids);
+    let bytes = document_to_cdr_version(&doc, 21);
+    assert!(crate::check::check_bytes(&bytes)
+        .expect("checks")
+        .is_empty());
+    // The styled record's marks, (0x3fff, 0x14), as (0, 0x04).
+    let mut mark = Vec::new();
+    mark.extend_from_slice(&0x3fffu16.to_le_bytes());
+    mark.extend_from_slice(&0x14u16.to_le_bytes());
+    mark.extend_from_slice(&[3, 0, 0, 0, b'E', 0]);
+    let mut unmarked = mark.clone();
+    unmarked[..4].copy_from_slice(&[0, 0, 4, 0]);
+    let old = repack(&bytes, &mark, &unmarked);
+    let findings = crate::check::check_bytes(&old).expect("checks");
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.to_string().contains("marked as applying no member")),
+        "{findings:?}"
+    );
+}
+
+/// A run record marked with neither members nor a locale (0, 0) still
+/// ends with a style string: the files of the program that wrote the
+/// samples hold `{"character":{}}` there (versions 16 to 27, #1139,
+/// #1297), and reading on as if it had none lost the text.
+#[test]
+fn a_run_record_of_no_marks_is_read_with_its_style_string() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    doc.pages[0].layers[0].shapes = vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("dkd", "Arial", 24.0)],
+        TextAlign::Left,
+    )];
+    doc.set_ids(ids);
+    let bytes = document_to_cdr_version(&doc, 21);
+    let rec = txsm_records(&bytes).remove(0);
+    let p = &written_paragraphs(&rec, 21)[0];
+    assert_eq!(p.records.len(), 1);
+    // Rebuild the record as (4, 0, 0), no locale, `{"character":{}}`.
+    let style = br#"{"character":{}}"#;
+    let mut plain = Vec::new();
+    plain.extend_from_slice(&4u16.to_le_bytes());
+    plain.extend_from_slice(&[0, 0, 4, 0, 3, 0, 0, 0, b'E', 0, b'N', 0, b'U', 0]);
+    plain.extend_from_slice(&(style.len() as u32).to_le_bytes());
+    plain.extend_from_slice(style);
+    let at = rec
+        .windows(plain.len())
+        .position(|w| w == plain)
+        .expect("the plain record");
+    let mut bare = rec[..at].to_vec();
+    bare.extend_from_slice(&4u16.to_le_bytes());
+    bare.extend_from_slice(&[0, 0, 0, 0]);
+    bare.extend_from_slice(&(style.len() as u32).to_le_bytes());
+    bare.extend_from_slice(style);
+    bare.extend_from_slice(&rec[at + plain.len()..]);
+    let mut warnings = Vec::new();
+    let read = crate::text::read_txsm(&bare, 21, 0, &mut |w| warnings.push(w)).expect("reads");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let text: String = read.paragraphs[0]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(text, "dkd");
+    assert_eq!(read.inert_styles, 0);
 }
 
 /// `font` with its name table replaced by one of `names` (name ID and
@@ -4772,16 +5537,19 @@ fn with_names(font: &[u8], names: &[(u16, &str)]) -> Vec<u8> {
 fn a_face_with_typographic_names_is_written_under_its_family() {
     const FONT: &[u8] =
         include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
-    let khand = with_names(
-        FONT,
-        &[
-            (1, "Khand SemiBold"),
-            (2, "Regular"),
-            (4, "Khand SemiBold"),
-            (6, "Khand-SemiBold"),
-            (16, "Khand"),
-            (17, "SemiBold"),
-        ],
+    let khand = with_weight(
+        &with_names(
+            FONT,
+            &[
+                (1, "Khand SemiBold"),
+                (2, "Regular"),
+                (4, "Khand SemiBold"),
+                (6, "Khand-SemiBold"),
+                (16, "Khand"),
+                (17, "SemiBold"),
+            ],
+        ),
+        600,
     );
     let faces = vec![FontFace {
         family: "Khand SemiBold".into(),
@@ -5858,5 +6626,778 @@ fn a_hidden_object_casts_no_shadow_picture() {
         assert_eq!(read.len(), 1, "{v}");
         assert!(!read[0].visible, "{v}");
         assert_eq!(read[0].shadow, Some(shadow), "{v}");
+    }
+}
+
+/// Objects on master layers are on every page they show on, behind or in
+/// front of the page's own objects as drawn (#1132): no file seen has
+/// objects on the master page, so each page gets a layer of copies.
+#[test]
+fn master_layer_objects_are_written_on_every_page_in_their_order() {
+    let square = |ids: &mut tracedraw_core::id::IdSource, x: f64| {
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(x, 10.0, x + 10.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::BLACK);
+        s
+    };
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    doc.pages[0].layers[0].shapes = vec![square(&mut ids, 0.0)];
+    let mut second = Page {
+        id: ids.page(),
+        name: "Two".into(),
+        size: Size::new(200.0, 100.0),
+        layers: vec![Layer::new(ids.layer(), "Ink")],
+        guides: Vec::new(),
+        background: None,
+    };
+    second.layers[0].shapes = vec![square(&mut ids, 20.0)];
+    doc.pages.push(second);
+    let mut under = Layer::master(ids.layer(), "Under", tracedraw_core::MasterScope::All);
+    under.shapes = vec![square(&mut ids, 40.0)];
+    let mut over = Layer::master(ids.layer(), "Over", tracedraw_core::MasterScope::All);
+    over.shapes = vec![square(&mut ids, 60.0)];
+    over.in_front = true;
+    doc.master = vec![under, over];
+    doc.set_ids(ids);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(back.pages.len(), 2, "{v}: {:?}", rep.warnings);
+        let mut all = Vec::new();
+        for (i, p) in back.pages.iter().enumerate() {
+            // Bottom to top, the layers holding objects.
+            let names: Vec<&str> = p
+                .layers
+                .iter()
+                .filter(|l| !l.shapes.is_empty())
+                .map(|l| l.name.as_str())
+                .collect();
+            assert_eq!(names, ["Under", "Ink", "Over"], "{v}: page {}", i + 1);
+            for l in &p.layers {
+                all.extend(l.shapes.iter().map(|s| s.bounds().x0.round() as i64));
+            }
+        }
+        all.sort();
+        assert_eq!(all, [0, 20, 40, 40, 60, 60], "{v}");
+    }
+    // The drawing itself is left alone.
+    assert_eq!(doc.master.len(), 2);
+}
+
+/// A paragraph text of two paragraphs and a blank line between them (a
+/// paragraph of no letters, as the files hold one) in a 70 x 30 mm
+/// frame, turned and moved.
+fn paragraph_shape(ids: &mut tracedraw_core::id::IdSource, para: ParagraphStyle) -> Shape {
+    let mut t = Shape::new(
+        ids.shape(),
+        ShapeKind::Text {
+            spans: vec![TextSpan::new(
+                "Paragraph text flows in its frame\n\nand keeps it",
+                "Arial",
+                12.0,
+            )],
+            origin: Point::new(5.0, -40.0),
+            frame: Some(Size::new(70.0, 30.0)),
+            align: TextAlign::Center,
+            para,
+            on_path: None,
+        },
+    );
+    t.transform = Affine::translate((40.0, 80.0)) * Affine::rotate(0.3);
+    t.fill = Fill::Solid(Color::BLACK);
+    t.stroke = None;
+    t
+}
+
+/// The first object's `loda` and `txsm` records of a written file.
+fn first_text_records(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (_, tree, riff) = chunk_ids(bytes);
+    let mut out = (None, None);
+    tree.root.walk(&mut |c, _| {
+        if c.is(b"txsm") && out.1.is_none() {
+            out.1 = Some(tree.data(&riff, c).to_vec());
+        }
+        if c.is(b"loda") && out.0.is_none() {
+            let d = tree.data(&riff, c);
+            if tracedraw_cdr_format::loda::table(d, 7).map(|t| t.kind) == Some(OBJ_PARAGRAPH_TEXT) {
+                out.0 = Some(d.to_vec());
+            }
+        }
+    });
+    (
+        out.0.expect("a paragraph text"),
+        out.1.expect("a text record"),
+    )
+}
+
+/// Paragraph text goes out as paragraph text (object type 6) with its
+/// frame in every version but 8, laid out as files of versions 7, 9 to
+/// 15, 19, 22 and 27 hold it, and comes back as paragraph text with the
+/// same frame in the same place (#1226; it went out as one artistic text
+/// per line, so the frame was lost in the other program and in TraceDraw).
+#[test]
+fn paragraph_text_goes_out_with_its_frame() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let t = paragraph_shape(&mut ids, ParagraphStyle::default());
+    let corners = t.text_frame_corners().expect("a frame");
+    let doc = doc_with(vec![t]);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let shapes = &back.pages[0].layers[0].shapes;
+        if v == 8 {
+            // Lines of artistic text, as before.
+            assert!(
+                !matches!(shapes[0].kind, ShapeKind::Text { frame: Some(_), .. }),
+                "{v}: {:?}",
+                shapes[0].kind
+            );
+            continue;
+        }
+        assert_eq!(shapes.len(), 1, "{v}: {:?}", rep.warnings);
+        let s = &shapes[0];
+        let ShapeKind::Text {
+            spans,
+            frame: Some(f),
+            align,
+            ..
+        } = &s.kind
+        else {
+            panic!("{v}: {:?}", s.kind);
+        };
+        let text: String = spans.iter().map(|sp| sp.text.as_str()).collect();
+        assert_eq!(
+            text, "Paragraph text flows in its frame\n\nand keeps it",
+            "{v}"
+        );
+        assert_eq!(*align, TextAlign::Center, "{v}");
+        assert!(
+            (f.width - 70.0).abs() < 0.01 && (f.height - 30.0).abs() < 0.01,
+            "{v}: {f:?}"
+        );
+        let got = s.text_frame_corners().expect("a frame");
+        for (a, b) in got.iter().zip(&corners) {
+            assert!((*a - *b).hypot() < 0.01, "{v}: {got:?} for {corners:?}");
+        }
+        // The records as the files hold them.
+        let (loda, txsm) = first_text_records(&bytes);
+        let args = loda_args(&loda);
+        assert!(
+            args.iter().all(|(ty, _)| *ty != ARG_TEXT_LINK),
+            "{v}: paragraph text has no 16015"
+        );
+        let coords = &args.iter().find(|(ty, _)| *ty == ARG_COORDS).expect("30").1;
+        let i = |at: usize| i32::from_le_bytes(coords[at..at + 4].try_into().expect("4"));
+        assert_eq!(coords.len(), if v >= 9 { 92 } else { 88 }, "{v}");
+        assert_eq!(
+            (i(0), i(4), i(8), i(12), i(16)),
+            (0, 700000, 300000, 1, 1),
+            "{v}"
+        );
+        assert_eq!(i(if v >= 9 { 24 } else { 20 }), 700000, "{v}");
+        let u = |at: usize| i32::from_le_bytes(txsm[at..at + 4].try_into().expect("4"));
+        assert_eq!(u(0), 0, "{v}: the frame layout");
+        // After the frame's number and matrix (and the on-path flag).
+        let at = if v >= 16 {
+            36 + 2 + 3 + 4 + 4 + 48 + 4 + 8
+        } else {
+            36 + usize::from(v >= 15) + 4 + 4 + 48 + 4 + if v >= 15 { 12 } else { 0 }
+        };
+        if v >= 16 {
+            assert_eq!(
+                (u(at), u(at + 4), u(at + 8), u(at + 12)),
+                (0, -300000, 0, 700000),
+                "{v}"
+            );
+        } else {
+            let w = at + 8 + usize::from(v >= 8) * 2;
+            assert_eq!((u(at), u(at + 4)), (0, 1), "{v}");
+            assert_eq!((u(w), u(w + 4), u(w + 8)), (700000, 0, -300000), "{v}");
+        }
+    }
+}
+
+/// Columns go out in the frame's settings from version 16 and come back.
+#[test]
+fn paragraph_columns_round_trip_from_version_16() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let para = ParagraphStyle {
+        columns: 2,
+        gutter: 4.0,
+        ..ParagraphStyle::default()
+    };
+    let doc = doc_with(vec![paragraph_shape(&mut ids, para)]);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        match (&s.kind, v >= 16) {
+            (ShapeKind::Text { para, frame, .. }, true) => {
+                assert!(frame.is_some(), "{v}");
+                assert_eq!(para.columns, 2, "{v}");
+                assert!((para.gutter - 4.0).abs() < 0.01, "{v}: {}", para.gutter);
+            }
+            // Before 16 such frames go out as lines.
+            (ShapeKind::Group { .. } | ShapeKind::Text { frame: None, .. }, false) => {}
+            (k, _) => panic!("{v}: {k:?}"),
+        }
+    }
+    assert_eq!(
+        frame_json(
+            Size::new(70.0, 30.0),
+            &ParagraphStyle {
+                columns: 2,
+                gutter: 4.0,
+                ..ParagraphStyle::default()
+            }
+        ),
+        r#"{"frame":{"columns":"330000,40000,330000,0","equalWidthColumns":"1","rtlColumns":"0","v_justify":"0"}}"#
+    );
+}
+
+/// Frames the files' paragraph text cannot hold as TraceDraw draws them
+/// (scaled, vertical, fitted to the frame, centred from top to bottom,
+/// linked) keep going out as one artistic text per line.
+#[test]
+fn paragraph_text_the_files_cannot_hold_goes_out_as_lines() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut scaled = paragraph_shape(&mut ids, ParagraphStyle::default());
+    scaled.transform *= Affine::scale(1.5);
+    let vertical = paragraph_shape(
+        &mut ids,
+        ParagraphStyle {
+            vertical: true,
+            ..ParagraphStyle::default()
+        },
+    );
+    let fitted = paragraph_shape(
+        &mut ids,
+        ParagraphStyle {
+            fit_to_frame: true,
+            ..ParagraphStyle::default()
+        },
+    );
+    let centred = paragraph_shape(
+        &mut ids,
+        ParagraphStyle {
+            vertical_align: tracedraw_core::VerticalAlign::Center,
+            ..ParagraphStyle::default()
+        },
+    );
+    let mut linked = paragraph_shape(&mut ids, ParagraphStyle::default());
+    linked.data.push(("text.next".into(), "99".into()));
+    for s in [scaled, vertical, fitted, centred, linked] {
+        let w = Writer::new(Ver(21), &[], "t");
+        assert!(!w.writes_frame(&s), "{:?}", s.kind);
+    }
+    let plain = paragraph_shape(&mut ids, ParagraphStyle::default());
+    assert!(Writer::new(Ver(21), &[], "t").writes_frame(&plain));
+    assert!(!Writer::new(Ver(8), &[], "t").writes_frame(&plain));
+}
+
+/// Two pages with guidelines: two that both pages have (written once, on
+/// the master page) and one of each page's own.
+fn guides_doc() -> Document {
+    use tracedraw_core::document::{Guide, GuideLine};
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let shared = [
+        Guide::from(GuideLine::Horizontal { y: 40.0 }),
+        Guide::from(GuideLine::Vertical { x: 25.0 }),
+    ];
+    doc.pages[0].guides = shared.to_vec();
+    doc.pages[0]
+        .guides
+        .push(Guide::from(GuideLine::Horizontal { y: 70.5 }));
+    let mut second = Page {
+        id: ids.page(),
+        name: "Two".into(),
+        size: Size::new(200.0, 100.0),
+        layers: vec![Layer::new(ids.layer(), "Ink")],
+        guides: shared.to_vec(),
+        background: None,
+    };
+    second.guides.push(Guide::from(GuideLine::Angled {
+        x: 50.0,
+        y: 60.0,
+        angle: 30.0,
+    }));
+    doc.pages.push(second);
+    doc.set_ids(ids);
+    doc
+}
+
+/// Guidelines go out to `.cdr` and come back on their pages in every
+/// version (#1161; they were not written: the guides layers went out
+/// empty).
+#[test]
+fn guidelines_round_trip_on_their_pages() {
+    use tracedraw_core::document::GuideLine;
+    let doc = guides_doc();
+    let near = |a: &GuideLine, b: &GuideLine| match (a, b) {
+        (GuideLine::Horizontal { y: p }, GuideLine::Horizontal { y: q }) => (p - q).abs() < 1e-3,
+        (GuideLine::Vertical { x: p }, GuideLine::Vertical { x: q }) => (p - q).abs() < 1e-3,
+        (
+            GuideLine::Angled { x, y, angle },
+            GuideLine::Angled {
+                x: x2,
+                y: y2,
+                angle: a2,
+            },
+        ) => (x - x2).abs() < 1e-3 && (y - y2).abs() < 1e-3 && (angle - a2).abs() < 1e-3,
+        _ => false,
+    };
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(back.pages.len(), 2, "{v}: {:?}", rep.warnings);
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        for (page, want) in back.pages.iter().zip(&doc.pages) {
+            assert_eq!(
+                page.guides.len(),
+                want.guides.len(),
+                "{v}: {:?}",
+                page.guides
+            );
+            for g in &want.guides {
+                assert!(
+                    page.guides.iter().any(|h| near(&h.line, &g.line)),
+                    "{v}: {:?} not in {:?}",
+                    g.line,
+                    page.guides
+                );
+            }
+            // Guidelines are no objects of the drawing.
+            assert!(page.layers.iter().all(|l| l.shapes.is_empty()), "{v}");
+        }
+    }
+}
+
+/// The guideline records as the files of versions 11, 15 and 25 to 27
+/// hold them: the angle and the line's two ends 900 inches out from the
+/// page's centre, the second again; the arguments of each version; the
+/// shared ones on the master page's guides layer.
+#[test]
+fn guideline_records_are_laid_out_as_the_files_have_them() {
+    let doc = guides_doc();
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut records: Vec<(bool, Args)> = Vec::new();
+        let mut master = None;
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"flgs") {
+                let d = tree.data(&riff, c);
+                if d.len() == 4 && d[3] == 0x90 {
+                    master = Some(d[2] == 1);
+                }
+            }
+            if c.is(b"loda") {
+                let d = tree.data(&riff, c);
+                if tracedraw_cdr_format::loda::table(d, v).map(|t| t.kind) == Some(OBJ_GUIDE) {
+                    records.push((master.unwrap_or(false), loda_args(d)));
+                }
+            }
+        });
+        assert_eq!(records.len(), 4, "{v}");
+        assert_eq!(records.iter().filter(|(m, _)| *m).count(), 2, "{v}");
+        let (_, horizontal) = &records[0];
+        let line = &horizontal
+            .iter()
+            .find(|(ty, _)| *ty == ARG_GUIDE_LINE)
+            .expect("16000")
+            .1;
+        assert_eq!(line.len(), 40, "{v}");
+        let i = |at: usize| i32::from_le_bytes(line[at..at + 4].try_into().expect("4"));
+        // y = 40 on a page 100 mm high: 10 mm under its centre.
+        assert_eq!(
+            (i(12), i(16), i(20), i(24), i(28), i(32), i(36)),
+            (
+                0,
+                -228_600_000,
+                -100_000,
+                228_600_000,
+                -100_000,
+                228_600_000,
+                -100_000
+            ),
+            "{v}"
+        );
+        let (_, vertical) = &records[1];
+        let line = &vertical
+            .iter()
+            .find(|(ty, _)| *ty == ARG_GUIDE_LINE)
+            .expect("16000")
+            .1;
+        let i = |at: usize| i32::from_le_bytes(line[at..at + 4].try_into().expect("4"));
+        assert_eq!(
+            (i(12), i(16), i(20), i(24), i(28)),
+            (90_000_000, -750_000, -228_600_000, -750_000, 228_600_000),
+            "{v}"
+        );
+        let has = |ty: u32| horizontal.iter().any(|(t, _)| *t == ty);
+        assert_eq!(has(ARG_GUIDE_KIND), v >= 25, "{v}");
+        assert_eq!(has(ARG_HIDDEN), v <= 12, "{v}");
+        assert!(!has(ARG_TEXT_LINK), "{v}");
+        if (7..=15).contains(&v) {
+            let flags = &horizontal
+                .iter()
+                .find(|(t, _)| *t == ARG_DRAW_FLAGS)
+                .expect("19170")
+                .1;
+            let mark = u32::from_le_bytes(flags[4..8].try_into().expect("4"));
+            assert_eq!(mark, if v >= 13 { 5000 } else { 999 }, "{v}");
+        }
+    }
+}
+
+/// `font` with the OS/2 weight class `weight`.
+fn with_weight(font: &[u8], weight: u16) -> Vec<u8> {
+    let mut f = font.to_vec();
+    let be32 = |b: &[u8], at: usize| u32::from_be_bytes(b[at..at + 4].try_into().expect("u32"));
+    let n = u16::from_be_bytes([f[4], f[5]]) as usize;
+    let dir = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &f[r..r + 4] == b"OS/2")
+        .expect("OS/2");
+    let at = be32(&f, dir + 8) as usize;
+    f[at + 4..at + 6].copy_from_slice(&weight.to_be_bytes());
+    f
+}
+
+/// `font` with a table `tag` holding `data` added, the tables laid out
+/// again (checksums are not kept; fonts are read without them).
+fn with_extra_table(font: &[u8], tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let be32 = |b: &[u8], at: usize| u32::from_be_bytes(b[at..at + 4].try_into().expect("u32"));
+    let n = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let mut tables: Vec<([u8; 4], Vec<u8>)> = (0..n)
+        .map(|i| {
+            let r = 12 + 16 * i;
+            let (off, len) = (be32(font, r + 8) as usize, be32(font, r + 12) as usize);
+            (
+                font[r..r + 4].try_into().expect("tag"),
+                font[off..off + len].to_vec(),
+            )
+        })
+        .collect();
+    tables.push((*tag, data.to_vec()));
+    tables.sort_by_key(|t| t.0);
+    let mut out = font[..4].to_vec();
+    out.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+    out.extend_from_slice(&font[6..12]);
+    let start = 12 + 16 * tables.len();
+    let mut body = Vec::new();
+    for (t, d) in &tables {
+        out.extend_from_slice(t);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&((start + body.len()) as u32).to_be_bytes());
+        out.extend_from_slice(&(d.len() as u32).to_be_bytes());
+        body.extend_from_slice(d);
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+    }
+    out.extend_from_slice(&body);
+    out
+}
+
+/// What a package says about its fonts: the font table's entries
+/// (number, flags, family, kind, style), the embedding members and the
+/// drawing's `font` records (id, flags, embedded, PostScript name), and
+/// the text of its style strings (zero bytes dropped).
+struct PackageFonts {
+    entries: Vec<(u16, u32, String, u32, String)>,
+    members: Vec<Vec<u8>>,
+    records: Vec<(u16, u32, bool, String)>,
+    styles: String,
+}
+
+fn package_fonts(bytes: &[u8]) -> PackageFonts {
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("u32"));
+    let utf16_at = |b: &[u8], at: usize| -> (String, usize) {
+        let n = u32_at(b, at) as usize;
+        let units: Vec<u16> = b[at + 4..at + 4 + 2 * n]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|u| *u != 0)
+            .collect();
+        (String::from_utf16_lossy(&units), at + 4 + 2 * n)
+    };
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
+    let read = |z: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut z.by_name(name).expect("member"), &mut out).expect("read");
+        out
+    };
+    let table = read(&mut z, "font/fontTable.dat");
+    let mut entries = Vec::new();
+    let mut at = 12;
+    for _ in 0..u32_at(&table, 8) {
+        let e = at + 8;
+        let number = u16::from_le_bytes([table[e], table[e + 1]]);
+        let flags = u32_at(&table, e + 4);
+        let (family, p) = utf16_at(&table, e + 18);
+        let (_, p) = utf16_at(&table, p + 1);
+        let kind = u32_at(&table, p + 4);
+        let (_, p) = utf16_at(&table, p + 8);
+        let (_, p) = utf16_at(&table, p);
+        let (style, _) = utf16_at(&table, p);
+        entries.push((number, flags, family, kind, style));
+        at = e + u32_at(&table, at + 4) as usize;
+    }
+    let mut members = Vec::new();
+    while let Ok(mut f) = z.by_name(&format!("embed/embedding{}", members.len())) {
+        let mut m = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut m).expect("read");
+        drop(f);
+        members.push(m);
+    }
+    let (_, tree, riff) = chunk_ids(bytes);
+    let mut records = Vec::new();
+    let mut styles = Vec::new();
+    tree.root.walk(&mut |c, _| {
+        let d = tree.data(&riff, c);
+        if c.id_str() == "font" {
+            let ps: Vec<u16> = d[164..]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|u| *u != 0)
+                .collect();
+            records.push((
+                u16::from_le_bytes([d[0], d[1]]),
+                u32_at(d, 4),
+                u32_at(d, 156) == 1,
+                String::from_utf16_lossy(&ps),
+            ));
+        } else if c.is(b"txsm") {
+            styles.extend(d.iter().copied().filter(|b| *b != 0));
+        }
+    });
+    PackageFonts {
+        entries,
+        members,
+        records,
+        styles: String::from_utf8_lossy(&styles).into_owned(),
+    }
+}
+
+/// A face is listed and embedded as the face its font file holds, not as
+/// the style the text asks for: regular "Khand" text drawn by the only
+/// "Khand" file found, the bold one, is listed as "Khand" Bold at 0x1000
+/// (TraceDraw listed it at 0x40, regular, with the PostScript name and
+/// style of the bold face, and the program that reads the file reported
+/// Khand missing although it was installed, #1484), its face block and
+/// EOT header say bold and upright, the records describe both the face
+/// the text asks for and the face listed, and the kind is the outlines'
+/// as files give it: 2 for TrueType outlines, 4 when the font is signed
+/// (a `DSIG` table), in the table, the member and the style strings'
+/// `technology`, beside the font's version string.
+#[test]
+fn a_face_is_listed_as_the_face_its_font_file_holds() {
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    let khand_bold = with_weight(
+        &with_names(
+            BOLD,
+            &[
+                (1, "Khand"),
+                (2, "Bold"),
+                (4, "Khand Bold"),
+                (5, "Version 1.102;PS 1.0"),
+                (6, "Khand-Bold"),
+            ],
+        ),
+        700,
+    );
+    let signed = with_extra_table(&khand_bold, b"DSIG", &[0, 0, 0, 1, 0, 0, 0, 0]);
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("abhishek", "Khand", 12.0)],
+        TextAlign::Left,
+    )]);
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("u32"));
+    for (font, kind) in [(&khand_bold, 2u32), (&signed, 4)] {
+        let previews = Previews {
+            fonts: vec![FontFace {
+                family: "Khand".into(),
+                bold: false,
+                italic: false,
+                data: Some(std::sync::Arc::new(font.clone())),
+            }],
+            embed_fonts: true,
+            ..Default::default()
+        };
+        let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+        let p = package_fonts(&bytes);
+        assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
+        let (number, flags, family, k, style) = p.entries[0].clone();
+        assert_eq!(
+            (flags, family.as_str(), k, style.as_str()),
+            (0x1000, "Khand", kind, "Bold")
+        );
+        assert_eq!(p.members.len(), 1);
+        let m = &p.members[0];
+        assert_eq!(u32::from(m[8]), kind, "the member's kind");
+        assert_eq!(u32_at(m, 2163), 0x1000, "the face block's flags");
+        let eot = &m[2705..];
+        assert_eq!(eot[27], 0, "upright");
+        assert_eq!(u32_at(eot, 28), 700, "the font's weight");
+        // The text's face (regular) and the listed one (bold), both of
+        // the embedded font.
+        for want in [0x40, 0x1000] {
+            assert!(
+                p.records
+                    .iter()
+                    .any(|r| *r == (number, want, true, "Khand-Bold".to_string())),
+                "{want:#x}: {:?}",
+                p.records
+            );
+        }
+        assert!(
+            p.styles.contains(r#""version":"Version 1.102;PS 1.0","#),
+            "{}",
+            p.styles
+        );
+        assert!(p.styles.contains(&format!(r#""technology":"{kind}","#)));
+        if kind != 4 {
+            assert!(!p.styles.contains(r#""technology":"4","#));
+        }
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("not text");
+        };
+        assert_eq!(
+            (spans[0].font_family.as_str(), spans[0].bold),
+            ("Khand", false)
+        );
+    }
+}
+
+/// Bold text in a light static face ("Khand Light", name ID 1, of the
+/// typographic family "Khand") drawn by the family's bold face is
+/// written as that family at 700: written "Khand Light" at 4096 with
+/// the light font embedded as bold italic, the program that reads the
+/// file drew it light and upright (#1455). Bold italic underlined text
+/// of "Khand Light" and of "Khand", both drawn by the bold face, gives
+/// one font table entry ("Khand" Bold, with the underline bit as files
+/// set it for underlined text) and one embedded font; the records keep
+/// the face the text asks for (bold italic) beside it; the text reads
+/// back bold, italic and underlined.
+#[test]
+fn bold_text_in_a_light_face_is_written_as_the_family_bold() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    let light = with_weight(
+        &with_names(
+            REGULAR,
+            &[
+                (1, "Khand Light"),
+                (2, "Regular"),
+                (4, "Khand Light"),
+                (6, "Khand-Light"),
+                (16, "Khand"),
+                (17, "Light"),
+            ],
+        ),
+        300,
+    );
+    let bold = std::sync::Arc::new(with_weight(
+        &with_names(
+            BOLD,
+            &[
+                (1, "Khand"),
+                (2, "Bold"),
+                (4, "Khand Bold"),
+                (6, "Khand-Bold"),
+            ],
+        ),
+        700,
+    ));
+    let face = |family: &str, data: &std::sync::Arc<Vec<u8>>| FontFace {
+        family: family.into(),
+        bold: true,
+        italic: true,
+        data: Some(data.clone()),
+    };
+    let faces = vec![face("Khand Light", &bold), face("Khand", &bold)];
+    assert_eq!(
+        fonts::split_family("Khand Light", true, &faces),
+        Some(("Khand".into(), 700))
+    );
+    // Drawn by the light face thickened (no bold face found): kept whole.
+    let light_only = vec![face("Khand Light", &std::sync::Arc::new(light))];
+    assert_eq!(fonts::split_family("Khand Light", true, &light_only), None);
+
+    let span = |family: &str| {
+        let mut sp = TextSpan::new("abhishek", family, 12.0);
+        sp.bold = true;
+        sp.italic = true;
+        sp.underline = true;
+        sp
+    };
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![
+        text_shape(&mut ids, vec![span("Khand Light")], TextAlign::Left),
+        text_shape(&mut ids, vec![span("Khand")], TextAlign::Left),
+    ]);
+    let previews = Previews {
+        fonts: faces,
+        embed_fonts: true,
+        ..Default::default()
+    };
+    let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+    let p = package_fonts(&bytes);
+    assert!(!p.styles.contains("Khand Light"), "{}", p.styles);
+    assert!(p
+        .styles
+        .contains(r#""italic":"1","weight":"4096","underline":"1""#));
+    assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
+    let (number, flags, family, _, style) = p.entries[0].clone();
+    assert_eq!(
+        (flags, family.as_str(), style.as_str()),
+        (0x1000 | fonts::UNDERLINE_FLAG, "Khand", "Bold")
+    );
+    assert_eq!(p.members.len(), 1);
+    let m = &p.members[0];
+    assert_eq!(
+        u32::from_le_bytes(m[2163..2167].try_into().expect("u32")),
+        0x1000,
+        "no lines in the face block"
+    );
+    assert_eq!(m[2705 + 27], 0, "the bold face is upright");
+    for want in [
+        0x2000 | fonts::UNDERLINE_FLAG,
+        0x1000 | fonts::UNDERLINE_FLAG,
+    ] {
+        assert!(
+            p.records
+                .iter()
+                .any(|r| r.0 == number && r.1 == want && r.2),
+            "{want:#x}: {:?}",
+            p.records
+        );
+    }
+    let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+    for s in &back.pages[0].layers[0].shapes {
+        let ShapeKind::Text { spans, .. } = &s.kind else {
+            panic!("not text");
+        };
+        let sp = &spans[0];
+        assert_eq!(
+            (sp.font_family.as_str(), sp.bold, sp.italic, sp.underline),
+            ("Khand", true, true, true)
+        );
     }
 }

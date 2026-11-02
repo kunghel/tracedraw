@@ -2,13 +2,18 @@
 // NativeActivity, which loads libtracedraw.so and hands it the window and
 // the input, plus the few things the editor can only do from Java: the
 // system document picker (Storage Access Framework), reading and writing
-// the documents it returns, and the system clipboard. The Rust side calls
+// the documents it returns, the system clipboard, the print service, the
+// share sheet and "open with" (files served by SharedFiles), and an
+// invisible view the on-screen keyboard types into (TextInputView). The Rust side calls
 // the public methods through JNI from its own thread; a picked document
-// comes back through the native method nativeDocumentResult. Built by
+// comes back through the native method nativeDocumentResult, and so does a
+// document another app (a file manager, a mail, Share) asks TraceDraw to
+// open, under the request code OPENED_ELSEWHERE. Built by
 // scripts/android/build.sh with javac and d8 into classes.dex.
 package dev.tracedraw.app;
 
 import android.app.NativeActivity;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
@@ -16,10 +21,25 @@ import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.os.ParcelFileDescriptor;
+import android.print.PageRange;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintDocumentInfo;
+import android.os.Process;
+import android.print.PrintManager;
+import android.os.Parcelable;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -44,6 +64,266 @@ public class TraceDrawActivity extends NativeActivity {
      * Implemented in Rust (android.rs).
      */
     private native void nativeDocumentResult(int request, String uris, String names, String mimes);
+
+    /**
+     * What the on-screen keyboard's input method did in TextInputView: the
+     * text it composes (empty: the composition ends), the text it commits,
+     * and the characters it deletes before and after the caret.
+     * Implemented in Rust (android.rs).
+     */
+    private native void nativeImeCompose(String text);
+    private native void nativeImeCommit(String text);
+    private native void nativeImeDelete(int before, int after);
+
+    /** The view the on-screen keyboard types into. */
+    private TextInputView textInput;
+
+    /**
+     * Wait, at most `timeoutMs`, until the editor's thread has let go of
+     * the activity's window, which it does after backing the drawings up
+     * (eframe's save on suspend). Implemented in Rust (android.rs).
+     */
+    private native void nativeAwaitWindowGone(long timeoutMs);
+
+    /** How long the end of the activity waits for the backup. */
+    private static final long BACKUP_WAIT_MS = 10000;
+
+    // ----- documents other apps open with TraceDraw ---------------------------
+
+    /**
+     * The request code of documents another app asked TraceDraw to open
+     * (VIEW, EDIT, SEND): the editor opens each in a tab of its own
+     * (documents::OPENED_ELSEWHERE in android.rs).
+     */
+    private static final int OPENED_ELSEWHERE = 0;
+
+    /** An intent that came before the editor could take documents. */
+    private Intent pendingOpen;
+
+    /** Set once the editor's native methods are registered. */
+    private boolean editorReady;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        textInput = new TextInputView(this);
+        addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
+        // The intent that started the app; not again when the system
+        // recreates the activity (its documents are open already) or when
+        // the app is brought back from the recent apps, which hands the
+        // first intent over once more.
+        Intent start = getIntent();
+        boolean fromRecents = start != null
+                && (start.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
+        if (savedInstanceState == null && !fromRecents) {
+            pendingOpen = start;
+        }
+    }
+
+    /**
+     * The activity ends: relaunched by the system (a change of its
+     * resource overlays, which no configChanges entry can take over, or of
+     * the screen density) or finished. NativeActivity.onDestroy then waits
+     * for the editor's thread to return from android_main, which it never
+     * does (winit runs one event loop per process and cannot start
+     * another), so the app froze for good with the system's starting
+     * window on the screen. Instead, once the editor has given up the
+     * window (and backed the drawings up while doing so, which happens
+     * inside super.onDestroy), the process ends; the manifest's
+     * stateNotNeeded makes the system start the activity again in a new
+     * process, which offers the backed-up drawings.
+     */
+    @Override
+    protected void onDestroy() {
+        final boolean relaunch = isChangingConfigurations();
+        Thread end = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    nativeAwaitWindowGone(BACKUP_WAIT_MS);
+                } catch (UnsatisfiedLinkError e) {
+                    // The editor's thread has not started: nothing to back up.
+                    Log.w(TAG, "ending: " + e);
+                }
+                Log.i(TAG, relaunch
+                        ? "the activity is relaunched: the process ends and the system starts it again"
+                        : "the activity ends: the process ends");
+                Process.killProcess(Process.myPid());
+            }
+        }, "tracedraw-end");
+        end.setDaemon(true);
+        end.start();
+        super.onDestroy();
+    }
+
+    // ----- the on-screen keyboard ---------------------------------------------
+
+    /**
+     * Show the on-screen keyboard, typing into the editor (`on`: a text or
+     * a field takes typed text), or hide it. `again`: it was shown and the
+     * user tapped into the text or field once more, so it comes back if
+     * the system's key hid it, still connected to what it was composing.
+     */
+    public void showTextInput(final boolean on, final boolean again) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm == null || textInput == null) {
+                    return;
+                }
+                if (on) {
+                    if (!again || !textInput.isFocused()) {
+                        boolean focused = textInput.requestFocus();
+                        imm.restartInput(textInput);
+                        if (!focused) {
+                            Log.w(TAG, "keyboard: the text view did not take the focus");
+                        }
+                    }
+                    showKeyboard(imm, 0);
+                } else {
+                    keyboardWanted = false;
+                    // A composition left open ends with the editing.
+                    imm.restartInput(textInput);
+                    imm.hideSoftInputFromWindow(textInput.getWindowToken(), 0);
+                }
+            }
+        });
+    }
+
+    /** Whether the editor wants the keyboard (shown or being shown). */
+    private boolean keyboardWanted;
+
+    /** How many times the keyboard is asked again when the system ignores the request. */
+    private static final int SHOW_TRIES = 5;
+
+    /**
+     * Ask for the keyboard on the text view. The system ignores the
+     * request while the view is not yet the one the input method serves
+     * (its focus reaches the input method a moment later, more so right
+     * after a tap): then the request is made again shortly after.
+     */
+    private void showKeyboard(final InputMethodManager imm, final int tried) {
+        keyboardWanted = true;
+        boolean shown = imm.showSoftInput(textInput, 0);
+        if (shown) {
+            Log.i(TAG, "keyboard: shown" + (tried > 0 ? " after " + tried + " retries" : ""));
+            return;
+        }
+        if (tried + 1 >= SHOW_TRIES) {
+            Log.w(TAG, "keyboard: the system did not show it (focus " + textInput.isFocused()
+                    + ", window focus " + textInput.hasWindowFocus() + ")");
+            return;
+        }
+        textInput.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!keyboardWanted) {
+                    return;
+                }
+                if (!textInput.isFocused()) {
+                    textInput.requestFocus();
+                    imm.restartInput(textInput);
+                }
+                showKeyboard(imm, tried + 1);
+            }
+        }, 100);
+    }
+
+    void imeCompose(String text) {
+        try {
+            nativeImeCompose(text);
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "keyboard: " + e);
+        }
+    }
+
+    void imeCommit(String text) {
+        try {
+            nativeImeCommit(text);
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "keyboard: " + e);
+        }
+    }
+
+    void imeDelete(int before, int after) {
+        try {
+            nativeImeDelete(before, after);
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "keyboard: " + e);
+        }
+    }
+
+    // ----- the intents of documents other apps open ---------------------------
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // The app runs (launchMode singleTask): the documents open in tabs
+        // of the running editor.
+        if (editorReady) {
+            deliverOpened(intent);
+        } else {
+            pendingOpen = intent;
+        }
+    }
+
+    /**
+     * Called by the editor once it can take documents: the documents of
+     * the intent that started the app, if any, are handed over now.
+     */
+    public void readyForDocuments() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                editorReady = true;
+                Intent intent = pendingOpen;
+                pendingOpen = null;
+                if (intent != null) {
+                    deliverOpened(intent);
+                }
+            }
+        });
+    }
+
+    /** The documents of an intent that asks to open, edit or share files. */
+    private void deliverOpened(Intent intent) {
+        String action = intent.getAction();
+        if (action == null) {
+            return;
+        }
+        ArrayList<Uri> uris = new ArrayList<Uri>();
+        try {
+            if (Intent.ACTION_VIEW.equals(action) || Intent.ACTION_EDIT.equals(action)) {
+                if (intent.getData() != null) {
+                    uris.add(intent.getData());
+                }
+            } else if (Intent.ACTION_SEND.equals(action)) {
+                Parcelable stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (stream instanceof Uri) {
+                    uris.add((Uri) stream);
+                }
+            } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+                ArrayList<Parcelable> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (streams != null) {
+                    for (Parcelable p : streams) {
+                        if (p instanceof Uri && !uris.contains(p)) {
+                            uris.add((Uri) p);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "cannot read the documents of " + action, e);
+        }
+        if (uris.isEmpty()) {
+            return;
+        }
+        // Rights granted with a VIEW or SEND last as long as the activity:
+        // nothing to keep past it.
+        sendDocuments(OPENED_ELSEWHERE, uris, 0);
+    }
 
     // ----- the document picker -----------------------------------------------
 
@@ -120,6 +400,14 @@ public class TraceDrawActivity extends NativeActivity {
         // after the process restarts, so the recent list reopens it.
         int flags = data.getFlags()
             & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        sendDocuments(requestCode, uris, flags);
+    }
+
+    /**
+     * Hand `uris` to the editor under `requestCode`, with their names and
+     * types, keeping the persistable permissions `flags` names.
+     */
+    private void sendDocuments(int requestCode, ArrayList<Uri> uris, int flags) {
         StringBuilder u = new StringBuilder();
         StringBuilder n = new StringBuilder();
         StringBuilder m = new StringBuilder();
@@ -244,6 +532,192 @@ public class TraceDrawActivity extends NativeActivity {
         }
     }
 
+    // ----- printing, sharing and "open with" (#1398) ----------------------------
+
+    /**
+     * Hand the PDF at `path` (one of the app's files) to the system's print
+     * service as the job `job`; its dialog picks the printer, the copies
+     * and the paper. Whether the dialog opened.
+     */
+    public boolean printFile(final String path, final String job) {
+        Boolean done = onUiThread(new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                PrintManager printing = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                final File file = new File(path);
+                if (printing == null || !file.isFile()) {
+                    return Boolean.FALSE;
+                }
+                printing.print(job, new PdfAdapter(file, job), null);
+                return Boolean.TRUE;
+            }
+        }, Boolean.FALSE);
+        return done != null && done.booleanValue();
+    }
+
+    /** Hands a ready PDF to the print service as it is. */
+    private static final class PdfAdapter extends PrintDocumentAdapter {
+        private final File file;
+        private final String name;
+
+        PdfAdapter(File file, String name) {
+            this.file = file;
+            this.name = name;
+        }
+
+        @Override
+        public void onLayout(PrintAttributes oldAttributes, PrintAttributes newAttributes,
+                CancellationSignal cancel, LayoutResultCallback callback, Bundle extras) {
+            if (cancel != null && cancel.isCanceled()) {
+                callback.onLayoutCancelled();
+                return;
+            }
+            PrintDocumentInfo info = new PrintDocumentInfo.Builder(name.endsWith(".pdf") ? name : name + ".pdf")
+                .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                .setPageCount(PrintDocumentInfo.PAGE_COUNT_UNKNOWN)
+                .build();
+            callback.onLayoutFinished(info, oldAttributes == null || !oldAttributes.equals(newAttributes));
+        }
+
+        @Override
+        public void onWrite(PageRange[] pages, ParcelFileDescriptor destination,
+                CancellationSignal cancel, WriteResultCallback callback) {
+            InputStream in = null;
+            FileOutputStream out = null;
+            try {
+                in = new FileInputStream(file);
+                out = new FileOutputStream(destination.getFileDescriptor());
+                byte[] buffer = new byte[64 * 1024];
+                int got;
+                while ((got = in.read(buffer)) != -1) {
+                    if (cancel != null && cancel.isCanceled()) {
+                        callback.onWriteCancelled();
+                        return;
+                    }
+                    out.write(buffer, 0, got);
+                }
+                out.flush();
+                callback.onWriteFinished(new PageRange[] {PageRange.ALL_PAGES});
+            } catch (Exception e) {
+                Log.w(TAG, "print: " + e);
+                callback.onWriteFailed(e.toString());
+            } finally {
+                close(in);
+                close(out);
+            }
+        }
+    }
+
+    /**
+     * Offer the file at `path` (one of the app's files, of type `mime`) to
+     * another app through the share sheet, with `subject` for a mail;
+     * `mail` limits the choice to mail apps. Whether the sheet opened.
+     */
+    public boolean shareFile(final String path, final String mime, final String subject, final boolean mail) {
+        Boolean done = onUiThread(new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                Uri uri = SharedFiles.uriFor(TraceDrawActivity.this, new File(path));
+                if (uri == null) {
+                    Log.w(TAG, "share: " + path + " is not one of the app's files");
+                    return Boolean.FALSE;
+                }
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType(mime);
+                send.putExtra(Intent.EXTRA_STREAM, uri);
+                send.putExtra(Intent.EXTRA_SUBJECT, subject);
+                send.setClipData(ClipData.newRawUri(subject, uri));
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                if (mail) {
+                    // Only the apps that send mail.
+                    send.setSelector(new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")));
+                }
+                try {
+                    startActivity(Intent.createChooser(send, subject));
+                    return Boolean.TRUE;
+                } catch (ActivityNotFoundException e) {
+                    Log.w(TAG, "share: no app takes " + mime);
+                    return Boolean.FALSE;
+                }
+            }
+        }, Boolean.FALSE);
+        return done != null && done.booleanValue();
+    }
+
+    /**
+     * Open the file at `path` (one of the app's files, of type `mime`) in
+     * an app that edits it, with the right to write it back; the system
+     * asks which app when there are several. False when none edits it.
+     */
+    public boolean editFile(final String path, final String mime) {
+        Boolean done = onUiThread(new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                Uri uri = SharedFiles.uriFor(TraceDrawActivity.this, new File(path));
+                if (uri == null) {
+                    Log.w(TAG, "edit: " + path + " is not one of the app's files");
+                    return Boolean.FALSE;
+                }
+                Intent edit = new Intent(Intent.ACTION_EDIT);
+                edit.setDataAndType(uri, mime);
+                edit.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                try {
+                    startActivity(edit);
+                    return Boolean.TRUE;
+                } catch (ActivityNotFoundException e) {
+                    Log.i(TAG, "edit: no app edits " + mime);
+                    return Boolean.FALSE;
+                }
+            }
+        }, Boolean.FALSE);
+        return done != null && done.booleanValue();
+    }
+
+    /**
+     * Show `target` in the app the system has for it: a web address (or
+     * any other URI with a scheme, such as a picked document's content
+     * URI), or one of the app's files (an absolute path), of type `mime`
+     * when it is not empty. False when no app opens it.
+     */
+    public boolean viewTarget(final String target, final String mime) {
+        Boolean done = onUiThread(new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                Intent view = new Intent(Intent.ACTION_VIEW);
+                if (target.startsWith("/")) {
+                    Uri uri = SharedFiles.uriFor(TraceDrawActivity.this, new File(target));
+                    if (uri == null) {
+                        Log.w(TAG, "view: " + target + " is not one of the app's files");
+                        return Boolean.FALSE;
+                    }
+                    String type = mime == null || mime.isEmpty() ? SharedFiles.mimeOf(target) : mime;
+                    view.setDataAndType(uri, type);
+                    view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } else {
+                    // A web address, or a document the picker returned,
+                    // whose grant this app holds and passes on to read it.
+                    Uri uri = Uri.parse(target);
+                    if (mime == null || mime.isEmpty()) {
+                        view.setData(uri);
+                    } else {
+                        view.setDataAndType(uri, mime);
+                    }
+                    if ("content".equals(uri.getScheme())) {
+                        view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    }
+                }
+                try {
+                    startActivity(view);
+                    return Boolean.TRUE;
+                } catch (ActivityNotFoundException e) {
+                    Log.i(TAG, "view: no app opens " + target);
+                    return Boolean.FALSE;
+                }
+            }
+        }, Boolean.FALSE);
+        return done != null && done.booleanValue();
+    }
+
     // ----- the system clipboard -----------------------------------------------
 
     /** The clipboard's text, or null when it holds none (or the app is not in front). */
@@ -259,8 +733,66 @@ public class TraceDrawActivity extends NativeActivity {
                 if (clip == null || clip.getItemCount() == 0) {
                     return null;
                 }
-                CharSequence text = clip.getItemAt(0).coerceToText(TraceDrawActivity.this);
-                return text == null || text.length() == 0 ? null : text.toString();
+                // A document (a picture copied in a gallery or a browser)
+                // is no text: its URI would paste as one (#1403).
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    ClipData.Item item = clip.getItemAt(i);
+                    if (item.getUri() != null && item.getText() == null) {
+                        continue;
+                    }
+                    CharSequence text = item.coerceToText(TraceDrawActivity.this);
+                    if (text != null && text.length() > 0) {
+                        return text.toString();
+                    }
+                }
+                return null;
+            }
+        }, null);
+    }
+
+    /**
+     * The documents on the clipboard (pictures and files other apps
+     * copied), one per line as "uri TAB mime TAB name"; null when there is
+     * none. Reading the clip grants this app the right to read them.
+     */
+    public String getClipboardDocuments() {
+        return onUiThread(new Callable<String>() {
+            @Override
+            public String call() {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard == null || !clipboard.hasPrimaryClip()) {
+                    return null;
+                }
+                ClipData clip = clipboard.getPrimaryClip();
+                if (clip == null) {
+                    return null;
+                }
+                StringBuilder out = new StringBuilder();
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    Uri uri = clip.getItemAt(i).getUri();
+                    if (uri == null) {
+                        continue;
+                    }
+                    String mime = null;
+                    try {
+                        mime = getContentResolver().getType(uri);
+                    } catch (Exception e) {
+                        // Unknown type: the editor goes by the name.
+                    }
+                    if (mime == null && clip.getDescription() != null
+                        && clip.getDescription().getMimeTypeCount() > 0) {
+                        mime = clip.getDescription().getMimeType(0);
+                    }
+                    if (out.length() > 0) {
+                        out.append('\n');
+                    }
+                    out.append(uri.toString().replace('\t', ' ').replace('\n', ' '));
+                    out.append('\t');
+                    out.append(mime == null ? "" : mime.replace('\t', ' ').replace('\n', ' '));
+                    out.append('\t');
+                    out.append(displayName(uri).replace('\t', ' ').replace('\n', ' '));
+                }
+                return out.length() == 0 ? null : out.toString();
             }
         }, null);
     }
@@ -279,6 +811,39 @@ public class TraceDrawActivity extends NativeActivity {
             }
         }, Boolean.FALSE);
         return done != null && done.booleanValue();
+    }
+
+    // ----- accessibility settings (#1412) -------------------------------------
+
+    /**
+     * The system's settings the interface follows, as "font-scale contrast
+     * dark": the font scale (Settings > Display > Font size), 1 when the
+     * contrast is raised (Android 14's contrast setting at medium or high,
+     * or high contrast text) else 0, and 1 when the system shows dark
+     * windows else 0. Read by the editor every few seconds; a font scale
+     * change reaches the activity without restarting it (configChanges).
+     */
+    public String getAccessibility() {
+        android.content.res.Configuration config = getResources().getConfiguration();
+        int night = config.uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        boolean dark = night == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        boolean contrast = false;
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            try {
+                android.app.UiModeManager modes =
+                    (android.app.UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+                contrast = modes != null && modes.getContrast() >= 0.5f;
+            } catch (Exception e) {
+                // No contrast setting to read.
+            }
+        }
+        try {
+            contrast = contrast
+                || android.provider.Settings.Secure.getInt(getContentResolver(), "high_text_contrast_enabled", 0) == 1;
+        } catch (Exception e) {
+            // The setting is closed to apps on this system.
+        }
+        return config.fontScale + " " + (contrast ? "1" : "0") + " " + (dark ? "1" : "0");
     }
 
     /**

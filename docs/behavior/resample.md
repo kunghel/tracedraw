@@ -1,6 +1,6 @@
 # Resample
 
-Bitmaps > Resample (also on the bitmap property bar) gives the selected
+Image > Resample (also on the bitmap property bar) gives the selected
 bitmaps a new pixel size; their place and size on the page stay.
 
 ## Fields

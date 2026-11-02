@@ -199,7 +199,7 @@ the first selected object; **Break Link to Style** unlinks objects. The
 The same panel shows the fill and outline that new objects take, for
 three kinds: graphics, artistic text and paragraph text. Choose a colour
 with nothing selected, or use **From Selection** and **Reset** there.
-**Tools > Save Settings as Default** keeps them for new drawings. See
+**Tools > Save as Defaults** keeps them for new drawings. See
 [the object style notes](../behavior/object-styles.md).
 
 ## Colour on screen and in print

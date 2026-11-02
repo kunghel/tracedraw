@@ -26,9 +26,97 @@ pub struct Imported {
     pub size: Size,
 }
 
+/// How deep elements may nest in an SVG file. The XML reader walks the
+/// elements by calling itself once per level, with no bound of its own,
+/// so a file of nothing but opening `<g>` tags (50 000 of them in
+/// 350 KB) ran the stack out, which cannot be caught, and closed the
+/// program. Drawings nest a few dozen levels at most; a file deeper
+/// than this is refused with a clear error before it is read.
+pub const MAX_ELEMENT_DEPTH: usize = 256;
+
+/// How deep the elements of XML text nest: the most elements open at
+/// once, counted from the text alone (comments, CDATA sections,
+/// processing instructions and the document type skipped, self-closing
+/// tags not counted). Text that is not XML gives some number; the XML
+/// reader then says what is wrong with it.
+fn element_depth(xml: &str) -> usize {
+    let b = xml.as_bytes();
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    let mut i = 0;
+    // The end of the section starting at `i` with `open`, after `close`.
+    let skip_to = |i: usize, close: &[u8]| -> usize {
+        b[i..]
+            .windows(close.len())
+            .position(|w| w == close)
+            .map_or(b.len(), |p| i + p + close.len())
+    };
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let rest = &b[i..];
+        if rest.starts_with(b"<!--") {
+            i = skip_to(i + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(i + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = skip_to(i + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            // The document type, whose internal subset may hold `>`.
+            let mut j = i + 2;
+            let mut in_subset = false;
+            while j < b.len() {
+                match b[j] {
+                    b'[' => in_subset = true,
+                    b']' => in_subset = false,
+                    b'>' if !in_subset => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j + 1;
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            i = skip_to(i + 2, b">");
+        } else {
+            // A start tag: to its `>` outside quoted attribute values;
+            // `/>` closes the element at once.
+            let mut j = i + 1;
+            let mut quote: Option<u8> = None;
+            let mut self_closing = false;
+            while j < b.len() {
+                match (quote, b[j]) {
+                    (Some(q), c) if c == q => quote = None,
+                    (Some(_), _) => {}
+                    (None, c @ (b'"' | b'\'')) => quote = Some(c),
+                    (None, b'>') => {
+                        self_closing = j > 0 && b[j - 1] == b'/';
+                        break;
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            if !self_closing {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            i = j + 1;
+        }
+    }
+    deepest
+}
+
 /// Parse SVG text. `ids` allocates shape identifiers so the result can be
 /// added to an existing document.
 pub fn parse(svg: &str, ids: &mut IdSource) -> std::result::Result<Imported, String> {
+    let depth = element_depth(svg);
+    if depth > MAX_ELEMENT_DEPTH {
+        return Err(format!(
+            "the file nests {depth} elements deep; at most {MAX_ELEMENT_DEPTH} are read"
+        ));
+    }
     let opt = usvg::Options::default();
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
     let size = tree.size();
@@ -380,6 +468,43 @@ mod tests {
         assert!((st.width - 2.0 * PX_TO_MM).abs() < 1e-6);
         assert_eq!(children[0].name.as_deref(), Some("r"));
         assert_eq!(children[1].fill, Fill::Solid(Color::rgb8(0, 255, 0)));
+    }
+
+    /// A file of 50 000 nested groups is refused before the XML reader
+    /// sees it: the reader's recursion ran the stack out, which cannot
+    /// be caught, and closed the program. Drawings nested a hundred
+    /// deep are read whole, and the count skips what is not an element.
+    #[test]
+    fn deeply_nested_elements_are_refused_not_a_crash() {
+        let nested = |depth: usize| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">{}<rect x="1" y="1" width="10" height="10"/>{}</svg>"#,
+                "<g>".repeat(depth),
+                "</g>".repeat(depth)
+            )
+        };
+        let mut ids = IdSource::default();
+        let Err(err) = parse(&nested(50_000), &mut ids) else {
+            panic!("a file nested 50 000 deep was read");
+        };
+        assert!(err.contains("50001 elements deep"), "{err}");
+        let imp = parse(&nested(100), &mut ids).expect("a hundred deep is fine");
+        let mut shape = &imp.shapes[0];
+        while let ShapeKind::Group { children } = &shape.kind {
+            shape = &children[0];
+        }
+        assert!(
+            matches!(shape.kind, ShapeKind::Path { .. }),
+            "{:?}",
+            shape.kind
+        );
+        // Comments, CDATA, the prologue, the document type, attribute
+        // values and self-closing tags hold no elements.
+        let text = r#"<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY a "<g><g>"> ]>
+<!-- <g><g><g> --><svg title="<g><g>" xmlns="http://www.w3.org/2000/svg"><g><![CDATA[<g><g><g>]]><rect/><path d='M 0 0'/></g></svg>"#;
+        assert_eq!(element_depth(text), 2);
+        // The svg, three groups and a self-closing rect.
+        assert_eq!(element_depth(&nested(3)), 4);
     }
 }
 

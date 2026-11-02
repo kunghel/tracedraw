@@ -13,7 +13,7 @@ sprawdzić, co się zmieniło, i wymienia najważniejsze nowości ostatnich wers
   menu, które je zawiera. Oznaczenia znikają po wyłączeniu polecenia, a przy
   następnym uruchomieniu TraceDraw polecenie znowu jest wyłączone.
 - Pełna lista zmian każdej wersji znajduje się w
-  [dzienniku zmian](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [dzienniku zmian](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   projektu.
 
 ## Najważniejsze nowości ostatnich wersji {#highlights}

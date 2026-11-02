@@ -1,4 +1,4 @@
-//! Bitmap colour mode conversions (Bitmaps > Mode): black and white with seven conversion methods,
+//! Bitmap colour mode conversions (Image > Mode): black and white with seven conversion methods,
 //! duotone (one to four inks, each with a tone curve), paletted (uniform,
 //! standard VGA, adaptive, optimized, grayscale, system or custom
 //! palettes, with ordered or error-diffusion dithering), and Lab. Pixels
@@ -64,7 +64,7 @@ impl ConvertMode {
     }
 }
 
-/// Bitmaps > Convert to Bitmap's settings.
+/// Image > Convert to Bitmap's settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConvertOptions {
     pub dpi: f64,
@@ -250,7 +250,7 @@ impl ToneCurve {
 
 // ----- black and white -------------------------------------------------------
 
-/// Bitmaps > Mode > Black and White (1-bit): the conversion method.
+/// Image > Mode > Black and White (1-bit): the conversion method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BwMethod {
     LineArt,

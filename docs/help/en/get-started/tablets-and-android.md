@@ -7,7 +7,7 @@ desktop version, with the same menus, tools and files.
 
 ## Installing the browser version as an app {#install}
 
-The [browser version](https://igtoth.github.io/tracedraw/) can be installed
+The [browser version](https://tracedraw.github.io/tracedraw/) can be installed
 from the browser. It then opens full screen with the TraceDraw icon, without
 the browser's address bar and tabs, in any orientation, and keeps clear of a
 notch or rounded screen corners.
@@ -45,7 +45,7 @@ the choice is kept. See [Workspaces](../customize/workspaces.md).
 
 What works differently:
 
-- **Files.** Open, Import, Save, Save As, Export and Publish to PDF go
+- **Files.** Open, Import, Save, Save As, Export and Export as PDF go
   through the system's document picker. Save writes an opened document back
   in place. The [[dialog.save_drawing]] dialog box asks only for the name,
   type and version; the system then asks where to save.

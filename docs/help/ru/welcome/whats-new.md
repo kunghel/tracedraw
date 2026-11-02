@@ -14,7 +14,7 @@
   заголовком меню, где она есть. Отметки исчезают, когда вы выключаете
   команду, и при следующем запуске TraceDraw команда снова выключена.
 - Полный список изменений каждой версии есть в
-  [журнале изменений](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [журнале изменений](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   проекта.
 
 ## Главное в последних версиях {#highlights}

@@ -52,6 +52,7 @@ pub fn cmyk_profile(
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
     let mut names: Vec<String> = archive
         .file_names()
+        .filter_map(|n| n.ok())
         .filter(|n| {
             let lower = n.to_ascii_lowercase();
             lower.starts_with("color/profiles/cmyk/")
@@ -113,6 +114,7 @@ pub fn embedded_fonts(
     const NOT_FONTS: [&str; 7] = [".png", ".curve", ".jpg", ".jpeg", ".bmp", ".xml", ".json"];
     let mut names: Vec<String> = archive
         .file_names()
+        .filter_map(|n| n.ok())
         .filter(|n| {
             let lower = n.to_ascii_lowercase();
             lower.starts_with("embed/")

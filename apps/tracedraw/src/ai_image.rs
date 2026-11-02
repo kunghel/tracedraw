@@ -277,7 +277,7 @@ pub const VECTOR_STYLES: [(&str, &str); 6] = [
 
 /// Ready-made remix requests (the workflows remixing is good at): the
 /// i18n key of the name and the prompt it fills in.
-/// Bitmaps > AI Art Styles: the picture repainted in a style, keeping
+/// Image > AI Art Styles: the picture repainted in a style, keeping
 /// what it shows (i18n key, request).
 pub const ART_STYLES: [(&str, &str); 8] = [
     ("aiimg.art_oil", "Repaint this picture as an oil painting with thick, visible brush strokes and rich colour. Keep its subject and composition exactly."),
@@ -1200,7 +1200,7 @@ impl App {
         self.poll_ai_image();
     }
 
-    /// Bitmaps > AI Art Styles: remix the selection with the request of
+    /// Image > AI Art Styles: remix the selection with the request of
     /// style `i` (the AI Generate docker shows it and the results).
     pub fn ai_art_style(&mut self, i: usize) {
         let Some((_, words)) = ART_STYLES.get(i) else {
@@ -1217,7 +1217,7 @@ impl App {
         self.ai_remix();
     }
 
-    /// Bitmaps > Remove Background: the selected bitmap's subject kept,
+    /// Image > Remove Background: the selected bitmap's subject kept,
     /// the rest made transparent, as one undo step.
     pub fn ai_remove_background(&mut self) {
         if self.ai_image.busy() {

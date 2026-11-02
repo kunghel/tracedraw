@@ -1,7 +1,7 @@
 # Variable Outline tool
 
-The Variable Outline tool (its own button at the bottom of the toolbox,
-after the Fill flyout) makes an outline thicker or thinner along its
+The Variable Outline tool (its own button in the toolbox, right under
+the brush tools' flyout) makes an outline thicker or thinner along its
 length with width nodes.
 
 ## Using it

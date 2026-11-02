@@ -1,4 +1,4 @@
-//! File > Document Properties: the drawing's language, title, subject,
+//! File > Document Info: the drawing's language, title, subject,
 //! author, copyright, tags, notes and rating, edited until OK, over a
 //! scrolling report of the file, the document, its colour settings and
 //! what it holds (objects, text, bitmaps, styles, effects, fills,

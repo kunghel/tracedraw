@@ -111,27 +111,6 @@ próprios atalhos; veja
 | [[menu.view.snap_page]] | [Encaixe](../pages-layout/snapping.md) |
 | [[menu.view.snap_off]] | [Encaixe](../pages-layout/snapping.md) |
 
-## [[menu.layout]] {#layout}
-
-| Comando | Veja |
-|---|---|
-| [[menu.layout.insert_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.duplicate_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.rename_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.delete_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.go_to_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.insert_page_number]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_number_active]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_number_all]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_number_odd]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_number_even]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_number_settings]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.switch_orientation]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.document_options]] | [Opções do documento](../pages-layout/document-options.md) |
-| [[menu.layout.page_size]] | [Trabalhar com páginas](../pages-layout/pages.md) |
-| [[menu.layout.page_layout]] | [Opções do documento](../pages-layout/document-options.md) |
-| [[menu.layout.page_background]] | [Opções do documento](../pages-layout/document-options.md) |
-
 ## [[menu.object]] {#object}
 
 | Comando | Veja |
@@ -244,60 +223,6 @@ próprios atalhos; veja
 | [[menu.object.properties]] | [O painel Propriedades](../objects/properties-docker.md) |
 | [[menu.object.objects]] | [Organizar objetos e camadas](../objects/objects-and-layers.md) |
 
-## [[menu.effects]] {#effects}
-
-| Comando | Veja |
-|---|---|
-| [[menu.effects.flatten]] | [Efeitos de bitmap](../effects/bitmap-effects.md) |
-| [[menu.effects.brush_strokes]] | [Pinceladas e pincéis pictóricos](../lines-shapes/artistic-media.md) |
-| [[menu.effects.bevel]] | [Chanfros](../effects/bevel.md) |
-| [[menu.effects.blend]] | [Misturas](../effects/blend.md) |
-| [[menu.effects.contour]] | [Contornos concêntricos](../effects/contour.md) |
-| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
-| [[menu.effects.extrude]] | [Extrusões](../effects/extrude.md) |
-| [[menu.effects.lens]] | [Lentes](../effects/lens.md) |
-| [[menu.effects.picture_mosaic]] | [Mosaicos vetoriais e de imagens](../effects/mosaics.md) |
-| [[menu.effects.vector_mosaic]] | [Mosaicos vetoriais e de imagens](../effects/mosaics.md) |
-
-## [[menu.bitmaps]] {#bitmaps}
-
-| Comando | Veja |
-|---|---|
-| [[menu.bitmaps.convert_to_bitmap]] | [Converter objetos em bitmaps](../bitmaps/convert-to-bitmap.md) |
-| [[menu.bitmaps.straighten_image]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.edit_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.crop_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.resample]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.remove_background_local]] | [Remover fundo](../bitmaps/remove-background.md) |
-| [[menu.bitmaps.remove_background]] | [Desenhar e gerar com IA](../customize/ai.md) |
-| [[menu.bitmaps.ai_art_styles]] | [Desenhar e gerar com IA](../customize/ai.md) |
-| [[menu.bitmaps.mode]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_bw]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_grayscale]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_duotone]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_paletted]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_rgb]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_lab]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_cmyk]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.inflate]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_auto]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_manual]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.break_link]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.update_from_link]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.quick_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.centerline_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_technical]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_drawing]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.outline_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_art]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_logo]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_detailed_logo]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_clipart]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_low_quality]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_high_quality]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.plugins]] | [Bitmaps](../bitmaps/index.md) |
-| [[menu.bitmaps.bitmap_mask]] | [Mascarar cores de bitmaps](../bitmaps/bitmap-mask.md) |
-
 ## [[menu.text]] {#text}
 
 | Comando | Veja |
@@ -333,7 +258,7 @@ próprios atalhos; veja
 | [[menu.text.custom_hyphens]] | [Ferramentas de escrita](../text/writing-tools.md) |
 | [[menu.text.writing_tools]] | [Ferramentas de escrita](../text/writing-tools.md) |
 | [[menu.text.spell_check]] | [Ferramentas de escrita](../text/writing-tools.md) |
-| [[menu.text.grammatik]] | [Ferramentas de escrita](../text/writing-tools.md) |
+| [[menu.text.grammar]] | [Ferramentas de escrita](../text/writing-tools.md) |
 | [[menu.text.thesaurus]] | [Ferramentas de escrita](../text/writing-tools.md) |
 | [[menu.text.autocorrect]] | [Ferramentas de escrita](../text/writing-tools.md) |
 | [[menu.text.change_case]] | [Ferramentas de escrita](../text/writing-tools.md) |
@@ -342,7 +267,7 @@ próprios atalhos; veja
 | [[menu.text.text_docker]] | [Adicionar e editar texto](../text/adding-text.md) |
 | [[menu.text.glyphs]] | [Fontes e glifos](../text/fonts.md) |
 
-## [[menu.table]] {#table}
+### [[menu.table]] {#table}
 
 | Comando | Veja |
 |---|---|
@@ -370,6 +295,83 @@ próprios atalhos; veja
 | [[menu.table.unmerge_cells]] | [Tabelas](../objects/tables.md) |
 | [[menu.table.split_into_rows]] | [Tabelas](../objects/tables.md) |
 | [[menu.table.split_into_columns]] | [Tabelas](../objects/tables.md) |
+
+## [[menu.bitmaps]] {#bitmaps}
+
+| Comando | Veja |
+|---|---|
+| [[menu.bitmaps.convert_to_bitmap]] | [Converter objetos em bitmaps](../bitmaps/convert-to-bitmap.md) |
+| [[menu.bitmaps.straighten_image]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.edit_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.crop_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.resample]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.remove_background_local]] | [Remover fundo](../bitmaps/remove-background.md) |
+| [[menu.bitmaps.remove_background]] | [Desenhar e gerar com IA](../customize/ai.md) |
+| [[menu.bitmaps.ai_art_styles]] | [Desenhar e gerar com IA](../customize/ai.md) |
+| [[menu.bitmaps.mode]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_bw]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_grayscale]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_duotone]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_paletted]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_rgb]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_lab]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_cmyk]] | [Mudar o modo de cor de bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.inflate]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_auto]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_manual]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.break_link]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.update_from_link]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.quick_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.centerline_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_technical]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_drawing]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.outline_trace]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_art]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_logo]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_detailed_logo]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_clipart]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_low_quality]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_high_quality]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_optimized]] | [Vetorizar bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.plugins]] | [Bitmaps](../bitmaps/index.md) |
+| [[menu.bitmaps.bitmap_mask]] | [Mascarar cores de bitmaps](../bitmaps/bitmap-mask.md) |
+
+## [[menu.effects]] {#effects}
+
+| Comando | Veja |
+|---|---|
+| [[menu.effects.flatten]] | [Efeitos de bitmap](../effects/bitmap-effects.md) |
+| [[menu.effects.brush_strokes]] | [Pinceladas e pincéis pictóricos](../lines-shapes/artistic-media.md) |
+| [[menu.effects.bevel]] | [Chanfros](../effects/bevel.md) |
+| [[menu.effects.blend]] | [Misturas](../effects/blend.md) |
+| [[menu.effects.contour]] | [Contornos concêntricos](../effects/contour.md) |
+| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
+| [[menu.effects.extrude]] | [Extrusões](../effects/extrude.md) |
+| [[menu.effects.lens]] | [Lentes](../effects/lens.md) |
+| [[menu.effects.picture_mosaic]] | [Mosaicos vetoriais e de imagens](../effects/mosaics.md) |
+| [[menu.effects.vector_mosaic]] | [Mosaicos vetoriais e de imagens](../effects/mosaics.md) |
+
+## [[menu.layout]] {#layout}
+
+| Comando | Veja |
+|---|---|
+| [[menu.layout.insert_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.duplicate_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.rename_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.delete_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.go_to_page]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.insert_page_number]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_number_active]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_number_all]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_number_odd]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_number_even]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_number_settings]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.switch_orientation]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.document_options]] | [Opções do documento](../pages-layout/document-options.md) |
+| [[menu.layout.page_size]] | [Trabalhar com páginas](../pages-layout/pages.md) |
+| [[menu.layout.page_layout]] | [Opções do documento](../pages-layout/document-options.md) |
+| [[menu.layout.page_background]] | [Opções do documento](../pages-layout/document-options.md) |
 
 ## [[menu.tools]] {#tools}
 

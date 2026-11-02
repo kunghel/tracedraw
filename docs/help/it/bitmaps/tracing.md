@@ -7,22 +7,24 @@ scansionato, uno schizzo, una foto.
 ## Ricalco rapido {#quick-trace}
 
 Selezionate una bitmap e scegliete
-[[menu.bitmaps > menu.bitmaps.quick_trace]]. Usa la preimpostazione scelta
-nella pagina [[options.bitmap_tracing]] delle opzioni globali (Clipart
-all'inizio).
+[[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.quick_trace]]. Usa la preimpostazione scelta
+nella pagina [[options.bitmap_tracing]] delle opzioni globali
+([[menu.bitmaps.trace_optimized]] all'inizio, che sceglie il dettaglio per
+ogni immagine: il più fedele possibile con il minor numero di nodi).
 
 [[menu.bitmaps.repeat_last_trace]] ricalca di nuovo la bitmap selezionata come l'ultimo ricalco, senza finestra di dialogo, e [[menu.bitmaps.last_trace_settings]] apre la finestra di dialogo con le sue impostazioni. Anche il menu contestuale di una bitmap ha questi comandi, con [[menu.bitmaps.centerline_trace]] e [[menu.bitmaps.outline_trace]].
 
 ## La finestra di dialogo Ricalca bitmap {#trace}
 
-[[menu.bitmaps > menu.bitmaps.outline_trace]] e
+[[menu.bitmaps > menu.bitmaps.trace > menu.bitmaps.outline_trace]] e
 [[menu.bitmaps.centerline_trace]] elencano le preimpostazioni; sceglietene
 una per aprire la finestra di dialogo.
 
 - **Ricalco del contorno** riempie le aree di colore con forme:
   [[menu.bitmaps.trace_line_art]], [[menu.bitmaps.trace_logo]],
   [[menu.bitmaps.trace_detailed_logo]], [[menu.bitmaps.trace_clipart]],
-  [[menu.bitmaps.trace_low_quality]] e [[menu.bitmaps.trace_high_quality]].
+  [[menu.bitmaps.trace_low_quality]], [[menu.bitmaps.trace_high_quality]] e
+  [[menu.bitmaps.trace_optimized]].
 - **Ricalco della linea centrale** segue le linee con curve aperte:
   [[menu.bitmaps.trace_technical]] e [[menu.bitmaps.trace_line_drawing]].
 
@@ -34,7 +36,8 @@ il ricalco viene rifatto a ogni cambio di impostazione: non c'è nulla da
 premere per vedere il risultato. Sotto l'anteprima una riga conta le
 **curve**, i **nodi** e i **colori** del risultato. Fate clic su
 [[dialog.ok]] per collocare le forme sopra la bitmap, le più scure per
-prime, o su [[dialog.cancel]] per lasciare la bitmap com'è.
+prime, o su [[dialog.cancel]] per lasciare la bitmap com'è; entrambi
+stanno in basso a destra nella finestra di dialogo.
 
 ## L'anteprima {#preview}
 
@@ -54,6 +57,11 @@ ingrandiscono e spostano. La rotellina ingrandisce intorno al puntatore e
 un trascinamento sposta l'immagine; i due riquadri si muovono insieme. Le
 parti trasparenti mostrano una scacchiera.
 
+Nella versione per browser l'anteprima di un'immagine grande viene fatta da
+una copia più piccola, e una nota in rosso sotto l'anteprima lo segnala: i
+dettagli fini possono sembrare grossolani, ma [[dialog.ok]] ricalca
+l'immagine intera. La versione desktop mostra l'anteprima esatta.
+
 ## Impostazioni {#settings}
 
 La scheda [[dialog.trace_tab_settings]] contiene:
@@ -62,7 +70,9 @@ La scheda [[dialog.trace_tab_settings]] contiene:
   [[dialog.trace_image_type]] la preimpostazione. Sceglierne una porta i
   cursori sottostanti ai valori adatti a quel tipo di immagine.
 - [[dialog.detail]] (da 0 a 100): più dettaglio conserva aree più piccole e
-  linee più sottili; meno dettaglio leviga macchie e grana.
+  linee più sottili; meno dettaglio leviga macchie e grana. Con
+  [[menu.bitmaps.trace_optimized]] il dettaglio viene scelto per ogni
+  immagine e il cursore è in grigio.
 - [[dialog.smoothing]] (da 0 a 100, 25 all'inizio): curve più morbide con
   meno nodi.
 - [[dialog.corner_smoothness]] (da 0 a 100): angoli più arrotondati.
@@ -74,19 +84,27 @@ La scheda [[dialog.trace_tab_settings]] contiene:
   colore del campione, che potete cambiare o prelevare dall'anteprima con
   il contagocce accanto.
 - [[dialog.trace_objects]]: [[dialog.trace_merge_adjacent]] (attivo
-  all'inizio) fa una sola curva di ogni area di un colore; disattivato,
-  ogni chiazza separata è una curva a sé. [[dialog.trace_remove_overlap]]
-  tiene ogni forma sui propri pixel; disattivato, le forme si estendono un
-  poco sotto quelle sopra, così tra vicine non si vedono fessure.
-  [[dialog.trace_group_by_color]] mette le curve di ogni colore in un
-  gruppo a sé; è disponibile quando le aree di un colore non sono già
-  unite.
+  all'inizio) fa una sola curva di ogni area di un colore; disattivato, ogni
+  chiazza separata è una curva a sé. [[dialog.trace_remove_overlap]] tiene
+  ogni forma sui propri pixel, buchi compresi; disattivato, una forma è
+  disegnata intera sotto le forme al suo interno (una testa sotto i suoi
+  occhi). In entrambi i casi le vicine condividono una curva lungo il bordo,
+  così non si vedono fessure e il fil di ferro mostra ogni bordo una volta.
+  [[dialog.trace_group_by_color]] mette le curve di ogni colore in un gruppo
+  a sé; è disponibile quando le aree di un colore non sono già unite.
 - [[dialog.delete_original]]: la bitmap sparisce quando il risultato viene
   collocato.
 
 Le impostazioni che non valgono per il tipo di ricalco in uso sono in
 grigio: un ricalco della linea centrale legge solo il dettaglio e la
 levigatura.
+
+[[dialog.trace_optimize]], in basso a sinistra nella finestra di dialogo,
+prova diversi livelli di dettaglio sull'immagine, confronta ogni ricalco con
+essa e mette nel cursore [[dialog.detail]] il dettaglio che la disegna più
+fedelmente con il minor numero di nodi. È un passo che potete annullare. Se
+cambiate le impostazioni prima che abbia finito, il suo risultato viene
+scartato.
 
 ## Colori {#colors}
 

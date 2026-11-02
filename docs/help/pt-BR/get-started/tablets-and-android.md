@@ -9,7 +9,7 @@ da versão para computador, com os mesmos menus, ferramentas e arquivos.
 
 ## Instalar a versão para navegador como app {#install}
 
-A [versão para navegador](https://igtoth.github.io/tracedraw/) pode ser
+A [versão para navegador](https://tracedraw.github.io/tracedraw/) pode ser
 instalada pelo navegador. Ela então abre em tela cheia com o ícone do
 TraceDraw, sem a barra de endereço e as guias do navegador, em qualquer
 orientação, e evita o entalhe ou os cantos arredondados da tela.

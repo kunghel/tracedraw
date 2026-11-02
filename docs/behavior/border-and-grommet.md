@@ -1,6 +1,6 @@
-# Border and Grommet
+# Banner Hems and Eyelets
 
-Tools > Border and Grommet: finishing for large-format prints (banners,
+Tools > Banner Hems and Eyelets: finishing for large-format prints (banners,
 canvases). The dialog grows the page by a border and places grommet
 marks on its edge.
 

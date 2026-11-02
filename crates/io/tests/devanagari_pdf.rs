@@ -129,7 +129,7 @@ fn latin_text_exported_has_no_actual_text() {
     let pdf = lopdf::Document::load_mem(&bytes).expect("parses");
     let mut ops = Vec::new();
     for (_, page) in pdf.get_pages() {
-        let content = pdf.get_page_content(page).expect("content");
+        let content = pdf.get_page_content(page);
         let content = lopdf::content::Content::decode(&content).expect("decodes");
         ops.extend(content.operations.into_iter().map(|o| o.operator));
     }

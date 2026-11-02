@@ -1,4 +1,4 @@
-//! Text > Writing Tools: one dialog with three tabs (Spell Checker,
+//! Text > Proofing: one dialog with three tabs (Spell Checker,
 //! Grammar, Thesaurus), "?" and Close; and Text > Custom Optional
 //! Hyphens. See docs/behavior/writing-tools.md.
 
@@ -60,7 +60,7 @@ pub struct ThesaurusTab {
     pub auto_close: bool,
 }
 
-/// Text > Writing Tools.
+/// Text > Proofing.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WritingToolsState {
     /// 0 Spell Checker, 1 Grammar, 2 Thesaurus.

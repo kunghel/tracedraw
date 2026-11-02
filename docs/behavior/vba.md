@@ -30,7 +30,7 @@ Rules that hold everywhere:
 - **Out parameters.** Methods that hand values back through ByRef
   arguments return them as an array in parameter order: `GetPosition`
   gives `[x, y]`, `GetSize` `[w, h]`, `GetBoundingBox` `[x, y, w, h]`.
-- **Named arguments.** Methods are declared with their reference
+- **Named arguments.** Methods are declared with their published
   parameter names (`Left`, `Top`, `Right`, `Bottom`, `CornerUL`...), so
   named arguments match by name.
 - **Collections** are 1-based, take an index or a name in `Item`, have
@@ -175,7 +175,7 @@ Shared with ranges and the selection:
   new curve).
 - **Groups and frames:** `Ungroup`, `UngroupEx`, `UngroupAll`,
   `UngroupAllEx`, `Shapes` (a group's), `Layer`, `Page`, `ParentGroup`,
-  `PowerClip` (`Shapes` inside a clip frame), `PowerClipParent`.
+  `ClipFrame` (`Shapes` inside a clip frame), `ClipFrameParent`.
 - **Views of the object:**
   - `Curve`: `Nodes`, `SubPaths`, `Segments`, `Closed`, `Length`.
     Nodes have `PositionX`, `PositionY`, `SetPosition`, `Move`, `Type`
@@ -234,14 +234,14 @@ Checked member by member against the published developer reference
 (enumeration pages listing each member's value):
 `cdrUnit` (including `cdrUnitQ` and `cdrUnitH`, both 0.25 mm),
 `cdrReferencePoint`, `cdrShapeType`, `cdrFillType`, `cdrFilter` (every
-member, `cdrWEBP` from a later version of the reference), `cdrImageType`,
+member, `cdrWEBP`, added in a later version of the object model), `cdrImageType`,
 `cdrEffectType`, `cdrAlignment`, `cdrFontLine`, `cdrFontCase`,
 `cdrSegmentType`, `cdrOutlineType`, `cdrOutlineLineCaps`, `cdrMergeMode`,
 `cdrTransparencyAppliedTo`, `cdrDistributeArea`, `cdrAlignDistributeH`,
 `cdrAlignShapesTo`, and the members TraceDraw defines of
 `cdrTextLanguage` and `cdrCursorShape`.
 
-Checked against published type definitions rather than the reference:
+Checked against published type definitions, not the enumeration pages:
 `cdrColorType`, `cdrTextType` and `cdrTriState`.
 
 Not yet checked, with the values macros commonly assume:
@@ -255,7 +255,7 @@ bottom, 3 centre, 4 to 6 spread those lines, 7 equal gaps),
 `cdrAntiAliasingType`, `cdrImportMode`, `cdrFileVersion`,
 `cdrCompressionType` and `cdrShapeLinkType`.
 
-Method parameters carry the reference names, so named arguments match;
+Method parameters carry the published names, so named arguments match;
 checked for `CreateRectangle`, `CreateRectangle2`, `CreateEllipse2`,
 `SetPosition`, `SetSize`, `SetSizeEx`, `Move`, `Rotate`, `Duplicate`,
 `ApplyUniformFill`, `ApplyFountainFill`, `RGBAssign`, `CMYKAssign`,
@@ -283,7 +283,7 @@ other libraries):
 | Text, Story, Words, Range, Size, Bold, Italic, Font, LineSpacing, Overflow, IsArtisticText | 100, 12, 3, 5, 9, 9, 9, 3, 8, 4, 3 | W (`LanguageID`: E) |
 | Bitmap, ResolutionX, ResolutionY, Mode, ConvertTo, Resample, ExternallyLinked, Resolution | 51, 12, 12, 7, 14, 5, 3, 4 | W |
 | ConvertToBitmapEx, ConvertToCurves | 6, 4 | W |
-| PowerClip, PowerClipParent | 44, 8 | W |
+| ClipFrame, ClipFrameParent | 44, 8 | W |
 | EnterEditMode, LeaveEditMode | 3, 3 | N |
 | Effects, DropShadow, Separate, Clear | 14, 6, 7, 14 | W (a separated shadow loses its blur) |
 | MergeMode | 6 | W for normal; others E |
@@ -315,7 +315,7 @@ declare variables (`cdrShapeType`, `cdrColorType`, `cdrImageType`,
 
 The remaining rarer members follow the same rules:
 
-- Works: `MoveToLayer`, `OrderIsInFrontOf`, `AddToPowerClip`,
+- Works: `MoveToLayer`, `OrderIsInFrontOf`, `AddToClipFrame`,
   `FindAnyOfType`, `SelectShapesAtPoint`, `ImportEx`, `DrawingOriginX`
   and `DrawingOriginY` (0: the origin is the page corner).
 - Raise a named error: `GetUserClick`, `GetUserArea`, `DesktopLayer`,

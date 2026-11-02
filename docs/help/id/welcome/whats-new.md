@@ -13,7 +13,7 @@ cara mengetahui apa yang berubah dan mencantumkan sorotan versi-versi terbaru.
   yang memuatnya. Tanda hilang saat Anda menonaktifkan perintah itu, dan
   perintah kembali nonaktif saat TraceDraw dimulai lagi.
 - Daftar lengkap perubahan setiap versi ada di
-  [log perubahan](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [log perubahan](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   proyek.
 
 ## Sorotan versi terbaru {#highlights}

@@ -217,7 +217,7 @@ fn show(report: &str, saved: Option<&Path>) {
     let mut text = format!("{first}\n\n");
     if let Some(p) = saved {
         text.push_str(&format!(
-            "The details are in {}. Please attach that file to an issue at https://github.com/igtoth/tracedraw/issues",
+            "The details are in {}. Please attach that file to an issue at https://github.com/tracedraw/tracedraw/issues",
             p.display()
         ));
     }

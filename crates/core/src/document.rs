@@ -1972,7 +1972,7 @@ impl Default for QrCode {
     fn default() -> Self {
         QrCode {
             kind: QrKind::Url,
-            fields: vec!["https://github.com/igtoth/tracedraw".into()],
+            fields: vec!["https://github.com/tracedraw/tracedraw".into()],
             pixel_mm: 2.5,
             dark: Fill::Solid(crate::Color::BLACK),
             light: Fill::Solid(crate::Color::WHITE),
@@ -2502,6 +2502,63 @@ impl Shape {
             c.radii = c.radii.map(|r| fit(r / k, local_limit));
         }
         Some(ShapeKind::rect_with_corners(rect, c))
+    }
+
+    /// Lay a parent's uniform transparency over the shape's own, as when a
+    /// group is ungrouped or flattened for a file: `parent` is the group's
+    /// opacity, 1 being opaque.
+    pub fn absorb_opacity(&mut self, parent: f64) {
+        self.opacity = (self.opacity * parent).clamp(0.0, 1.0);
+    }
+
+    /// A clip frame whose frame is a group: Ungroup takes it apart into
+    /// the group's objects, each a clip frame holding the contents (#1605).
+    pub fn is_clip_frame_of_group(&self) -> bool {
+        matches!(&self.kind, ShapeKind::ClipFrame { frame, .. }
+            if matches!(frame.kind, ShapeKind::Group { .. }))
+    }
+
+    /// Whether Break Apart has parts to give: a curve of several
+    /// subpaths, or a clip frame whose frame is one (each part then a
+    /// clip frame holding the contents, #1607).
+    pub fn breaks_into_parts(&self) -> bool {
+        let path = match &self.kind {
+            ShapeKind::Path { path, .. } => path,
+            ShapeKind::ClipFrame { frame, .. } => match &frame.kind {
+                ShapeKind::Path { path, .. } => path,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        path.elements()
+            .iter()
+            .filter(|e| matches!(e, geometry::PathEl::MoveTo(_)))
+            .count()
+            > 1
+    }
+
+    /// A copy with ids from `next` for the object and everything inside
+    /// it (a group's objects, a clip frame's frame and contents), and no
+    /// uid, so the copy gets one of its own.
+    pub fn with_fresh_ids(&self, next: &mut dyn FnMut() -> ShapeId) -> Shape {
+        let mut c = self.clone();
+        c.id = next();
+        c.uid = None;
+        match &mut c.kind {
+            ShapeKind::Group { children } => {
+                let copies: Vec<Shape> =
+                    children.iter().map(|ch| ch.with_fresh_ids(next)).collect();
+                *children = copies;
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                **frame = frame.with_fresh_ids(next);
+                let copies: Vec<Shape> =
+                    contents.iter().map(|ch| ch.with_fresh_ids(next)).collect();
+                *contents = copies;
+            }
+            _ => {}
+        }
+        c
     }
 
     /// Put `parent` in front of the shape's own transform (ungrouping,
@@ -3058,6 +3115,23 @@ impl Shape {
         for e in &mut self.effects {
             if let crate::live::Effect::Transparency { mask, .. } = e {
                 mask.carry(t, before, after);
+            }
+        }
+    }
+
+    /// Keep the object's fountain fill and gradient transparency where
+    /// they lie on the page while its outline changes and its page box
+    /// goes from `before` to `after` (#1491): moving nodes or cropping cuts
+    /// them instead of squeezing them into the new box.
+    pub fn keep_paint_in_place(&mut self, before: Rect, after: Rect) {
+        self.fill.keep_in_place(before, after);
+        for e in self
+            .effects
+            .iter_mut()
+            .chain(self.parked_effects.iter_mut().map(|p| &mut p.effect))
+        {
+            if let crate::live::Effect::Transparency { mask, .. } = e {
+                mask.keep_in_place(before, after);
             }
         }
     }
@@ -4768,8 +4842,15 @@ impl Document {
     /// Write the `.tdraw` JSON of format `version` to `w` as it is made.
     /// The current format goes straight to the writer; only an older one
     /// builds the whole tree in memory first (many times the drawing's
-    /// size), to take it down.
+    /// size), to take it down. Every number written is a number: a value
+    /// that is not one (a division by zero somewhere, or an import with
+    /// a number too large to hold, can leave one in a coordinate, an
+    /// outline width, a transparency, a colour component or a font size)
+    /// is written as 0, not as `null`, which no reader before 0.35 took
+    /// for a number, so one such value made the whole file refuse to
+    /// open in those versions and the drawing was lost.
     pub fn write_json_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
+        use crate::finite::{Finite, FiniteSerializer};
         if (version as usize) >= DOWN_STEPS.len() {
             #[derive(Serialize)]
             struct Versioned<'a> {
@@ -4777,16 +4858,15 @@ impl Document {
                 doc: &'a Document,
                 format_version: u32,
             }
-            serde_json::to_writer_pretty(
-                w,
-                &Versioned {
-                    doc: self,
-                    format_version: TDRAW_FORMAT_VERSION,
-                },
-            )?;
+            let mut ser = serde_json::Serializer::pretty(w);
+            Versioned {
+                doc: self,
+                format_version: TDRAW_FORMAT_VERSION,
+            }
+            .serialize(FiniteSerializer(&mut ser))?;
             return Ok(());
         }
-        let mut v = serde_json::to_value(self)?;
+        let mut v = serde_json::to_value(Finite(self))?;
         if let serde_json::Value::Object(m) = &mut v {
             m.insert(
                 FORMAT_VERSION_KEY.into(),
@@ -4804,18 +4884,149 @@ impl Document {
     /// date by [`migrate`]; newer ones are read as far as this version
     /// knows them (fields it does not know are left out).
     pub fn from_json(s: &str) -> Result<Self> {
-        let mut v: serde_json::Value = serde_json::from_str(s)?;
+        let mut v: serde_json::Value = json_value(s)?;
         let from = tdraw_version(&v);
         migrate(&mut v, from);
         if let serde_json::Value::Object(m) = &mut v {
             m.remove(FORMAT_VERSION_KEY);
         }
-        let mut doc: Document = serde_json::from_value(v)?;
+        let mut doc: Document = match Document::deserialize(&v) {
+            Ok(doc) => doc,
+            Err(e) => numbers_lost_as_zero(v, e)?,
+        };
         // What text wraps around is not saved: work it out again.
         doc.refresh_text_flow();
         Ok(doc)
     }
 }
+
+/// How many brackets (`{` and `[`) of a `.tdraw` file may be open at
+/// once. A group inside a group nests four levels, so this is some 250
+/// groups inside groups, far beyond what a drawing holds (the `.cdr`
+/// reader stops at 64) and read, migrated and drawn well within the
+/// stack of every platform. The JSON reader's own limit is 128 levels,
+/// about 30 groups inside groups, which drawings do reach: such a
+/// drawing saved and then refused to open, and was lost.
+pub const MAX_JSON_DEPTH: usize = 1024;
+
+/// The JSON of a `.tdraw` text as a value, with the reader's nesting
+/// limit lifted and [`MAX_JSON_DEPTH`] in its place.
+fn json_value(s: &str) -> Result<serde_json::Value> {
+    let depth = json_depth(s);
+    if depth > MAX_JSON_DEPTH {
+        return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+            "the file nests {depth} levels deep; at most {MAX_JSON_DEPTH} are read"
+        ))
+        .into());
+    }
+    let mut de = serde_json::Deserializer::from_str(s);
+    de.disable_recursion_limit();
+    let v = serde_json::Value::deserialize(&mut de)?;
+    de.end()?;
+    Ok(v)
+}
+
+/// How deep the brackets of JSON text nest: the most `{` and `[` open at
+/// once, brackets inside strings not counted. Text that is not JSON
+/// gives some number; the reader then says what is wrong with it.
+fn json_depth(s: &str) -> usize {
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    let mut in_string = false;
+    let mut escaped = false;
+    for b in s.bytes() {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
+
+/// A `.tdraw` file whose numbers are not all numbers, read with each
+/// such number as 0. A value that is not a number (the result of a
+/// division by zero somewhere, or of an import with a number too large
+/// to hold) is written as `null`, which the reader does not take for a
+/// number, so one such value anywhere in a drawing made the whole file
+/// refuse to open and the drawing was lost. Every `null` but those the
+/// format writes for a setting that is not there ([`NULL_SETTINGS`]) is
+/// read as 0; a file that still does not open gives the error `first`
+/// (the one reading `v` as it was gave), as does one with no such
+/// `null`.
+fn numbers_lost_as_zero(mut v: serde_json::Value, first: serde_json::Error) -> Result<Document> {
+    fn zeros(v: &mut serde_json::Value, key: Option<&str>, n: &mut usize) {
+        match v {
+            serde_json::Value::Null => {
+                if !key.is_some_and(|k| NULL_SETTINGS.contains(&k)) {
+                    *v = serde_json::Value::from(0.0);
+                    *n += 1;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().for_each(|x| zeros(x, None, n));
+            }
+            serde_json::Value::Object(m) => {
+                m.iter_mut().for_each(|(k, x)| zeros(x, Some(k), n));
+            }
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    zeros(&mut v, None, &mut n);
+    if n == 0 {
+        return Err(first.into());
+    }
+    serde_json::from_value(v).map_err(|_| first.into())
+}
+
+/// The keys the format writes as `null` for a setting that is not there
+/// (optional fields written without `skip_serializing_if`), which
+/// [`numbers_lost_as_zero`] leaves alone. A key that holds a number
+/// elsewhere is not among them, so a number lost under it is read as 0.
+const NULL_SETTINGS: [&str; 29] = [
+    "active",
+    "arc",
+    "background",
+    "border",
+    "by_length",
+    "ctrl_in",
+    "ctrl_out",
+    "fill",
+    "finish",
+    "forward",
+    "frame",
+    "grid",
+    "harmony",
+    "link",
+    "main",
+    "name",
+    "nodes",
+    "on_path",
+    "outline",
+    "outline_to",
+    "path",
+    "range",
+    "shade_from",
+    "shade_to",
+    "shadow",
+    "spacing",
+    "start",
+    "stroke",
+    "vanishing",
+];
 
 /// The `.tdraw` format's version, written into every file. A change that
 /// an older TraceDraw would read wrongly (a field renamed, moved or given
@@ -4843,9 +5054,7 @@ pub fn tdraw_version(v: &serde_json::Value) -> u32 {
 
 /// The version a `.tdraw` text says it has (0 for unreadable text).
 pub fn tdraw_text_version(s: &str) -> u32 {
-    serde_json::from_str::<serde_json::Value>(s)
-        .map(|v| tdraw_version(&v))
-        .unwrap_or(0)
+    json_value(s).map(|v| tdraw_version(&v)).unwrap_or(0)
 }
 
 /// One step of [`migrate`]: the JSON of version `i` to version `i + 1`.
@@ -4998,6 +5207,181 @@ mod tests {
     }
 
     use super::*;
+
+    /// A drawing with a value that is not a number anywhere in it (a
+    /// division by zero's result, an imported number too large to hold)
+    /// is saved with 0 for that value, so the file opens in every
+    /// version: the writer wrote `null`, which no reader before 0.35
+    /// took for a number, so one such value made the whole file refuse
+    /// to open there and the drawing was lost. The `null`s in the file
+    /// are the settings that are not there, and nothing else.
+    #[test]
+    fn a_value_that_is_not_a_number_is_saved_as_zero() {
+        fn nulls(v: &serde_json::Value, key: Option<&str>, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Null => {
+                    if !key.is_some_and(|k| NULL_SETTINGS.contains(&k)) {
+                        out.push(key.unwrap_or("[]").to_string());
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().for_each(|x| nulls(x, None, out));
+                }
+                serde_json::Value::Object(m) => {
+                    m.iter().for_each(|(k, x)| nulls(x, Some(k), out));
+                }
+                _ => {}
+            }
+        }
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut doc = Document::default();
+            let mut rect = Shape::new(
+                ShapeId(1),
+                ShapeKind::Rect {
+                    rect: crate::geometry::Rect::new(5.0, 5.0, v, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            rect.transform = crate::geometry::Affine::new([1.0, 0.0, 0.0, 1.0, v, 0.0]);
+            rect.stroke = Some(Stroke::new(crate::Color::BLACK, v));
+            rect.opacity = v;
+            let mut text = Shape::new(
+                ShapeId(2),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new("Hello", "Sans", v)],
+                    origin: crate::geometry::Point::new(10.0, 60.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            text.fill = Fill::Solid(crate::Color::Rgb {
+                r: v as f32,
+                g: 0.5,
+                b: 0.0,
+            });
+            doc.pages[0].layers[0].shapes = vec![rect, text];
+            doc.pages[0].size = crate::geometry::Size::new(100.0, v);
+            for version in [TDRAW_FORMAT_VERSION, 0] {
+                let json = doc.to_json_version(version).expect("json");
+                let tree: serde_json::Value = serde_json::from_str(&json).expect("parses");
+                let mut lost = Vec::new();
+                nulls(&tree, None, &mut lost);
+                assert!(lost.is_empty(), "version {version}: null under {lost:?}");
+                assert_eq!(tree["pages"][0]["size"]["height"], serde_json::json!(0.0));
+                let shape = &tree["pages"][0]["layers"][0]["shapes"][0];
+                assert_eq!(shape["opacity"], serde_json::json!(0.0));
+                assert_eq!(shape["stroke"]["width"], serde_json::json!(0.0));
+                let back = Document::from_json(&json).expect("opens again");
+                let shapes = &back.pages[0].layers[0].shapes;
+                assert_eq!(shapes.len(), 2);
+                let ShapeKind::Rect { rect, .. } = &shapes[0].kind else {
+                    panic!("a rectangle");
+                };
+                assert_eq!((rect.x0, rect.x1, rect.y1), (5.0, 0.0, 30.0));
+                assert_eq!(shapes[0].transform.as_coeffs()[4], 0.0);
+                assert_eq!(shapes[0].opacity, 0.0);
+                let ShapeKind::Text { spans, .. } = &shapes[1].kind else {
+                    panic!("a text");
+                };
+                assert_eq!((spans[0].text.as_str(), spans[0].size_pt), ("Hello", 0.0));
+                assert_eq!(back.pages[0].size.height, 0.0);
+            }
+        }
+        // A setting that is not there is still `null`, as the format has it.
+        fn settings(v: &serde_json::Value, key: Option<&str>, n: &mut usize) {
+            match v {
+                serde_json::Value::Null if key.is_some_and(|k| NULL_SETTINGS.contains(&k)) => {
+                    *n += 1;
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().for_each(|x| settings(x, None, n));
+                }
+                serde_json::Value::Object(m) => {
+                    m.iter().for_each(|(k, x)| settings(x, Some(k), n));
+                }
+                _ => {}
+            }
+        }
+        let json = Document::default().to_json().expect("json");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("parses");
+        let mut n = 0;
+        settings(&tree, None, &mut n);
+        assert!(n > 0, "{json}");
+    }
+
+    /// A `.tdraw` file saved before 0.35 with `null` for a value that is
+    /// not a number still opens: the value is read as 0 and everything
+    /// else is as it was. A `null` where something other than a number
+    /// belongs is still an error.
+    #[test]
+    fn a_file_with_a_value_that_is_not_a_number_still_opens() {
+        let bad = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        for v in bad {
+            let mut doc = Document::default();
+            let mut rect = Shape::new(
+                ShapeId(1),
+                ShapeKind::Rect {
+                    rect: crate::geometry::Rect::new(5.0, 5.0, v, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            rect.transform = crate::geometry::Affine::new([1.0, 0.0, 0.0, 1.0, v, 0.0]);
+            rect.stroke = Some(Stroke::new(crate::Color::BLACK, v));
+            rect.opacity = v;
+            let mut text = Shape::new(
+                ShapeId(2),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new("Hello", "Sans", v)],
+                    origin: crate::geometry::Point::new(10.0, 60.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            text.fill = Fill::Solid(crate::Color::Rgb {
+                r: v as f32,
+                g: 0.5,
+                b: 0.0,
+            });
+            doc.pages[0].layers[0].shapes = vec![rect, text];
+            doc.pages[0].size = crate::geometry::Size::new(100.0, v);
+            let json = doc.to_json().expect("json");
+            assert!(json.contains("null"), "written as null");
+            let back = Document::from_json(&json).expect("opens again");
+            let shapes = &back.pages[0].layers[0].shapes;
+            assert_eq!(shapes.len(), 2);
+            let ShapeKind::Rect { rect, .. } = &shapes[0].kind else {
+                panic!("a rectangle");
+            };
+            assert_eq!((rect.x0, rect.x1, rect.y1), (5.0, 0.0, 30.0));
+            assert_eq!(shapes[0].transform.as_coeffs()[4], 0.0);
+            assert_eq!(shapes[0].stroke.as_ref().map(|s| s.width), Some(0.0));
+            assert_eq!(shapes[0].opacity, 0.0);
+            let ShapeKind::Text { spans, .. } = &shapes[1].kind else {
+                panic!("a text");
+            };
+            assert_eq!((spans[0].text.as_str(), spans[0].size_pt), ("Hello", 0.0));
+            assert_eq!(
+                shapes[1].fill,
+                Fill::Solid(crate::Color::Rgb {
+                    r: 0.0,
+                    g: 0.5,
+                    b: 0.0
+                })
+            );
+            assert_eq!(back.pages[0].size.height, 0.0);
+        }
+        // A null that is not a lost number is still refused.
+        let json = Document::default().to_json().expect("json");
+        let broken = json.replacen("\"pages\": [", "\"pages\": null, \"x\": [", 1);
+        assert!(broken.contains("\"pages\": null"));
+        assert!(Document::from_json(&broken).is_err());
+    }
 
     /// Variable font axis values (#870) are set, replaced and taken off
     /// per tag, saved with the text in the native format and left out of
@@ -5583,6 +5967,52 @@ mod tests {
         assert!((b.x0 - 15.0).abs() < 1e-6 && (b.y1 - 35.0).abs() < 1e-6);
         assert_eq!(back.locate(id).unwrap(), (layer, 0));
         let _ = Point::ZERO;
+    }
+
+    /// A drawing with groups inside groups, 40 deep, saves and opens
+    /// again. The JSON reader's own nesting limit (128 levels, about 30
+    /// groups inside groups) refused such a file as "recursion limit
+    /// exceeded", so a drawing that saved fine was lost on reopening.
+    /// A file nested past [`MAX_JSON_DEPTH`] is refused with a clear
+    /// error, not a crash, and the bracket count ignores strings.
+    #[test]
+    fn deeply_nested_groups_save_and_open_again() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut ids = doc.ids().clone();
+        let mut inner = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        for _ in 0..40 {
+            inner = Shape::new(
+                ids.shape(),
+                ShapeKind::Group {
+                    children: vec![inner],
+                },
+            );
+        }
+        doc.set_ids(ids);
+        doc.layer_mut(layer).unwrap().shapes.push(inner);
+        let json = doc.to_json().unwrap();
+        assert!(json_depth(&json) > 128, "{}", json_depth(&json));
+        assert_eq!(tdraw_text_version(&json), TDRAW_FORMAT_VERSION);
+        let back = Document::from_json(&json).unwrap();
+        assert_eq!(doc, back);
+
+        assert_eq!(json_depth(r#"{"a":"[[{{","b":[1,[2,"\"]]]"]]}"#), 3);
+        let too_deep = format!(
+            "{}{}",
+            "[".repeat(MAX_JSON_DEPTH + 1),
+            "]".repeat(MAX_JSON_DEPTH + 1)
+        );
+        let err = Document::from_json(&too_deep).unwrap_err().to_string();
+        assert!(err.contains("levels deep"), "{err}");
+        assert_eq!(tdraw_text_version(&too_deep), 0);
     }
 
     #[test]

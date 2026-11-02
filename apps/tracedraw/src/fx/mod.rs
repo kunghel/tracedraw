@@ -371,7 +371,7 @@ pub const VECTOR_FX_DPI: f64 = 300.0;
 const VECTOR_FX_MAX_PIXELS: f64 = 16_000_000.0;
 
 /// The resolution bitmap effects draw vector objects at: the drawing's
-/// rendering resolution (Layout > Page Setup, 72 to 1200 dpi), else
+/// rendering resolution (Page > Page Setup, 72 to 1200 dpi), else
 /// [`VECTOR_FX_DPI`] (#382).
 pub fn vector_fx_dpi(meta: &tracedraw_core::document::Metadata) -> f64 {
     if meta.resolution_dpi.is_finite() && meta.resolution_dpi > 0.0 {
@@ -571,8 +571,8 @@ impl crate::app::App {
         }
     }
 
-    /// Bitmaps > Inflate Bitmap > Auto Inflate Bitmap, the same switch as
-    /// Document Options > General: effects rendered from now on that
+    /// Image > Bitmap Padding > Automatic, the same switch as
+    /// Document Setup > General: effects rendered from now on that
     /// spread past the edges grow the bitmap first.
     pub fn set_auto_inflate_bitmaps(&mut self, on: bool) {
         let mut metadata = self.doc().metadata.clone();
@@ -649,7 +649,7 @@ impl crate::app::App {
         fn walk(s: &tracedraw_core::Shape, dpi: f64, out: &mut Vec<tracedraw_core::Shape>) {
             if let Some(fx) = &s.raster_fx {
                 // Made from an earlier state, or at another resolution than
-                // the drawing's (it changed in Document Properties).
+                // the drawing's (it changed in Document Info).
                 let pixels = f64::from(fx.width_px) * f64::from(fx.height_px);
                 if fx.source != s.raster_source()
                     || (!fx.png.is_empty()

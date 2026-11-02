@@ -14,9 +14,12 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
 /// The project's latest release, as GitHub describes it.
-pub const LATEST_URL: &str = "https://api.github.com/repos/igtoth/tracedraw/releases/latest";
+pub const LATEST_URL: &str = "https://api.github.com/repos/tracedraw/tracedraw/releases/latest";
 /// The release list, for when no download fits this system.
-pub const RELEASES_PAGE: &str = "https://github.com/igtoth/tracedraw/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/tracedraw/tracedraw/releases";
+/// TraceDraw's page in the Microsoft Store (the browser version offers it
+/// on Windows).
+pub const MICROSOFT_STORE_PAGE: &str = "https://apps.microsoft.com/detail/9P50L12VHF33";
 /// TraceDraw's page in the Microsoft Store app, which Help > Updates opens
 /// in a copy installed from the Store.
 #[cfg(not(target_os = "android"))]
@@ -538,14 +541,9 @@ impl Installer {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
-    use ureq::tls::{RootCerts, TlsConfig};
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
+        .tls_config(crate::net::tls_config())
         .build()
         .into();
     // Redirects (GitHub sends downloads to its file host) are followed
@@ -584,14 +582,9 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch() -> Result<String, String> {
-    use ureq::tls::{RootCerts, TlsConfig};
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
+        .tls_config(crate::net::tls_config())
         .build()
         .into();
     let mut resp = agent
@@ -619,7 +612,7 @@ mod tests {
     /// version moved to 0.5.0. Each URL ends in the file's name.
     const SAMPLE: &str = r#"{
         "tag_name": "v0.5.0",
-        "html_url": "https://github.com/igtoth/tracedraw/releases/tag/v0.5.0",
+        "html_url": "https://github.com/tracedraw/tracedraw/releases/tag/v0.5.0",
         "prerelease": false,
         "draft": false,
         "assets": [

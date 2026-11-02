@@ -34,6 +34,11 @@ whatever tool is active.
 - 3-point rectangle and 3-point ellipse: Ctrl while dragging the base
   keeps it to steps of the constrain angle from its start (#934,
   `pick_drag_tests::ctrl_keeps_the_three_point_base_to_the_constrain_angle`).
+  The rectangle takes the dragged base as one of its sides and the third
+  click as its height. The ellipse takes the base as its centre line (an
+  axis, from end to end) and grows from it to the third click on both
+  sides alike, so the click sets half its other axis (#1511,
+  `pick_drag_tests::a_three_point_ellipse_grows_from_its_centre_line_to_both_sides`).
 
 ## Rectangle (F6)
 

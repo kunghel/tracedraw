@@ -1247,9 +1247,55 @@ impl App {
                 return;
             }
         }
-        // Add a node in the middle of the segment ending at each selected node.
-        self.for_each_selected_node("Add Nodes", |p, i| nodes::add_node(p, i, 0.5));
-        self.node_selection.clear();
+        // Add a node in the middle of the segment ending at each selected
+        // node. The nodes stay chosen with the new ones, so the next press
+        // halves every one of those segments again (#1326).
+        let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
+        for (id, i) in self.node_selection.clone() {
+            by_shape.entry(id).or_default().push(i);
+        }
+        let mut cmds = Vec::new();
+        let mut chosen = Vec::new();
+        for (id, mut idxs) in by_shape {
+            let Some((mut path, closed, _)) = self.path_of(id) else {
+                chosen.extend(idxs.into_iter().map(|i| (id, i)));
+                continue;
+            };
+            path = nodes::normalize(&path);
+            idxs.sort_unstable();
+            idxs.dedup();
+            // The segments ending at the nodes (the closing one for the
+            // start of a closed curve), the last first: a node added moves
+            // those after it on.
+            let mut segments: Vec<usize> = idxs
+                .iter()
+                .filter_map(|i| nodes::segment_into(&path, *i))
+                .collect();
+            segments.sort_unstable_by(|a, b| b.cmp(a));
+            segments.dedup();
+            let mut picked = idxs;
+            for k in segments {
+                let before = path.elements().len();
+                path = nodes::add_node(&path, k, 0.5);
+                if path.elements().len() == before + 1 {
+                    for p in picked.iter_mut().filter(|p| **p >= k) {
+                        *p += 1;
+                    }
+                    // The new node takes the segment's place.
+                    picked.push(k);
+                }
+            }
+            picked.sort_unstable();
+            chosen.extend(picked.into_iter().map(|i| (id, i)));
+            cmds.push(Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path { path, closed },
+            });
+        }
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Add Nodes", &cmds);
+        }
+        self.node_selection = chosen;
     }
 
     /// Make the chosen nodes `ty`: their handles are aligned (and of equal
@@ -1883,6 +1929,62 @@ mod bitmap_node_tests {
             let b = tracedraw_core::geometry::Shape::bounding_box(&frame.page_path());
             assert!((b.x0 - left).abs() < 0.1, "{op:?}: {b:?}");
         }
+    }
+
+    /// To Curve and To Line on the start node of a closed curve act on its
+    /// closing segment, the segment ending at that node, as the property
+    /// bar's buttons do on any other node (#1618).
+    #[test]
+    fn to_curve_takes_the_closing_segment_through_the_start_node() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.convert_to_curves();
+        let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            other => panic!("not a curve: {other:?}"),
+        };
+        let curves = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::CurveTo(..)))
+                .count()
+        };
+        let before = path_of(&app);
+        assert_eq!(curves(&before), 0);
+        let start = match before.elements()[0] {
+            PathEl::MoveTo(p) => p,
+            _ => Point::ZERO,
+        };
+        app.node_selection = vec![(id, 0)];
+        app.selected_segments_to_curve();
+        let after = path_of(&app);
+        assert_eq!(curves(&after), 1, "{after:?}");
+        // The closing segment is the curve: it ends on the start node, and
+        // the curve keeps its four nodes.
+        assert!(after
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::CurveTo(_, _, p) if (*p - start).hypot() < 1e-9)));
+        assert_eq!(nodes::nodes(&after).len(), 4);
+        app.selected_segments_to_line();
+        assert_eq!(curves(&path_of(&app)), 0);
+        // The closing segment clicked (the Shape tool chooses the element
+        // drawing it) converts as well.
+        let z = path_of(&app)
+            .elements()
+            .iter()
+            .position(|e| matches!(e, PathEl::ClosePath))
+            .expect("closed");
+        app.node_selection = vec![(id, z)];
+        app.selected_segments_to_curve();
+        assert_eq!(curves(&path_of(&app)), 1);
     }
 
     #[test]

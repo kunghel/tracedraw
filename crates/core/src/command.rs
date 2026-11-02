@@ -814,7 +814,24 @@ impl Command {
                 }
             }
             Command::SetShapeKind { shape, kind } => {
+                let parent = doc.parent_transform(*shape).unwrap_or(Affine::IDENTITY);
                 let s = any_mut(doc, *shape)?;
+                // A new outline of the same object (nodes moved, an area
+                // cropped off): its gradient fill and transparency stay
+                // where they lie on the page (#1491). Text, groups,
+                // tables and symbols place their paint their own way.
+                let outline = |k: &ShapeKind| {
+                    !matches!(
+                        k,
+                        ShapeKind::Text { .. }
+                            | ShapeKind::Group { .. }
+                            | ShapeKind::Table(_)
+                            | ShapeKind::SymbolInstance { .. }
+                    )
+                };
+                let keep = outline(&s.kind) && outline(kind);
+                let before =
+                    keep.then(|| crate::geometry::Shape::bounding_box(&(parent * s.page_path())));
                 // Chosen node types follow node indices: a curve that
                 // gains or loses nodes drops them.
                 if !s.node_types.is_empty() && node_count(&s.kind) != node_count(kind) {
@@ -823,17 +840,26 @@ impl Command {
                 // A B-spline given any other outline is an ordinary curve.
                 s.spline = None;
                 s.kind = kind.clone();
+                if let Some(before) = before {
+                    let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
+                    s.keep_paint_in_place(before, after);
+                }
             }
             Command::SetSpline { shape, points } => {
                 if points.len() < 2 || points.iter().any(|p| !p.is_finite()) {
                     return Err(Error::BadSpline);
                 }
+                let parent = doc.parent_transform(*shape).unwrap_or(Affine::IDENTITY);
                 let s = any_mut(doc, *shape)?;
                 let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
+                let before = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
                 s.kind = ShapeKind::Path {
                     path: crate::geometry::bspline_path(points, closed),
                     closed,
                 };
+                // Its gradients stay in place, as for any new outline.
+                let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
+                s.keep_paint_in_place(before, after);
                 s.node_types.clear();
                 s.spline = Some(points.clone());
             }
@@ -1086,8 +1112,16 @@ impl Command {
             Command::BreakApart { shape } => {
                 let (layer_id, idx) = doc.locate(*shape)?;
                 let s = doc.shape(*shape)?.1.clone();
-                let ShapeKind::Path { path, closed } = &s.kind else {
-                    return Ok(());
+                // A clip frame breaks apart through its frame: each part
+                // of the frame becomes a clip frame holding the contents
+                // (#1607).
+                let (path, closed, clip) = match &s.kind {
+                    ShapeKind::Path { path, closed } => (path, closed, None),
+                    ShapeKind::ClipFrame { frame, contents } => match &frame.kind {
+                        ShapeKind::Path { path, closed } => (path, closed, Some((frame, contents))),
+                        _ => return Ok(()),
+                    },
+                    _ => return Ok(()),
                 };
                 let mut parts: Vec<BezPath> = Vec::new();
                 let mut cur = BezPath::new();
@@ -1105,24 +1139,50 @@ impl Command {
                 if parts.len() < 2 {
                     return Ok(());
                 }
+                doc.layer_mut(layer_id)?.shapes.remove(idx);
+                let pieces: Vec<Shape> = match clip {
+                    None => {
+                        let n = parts.len();
+                        let mut ids: Vec<ShapeId> = (1..n).map(|_| doc.ids_mut().shape()).collect();
+                        ids.insert(0, *shape);
+                        parts
+                            .into_iter()
+                            .zip(ids)
+                            .map(|(p, id)| {
+                                let mut piece = Shape::new(
+                                    id,
+                                    ShapeKind::Path {
+                                        path: p,
+                                        closed: *closed,
+                                    },
+                                );
+                                piece.transform = s.transform;
+                                piece.fill = s.fill.clone();
+                                piece.stroke = s.stroke.clone();
+                                piece.opacity = s.opacity;
+                                piece
+                            })
+                            .collect()
+                    }
+                    Some((frame, contents)) => {
+                        let frames: Vec<Shape> = parts
+                            .into_iter()
+                            .map(|p| {
+                                let mut f = (**frame).clone();
+                                f.kind = ShapeKind::Path {
+                                    path: p,
+                                    closed: *closed,
+                                };
+                                f.node_types.clear();
+                                f.spline = None;
+                                f
+                            })
+                            .collect();
+                        clip_frame_pieces(doc, &s, contents, frames)
+                    }
+                };
                 let layer = doc.layer_mut(layer_id)?;
-                layer.shapes.remove(idx);
-                let n = parts.len();
-                let mut ids: Vec<ShapeId> = (1..n).map(|_| doc.ids_mut().shape()).collect();
-                ids.insert(0, *shape);
-                let layer = doc.layer_mut(layer_id)?;
-                for (k, (p, id)) in parts.into_iter().zip(ids).enumerate() {
-                    let mut piece = Shape::new(
-                        id,
-                        ShapeKind::Path {
-                            path: p,
-                            closed: *closed,
-                        },
-                    );
-                    piece.transform = s.transform;
-                    piece.fill = s.fill.clone();
-                    piece.stroke = s.stroke.clone();
-                    piece.opacity = s.opacity;
+                for (k, piece) in pieces.into_iter().enumerate() {
                     layer.shapes.insert(idx + k, piece);
                 }
             }
@@ -1173,11 +1233,19 @@ impl Command {
                 let s = doc.layer_mut(lid)?.shapes.remove(i);
                 match s.kind {
                     ShapeKind::ClipFrame { frame, contents } => {
+                        // The frame and the contents sit in the clip
+                        // frame's own space: a clip frame moved, turned or
+                        // resized since it was made carries that in its
+                        // own transform, which goes onto each of them so
+                        // they stay where they show (#1562).
+                        let carried = s.transform;
                         let layer = doc.layer_mut(lid)?;
                         let mut f = *frame;
                         f.id = *clip;
+                        f.transform_by(carried);
                         layer.shapes.insert(i, f);
-                        for (k, c) in contents.into_iter().enumerate() {
+                        for (k, mut c) in contents.into_iter().enumerate() {
+                            c.transform_by(carried);
                             layer.shapes.insert(i + 1 + k, c);
                         }
                     }
@@ -1260,28 +1328,61 @@ impl Command {
             Command::SetGuides { page, guides } => doc.page_mut(*page)?.guides = guides.clone(),
             Command::Ungroup { group } => {
                 let (layer_id, idx) = doc.locate(*group)?;
-                let layer = doc.layer_mut(layer_id)?;
-                let g = layer.shapes.remove(idx);
+                let g = doc.layer_mut(layer_id)?.shapes.remove(idx);
                 // The group's perspective stays on each of its objects, which
                 // are drawn as they were (#674); its other effects go.
                 let group_path = g.local_path();
                 let group_effects = g.effects.clone();
-                match g.kind {
-                    ShapeKind::Group { children } => {
-                        for (k, mut c) in children.into_iter().enumerate() {
+                let pieces: Vec<Shape> = match g.kind {
+                    ShapeKind::Group { children } => children
+                        .into_iter()
+                        .map(|mut c| {
                             crate::live::take_group_perspectives(
                                 &mut c,
                                 &group_path,
                                 &group_effects,
                             );
                             c.absorb(g.transform);
-                            layer.shapes.insert(idx + k, c);
-                        }
+                            // The group's uniform transparency stays on
+                            // each of its objects.
+                            c.absorb_opacity(g.opacity);
+                            c
+                        })
+                        .collect(),
+                    // A clip frame whose frame is a group comes apart into
+                    // the group's objects, each a clip frame holding the
+                    // contents, where it shows (#1605).
+                    ShapeKind::ClipFrame { frame, contents }
+                        if matches!(frame.kind, ShapeKind::Group { .. }) =>
+                    {
+                        let frame = *frame;
+                        let (frame_transform, frame_opacity) = (frame.transform, frame.opacity);
+                        let children = match frame.kind {
+                            ShapeKind::Group { children } => children,
+                            _ => Vec::new(),
+                        };
+                        let frames: Vec<Shape> = children
+                            .into_iter()
+                            .map(|mut c| {
+                                c.absorb(frame_transform);
+                                c.absorb_opacity(frame_opacity);
+                                c
+                            })
+                            .collect();
+                        let clip = Shape {
+                            kind: ShapeKind::Group {
+                                children: Vec::new(),
+                            },
+                            ..g
+                        };
+                        clip_frame_pieces(doc, &clip, &contents, frames)
                     }
-                    other => {
-                        // Not a group: put it back untouched.
-                        layer.shapes.insert(idx, Shape { kind: other, ..g });
-                    }
+                    // Not a group: put it back untouched.
+                    other => vec![Shape { kind: other, ..g }],
+                };
+                let layer = doc.layer_mut(layer_id)?;
+                for (k, piece) in pieces.into_iter().enumerate() {
+                    layer.shapes.insert(idx + k, piece);
                 }
             }
         }
@@ -1335,6 +1436,49 @@ fn remove_shapes(shapes: &mut Vec<Shape>, ids: &[ShapeId]) {
 /// frames' frames and contents (a page copy whose clip frames kept their
 /// ids had two objects of one id, and a change to the copy went to the
 /// original, #377).
+/// The clip frame `clip` taken apart into one clip frame per frame in
+/// `frames` (each in the clip frame's space, as its frame was), every one
+/// holding `contents`, so the picture stays as it was: the first keeps
+/// the clip frame's id (and its frame the frame's), the others get ids of
+/// their own and copies of the contents with fresh ids (#1605, #1607).
+fn clip_frame_pieces(
+    doc: &mut Document,
+    clip: &Shape,
+    contents: &[Shape],
+    frames: Vec<Shape>,
+) -> Vec<Shape> {
+    let frame_id = match &clip.kind {
+        ShapeKind::ClipFrame { frame, .. } => Some(frame.id),
+        _ => None,
+    };
+    frames
+        .into_iter()
+        .enumerate()
+        .map(|(k, mut frame)| {
+            let mut piece = clip.clone();
+            let contents = if k == 0 {
+                if let Some(id) = frame_id {
+                    frame.id = id;
+                }
+                contents.to_vec()
+            } else {
+                piece.id = doc.ids_mut().shape();
+                piece.uid = None;
+                frame = frame.with_fresh_ids(&mut || doc.ids_mut().shape());
+                contents
+                    .iter()
+                    .map(|c| c.with_fresh_ids(&mut || doc.ids_mut().shape()))
+                    .collect()
+            };
+            piece.kind = ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents,
+            };
+            piece
+        })
+        .collect()
+}
+
 fn reid_shape(s: &Shape, doc: &mut Document) -> Shape {
     let mut c = s.clone();
     c.id = doc.ids_mut().shape();
@@ -1996,6 +2140,67 @@ mod tests {
     }
     use crate::geometry::Rect;
 
+    /// #1491: nodes moved so the object loses its left half: its gradient
+    /// fill and transparency stay where they were on the page (cut), not
+    /// squeezed into the new box; undo puts the outline back.
+    #[test]
+    fn a_new_outline_keeps_gradients_in_place() {
+        use crate::geometry::Point;
+        use crate::style::{Fountain, FountainKind};
+        let mut eng = crate::Engine::new(Document::new("t", Size::new(200.0, 200.0)));
+        let layer = eng.document().pages[0].layers[0].id;
+        let id = eng.new_shape_id();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 100.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let ramp = Fill::Fountain(Fountain::two(
+            FountainKind::Linear,
+            Color::BLACK,
+            Color::WHITE,
+            0.0,
+        ));
+        s.fill = ramp.clone();
+        s.effects.push(crate::live::Effect::Transparency {
+            mask: ramp,
+            merge: Default::default(),
+            target: 2,
+        });
+        eng.run(&Command::AddShape { layer, shape: s }).unwrap();
+        let mut path = BezPath::new();
+        path.move_to((50.0, 0.0));
+        path.line_to((100.0, 0.0));
+        path.line_to((100.0, 50.0));
+        path.line_to((50.0, 50.0));
+        path.close_path();
+        eng.run(&Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Path { path, closed: true },
+        })
+        .unwrap();
+        let s = eng.document().find_shape(id).unwrap().clone();
+        let b = crate::geometry::Shape::bounding_box(&s.page_path());
+        assert!((b.x0 - 50.0).abs() < 1e-9);
+        // Three quarters of the way along the ramp at x = 75, as before.
+        let at = |f: &Fill| match f {
+            Fill::Fountain(f) => f.param_at(b, Point::new(75.0, 25.0)).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        assert!((at(&s.fill) - 0.75).abs() < 1e-9, "{}", at(&s.fill));
+        let Some(crate::live::Effect::Transparency { mask, .. }) = s.effects.first() else {
+            panic!("a transparency");
+        };
+        assert!((at(mask) - 0.75).abs() < 1e-9, "{}", at(mask));
+        eng.undo().unwrap();
+        let s = eng.document().find_shape(id).unwrap();
+        assert!(matches!(s.kind, ShapeKind::Rect { .. }));
+        assert!(matches!(&s.fill, Fill::Fountain(f) if f.handles.is_none()));
+    }
+
     fn rect(doc: &mut Document, x: f64) -> Shape {
         let id = doc.ids_mut().shape();
         Shape::new(
@@ -2281,6 +2486,39 @@ mod tests {
     }
 
     #[test]
+    fn ungrouping_keeps_the_groups_uniform_transparency_on_each_object() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut a = rect(&mut doc, 0.0);
+        a.opacity = 0.5;
+        let b = rect(&mut doc, 20.0);
+        let (ia, ib) = (a.id, b.id);
+        Command::AddShape { layer, shape: a }
+            .apply(&mut doc)
+            .unwrap();
+        Command::AddShape { layer, shape: b }
+            .apply(&mut doc)
+            .unwrap();
+        Command::Group {
+            shapes: vec![ia, ib],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let gid = doc.layer(layer).unwrap().shapes[0].id;
+        Command::SetOpacity {
+            shapes: vec![gid],
+            opacity: 0.4,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        Command::Ungroup { group: gid }.apply(&mut doc).unwrap();
+        let shapes = &doc.layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 2);
+        assert!((shapes[0].opacity - 0.2).abs() < 1e-9);
+        assert!((shapes[1].opacity - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
     fn grouping_objects_of_several_layers_keeps_their_drawing_order() {
         let mut doc = Document::default();
         let page = doc.pages[0].id;
@@ -2471,6 +2709,201 @@ mod tests {
             .unwrap();
         assert_eq!(doc.layer(layer).unwrap().shapes.len(), 2);
         assert!(doc.shape(ia).is_ok());
+    }
+
+    /// A clip frame moved (turned, resized) after it was made carries
+    /// that in its own transform; Extract Contents and Edit Contents take
+    /// it apart where it shows, not where it was made (#1562).
+    #[test]
+    fn extracting_a_moved_clip_frame_keeps_the_frame_and_contents_in_place() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let a = rect(&mut doc, 0.0);
+        let b = rect(&mut doc, 5.0);
+        let (ia, ib) = (a.id, b.id);
+        Command::AddShape { layer, shape: a }
+            .apply(&mut doc)
+            .unwrap();
+        Command::AddShape { layer, shape: b }
+            .apply(&mut doc)
+            .unwrap();
+        Command::PlaceInside {
+            contents: vec![ia],
+            frame: ib,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let moved = Affine::translate((40.0, -25.0)) * Affine::scale(2.0);
+        Command::TransformShapes {
+            shapes: vec![ib],
+            transform: moved,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let clip_box = doc.find_shape(ib).unwrap().bounds();
+        let content_box = crate::geometry::transformed_bounds(
+            &crate::geometry::rect_path(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0),
+            moved,
+        );
+        Command::ExtractContents { clip: ib }
+            .apply(&mut doc)
+            .unwrap();
+        let frame_box = doc.find_shape(ib).unwrap().bounds();
+        let a_box = doc.find_shape(ia).unwrap().bounds();
+        let same = |p: Rect, q: Rect| {
+            (p.x0 - q.x0).abs() < 1e-9
+                && (p.y0 - q.y0).abs() < 1e-9
+                && (p.x1 - q.x1).abs() < 1e-9
+                && (p.y1 - q.y1).abs() < 1e-9
+        };
+        assert!(same(frame_box, clip_box), "{frame_box:?} vs {clip_box:?}");
+        assert!(same(a_box, content_box), "{a_box:?} vs {content_box:?}");
+        // Put back, the clip frame is where it was, and undo takes it
+        // all back as it was.
+        Command::PlaceInside {
+            contents: vec![ia],
+            frame: ib,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(same(doc.find_shape(ib).unwrap().bounds(), clip_box));
+    }
+
+    /// Ungroup on a clip frame whose frame is a group: the clip frame
+    /// comes apart into one clip frame per object of the group, each
+    /// holding the contents where they show, the first keeping the clip
+    /// frame's id and the others getting their own (#1605).
+    #[test]
+    fn a_clip_frame_of_a_group_ungroups_into_clip_frames_of_its_objects() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let a = rect(&mut doc, 0.0);
+        let b = rect(&mut doc, 20.0);
+        let c = rect(&mut doc, 5.0);
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        for shape in [a, b, c] {
+            Command::AddShape { layer, shape }.apply(&mut doc).unwrap();
+        }
+        Command::Group {
+            shapes: vec![ia, ib],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let group = doc.top_level_of(ia).unwrap();
+        Command::PlaceInside {
+            contents: vec![ic],
+            frame: group,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let moved = Affine::translate((3.0, 4.0));
+        Command::TransformShapes {
+            shapes: vec![group],
+            transform: moved,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(doc.find_shape(group).unwrap().is_clip_frame_of_group());
+        Command::Ungroup { group }.apply(&mut doc).unwrap();
+        let shapes = &doc.layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 2, "{shapes:#?}");
+        assert_eq!(shapes[0].id, group, "the first keeps the id");
+        assert_ne!(shapes[1].id, group);
+        let mut content_ids = Vec::new();
+        for (piece, x) in shapes.iter().zip([0.0, 20.0]) {
+            let ShapeKind::ClipFrame { frame, contents } = &piece.kind else {
+                panic!("not a clip frame: {:?}", piece.kind);
+            };
+            assert!(matches!(frame.kind, ShapeKind::Rect { .. }));
+            let fb = crate::geometry::Shape::bounding_box(&(piece.transform * frame.page_path()));
+            assert!(
+                (fb.x0 - (x + 3.0)).abs() < 1e-9 && (fb.y0 - 4.0).abs() < 1e-9,
+                "{fb:?}"
+            );
+            assert_eq!(contents.len(), 1);
+            assert!(matches!(contents[0].kind, ShapeKind::Rect { .. }));
+            content_ids.push(contents[0].id);
+        }
+        assert_eq!(content_ids[0], ic, "the first keeps its contents");
+        assert_ne!(
+            content_ids[0], content_ids[1],
+            "the copy has ids of its own"
+        );
+        assert!(!doc.find_shape(group).unwrap().is_clip_frame_of_group());
+    }
+
+    /// Break Apart on a clip frame whose frame is a curve of several
+    /// parts: each part becomes a clip frame holding the contents, the
+    /// first keeping the clip frame's id and its frame's (#1607).
+    #[test]
+    fn a_clip_frame_of_a_combined_curve_breaks_into_clip_frames_of_its_parts() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let a = rect(&mut doc, 0.0);
+        let b = rect(&mut doc, 20.0);
+        let c = rect(&mut doc, 5.0);
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        for shape in [a, b, c] {
+            Command::AddShape { layer, shape }.apply(&mut doc).unwrap();
+        }
+        Command::Combine {
+            shapes: vec![ia, ib],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let combined = doc.layer(layer).unwrap().shapes[0].id;
+        Command::PlaceInside {
+            contents: vec![ic],
+            frame: combined,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let clip = doc.find_shape(combined).unwrap().clone();
+        assert!(clip.breaks_into_parts());
+        let ShapeKind::ClipFrame { frame, .. } = &clip.kind else {
+            panic!("not a clip frame");
+        };
+        let frame_id = frame.id;
+        Command::BreakApart { shape: combined }
+            .apply(&mut doc)
+            .unwrap();
+        let shapes = &doc.layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 2, "{shapes:#?}");
+        assert_eq!(shapes[0].id, combined);
+        let mut xs = Vec::new();
+        for piece in shapes {
+            let ShapeKind::ClipFrame { frame, contents } = &piece.kind else {
+                panic!("not a clip frame: {:?}", piece.kind);
+            };
+            let ShapeKind::Path { path, closed } = &frame.kind else {
+                panic!("not a curve: {:?}", frame.kind);
+            };
+            assert!(*closed);
+            let parts = path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count();
+            assert_eq!(parts, 1);
+            xs.push(frame.bounds().x0);
+            assert_eq!(contents.len(), 1);
+            assert!(!piece.breaks_into_parts());
+        }
+        xs.sort_by(|a, b| a.total_cmp(b));
+        assert!(
+            (xs[0]).abs() < 1e-9 && (xs[1] - 20.0).abs() < 1e-9,
+            "{xs:?}"
+        );
+        let ShapeKind::ClipFrame { frame, .. } = &shapes[0].kind else {
+            panic!("not a clip frame");
+        };
+        assert_eq!(frame.id, frame_id, "the first frame keeps its id");
+        // A clip frame whose frame is one part has nothing to break.
+        let n = doc.layer(layer).unwrap().shapes.len();
+        Command::BreakApart { shape: combined }
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(doc.layer(layer).unwrap().shapes.len(), n);
     }
 
     /// The frame inside a clip frame has an id of its own, so it can be

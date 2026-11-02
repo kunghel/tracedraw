@@ -5,12 +5,12 @@
 | Click | select the topmost object under the pointer (its fill counts only when filled; otherwise its outline within 3 px; text, groups, tables, bitmaps, clip frames and symbols count anywhere inside their bounds); an object with live effects counts where it is drawn: its warped outline and the objects its effects add, and its selection box encloses them |
 | Shift+click | add or remove from the selection |
 | Ctrl+click | on a clip frame lying on a layer: Edit Contents, the contents taken out of the frame and the one under the pointer selected (all of them off the contents), see `clip-frame.md` (#982); otherwise the object inside a group, one level further in at each click (the first level inside the topmost group, then the group or object inside that, down to the innermost object); its handles are round, and moving, scaling, colouring or deleting it changes that object only (a group left empty goes); once chosen it is dragged on its own from anywhere on it without Ctrl, while a press on another part of the group takes the whole group (#849, `pick_drag_tests::object_chosen_in_a_group_drags_alone_from_anywhere_on_it`); Ctrl+Shift+click adds one more; a group and an object inside it are never selected together |
-| Alt+click | the object beneath the selected one under the pointer, round to the top again after the bottom one (dig); with nothing there selected, the topmost; Ctrl+Alt digs through the objects inside groups and clip frames (a clip frame comes after its contents); Shift+Alt adds it |
+| Alt+click | the object beneath the selected one under the pointer, round to the top again after the bottom one (dig); with nothing there selected, the object beneath the topmost one, so one Alt+click on the object in front takes the one hidden behind it (the topmost itself when it is alone there; #1350, `pick_drag_tests::alt_click_takes_the_object_behind_the_front_one_at_once`); Ctrl+Alt digs through the objects inside groups and clip frames (a clip frame comes after its contents); Shift+Alt adds it |
 | Click on a selected object (any of a selection), or on the centre mark | toggle the rotate/skew handles: curved arrows at the corners, straight double arrows at the sides, the centre of rotation in the middle |
 | Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts); with Alt held at the press the frame starts also over an object that is not selected (a background under the objects; without Alt that press moves the object; #1341, #1350, `pick_drag_tests::alt_drag_selects_also_when_it_starts_over_an_object`); Shift keeps the selection and turns over the objects the frame takes (selected ones are deselected, the others added; the Freehand Pick lasso too, #401); Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
 | Drag the centre mark (the "x") | moves the selection, also where the mark lies on nothing (an outline-only ring) |
-| Space | from another tool, picks the Pick tool; on the Pick tool, goes back to the tool used before it (the Pick tool's key, whatever it is bound to in Options, works the same way); ignored during a drag (it drops a copy there) and while text is edited |
-| Drag object | move with the pointer (snapped); Ctrl keeps the move horizontal or vertical, whichever is longer; Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached); let go over the document palette to add the objects' colours to it instead of moving them |
+| Space | from another tool, picks the Pick tool; on the Pick tool, goes back to the tool used before it (the Pick tool's key, whatever it is bound to in Options, works the same way); ignored during a drag (it drops a copy there) and while text is edited. A tool key held down counts once: the presses the keyboard repeats while it is held pick nothing (#1502, `pick_drag_tests::holding_space_drops_one_copy_and_picks_once`) |
+| Drag object | move with the pointer (snapped); Ctrl keeps the move horizontal or vertical, whichever is longer; Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached), one copy a press, however long Space is held; let go over the document palette to add the objects' colours to it instead of moving them |
 | Corner handle | scale proportionally from the opposite corner, by where the pointer falls along the box's diagonal: `s = (|sx| w² + |sy| h²) / (w² + h²)` with `sx`, `sy` the two sides' own ratios (each keeps its sign, for mirroring), so the corner follows the pointer and a wide, low box such as a line of text does not grow at the short side's pace (#383); the handle follows the pointer from the frame the drag starts, not in a jump of the few pixels before a press becomes a drag; Shift from the centre; Ctrl in whole steps of 100 % (crossing the other side gives the mirror image at the same size); Alt scales freely |
 | Side handle | stretch one axis from the opposite side (across it: mirrored); Shift from the centre; Ctrl in steps of 100 % |
 | Snapping while scaling | with snapping on, the dragged corner or side handle snaps to other objects' points and edges, guidelines, the grid and the page (never to the selection's own points), and the snap mark shows where |
@@ -21,7 +21,7 @@
 | Right click during a move, scale, rotation or skew | the original stays and a copy takes the change (the copy becomes the selection); a second right click takes it back; the status bar says which, and the pointer carries a plus in a square (beside the box of a move, at the lower right of the scale, turn and slant pointers). The transform runs until the left button goes up, whichever button is released first or both in one frame, and wherever it is dropped (bare canvas, another object): the release is never taken for a click there, a held second right press does not start it again, and a palette swatch under the pointer does not take the right click as an outline colour (#528, `pick_drag_tests::a_right_click_copy_survives_any_release_order`, `a_right_click_copy_dropped_on_another_object_copies_the_dragged_one`, `a_right_click_during_a_ctrl_mirror_leaves_a_mirrored_copy` (Ctrl and a side handle dragged across: a mirrored copy), `a_right_click_during_a_turn_or_a_slant_leaves_the_original`, `a_held_second_right_press_takes_the_copy_back_and_the_move_goes_on`); in the browser too, where the left button let go while the right one is held sends no pointer release (#1334, `a_left_release_while_the_right_button_is_held_ends_the_drag`) |
 | Right click during a marquee or a Freehand Pick lasso | ignored: the frame goes on with the pointer while the left button is held and selects when it goes up, whichever button is released first or both in one frame; no context menu or drop menu opens (#1015, `pick_drag_tests::a_right_press_during_a_selection_box_does_not_leave_it_frozen`) |
 | Esc during a move, scale, rotation or skew | cancels it; nothing changes |
-| Arrows | nudge by the nudge distance (2.54 mm default); Shift by the super nudge distance (5.08 mm), Ctrl by the micro nudge distance (0.254 mm); all three in Document Options > Rulers; with guidelines selected and no object, the guidelines move |
+| Arrows | nudge by the nudge distance (2.54 mm default); Shift by the super nudge distance (5.08 mm), Ctrl by the micro nudge distance (0.254 mm); all three in Document Setup > Rulers; with guidelines selected and no object, the guidelines move |
 | Tab / Shift+Tab | cycle selection in stacking order |
 | + (also on the numeric keypad) | duplicate the selection in place (no offset), the copies selected, one undo step |
 | Double-click | Shape tool on a curve; on text, the Text tool editing that text with the caret at the end |
@@ -123,15 +123,24 @@ edges, guidelines, the grid and the page (Ctrl turns in steps instead).
 ## Duplicate
 
 Edit > Duplicate (Ctrl+D) copies the selection at the duplicate offset
-(Options > Document > General, 6.35 mm right and up at first) and
-selects the copies. While the copies stay the selection, the next
+(Options > Document > General; none at first, so the copy lies on the
+original ready to be moved, scaled or turned; preferences that kept
+the old default of 6.35 mm get none once, #1494) and selects the
+copies. While the copies stay the selection, the next
 Duplicate repeats the step from each original to its copy: the offset
 if they were left alone, or the move, scale, turn or skew done to them
-since (smart duplicate, as in the reference program): duplicate a box,
+since (a smart duplicate): duplicate a box,
 move the copy 20 mm, and each next Duplicate is 20 mm further; scale the
-copy by 10 % and each next one is 10 % larger. With anything else
-selected it is the offset again (#559,
-`app::tests::duplicate_repeats_what_was_done_to_the_copy`).
+copy by 10 % and each next one is 10 % larger; turn it 9 degrees and
+scale it and each next one turns and grows as much again. Deselecting
+the copies (a click elsewhere, Esc, another object picked) ends it: the
+next Duplicate is the offset again, also when the copies are picked
+again. Guidelines duplicate the same way: a copy of selected guidelines
+moved or turned (about the point where it crosses its original) is
+moved or turned as much again by each next Duplicate (#559, #1494,
+`app::tests::duplicate_repeats_what_was_done_to_the_copy`,
+`app::tests::smart_duplicate_repeats_a_turn_and_scale_until_deselected`,
+`guides::tests::duplicating_guidelines_repeats_their_move_and_turn`).
 
 ## Snap marks over the selection
 
@@ -196,7 +205,7 @@ W, H, scale, angle, mirror buttons, the outline width, To Front, To Back
 and Convert to Curves. Text selected on its own adds the text fields of the
 Text tool after them. Bitmaps selected on their own replace Convert to
 Curves with the bitmap commands: Edit Bitmap, Crop Bitmap (switches to the
-Crop tool), Trace Bitmap (Quick Trace and the centreline and outline
+Crop tool), Trace Bitmap (Automatic trace and the centreline and outline
 presets), Straighten Image and Resample.
 
 With two or more objects selected, a group, or a curve of several parts,
@@ -204,7 +213,7 @@ the bar ends with the arranging buttons: Group (Ctrl+G), Ungroup
 (Ctrl+U) and Ungroup All (with a group in the selection), Combine
 (Ctrl+L) and Break Apart (Ctrl+K, with a curve of several parts), the
 shaping operations Weld, Trim, Intersect, Simplify, Front Minus Back,
-Back Minus Front and Boundary (they act as in Object > Shaping, see
+Back Minus Front and Boundary (they act as in Object > Combine Shapes, see
 `shaping.md`; Boundary works on one object too), and a button that opens the Align and
 Distribute panel. Their pictures show a square behind a
 circle: the result filled, an object that stays outlined, one that goes

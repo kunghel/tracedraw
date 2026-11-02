@@ -164,7 +164,7 @@ the symbols too); Convert spot colors too (off).
   engine sampled on a 17-point grid per channel, the pixels read by
   trilinear interpolation), so it shows the colours the inks can make,
   in the same undo step; to RGB the mode alone changes and the pixels
-  stay. Bitmaps > Mode > RGB Color and CMYK Color do the same for the
+  stay. Image > Mode > RGB Color and CMYK Color do the same for the
   selected bitmaps and tick the mode they are in; the status line names
   it ("Bitmap 600 x 400 px (CMYK)"). A `.cdr` CMYK picture (colour
   model 3) opens in the CMYK mode; `.tdraw` files keep it. Saving `.cdr`

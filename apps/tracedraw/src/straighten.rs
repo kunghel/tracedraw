@@ -1,4 +1,4 @@
-//! Bitmaps > Straighten Image: lens distortion
+//! Image > Straighten Image: lens distortion
 //! correction (barrel or pincushion), a rotation of -15 to 15 degrees,
 //! vertical and horizontal perspective, quarter turns, and cropping to
 //! the largest rectangle of the original proportions inside the result

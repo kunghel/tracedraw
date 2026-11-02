@@ -1,7 +1,7 @@
 # System requirements
 
 What TraceDraw needs to run, for the builds published on the
-[releases page](https://github.com/igtoth/tracedraw/releases). The
+[releases page](https://github.com/tracedraw/tracedraw/releases). The
 operating system, library and graphics lines come from the build
 settings, the packaging files and the release programs themselves. The
 memory, processor and disk lines are measured or estimated, and say so.
@@ -38,7 +38,7 @@ memory, processor and disk lines are measured or estimated, and say so.
   Rocky 10, or later.
   **Older distributions** (Ubuntu 20.04, Debian 11, RHEL 9 and its
   rebuilds, glibc 2.34 or older) cannot start the native programs; the
-  [browser version](https://igtoth.github.io/tracedraw/) runs there.
+  [browser version](https://tracedraw.github.io/tracedraw/) runs there.
   Other libraries are loaded when the program starts: `libxkbcommon`
   (and `libxkbcommon-x11` on X11), the system's OpenGL or EGL, and a
   Vulkan driver when there is one. A desktop that runs other graphical
@@ -95,4 +95,4 @@ estimates from them:
   room for autosaves of large documents and exports.
 
 Something here wrong for your computer? Send `tracedraw.log` in
-[an issue](https://github.com/igtoth/tracedraw/issues/new?template=bug_report.yml).
+[an issue](https://github.com/tracedraw/tracedraw/issues/new?template=bug_report.yml).

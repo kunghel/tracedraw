@@ -132,7 +132,7 @@ pub struct Settings {
     /// outline widths).
     #[serde(default)]
     pub custom_dashes: Vec<Vec<f64>>,
-    /// Page sizes saved in Document Options > Page Size, listed in every
+    /// Page sizes saved in Document Setup > Page Size, listed in every
     /// page size list after the favourites.
     #[serde(default)]
     pub page_sizes: Vec<PageSizePreset>,
@@ -146,7 +146,7 @@ pub struct Settings {
     #[serde(default = "default_outline_units")]
     pub text_units: String,
     /// Grid, ruler and guideline settings new drawings start with
-    /// (Document Options > Save as Default).
+    /// (Document Setup > Save as Default).
     #[serde(default)]
     pub document_defaults: DocumentDefaults,
     /// Options > Text > Autocorrect.
@@ -155,7 +155,7 @@ pub struct Settings {
     /// Options > Text > Spelling.
     #[serde(default)]
     pub spelling: SpellingPrefs,
-    /// Thesaurus file picked by the user (Text > Writing Tools > Thesaurus).
+    /// Thesaurus file picked by the user (Text > Proofing > Thesaurus).
     #[serde(default)]
     pub thesaurus_file: Option<PathBuf>,
     /// Options > General: show the Create a New Document dialog for File >
@@ -340,6 +340,20 @@ pub struct Settings {
     /// out (off: it opens the context menu).
     #[serde(default = "default_true")]
     pub zoom_right_click_out: bool,
+    /// Options > Tools > Zoom/Pan: zoom 100% is the real size at the
+    /// calibrated screen resolution (on, the default); off, it is 96 per
+    /// inch whatever the calibration.
+    #[serde(default = "default_true")]
+    pub zoom_relative_1to1: bool,
+    /// Options > Tools > Zoom/Pan: a wheel zoom brings the point under
+    /// the pointer to the middle of the view and moves the pointer there
+    /// (off by default: the point stays under the pointer).
+    #[serde(default)]
+    pub wheel_zoom_centers: bool,
+    /// Options > Tools > Zoom/Pan: a right click with the Pan tool zooms
+    /// out (off, the default: it opens the context menu).
+    #[serde(default)]
+    pub pan_right_click_out: bool,
     /// Options > Customization > Color Palette.
     #[serde(default)]
     pub palette: PalettePrefs,
@@ -358,7 +372,7 @@ pub struct Settings {
     /// File > Preflight: the checks to run and their thresholds.
     #[serde(default)]
     pub preflight: crate::preflight::PreflightPrefs,
-    /// File > Publish to PDF: the choices used last (never the passwords).
+    /// File > Export as PDF: the choices used last (never the passwords).
     #[serde(default)]
     pub publish_pdf: crate::ui::publish_pdf::PublishPrefs,
     /// What a fill or outline chosen with nothing selected changes.
@@ -415,6 +429,14 @@ pub struct Settings {
     /// The Objects docker's thumbnail size, interface points (16 to 96).
     #[serde(default = "default_object_thumb")]
     pub object_thumb_size: f32,
+    /// New master layers showing on all, odd or even pages are drawn in
+    /// front of the page's own layers (#1132, #1477).
+    #[serde(default)]
+    pub master_in_front: [bool; 3],
+    /// The Objects docker lists every page, not only the current one
+    /// (#1477).
+    #[serde(default = "default_true")]
+    pub objects_all_pages: bool,
     /// The font lists' sample size, in points.
     #[serde(default = "default_font_sample")]
     pub font_sample_px: f32,
@@ -497,8 +519,10 @@ fn default_path_tick() -> f64 {
 
 /// The dockers as they were left: the default column's dockers, in
 /// order, and the one in front (by their name keys, "docker.hints" ...);
-/// the other column's, its front and whether it was open; and the
-/// floating ones with their windows.
+/// the other column's, its front and whether it was open; the second
+/// column on each side (between the column at the window's edge and the
+/// drawing), its front and whether it was open; and the floating ones
+/// with their windows.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct DockerSetup {
@@ -507,6 +531,20 @@ pub struct DockerSetup {
     pub left: Vec<String>,
     pub left_front: String,
     pub left_shown: bool,
+    /// The second column on the default column's side.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inner: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub inner_front: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inner_shown: bool,
+    /// The second column on the other side.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_inner: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub left_inner_front: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub left_inner_shown: bool,
     pub floating: Vec<FloatingSetup>,
 }
 
@@ -558,7 +596,7 @@ fn default_desktop() -> [u8; 3] {
 }
 
 /// How many one-time upgrades `Settings::upgrade` knows.
-const UPGRADES: u32 = 4;
+const UPGRADES: u32 = 5;
 
 fn default_outline_units() -> String {
     "pt".into()
@@ -589,6 +627,17 @@ pub fn screen_ppi(s: &Settings) -> f32 {
 /// real size whatever the interface size.
 pub fn screen_points_per_inch(s: &Settings) -> f32 {
     screen_ppi(s) / crate::ui::ui_zoom(effective_ui_size(s))
+}
+
+/// Interface points per inch at zoom 100 %: the calibrated resolution, or
+/// 96 per inch when Options > Tools > Zoom/Pan > Zoom relative to 1:1 is
+/// off.
+pub fn zoom_points_per_inch(s: &Settings) -> f32 {
+    if s.zoom_relative_1to1 {
+        screen_points_per_inch(s)
+    } else {
+        96.0 / crate::ui::ui_zoom(effective_ui_size(s))
+    }
 }
 
 /// How much larger the Touch workspace draws the interface (bars,
@@ -1363,6 +1412,10 @@ pub struct SpellingPrefs {
     pub dictionary_folder: Option<PathBuf>,
     /// The dictionaries switched off, by name (`pt_BR`).
     pub disabled_dictionaries: Vec<String>,
+    /// The dictionaries downloaded (Options > Text > Spelling), by their
+    /// code in the collection (`pt`, `en-GB`): a browser fetches them
+    /// again at each visit, as it has no folder to keep them in (#1405).
+    pub downloaded_dictionaries: Vec<String>,
     /// Options > Text > Paragraph Text: the hyphenation pattern file used
     /// (`hyph_pt_BR`, found where the dictionaries are), empty for the
     /// built-in patterns.
@@ -1397,7 +1450,9 @@ impl Default for Settings {
             nudge_mm: 2.54,
             super_nudge_mm: default_super_nudge(),
             micro_nudge_mm: default_micro_nudge(),
-            duplicate_offset_mm: [6.35, 6.35],
+            // In place: the next Duplicate repeats what is done to the
+            // copy (#1494).
+            duplicate_offset_mm: [0.0, 0.0],
             default_dpi: 300.0,
             snap: SnapPrefs::default(),
             shortcuts: Vec::new(),
@@ -1440,6 +1495,9 @@ impl Default for Settings {
             crosshair_cursor: false,
             screen_ppi: default_screen_ppi(),
             zoom_right_click_out: true,
+            zoom_relative_1to1: true,
+            wheel_zoom_centers: false,
+            pan_right_click_out: false,
             palette: PalettePrefs::default(),
             tools: ToolPrefs::default(),
             view: ViewPrefs::default(),
@@ -1490,6 +1548,8 @@ impl Default for Settings {
             hyphens_when_typing: true,
             hyphens_when_pasting: true,
             object_thumb_size: default_object_thumb(),
+            master_in_front: [false; 3],
+            objects_all_pages: true,
             font_sample_px: default_font_sample(),
             workspace_parts: crate::workspace_file::WorkspaceParts::default(),
             printing: Default::default(),
@@ -1578,7 +1638,8 @@ impl Settings {
     /// 1. objects are treated as filled (a click inside an unfilled one
     ///    selects it), which older versions saved switched off;
     /// 2. new rectangles keep their corners; 3. the alignment and dynamic
-    ///    guides start off; 4. the last export's settings are remembered.
+    ///    guides start off; 4. the last export's settings are remembered;
+    /// 5. Duplicate's old default offset (6.35 mm) becomes none.
     pub fn upgrade(mut self) -> Settings {
         self.autocorrect.upgrade();
         if self.upgrades < 1 {
@@ -1606,8 +1667,15 @@ impl Settings {
         if self.upgrades < 4 {
             self.formats.remember_last = true;
         }
+        // Duplicate placed its copy 6.35 mm off by default; the copy now
+        // stays in place to be moved, scaled or turned, and the next
+        // Duplicate repeats that (#1494). An offset of one's own stays.
+        if self.upgrades < 5 && self.duplicate_offset_mm == [6.35, 6.35] {
+            self.duplicate_offset_mm = [0.0, 0.0];
+        }
         self.upgrades = self.upgrades.max(UPGRADES);
         self.migrate_ai();
+        migrate_command_keys(&mut self.shortcuts);
         self
     }
 
@@ -1659,7 +1727,11 @@ impl Settings {
         #[cfg(target_arch = "wasm32")]
         {
             if let Ok(s) = serde_json::to_string(self) {
-                crate::web::storage_set(WEB_KEY, &s);
+                // A refusal is told to the user; the settings stay in
+                // effect in this tab (#1414).
+                if let Err(full) = crate::web::storage_set(WEB_KEY, &s) {
+                    crate::storage_full::report(crate::storage_full::Kept::Settings, full);
+                }
             }
             return;
         }
@@ -1696,6 +1768,22 @@ impl Settings {
         self.recent_files.retain(|p| p != path);
         self.recent_files.insert(0, path.to_path_buf());
         self.recent_files.truncate(10);
+    }
+}
+
+/// Command keys that earlier versions wrote into a shortcut list under
+/// another name, and the key they go by now. A key is renamed only when a
+/// name had to go; the menus keep their keys otherwise, so a saved
+/// shortcut keeps working whatever its command is called or where it sits.
+pub const RENAMED_COMMAND_KEYS: [(&str, &str); 1] = [("menu.text.grammatik", "menu.text.grammar")];
+
+/// Bring the command keys of a shortcut list (the preferences' or a
+/// workspace file's) up to date. Safe to run again.
+pub fn migrate_command_keys(shortcuts: &mut [(String, String)]) {
+    for (key, _) in shortcuts.iter_mut() {
+        if let Some((_, now)) = RENAMED_COMMAND_KEYS.iter().find(|(old, _)| *old == key) {
+            *key = (*now).to_string();
+        }
     }
 }
 
@@ -1864,6 +1952,8 @@ mod tests {
         let big = SystemPrefs {
             text_scale: 1.5,
             high_contrast: Some(ContrastColors::BLACK),
+            text_scale_known: true,
+            contrast_known: true,
         };
         assert!((effective_ui_size_with(&s, big) - 1.5).abs() < 1e-6);
         assert_eq!(effective_theme_with(&s, big), "high_contrast");
@@ -1895,6 +1985,28 @@ mod tests {
         assert!(!again.upgrade().treat_all_filled);
         // New preferences start up to date.
         assert_eq!(Settings::default().upgrades, UPGRADES);
+    }
+
+    /// Duplicate's old default offset becomes none, once; an offset of
+    /// one's own stays, and none set again later stays (#1494).
+    #[test]
+    fn the_old_default_duplicate_offset_becomes_none_once() {
+        let old: Settings =
+            serde_json::from_str(r#"{"upgrades": 4, "duplicate_offset_mm": [6.35, 6.35]}"#)
+                .expect("old preferences");
+        let s = old.upgrade();
+        assert_eq!(s.duplicate_offset_mm, [0.0, 0.0]);
+        assert_eq!(s.upgrades, UPGRADES);
+        let own: Settings =
+            serde_json::from_str(r#"{"upgrades": 4, "duplicate_offset_mm": [5.0, 2.0]}"#)
+                .expect("old preferences");
+        assert_eq!(own.upgrade().duplicate_offset_mm, [5.0, 2.0]);
+        let mut s = Settings::default();
+        assert_eq!(s.duplicate_offset_mm, [0.0, 0.0]);
+        s.duplicate_offset_mm = [6.35, 6.35];
+        let saved = serde_json::to_string(&s).expect("saved");
+        let again: Settings = serde_json::from_str(&saved).expect("read back");
+        assert_eq!(again.upgrade().duplicate_offset_mm, [6.35, 6.35]);
     }
 
     /// Preferences saved before the last export's settings were kept
@@ -1971,6 +2083,8 @@ mod tests {
             partial.wheel_zooms,
             "old settings files keep the zoom default"
         );
+        assert!(partial.zoom_relative_1to1 && !partial.wheel_zoom_centers);
+        assert!(!partial.pan_right_click_out);
         assert!(partial.snap.guides);
     }
 
@@ -2045,6 +2159,49 @@ mod tests {
     fn migrated(json: &str) -> Settings {
         let s: Settings = serde_json::from_str(json).expect("old preferences");
         s.upgrade()
+    }
+
+    /// A shortcut saved for the grammar checker under its old key goes
+    /// by the new key; the other shortcuts, and one already under the new
+    /// key, stay as they are.
+    #[test]
+    fn a_shortcut_saved_under_the_old_grammar_key_moves_to_the_new_one() {
+        let s = migrated(
+            r#"{"shortcuts": [["menu.text.grammatik", "Ctrl+Shift+G"],
+                ["menu.file.open", "Ctrl+Shift+O"], ["menu.text.grammar", "F7"]]}"#,
+        );
+        assert_eq!(
+            s.shortcuts,
+            [
+                ("menu.text.grammar".to_string(), "Ctrl+Shift+G".to_string()),
+                ("menu.file.open".into(), "Ctrl+Shift+O".into()),
+                ("menu.text.grammar".into(), "F7".into()),
+            ]
+        );
+        // An empty shortcut (a built-in one taken away) moves too.
+        let s = migrated(r#"{"shortcuts": [["menu.text.grammatik", ""]]}"#);
+        assert_eq!(
+            s.shortcuts,
+            [("menu.text.grammar".to_string(), String::new())]
+        );
+        // Running the migration again changes nothing.
+        let mut list = s.shortcuts.clone();
+        migrate_command_keys(&mut list);
+        assert_eq!(list, s.shortcuts);
+        // Every renamed key names a command that exists now, not one that
+        // was itself renamed.
+        for (old, now) in RENAMED_COMMAND_KEYS {
+            assert_ne!(old, now);
+            assert!(!RENAMED_COMMAND_KEYS.iter().any(|(o, _)| *o == now));
+            assert!(
+                crate::i18n::english_keys().iter().any(|k| k == now),
+                "{now}"
+            );
+            assert!(
+                !crate::i18n::english_keys().iter().any(|k| k == old),
+                "{old}"
+            );
+        }
     }
 
     #[test]

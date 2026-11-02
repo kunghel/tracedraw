@@ -214,9 +214,10 @@ fn zoom_box(app: &mut App, ui: &mut Ui, id: &str, width: f32) {
                     ui.data_mut(|d| d.remove::<String>(edit_id));
                 }
                 if r.lost_focus() {
-                    if let Ok(v) = text.trim().trim_end_matches('%').trim().parse::<f32>() {
+                    // Sums and products too, as in the number fields (#1495).
+                    if let Some(v) = crate::ui::field::parse(&text, None) {
                         if v > 0.0 {
-                            app.set_zoom_percent(v);
+                            app.set_zoom_percent(v as f32);
                         }
                     }
                 }
@@ -455,17 +456,29 @@ pub(crate) fn draw_item(app: &mut App, ui: &mut Ui, bar: &str, id: &str) {
             }
         }
         "cut" => {
+            // While a text is being edited: its selected characters.
+            let has = if app.editing_text() {
+                app.text_selection_active()
+            } else {
+                has
+            };
             if std_button(ui, icons::Action::Cut, &tip("toolbar.cut"), has, false).clicked() {
                 app.cut();
             }
         }
         "copy" => {
+            let has = if app.editing_text() {
+                app.text_selection_active()
+            } else {
+                has
+            };
             if std_button(ui, icons::Action::Copy, &tip("toolbar.copy"), has, false).clicked() {
                 app.copy_with_system();
             }
         }
         "paste" => {
-            let can_paste = doc && app.clipboard.is_some();
+            let can_paste =
+                doc && (app.clipboard.is_some() || app.text_clip.is_some() || app.editing_text());
             if std_button(
                 ui,
                 icons::Action::Paste,
@@ -730,7 +743,7 @@ fn tool_item(app: &mut App, ui: &mut Ui, t: Tool) {
         Tokens::icon(),
     );
     if resp.clicked() {
-        app.set_tool(t);
+        app.choose_tool(t);
     }
 }
 
@@ -1838,6 +1851,10 @@ fn bitmap_properties(app: &mut App, ui: &mut Ui) {
                 "menu.bitmaps.trace_high_quality",
                 crate::trace::Preset::HighQualityImage,
             ),
+            (
+                "menu.bitmaps.trace_optimized",
+                crate::trace::Preset::Optimized,
+            ),
         ] {
             if ui.button(tr(key)).clicked() {
                 app.dialog = Dialog::Trace(TraceState::new(preset, &app.settings.tracing));
@@ -2056,34 +2073,28 @@ pub fn transparency_part(app: &mut App, ui: &mut Ui) {
 /// docker's width: the kind and what it applies to, then the amount (or
 /// the fountain's angle and kind), then the merge mode.
 pub fn transparency_section(app: &mut App, ui: &mut Ui) {
-    ui.vertical(|ui| transparency_controls(app, ui, true));
+    ui.vertical(|ui| crate::ui::transparency_docker::section(app, ui));
 }
 
-/// `f` in a row of its own when `stacked`, else straight in `ui`.
-fn part_row(ui: &mut Ui, stacked: bool, f: impl FnOnce(&mut Ui)) {
-    if stacked {
-        ui.horizontal(f);
-    } else {
-        f(ui);
-    }
-}
-
-fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
+/// What the Transparency part shows: the settings of the first selected
+/// object (the defaults with nothing selected), its kind as
+/// [`crate::mixed::ShapeTransparency::kind`] (`None` when the selection's
+/// kinds differ), the settings that differ across the selection, and
+/// whether anything is selected. A change sends only the changed setting
+/// to each object.
+pub(crate) fn transparency_state(
+    app: &App,
+) -> (
+    crate::effects_ui::TransparencySettings,
+    Option<usize>,
+    Vec<crate::mixed::TransparencyField>,
+    bool,
+) {
     use crate::mixed::{transparency_mixed, TransparencyField as F};
-    let kinds = [
-        tr("transparency.none"),
-        tr("transparency.uniform"),
-        tr("transparency.fountain"),
-        tr("transparency.pattern"),
-        tr("transparency.texture"),
-    ];
-    // Reflect the first selected object in the bar; settings that differ
-    // across the selection show as mixed, and a change sends only that
-    // setting to each object.
     let ts = app.selection_transparency();
     let mixed = transparency_mixed(&ts);
     let has_selection = !ts.is_empty();
-    let (mut set, current) = match ts.first() {
+    let (set, current) = match ts.first() {
         Some(t) => {
             let mut set = app.transparency_default.clone();
             if t.kind >= 1 {
@@ -2103,6 +2114,39 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
         }
         None => (app.transparency_default.clone(), Some(0)),
     };
+    (set, current, mixed, has_selection)
+}
+
+/// `f` in a row of its own when `stacked`, else straight in `ui`.
+fn part_row(ui: &mut Ui, stacked: bool, f: impl FnOnce(&mut Ui)) {
+    if stacked {
+        ui.horizontal(f);
+    } else {
+        f(ui);
+    }
+}
+
+/// Like `part_row`, but the docker stacks the controls in a column, so a
+/// slider takes the panel's width with its label above, as the Fill
+/// section's angle and edge pad do.
+fn part_column(ui: &mut Ui, stacked: bool, f: impl FnOnce(&mut Ui)) {
+    if stacked {
+        ui.vertical(f);
+    } else {
+        f(ui);
+    }
+}
+
+fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
+    use crate::mixed::TransparencyField as F;
+    let kinds = [
+        tr("transparency.none"),
+        tr("transparency.uniform"),
+        tr("transparency.fountain"),
+        tr("transparency.pattern"),
+        tr("transparency.texture"),
+    ];
+    let (mut set, current, mixed, has_selection) = transparency_state(app);
     let mut field = None;
     let targets = [
         tr("transparency.target_fill"),
@@ -2160,14 +2204,17 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
             target_list(ui, &mut set, &mut field);
         }
     });
-    part_row(ui, stacked, |ui| {
+    part_column(ui, stacked, |ui| {
         let kind_mixed = mixed.contains(&F::Kind);
         if set.kind == 0 && !kind_mixed {
             let amount_mixed = mixed.contains(&F::Amount);
             let mut amount = set.amount;
-            let slider = crate::ui::Slider::new(&mut amount, 0.0..=100.0)
+            let mut slider = crate::ui::Slider::new(&mut amount, 0.0..=100.0)
                 .suffix(" %")
                 .mixed(amount_mixed);
+            if stacked {
+                slider = slider.text(tr("docker.transparency_lc"));
+            }
             if ui
                 .add_enabled(has_selection, slider)
                 .rich_tip(crate::ui::tips::keyed("toolbar.transparency_amount"))
@@ -2179,13 +2226,23 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
         } else if set.kind == 1 && !kind_mixed {
             if let Fill::Fountain(f) = &mut set.mask {
                 let mut angle = f.angle;
-                if ui
-                    .add(
+                let angle_mixed = mixed.contains(&F::MaskAngle);
+                let resp = if stacked {
+                    ui.add(
+                        crate::ui::Slider::new(&mut angle, -180.0..=180.0)
+                            .text(tr("docker.angle_lc"))
+                            .suffix("°")
+                            .mixed(angle_mixed),
+                    )
+                } else {
+                    ui.add(
                         crate::ui::field::NumField::new(&mut angle)
                             .suffix("°")
                             .speed(1.0)
-                            .mixed(mixed.contains(&F::MaskAngle)),
+                            .mixed(angle_mixed),
                     )
+                };
+                if resp
                     .rich_tip(crate::ui::tips::pair(
                         "toolbar.angle",
                         "toolbar.fill_angle_desc",
@@ -2707,8 +2764,10 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
     ) {
         app.reduce_selected_nodes();
     }
-    // Curve smoothness: dragging removes nodes from the curves as they
-    // were when the drag began, in one undo step.
+    // Curve smoothness: removes nodes from the curves as they were at
+    // its first change, in one undo step; it keeps its value until
+    // something else changes (#1326).
+    app.forget_smoothing_if_stale();
     let mut v = app.curve_smoothness;
     let r = ui
         .add_enabled(
@@ -2719,17 +2778,7 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
         )
         .rich_tip(tr("toolbar.curve_smoothness"));
     if r.changed() {
-        let first = app.smoothing.is_none();
-        if first {
-            app.smoothing = Some(app.smoothing_curves());
-        }
-        app.curve_smoothness = v;
-        let start = app.smoothing.clone().unwrap_or_default();
-        app.smooth_curves(&start, v, !first);
-    } else if !r.dragged() && app.smoothing.is_some() {
-        // Let go: the next change starts a new step from the new curves.
-        app.smoothing = None;
-        app.curve_smoothness = 0.0;
+        app.set_curve_smoothness(v);
     }
     if !has_curve && !app.selection.is_empty() {
         sep(ui);

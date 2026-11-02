@@ -1,7 +1,7 @@
 # Shaping
 
-Object > Shaping, the property bar's shaping buttons (with two or more
-objects selected) and the Shaping panel.
+Object > Combine Shapes, the property bar's shaping buttons (with two or more
+objects selected) and the Combine Shapes panel.
 
 ## Operations
 
@@ -85,6 +85,11 @@ attributes, none, and showed only in Wireframe (#539,
   the Bezier segments of the objects, with new nodes only where their
   outlines cross; two circles welded give a handful of curve segments,
   not hundreds of tiny lines.
+- A vertex where two outlines cross is moved onto the exact crossing of
+  the curves. Where they cross at a shallow angle, several vertices of
+  the flattening lie near the crossing and all land on it; they become
+  one node (vertices closer than 1e-7 mm are one), so the result has no
+  lines of no length there (`shaping::tests::shallow_crossings_give_one_node_each`).
 - An edge that does not follow an object's outline (a chord across an
   arc, as where a cut runs straight across a curve) stays a straight
   line: a stretch is taken from the source only when the edges lie
@@ -106,6 +111,19 @@ attributes, none, and showed only in Wireframe (#539,
   (`panels.shaping_op`, `panels.shaping_leave`).
 - The button under them, named after the operation, applies it; it is
   pale until enough objects are selected, and a line says how many.
+
+## Fill rule
+
+`shaping::overlay` reads both inputs with the even-odd rule, how curves
+fill: contours of one object that overlap make holes there.
+`shaping::overlay_with` takes the rule (`FillRule::EvenOdd` or
+`FillRule::NonZero`) for outlines meant for the nonzero rule, how text
+fills (glyphs drawn as overlapping strokes, traced logos), so they need no
+clean-up first; a contour turning the other way is a hole under both
+rules. The result covers the same area under the even-odd rule
+(`shaping::tests::overlay_reads_its_inputs_with_the_fill_rule_given`).
+`shaping::nonzero_as_even_odd` turns one such outline into an even-odd one
+on its own.
 
 ## Checks
 

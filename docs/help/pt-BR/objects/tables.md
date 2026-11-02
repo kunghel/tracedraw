@@ -2,11 +2,11 @@
 
 Uma tabela é um objeto feito de linhas e colunas de células, cada uma com
 texto e preenchimento. Desenhe tabelas com a ferramenta [[tool.table]] e
-altere-as com o menu [[menu.table]].
+altere-as com o menu [[menu.text > menu.table]].
 
 ## Criar uma tabela {#create-table}
 
-- Escolha [[menu.table > menu.table.create_new_table]] (ou
+- Escolha [[menu.text > menu.table > menu.table.create_new_table]] (ou
   [[menu.object > menu.object.create > menu.object.create_table]]). Na caixa de
   diálogo [[dialog.create_table]], defina o [[dialog.table_rows]], o
   [[dialog.table_columns]] e a altura e a largura (100 por 75 mm de início), e
@@ -35,7 +35,7 @@ altura. <kbd>Shift</kbd>+clique acrescenta células à seleção.
 
 ## Mudar linhas e colunas {#table-menu}
 
-O menu [[menu.table]] age sobre a célula ativa e as células selecionadas:
+O menu [[menu.text > menu.table]] age sobre a célula ativa e as células selecionadas:
 
 - [[menu.table.insert]]: [[menu.table.insert_row_above]],
   [[menu.table.insert_row_below]], [[menu.table.insert_column_left]] e

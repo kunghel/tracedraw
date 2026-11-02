@@ -3,7 +3,7 @@
 # The Store signs the package itself, so this package is not signed. The
 # identity comes from the app's Product identity page in Partner Center,
 # passed in the environment (see docs/code-signing.md):
-#   MSIX_IDENTITY_NAME   Package/Identity/Name, e.g. 12345IghorToth.TraceDraw
+#   MSIX_IDENTITY_NAME   Package/Identity/Name, e.g. 12345TraceDraw.TraceDraw
 #   MSIX_PUBLISHER       Package/Identity/Publisher, e.g. CN=1A2B3C4D-...
 #   MSIX_PUBLISHER_NAME  Package/Properties/PublisherDisplayName
 # With them the package goes to dist\ (and so into the release); without

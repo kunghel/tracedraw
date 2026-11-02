@@ -96,6 +96,7 @@ pub fn detect(bytes: &[u8]) -> Result<Container> {
             .or_else(|| {
                 archive
                     .file_names()
+                    .filter_map(|n| n.ok())
                     .find(|n| n.to_ascii_lowercase().ends_with("riffdata.cdr"))
                     .map(String::from)
             })

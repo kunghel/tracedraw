@@ -141,6 +141,12 @@ pub const GROUPS: &[ToolGroup] = &[
         ],
         hidden: false,
     },
+    // The Variable Outline tool has a button of its own, under the brush
+    // tools.
+    ToolGroup {
+        tools: &[Tool::VariableOutline],
+        hidden: false,
+    },
     ToolGroup {
         tools: &[Tool::Rectangle, Tool::ThreePointRectangle],
         hidden: false,
@@ -205,11 +211,6 @@ pub const GROUPS: &[ToolGroup] = &[
     },
     ToolGroup {
         tools: &[Tool::InteractiveFill, Tool::AreaFill, Tool::MeshFill],
-        hidden: false,
-    },
-    // The Variable Outline tool has a button of its own at the bottom.
-    ToolGroup {
-        tools: &[Tool::VariableOutline],
         hidden: false,
     },
     ToolGroup {

@@ -1,18 +1,18 @@
-# Writing tools
+# Proofing
 
 TraceDraw checks spelling and grammar, finds synonyms, corrects as you type,
 and fixes text that came in with the wrong characters. The commands are in
 [[menu.text > menu.text.writing_tools]] and the [[menu.text]] menu.
 
-## The Writing Tools dialog box {#writing-tools}
+## The Proofing dialog box {#writing-tools}
 
 [[menu.text > menu.text.writing_tools > menu.text.spell_check]],
-[[menu.text.grammatik]] and [[menu.text.thesaurus]] open the
+[[menu.text.grammar]] and [[menu.text.thesaurus]] open the
 [[writing.title]] dialog box at that tab. [[writing.check]] chooses whether to
 check every text of the page ([[writing.scope_document]]) or only the
 selected texts ([[writing.scope_selection]]).
 
-![The Writing Tools dialog box](../../img/text-writing-tools.png)
+![The Proofing dialog box](../../img/text-writing-tools.png)
 
 ### Spell Checker {#spell-checker}
 
@@ -128,12 +128,12 @@ selected text to
 
 ![The Change Case dialog box](../../img/text-writing-tools-change-case.png)
 
-## Text statistics {#statistics}
+## Word count {#statistics}
 
 [[menu.text > menu.text.text_statistics]] counts the text objects, lines,
 words, characters and fonts of the selected text, or of the page.
 
-![The Text Statistics dialog box](../../img/text-writing-tools-statistics.png)
+![The Word Count dialog box](../../img/text-writing-tools-statistics.png)
 
 ## Encode {#encode}
 
@@ -147,7 +147,7 @@ such as "cafÃ©" instead of "café". [[menu.text > menu.text.encode]] fixes it:
 
 ![The Encode Text dialog box](../../img/text-writing-tools-encode.png)
 
-## Web-compatible text {#web-compatible}
+## Web-safe text {#web-compatible}
 
 [[menu.text > menu.text.make_web_compatible]] simplifies the selected text for
 web pages: gradient, pattern, texture and mesh fills become a flat color, and

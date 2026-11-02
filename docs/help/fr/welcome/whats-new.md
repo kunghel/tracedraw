@@ -15,7 +15,7 @@ dernières versions.
   disparaissent quand vous désactivez la commande, et la commande est de
   nouveau désactivée au prochain démarrage de TraceDraw.
 - La liste complète des changements de chaque version se trouve dans le
-  [journal des modifications](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [journal des modifications](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   du projet.
 
 ## Points forts des dernières versions {#highlights}

@@ -1,17 +1,19 @@
 # Objects panel
 
-The Objects tab of the docker shows the current page as a tree: the page
-with its layers, topmost first, then the Master Page with the master
-layers, the guides and the document grid. A bar at the bottom holds New
-Layer and New Master Layer at the left, the thumbnail size in the middle
-and Delete at the right.
+The Objects tab of the docker shows the drawing as a tree: every page
+with its layers, topmost first (or only the current page), then the
+Master Page with the master layers, the guides and the document grid
+(#1477). A bar at the bottom holds New Layer, New Master Layer and Show
+All Pages at the left, the thumbnail size in the middle and Delete at
+the right.
 
 | Row | Contents |
 |---|---|
-| Page, Master Page | open or close arrow, a sheet (cream for the Master Page), name in bold; a click opens or closes it |
+| Page, Master Page | open or close arrow, a sheet (cream for the Master Page), name (in bold for the current page and the Master Page); a click opens or closes it |
 | Layer (light grey), one step in | collapse arrow, eye (show or hide), printer (print and export or not), padlock (lock or unlock), layer icon (its top sheet blue for a page's layers, amber for master layers), name |
 | Active layer | as a layer, on `#D4E6F7` with a 3 px accent bar at the left, name in bold |
 | Master layer for odd or even pages | as a layer, followed by "Odd pages" or "Even pages" in small grey; dimmed on the pages it does not show on |
+| Master layer in front of the page's layers | as a layer, followed by "In front" in small grey (after "Odd pages" or "Even pages" if it has one); it stays listed under the Master Page (#1132) |
 | Guides | eye (show or hide the guidelines), a pale printer (guidelines never print), padlock (locks or unlocks all of the page's guidelines; shut when they all are) |
 | Document Grid | eye (show or hide the grid), a pale printer and a pale shut padlock (the grid never prints and cannot be edited) |
 | Object, two steps in | thumbnail: the object itself drawn small (its shape, fill, outline and effects) on a white tile, then its name, or what it is when it has none ("Rectangle", "Curve with 8 nodes", "Paragraph Text: ...") |
@@ -34,27 +36,59 @@ and Delete at the right.
   page's topmost visible, unlocked layer, as they do before any layer is
   picked. Each open drawing remembers its own pick.
 - Objects on master layers show on every page the layer is for (all,
-  odd or even pages) under the page's own layers, and can be clicked,
+  odd or even pages) under the page's own layers, or over them when the
+  layer is in front (its menu's "In front of the page's layers", or To
+  Front of Page on one of its objects; To Back of Page puts it behind
+  again, one undo step; #1132), and can be clicked,
   marquee-selected, snapped to and selected with Select All or Tab from
   any of those pages while the layer is visible and unlocked.
 - Double-click a layer to rename it; double-click an object to name it
   (Rename Object; an empty name goes back to the description).
 - Double-click the page node, or pick Rename in its context menu, to
-  rename the page (the Rename Page dialog, as in Layout > Rename Page).
-- A layer's context menu: Rename, Move Up, Move Down, Delete Layer (a
-  page keeps its last layer); a master layer's adds Show On (All pages,
-  Odd pages, Even pages).
+  rename the page (the Rename Page dialog, as in Page > Rename Page);
+  the context menu of another page also has Go to Page.
+- A click on a layer or an object of another page makes that page the
+  current one first (Layout's page change), then picks the layer or
+  selects the object.
+- A layer's context menu: Rename; New Layer (on its page) or New Master
+  Layer (on the same pages); Select the Layer's Objects (the ones shown
+  and not locked); ticks for Show/hide, Print and export the layer and
+  Lock layer; Move Up, Move Down; a page's layer has Move to Master Page
+  (all pages): the layer becomes a master layer with its name, look and
+  objects (a page keeps its last layer, emptied); a master layer has
+  Show On (All pages, Odd pages, Even pages), In front of the page's
+  layers (a tick) and Move to the Current Page: it becomes the page's
+  top layer with its objects, which then show on that page only; then
+  Delete Layer. Each is one undo step (#1477).
+- An object's context menu: Rename; Move to Layer, a list of every
+  page's layers and the master layers under their page's name: the
+  object (with the rest of the selection when it is selected) goes to
+  the top of that layer, keeping its place on the page, in one undo
+  step, and stays selected; a layer of another page makes that page the
+  current one. So an object of a master layer is moved onto one page's
+  layer, or a page's object onto the master page (#1477). Delete.
 - The bottom bar:
   - New Layer adds "Layer n" on top of the page's layers (n is the
     number of layers plus one, or the next number not in use) and makes
     it active.
   - New Master Layer adds "Master Layer n" for all pages and makes it
-    active; its context menu adds one for odd or for even pages.
+    active; its context menu adds one for odd or for even pages, and
+    under "In front of the page's layers" has a tick for each kind (All
+    pages, Odd pages, Even pages): ticking it puts the drawing's master
+    layers of that kind in front of the page's own layers (one undo
+    step), unticking puts them behind, and new master layers of that
+    kind are made in front or behind accordingly. The ticks are kept in
+    the preferences (`master_in_front`, off at first) and are also in
+    Options > Page, beside New master (all, odd, even), where each
+    master layer also has an In front tick (#1132, #1477).
+  - Show All Pages (two sheets, shown pressed when on, the default)
+    lists every page; off, only the current one
+    (`objects_all_pages` in the preferences).
   - Delete removes the selected objects or, with nothing selected, the
     active layer (not the page's last one). It is pale when there is
     nothing it can delete.
-- Which layers are closed, which groups are open and whether the page
-  and Master Page nodes are closed lasts for the session.
+- Which layers are closed, which groups are open and which page nodes
+  and the Master Page node are closed lasts for the session.
 
 ## Thumbnails
 

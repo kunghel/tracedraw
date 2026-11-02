@@ -6,7 +6,7 @@
 //!
 //! Dragging out of a ruler adds a guideline, dragging out of the corner
 //! moves the ruler origin, double-clicking a ruler or the corner opens the
-//! ruler settings (Document Options, Rulers).
+//! ruler settings (Document Setup, Rulers).
 
 use crate::app::{App, Drag};
 use crate::theme::Tokens;

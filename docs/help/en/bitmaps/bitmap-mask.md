@@ -4,7 +4,7 @@ The [[docker.bitmap_mask]] panel hides or keeps the pixels of chosen colors in
 a bitmap, for example to make a white background transparent. Open it with
 [[menu.bitmaps > menu.bitmaps.bitmap_mask]].
 
-![The Bitmap Mask panel](../../img/bitmaps-bitmap-mask.png)
+![The Color Mask panel](../../img/bitmaps-bitmap-mask.png)
 
 ## To mask colors {#mask}
 

@@ -20,7 +20,7 @@ later, and removing the last one gives the original back.
 - The native `.tdraw` file stores the list; a bitmap without effects
   writes no `fx` field, and older files load unchanged.
 - Changes that rework the pixels themselves (colour modes, Resample,
-  Manually Inflate Bitmap, Straighten Image, Bitmap Color Mask, Update
+  Bitmap Padding > Custom, Straighten Image, Color Mask, Update
   From Link, Effects > Flatten Effects) keep what the bitmap shows and
   drop the list.
 
@@ -156,8 +156,8 @@ the original pixels.
 
 ## Auto inflate
 
-Document Options > General > Auto inflate bitmaps for effects, also
-Bitmaps > Inflate Bitmap > Auto Inflate Bitmap (a check mark), is on by
+Document Setup > General > Pad bitmaps for effects automatically, also
+Image > Bitmap Padding > Automatic (a check mark), is on by
 default. When on, the visible effects that spread past the edges grow the
 original first by their reach (summed, at most the larger side), with a
 transparent margin, and the bitmap's place grows by the same amount in
@@ -166,9 +166,9 @@ millimetres, so a blur is not cut off at the edges. Reach: Gaussian Blur
 `Strength / 2` pixels. The switch is stored in the document and applies
 to effects rendered from then on.
 
-Bitmaps > Inflate Bitmap > Manually Inflate Bitmap grows the selected
-bitmaps' canvas by hand: for Width and Height, Inflate to (pixels, from
-the first selected bitmap) or Inflate by (100 to 1000 %, default 100),
+Image > Bitmap Padding > Custom grows the selected
+bitmaps' canvas by hand: for Width and Height, Pad to (pixels, from
+the first selected bitmap) or Pad by (100 to 1000 %, default 100),
 which follow each other; Maintain aspect ratio (on) moves both
 percentages together. Every selected bitmap grows by the percentages,
 centred, with transparent margins, keeping its resolution, in one undo
@@ -468,7 +468,7 @@ The Effects menu's bitmap effects work on any object, not only bitmaps.
 A vector object keeps its shape, fill and outlines; its effects are kept
 with it (`Shape::raster_fx`) and it is drawn as the picture they make:
 the object alone, drawn in its own space at the drawing's rendering
-resolution (Layout > Page Setup, 72 to 1200 dpi; 300 when none is set;
+resolution (Page > Page Setup, 72 to 1200 dpi; 300 when none is set;
 fewer pixels when it would pass 16 million) with a margin of 2 mm, its outline width and 8 % of
 its size, then the visible effects in order. The picture is kept in the
 drawing, so the screen, PDF, SVG, EPS and EMF draw it without the
@@ -509,9 +509,9 @@ its default settings to a 64-pixel landscape, and its name below.
 The bitmap's context menu writes its pixels, the effects in its stack
 included, to a PNG file (a download in the browser).
 
-## Bitmap Mask docker
+## Color Mask docker
 
-Bitmaps > Bitmap Mask opens the docker:
+Image > Color Mask opens the docker:
 
 - An eyedropper (the Color Eyedropper tool; each colour it samples
   fills the selected slot and ticks it) and "Select colours from

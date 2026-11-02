@@ -25,20 +25,26 @@ the owner does to publish it and what to test on a tablet first.
 | Workspace | the one chosen | a fresh install starts in the Touch workspace (`workspaces.md`: bars and buttons 1.4 times larger, no rulers, panels or status bar, two fingers pan, a pinch zooms); Window > Workspace picks another and it is kept |
 | Open, Import, palettes, scripts, ICC profiles, every "pick a file" | system file dialog | the system's document picker (Storage Access Framework, `ACTION_OPEN_DOCUMENT`, any type): the picked document opens by the extension of its display name; the closure runs on a later frame, as in the browser |
 | Save on an opened drawing | writes the file | writes the document back through its content URI (the picker grants read and write, kept across restarts) |
-| Save As, Export, Publish to PDF, Save Bitmap As, exports of dockers that use `save_file` | the Save Drawing dialog with folders, or the system save dialog | the Save Drawing dialog shows name, type and version only, then the system's picker (`ACTION_CREATE_DOCUMENT`) asks where, with that name and the type's MIME; the file is written when it answers. Publish to PDF has no Browse button: OK opens the picker |
+| Save As, Export, Export as PDF, Save Bitmap As, exports of dockers that use `save_file` | the Save Drawing dialog with folders, or the system save dialog | the Save Drawing dialog shows name, type and version only, then the system's picker (`ACTION_CREATE_DOCUMENT`) asks where, with that name and the type's MIME; the file is written when it answers. Export as PDF has no Browse button: OK opens the picker |
 | The few saves that need a path at once (`Dialog::save_path`: tone curve and duotone presets, the mask file, macro scripts and exports, palette files) | system save dialog | no picker yet: the file goes to the app's documents folder (`Android/data/dev.tracedraw.app/files` on the shared storage, which file managers show) under the suggested name |
 | Recent files, Welcome screen thumbnails | paths | the same list: a picked document is named `/content/<its URI, escaped>/<its display name>` (`files::document_path`), so the name shows and the URI reopens it; the system keeps the permission (`takePersistableUriPermission`) |
 | Pick a folder (export folders, font folders) | system folder dialog | not available (nothing is picked) |
-| Print, Send To, Edit Bitmap | system programs | not available (no printing service, no external programs) |
-| Clipboard | text, images and files through the system clipboard | text through the system's clipboard service: Copy puts the selection's SVG text there (other apps paste it as text, the editor as objects), Paste reads text copied elsewhere (artistic text, or objects when it is SVG). Pictures and files copied elsewhere are not read yet; copies inside the editor work as before |
+| File > Package, Save As > Package | a folder with the drawing, its pictures, fonts and report | File > Package asks for the name and the PDF, then the system's save picker for `<name>.zip`, and writes the package as one zip file there (#1401, `behavior/package.md`); Save As's Package box is greyed with the reason |
+| Print | the system's printers, or the PDF viewer | the system's print service (#1398): the Print dialog's destination reads "System printer (through the Android print service)", the print PDF is made as on the desktop and handed to `PrintManager`, whose dialog picks the printer, the copies and the paper; PDF and PostScript files go through the save picker |
+| Send To | a PDF in the Desktop or Documents folder, or for a mail | Documents: the save picker asks where the PDF goes; Mail Recipient: the share sheet, limited to the apps that send mail, gets the PDF as an attachment; Desktop is greyed with the reason (Android has no desktop folder) |
+| Edit Bitmap | the bitmap editor of the options, or the system's program for PNG files | "open with" (`ACTION_EDIT`): Android asks which app edits the picture and lets it write the picture back; the editor reads it again when it changes, as on the desktop. Options > File Locations says so instead of asking for a program. No app that edits pictures: the status bar says so |
+| Opening a page or a file (Help, links, Open Folder) | the system's browser and programs | web pages in the browser and files in the app picked for their type (`ACTION_VIEW`); Open Folder is greyed with the reason (Android shows no app's private folder to other apps) |
+| Clipboard | text, images and files through the system clipboard | text, pictures and files through the system's clipboard service: Copy puts the selection's SVG text there (other apps paste it as text, the editor as objects), Paste reads text copied elsewhere (artistic text, or objects when it is SVG), a picture copied elsewhere as a bitmap and documents copied elsewhere as imports (#1403); copies inside the editor work as before |
+| Text size and contrast (#1412) | the desktop's text size and high contrast | the system's font scale (Settings > Display > Font size, which reaches the running app: `fontScale` is among the configuration changes the activity handles) and Android 14's contrast setting or high contrast text, read through the activity's `getAccessibility` every 3 s (`behavior/options.md`) |
 | Settings | `settings.json` in the configuration folder | `settings.json` in the app's private folder (`TRACEDRAW_CONFIG_DIR` set by `android_main`) |
-| Fonts | installed system fonts | the system's fonts (`/system/fonts`, `/product/fonts` and `/vendor/fonts`: Roboto, Noto and the rest; the font database looks in no folder on Android by itself, so `tracedraw_text` names these) |
-| Keyboard | the physical keyboard | a physical or Bluetooth keyboard works; the on-screen keyboard is raised by the system when a text field has the focus (winit's IME), not checked on a device yet |
+| Fonts | installed system fonts | the system's fonts (`/system/fonts`, `/product/fonts` and `/vendor/fonts`: Roboto, Noto and the rest; the font database looks in no folder on Android by itself, so `tracedraw_text` names these). Font Manager > Add Font copies the picked font into `fonts` in the app's private folder and installs it from there, at once and at every start (#1400); Add Folder is greyed |
+| Keyboard | the physical keyboard | a physical or Bluetooth keyboard works. The on-screen keyboard shows while a text, a table cell or a field takes typed text and types into an invisible view of the activity (`TextInputView`): a `NativeActivity` offers input methods no text field, so before #1309 only the key presses of Latin letters arrived and Chinese, Japanese, Korean, Tamil and other composed scripts never did. What the input method composes, commits and deletes reaches the editor as an input method's events (`soft_keyboard.rs`), its Backspace, Enter and arrow presses as keys. A tap with the Text tool starts a text there and brings the keyboard up; a tap into the text or field once more brings it back after the system's key hid it; it hides only once three frames in a row take no text, so a lone frame without the caret does not hide it and end what the input method composes; when the system ignores the request (the view's focus reaches the input method a moment later), it is made again up to five times, 100 ms apart. The emulator check types through a test keyboard and as key presses (see "The emulator check"); not checked on a device |
 | Updates | a check of GitHub's releases, asked about at the first start | none: Google Play updates the app (its policy refuses apps that download code of their own), so there is no first-start question and no daily check; Help > Updates opens the app's Play page (`updates::store_install`) |
-| AI Drawing | HTTPS requests | the requests compile; the certificate check needs the Java side Android gives apps with code, so they are expected to fail until a later phase |
+| AI Drawing, AI Generate, GitHub, dictionary downloads | HTTPS requests, certificates checked by the system's verifier | the same requests, certificates checked against the system's own store, the files Android's TLS reads (`/apex/com.android.conscrypt/cacerts` on Android 14 and later, else `/system/etc/security/cacerts`), read once at the first request, with the Mozilla roots bundled in the app when neither can be read (`net::tls_config`). The system's verifier the desktop uses needs a Java part the app does not carry, so every request failed its certificate check before (#1396). The emulator check sends one request at the start and wants it answered (see "The emulator check") |
 | Temporary files (auto-backups, crash recovery) | the system's temporary folder | `tmp` in the app's private folder (`TMPDIR` set by `android_main`: the system's default, `/data/local/tmp`, is closed to apps) |
 | Help | the user Help in the browser | the same pages open in the browser |
 | Errors | a message box and the log file | the system log only: `adb logcat -s tracedraw` |
+| Configuration changes (rotation, window size, keyboard, dark mode, language, font size) | the window follows them | the same: the activity declares them (`android:configChanges`), so the system does not relaunch it. A relaunch the manifest cannot prevent (a new screen density, a change of the system's resource overlays: wallpaper colours, icon shapes, display cutout) ends the process once the drawings are backed up, and the system starts the app again in a new process, which offers them (see "Relaunches" below) |
 
 Pen pressure is #850 (another change): `android-activity` exposes
 `MotionEvent` pressure per pointer, so when winit passes it on the
@@ -83,13 +89,40 @@ the Rust side queues the answer and asks egui for a frame;
 with the documents' paths. A cancelled picker runs nothing. Several
 documents (Import of many) come as newline-separated lists.
 
+## Printing, sharing and "open with"
+
+The print service, the share sheet and the other apps need the file
+itself, and the editor's files (the print PDF, a picture to edit) live in
+the app's private folders, which no other app can open. The activity's
+file provider, `SharedFiles` (`packaging/android/java`, authority
+`dev.tracedraw.app.files`, not exported, `grantUriPermissions`), serves
+the files of the app's files and cache folders under
+`content://dev.tracedraw.app.files/files/<path>` (or `cache/<path>`),
+with the display name and size share targets ask for; a path that leads
+out of those folders (`..`, links) is refused. The bridge
+(`android::outside`) calls the activity's `printFile` (a
+`PrintDocumentAdapter` that copies the ready PDF to the service),
+`shareFile` (`ACTION_SEND` with the file as `EXTRA_STREAM` and a read
+grant, in the system's chooser; a `mailto:` selector for Mail Recipient
+keeps the mail apps only), `editFile` (`ACTION_EDIT` with read and write
+grants) and `viewTarget` (`ACTION_VIEW` for a web address, a picked
+document's content URI or one of the app's files). Each runs on the UI
+thread, answers whether the system took it, and a missing app comes back
+as false, which the status bar reports. `export::open_with_system` goes
+through `viewTarget` on Android, so Help, links and the other "open"
+commands work there; a folder cannot be shown (`status.no_folders_on_android`).
+
 ## The system clipboard
 
-`android::clipboard::text` and `set_text` call the activity's
-`getClipboardText` and `setClipboardText`, which run on the UI thread
+`android::clipboard::text`, `documents` and `set_text` call the
+activity's `getClipboardText`, `getClipboardDocuments` and
+`setClipboardText`, which run on the UI thread
 (`ClipboardManager` wants it) and wait up to two seconds. Android 10 and
 later hand the clipboard's content only to the app in front, which the
-editor is when it pastes.
+editor is when it pastes. `getClipboardText` skips the clip's documents
+(their URI is no text); `getClipboardDocuments` lists them as "URI, type,
+name" lines, and `clipboard.rs` makes one picture alone the clipboard's
+picture and the rest files named like the document picker's (#1403).
 
 ## Building the APK and the bundle
 
@@ -177,7 +210,12 @@ CI's `android-emulator` job starts the app on Android emulators with
 KVM on every push, Android 11 (API 30) and Android 14 (API 34), through
 `scripts/android/emulator_check.sh`: it installs the x86_64 APK, starts
 the launcher activity and fails unless, 45 s later, the app's process is
-still the one that started, the app has the focus, the system log has
+still the one that started (or, after a relaunch by the system that the
+app logged, the one the system started again), then switches the first
+display cutout overlay the emulator offers on and off again (`cmd
+overlay`, each switch relaunches the activity) and wants the app back in
+a new process that draws its first frame each time, and fails unless the
+app has the focus, the system log has
 no Java `FATAL EXCEPTION`, native crash (`Fatal signal`, a tombstone),
 Rust panic (`panicked at`, `RustPanic`, the app's own `panic:` line) or
 ANR, the app logged its first frame and did not find zero system fonts,
@@ -186,7 +224,33 @@ no colour on more than 97 % of the screen, at least 16 colours). The
 screenshot, the whole system log, the app's lines and the crash log are
 kept as the `android-emulator-api30` and `android-emulator-api34`
 artifacts; the screenshot shows the editor with its menus, toolbars,
-toolbox, the Welcome Screen and the docker tabs.
+toolbox, the Welcome Screen and the docker tabs. When the check fails on
+GitHub Actions, it also writes the crash lines, the app's last log
+lines, the activity's events, the focus and, for a process still there,
+its main thread's Java stack as annotations on the job, which can be
+read without downloading the artifacts.
+
+The app is started with `--es tracedraw.https_check
+https://api.github.com/zen` (`TRACEDRAW_HTTPS_URL` changes the address;
+empty sends none): it sends one GET the way the online features send
+theirs and logs `HTTPS check: <url> answered <status>` or the error.
+The check notes the answer and the certificate store read (`HTTPS: <n>
+trusted certificates from <folder>`) and fails when the request was
+refused for its certificate; an emulator without a network only gets a
+notice (#1396).
+
+With the test keyboard (`scripts/android/test-ime`, an input method
+built by `scripts/android/build_test_ime.sh`, installed and made the
+system's keyboard by the check, never shipped), the check also types
+(#1489, #1496): the app is started with `--es tracedraw.check typing`,
+opens a drawing with the Text tool on (`soft_keyboard::check`) and logs
+what the text being edited reads after each change; the check taps the
+middle of the screen and wants a text started and the keyboard shown for
+the app, then has the keyboard compose "ni" and commit 你好 and "abc"
+through the system's input method service, and types "xyz" as key
+presses (`adb shell input text`), each of which must reach the text. The
+outcome, with the input method service's state and the keyboard's log
+when a step fails, is a notice on the job.
 
 The x86_64 library runs natively there. The ARM64 library cannot be
 checked this way: the emulator's ARM translation (Android 11 and 14
@@ -203,6 +267,42 @@ the app asks for OpenGL ES only, `gpu::ANDROID_BACKENDS`), no system
 fonts (the font database looks in no folder on Android), the temporary
 folder (`/data/local/tmp` is closed to apps) and the update question at
 the first start (Google Play updates the app).
+
+## Relaunches
+
+The system relaunches an activity (destroys it and makes a new one) on
+any configuration change it does not declare in `android:configChanges`,
+and always on a change of the system's resource overlays (configuration
+change `0x80000000`, assets paths: wallpaper colours, icon shapes, a
+display cutout switched on; no manifest entry covers it). Android 14
+emulators do that once right after booting, and about one start in four
+in CI landed on it. A `NativeActivity` cannot be relaunched in place:
+its `onDestroy` waits for `android_main` to return, which it never does
+(winit ignores the destroy, and runs one event loop per process, so the
+editor could not start again in the same process anyway). The app froze
+for good on the system's starting window, never drawing, with the
+activity's thread blocked.
+
+Now:
+
+- The manifest declares every configuration change the editor follows
+  by itself (orientation, screen size and layout, keyboard, navigation,
+  touch screen, UI mode, locale, layout direction, MCC and MNC, font
+  scale and weight, colour mode, grammatical gender), so those never
+  relaunch it. The screen density is left out: a new density starts the
+  editor afresh at its scale.
+- `TraceDrawActivity.onDestroy` starts a thread and then calls
+  `NativeActivity.onDestroy`, which first takes the window from the
+  editor: winit's Suspended, on which eframe's save backs the drawings
+  up (`Shell::save`, #1395). The thread waits (`nativeAwaitWindowGone`,
+  `android::ending`, at most 10 s) until the editor's thread holds no
+  window any more, logs `the activity is relaunched: the process ends`
+  and ends the process.
+- `android:stateNotNeeded="true"` makes the system keep the activity
+  when its process ends and start it again in a new process; the new
+  start offers the backed-up drawings as after any end of the app it
+  was not told about. A finished activity (not relaunched) ends the
+  same way and stays closed.
 
 ## How it is wired
 
@@ -221,11 +321,19 @@ the first start (Google Play updates the app).
 - `android.rs` also holds the JNI bridge: `with_activity` attaches the
   thread (`JavaVM::singleton`, which `android-activity` set up) and
   borrows the activity; `documents` (open, create, read, write, the
-  answer queue, `register_natives`) and `clipboard` (text, set_text).
+  answer queue, `register_natives`), `clipboard` (text, documents, set_text) and
+  `keyboard` (the native methods of the keyboard's view, and a plugin
+  that shows or hides the on-screen keyboard after each frame that asks
+  for an input method or no longer does, `showTextInput`), `ending`
+  (the wait of the activity's end, see "Relaunches") and `outside`
+  (print, share, edit and view, through `SharedFiles`).
   Every JNI failure is logged and comes back as `None`, never a panic.
 - `packaging/android/java/dev/tracedraw/app/TraceDrawActivity.java`: the
   activity, with the picker intents, `onActivityResult`, the content
-  resolver reads and writes and the clipboard, all on the right threads.
+  resolver reads and writes, the clipboard and the on-screen keyboard,
+  all on the right threads. `TextInputView.java`: the one-pixel view the
+  keyboard types into, whose input connection keeps no text and hands
+  over what the input method composes, commits and deletes.
 - `Cargo.toml`: a `[lib]` (doc tests off) beside the `[[bin]]`; `rfd`
   (file dialogs) on every target but Android; `arboard` (system
   clipboard) on the desktop targets only; `eframe` with
@@ -237,7 +345,7 @@ the first start (Google Play updates the app).
   `read`, `write`, `write_with`, `exists`, `canonical` and `Dialog`
   (`android_pickers`); `Dialog::save_file`'s closure is `'static` on
   every platform now, as the answer may come on a later frame.
-  `clipboard.rs`: the system clipboard's text on Android;
+  `clipboard.rs`: the system clipboard's text, pictures and documents on Android;
   `ui/save_as.rs`: Save and Save As hand the name and type to the
   picker; `ui/publish_pdf.rs`: OK opens the picker; `startup_log.rs`:
   error boxes go to the log on Android.
@@ -245,12 +353,10 @@ the first start (Google Play updates the app).
 ## Later phases
 
 1. The remaining synchronous saves (`Dialog::save_path`) and the folder
-   pickers through the system picker; sharing a PDF or image to another
-   app (`ACTION_SEND`); opening a `.cdr` or `.tdraw` from a file manager
-   (`ACTION_VIEW`).
-2. Pictures and files from the system clipboard.
-3. Pen pressure and tilt (#850), palm rejection, a long press as the
+   pickers through the system picker; opening a `.cdr` or `.tdraw` from
+   a file manager (`ACTION_VIEW`).
+2. Pen pressure and tilt (#850), palm rejection, a long press as the
    right click.
-4. Printing through the Android print service; the Help inside the app.
-5. A 32-bit ARM library for older devices; the store listing's
+3. The Help inside the app.
+4. A 32-bit ARM library for older devices; the store listing's
    screenshots from a device.

@@ -139,6 +139,65 @@ fn plate_names(doc: &Document) -> Vec<String> {
     names
 }
 
+/// The smallest and largest stretch of the page a Transform handle sets,
+/// as a factor.
+const STRETCH_MIN: f64 = 0.01;
+const STRETCH_MAX: f64 = 10.0;
+
+/// A Transform handle `(hx, hy)` (-1, 0 or 1 on each axis) dragged by
+/// `(dx, dy)` mm (x right, y up) with the page's cell `c` on the sheet:
+/// the side under the handle follows the pointer and the opposite side
+/// stays put, so the stretch grows by the move and the middle by half of
+/// it. A side handle stretches its axis alone; a corner handle keeps the
+/// page's proportions, both axes by the one factor of the axis the
+/// pointer moved most, so a drawing fitted by its corners is not
+/// distorted (#1543).
+pub fn drag_transform_handle(
+    st: &mut PrintState,
+    (hx, hy): (i8, i8),
+    c: tracedraw_core::geometry::Rect,
+    dx: f64,
+    dy: f64,
+) {
+    if !(dx.is_finite() && dy.is_finite()) || c.width() <= 1e-6 || c.height() <= 1e-6 {
+        return;
+    }
+    // The factor each axis asks for on its own.
+    let kx = (c.width() + f64::from(hx) * dx).max(1.0) / c.width();
+    let ky = (c.height() + f64::from(hy) * dy).max(1.0) / c.height();
+    let (kx, ky) = match (hx, hy) {
+        (0, _) => (1.0, ky),
+        (_, 0) => (kx, 1.0),
+        _ => {
+            // A corner: one factor for both, kept within the range on
+            // both axes so they stay in step.
+            let k = if (kx - 1.0).abs() >= (ky - 1.0).abs() {
+                kx
+            } else {
+                ky
+            };
+            let (sx, sy) = (st.art_stretch.0.max(1e-9), st.art_stretch.1.max(1e-9));
+            let low = (STRETCH_MIN / sx).max(STRETCH_MIN / sy);
+            let high = (STRETCH_MAX / sx).min(STRETCH_MAX / sy);
+            let k = if low <= high { k.clamp(low, high) } else { 1.0 };
+            (k, k)
+        }
+    };
+    if hx != 0 {
+        let before = st.art_stretch.0;
+        st.art_stretch.0 = (before * kx).clamp(STRETCH_MIN, STRETCH_MAX);
+        // The opposite side stays: the middle moves by half the growth.
+        let grown = c.width() * (st.art_stretch.0 / before.max(1e-9) - 1.0);
+        st.art_offset.0 += f64::from(hx) * grown / 2.0;
+    }
+    if hy != 0 {
+        let before = st.art_stretch.1;
+        st.art_stretch.1 = (before * ky).clamp(STRETCH_MIN, STRETCH_MAX);
+        let grown = c.height() * (st.art_stretch.1 / before.max(1e-9) - 1.0);
+        st.art_offset.1 += f64::from(hy) * grown / 2.0;
+    }
+}
+
 /// The id of the options panel at the left of Print Preview.
 const PREVIEW_OPTIONS: &str = "print_preview_options";
 /// The options panel's width at first, its narrowest and the widest its
@@ -312,7 +371,17 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         });
                         ui.end_row();
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut st.fit_to_page, tr("dialog.fit_to_page"));
+                            if ui
+                                .checkbox(&mut st.fit_to_page, tr("dialog.fit_to_page"))
+                                .changed()
+                                && st.fit_to_page
+                            {
+                                // Ticked: a page dragged or stretched
+                                // off its place comes back onto the
+                                // sheet, fitted (#1577).
+                                st.art_offset = (0.0, 0.0);
+                                st.art_stretch = (1.0, 1.0);
+                            }
                             if !st.fit_to_page {
                                 ui.add(
                                     crate::ui::field::NumField::new(&mut st.scale)
@@ -599,22 +668,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         (None, None) => egui::CursorIcon::Move,
                     });
                 }
-                if let (true, Some((hx, hy)), Some(c)) = (resp.dragged(), pv.handle_drag, cell) {
-                    // A side follows the pointer, the opposite one stays:
-                    // the stretch grows by the move, the middle by half.
+                if let (true, Some(handle), Some(c)) = (resp.dragged(), pv.handle_drag, cell) {
                     let d = resp.drag_delta();
                     let (dx, dy) = (f64::from(d.x) / zoom, -f64::from(d.y) / zoom);
-                    let st = &mut pv.st;
-                    if hx != 0 && c.width() > 1e-6 {
-                        let w = (c.width() + f64::from(hx) * dx).max(1.0);
-                        st.art_stretch.0 = (st.art_stretch.0 * w / c.width()).clamp(0.01, 10.0);
-                        st.art_offset.0 += dx / 2.0;
-                    }
-                    if hy != 0 && c.height() > 1e-6 {
-                        let h = (c.height() + f64::from(hy) * dy).max(1.0);
-                        st.art_stretch.1 = (st.art_stretch.1 * h / c.height()).clamp(0.01, 10.0);
-                        st.art_offset.1 += dy / 2.0;
-                    }
+                    drag_transform_handle(&mut pv.st, handle, c, dx, dy);
                 } else if resp.dragged() {
                     let d = resp.drag_delta();
                     match pv.margin_drag {
@@ -1023,6 +1080,207 @@ mod tests {
         assert!(all_pages.x < 330.0 && all_pages.y > printer.y + 15.0);
         assert!(at(&tr("print.collate")).is_some());
         assert!(at(&tr("print.printer")).is_some_and(|p| p.y < all_pages.y));
+    }
+
+    /// Transform's corner handles keep the page's proportions: both
+    /// stretches grow by the one factor and the opposite corner stays
+    /// put; a side handle stretches its axis alone. A corner stretched
+    /// each axis by its own move, so a drawing fitted to the sheet by a
+    /// corner came out distorted (#1543).
+    #[test]
+    fn a_corner_handle_keeps_the_page_s_proportions() {
+        let cell = tracedraw_core::geometry::Rect::new(10.0, 10.0, 110.0, 160.0);
+        let mut st = PrintState::default();
+        // The top right corner 20 mm right and 5 mm up: the width's 20 %
+        // wins and the height follows it.
+        drag_transform_handle(&mut st, (1, 1), cell, 20.0, 5.0);
+        assert!(
+            (st.art_stretch.0 - 1.2).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        assert!(
+            (st.art_stretch.1 - 1.2).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        // The bottom left corner stays where it was: the middle moves by
+        // half the growth on each axis.
+        assert!((st.art_offset.0 - 10.0).abs() < 1e-9, "{:?}", st.art_offset);
+        assert!((st.art_offset.1 - 15.0).abs() < 1e-9, "{:?}", st.art_offset);
+        // Inwards from the bottom left corner: both shrink alike.
+        drag_transform_handle(&mut st, (-1, -1), cell, 10.0, 60.0);
+        assert!(
+            (st.art_stretch.0 - st.art_stretch.1).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        assert!(st.art_stretch.0 < 1.2, "{:?}", st.art_stretch);
+        // A side handle: its axis alone, the other untouched.
+        let mut st = PrintState::default();
+        drag_transform_handle(&mut st, (-1, 0), cell, -30.0, 7.0);
+        assert!(
+            (st.art_stretch.0 - 1.3).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        assert_eq!(st.art_stretch.1, 1.0);
+        assert!((st.art_offset.0 + 15.0).abs() < 1e-9, "{:?}", st.art_offset);
+        assert_eq!(st.art_offset.1, 0.0);
+        drag_transform_handle(&mut st, (0, 1), cell, -30.0, 15.0);
+        assert!(
+            (st.art_stretch.1 - 1.1).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        assert!(
+            (st.art_stretch.0 - 1.3).abs() < 1e-9,
+            "{:?}",
+            st.art_stretch
+        );
+        // Nothing moves on a move that is not a number or an empty cell.
+        let before = st.clone();
+        drag_transform_handle(&mut st, (1, 1), cell, f64::NAN, 1.0);
+        drag_transform_handle(
+            &mut st,
+            (1, 1),
+            tracedraw_core::geometry::Rect::new(0.0, 0.0, 0.0, 10.0),
+            1.0,
+            1.0,
+        );
+        assert_eq!(st.art_stretch, before.art_stretch);
+        assert_eq!(st.art_offset, before.art_offset);
+    }
+
+    /// Ticking Fit to page puts back a page dragged or stretched on the
+    /// sheet: the artwork position and the stretch go back to nothing,
+    /// so the page sits fitted on the sheet again. They stayed as they
+    /// were, so Fit to page seemed to do nothing to a dragged page
+    /// (#1577).
+    #[test]
+    fn fit_to_page_brings_a_dragged_page_back() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.print_preview(None);
+        let size = egui::vec2(1400.0, 900.0);
+        if let Some(pv) = app.print_preview.as_mut() {
+            pv.st.looking_for_printers = false;
+            pv.st.fit_to_page = false;
+            // As a drag on the sheet and a corner handle leave it.
+            pv.st.art_offset = (50.0, -40.0);
+            pv.st.art_stretch = (1.5, 1.5);
+        }
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            texts = frame_texts(&mut app, &ctx, size);
+        }
+        let label = tr("dialog.fit_to_page");
+        let at = texts
+            .iter()
+            .find(|(t, _)| *t == label)
+            .map(|(_, r)| r.center())
+            .expect("Fit to page shown");
+        let run = |app: &mut App, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| show(app, ui),
+            );
+            out.textures_delta.clear();
+        };
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            run(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        run(&mut app, Vec::new());
+        let st = &app.print_preview.as_ref().expect("preview").st;
+        assert!(st.fit_to_page, "the box was ticked");
+        assert_eq!(st.art_offset, (0.0, 0.0), "the page is back in place");
+        assert_eq!(st.art_stretch, (1.0, 1.0), "and at its size");
+        // The Print dialog's Layout tab does the same when Fit to page is
+        // chosen there.
+        let mut st = PrintState {
+            fit_to_page: false,
+            art_offset: (12.0, 3.0),
+            art_stretch: (2.0, 0.5),
+            ..PrintState::default()
+        };
+        let mut shown = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                        crate::ui::dialogs::print_tab_layout(&app, ui, &mut st);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            shown = out.shapes;
+        }
+        let mut found = Vec::new();
+        fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match s {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_string(), t.visual_bounding_rect()))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        shown.iter().for_each(|c| walk(&c.shape, &mut found));
+        let at = found
+            .iter()
+            .find(|(t, _)| *t == label)
+            .map(|(_, r)| r.center())
+            .expect("Fit to page in the Layout tab");
+        let tab = |app: &App, st: &mut PrintState, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                        crate::ui::dialogs::print_tab_layout(app, ui, st);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+        };
+        tab(&app, &mut st, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            tab(
+                &app,
+                &mut st,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        tab(&app, &mut st, Vec::new());
+        assert!(st.fit_to_page, "Fit to page chosen in the Layout tab");
+        assert_eq!(st.art_offset, (0.0, 0.0));
+        assert_eq!(st.art_stretch, (1.0, 1.0));
     }
 
     #[test]

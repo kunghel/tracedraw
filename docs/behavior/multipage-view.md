@@ -18,6 +18,13 @@ off too and is lit while it is on (#1019).
   the normal text colour, the others dimmed.
 - Objects outside a page's edges are not shown on the other pages; the
   current page shows them as always.
+- Every page shows its own guidelines: the current page's across the
+  whole window, as always, and each other page's within that page,
+  where it sits in the grid (#1448,
+  `multipage::tests::the_other_pages_guidelines_show_where_their_pages_sit`).
+  Guidelines belong to their page; a click on another page makes it
+  current, and its guidelines are then the ones picked, moved and
+  snapped to.
 
 ## Working
 
@@ -27,7 +34,7 @@ off too and is lit while it is on (#1019).
   click selects there and a drag draws there. Nothing moves on screen.
 - The page tabs and the navigator change the current page the same way.
 - Zoom to Fit (F4) and turning the view on fit every page in the window.
-- Page Sorter View and Multipage View exclude each other.
+- Page Overview and Multipage View exclude each other.
 
 ## Drawing
 
@@ -39,6 +46,13 @@ off too and is lit while it is on (#1019).
 - One frame spends at most 10 ms rendering the current page and the
   others; pages left over show their last picture and render in the next
   frames. One render runs every frame, so every page gets its turn.
+- Renders on a thread run one at a time in the whole program, the page
+  being edited first: when it had to wait, the turn stays kept for it
+  for 1 s after the running render ends. A page refused its turn for
+  that reason schedules a repaint for the moment the turn is free again,
+  so it is rendered sharp at the current zoom without any pointer move or
+  key press (#1384,
+  `raster::tests::a_page_refused_a_kept_turn_asks_for_a_repaint`).
 
 ## Formula
 

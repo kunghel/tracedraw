@@ -1,4 +1,4 @@
-//! Bitmaps > Straighten Image: the preview with a grid and the cropping
+//! Image > Straighten Image: the preview with a grid and the cropping
 //! area, zoom and pan, quarter turns, and the lens, rotation and
 //! perspective sliders, Crop image and Crop and resample to original
 //! size.

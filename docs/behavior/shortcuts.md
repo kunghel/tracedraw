@@ -14,7 +14,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+F4, Alt+F4 | Close window, Exit |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+R | Undo, Redo, Repeat |
 | Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+Shift+V | Cut, Copy, Paste, Paste in view |
-| Ctrl+D, Ctrl+Shift+D | Duplicate, Step and Repeat panel |
+| Ctrl+D, Ctrl+Shift+D | Duplicate, Repeat Copies panel |
 | + (Pick tool, with a selection) | Duplicate in place |
 | Ctrl+Space | the Pick tool, from any tool |
 | Space | the Pick tool (not while a text or table cell is edited, where it types a space, nor during a drag, where it drops a copy); on the Pick tool, back to the tool used before it (`App::previous_tool`); Shift+Space and other combinations leave the tool alone |
@@ -71,7 +71,7 @@ original, #471). Checks:
 | Shift+PgUp, Shift+PgDn | To front and back of the layer |
 | Ctrl+PgUp, Ctrl+PgDn | Forward one, back one |
 | Alt+Enter | Properties panel |
-| Ctrl+Shift+A | Copy Properties From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`) |
+| Ctrl+Shift+A | Paste Style From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`) |
 | Alt+F7, Alt+F8, Alt+F9, Alt+F10 | Transformations panel on Position, Rotate, Scale and Mirror, Size |
 | Ctrl+M | Merge table cells |
 | Alt+Shift+F8, Alt+F11 | Run Macro, Macro Editor (Tools > Macros) |
@@ -145,8 +145,14 @@ name.
 - Your shortcuts are looked at before the built-in ones, so a key a
   built-in command uses runs your command instead; the page names the
   commands and tools that lost it. Another command of yours with the
-  same keys loses them. A command's built-in shortcut keeps working
-  beside yours until another command takes it.
+  same keys loses them, and a command or tool that had them built in
+  is left without a shortcut (kept as an empty one, as Delete leaves
+  it; Reset gives it back), so one key runs one command and no two
+  commands or tools share one (#1595,
+  `ui::options::tests::a_shortcut_given_to_a_command_is_taken_from_its_built_in_holder`).
+  A command's built-in shortcut keeps working beside yours until
+  another command takes it. A key of yours on a tool picks the tool as
+  its built-in key would (once a press, not W or K during a move).
 - The menus show your shortcut in place of the built-in one. Delete
   leaves the command without a shortcut, a built-in one too: it is
   kept as an empty shortcut, the menus show none and its keys do
@@ -167,7 +173,7 @@ name.
 - The bars' own buttons (listed under Toolbar Buttons) that run a menu
   command show that command's keys on their Shortcut Keys tab and set
   them: New, Open, Save, Print, Cut, Copy, Paste, Undo, Redo, Import,
-  Export, Publish to PDF, Full-screen Preview, Rulers, Grid,
+  Export, Export as PDF, Full-screen Preview, Rulers, Grid,
   Guidelines, Snap Off, Zoom In, Zoom Out and Zoom to Fit
   (`bar_items::menu_command`, #1148). The buttons the menus lack (the
   zoom levels list, Snap To, the other zoom buttons, Options, Launch)
@@ -176,6 +182,10 @@ name.
 ## Checks
 
 - `ui::options::tests::bar_buttons_and_rows_shown_at_times_take_shortcuts`
+- `ui::options::tests::no_two_default_commands_share_a_shortcut`: no two
+  menu commands or tools have the same built-in keys, the documented
+  split of E (Align Centers Horizontally with a selection, Roughen
+  without) aside.
 
 - Given a dialog open, when Esc is pressed, then the dialog is closed
   and the tool and selection are unchanged.

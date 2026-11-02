@@ -4,7 +4,7 @@
 |---|---|
 | Snap to objects | on (Alt+Z), radius 10 px (screen) |
 | Snap to guides | on |
-| Snap to grid | off (Ctrl+Y); document grid 10 mm both ways through the ruler origin (Document Options > Grid) |
+| Snap to grid | off (Ctrl+Y); document grid 10 mm both ways through the ruler origin (Document Setup > Grid) |
 | Snap to baseline grid | off; baselines from the page top (see `rulers-grid-guidelines.md`) |
 | Snap to pixels | off; whole pixels of the document resolution from the page corner |
 | Snap to page | on: the page's corners, edge midpoints, centre and edges |

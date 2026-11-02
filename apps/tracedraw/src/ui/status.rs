@@ -866,6 +866,27 @@ mod tests {
         }
     }
 
+    /// The hints share one style: parts joined by " · ", no "Dbl-click"
+    /// abbreviation, no semicolons, no trailing full stop.
+    #[test]
+    fn hints_share_one_style() {
+        crate::i18n::set_language("en");
+        let mut keys: Vec<String> = Tool::ALL
+            .iter()
+            .map(|t| format!("status_hint.{}", t.id()))
+            .collect();
+        keys.push("status_hint.pick_selected".into());
+        for key in keys {
+            let hint = tr(&key);
+            assert!(!hint.contains(';'), "{key}: {hint}");
+            assert!(!hint.to_lowercase().contains("dbl"), "{key}: {hint}");
+            assert!(!hint.ends_with('.'), "{key}: {hint}");
+            assert!(hint.chars().next().is_some_and(char::is_uppercase), "{key}");
+        }
+        assert!(tool_hint_for(Tool::Pick, true).contains(" · "));
+        assert!(tool_hint_for(Tool::Pick, false).contains("again"));
+    }
+
     #[test]
     fn object_information_names_the_object_and_its_layer() {
         crate::i18n::set_language("en");
@@ -921,7 +942,7 @@ mod tests {
         });
         assert_eq!(object_info(&app), "Bitmap 1 x 1 px (CMYK) on Layer 1");
         app.select(vec![a, b]);
-        assert!(tool_hint(&app).contains("twice"));
+        assert!(tool_hint(&app).contains("again"));
     }
 
     #[test]

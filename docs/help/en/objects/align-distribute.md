@@ -51,7 +51,7 @@ With too few objects the buttons are pale and the panel says how many are
 needed. Each align or distribute is one undo step.
 
 To place copies at even distances in one step, see
-[Step and repeat](step-and-repeat.md).
+[Repeat copies](step-and-repeat.md).
 
 ## Fit objects to a path {#fit-to-path}
 

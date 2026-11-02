@@ -1,4 +1,4 @@
-//! What File > Document Properties reports about a drawing: its objects,
+//! What File > Document Info reports about a drawing: its objects,
 //! curves, text, bitmaps, styles, effects, fills, outlines, colour models
 //! and symbols. See docs/behavior/document-properties.md.
 

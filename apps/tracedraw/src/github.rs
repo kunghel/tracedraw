@@ -864,7 +864,7 @@ mod tests {
     #[ignore]
     fn live_open_of_a_public_drawing() {
         let r = Remote {
-            owner: "igtoth".into(),
+            owner: "tracedraw".into(),
             repo: "tracedraw".into(),
             branch: "main".into(),
             path: "sample.tdraw".into(),

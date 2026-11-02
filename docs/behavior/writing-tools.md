@@ -1,12 +1,12 @@
-# Writing tools
+# Proofing
 
-Text > Writing Tools: Spell Check, Grammar, Thesaurus and Autocorrect,
-plus Text > Custom Optional Hyphens, Text > Encode and Text > Make Text
-Web Compatible.
+Text > Proofing: Spell Check, Grammar, Thesaurus and Autocorrect,
+plus Text > Custom Optional Hyphens, Text > Text Encoding and Text > Use
+Web-safe Text.
 
-## Writing Tools dialog
+## Proofing dialog
 
-Text > Writing Tools > Spell Check (Ctrl+F12), Grammar and Thesaurus open
+Text > Proofing > Spell Check (Ctrl+F12), Grammar and Thesaurus open
 one dialog on that tab: Spell Checker, Grammar and Thesaurus, with "?"
 (the behaviour pages) and Close at the bottom. The checkers look at every
 text object of the page (Check: Document) or the selected ones (Check:
@@ -20,17 +20,50 @@ TraceDraw's `dictionaries` folder under the configuration folder and in
 the folder named under Options > Text > Spelling > Also read
 dictionaries from (each with the folders inside it, three deep, so a
 dictionary package unpacked there or another program's dictionary folder
-works), then in the system's folders (`/usr/share/hunspell`,
-`/usr/share/myspell`, `/Library/Spelling` ...); a name found twice is
-used once, the user's folders first. `hyph_*` and `th_*` files
+works), then in the system's folders (`spell::system_folders`, #1405):
+on Linux `/usr/share/hunspell`, `/usr/share/myspell`,
+`/usr/local/share/hunspell` and `~/.local/share/hunspell`; on macOS
+`/Library/Spelling` and `~/Library/Spelling`; on Windows
+`%LOCALAPPDATA%\Microsoft\Spelling` and `%APPDATA%\Microsoft\Spelling`
+(two deep: Hunspell dictionaries added for the system's spell checker,
+one folder per language, and its lists of added words, UTF-16 with a byte
+order mark) and `%APPDATA%\hunspell`; and everywhere the dictionary
+extensions of office suites installed in the usual places
+(`<Program Files>\<suite>\share\extensions\dict-*`,
+`/usr/lib/<suite>/share/extensions`, `/opt/<suite>/share/extensions`,
+`/Applications/<suite>.app/Contents/Resources/extensions`). A name found
+twice is used once, the user's folders first. `hyph_*` and `th_*` files
 (hyphenation patterns, thesauri) are left out; a `.dic` with no `.aff`
 is a plain word list. The Spelling tab lists them by name, each with a
 check box (on; the names switched off are kept in the preferences),
 Open Folder (creates and opens TraceDraw's folder) and Read Again
-(reads the folders and the dictionaries again). A word is right when any
-dictionary in use, a system word list (`/usr/share/dict/*`), the
-built-in core words or the user's own words know it; a hyphenated word
-when each part is. The affix file is read for `SET` (UTF-8, ISO 8859,
+(reads the folders and the dictionaries again).
+
+More dictionaries on every platform (#1405):
+
+- Download dictionary: a list of 42 languages of the wooorm/dictionaries
+  collection on GitHub (Hunspell dictionaries in UTF-8, each with its
+  own free licence, shown in the button's tip and listed in
+  `ATTRIBUTION.md`; the interface language's is chosen first) and
+  Download, which fetches the affix file, the word file and the licence
+  (`dictionary_download.rs`). On the desktop and on Android they go to
+  TraceDraw's dictionaries folder as `<code>.aff`, `<code>.dic` and
+  `<code>.license.txt` (`en_GB`, `pt`); a browser has no folder, so it
+  holds them in memory and fetches them again at each visit (the
+  settings remember them, `downloaded_dictionaries`; the browser's cache
+  answers). The status bar says when one is installed or why it failed.
+- Add Files: `.dic` and `.aff` files picked with the system's (or the
+  browser's, or Android's) file picker are copied to TraceDraw's
+  folder, or held in memory for the visit in a browser.
+- Windows: its own spell checker (the Spell Checking API,
+  `spell_windows.rs`) checks the languages installed in Windows; it is
+  listed as "Windows spell checker (en-US, ...)" with a check box. A word
+  no dictionary knows is asked of it, and its suggestions come first.
+- The browser hides the dictionaries folder and "Also read dictionaries from" (it has no folders).
+
+A word is right when any dictionary in use, the spell checker of Windows,
+a system word list (`/usr/share/dict/*`), the built-in core words or the
+user's own words know it; a hyphenated word when each part is. The affix file is read for `SET` (UTF-8, ISO 8859,
 Windows code pages, KOI8-R), `FLAG` (characters, `long`, `num`), `AF`
 aliases, `PFX` and `SFX` rules (strip, add, condition, cross product,
 continuation classes: two suffixes, a suffix and a prefix),
@@ -45,7 +78,10 @@ split into two words, then edits found in the word lists; eight at most.
 Checks: `hunspell::tests` (and `real_dictionaries`, ignored, over
 dictionaries in `HUNSPELL_TEST_DIR`: English, Brazilian Portuguese and
 German words, affixed and compound), and
-`spell::tests::dictionaries_in_a_folder_are_found_and_used`.
+`spell::tests::dictionaries_in_a_folder_are_found_and_used`,
+`spell::tests::system_folders_per_platform`,
+`dictionary_download::tests::the_catalog_names_its_files_and_licences` and
+`an_installed_dictionary_is_used`.
 
 Left: Replace with, the
 Replacements list (suggestions; a click puts one in Replace with, a
@@ -114,7 +150,7 @@ their text is hyphenated (they win over the patterns, capitals or not).
 
 ## Autocorrect
 
-Tools > Options > Text > Autocorrect (Text > Writing Tools > Autocorrect
+Tools > Options > Text > Autocorrect (Text > Proofing > Autocorrect
 opens that tab). Applied while typing (`App::update_text`), once a word
 is finished with a space or punctuation:
 
@@ -145,6 +181,17 @@ is finished with a space or punctuation:
 Settings written by older versions with autocorrect switched off as a
 whole load with every rule off.
 
+Autocorrect leaves alone the letters typed in a font that sets another
+script at the places of Latin letters, as fonts made before Unicode had
+the script do (older Tamil fonts typed with the Latin keys of their
+letters, symbol fonts): a capital or a curly quote would be another
+letter there. Such a font has a symbol character map, or says it draws
+a script (Indian scripts, Sinhala, Thai and the others of South-East
+Asia, Tibetan, Arabic, Hebrew, Armenian, Georgian, Ethiopic, Greek,
+Cyrillic) and maps none of its characters (#1358,
+`text_editing::tests::autocorrect_leaves_fonts_with_a_script_at_latin_places_alone`,
+`tracedraw_text::tests::fonts_with_a_script_at_latin_places_are_told_apart`).
+
 Autocorrect never changes text that was pasted or imported, only typed
 characters.
 
@@ -153,9 +200,9 @@ Checks: `autocorrect::tests::days_quotes_and_links_follow_the_options`,
 `ui::writing_tools::tests::corrections_go_to_the_autocorrect_table`,
 `ui::options::tests::every_text_tab_draws`.
 
-## Encode
+## Text Encoding
 
-Text > Encode re-interprets the characters of the selected text: each
+Text > Text Encoding re-interprets the characters of the selected text: each
 character is mapped back to the byte it came from under the "read as"
 encoding and the bytes are decoded again with the right one. Encodings:
 UTF-8, Windows-1252, ISO-8859-1, Mac OS Roman, Windows-1251. Characters
@@ -166,7 +213,7 @@ Check: "cafÃ©" read as Windows-1252, really UTF-8, becomes "café"; a
 Cyrillic word shown as "Ïðèâåò" (read as Latin-1, really Windows-1251)
 becomes "Привет".
 
-## Make Text Web Compatible
+## Use Web-safe Text
 
 For each selected text object: gradient, pattern, texture and mesh fills
 become a solid colour (first stop, front colour, first node); the outline,

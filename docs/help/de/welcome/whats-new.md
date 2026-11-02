@@ -15,7 +15,7 @@ der letzten Versionen.
   Markierungen verschwinden, wenn Sie den Befehl ausschalten, und beim
   nächsten Start von TraceDraw ist der Befehl wieder aus.
 - Die vollständige Liste der Änderungen jeder Version steht im
-  [Änderungsprotokoll](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [Änderungsprotokoll](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   des Projekts.
 
 ## Highlights der letzten Versionen {#highlights}

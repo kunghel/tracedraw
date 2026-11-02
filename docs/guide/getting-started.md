@@ -11,7 +11,7 @@ of this guide make sense.
 Every version of TraceDraw has a release with files for each system. To
 install it:
 
-1. Open the [latest release](https://github.com/igtoth/tracedraw/releases/latest).
+1. Open the [latest release](https://github.com/tracedraw/tracedraw/releases/latest).
 2. Download the file for your system (`<version>` is the version
    number):
 
@@ -39,7 +39,7 @@ pre-release on the releases page is refreshed with every change.
 
 ### In your browser
 
-You can also [open TraceDraw in the browser](https://igtoth.github.io/tracedraw/)
+You can also [open TraceDraw in the browser](https://tracedraw.github.io/tracedraw/)
 with nothing to install. While it loads, the page shows a progress bar;
 the editor starts when the bar is full.
 
@@ -122,12 +122,12 @@ Detail: [the New Document notes](../behavior/new-document.md).
 From top to bottom and left to right:
 
 - **Menu bar**: every command, grouped in menus such as File, Edit,
-  View, Layout, Object, Effects, Text, Tools, Window and Help, with each
+  View, Object, Text, Image, Effects, Page, Tools, Window and Help, with each
   command's shortcut shown beside it.
 - **Standard toolbar**: New, Open (its arrow lists recent drawings),
   Save and Print; Cut, Copy and Paste; Undo and Redo (their arrows list
   the steps, so you can undo several at once); Import, Export and
-  Publish to PDF; the zoom box; Show Rulers, Show Grid and Show
+  Export as PDF; the zoom box; Show Rulers, Show Grid and Show
   Guidelines; Snap Off and Snap To; Options; and Launch (Font Manager,
   Welcome Screen, Color Management).
 - **Property bar**: the settings for what you are doing right now. With

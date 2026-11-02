@@ -1,5 +1,5 @@
-//! Bitmaps > Mode dialogs: Black and White (1-bit), Duotone (8-bit) and
-//! Paletted (8-bit), and Bitmaps > Remove Background, each a window the
+//! Image > Mode dialogs: Black and White (1-bit), Duotone (8-bit) and
+//! Paletted (8-bit), and Image > Remove Background, each a window the
 //! user sizes with the shared Before and After preview of the selected
 //! bitmap (`before_after.rs`) at the left and its settings at the right.
 //! OK converts every selected bitmap in one undo step.
@@ -557,7 +557,7 @@ pub fn bg_pick_click(
     st.picking = false;
 }
 
-/// Bitmaps > Remove Background: the list of colours to remove (each
+/// Image > Remove Background: the list of colours to remove (each
 /// Automatic or picked, with its own tolerance), tolerance, edge
 /// softness, Contiguous, Remove specks and Clean edge colors.
 pub fn remove_background_dialog(

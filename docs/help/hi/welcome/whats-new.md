@@ -13,7 +13,7 @@ TraceDraw का हर संस्करण सुविधाएँ और �
   के ऊपर एक छोटा बिंदु दिखता है। कमांड बंद करने पर चिह्न हट जाते हैं, और अगली
   बार TraceDraw शुरू होने पर कमांड फिर बंद रहती है।
 - हर संस्करण के बदलावों की पूरी सूची प्रोजेक्ट के
-  [चेंज लॉग](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md) में है।
+  [चेंज लॉग](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md) में है।
 
 ## हाल के संस्करणों की मुख्य बातें {#highlights}
 

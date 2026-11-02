@@ -382,7 +382,7 @@ impl K<'_> {
         }
         let r = Rect::from_min_size(o, Vec2::splat(size));
         self.p.rect_filled(r.expand(1.0), 2.0, alpha(PAGE, 220));
-        crate::ui::icons::draw(self.p, r, tool, INK);
+        crate::ui::icons::draw_on(self.p, r, tool, INK, PAGE);
     }
 
     /// A drag from `a` to `b`: a dashed accent line with an arrowhead.

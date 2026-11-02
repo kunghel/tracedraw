@@ -107,7 +107,7 @@ Detail: [the Shape tool notes](../behavior/shape-tool.md).
 ## Shaping: weld, trim, intersect
 
 Shaping combines overlapping objects into new outlines. Select two or
-more objects and use **Object > Shaping**, the buttons at the end of the
+more objects and use **Object > Combine Shapes**, the buttons at the end of the
 property bar, or the **Shaping** panel. The **last object you selected**
 is the target: it gives the result its fill and outline.
 
@@ -121,7 +121,7 @@ is the target: it gives the result its fill and outline.
 | **Back Minus Front** | the back object without the ones in front |
 | **Boundary** | an outline around the selection (works on one object too) |
 
-In the Shaping panel you can choose, for Weld, Trim and Intersect,
+In the Combine Shapes panel you can choose, for Weld, Trim and Intersect,
 whether to leave the original source and target objects. Each operation
 is one undo step. Detail: [the shaping notes](../behavior/shaping.md).
 

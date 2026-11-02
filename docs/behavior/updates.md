@@ -4,7 +4,7 @@ Desktop only (the browser build is always the latest; there Help >
 Updates opens the releases page).
 
 - Help > Updates asks GitHub for the project's latest release
-  (`api.github.com/repos/igtoth/tracedraw/releases/latest`) and says
+  (`api.github.com/repos/tracedraw/tracedraw/releases/latest`) and says
   whether it is newer than this version (numbers compared as major,
   minor, patch; drafts, pre-releases and the nightly build never count).
 - A newer release offers Download, Release notes, Skip this version and

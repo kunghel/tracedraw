@@ -18,8 +18,10 @@ key("F10"); click(800, 240); drag(850, 240, 870, 260); check("node drag")
 key("space"); click(500, 240); click(500, 240, button=3); time.sleep(0.4); key("Escape"); check("context menu")
 combo("Control_L", "a"); combo("Control_L", "g"); combo("Control_L", "u"); check("group ungroup")
 combo("Control_L", "l"); combo("Control_L", "k"); combo("Control_L", "q"); check("combine break convert")
-click(17, 505); drag(500, 240, 540, 270); check("drop shadow")
-click(17, 540); drag(650, 240, 620, 220); check("transparency")
+# The toolbox buttons: the Variable Outline button sits under the brush
+# tools, so the buttons from Rectangle down are one button lower.
+click(17, 538); drag(500, 240, 540, 270); check("drop shadow")
+click(17, 573); drag(650, 240, 620, 220); check("transparency")
 key("F2"); click(600, 400); key("F4"); key("h"); drag(600, 400, 650, 420); key("F4"); check("zoom pan")
 click(175, 872); click(77, 872); check("pages")
 for y in (105, 180, 250, 340, 430):

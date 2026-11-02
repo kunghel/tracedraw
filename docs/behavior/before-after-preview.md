@@ -2,7 +2,7 @@
 
 One preview serves every dialog that changes a picture: Trace Bitmap,
 Remove Background, the colour mode dialogs (Black and White, Duotone,
-Paletted), every bitmap effect dialog and Image Adjustments
+Indexed), every bitmap effect dialog and Image Adjustments
 (`apps/tracedraw/src/ui/before_after.rs`). Each dialog is a window the
 user sizes (960 x 640 points at first, never under 720 x 480, a
 maximize button in the title bar; Trace Bitmap keeps its 1040 x 700):
@@ -48,7 +48,7 @@ and redo arrows (`before_after::steps_row`, 34 points):
   step to.
 - Trace Bitmap and Image Adjustments keep histories of their own
   (`trace_dialog.rs`, `lab_dialog.rs`: a step keeps the Colors tab's
-  merges and edits, or a snapshot). Black and White, Duotone, Paletted
+  merges and edits, or a snapshot). Black and White, Duotone, Indexed
   and the effect dialogs, whose state is their settings alone, use
   `before_after::steps_for`: the history is kept between frames under
   the dialog's id and starts afresh when the dialog opens.
@@ -89,7 +89,7 @@ and redo arrows (`before_after::steps_row`, 34 points):
 - `before_after::tests::results_are_made_once_per_key`: a result is
   made once per key and found again without being made.
 - `pick_drag_tests::every_picture_dialog_has_the_shared_preview`: Remove
-  Background, Black and White, Duotone, Paletted, an effect dialog,
+  Background, Black and White, Duotone, Indexed, an effect dialog,
   Image Adjustments and Trace Bitmap all draw the Preview list, the
   zoom and pan buttons and the panes; the zoom buttons and the fit
   button change the zoom, the Preview list shows one pane for Before,

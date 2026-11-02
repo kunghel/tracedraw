@@ -15,7 +15,7 @@ saber o que mudou e lista os destaques das versões mais recentes.
   um menu que contém um. As marcas somem quando você desativa o comando, e ele
   volta desativado na próxima vez que o TraceDraw é iniciado.
 - A lista completa de mudanças de cada versão está no
-  [registro de alterações](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [registro de alterações](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   do projeto.
 
 ## Destaques das versões recentes {#highlights}

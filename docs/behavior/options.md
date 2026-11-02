@@ -2,11 +2,11 @@
 
 Tools > Options is a submenu: TraceDraw
 (Ctrl+J), Customization, Tools, Global, Workspaces and AI each open the
-Options window on their pages. Layout > Document Options opens it on the
+Options window on their pages. Page > Document Setup opens it on the
 document's pages (also a double-click on a ruler, the page border or its
 shadow). The window has a tab for each of them along the top, so every
 option is a click away: TraceDraw, Customization, Tools, Global,
-Workspaces, AI and, while a drawing is open, Document Options. A tab
+Workspaces, AI and, while a drawing is open, Document Setup. A tab
 shows its set's page list and the page of that set shown last (else its
 first page); the title follows the tab, and OK and Cancel cover what
 was changed on every tab (#633).
@@ -30,7 +30,7 @@ was changed on every tab (#633).
 - Section headings are a label followed by a light line to the right
   edge. Indented groups have no guide line.
 - Bottom row: the help button (27 x 27) at the left (and Save as Default
-  in Document Options), OK and Cancel (100 x 27) at the right.
+  in Document Setup), OK and Cancel (100 x 27) at the right.
 - Changes show at once. OK keeps them and writes the preferences; Cancel,
   the close button and Esc put back everything the dialog changed,
   including document settings (their commands are undone).
@@ -48,7 +48,7 @@ was changed on every tab (#633).
 | Alignment Guides | On or off; guides for the selection as one or each object; edges, centres, the page, equal spacing, equal sizes; margins with offset and inset; colour and line style; Reset (see `live-guides.md`) |
 | Dynamic Guides | On or off; angles (check boxes every 15 degrees, others added by value); distance and angle tip; tick marks, their spacing, snap to ticks; colour and line style; Reset (see `live-guides.md`) |
 | Save | Back up original file before saving (on): `backup_of_<name>` next to the file or in a chosen folder; Auto-backup every 20 minutes (on): each open drawing with unsaved changes as `AutoBackup_of_<name>.tdraw` in `TraceDraw` under the temporary folder or a chosen folder; a session that ended without closing offers them at the next start (see `recovery.md`) |
-| Text | Five tabs (`options_text_tab`). Display: keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text), text units (points at first, any unit of the rulers: font sizes on the property bar, the Text docker, the table bar, this page and the object information show and take sizes in it, a unit typed with the value counts; sizes are kept in points, `settings.text_units`, `pick_drag_tests::font_sizes_show_and_type_in_the_text_units`, #529), default font and size (of new text: they do not follow the text selected and can be changed while a text is selected; with no text selected the Text tool's bar shows and sets them, `the_default_text_font_does_not_follow_the_selection`, #449), non-printing characters. Paragraph Text: show text frames, hyphenation, hyphenation patterns (Built-in (English) or a `hyph_*.dic` file found in the dictionary folders, shown without `hyph_`; see `text.md`). Fonts: show recently used fonts at the top of the font lists (on) and how many (5, 1 to 20; the lists keep the last 20), font sample size. Spelling: ignore words with numbers, ignore words in capitals (both off, also under Options in the Spell Checker), add corrections to Autocorrect (off: a word replaced in the Spell Checker becomes a replacement row, its row replaced if it has one). Dictionaries: the Hunspell dictionaries found, each with a check box, TraceDraw's dictionaries folder with Open Folder, Also read dictionaries from (a folder, Browse and Clear) and Read Again (see `writing-tools.md`). Autocorrect: see `writing-tools.md`; Text > Writing Tools > Autocorrect opens this tab |
+| Text | Five tabs (`options_text_tab`). Display: keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text), text units (points at first, any unit of the rulers: font sizes on the property bar, the Text docker, the table bar, this page and the object information show and take sizes in it, a unit typed with the value counts; sizes are kept in points, `settings.text_units`, `pick_drag_tests::font_sizes_show_and_type_in_the_text_units`, #529), default font and size (of new text: they do not follow the text selected and can be changed while a text is selected; with no text selected the Text tool's bar shows and sets them, `the_default_text_font_does_not_follow_the_selection`, #449), non-printing characters. Paragraph Text: show text frames, hyphenation, hyphenation patterns (Built-in (English) or a `hyph_*.dic` file found in the dictionary folders, shown without `hyph_`; see `text.md`). Fonts: show recently used fonts at the top of the font lists (on) and how many (5, 1 to 20; the lists keep the last 20), font sample size. Spelling: ignore words with numbers, ignore words in capitals (both off, also under Options in the Spell Checker), add corrections to Autocorrect (off: a word replaced in the Spell Checker becomes a replacement row, its row replaced if it has one). Dictionaries: the Hunspell dictionaries found (and on Windows its own spell checker), each with a check box, TraceDraw's dictionaries folder with Open Folder and Also read dictionaries from (a folder, Browse and Clear), both not in a browser, Download dictionary (a language and Download), Add Files and Read Again (see `writing-tools.md`, #1405). Autocorrect: see `writing-tools.md`; Text > Proofing > Autocorrect opens this tab |
 
 ## Customization
 
@@ -62,21 +62,47 @@ mouse button; see `color-palettes.md`).
 
 ## Tools
 
+The page list shows each tool's toolbox icon beside its name, in this
+order: Pick, Eraser, Zoom/Pan, Freehand/Bézier, Shape Recognition,
+Rectangle, Ellipse, Polygon, Graph Paper, Spiral, Table, Dimension,
+Connector, Mesh Fill (`OptionsSet::pages`). Each page has the label column
+and controls of the other options pages; every value is the same one the
+tool's property bar edits, so a change on either shows on the other, is
+kept with the tool settings across restarts (`settings.tools`) and is put
+back by Cancel.
+
 Pick (cross hair cursor; treat all objects as filled, on by default:
 unfilled objects are picked inside too; marquee selects touched objects,
 off by default: a marquee or freehand selection takes what it touches and
-Alt only what lies wholly inside), Zoom/Pan (right mouse button of the Zoom tool:
-zoom out or context menu; mouse wheel action), Curve tools (Freehand
+Alt only what lies wholly inside), Eraser (thickness, round or square
+nib), Zoom/Pan (Zoom tool section: right mouse button of the Zoom tool:
+zoom out or context menu; Zoom relative to 1:1, on: zoom 100 % is the
+real size at the calibrated screen resolution, off: 96 pixels per inch
+whatever the calibration (`settings.zoom_relative_1to1`); Center mouse
+when zooming with the mouse wheel, off: a wheel notch first brings the
+spot under the pointer to the middle of the canvas and moves the pointer
+there (not in the browser, which cannot move it), then zooms about the
+middle, plain wheel or Ctrl+wheel as the mouse wheel action says
+(`settings.wheel_zoom_centers`); mouse wheel action; Calibrate Zoom... opens the ruler
+calibration on the Display page; Pan tool section: right mouse button of
+the Pan tool, zoom out or context menu (at first,
+`settings.pan_right_click_out`)), Freehand/Bézier (Freehand
 smoothing, 0 to 100, 50 by default; Join and close within, 1 to 50
 screen pixels, 5 by default; Graphics tablet: pen pressure sets the
 width of Freehand and Brush Strokes drags, on; see `curve-tools.md` and
-`pen-pressure.md`), Rectangle (Rectangle
+`pen-pressure.md`), Shape Recognition (recognition and smoothing levels,
+off to highest, as on the tool's property bar), Rectangle (Rectangle
 corners: style, the four sizes, Edit corners together; Scale corners:
 Relative corner scaling, off by default so that new rectangles keep
 their corner size when resized; see `shape-tools.md`),
 Ellipse (ellipse, pie or arc and its angles), Polygon (points, sharpness),
-Spiral (revolutions, symmetrical or logarithmic), Graph Paper and Table
-(rows, columns), Eraser (thickness, round or square nib).
+Graph Paper (rows, columns), Spiral (revolutions, symmetrical or
+logarithmic), Table (rows, columns), Dimension (the label of new
+dimensions: precision, units, show units, prefix, suffix; dimensions
+already drawn keep theirs, unlike the property bar, which also changes
+the selected dimensions; see `dimensions.md`), Connector (corner radius
+of new rounded connectors, 0 to 1000 mm, 3 mm by default), Mesh Fill
+(columns and rows of a new mesh, 1 to 50, 2 by 2 by default).
 
 ## Global and Workspaces
 
@@ -137,9 +163,9 @@ starts at the CDR type for a drawing without a file (#613).
 
 ### Bitmap Tracing
 
-Quick Trace uses (`tracing`): one of the eight presets (Clipart by
-default). Every trace starts with: Remove background (on) and Delete
-original image (off); Quick Trace and the Trace dialog's presets take
+Automatic trace uses (`tracing`): one of the nine presets (Optimized by
+default, which chooses the detail for each picture; Clipart before). Every trace starts with: Remove background (on) and Delete
+original image (off); Automatic trace and the Trace dialog's presets take
 them, and the dialog can still change them for one trace.
 
 ### Warnings
@@ -186,8 +212,8 @@ it), applied when the slider is let go.
   rows. 100 % is a zoom of 1 over the system's scaling on every system:
   one interface point per pixel at the system's scaling (`BASE_ZOOM`).
   It was 0.8 on macOS and in the browser and 12 / 13 on Windows, to make
-  the whole interface as compact as the reference drawing program; what
-  made that program compact was its small button size, which the bars
+  the whole interface compact; what
+  made it compact was its small button size, which the bars
   offer (Default Button Size: Small, also the size at first, see `toolbars.md`), so
   the text and the menus stay at the system's size (#1, #229).
 - The size is a zoom factor over the monitor's own scaling, so text stays
@@ -236,7 +262,7 @@ per inch are that resolution over the interface's zoom (96 at 100 %),
 so the interface size never changes real sizes. Reset puts
 96 back.
 
-## Document Options
+## Document Setup
 
 General (rendering resolution; Fill open curves, off: an open curve's
 fill shows only in its closed subpaths, on screen, in hit testing and in
@@ -287,29 +313,50 @@ toolbox, its flyouts and the Hints panel draw each tool in its group's
 colour (pick blue, shape editing purple, crop red, zoom teal, curves
 green, drawing orange, shapes light blue, text grey, dimensions slate,
 connectors sea green, effects magenta, transparency indigo, eyedroppers
-ochre, fills orange, outlines navy), 35 % lighter on dark themes. The
+ochre, fills orange, outlines navy), 35 % lighter on dark themes: the
+hue is the icon's ink, the live point's blue stays (see `icons.md`). The
 High Contrast theme keeps one icon colour.
 
 ## Desktop accessibility settings
 
-Read once at start-up (`system_prefs.rs`, with the `reg` tool on
-Windows; elsewhere nothing is read and the defaults apply):
+The system's text size and contrast setting, followed on every platform
+(#1412, `system_prefs.rs`). A background thread reads them at start
+(the first frame waits for that reading 0.3 s at most) and again every
+3 s; in the browser a page timer does. A frame only takes the last
+reading, and a change asks for a frame, so the interface follows the
+system within seconds and no frame waits for the system:
 
-- Text size (Windows Settings > Accessibility > Text size, the
-  `TextScaleFactor` value, 100 to 225 %): with "Grow with the desktop
-  text size" (Appearance, on by default) the interface size is
-  multiplied by it, up to 400 %. The option shows the size read.
-- High contrast (the `Flags` value of the HighContrast key, bit 1):
-  with "Use high contrast while the desktop has a high contrast theme
-  on" (on by default) the High Contrast theme is used whatever theme is
-  picked. Its colours are the desktop's (`Control Panel\Colors`:
-  Window, WindowText, Hilight, HilightText, ButtonFace, ButtonText,
-  GrayText, HotTrackingColor): panels in the button face colour, fields
-  and menus in the window colour, text in the button text colour,
-  disabled text in the grey text colour, hovered and picked rows in the
-  highlight colour with the highlight text colour on them, links and
-  focus frames in the hot-track colour. Picked by hand, or when a colour
-  cannot be read, the classic black theme's colours are used.
+| Platform | Text size | High contrast |
+|---|---|---|
+| Windows | Settings > Accessibility > Text size (`TextScaleFactor`, 100 to 225 %, read with `reg`) | the high contrast themes (`Flags` of the HighContrast key, bit 1), with their colours |
+| macOS | none: macOS has no system text size for programs of this kind, so the option is greyed and its tip says to use Interface size | Accessibility > Display > Increase contrast, asked of AppKit (`NSWorkspace.accessibilityDisplayShouldIncreaseContrast`) through `osascript`, with the dark or light appearance choosing the colours |
+| Linux, GNOME and its relatives | `gsettings get org.gnome.desktop.interface text-scaling-factor` | the desktop portal's `org.freedesktop.appearance contrast` (read through `gdbus`, 1 s at most), else `org.gnome.desktop.a11y.interface high-contrast` or a `HighContrast` theme |
+| Linux, KDE | `forceFontDPI` of `kcmfonts` over 96, else the general font's size in `kdeglobals` over 10 points | the portal's contrast, else a high contrast colour scheme in `kdeglobals` |
+| Android | Settings > Display > Font size (the configuration's font scale; a change reaches the running app) | Android 14's contrast setting at medium or high, or high contrast text |
+| Browser | the page's default font size (the browser's font size setting) over 16 px | `prefers-contrast: more` or `forced-colors: active` |
+
+- Text size: with "Grow with the desktop text size" (Appearance, on by
+  default) the interface size is multiplied by it (1 to 2.25, smaller
+  sizes count as 1), up to 400 %. The option shows the size read; where
+  none can be read it is greyed and its tip says why.
+- High contrast: with "Use high contrast while the desktop has a high
+  contrast theme on" (on by default) the High Contrast theme is used
+  whatever theme is picked; greyed with the reason where the setting
+  cannot be read. On Windows its colours are the desktop's
+  (`Control Panel\Colors`: Window, WindowText, Hilight, HilightText,
+  ButtonFace, ButtonText, GrayText, HotTrackingColor): panels in the
+  button face colour, fields and menus in the window colour, text in the
+  button text colour, disabled text in the grey text colour, hovered and
+  picked rows in the highlight colour with the highlight text colour on
+  them, links and focus frames in the hot-track colour. Elsewhere,
+  where the system names no colours, a system with dark windows gets
+  the classic black theme's colours and one with light windows the white
+  theme's (black text on white, a purple highlight, dark blue links).
+  Picked by hand, or when a colour cannot be read, the classic black
+  theme's colours are used. When the colours change while the editor
+  runs, the interface takes them at once.
+- Tests read nothing from the system running them
+  (`system_prefs::tests`: the recorded outputs of each platform).
 
 ## Where the preferences are kept
 

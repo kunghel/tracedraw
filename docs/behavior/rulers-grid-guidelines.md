@@ -24,7 +24,7 @@
   showing dashed lines across the window while dragging.
 - Dragging out of a ruler adds a guideline (horizontal from the top ruler,
   vertical from the left one) where it is released inside the window.
-- Double-clicking a ruler or the corner opens Document Options at Rulers.
+- Double-clicking a ruler or the corner opens Document Setup at Rulers.
 
 ### Origin
 
@@ -33,7 +33,7 @@ corner, 0, 0 by default). Rulers, the status bar's cursor coordinates,
 the property bar's X and Y, the Transformations summary, the Guidelines
 panel and the document grid all count from it.
 
-### Document Options > Rulers
+### Document Setup > Rulers
 
 Units (inches, millimeters, picas,
 points, pixels, ciceros, didots, feet, yards, miles, centimeters, meters,
@@ -43,7 +43,7 @@ Show rulers, and a button that puts the origin back at the page corner.
 
 ### Drawing scale
 
-Document Options > Rulers > Drawing scale makes a distance on the page
+Document Setup > Rulers > Drawing scale makes a distance on the page
 stand for a distance in the world (`drawing_scale.rs`):
 
 - Typical scales: 1:1 (default), 1:2, 1:5, 1:10, 1:20, 1:25, 1:50, 1:75,
@@ -59,13 +59,13 @@ stand for a distance in the world (`drawing_scale.rs`):
   the scale, "millimeters (1:100)"), the cursor coordinates and object
   details on the status bar, the property bar's position, size, nudge,
   duplicate distance and corner sizes, the Transformations, Object
-  Coordinates, Step and Repeat, Corners and Join Curves panels, contour
+  Coordinates, Repeat Copies, Corners and Join Curves panels, contour
   offsets, the grid spacing, guideline positions, the ruler origin and the
   symmetry centre, and the labels of new dimension lines.
 - Not through it, as printed: the page size, bleed, page margins and
   columns of the guideline presets, the baseline grid, outline widths, text
   sizes, paragraph indents, tabs and columns, barcodes and QR codes, nib
-  widths (eraser, artistic media) and Border and Grommet.
+  widths (eraser, artistic media) and Banner Hems and Eyelets.
 - The scale is saved with the drawing (`scale_page` and `scale_world` in
   mm with the units they were given in); changing it is an undo step.
 
@@ -73,7 +73,7 @@ stand for a distance in the world (`drawing_scale.rs`):
 
 - View > Grid > Document Grid shows it over the page and the desktop,
   behind objects, as 1 px `#DCDCDC` lines or `#8C8C8C` dots at the
-  intersections (Document Options > Grid > Show grid as).
+  intersections (Document Setup > Grid > Show grid as).
 - Spacing: horizontal and vertical, 10 mm by default, shown either as a
   distance ("millimeters apart") or as lines per unit. Lines pass through
   the ruler origin.
@@ -115,10 +115,13 @@ stand for a distance in the world (`drawing_scale.rs`):
   guidelines are red.
 - Each guideline has a colour, a style (solid, dashed, dotted, dash dot)
   and a lock, saved with the drawing in `.tdraw` files (every page's
-  guidelines). The `.cdr` writer leaves the guides layers empty (the
-  guideline record of versions 14 and later is not known), so saving a
-  drawing with guidelines to `.cdr` adds "Guidelines are not saved in
-  .cdr files" to the status line (#1161).
+  guidelines). `.cdr` files keep them too (#1161): the guidelines every
+  page has go once on the master page's guides layer, as the other
+  program's files keep theirs, and each page's others on its own guides
+  layer (before version 14 on its entry for the master's guides layer);
+  opening the file puts the master page's guidelines on every page. The
+  colour, style and lock of a guideline are not written there (they
+  come back in the default colour, dashed and unlocked).
 - Pick tool: a click selects a guideline (Shift adds or removes); a press
   and drag moves it, snapping to the grid, the page and objects; dropping
   it outside the drawing window deletes it. The move is one undo step.
@@ -133,7 +136,7 @@ stand for a distance in the world (`drawing_scale.rs`):
   selected; the Guidelines docker's Duplicate does the same, and its
   Clear deletes every guideline of the type shown, one undo step
   (`selected_guidelines_move_copy_duplicate_and_clear_together`). The
-  duplicate offset is Layout > Document Options > General > Duplicate
+  duplicate offset is Page > Document Setup > General > Duplicate
   offset.
 - Edit > Copy (Ctrl+C) and Cut (Ctrl+X) with guidelines and no objects
   selected put them on the clipboard (status "n guideline(s) copied"; Cut
@@ -153,7 +156,13 @@ stand for a distance in the world (`drawing_scale.rs`):
   pivot where it was clicked and two curved arrows 70 px along it.
   Dragging an arrow turns the guideline about the pivot in whole degrees;
   0 and 180 make it horizontal, 90 and 270 vertical.
-- Locked guidelines can be selected but not moved or deleted.
+- Locked guidelines can be selected but not moved, rotated, nudged,
+  deleted or edited: a click or double click on a locked guideline never
+  shows its rotation handles, and locking one that shows them hides them;
+  the Guidelines docker's Clear, colour and style leave locked ones as
+  they are (the status bar says the guideline is locked when nothing
+  else changed). The padlock of the Guides row in the Objects panel
+  locks or unlocks every guideline of the page the same way (#1385).
 - The pointer over a guideline (where no object is) shows the arrows
   across it: up and down for a horizontal one, sideways for a vertical
   one, the move arrows for a slanted one, the plain arrow for a locked
@@ -193,7 +202,7 @@ guideline as soon as it is entered (Enter or leaving the field), with no
 need for Modify, which stays for a change of type and for Add's values
 (`guides::tests::typed_values_move_the_selected_guideline_and_the_panel_follows_it`).
 
-### Document Options > Guidelines
+### Document Setup > Guidelines
 
 Show guidelines, Snap to guidelines, the default guideline colour, the
 default preset guideline colour, and presets added in the preset colour:
@@ -210,7 +219,7 @@ A preset line already present is not added twice.
 
 ## Save as Default
 
-Tools > Save Settings as Default (and the button in Options) keeps the
+Tools > Save as Defaults (and the button in Options) keeps the
 active drawing's grid, ruler and guideline settings, and its default
 properties for new objects (see `object-styles.md`), for new drawings.
 
@@ -222,6 +231,9 @@ properties for new objects (see `object-styles.md`), for new drawings.
 - `guides::tests::dragging_a_guide_is_one_undo_step_and_leaves_other_guides_alone`
 - `guides::tests::dropping_a_guide_outside_the_window_deletes_it`
 - `guides::tests::locked_guides_select_but_do_not_move_or_delete`
+- `guides::tests::locked_guide_shows_no_rotation_handles`
+- `guides::tests::clear_colour_and_style_leave_locked_guides_alone`
+- `pick_drag_tests::locked_guidelines_cannot_be_rotated_moved_nudged_or_deleted`
 - `pick_drag_tests::arrow_keys_nudge_the_selected_guidelines`
 - `guides::tests::second_click_rotates_a_guide_about_the_clicked_point`
 - `ui::layout_options::tests::*` (form origin, presets)

@@ -1,6 +1,6 @@
-# Publish to PDF
+# Export as PDF
 
-File > Publish to PDF... (also on the standard toolbar) opens the PDF
+File > Export as PDF... (also on the standard toolbar) opens the PDF
 Settings dialog for the active drawing, with the tabs General, Color,
 Document, Objects, Prepress, Security and the issues tab, then "?", OK
 and Cancel. OK writes the file named on General (in the browser the file
@@ -108,7 +108,7 @@ the choices. The writer:
   curves with invisible text over them.
 - Respects licences: a font whose OS/2 embedding bits allow no
   embedding (restricted licence, or bitmaps only) is never embedded;
-  its text is written as curves. Publish to PDF names those fonts on
+  its text is written as curves. Export as PDF names those fonts on
   the status line, and the preflight's "Font may not be embedded" note
   (`preflight.md`) lists the text that uses them before publishing.
 
@@ -120,7 +120,7 @@ Nothing is flattened into short lines.
 
 ## Prepress
 
-Bleed: the drawing's bleed (Document Properties) to start with, 0 to
+Bleed: the drawing's bleed (Document Info) to start with, 0 to
 50 mm, around every page (trim box the page, media box the page and the
 bleed).
 

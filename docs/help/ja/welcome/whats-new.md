@@ -13,7 +13,7 @@ TraceDraw の各バージョンでは機能と修正が加わります。この�
   点が付きます。コマンドをオフにすると印は消え、TraceDraw を次に起動したとき
   にはコマンドは再びオフになっています。
 - 各バージョンの変更点の完全な一覧は、プロジェクトの
-  [変更履歴](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [変更履歴](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   にあります。
 
 ## 最近のバージョンの主な新機能 {#highlights}

@@ -51,7 +51,7 @@ beside the pointer shows the colour a click would take
   Tools > Convert Colors reads in the model it went to, a picture in
   CMYK mode giving its pixels in CMYK (#1254); a colour
   of another model (HSB, Lab, grey...) in the drawing's primary colour
-  mode (Document Options); one per line; spot colours show their tint
+  mode (Document Setup); one per line; spot colours show their tint
   and Registration its name;
 - its hex value, upper case (`#E02020`).
 

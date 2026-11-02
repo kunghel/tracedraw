@@ -14,9 +14,9 @@ brackets are the Store's.
 ## Properties
 
 - Category: Photo & video (or Productivity).
-- Privacy policy URL: <https://github.com/igtoth/tracedraw/blob/main/PRIVACY.md>
-- Website: <https://github.com/igtoth/tracedraw>
-- Support contact: <https://github.com/igtoth/tracedraw/issues>
+- Privacy policy URL: <https://github.com/tracedraw/tracedraw/blob/main/PRIVACY.md>
+- Website: <https://github.com/tracedraw/tracedraw>
+- Support contact: <https://github.com/tracedraw/tracedraw/issues>
 - Product declarations: none of the data, accessibility or
   inking boxes apply; the app works with a mouse and a keyboard.
 - System requirements: Windows 10 version 1809 or later, x64. A
@@ -75,7 +75,7 @@ of location or personal data, no purchases. The usual result is 3+ / E.
 >
 > TraceDraw collects nothing and needs no account. It is free software
 > under the MIT or Apache-2.0 license; the source code, the feature
-> status and the issue tracker are at github.com/igtoth/tracedraw.
+> status and the issue tracker are at github.com/tracedraw/tracedraw.
 >
 > This is an alpha release: some features are still missing, and real
 > work will turn up bugs. Reports and sample files help most.
@@ -99,8 +99,12 @@ of [`CHANGELOG.md`](../CHANGELOG.md) for the version submitted.
 **Keywords** [up to 7]: vector editor, illustration, page layout,
 drawing, graphic design, print, cdr
 
-**Copyright and trademark info**: Copyright (c) 2026 Ighor Toth and the
-TraceDraw contributors. MIT or Apache-2.0.
+**Copyright and trademark info**: Copyright (c) 2026 TraceDraw members and
+contributors. MIT or Apache-2.0. TraceDraw is an independent
+project, not affiliated with, endorsed by or sponsored by Corel
+Corporation or Alludo. CorelDRAW is a registered trademark of Corel
+Corporation. .cdr support is implemented independently, for
+interoperability.
 
 **Screenshots** [PNG, 1366 x 768 or larger, up to 10]: the README pictures
 in `docs/images/` saved as PNG (1600 x 950): the poster (`hero`), curves,

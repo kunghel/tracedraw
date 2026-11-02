@@ -148,7 +148,7 @@ and columns (4) on the property bar, and drag.
 
 - Click a cell and type. **Tab** moves to the next cell, **Shift+Tab**
   back. A row grows as its text needs more room.
-- The **Table** menu inserts rows and columns, selects cells, rows,
+- The **Text > Table** submenu inserts rows and columns, selects cells, rows,
   columns or the table, deletes, distributes rows and columns evenly,
   merges cells (`Ctrl+M`), unmerges and splits.
 - **Convert Text to Table** turns paragraphs into rows and cuts them
@@ -159,9 +159,9 @@ and columns (4) on the property bar, and drag.
 
 See [the table notes](../behavior/table.md).
 
-## Writing tools
+## Proofing
 
-**Text > Writing Tools** offers:
+**Text > Proofing** offers:
 
 - **Spell Check**: unknown words with suggestions; Replace, Replace All,
   Skip, Skip All and Add to the user list.
@@ -172,13 +172,13 @@ See [the table notes](../behavior/table.md).
   types typographic quotes and replaces `(c)`, `(r)`, `(tm)` and simple
   fractions as you type.
 
-Also in the Text menu: **Change Case**, **Text Statistics**, **Encode**
+Also in the Text menu: **Change Case**, **Word Count**, **Text Encoding**
 (repairs text that was read with the wrong character encoding) and
-**Make Text Web Compatible**. **Find and Replace** (`Ctrl+F`) searches
+**Use Web-safe Text**. **Find and Replace** (`Ctrl+F`) searches
 text and object attributes, and the **Glyphs** panel shows every
 character of a font.
 
-Detail: [the writing tool notes](../behavior/writing-tools.md).
+Detail: [the proofing notes](../behavior/writing-tools.md).
 
 ## Where next
 

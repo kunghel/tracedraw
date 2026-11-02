@@ -147,7 +147,7 @@ and the new bitmaps come out selected.
 
 ## PDF and printing
 
-PDF export, Publish to PDF and printing (which goes through the same
+PDF export, Export as PDF and printing (which goes through the same
 PDF) draw each shadow beneath its object as a picture of the blurred
 silhouette at 300 dpi (fewer when the shadow is so large it would pass
 40 million pixels), in the shadow's colour, with its feathering, fade

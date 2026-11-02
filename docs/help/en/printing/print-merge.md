@@ -1,6 +1,6 @@
-# Print merge
+# Data merge
 
-Print merge fills a design with data, to make many versions of it: name
+Data merge fills a design with data, to make many versions of it: name
 badges, numbered tickets, certificates, labels with QR codes. Each record of
 your data becomes a copy of the page, filled in.
 
@@ -20,9 +20,9 @@ your data becomes a copy of the page, filled in.
 4. Click **Finish**. The [[docker.print_merge]] panel opens, where you put
    the fields on the page and make the merge.
 
-![The Print Merge dialog box](../../img/printing-print-merge.png)
+![The Data Merge dialog box](../../img/printing-print-merge.png)
 
-## The Print Merge panel {#docker}
+## The Data Merge panel {#docker}
 
 The [[docker.print_merge]] panel (also under Window > Panels) works with the
 data source you created or loaded:

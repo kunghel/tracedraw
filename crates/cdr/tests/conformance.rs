@@ -314,7 +314,7 @@ fn records_and_blends(bytes: &[u8]) -> Vec<u8> {
         return bytes.to_vec();
     };
     let own = |name: &str| name.starts_with("tracedraw/") && name != "tracedraw/blends.json";
-    if !z.file_names().any(own) {
+    if !z.file_names().any(|n| own(&n.expect("name"))) {
         return bytes.to_vec();
     }
     let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -322,7 +322,7 @@ fn records_and_blends(bytes: &[u8]) -> Vec<u8> {
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for i in 0..z.len() {
         let mut f = z.by_index(i).expect("member");
-        let name = f.name().to_string();
+        let name = f.name().expect("name").into_owned();
         if own(&name) {
             continue;
         }
@@ -733,6 +733,35 @@ fn paragraph_text_keeps_its_words_and_place() {
     let frame_box = doc.pages[0].layers[0].shapes[0].bounds();
     every_version(&doc, |r| {
         r.count(1);
+        // Paragraph text with its frame (#1226), except in version 8,
+        // whose frames go out as one text per line.
+        if r.v != 8 {
+            let t = r.shape(0);
+            let ShapeKind::Text {
+                spans,
+                frame: Some(f),
+                ..
+            } = &t.kind
+            else {
+                panic!("version {}: {:?}", r.v, t.kind);
+            };
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(text, words, "version {}", r.v);
+            assert!(
+                near(f.width, 60.0, 0.01) && near(f.height, 60.0, 0.01),
+                "version {}: {f:?}",
+                r.v
+            );
+            // The frame lies where it did.
+            let corners = t.text_frame_corners().expect("a frame");
+            let b = corners
+                .iter()
+                .fold(Rect::from_points(corners[0], corners[0]), |r, p| {
+                    r.union_pt(*p)
+                });
+            same_box(r.v, b, Rect::new(20.0, 90.0, 80.0, 150.0), 0.01);
+            return;
+        }
         // One text per line, grouped when there are several.
         let mut texts: Vec<&Shape> = Vec::new();
         fn collect<'a>(s: &'a Shape, out: &mut Vec<&'a Shape>) {
@@ -873,11 +902,11 @@ fn clip_frames() {
         );
         let cb = (first.transform * contents[0].page_path()).bounding_box();
         same_box(r.v, cb, Rect::new(10.0, 10.0, 70.0, 40.0), EPS);
-        // From version 12 a clip container (#1222): the frame with its
-        // fill and outline, the contents inside it. Before, the frame's
-        // fill under, the contents, the frame's outline over.
+        // From version 11 a clip container (#1222, #1226): the frame with
+        // its fill and outline, the contents inside it. Before, the
+        // frame's fill under, the contents, the frame's outline over.
         let second = r.shape(1);
-        if r.v >= 12 {
+        if r.v >= 11 {
             let ShapeKind::ClipFrame { frame, contents } = &second.kind else {
                 panic!("version {}: {}", r.v, kind_name(&second.kind));
             };
@@ -1224,6 +1253,44 @@ fn transparency_uniform_and_graded() {
                 graded.opacity
             );
         }
+    });
+}
+
+/// A group's uniform transparency is written on each object it holds, so
+/// the file shows the group as drawn.
+#[test]
+fn group_transparency_goes_on_its_objects() {
+    let doc = drawing(200.0, 100.0, |ids| {
+        let mut half = rect(ids, Rect::new(10.0, 10.0, 50.0, 50.0), 0.0);
+        half.opacity = 0.5;
+        let plain = rect(ids, Rect::new(60.0, 10.0, 100.0, 50.0), 0.0);
+        let mut g = group(ids, vec![half, plain]);
+        g.opacity = 0.4;
+        vec![g]
+    });
+    every_version(&doc, |r| {
+        r.count(1);
+        let ShapeKind::Group { children } = &r.shape(0).kind else {
+            panic!("version {}: {}", r.v, kind_name(&r.shape(0).kind));
+        };
+        assert_eq!(children.len(), 2, "version {}", r.v);
+        let (want_half, want_plain) = if keeps_opacity(r.v) {
+            (0.2, 0.4)
+        } else {
+            (1.0, 1.0)
+        };
+        assert!(
+            near(children[0].opacity, want_half, 0.002),
+            "version {}: opacity {}",
+            r.v,
+            children[0].opacity
+        );
+        assert!(
+            near(children[1].opacity, want_plain, 0.002),
+            "version {}: opacity {}",
+            r.v,
+            children[1].opacity
+        );
     });
 }
 
@@ -1808,7 +1875,7 @@ mod structure {
             let mut data = Vec::new();
             f.read_to_end(&mut data).expect("read");
             let stored = f.compression() == zip::CompressionMethod::Stored;
-            out.push((f.name().to_string(), data, stored));
+            out.push((f.name().expect("name").into_owned(), data, stored));
         }
         out
     }

@@ -13,7 +13,7 @@ base64 = "0.22"
 flate2 = "1"
 tiny-skia.workspace = true
 usvg = { version = "0.48", default-features = false }
-lopdf = { version = "0.36", default-features = false }
+lopdf = { version = "0.46", default-features = false }
 roxmltree = "0.21"
 # Fonts embedded in PDF files: their tables (ttf-parser) and the subset of
 # glyphs a file uses (subsetter, MIT OR Apache-2.0).
@@ -30,10 +30,12 @@ sha2 = "0.10"
 md5 = { package = "md-5", version = "0.10" }
 getrandom = "0.3"
 
-# lopdf draws random numbers (getrandom 0.3); in a browser they come from
-# JavaScript (see .cargo/config.toml for the matching cfg).
+# Random numbers in a browser come from JavaScript. Our own keys use
+# getrandom 0.3 (see .cargo/config.toml for the matching cfg); lopdf 0.46
+# draws its own through getrandom 0.4, which only needs the feature.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 # The round trip of Hindi through a PDF lays text out with the real text

@@ -42,7 +42,7 @@ pub struct ClipEditMark {
     pub begins: bool,
 }
 
-/// Step and Repeat docker state.
+/// Repeat Copies docker state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepRepeat {
     pub copies: u32,
@@ -130,8 +130,16 @@ impl App {
     /// The bounds of everything drawn on the current page (its layers'
     /// objects, effects included), page mm.
     pub fn drawing_bounds(&self) -> Option<tracedraw_core::geometry::Rect> {
+        self.page_drawing_bounds(self.page)
+    }
+
+    /// As [`Self::drawing_bounds`], for the page `page`.
+    pub fn page_drawing_bounds(
+        &self,
+        page: tracedraw_core::PageId,
+    ) -> Option<tracedraw_core::geometry::Rect> {
         let doc = self.doc();
-        let page = doc.page(self.page).ok()?;
+        let page = doc.page(page).ok()?;
         page.layers
             .iter()
             .flat_map(|l| l.shapes.iter())
@@ -140,17 +148,17 @@ impl App {
             .reduce(|a, b| a.union(b))
     }
 
-    /// Layout > Fit Page to Selection: the current page takes the size
+    /// Page > Fit Page to Selection: the current page takes the size
     /// of the selection's bounds and the page's objects move so the
     /// selection sits on the page from its bottom-left corner; one undo
     /// step. Nothing happens without a selection.
     pub fn fit_page_to_selection(&mut self) {
         if let Some(b) = self.selection_bounds() {
-            self.fit_page_to(b, "Fit Page to Selection");
+            self.fit_pages_to(&[(self.page, b)], "Fit Page to Selection");
         }
     }
 
-    /// Layout > Fit Page to Drawing: as [`Self::fit_page_to_selection`],
+    /// Page > Fit Page to Drawing: as [`Self::fit_page_to_selection`],
     /// for everything on the page.
     pub fn fit_page_to_drawing(&mut self) {
         self.fit_page_to_drawing_with_margin(0.0);
@@ -175,44 +183,84 @@ impl App {
     /// The property bar's Autofit Page: [`Self::fit_page_to_drawing`]
     /// with `margin` mm left free around the drawing on every side.
     pub fn fit_page_to_drawing_with_margin(&mut self, margin: f64) {
+        self.autofit_pages(margin, false);
+    }
+
+    /// The property bar's Autofit Page with the page bar's scope: the
+    /// current page, or with All Pages on every page, each fitted to its
+    /// own drawing with `margin` mm around it (#1393). Pages with nothing
+    /// drawn keep their size. One undo step.
+    pub fn autofit_pages(&mut self, margin: f64, all: bool) {
         let margin = if margin.is_finite() {
             margin.max(0.0)
         } else {
             0.0
         };
-        if let Some(b) = self.drawing_bounds() {
-            self.fit_page_to(b.inflate(margin, margin), "Fit Page to Drawing");
-        }
-    }
-
-    fn fit_page_to(&mut self, b: tracedraw_core::geometry::Rect, label: &'static str) {
-        use tracedraw_core::geometry::{Affine, Size, Vec2};
-        if !(b.width().is_finite() && b.height().is_finite()) || b.width() < 0.1 || b.height() < 0.1
-        {
-            self.status = crate::i18n::tr("status.fit_page_nothing");
+        let pages: Vec<tracedraw_core::PageId> = if all {
+            self.doc().pages.iter().map(|p| p.id).collect()
+        } else {
+            vec![self.page]
+        };
+        let fits: Vec<_> = pages
+            .into_iter()
+            .filter_map(|p| {
+                self.page_drawing_bounds(p)
+                    .map(|b| (p, b.inflate(margin, margin)))
+            })
+            .collect();
+        if fits.is_empty() {
+            if all {
+                self.status = crate::i18n::tr("status.fit_page_nothing");
+            }
             return;
         }
-        let page = self.page;
-        let shapes: Vec<ShapeId> = self
-            .doc()
-            .page(page)
-            .map(|p| {
-                p.layers
-                    .iter()
-                    .flat_map(|l| l.shapes.iter().map(|s| s.id))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut cmds = vec![Command::ResizePage {
-            page,
-            size: Size::new(b.width(), b.height()),
-        }];
-        let shift = Vec2::new(-b.x0, -b.y0);
-        if shift.hypot() > 1e-9 && !shapes.is_empty() {
-            cmds.push(Command::TransformShapes {
-                shapes,
-                transform: Affine::translate(shift),
+        self.fit_pages_to(&fits, "Fit Page to Drawing");
+    }
+
+    /// Size each page to its rectangle and move the page's objects so the
+    /// rectangle's bottom-left corner is the page's; one undo step for
+    /// all of them. A page whose rectangle is empty or not a number keeps
+    /// its size; when every one is, nothing happens and the status says
+    /// so.
+    fn fit_pages_to(
+        &mut self,
+        fits: &[(tracedraw_core::PageId, tracedraw_core::geometry::Rect)],
+        label: &'static str,
+    ) {
+        use tracedraw_core::geometry::{Affine, Size, Vec2};
+        let mut cmds = Vec::new();
+        for &(page, b) in fits {
+            if !(b.width().is_finite() && b.height().is_finite())
+                || b.width() < 0.1
+                || b.height() < 0.1
+            {
+                continue;
+            }
+            let shapes: Vec<ShapeId> = self
+                .doc()
+                .page(page)
+                .map(|p| {
+                    p.layers
+                        .iter()
+                        .flat_map(|l| l.shapes.iter().map(|s| s.id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            cmds.push(Command::ResizePage {
+                page,
+                size: Size::new(b.width(), b.height()),
             });
+            let shift = Vec2::new(-b.x0, -b.y0);
+            if shift.hypot() > 1e-9 && !shapes.is_empty() {
+                cmds.push(Command::TransformShapes {
+                    shapes,
+                    transform: Affine::translate(shift),
+                });
+            }
+        }
+        if cmds.is_empty() {
+            self.status = crate::i18n::tr("status.fit_page_nothing");
+            return;
         }
         if let Err(e) = self.engine.run_batch(label, &cmds) {
             self.status = e.to_string();
@@ -221,7 +269,7 @@ impl App {
 
     // ----- layout ----------------------------------------------------------------
 
-    /// Layout > Insert Page Number: an artistic text "1", "2"... on the
+    /// Page > Insert Page Number: an artistic text "1", "2"... on the
     /// chosen pages (bottom centre), named "page-number". With a master
     /// layer active it is one field on that layer that shows the number
     /// of each page it is drawn on (#807).
@@ -366,23 +414,35 @@ impl App {
     }
 
     pub fn ungroup_all(&mut self) {
-        // Repeat ungroup until no selected object is a group.
+        // Repeat ungroup until no selected object is a group (or a clip
+        // frame whose frame is one, #1605).
         for _ in 0..64 {
             let groups: Vec<ShapeId> = self
                 .selected_shapes()
                 .iter()
-                .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+                .filter(|s| matches!(s.kind, ShapeKind::Group { .. }) || s.is_clip_frame_of_group())
                 .map(|s| s.id)
                 .collect();
             if groups.is_empty() {
                 break;
             }
+            let before = self.top_level_ids();
             let mut new_sel: Vec<ShapeId> = self
                 .selection
                 .iter()
                 .copied()
                 .filter(|s| !groups.contains(s))
                 .collect();
+            for g in &groups {
+                // A clip frame stays, as the first of its pieces.
+                if self
+                    .doc()
+                    .find_shape(*g)
+                    .is_some_and(Shape::is_clip_frame_of_group)
+                {
+                    new_sel.push(*g);
+                }
+            }
             for g in groups {
                 let children: Vec<ShapeId> = self
                     .doc()
@@ -396,6 +456,13 @@ impl App {
                     .unwrap_or_default();
                 self.run(Command::Ungroup { group: g });
                 new_sel.extend(children);
+            }
+            // The pieces a clip frame came apart into; a group's objects
+            // are new on the layer too and already taken, each id once.
+            for id in self.added_top_level_ids(&before) {
+                if !new_sel.contains(&id) {
+                    new_sel.push(id);
+                }
             }
             self.selection = new_sel;
         }
@@ -1796,7 +1863,7 @@ impl App {
         }
     }
 
-    /// Bitmaps > Inflate Bitmap > Manually Inflate Bitmap: grow every
+    /// Image > Bitmap Padding > Custom: grow every
     /// selected bitmap's canvas to `pw` by `ph` percent of its size (100
     /// or more), centred, with transparent margins; one undo step. The
     /// bitmap keeps its resolution, so it grows on the page too.
@@ -1848,7 +1915,7 @@ impl App {
         }
     }
 
-    /// The Bitmap Mask docker's Apply: hide (or keep only) the colours of
+    /// The Color Mask docker's Apply: hide (or keep only) the colours of
     /// the slots in use in the selected bitmaps. True when a bitmap changed.
     pub fn apply_bitmap_mask(&mut self) -> bool {
         let slots = self.mask.active();
@@ -1970,7 +2037,7 @@ impl App {
         });
     }
 
-    /// Bitmaps > Convert to Bitmap: the selection becomes one bitmap with
+    /// Image > Convert to Bitmap: the selection becomes one bitmap with
     /// the dialog's resolution, colour mode, dithering, anti-aliasing,
     /// background and overprint, in one undo step.
     pub fn convert_to_bitmap_with(&mut self, o: &crate::bitmap_modes::ConvertOptions) {
@@ -2045,7 +2112,7 @@ impl App {
 
     // ----- tracing ---------------------------------------------------------------------
 
-    /// Bitmaps > Quick Trace: the preset and choices of Options > Global >
+    /// Image > Trace > Automatic: the preset and choices of Options > Global >
     /// Bitmap Tracing.
     pub fn quick_trace(&mut self) {
         let prefs = &self.settings.tracing;
@@ -2281,8 +2348,20 @@ impl App {
         }
     }
 
-    /// Text > Convert: artistic to paragraph text or back.
+    /// Text > Convert: artistic to paragraph text or back. The letters stay
+    /// where they were: the new text is moved so its first letter lands
+    /// on the old one's place, in the text's own space. A frame is as
+    /// large as the text's own box (not its box on the page, which a
+    /// turned, scaled or moved text no longer matches) plus 2 mm; the
+    /// frame's place came from the box on the page and moved texts that
+    /// had a transform of their own away (#1238).
     pub fn toggle_text_kind(&mut self) {
+        use tracedraw_core::document::text_glyph_layout;
+        // The pen position of the first glyph, in the text's own space.
+        let first_letter = |kind: &ShapeKind| {
+            text_glyph_layout(kind)
+                .and_then(|l| l.glyphs.first().map(|g| g.transform * Point::ZERO))
+        };
         for s in self.text_shapes() {
             let ShapeKind::Text {
                 spans,
@@ -2295,37 +2374,47 @@ impl App {
             else {
                 continue;
             };
-            let b = s.bounds();
+            let local = s.local_path().bounding_box();
+            let local = if local.width().is_finite() && local.height().is_finite() {
+                local
+            } else {
+                Rect::from_origin_size(origin, (0.0, 0.0))
+            };
             let new_frame = match frame {
                 Some(_) => None,
                 None => Some(Size::new(
-                    b.width().max(10.0) + 2.0,
-                    b.height().max(5.0) + 2.0,
+                    local.width().max(10.0) + 2.0,
+                    local.height().max(5.0) + 2.0,
                 )),
             };
-            let new_origin = match (frame, new_frame) {
-                (None, Some(_)) => {
-                    Point::new(origin.x, origin.y - (b.height() - (b.y1 - origin.y)))
-                }
+            // A first guess from the box, then the first letter's place.
+            let guess = match (frame, new_frame) {
+                (None, Some(f)) => Point::new(local.x0, local.y1 + 1.0 - f.height),
                 (Some(_), None) => Point::new(
-                    origin.x,
-                    b.y1 - spans
-                        .first()
-                        .map(|s| s.size_pt * 25.4 / 72.0)
-                        .unwrap_or(5.0),
+                    local.x0,
+                    local.y1
+                        - spans
+                            .first()
+                            .map(|s| s.size_pt * 25.4 / 72.0)
+                            .unwrap_or(5.0),
                 ),
                 _ => origin,
             };
+            let make = |origin: Point| ShapeKind::Text {
+                spans: spans.clone(),
+                origin,
+                frame: new_frame,
+                align,
+                para: para.clone(),
+                on_path: on_path.clone(),
+            };
+            let new_origin = match (first_letter(&s.kind), first_letter(&make(guess))) {
+                (Some(was), Some(now)) => guess + (was - now),
+                _ => guess,
+            };
             self.run(Command::SetShapeKind {
                 shape: s.id,
-                kind: ShapeKind::Text {
-                    spans,
-                    origin: new_origin,
-                    frame: new_frame,
-                    align,
-                    para,
-                    on_path,
-                },
+                kind: make(new_origin),
             });
         }
     }
@@ -3342,8 +3431,8 @@ impl App {
 
     // ----- step and repeat ---------------------------------------------------------------
 
-    /// The Step and Repeat values belong to the objects they were set
-    /// The values typed in the Step and Repeat docker stay as typed, for
+    /// The Repeat Copies values belong to the objects they were set
+    /// The values typed in the Repeat Copies docker stay as typed, for
     /// this selection, the copies an Apply makes and any object picked
     /// next, until they are changed again (#1198; until 0.27.0 they went
     /// back to the defaults at every change of the selection, so a
@@ -3354,20 +3443,11 @@ impl App {
         if shapes.is_empty() {
             return;
         }
-        let Some(b) = self.selection_bounds() else {
+        let Some(step) = self.step_and_repeat_step() else {
             return;
         };
+        let (dx, dy) = (step.x, step.y);
         let sr = self.step_repeat.clone();
-        let dx = if sr.mode_x == 1 {
-            b.width() + sr.dx
-        } else {
-            sr.dx
-        };
-        let dy = if sr.mode_y == 1 {
-            b.height() + sr.dy
-        } else {
-            sr.dy
-        };
         let Some(layer) = self.active_layer() else {
             return;
         };
@@ -3821,7 +3901,7 @@ mod tests {
         }
     }
 
-    /// The Step and Repeat values stay as typed: after an Apply (its copies
+    /// The Repeat Copies values stay as typed: after an Apply (its copies
     /// are selected) and for another object picked next, the same count
     /// and distances are used until changed (#1198).
     #[test]
@@ -4906,6 +4986,205 @@ mod clip_frame_tests {
         .expect("a layer")
     }
 
+    /// Ungroup takes a clip frame whose frame is a group apart into clip
+    /// frames of the group's objects, Break Apart one whose frame is a
+    /// combined curve into clip frames of its parts; the pieces come out
+    /// selected, one undo step each (#1605, #1607).
+    #[test]
+    fn clip_frames_ungroup_and_break_apart_through_their_frame() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let inner = rect(&mut app, Rect::new(2.0, 2.0, 28.0, 8.0));
+        app.select(vec![a, b]);
+        app.group_selection();
+        let group = app.selection[0];
+        app.engine
+            .run(&tracedraw_core::Command::PlaceInside {
+                contents: vec![inner],
+                frame: group,
+            })
+            .expect("place inside");
+        app.select(vec![group]);
+        let count = |app: &App| app.doc().pages[0].layers[0].shapes.len();
+        assert_eq!(count(&app), 1);
+        app.ungroup_selection();
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2, "the pieces are selected");
+        for id in app.selection.clone() {
+            let s = app.doc().find_shape(id).expect("piece");
+            assert!(
+                matches!(s.kind, ShapeKind::ClipFrame { .. }),
+                "{:?}",
+                s.kind
+            );
+            assert!(!s.is_clip_frame_of_group());
+        }
+        app.undo();
+        assert_eq!(count(&app), 1);
+        assert!(app
+            .doc()
+            .find_shape(group)
+            .is_some_and(|s| s.is_clip_frame_of_group()));
+        // Combined: the frame is one curve of two parts.
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let inner = rect(&mut app, Rect::new(2.0, 2.0, 28.0, 8.0));
+        app.select(vec![a, b]);
+        app.combine();
+        let combined = app.selection[0];
+        app.engine
+            .run(&tracedraw_core::Command::PlaceInside {
+                contents: vec![inner],
+                frame: combined,
+            })
+            .expect("place inside");
+        app.select(vec![combined]);
+        assert!(app.selected_shapes().iter().any(App::breaks_apart));
+        app.break_apart();
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2);
+        for id in app.selection.clone() {
+            let s = app.doc().find_shape(id).expect("piece");
+            assert!(
+                matches!(s.kind, ShapeKind::ClipFrame { .. }),
+                "{:?}",
+                s.kind
+            );
+            assert!(!s.breaks_into_parts());
+        }
+        app.undo();
+        assert_eq!(count(&app), 1);
+    }
+
+    /// None of the commands that take a clip frame apart (Ungroup,
+    /// Ungroup All, Break Apart, the Knife) leaves two objects of one id
+    /// in the drawing or an id twice in the selection, with contents that
+    /// hold a group (each copy's objects get ids of their own); Ungroup on
+    /// a plain group selects each object once (#1605, #1606, #1607).
+    #[test]
+    fn taking_a_clip_frame_apart_repeats_no_id() {
+        use std::collections::HashSet;
+        use tracedraw_core::geometry::Point;
+        use tracedraw_core::{Command, Shape};
+
+        fn ids_in(shapes: &[Shape], out: &mut Vec<ShapeId>) {
+            for s in shapes {
+                out.push(s.id);
+                match &s.kind {
+                    ShapeKind::Group { children } => ids_in(children, out),
+                    ShapeKind::ClipFrame { frame, contents } => {
+                        ids_in(std::slice::from_ref(frame), out);
+                        ids_in(contents, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn twice(ids: &[ShapeId]) -> Vec<ShapeId> {
+            let mut seen = HashSet::new();
+            ids.iter().copied().filter(|id| !seen.insert(*id)).collect()
+        }
+        fn check(app: &App, step: &str) {
+            let mut ids = Vec::new();
+            for layer in &app.doc().pages[0].layers {
+                ids_in(&layer.shapes, &mut ids);
+            }
+            let doubled = twice(&ids);
+            assert!(
+                doubled.is_empty(),
+                "{step}: ids twice in the drawing: {doubled:?}"
+            );
+            let doubled = twice(&app.selection);
+            assert!(
+                doubled.is_empty(),
+                "{step}: ids twice in the selection: {doubled:?}"
+            );
+            for id in &app.selection {
+                assert!(
+                    app.doc().find_shape(*id).is_some(),
+                    "{step}: {id:?} is selected but not in the drawing"
+                );
+            }
+        }
+        // The contents: a group of two objects and an object beside it.
+        fn contents(app: &mut App) -> Vec<ShapeId> {
+            let c1 = rect(app, Rect::new(2.0, 2.0, 6.0, 8.0));
+            let c2 = rect(app, Rect::new(22.0, 2.0, 28.0, 8.0));
+            app.select(vec![c1, c2]);
+            app.group_selection();
+            let group = app.selection[0];
+            let c3 = rect(app, Rect::new(10.0, 3.0, 20.0, 7.0));
+            vec![group, c3]
+        }
+        fn place(app: &mut App, frame: ShapeId) {
+            let contents = contents(app);
+            app.engine
+                .run(&Command::PlaceInside { contents, frame })
+                .expect("place inside");
+            app.select(vec![frame]);
+        }
+        let count = |app: &App| app.doc().pages[0].layers[0].shapes.len();
+
+        // Ungroup and Ungroup All: the frame a group.
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        app.select(vec![a, b]);
+        app.group_selection();
+        let frame = app.selection[0];
+        place(&mut app, frame);
+        check(&app, "placed");
+        app.ungroup_selection();
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+        check(&app, "ungroup");
+        app.undo();
+        app.select(vec![frame]);
+        app.ungroup_all();
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+        check(&app, "ungroup all");
+
+        // Break Apart: the frame a curve of two parts.
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        app.select(vec![a, b]);
+        app.combine();
+        let frame = app.selection[0];
+        place(&mut app, frame);
+        app.break_apart();
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+        check(&app, "break apart");
+
+        // The Knife: a cut through the frame.
+        let mut app = App::headless();
+        let frame = rect(&mut app, Rect::new(0.0, 0.0, 40.0, 40.0));
+        place(&mut app, frame);
+        app.select(Vec::new());
+        app.knife(Point::new(15.0, -5.0), Point::new(15.0, 45.0));
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.selection.len(), 2, "{:?}", app.selection);
+        check(&app, "knife");
+
+        // A plain group: each object selected once, in the drawing's order.
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        app.select(vec![a, b]);
+        app.group_selection();
+        app.ungroup_selection();
+        assert_eq!(app.selection, vec![a, b]);
+        check(&app, "ungroup a group");
+        app.undo();
+        app.ungroup_all();
+        assert_eq!(app.selection, vec![a, b]);
+        check(&app, "ungroup all on a group");
+    }
+
     /// The four ways of fitting contents to a frame, and the bar's
     /// commands on a clip frame: the contents picked, fitted as one undo
     /// step.
@@ -5145,6 +5424,89 @@ mod fit_page_tests {
         let before = app.engine.history_labels().0.len();
         app.fit_page_to_selection();
         assert_eq!(app.engine.history_labels().0.len(), before);
+    }
+
+    /// Autofit Page with All Pages on fits every page to its own drawing,
+    /// not only the current one, in one undo step; a page with nothing on
+    /// it keeps its size. With Current Page on only the current page
+    /// changes (#1393).
+    #[test]
+    fn autofit_with_all_pages_fits_every_page() {
+        let mut app = App::headless();
+        let first = app.page;
+        let a = rect(&mut app, Rect::new(30.0, 40.0, 80.0, 90.0));
+        app.add_page();
+        let second = app.page;
+        let b = rect(&mut app, Rect::new(10.0, 20.0, 110.0, 50.0));
+        app.add_page();
+        let empty = app.page;
+        app.goto_page(1);
+        assert_eq!(app.page, second);
+        let size = |app: &App, p| app.doc().page(p).expect("page").size;
+        let bounds = |app: &App, id| app.doc().shape_on_page(id).expect("shape").bounds();
+        let empty_size = size(&app, empty);
+        let close = |s: tracedraw_core::geometry::Size, w: f64, h: f64| {
+            (s.width - w).abs() < 1e-9 && (s.height - h).abs() < 1e-9
+        };
+
+        // Current page only: the first page keeps its A4 size.
+        let depth = app.engine.history_labels().0.len();
+        app.autofit_pages(2.0, false);
+        assert!(
+            close(size(&app, second), 104.0, 34.0),
+            "{:?}",
+            size(&app, second)
+        );
+        assert!(close(
+            size(&app, first),
+            empty_size.width,
+            empty_size.height
+        ));
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        app.undo();
+
+        // All pages: each page takes its own drawing's size plus the
+        // margin and its objects move in by the margin.
+        app.autofit_pages(2.0, true);
+        assert!(
+            close(size(&app, first), 54.0, 54.0),
+            "{:?}",
+            size(&app, first)
+        );
+        assert!(
+            close(size(&app, second), 104.0, 34.0),
+            "{:?}",
+            size(&app, second)
+        );
+        assert!(close(
+            size(&app, empty),
+            empty_size.width,
+            empty_size.height
+        ));
+        for id in [a, b] {
+            let r = bounds(&app, id);
+            assert!(
+                (r.x0 - 2.0).abs() < 1e-9 && (r.y0 - 2.0).abs() < 1e-9,
+                "{r:?}"
+            );
+        }
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "one step");
+        app.undo();
+        assert!(close(
+            size(&app, first),
+            empty_size.width,
+            empty_size.height
+        ));
+        assert!((bounds(&app, a).x0 - 30.0).abs() < 1e-9);
+        assert!((bounds(&app, b).x0 - 10.0).abs() < 1e-9);
+
+        // Nothing drawn on any page: no step, and the status says so.
+        let mut app = App::headless();
+        app.add_page();
+        let depth = app.engine.history_labels().0.len();
+        app.autofit_pages(0.0, true);
+        assert_eq!(app.engine.history_labels().0.len(), depth);
+        assert_eq!(app.status, crate::i18n::tr("status.fit_page_nothing"));
     }
 }
 

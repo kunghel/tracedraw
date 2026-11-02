@@ -33,6 +33,35 @@ is neither. Ctrl+C with nothing selected changes nothing.
   4. other text: artistic text in the middle of the page.
 
 Ctrl+Shift+V pastes the objects copied here in the middle of the view.
+Paste on the page's context menu centres what it pastes where the menu
+was opened.
+
+### In a browser and on Android (#1403)
+
+A browser hands the clipboard only to a paste event and to its
+clipboard API, never to a plain read:
+
+- Ctrl+V: the paste event's text goes the way above; its files (a
+  picture copied in an image program or a web page, files copied in a
+  file manager) are read in the background and pasted a frame later.
+  The shortcut's own frame then pastes nothing, so the copy made here
+  does not come as well. One picture alone is placed as a bitmap; other
+  files are imported like File > Import. While a text is edited, a
+  picture is not put into it.
+- Edit > Paste (and the context menu's Paste) reads the clipboard with
+  the browser's clipboard API (`navigator.clipboard.read()`): the first
+  time the browser asks for permission (Firefox shows a Paste button).
+  Its picture and text are pasted as for Ctrl+V; text that is still the
+  copy made here pastes the objects copied here. When the browser
+  refuses or has no such API, the copy made here is pasted and the
+  status bar says that Ctrl+V pastes what other programs copied.
+
+On Android the activity reads the system clipboard (`ClipboardManager`):
+its text, and the documents other apps copied (content URIs, which
+reading the clip grants the editor the right to read). One picture alone
+(copied in a gallery, a browser or a chat) is the clipboard's picture,
+placed as a bitmap; other documents are imported like files from the
+document picker. A document's URI is never pasted as text.
 
 Symbol instances pasted into another drawing (or inside pasted groups and
 clip frames) bring their symbols along: a symbol the drawing holds
@@ -51,6 +80,23 @@ the key press and sends nothing but the release of V. A release of V
 with Ctrl (Cmd), Shift+Insert or the Paste key that came without a paste
 event or press before it pastes too, once. V let go after Ctrl is typing
 and does not paste.
+
+## Pictures on a Linux desktop (X11)
+
+A screenshot tool keeps its picture on the clipboard itself and hands it
+over when asked; a large picture comes in parts, each one after the
+reader took the one before. The clipboard library gave each part 10 ms
+and asked for PNG only, so a busy program's picture often came out
+empty and took two or three pastes to arrive (#1488). On an X11 desktop
+(no `WAYLAND_DISPLAY`) the paste now reads the clipboard's list of types
+first and asks for the best picture type it offers (PNG, then BMP, TIFF,
+WebP, GIF, JPEG), gives the owner 3 s to answer and each part 2 s, and
+tries again twice, 150 ms apart, when no answer came
+(`x11_clipboard.rs`). A clipboard without a picture type is not waited
+for. On a Wayland desktop the clipboard library reads first and the X11
+clipboard the desktop keeps beside it is read when it finds nothing.
+TraceDraw keeps one connection to the system clipboard for the session
+instead of opening one for each read.
 
 ## Browser build
 
@@ -71,6 +117,12 @@ available.
   clipboard): what copy and paste cost with a 4000 x 3000 picture on it.
 - `pick_drag_tests::ctrl_v_pastes_when_only_its_release_comes_through`
   and `copy_cut_and_paste_events_work_on_objects`.
+- `x11_clipboard::tests::a_picture_sent_slowly_in_parts_arrives_whole`
+  (under the X server of `DISPLAY`, else an Xvfb it starts; skipped
+  without either): a program that owns the clipboard sends a PNG in
+  2 KB parts, 30 ms apart, and the first read gets it whole; once the
+  program is gone a read finds nothing within 2 s.
+  `picture_types_go_best_first` and `pictures_decode_by_type_or_by_signature`.
 - Checked under Xvfb with `xclip`: a picture (`image/png`) and a file
   (`text/uri-list` with CR LF) copied after a copy here paste as a bitmap
   and as an imported file; copying here again pastes the copy.

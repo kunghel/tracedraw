@@ -12,6 +12,8 @@ Lay out multi-page documents with layers, master layers, guides at any angle, gr
 
 Make it yours: dock the toolbox, palette and bars on any side, set your own keyboard shortcuts, keep objects on the Shelf for any drawing. The interface speaks 18 languages.
 
-TraceDraw collects nothing and needs no account. It is free software under the MIT or Apache-2.0 license; the source code, the feature status and the issue tracker are at github.com/igtoth/tracedraw.
+TraceDraw collects nothing and needs no account. It is free software under the MIT or Apache-2.0 license; the source code, the feature status and the issue tracker are at github.com/tracedraw/tracedraw.
 
 This is an early release of the Android version: some features of the desktop program (printing, external bitmap editors) are not available, and bugs are expected. Please report them on the project's issue tracker.
+
+TraceDraw is an independent project, not affiliated with, endorsed by or sponsored by Corel Corporation or Alludo. CorelDRAW is a registered trademark of Corel Corporation. .cdr support is implemented independently, for interoperability.

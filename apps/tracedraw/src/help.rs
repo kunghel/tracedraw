@@ -14,7 +14,7 @@ use crate::ui::dialogs::{Dialog, OptionsPage};
 
 /// Where the Help is published (`web/help_site.py` builds it into
 /// `site/help/`, the project's page).
-pub const BASE: &str = "https://igtoth.github.io/tracedraw/help/";
+pub const BASE: &str = "https://tracedraw.github.io/tracedraw/help/";
 
 /// The first page of the Help.
 pub const HOME: &str = "index";
@@ -113,6 +113,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::GithubHistory => "get-started/github#history",
         Dialog::WebNotice => "get-started/browser-version",
         Dialog::MacrosDesktopOnly => "get-started/browser-version#differences",
+        Dialog::StorageRefused(_) => "get-started/browser-version",
         Dialog::TimeTracker(_) => "customize/time-tracker",
         Dialog::Preflight(_) => "printing/preflight",
         Dialog::PublishPdf(_) => "file-formats/publish-pdf",
@@ -150,6 +151,10 @@ pub fn options_topic(p: OptionsPage) -> &'static str {
         GraphPaper => "customize/tool-options#graph-paper",
         Table => "customize/tool-options#table",
         Eraser => "customize/tool-options#eraser",
+        ShapeRecognition => "customize/tool-options#shape-recognition",
+        Dimension => "customize/tool-options#dimension",
+        Connector => "customize/tool-options#connector",
+        MeshFill => "customize/tool-options#mesh-fill",
         GlobalGeneral => "customize/global-options#general",
         Printing => "customize/global-options#printing",
         FileFormats => "customize/global-options#file-formats",
@@ -473,11 +478,11 @@ mod tests {
     fn urls_carry_the_language_and_fall_back_to_english() {
         assert_eq!(
             url_in("color/fills#mesh-fill", "pt-BR"),
-            "https://igtoth.github.io/tracedraw/help/pt-BR/color/fills.html#mesh-fill"
+            "https://tracedraw.github.io/tracedraw/help/pt-BR/color/fills.html#mesh-fill"
         );
         assert_eq!(
             url_in("printing/print", "xx"),
-            "https://igtoth.github.io/tracedraw/help/en/printing/print.html"
+            "https://tracedraw.github.io/tracedraw/help/en/printing/print.html"
         );
         assert_eq!(url_in("", "ja"), format!("{BASE}ja/index.html"));
     }

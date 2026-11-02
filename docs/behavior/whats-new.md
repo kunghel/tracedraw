@@ -2,7 +2,7 @@
 
 - Help > What's New opens the Welcome Screen's What's New page (three
   news items, `welcome.news_*` in the language files).
-- Help > Highlight What's New (a check item, off at start, not kept
+- Help > Mark New Features (a check item, off at start, not kept
   between sessions) marks what is new in this version in the menus: a
   small accent dot at the end of each new row, left of the arrow of a
   submenu leading to one, and over the title of a menu leading to one.

@@ -36,7 +36,7 @@ undo step ("QR Code"); the group's transform (moved, scaled, rotated)
 stays. Content that cannot be encoded (nothing filled in, too much for a
 code) changes nothing and is shown in red.
 
-New objects encode `https://github.com/igtoth/tracedraw`, black on white.
+New objects encode `https://github.com/tracedraw/tracedraw`, black on white.
 
 ## Files
 

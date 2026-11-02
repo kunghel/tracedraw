@@ -6,7 +6,7 @@ TraceDraw のウィンドウには、図面と、それを作業するのに必�
 
 上から下へ、左から右へ:
 
-- **メニューバー** には、[[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.layout]]、[[menu.object]]、[[menu.effects]]、[[menu.bitmaps]]、[[menu.text]]、[[menu.table]]、[[menu.tools]]、[[menu.window]]、[[menu.help]] の各メニューに、すべてのコマンドがあります。各コマンドの横にはショートカットが表示されます。図面を開いていないときは、[[menu.file]]、[[menu.tools]]、[[menu.window]]、[[menu.help]] だけが表示されます。[メニューコマンド](../reference/menus.md) のページにすべてのコマンドが一覧されています。
+- **メニューバー** には、[[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.object]]、[[menu.text]]、[[menu.bitmaps]]、[[menu.effects]]、[[menu.layout]]、[[menu.tools]]、[[menu.window]]、[[menu.help]] の各メニューに、すべてのコマンドがあります。各コマンドの横にはショートカットが表示されます。図面を開いていないときは、[[menu.file]]、[[menu.tools]]、[[menu.window]]、[[menu.help]] だけが表示されます。[メニューコマンド](../reference/menus.md) のページにすべてのコマンドが一覧されています。
 - **標準ツールバー** には、よく使うコマンドがあります (下記を参照)。
 - **プロパティバー** には、今行っている操作の設定が表示されます。
 - **ドキュメントタブ** は、開いている図面ごとに一つのタブを表示します。

@@ -29,6 +29,11 @@ of the Extrude and Smart Fill bars;
 
 Ctrl+F9 opens the Contour panel.
 
+A contour in a `.cdr` file saved by another program (version 9 seen,
+#1031) opens live: the object gets this effect with the file's offset,
+step count, side and end colours, and the steps the file stores go
+(`docs/cdr-format.md`, the Contour row).
+
 ## Formulas
 
 - With `n` steps, step `i` (1 to `n`) is the object's outline offset by
@@ -43,7 +48,11 @@ Ctrl+F9 opens the Contour panel.
   step.
 - Corners: the offset outline's corners are mitred (sharp; corners under
   about 9 degrees are cut off), round, or bevelled. Contours from older
-  files, which have no corner setting, are round.
+  files, which have no corner setting, are round. A round corner's curve
+  leaves the straight side before it along that side and arrives at the
+  next side along it, so it runs on from the sides it joins and stays at
+  the contour's distance (#1542,
+  `shaping::tests::a_round_offset_corner_runs_on_from_its_sides`).
 - Colours: step `i` of the `n` drawn takes `accelerate(i / n, colours)`
   of the way from the object's fill (and outline) colour to the last
   step's colours, mixed directly or through the hues clockwise or

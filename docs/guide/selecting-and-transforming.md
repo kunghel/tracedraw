@@ -16,8 +16,10 @@ To select objects:
   Treat all objects as filled** is on (it is on by default).
 - **Shift+click** adds an object to the selection, or takes it out.
 - **Alt+click** selects the object *beneath* the selected one under the
-  pointer. Keep clicking to dig down through a stack; after the bottom
-  object you come back to the top.
+  pointer, or beneath the topmost one when nothing there is selected: one
+  Alt+click on the object in front takes the one hidden behind it. Keep
+  clicking to dig down through a stack; after the bottom object you come
+  back to the top.
 - **Tab** and **Shift+Tab** step through the objects in stacking order.
 - **Ctrl+A** selects everything; double-clicking the Pick tool's button
   does the same.
@@ -104,13 +106,13 @@ start with):
 - `Ctrl`+arrow: the micro nudge distance (0.254 mm).
 
 Change the nudge distance on the property bar with nothing selected, or
-in **Layout > Document Options > Rulers**.
+in **Page > Document Setup > Rulers**.
 
 ### Duplicate
 
 - `Ctrl+D` duplicates the selection at the duplicate distance.
 - `+` (with the Pick tool) duplicates it in place, with no offset.
-- `Ctrl+Shift+D` opens the **Step and Repeat** panel.
+- `Ctrl+Shift+D` opens the **Repeat Copies** panel.
 
 ## Scale and stretch
 

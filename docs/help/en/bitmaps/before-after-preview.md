@@ -2,7 +2,7 @@
 
 Every dialog box that changes a picture shows the picture before and after
 the change in the same preview: Trace Bitmap, Remove Background, the color
-mode dialog boxes (Black and White, Duotone, Paletted), every bitmap effect
+mode dialog boxes (Black and White, Duotone, Indexed), every bitmap effect
 and [[fx.image_adjustments]]. This page explains how to look at the picture
 there.
 

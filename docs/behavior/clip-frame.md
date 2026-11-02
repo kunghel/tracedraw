@@ -37,9 +37,12 @@ frame is edited node by node, and the clip frame stays one
   show it too while they wait for their object (#379,
   `ui::cursors::tests::tools_get_their_cursors`).
 - Extract Contents: the contents become ordinary objects again; the frame
-  stays (an empty frame shows a hatched preview).
-- Edit Contents: takes the contents out of the frame to edit them; the
-  rest of the page fades to a quarter of its strength while the frame
+  stays (an empty frame shows a hatched preview). A clip frame moved,
+  turned or resized since it was made comes apart where it shows: its
+  own transform goes onto the frame and each content (#1562,
+  `command::tests::extracting_a_moved_clip_frame_keeps_the_frame_and_contents_in_place`).
+- Edit Contents: takes the contents out of the frame to edit them (where
+  they show, as Extract Contents does); the rest of the page fades to a quarter of its strength while the frame
   and the contents are drawn in full (`App::render_focus`, the
   renderer's focus option with several objects, `CLIP_EDIT_VISIBILITY`).
   Finish Editing Contents (the bar's Finish) puts them back; so does a
@@ -61,6 +64,23 @@ frame is edited node by node, and the clip frame stays one
   Redo of that step enters the edit again; undoing Finish goes back
   into the edit and redoing it leaves (#851,
   `clip_frame_edit_keeps_to_its_contents_and_its_own_undo`).
+- Ungroup, Break Apart and the Knife take a clip frame apart through
+  its frame, as they take the frame itself apart, and each piece is a
+  clip frame holding the contents (the first keeps the clip frame, the
+  others get ids of their own and copies of the contents), so the
+  picture stays where it shows. Ungroup (Ctrl+U, Ungroup All too) on a
+  clip frame whose frame is a group gives one clip frame per object of
+  the group (#1605,
+  `command::tests::a_clip_frame_of_a_group_ungroups_into_clip_frames_of_its_objects`);
+  Break Apart (Ctrl+K) on one whose frame is a curve of several parts
+  gives one per part (#1607,
+  `command::tests::a_clip_frame_of_a_combined_curve_breaks_into_clip_frames_of_its_parts`,
+  `ops2::clip_frame_tests::clip_frames_ungroup_and_break_apart_through_their_frame`);
+  the Knife cuts the frame as it cuts a closed object, the pieces
+  keeping the frame's fill and outline (#1606,
+  `knife::tests::a_clip_frame_is_cut_through_its_frame`). The pieces
+  come out selected; one undo step. A cropped picture (a clip frame
+  holding one bitmap) is cut as a picture, see `crop-knife-eraser.md`.
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame
@@ -149,12 +169,19 @@ in place and lock work as for any clip frame. One undo step each.
 - Given a `.cdr` bitmap with a crop outline smaller than the image, then
   the reader produces a clip frame of the bitmap inside the crop path
   (confirmed with the 2019 banner file).
-- Given a clip frame saved as `.cdr` version 12 or later, then the file
+- Given a clip frame saved as `.cdr` version 11 or later, then the file
   holds a clip container (the frame object naming a group of the
   document's clip contents list, as files of that format hold one) and
   the frame comes back with its look and its contents (#1222;
-  `write::tests::clip_frames_go_out_as_clip_containers_from_version_12`,
+  `write::tests::clip_frames_go_out_as_clip_containers_from_version_11`;
+  version 11 from 2026-10-30, #1226, as the version 11 file of #896 holds
+  its clip frames),
   see `docs/cdr-format.md`, Writing).
+- Given text and two clip frames saved as `.cdr` version 11 or later, then
+  each frame's contents group holds its own number plus one in its link
+  argument, a number no other object takes, as every clip group of the
+  sample files does, and the checker passes the file (#1226;
+  `write::tests::clip_groups_hold_their_number_plus_one_after_text_and_other_clips`).
 - `render::tests::opacity_masks_show_the_contents_by_the_frame_brightness`,
   `svg::tests::opacity_masks_are_svg_masks`,
   `pdf::tests::opacity_masks_go_in_as_transparent_pictures`,

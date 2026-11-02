@@ -33,7 +33,16 @@ colour (see `contour.md`, #1262). The choices are kept in the preferences
 2. The end of an open outline that stops within 0.01 mm of another
    outline (or of its own start) is joined to it by a short line, so a
    drawing whose lines nearly meet, as files carry from rounding,
-   encloses its cells all the same (#899). A wider gap stays open.
+   encloses its cells all the same (#899). A wider gap stays open. The
+   line runs through the end, from a millionth of the outlines' extent
+   behind it to at least as far past the outline it meets (half the gap
+   when that is more): the faces are cut on an integer grid of about a
+   thousand millionth of the extent per unit (twice that at the
+   coarsest), and an end within a unit of an outline, as the pieces an
+   opaque fill cuts away come back
+   (step 1), rounds to either side of it, so a line that only ran on
+   from the end could miss the outline and the area leaked (#1281, the
+   side of a circle extruded backwards).
 3. The outlines, flattened to 0.02 mm, cut a box around them all (their
    bounds and 2 mm more) into faces (`shaping::enclosed_area`). The face
    under the click is the area; a face that reaches the box's margin is
@@ -58,6 +67,13 @@ colour (see `contour.md`, #1262). The choices are kept in the preferences
 - `shaping::tests::enclosed_area_closes_hairline_gaps` (lines 0.0002 mm
   short of a frame divide it; 0.2 mm short they do not; an open ring
   closed by a hairline is an area of its own)
+- `shaping::tests::enclosed_area_closes_gaps_below_the_grid` (a line
+  whose ends stop a few hundred millionths of a millimetre short of the
+  frame, or past it, divides it)
+- `extrude::tests::area_fill_reaches_the_side_of_a_back_cylinder` and
+  `extrude_tool::tests::area_fill_takes_the_side_of_a_back_cylinder`
+  (the curved side of a circle extruded with a Back type fills as one
+  area from a click anywhere in it)
 - `pick_drag_tests::area_fill_keeps_the_curves_it_fills_between`
 - Given a circle 60 mm across, when the Area Fill tool clicks inside it,
   then the new object has four curves, every point within 0.02 mm of the

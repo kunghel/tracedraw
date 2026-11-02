@@ -21,6 +21,11 @@ log.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fontdb = { version = "0.24", features = ["fs", "memmap", "fontconfig"] }
 
+# The folders fontconfig lists, for the font list's filter (#867): read
+# with the same crate the font database reads them with.
+[target.'cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))'.dependencies]
+fontconfig-parser = { version = "0.5", default-features = false }
+
 # The fonts Windows lists as installed, from its registry.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }

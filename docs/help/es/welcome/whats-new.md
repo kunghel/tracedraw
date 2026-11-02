@@ -14,7 +14,7 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
   el comando vuelve a estar desactivado la próxima vez que TraceDraw se
   inicia.
 - La lista completa de cambios de cada versión está en el
-  [registro de cambios](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [registro de cambios](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   del proyecto.
 
 ## Lo más destacado de las últimas versiones {#highlights}

@@ -59,9 +59,9 @@ with few colors.
    all** draws the other inks' curves too.
 4. **Save** and **Load** keep the inks and curves in a file.
 
-## Paletted {#paletted}
+## Indexed {#paletted}
 
-![The Paletted dialog box](../../img/bitmaps-color-modes-paletted.png)
+![The Indexed dialog box](../../img/bitmaps-color-modes-paletted.png)
 
 - **Palette**: Uniform Colors, Standard VGA (16 colors), Adaptive and
   Optimized (the picture's own colors, reduced to the number of **colors**

@@ -64,7 +64,7 @@ fn without_own_members(bytes: &[u8]) -> Vec<u8> {
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for i in 0..z.len() {
         let mut f = z.by_index(i).expect("member");
-        let name = f.name().to_string();
+        let name = f.name().expect("name").into_owned();
         if name.starts_with("tracedraw/") {
             continue;
         }

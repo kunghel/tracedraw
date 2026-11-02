@@ -17,7 +17,7 @@ objects of the drawing.
 
 ## In exported files
 
-- PDF (File > Export, Publish to PDF, Print, Send To): every visible
+- PDF (File > Export, Export as PDF, Print, Send To): every visible
   linked object on a printable layer becomes a link area over its
   bounding box (without the outline width), with no border. Web and mail
   addresses open as addresses (characters outside 7-bit ASCII are

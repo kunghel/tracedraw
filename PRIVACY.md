@@ -82,7 +82,7 @@ at first start and can turn off at any time:
 
 ## The browser version
 
-The browser version at <https://igtoth.github.io/tracedraw/> is a set of static
+The browser version at <https://tracedraw.github.io/tracedraw/> is a set of static
 files served by GitHub Pages. TraceDraw itself sends nothing (AI Drawing
 aside, as above, from your browser to the service you set up). When a
 drawing's text needs a font of the page's font catalog, or the pointer
@@ -92,9 +92,17 @@ of both, may log visits as described in the
 [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
 Files you open in it stay in your browser.
 
+## Independence and trademarks
+
+TraceDraw is an independent open-source project, not affiliated with,
+endorsed by or sponsored by Corel Corporation, Alludo or any other
+software vendor. CorelDRAW is a registered trademark of Corel Corporation.
+`.cdr` support is implemented independently, for interoperability. Other
+trademarks and product names belong to their owners.
+
 ## Contact
 
 Questions about this policy: open an issue at
-<https://github.com/igtoth/tracedraw/issues>.
+<https://github.com/tracedraw/tracedraw/issues>.
 
-Last updated: 2026-10-29.
+Last updated: 2026-11-01.

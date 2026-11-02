@@ -322,6 +322,8 @@ impl App {
         }
         if let (true, Some(list)) = (parts.shortcuts, &file.shortcuts) {
             self.settings.shortcuts = list.clone();
+            // A file written before a command key was renamed.
+            crate::settings::migrate_command_keys(&mut self.settings.shortcuts);
             self.shortcut_editor.note = None;
             self.shortcut_editor.capture = None;
             applied.push(PART_SHORTCUTS);
@@ -514,6 +516,28 @@ mod tests {
         // Parts the file lacks are not applied even when chosen.
         let applied = to.import_workspace(&file, WorkspaceParts::ALL);
         assert_eq!(applied, vec![PART_SHORTCUTS, PART_PALETTE]);
+    }
+
+    /// A workspace file written before a command key was renamed: its
+    /// shortcut for that command comes in under the key used now.
+    #[test]
+    fn a_shortcut_under_a_renamed_key_is_imported_under_the_new_one() {
+        let json = serde_json::json!({
+            "kind": KIND,
+            "version": 1,
+            "shortcuts": [["menu.text.grammatik", "Ctrl+Shift+G"], ["menu.file.open", "Ctrl+O"]],
+        });
+        let file = WorkspaceFile::from_bytes(json.to_string().as_bytes()).expect("read");
+        let mut to = App::headless();
+        let applied = to.import_workspace(&file, WorkspaceParts::ALL);
+        assert_eq!(applied, vec![PART_SHORTCUTS]);
+        assert_eq!(
+            to.settings.shortcuts,
+            [
+                ("menu.text.grammar".to_string(), "Ctrl+Shift+G".to_string()),
+                ("menu.file.open".into(), "Ctrl+O".into()),
+            ]
+        );
     }
 
     #[test]

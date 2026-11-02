@@ -68,7 +68,7 @@
 | [[menu.edit.select_all_guidelines]] | [Selecting objects](../objects/selecting.md) |
 | [[menu.edit.select_all_nodes]] | [Selecting objects](../objects/selecting.md) |
 | [[menu.edit.find_and_replace]] | [Finding and replacing](../objects/find-replace.md) |
-| [[menu.edit.step_and_repeat]] | [Making copies with Step and Repeat](../objects/step-and-repeat.md) |
+| [[menu.edit.step_and_repeat]] | [Making copies with Repeat Copies](../objects/step-and-repeat.md) |
 
 ## [[menu.view]] {#view}
 
@@ -109,27 +109,6 @@
 | [[menu.view.snap_objects]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.snap_page]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.snap_off]] | [Snapping](../pages-layout/snapping.md) |
-
-## [[menu.layout]] {#layout}
-
-| Команда | См. |
-|---|---|
-| [[menu.layout.insert_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.duplicate_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.rename_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.delete_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.go_to_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.insert_page_number]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_active]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_all]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_odd]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_even]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_settings]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.switch_orientation]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.document_options]] | [Document options](../pages-layout/document-options.md) |
-| [[menu.layout.page_size]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_layout]] | [Document options](../pages-layout/document-options.md) |
-| [[menu.layout.page_background]] | [Document options](../pages-layout/document-options.md) |
 
 ## [[menu.object]] {#object}
 
@@ -243,60 +222,6 @@
 | [[menu.object.properties]] | [The Properties panel](../objects/properties-docker.md) |
 | [[menu.object.objects]] | [Organizing objects and layers](../objects/objects-and-layers.md) |
 
-## [[menu.effects]] {#effects}
-
-| Команда | См. |
-|---|---|
-| [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
-| [[menu.effects.brush_strokes]] | [Brush strokes and painterly brushes](../lines-shapes/artistic-media.md) |
-| [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
-| [[menu.effects.blend]] | [Blends](../effects/blend.md) |
-| [[menu.effects.contour]] | [Contours](../effects/contour.md) |
-| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
-| [[menu.effects.extrude]] | [Extrusions](../effects/extrude.md) |
-| [[menu.effects.lens]] | [Lenses](../effects/lens.md) |
-| [[menu.effects.picture_mosaic]] | [Vector and picture mosaics](../effects/mosaics.md) |
-| [[menu.effects.vector_mosaic]] | [Vector and picture mosaics](../effects/mosaics.md) |
-
-## [[menu.bitmaps]] {#bitmaps}
-
-| Команда | См. |
-|---|---|
-| [[menu.bitmaps.convert_to_bitmap]] | [Converting objects to bitmaps](../bitmaps/convert-to-bitmap.md) |
-| [[menu.bitmaps.straighten_image]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.edit_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.crop_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.resample]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.remove_background_local]] | [Удалить фон](../bitmaps/remove-background.md) |
-| [[menu.bitmaps.remove_background]] | [AI drawing and generating](../customize/ai.md) |
-| [[menu.bitmaps.ai_art_styles]] | [AI drawing and generating](../customize/ai.md) |
-| [[menu.bitmaps.mode]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_bw]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_grayscale]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_duotone]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_paletted]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_rgb]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_lab]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_cmyk]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.inflate]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_auto]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_manual]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.break_link]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.update_from_link]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.quick_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.centerline_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_technical]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_drawing]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.outline_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_art]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_logo]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_detailed_logo]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_clipart]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_low_quality]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_high_quality]] | [Tracing bitmaps](../bitmaps/tracing.md) |
-| [[menu.bitmaps.plugins]] | [Растровые изображения](../bitmaps/index.md) |
-| [[menu.bitmaps.bitmap_mask]] | [Masking colors out of bitmaps](../bitmaps/bitmap-mask.md) |
-
 ## [[menu.text]] {#text}
 
 | Команда | См. |
@@ -332,7 +257,7 @@
 | [[menu.text.custom_hyphens]] | [Writing tools](../text/writing-tools.md) |
 | [[menu.text.writing_tools]] | [Writing tools](../text/writing-tools.md) |
 | [[menu.text.spell_check]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.grammatik]] | [Writing tools](../text/writing-tools.md) |
+| [[menu.text.grammar]] | [Writing tools](../text/writing-tools.md) |
 | [[menu.text.thesaurus]] | [Writing tools](../text/writing-tools.md) |
 | [[menu.text.autocorrect]] | [Writing tools](../text/writing-tools.md) |
 | [[menu.text.change_case]] | [Writing tools](../text/writing-tools.md) |
@@ -341,7 +266,7 @@
 | [[menu.text.text_docker]] | [Adding and editing text](../text/adding-text.md) |
 | [[menu.text.glyphs]] | [Fonts and glyphs](../text/fonts.md) |
 
-## [[menu.table]] {#table}
+### [[menu.table]] {#table}
 
 | Команда | См. |
 |---|---|
@@ -369,6 +294,83 @@
 | [[menu.table.unmerge_cells]] | [Tables](../objects/tables.md) |
 | [[menu.table.split_into_rows]] | [Tables](../objects/tables.md) |
 | [[menu.table.split_into_columns]] | [Tables](../objects/tables.md) |
+
+## [[menu.bitmaps]] {#bitmaps}
+
+| Команда | См. |
+|---|---|
+| [[menu.bitmaps.convert_to_bitmap]] | [Converting objects to bitmaps](../bitmaps/convert-to-bitmap.md) |
+| [[menu.bitmaps.straighten_image]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.edit_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.crop_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.resample]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.remove_background_local]] | [Удалить фон](../bitmaps/remove-background.md) |
+| [[menu.bitmaps.remove_background]] | [AI drawing and generating](../customize/ai.md) |
+| [[menu.bitmaps.ai_art_styles]] | [AI drawing and generating](../customize/ai.md) |
+| [[menu.bitmaps.mode]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_bw]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_grayscale]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_duotone]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_paletted]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_rgb]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_lab]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_cmyk]] | [Changing the color mode of bitmaps](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.inflate]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_auto]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_manual]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.break_link]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.update_from_link]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.quick_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.centerline_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_technical]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_drawing]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.outline_trace]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_art]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_logo]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_detailed_logo]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_clipart]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_low_quality]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_high_quality]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_optimized]] | [Tracing bitmaps](../bitmaps/tracing.md) |
+| [[menu.bitmaps.plugins]] | [Растровые изображения](../bitmaps/index.md) |
+| [[menu.bitmaps.bitmap_mask]] | [Masking colors out of bitmaps](../bitmaps/bitmap-mask.md) |
+
+## [[menu.effects]] {#effects}
+
+| Команда | См. |
+|---|---|
+| [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
+| [[menu.effects.brush_strokes]] | [Brush strokes and painterly brushes](../lines-shapes/artistic-media.md) |
+| [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
+| [[menu.effects.blend]] | [Blends](../effects/blend.md) |
+| [[menu.effects.contour]] | [Contours](../effects/contour.md) |
+| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
+| [[menu.effects.extrude]] | [Extrusions](../effects/extrude.md) |
+| [[menu.effects.lens]] | [Lenses](../effects/lens.md) |
+| [[menu.effects.picture_mosaic]] | [Vector and picture mosaics](../effects/mosaics.md) |
+| [[menu.effects.vector_mosaic]] | [Vector and picture mosaics](../effects/mosaics.md) |
+
+## [[menu.layout]] {#layout}
+
+| Команда | См. |
+|---|---|
+| [[menu.layout.insert_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.duplicate_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.rename_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.delete_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.go_to_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.insert_page_number]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_active]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_all]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_odd]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_even]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_settings]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.switch_orientation]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.document_options]] | [Document options](../pages-layout/document-options.md) |
+| [[menu.layout.page_size]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_layout]] | [Document options](../pages-layout/document-options.md) |
+| [[menu.layout.page_background]] | [Document options](../pages-layout/document-options.md) |
 
 ## [[menu.tools]] {#tools}
 

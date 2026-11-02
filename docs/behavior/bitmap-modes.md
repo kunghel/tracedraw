@@ -1,6 +1,6 @@
 # Bitmap colour modes
 
-Bitmaps > Mode converts the selected bitmaps; every selected bitmap
+Image > Mode converts the selected bitmaps; every selected bitmap
 changes in one undo step. The dialogs are windows the user sizes that
 show the first selected bitmap before and after in the shared preview
 (`before-after-preview.md`: the Preview list, zoom and pan, the copy as
@@ -17,7 +17,7 @@ kept in every mode.
 | Black and White (1-bit)... | dialog below |
 | Grayscale (8-bit) | luminance `0.299 R + 0.587 G + 0.114 B` |
 | Duotone (8-bit)... | dialog below |
-| Paletted (8-bit)... | dialog below |
+| Indexed (8-bit)... | dialog below |
 | RGB Color (24-bit) | the bitmap's colour mode becomes RGB (`Shape::cmyk_bitmap` off); pixels unchanged. Ticked while every selected bitmap is RGB |
 | Lab Color (24-bit) | each pixel through CIE Lab (D65) and back, unchanged within one level |
 | CMYK Color (32-bit) | the colour mode becomes CMYK and the pixels show as the inks print them (through the colour management profiles and back), as Tools > Convert Colors does (#1254, `colour-management.md`). Ticked while every selected bitmap is CMYK |
@@ -59,7 +59,7 @@ before the conversion, so higher is lighter.
   `prod(1 - coverage_i * (1 - ink_i))`.
 - Load and Save keep the type, inks and curves in a JSON file.
 
-## Paletted (8-bit)
+## Indexed (8-bit)
 
 - Palette: Uniform Colors (6 x 6 x 6 colours and 40 grays), Standard VGA
   (16), Adaptive and Optimized (median cut of the image's colours to
@@ -79,17 +79,17 @@ is not greyed out in the menu.
 
 ## Convert to Bitmap
 
-Bitmaps > Convert to Bitmap (also Object > Convert to Bitmap) turns the
+Image > Convert to Bitmap (also Object > Convert to Bitmap) turns the
 selection into one bitmap in one undo step:
 
 - Resolution: a list (72, 96, 150, 200, 300, 400, 600 dpi) and a value
   (36 to 2400, default 300).
-- Color mode: Black and White (1-bit), Grayscale (8-bit), Paletted
+- Color mode: Black and White (1-bit), Grayscale (8-bit), Indexed
   (8-bit), RGB Color (24-bit, default), CMYK Color (32-bit; the pixels
   stay, colour management converts on output). Black and white uses a 50
-  % threshold, or Floyd-Steinberg when Dithered; Paletted an optimized
+  % threshold, or Floyd-Steinberg when Dithered; Indexed an optimized
   256-colour palette, dithered by Floyd-Steinberg or not.
-- Dithered: only for Black and White and Paletted (256 colours or fewer).
+- Dithered: only for Black and White and Indexed (256 colours or fewer).
 - Always overprint black: the bitmap is marked to overprint, so its black
   prints over the colours beneath (multiplied when overprints are
   simulated).

@@ -102,7 +102,7 @@ SignPath that means approving every push, so leave it off there.
 3. Open the app's Product management > Product identity page and copy
    three values into GitHub variables:
    - `MSIX_IDENTITY_NAME`: Package/Identity/Name (like
-     `12345IghorToth.TraceDraw`);
+     `12345TraceDraw.TraceDraw`);
    - `MSIX_PUBLISHER`: Package/Identity/Publisher (like `CN=1A2B3C4D-...`);
    - `MSIX_PUBLISHER_NAME`: Package/Properties/PublisherDisplayName (your
      name as the Store shows it).

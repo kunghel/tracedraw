@@ -1521,7 +1521,7 @@ pub fn guide_bar(app: &mut App, ui: &mut Ui) {
 /// The page bar's list of sizes: the presets by group, then Custom
 /// (#650), which is the one ticked when the page matches no preset and
 /// opens the Page Size dialog with the page's width and height to type
-/// any size, and Edit This List, which opens Document Options > Page Size
+/// any size, and Edit This List, which opens Document Setup > Page Size
 /// to save or delete sizes.
 fn page_size_list(app: &mut App, ui: &mut Ui, current: &str, size: Size) {
     let saved = app.settings.page_sizes.clone();
@@ -1595,12 +1595,13 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         }
     }
     // Fit page to drawing, as Layout has it (#236); pale on an empty
-    // page.
-    let has_objects = app
-        .doc()
-        .page(app.page)
-        .ok()
-        .is_some_and(|p| p.layers.iter().any(|l| !l.shapes.is_empty()));
+    // page, or with All Pages on when no page has anything on it.
+    let has_objects = |p: &tracedraw_core::Page| p.layers.iter().any(|l| !l.shapes.is_empty());
+    let has_objects = if app.page_size_all {
+        app.doc().pages.iter().any(has_objects)
+    } else {
+        app.doc().page(app.page).ok().is_some_and(has_objects)
+    };
     // Autofit Page: a popup with the margin to leave around the drawing
     // (kept in the preferences) and the button that fits the page.
     let fit = pic_button(
@@ -1659,7 +1660,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         )
     });
     if fitted {
-        app.fit_page_to_drawing_with_margin(app.settings.fit_page_margin);
+        app.autofit_pages(app.settings.fit_page_margin, app.page_size_all);
         app.fit_pending = true;
         egui::Popup::close_id(&ctx, popup_id);
     }
@@ -2998,17 +2999,13 @@ pub fn zoom_bar(app: &mut App, ui: &mut Ui) {
 /// parts (break apart); `None` when nothing applies.
 pub fn arrange_offers(shapes: &[tracedraw_core::Shape]) -> Option<(bool, bool, bool)> {
     let many = shapes.len() >= 2;
+    // A clip frame whose frame is a group ungroups, one whose frame is a
+    // curve of several parts breaks apart (#1605, #1607).
     let groups = shapes
         .iter()
-        .any(|s| matches!(s.kind, ShapeKind::Group { .. }));
+        .any(|s| matches!(s.kind, ShapeKind::Group { .. }) || s.is_clip_frame_of_group());
     let parts = shapes.iter().any(|s| match &s.kind {
-        ShapeKind::Path { path, .. } => {
-            path.elements()
-                .iter()
-                .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
-                .count()
-                > 1
-        }
+        ShapeKind::Path { .. } | ShapeKind::ClipFrame { .. } => s.breaks_into_parts(),
         _ => false,
     });
     (many || groups || parts).then_some((many, groups, parts))

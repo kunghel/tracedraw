@@ -25,29 +25,100 @@ pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
         let l = tmp.pages[0].layers[0].id;
         for s in app.selected_shapes() {
             let mut c = s.clone();
-            c.transform_by(Affine::translate((-bounds.x0, -bounds.y0)));
+            let shift = Affine::translate((-bounds.x0, -bounds.y0));
+            c.transform_by(shift);
+            carry_blend_ends(&mut c, shift);
             if let Ok(layer) = tmp.layer_mut(l) {
                 layer.shapes.push(c);
             }
         }
         (tmp, bounds)
-    } else if st.all_pages {
-        (doc.clone(), app.page_rect())
     } else {
+        // The pages chosen, in the order chosen (#1382).
         let mut tmp = doc.clone();
-        tmp.pages.retain(|p| p.id == app.page);
+        let mut all: Vec<_> = std::mem::take(&mut tmp.pages)
+            .into_iter()
+            .map(Some)
+            .collect();
+        tmp.pages = export_page_indexes(app, st)
+            .into_iter()
+            .filter_map(|i| all.get_mut(i).and_then(Option::take))
+            .collect();
         (tmp, app.page_rect())
     }
+}
+
+/// The indexes of the pages `st` exports from the drawing (#1382).
+pub(crate) fn export_page_indexes(app: &App, st: &ExportState) -> Vec<usize> {
+    let doc = app.engine.document();
+    let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
+    st.page_indexes(doc.pages.len(), current)
+}
+
+/// Where page `number` of a export to `path` that writes one file per
+/// page goes: "name-3.png" for page 3 (#1382).
+pub fn numbered_path(path: &Path, number: usize, ext: &str) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map_or(ext.to_string(), |e| e.to_string_lossy().to_string());
+    path.with_file_name(format!("{stem}-{number}.{ext}"))
 }
 
 pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, String> {
     let (_, ext) = EXPORT_FORMATS[st.format];
     let (doc, _) = export_document(app, st);
-    match ext {
-        "svg" => {
-            let svg = tracedraw_io::svg::page_to_svg(&doc, 0);
-            crate::files::write(path, svg).map_err(|e| e.to_string())?;
-        }
+    if ExportState::one_file_for_all_pages(ext) {
+        let bytes = document_file(app, &doc, ext, st)?;
+        crate::files::write(path, bytes).map_err(|e| e.to_string())?;
+        return Ok(trf(
+            "status.exported",
+            &[("path", &path.display().to_string())],
+        ));
+    }
+    // The other formats hold one page: one file per page, numbered by
+    // the page it shows when there are several (#1382).
+    let numbers: Vec<usize> = export_page_indexes(app, st)
+        .into_iter()
+        .map(|i| i + 1)
+        .collect();
+    let many = doc.pages.len() > 1;
+    let mut written = Vec::with_capacity(doc.pages.len());
+    for k in 0..doc.pages.len() {
+        let bytes = page_file(&doc, k, ext, st)?;
+        let target = if many {
+            numbered_path(path, numbers.get(k).copied().unwrap_or(k + 1), ext)
+        } else {
+            path.to_path_buf()
+        };
+        crate::files::write(&target, bytes).map_err(|e| e.to_string())?;
+        written.push(target);
+    }
+    Ok(match (written.first(), written.last()) {
+        (Some(first), Some(last)) if many => trf(
+            "status.exported_pages",
+            &[
+                ("count", &written.len().to_string()),
+                ("first", &first.display().to_string()),
+                ("last", &last.display().to_string()),
+            ],
+        ),
+        _ => trf("status.exported", &[("path", &path.display().to_string())]),
+    })
+}
+
+/// The file of a format that holds every page (PDF, AI, PostScript, PRN,
+/// HTML) for the pages of `doc`.
+fn document_file(
+    app: &App,
+    doc: &Document,
+    ext: &str,
+    st: &ExportState,
+) -> Result<Vec<u8>, String> {
+    Ok(match ext {
         "pdf" | "ai" => {
             use tracedraw_io::pdf::{PdfOptions, PdfStandard};
             let standard = match (ext, st.pdf_standard) {
@@ -68,96 +139,65 @@ pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, St
                 }),
                 keywords: (!st.tags.trim().is_empty()).then(|| st.tags.trim().to_string()),
                 flatten_dpi: st.dpi.max(72.0),
+                text: tracedraw_io::pdf::PdfText {
+                    as_curves: ext == "pdf" && st.text_as_curves,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
-            let pdf = tracedraw_io::pdf::document_to_pdf_with(&doc, &opts);
-            crate::files::write(path, pdf).map_err(|e| e.to_string())?;
+            tracedraw_io::pdf::document_to_pdf_with(doc, &opts)
         }
-        "eps" => {
-            let eps = tracedraw_io::eps::page_to_eps(&doc, 0);
-            crate::files::write(path, eps).map_err(|e| e.to_string())?;
-        }
-        "ps" | "prn" => {
-            // Every exported page; a print file is the same PostScript.
-            let ps = tracedraw_io::eps::document_to_ps(&doc);
-            crate::files::write(path, ps).map_err(|e| e.to_string())?;
-        }
-        "dxf" => {
-            let dxf = tracedraw_io::dxf::page_to_dxf(&doc, 0);
-            crate::files::write(path, dxf).map_err(|e| e.to_string())?;
-        }
-        "emf" => {
-            let emf = tracedraw_io::emf::page_to_emf(&doc, 0);
-            crate::files::write(path, emf).map_err(|e| e.to_string())?;
-        }
-        "wmf" => {
-            let wmf = tracedraw_io::emf::page_to_wmf(&doc, 0);
-            crate::files::write(path, wmf).map_err(|e| e.to_string())?;
-        }
-        "plt" => {
-            let plt = tracedraw_io::plt::page_to_plt(&doc, 0);
-            crate::files::write(path, plt).map_err(|e| e.to_string())?;
-        }
-        "psd" => {
-            let psd =
-                tracedraw_io::psd::page_to_psd(&doc, 0, st.render_dpi()).ok_or("render failed")?;
-            crate::files::write(path, psd).map_err(|e| e.to_string())?;
-        }
-        "html" => {
-            let html = tracedraw_io::html::document_to_html(&doc);
-            crate::files::write(path, html).map_err(|e| e.to_string())?;
-        }
+        // Every exported page; a print file is the same PostScript.
+        "ps" | "prn" => tracedraw_io::eps::document_to_ps(doc).into_bytes(),
+        "html" => tracedraw_io::html::document_to_html(doc).into_bytes(),
+        other => return Err(format!("{other}: not a format of several pages")),
+    })
+}
+
+/// The file of page `k` of `doc` in a format that holds one page.
+fn page_file(doc: &Document, k: usize, ext: &str, st: &ExportState) -> Result<Vec<u8>, String> {
+    Ok(match ext {
+        "svg" => tracedraw_io::svg::page_to_svg(doc, k).into_bytes(),
+        "eps" => tracedraw_io::eps::page_to_eps(doc, k).into_bytes(),
+        "dxf" => tracedraw_io::dxf::page_to_dxf(doc, k).into_bytes(),
+        "emf" => tracedraw_io::emf::page_to_emf(doc, k),
+        "wmf" => tracedraw_io::emf::page_to_wmf(doc, k),
+        "plt" => tracedraw_io::plt::page_to_plt(doc, k).into_bytes(),
+        "psd" => tracedraw_io::psd::page_to_psd(doc, k, st.render_dpi()).ok_or("render failed")?,
         _ => {
-            // Raster: every page when all_pages, numbered files.
-            let pages: Vec<_> = doc.pages.iter().map(|p| p.id).collect();
-            for (i, pid) in pages.iter().enumerate() {
-                let mut pm = tracedraw_render::render_page_image(&doc, *pid, st.render_dpi())
-                    .ok_or("render failed")?;
-                if st.transparent && matches!(ext, "png" | "webp" | "gif") {
-                    // Re-render on a transparent background.
-                    let p = doc.page(*pid).map_err(|e| e.to_string())?;
-                    let zoom = st.render_dpi() / 25.4;
-                    let w = (p.size.width * zoom).ceil() as u32;
-                    let h = (p.size.height * zoom).ceil() as u32;
-                    pm = tracedraw_render::render_page(
-                        &doc,
-                        *pid,
-                        &tracedraw_render::RenderOptions {
-                            width: w,
-                            height: h,
-                            view: tracedraw_render::ViewTransform {
-                                zoom,
-                                origin_x: 0.0,
-                                origin_y: h as f64,
-                            },
-                            preview: None,
-                            wireframe: false,
-                            ..tracedraw_render::RenderOptions::default()
+            let pid = doc.pages.get(k).ok_or("no page")?.id;
+            let mut pm = tracedraw_render::render_page_image(doc, pid, st.render_dpi())
+                .ok_or("render failed")?;
+            if st.transparent && matches!(ext, "png" | "webp" | "gif") {
+                // Re-render on a transparent background.
+                let p = doc.page(pid).map_err(|e| e.to_string())?;
+                let zoom = st.render_dpi() / 25.4;
+                let w = (p.size.width * zoom).ceil() as u32;
+                let h = (p.size.height * zoom).ceil() as u32;
+                pm = tracedraw_render::render_page(
+                    doc,
+                    pid,
+                    &tracedraw_render::RenderOptions {
+                        width: w,
+                        height: h,
+                        view: tracedraw_render::ViewTransform {
+                            zoom,
+                            origin_x: 0.0,
+                            origin_y: h as f64,
                         },
-                    )
-                    .ok_or("render failed")?;
-                }
-                let target = if pages.len() > 1 {
-                    let stem = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    path.with_file_name(format!("{stem}-{}.{ext}", i + 1))
-                } else {
-                    path.to_path_buf()
-                };
-                let bytes = encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?;
-                // The file says its resolution, so it opens at the size
-                // chosen in the dialog (#617).
-                let bytes = record_dpi(bytes, ext, st.dpi);
-                crate::files::write(&target, bytes).map_err(|e| e.to_string())?;
+                        preview: None,
+                        wireframe: false,
+                        ..tracedraw_render::RenderOptions::default()
+                    },
+                )
+                .ok_or("render failed")?;
             }
+            let bytes = encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?;
+            // The file says its resolution, so it opens at the size
+            // chosen in the dialog (#617).
+            record_dpi(bytes, ext, st.dpi)
         }
-    }
-    Ok(trf(
-        "status.exported",
-        &[("path", &path.display().to_string())],
-    ))
+    })
 }
 
 /// The output intent's profile for a PDF/X file: the CMYK profile picked
@@ -302,9 +342,11 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
 pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) -> Option<usize> {
     let (_, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
     let (doc, bounds) = export_document(app, st);
+    // One file per page: the first page's size times the pages (#1382).
+    let pages = doc.pages.len().max(1);
     match ext {
-        "svg" => Some(tracedraw_io::svg::page_to_svg(&doc, 0).len()),
-        "eps" => Some(tracedraw_io::eps::page_to_eps(&doc, 0).len()),
+        "svg" => Some(tracedraw_io::svg::page_to_svg(&doc, 0).len() * pages),
+        "eps" => Some(tracedraw_io::eps::page_to_eps(&doc, 0).len() * pages),
         "ps" | "prn" => Some(tracedraw_io::eps::document_to_ps(&doc).len()),
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
         "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
@@ -315,12 +357,7 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
             let dpi = st.render_dpi();
             let full = (bounds.width() / 25.4 * dpi) * (bounds.height() / 25.4 * dpi);
             let shown = (preview.width() as f64 * preview.height() as f64).max(1.0);
-            let pages = if st.all_pages && !st.selection_only {
-                doc.pages.len().max(1) as f64
-            } else {
-                1.0
-            };
-            Some((bytes * full / shown * pages) as usize)
+            Some((bytes * full / shown * pages as f64) as usize)
         }
         _ => None,
     }
@@ -482,9 +519,12 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
                 // thread: a slow or stuck printer leaves the window usable
                 // (#810).
                 let (printer, copies, collate) = (printer.clone(), st.copies, st.collate);
+                // Print as bitmap: the sheets are already pictures of
+                // that resolution, sent as they are.
+                let bitmap_dpi = st.as_bitmap.then(|| st.bitmap_dpi.clamp(36.0, 1200.0));
                 let msg = trf("status.printing_to", &[("name", &printer)]);
                 app.start_print_job(move || {
-                    print_on(&printer, &name, &doc, copies, collate, &stem)
+                    print_on(&printer, &name, &doc, copies, collate, &stem, bitmap_dpi)
                 });
                 return Ok(msg);
             }
@@ -510,6 +550,7 @@ fn print_on(
     copies: u32,
     collate: bool,
     title: &str,
+    _bitmap_dpi: Option<f64>,
 ) -> Result<String, String> {
     let pdf = tracedraw_io::pdf::document_to_pdf(doc);
     let dir = std::env::temp_dir().join("tracedraw-print");
@@ -520,13 +561,13 @@ fn print_on(
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
 }
 
-/// The resolution sheets are drawn at for a Windows printer.
-#[cfg(target_os = "windows")]
-const WINDOWS_PRINT_DPI: f64 = 300.0;
-
-/// The sheets drawn as pictures and sent to the Windows printer
-/// `printer`, local or on the network (#614), with the copies the dialog
-/// asked for.
+/// The sheets drawn at the printer's own resolution and sent to the
+/// Windows printer `printer`, local or on the network (#614), with the
+/// copies the dialog asked for. Each sheet goes as strips of pixels with
+/// its blank parts left out, so fine lines and small text come out as
+/// sharp as from a PDF sent through `lp` and blank paper costs nothing in
+/// the job (#1404); `bitmap_dpi` (Print as bitmap) sends that resolution
+/// instead.
 #[cfg(target_os = "windows")]
 fn print_on(
     printer: &str,
@@ -535,16 +576,127 @@ fn print_on(
     copies: u32,
     collate: bool,
     title: &str,
+    bitmap_dpi: Option<f64>,
 ) -> Result<String, String> {
-    let sheets: Vec<(Vec<u8>, f64, f64)> = doc
+    let dpi = bitmap_dpi
+        .unwrap_or_else(|| windows_print_dpi(crate::printers::printer_resolution_windows(printer)));
+    let sheets: Vec<crate::printers::Sheet> = doc
         .pages
         .iter()
-        .filter_map(|p| {
-            sheet_png(doc, p.id, WINDOWS_PRINT_DPI).map(|png| (png, p.size.width, p.size.height))
+        .map(|p| crate::printers::Sheet {
+            width: p.size.width,
+            height: p.size.height,
+            tiles: sheet_tiles(doc, p.id, dpi, PRINT_TILE_PIXELS).unwrap_or_default(),
         })
         .collect();
-    crate::printers::print_sheets_windows(printer, &sheets, copies, collate, title)?;
+    crate::printers::print_sheets_windows(printer, &sheets, dpi, copies, collate, title)?;
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
+}
+
+/// The resolution sheets are drawn at for a Windows printer that says
+/// `reported` dots per inch: its own, kept between 300 and 1200 (a
+/// higher one would only make the job larger), 600 when it does not say.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_print_dpi(reported: Option<f64>) -> f64 {
+    match reported {
+        Some(d) if d.is_finite() && d > 0.0 => d.clamp(300.0, 1200.0),
+        _ => 600.0,
+    }
+}
+
+/// The most pixels drawn at once for a printed sheet (64 MB of RGBA).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const PRINT_TILE_PIXELS: u64 = 1 << 24;
+
+/// A sheet drawn on white at `dpi` as strips of at most `max_pixels`
+/// pixels each, every strip cut to the part of it that is not blank
+/// (white) and left out when all of it is: the PNGs with where they go on
+/// the sheet. The strips put together give the same pixels as the whole
+/// sheet drawn at once, with no sheet-sized picture in memory.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sheet_tiles(
+    doc: &Document,
+    id: tracedraw_core::PageId,
+    dpi: f64,
+    max_pixels: u64,
+) -> Option<Vec<crate::printers::Tile>> {
+    let page = doc.page(id).ok()?;
+    let zoom = dpi / 25.4;
+    let w = ((page.size.width * zoom).ceil() as u32).max(1);
+    let h = ((page.size.height * zoom).ceil() as u32).max(1);
+    // Whole multiples of 16 rows, as the coarse grid of procedural fills.
+    let rows = ((max_pixels / w as u64) / 16 * 16).clamp(16, (h as u64).div_ceil(16) * 16) as u32;
+    let opts = tracedraw_render::RenderOptions {
+        width: w,
+        height: h,
+        view: tracedraw_render::ViewTransform {
+            zoom,
+            origin_x: 0.0,
+            origin_y: h as f64,
+        },
+        ..Default::default()
+    };
+    let mut tiles = Vec::new();
+    let mut y0 = 0u32;
+    while y0 < h {
+        let band = rows.min(h - y0);
+        let objects = tracedraw_render::render_page_rows(doc, id, &opts, y0, y0 + band)?;
+        let mut strip = tiny_skia::Pixmap::new(w, band)?;
+        strip.fill(tiny_skia::Color::WHITE);
+        strip.draw_pixmap(
+            0,
+            0,
+            objects.as_ref(),
+            &Default::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        if let Some((x, y, cw, ch)) = inked_area(&strip) {
+            let part =
+                strip.clone_rect(tiny_skia::IntRect::from_xywh(x as i32, y as i32, cw, ch)?)?;
+            tiles.push(crate::printers::Tile {
+                png: part.encode_png().ok()?,
+                x: x as f64 / zoom,
+                y: (y0 + y) as f64 / zoom,
+                width: cw as f64 / zoom,
+                height: ch as f64 / zoom,
+            });
+        }
+        y0 += band;
+    }
+    Some(tiles)
+}
+
+/// The smallest box (x, y, width, height in pixels) holding every pixel of
+/// `pm` that is not white; `None` when all of them are.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn inked_area(pm: &tiny_skia::Pixmap) -> Option<(u32, u32, u32, u32)> {
+    let w = pm.width() as usize;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for (y, row) in pm.data().chunks_exact(w * 4).enumerate() {
+        let mut first = None;
+        let mut last = 0;
+        for (x, px) in row.chunks_exact(4).enumerate() {
+            if px != [255, 255, 255, 255] {
+                first.get_or_insert(x);
+                last = x;
+            }
+        }
+        if let Some(f) = first {
+            x0 = x0.min(f);
+            x1 = x1.max(last);
+            y0 = y0.min(y);
+            y1 = y;
+        }
+    }
+    (x0 != usize::MAX).then(|| {
+        (
+            x0 as u32,
+            y0 as u32,
+            (x1 - x0 + 1) as u32,
+            (y1 - y0 + 1) as u32,
+        )
+    })
 }
 
 /// Prints sent to the system viewer in this session.
@@ -576,7 +728,7 @@ fn viewer_print_path(dir: &Path, name: &str, count: u32) -> std::path::PathBuf {
     nth(n)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -588,6 +740,23 @@ fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
         "status.print_sent",
         &[("path", &path.display().to_string())],
     ))
+}
+
+/// On Android the print PDF goes to the system's print service, whose
+/// dialog picks the printer, the copies and the paper (#1398). The file
+/// stays in the app's temporary folder: the service reads it later.
+#[cfg(target_os = "android")]
+fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("tracedraw-print");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(shared_file_name(name));
+    std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
+    let job = name.trim_end_matches(".pdf");
+    if crate::android::outside::print_pdf(&path, job) {
+        Ok(trf("status.print_sent_android", &[("name", job)]))
+    } else {
+        Err(tr("status.print_service_failed"))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -698,6 +867,87 @@ pub fn print_area<'a>(shapes: impl Iterator<Item = &'a tracedraw_core::Shape>) -
     ))
 }
 
+/// The copies of their end objects that the blends of `s` (and of the
+/// objects inside it) keep, in page space, moved by `t` along with `s`:
+/// a page-space transformation of the start object alone, with no end
+/// object to bring the copy up to date from (the end was not exported
+/// with the start), would otherwise leave the steps running to where the
+/// end used to be (#1541).
+fn carry_blend_ends(s: &mut tracedraw_core::Shape, t: Affine) {
+    for e in s.effects.iter_mut() {
+        if let tracedraw_core::live::Effect::Blend { end, .. } = e {
+            end.transform_by(t);
+        }
+    }
+    match &mut s.kind {
+        ShapeKind::Group { children } => children.iter_mut().for_each(|c| carry_blend_ends(c, t)),
+        ShapeKind::ClipFrame { frame, contents } => {
+            carry_blend_ends(frame, t);
+            contents.iter_mut().for_each(|c| carry_blend_ends(c, t));
+        }
+        _ => {}
+    }
+}
+
+/// The copies of their end objects that the blends of `doc` keep brought
+/// up to date from the end objects themselves, as the editor does after
+/// every change (`App::refresh_blends`). The sheets are made from a copy
+/// of the drawing whose objects are moved, shrunk and recoloured outside
+/// the editor (Fit to page, the selection as the page, a negative, text
+/// in black, spot inks as CMYK), and a blend evaluated from a stale copy
+/// ran its steps to where the end object used to be, in the colour it
+/// used to have (#1541).
+fn refresh_blend_ends(doc: &mut Document) {
+    use tracedraw_core::live::Effect;
+    fn starts(s: &tracedraw_core::Shape, out: &mut Vec<(ShapeId, ShapeId)>) {
+        for e in &s.effects {
+            if let Effect::Blend {
+                end_id: Some(end), ..
+            } = e
+            {
+                out.push((s.id, *end));
+            }
+        }
+        match &s.kind {
+            ShapeKind::Group { children } => children.iter().for_each(|c| starts(c, out)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                starts(frame, out);
+                contents.iter().for_each(|c| starts(c, out));
+            }
+            _ => {}
+        }
+    }
+    let mut pairs = Vec::new();
+    for layer in doc.all_layers() {
+        for s in &layer.shapes {
+            starts(s, &mut pairs);
+        }
+    }
+    for (start, end) in pairs {
+        // An end object that is not printed (not selected, say) leaves the
+        // copy as it is, as in the editor.
+        let Some(mut copy) = doc.shape_on_page(end) else {
+            continue;
+        };
+        copy.effects.clear();
+        let Some(s) = doc.find_shape_mut(start) else {
+            continue;
+        };
+        for e in s.effects.iter_mut() {
+            if let Effect::Blend {
+                end: kept,
+                end_id: Some(id),
+                ..
+            } = e
+            {
+                if *id == end {
+                    **kept = copy.clone();
+                }
+            }
+        }
+    }
+}
+
 /// The area the objects left on `page` and in the `master` layers cover
 /// (what prints of them: visible objects of visible, printable layers,
 /// their outlines and live effects included) made the page: the page
@@ -728,10 +978,21 @@ fn selection_as_page(
     page.size = Size::new(w, h);
 }
 
+/// The indexes of the drawing's pages the Print dialog's settings print,
+/// in printing order: the whole drawing, the current page, the pages
+/// listed or the selection's page, odd or even ones only when asked
+/// (`PrintState::page_indexes`). `print_sheets` imposes these pages, and
+/// the Layout sketch with the booklet summary under it counts the same
+/// ones, so the counts match what prints (#788).
+pub fn printed_pages(app: &App, st: &PrintState) -> Vec<usize> {
+    let doc = app.engine.document();
+    let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
+    st.page_indexes(doc.pages.len(), current)
+}
+
 pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     let mut doc = app.engine.document().clone();
-    let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
-    let keep = st.page_indexes(doc.pages.len(), current);
+    let keep = printed_pages(app, st);
     let mut i = 0;
     doc.pages.retain(|_| {
         i += 1;
@@ -777,6 +1038,8 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
             }
         }
     }
+    // The blends' steps follow the objects as printed (#1541).
+    refresh_blend_ends(&mut doc);
     let options = print_layout(app, st, &doc);
     let mut doc = crate::imposition::impose(&doc, &options);
     for page in doc.pages.iter_mut() {
@@ -916,12 +1179,6 @@ fn sheet_pixels(
     );
     let png = white.encode_png().ok()?;
     Some((png, white.width(), white.height()))
-}
-
-/// [`sheet_pixels`]'s PNG.
-#[cfg(target_os = "windows")]
-fn sheet_png(doc: &Document, id: tracedraw_core::PageId, dpi: f64) -> Option<Vec<u8>> {
-    sheet_pixels(doc, id, dpi).map(|(png, _, _)| png)
 }
 
 /// General > Print as bitmap: each sheet becomes one picture of itself.
@@ -1136,6 +1393,13 @@ pub fn map_colors(
     if let Some(st) = &mut s.stroke {
         st.color = f(st.color);
     }
+    // The copy of its end object a blend keeps: the steps run to the
+    // end's colour as mapped (#1541).
+    for e in s.effects.iter_mut() {
+        if let tracedraw_core::live::Effect::Blend { end, .. } = e {
+            map_colors(end, f);
+        }
+    }
     match &mut s.kind {
         ShapeKind::Group { children } => children.iter_mut().for_each(|c| map_colors(c, f)),
         ShapeKind::ClipFrame { frame, contents } => {
@@ -1200,6 +1464,66 @@ fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
     sep
 }
 
+/// A file name that stays one name inside a folder: no folder
+/// separators, no leading dots, never empty.
+pub fn shared_file_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() {
+        "document".into()
+    } else {
+        clean
+    }
+}
+
+/// Whether `target` is an address with a scheme (`https:`, `mailto:`,
+/// `market:`) rather than a file path.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn is_address(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() > 1
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// Open a file or a web address in the app the system has for it. On
+/// Android (#1398) an address opens in its app, a file of the app (or a
+/// document the picker returned) in the app picked for its type; a
+/// folder cannot be shown there.
+#[cfg(target_os = "android")]
+pub fn open_with_system(path: &Path) -> Result<(), String> {
+    let target = path.to_string_lossy();
+    let opened = if is_address(&target) {
+        crate::android::outside::view(&target, "")
+    } else {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mime = crate::files::mime_for_extension(ext);
+        match crate::files::document_uri(path) {
+            Some(uri) => crate::android::outside::view(&uri, mime),
+            None if path.is_dir() => return Err(tr("status.no_folders_on_android")),
+            None => crate::android::outside::view(&target, mime),
+        }
+    };
+    if opened {
+        Ok(())
+    } else {
+        Err(tr("status.could_not_open_viewer"))
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn open_with_system(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let r = std::process::Command::new("cmd")
@@ -1276,6 +1600,10 @@ impl App {
     /// File > Send To: write the document as PDF into `target` and report
     /// where it went.
     pub fn send_to(&mut self, target: SendTarget) {
+        if crate::files::ANDROID {
+            self.send_to_android(target);
+            return;
+        }
         if crate::files::WEB {
             // No folders in a browser: every target is a PDF download.
             let name = self.send_to_file_name();
@@ -1308,6 +1636,54 @@ impl App {
     }
 }
 
+impl App {
+    /// Send To on Android (#1398): Documents saves the PDF where the
+    /// system's picker says, Mail Recipient hands it to a mail app through
+    /// the share sheet; there is no desktop folder ([`SendTarget::why_not`]).
+    fn send_to_android(&mut self, target: SendTarget) {
+        if let Some(why) = target.why_not() {
+            self.status = tr(why);
+            return;
+        }
+        let name = self.send_to_file_name();
+        let pdf = tracedraw_io::pdf::document_to_pdf(self.engine.document());
+        if target == SendTarget::Documents {
+            crate::files::Dialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name(name)
+                .save_file(self, move |app, path| {
+                    app.status = match crate::files::write(&path, pdf) {
+                        Ok(()) => trf("status.sent_to", &[("path", &path.display().to_string())]),
+                        Err(e) => trf("status.export_failed", &[("e", &e.to_string())]),
+                    };
+                });
+            return;
+        }
+        let dir = std::env::temp_dir().join("tracedraw-send");
+        let path = dir.join(shared_file_name(&name));
+        self.status = match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, pdf))
+        {
+            Err(e) => trf("status.export_failed", &[("e", &e.to_string())]),
+            Ok(()) if share_pdf(&path, name.trim_end_matches(".pdf")) => {
+                trf("status.shared", &[("name", &name)])
+            }
+            Ok(()) => tr("status.share_failed"),
+        };
+    }
+}
+
+/// Hand the PDF at `path` to a mail app through the share sheet (Android);
+/// false where there is none.
+fn share_pdf(path: &Path, subject: &str) -> bool {
+    #[cfg(target_os = "android")]
+    return crate::android::outside::share(path, "application/pdf", subject, true);
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, subject);
+        false
+    }
+}
+
 /// Destinations of File > Send To.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendTarget {
@@ -1317,6 +1693,12 @@ pub enum SendTarget {
 }
 
 impl SendTarget {
+    /// Why this destination cannot be used here, as an i18n key for the
+    /// greyed menu row's tip: Android has no desktop folder.
+    pub fn why_not(self) -> Option<&'static str> {
+        why_not_send_to(self, crate::files::ANDROID)
+    }
+
     /// The folder the PDF is written to; the mail recipient gets it from
     /// the system's temporary folder.
     pub fn dir(self) -> Option<std::path::PathBuf> {
@@ -1330,6 +1712,11 @@ impl SendTarget {
             }
         }
     }
+}
+
+/// [`SendTarget::why_not`] on Android (`android`) or elsewhere.
+pub fn why_not_send_to(target: SendTarget, android: bool) -> Option<&'static str> {
+    (android && target == SendTarget::Desktop).then_some("menu.file.send_to_desktop_android")
 }
 
 /// `$XDG_*_DIR`, then `~/<name>` (created when missing), then the home
@@ -1763,6 +2150,67 @@ pub fn replace_properties(app: &mut App, st: &mut FindReplaceState) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::{is_address, shared_file_name, why_not_send_to, SendTarget};
+
+    /// Android (#1398): Send To has no desktop folder there (the row is
+    /// greyed with the reason), while Documents and Mail stay; every
+    /// destination works elsewhere. The file handed to another app keeps
+    /// one name inside its folder, and addresses are told from paths.
+    #[test]
+    fn android_sends_and_opens_through_the_system() {
+        assert_eq!(
+            why_not_send_to(SendTarget::Desktop, true),
+            Some("menu.file.send_to_desktop_android")
+        );
+        assert_eq!(why_not_send_to(SendTarget::Documents, true), None);
+        assert_eq!(why_not_send_to(SendTarget::Mail, true), None);
+        for t in [SendTarget::Desktop, SendTarget::Documents, SendTarget::Mail] {
+            assert_eq!(why_not_send_to(t, false), None);
+            // Not on Android here.
+            assert_eq!(t.why_not(), None);
+        }
+        assert!(crate::i18n::has_english(
+            "menu.file.send_to_desktop_android"
+        ));
+        assert_eq!(shared_file_name("Poster.pdf"), "Poster.pdf");
+        assert_eq!(shared_file_name("a/b\\c.pdf"), "a_b_c.pdf");
+        assert_eq!(shared_file_name("../x.pdf"), "_x.pdf");
+        assert_eq!(shared_file_name(" .. "), "document");
+        for a in [
+            "https://tracedraw.dev/help",
+            "mailto:someone@example.com",
+            "market://details?id=dev.tracedraw.app",
+            "content://com.android.providers/document/1",
+        ] {
+            assert!(is_address(a), "{a}");
+        }
+        for p in [
+            "/data/user/0/dev.tracedraw.app/files/tmp/a.pdf",
+            "C:\\Users\\a.pdf",
+            "notes.txt",
+            "",
+        ] {
+            assert!(!is_address(p), "{p}");
+        }
+        // The Print dialog names the destination after the system's
+        // service: the PDF viewer here, the print service on Android.
+        assert_eq!(crate::ui::dialogs::print_service_key(), "print.dest_viewer");
+        for key in [
+            "print.dest_android",
+            "status.print_sent_android",
+            "status.print_service_failed",
+            "status.shared",
+            "status.share_failed",
+            "status.bitmap_sent_to_app",
+            "status.no_app_edits_pictures",
+            "status.no_folders_on_android",
+            "options.bitmap_editor_android",
+            "options.open_folder_android",
+        ] {
+            assert!(crate::i18n::has_english(key), "{key}");
+        }
+    }
+
     /// Each print to the viewer gets a name of its own, so the viewer
     /// opens it in a new page while the last one is still shown; older
     /// ones are cleared away (#809).
@@ -1861,6 +2309,90 @@ mod tests {
         assert!(!fills(&seps.pages[0]).contains(&full));
     }
 
+    /// A Windows print goes at the printer's resolution in strips, blank
+    /// ones left out and each cut to its inked part; put back together
+    /// they are the sheet drawn whole, pixel for pixel (#1404).
+    #[test]
+    fn printed_sheet_strips_put_together_are_the_whole_sheet() {
+        use tracedraw_core::Fill;
+        let mut doc = Document::new("s", tracedraw_core::Size::new(50.0, 40.0));
+        let layer = doc.pages[0].layers[0].id;
+        let page = doc.pages[0].id;
+        for (rect, colour) in [
+            (
+                tracedraw_core::Rect::new(3.0, 2.0, 21.5, 9.3),
+                tracedraw_core::Color::rgb8(200, 0, 0),
+            ),
+            (
+                tracedraw_core::Rect::new(10.2, 25.0, 47.0, 38.0),
+                tracedraw_core::Color::rgb8(0, 90, 200),
+            ),
+        ] {
+            let id = doc.ids_mut().shape();
+            let mut s = tracedraw_core::Shape::new(id, ShapeKind::Ellipse { rect, arc: None });
+            s.fill = Fill::Solid(colour);
+            doc.layer_mut(layer).expect("layer").shapes.push(s);
+        }
+        let dpi = 200.0;
+        let whole = tracedraw_render::render_page_image(&doc, page, dpi).expect("whole");
+        let (w, h) = (whole.width(), whole.height());
+        // Strips of 16 rows: many, some blank, some cut.
+        let tiles = sheet_tiles(&doc, page, dpi, w as u64 * 16).expect("tiles");
+        assert!(tiles.len() > 4, "{}", tiles.len());
+        assert!(
+            tiles.len() < h.div_ceil(16) as usize,
+            "the blank strips between the two shapes are left out"
+        );
+        let mut joined = tiny_skia::Pixmap::new(w, h).expect("joined");
+        joined.fill(tiny_skia::Color::WHITE);
+        let zoom = dpi / 25.4;
+        for t in &tiles {
+            assert!(t.width < 50.0 - 1.0, "cut to its inked part");
+            let pm = tiny_skia::Pixmap::decode_png(&t.png).expect("png");
+            assert!(pm.height() <= 16);
+            assert!(((t.width * zoom) - pm.width() as f64).abs() < 1e-6);
+            assert!(((t.height * zoom) - pm.height() as f64).abs() < 1e-6);
+            joined.draw_pixmap(
+                (t.x * zoom).round() as i32,
+                (t.y * zoom).round() as i32,
+                pm.as_ref(),
+                &Default::default(),
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        // The same pixels, but for an edge's smoothing now and then by a
+        // step of its sixteen samples (each strip's shapes are placed a
+        // whole number of rows apart, which rounds a coordinate the other
+        // way at times): no marks where the strips meet, where outlines
+        // cut at a strip's edge used to leave caps.
+        let differ: Vec<u8> = whole
+            .data()
+            .iter()
+            .zip(joined.data())
+            .map(|(a, b)| a.abs_diff(*b))
+            .filter(|d| *d > 0)
+            .collect();
+        let worst = differ.iter().copied().max().unwrap_or(0);
+        assert!(worst <= 40, "{worst}");
+        assert!(differ.len() < whole.data().len() / 200, "{}", differ.len());
+        // A blank sheet sends nothing but the paper.
+        let blank = Document::new("b", tracedraw_core::Size::new(50.0, 40.0));
+        let tiles = sheet_tiles(&blank, blank.pages[0].id, 300.0, 1 << 24).expect("blank");
+        assert!(tiles.is_empty());
+    }
+
+    /// The printer's own resolution, kept within reason (#1404).
+    #[test]
+    fn windows_prints_at_the_printers_resolution() {
+        assert_eq!(windows_print_dpi(Some(600.0)), 600.0);
+        assert_eq!(windows_print_dpi(Some(1200.0)), 1200.0);
+        assert_eq!(windows_print_dpi(Some(2400.0)), 1200.0);
+        assert_eq!(windows_print_dpi(Some(150.0)), 300.0);
+        assert_eq!(windows_print_dpi(None), 600.0);
+        assert_eq!(windows_print_dpi(Some(f64::NAN)), 600.0);
+    }
+
     #[test]
     fn spot_inks_get_plates_of_their_own() {
         use tracedraw_core::{document::Ink, Fill};
@@ -1891,6 +2423,182 @@ mod tests {
             "{}",
             &text[..text.len().min(400)]
         );
+    }
+
+    /// File > Export of the current page, every page or a list of pages:
+    /// one numbered file per page for the formats of one page, one file
+    /// with every page chosen for PDF, its text as curves when asked
+    /// (#1382).
+    #[test]
+    fn export_writes_the_pages_chosen() {
+        let mut app = App::headless();
+        // Three pages, each with a rectangle of its own width.
+        for k in 0..3 {
+            if k > 0 {
+                app.add_page();
+            }
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 20.0 + 10.0 * k as f64, 30.0),
+                radius: 0.0,
+                corners: None,
+            });
+        }
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        app.page = ids[1];
+        let dir = std::env::temp_dir().join(format!("tracedraw-1382-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let png = |range: (bool, bool, &str)| ExportState {
+            format: 2,
+            dpi: 25.4,
+            all_pages: range.0,
+            page_list: range.1,
+            pages: range.2.into(),
+            transparent: false,
+            ..ExportState::default()
+        };
+        // The current page: one file under the name given.
+        let one = dir.join("one");
+        std::fs::create_dir_all(&one).unwrap();
+        export(&mut app, &one.join("a.png"), &png((false, false, ""))).expect("current");
+        assert_eq!(files(&one), ["a.png"]);
+        let img = image::open(one.join("a.png")).unwrap();
+        assert_eq!(img.width(), 210, "page 2, 25.4 dpi: one pixel per mm");
+        // Every page: numbered files.
+        let all = dir.join("all");
+        std::fs::create_dir_all(&all).unwrap();
+        let msg = export(&mut app, &all.join("a.png"), &png((true, false, ""))).expect("all");
+        assert_eq!(files(&all), ["a-1.png", "a-2.png", "a-3.png"]);
+        assert!(msg.contains('3'), "{msg}");
+        // A list: the pages listed, numbered by their page.
+        let list = dir.join("list");
+        std::fs::create_dir_all(&list).unwrap();
+        export(&mut app, &list.join("a.png"), &png((true, true, "3, 1"))).expect("list");
+        assert_eq!(files(&list), ["a-1.png", "a-3.png"]);
+        // Page 3's rectangle is 40 mm wide, page 1's 20 mm: each file
+        // shows its own page.
+        let dark = |p: &Path| {
+            let img = image::open(p).unwrap().to_rgb8();
+            let y = img.height() - 20;
+            let inked: Vec<u32> = (0..img.width())
+                .filter(|x| img.get_pixel(*x, y).0 != [255, 255, 255])
+                .collect();
+            inked.last().unwrap_or(&0) - inked.first().unwrap_or(&0)
+        };
+        assert!(dark(&list.join("a-3.png")) > dark(&list.join("a-1.png")) + 10);
+        // SVG too writes one file per page.
+        let svg = dir.join("svg");
+        std::fs::create_dir_all(&svg).unwrap();
+        let st = ExportState {
+            format: 0,
+            ..png((true, true, "2-3"))
+        };
+        export(&mut app, &svg.join("b.svg"), &st).expect("svg");
+        assert_eq!(files(&svg), ["b-2.svg", "b-3.svg"]);
+        // PDF: one file holding the pages chosen.
+        let pdf = dir.join("pdf");
+        std::fs::create_dir_all(&pdf).unwrap();
+        let st = ExportState {
+            format: 1,
+            ..png((true, true, "1, 3"))
+        };
+        export(&mut app, &pdf.join("c.pdf"), &st).expect("pdf");
+        assert_eq!(files(&pdf), ["c.pdf"]);
+        let text = String::from_utf8_lossy(&std::fs::read(pdf.join("c.pdf")).unwrap()).to_string();
+        assert!(text.contains("/Count 2"), "two pages");
+        let st = ExportState {
+            format: 1,
+            ..png((true, false, ""))
+        };
+        export(&mut app, &pdf.join("c.pdf"), &st).expect("pdf");
+        let text = String::from_utf8_lossy(&std::fs::read(pdf.join("c.pdf")).unwrap()).to_string();
+        assert!(text.contains("/Count 3"), "every page");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pages an export takes: the current one, every page, or the
+    /// list in its order (every page when it names none); the selection
+    /// comes from the current page (#1382).
+    #[test]
+    fn export_page_choices_pick_pages() {
+        let mut st = ExportState::default();
+        assert_eq!(st.page_indexes(4, 2), vec![2]);
+        st.all_pages = true;
+        assert_eq!(st.page_indexes(4, 2), vec![0, 1, 2, 3]);
+        st.page_list = true;
+        st.pages = "4, 1-2".into();
+        assert_eq!(st.page_indexes(4, 2), vec![3, 0, 1]);
+        st.pages = "9".into();
+        assert_eq!(st.page_indexes(4, 2), vec![0, 1, 2, 3]);
+        st.selection_only = true;
+        assert_eq!(st.page_indexes(4, 2), vec![2]);
+        assert!(ExportState::one_file_for_all_pages("pdf"));
+        assert!(!ExportState::one_file_for_all_pages("svg"));
+        assert!(!ExportState::one_file_for_all_pages("png"));
+        assert_eq!(
+            numbered_path(Path::new("/x/name.jpeg"), 3, "jpg"),
+            Path::new("/x/name-3.jpeg")
+        );
+        assert_eq!(
+            numbered_path(Path::new("/x/name"), 2, "png"),
+            Path::new("/x/name-2.png")
+        );
+    }
+
+    /// Export to PDF with text as curves holds no font (#1382).
+    #[test]
+    fn export_pdf_text_as_curves_holds_no_font() {
+        tracedraw_text::install();
+        let fonts = tracedraw_text::fonts();
+        let Some(family) = ["DejaVu Sans", "Liberation Sans", "Noto Sans"]
+            .into_iter()
+            .find(|f| fonts.has_family(f))
+        else {
+            return;
+        };
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Text {
+            spans: vec![TextSpan::new("Searchable words", family, 24.0)],
+            origin: tracedraw_core::Point::new(20.0, 50.0),
+            frame: None,
+            align: Default::default(),
+            para: Default::default(),
+            on_path: None,
+        });
+        let dir = std::env::temp_dir().join(format!("tracedraw-1382c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.pdf");
+        let mut st = ExportState {
+            format: 1,
+            ..ExportState::default()
+        };
+        export(&mut app, &path, &st).expect("pdf");
+        let live = std::fs::read(&path).unwrap();
+        st.text_as_curves = true;
+        export(&mut app, &path, &st).expect("pdf");
+        let curves = std::fs::read(&path).unwrap();
+        let words = |bytes: &[u8]| {
+            lopdf::Document::load_mem(bytes)
+                .ok()
+                .and_then(|d| d.extract_text(&[1]).ok())
+                .unwrap_or_default()
+        };
+        assert!(String::from_utf8_lossy(&live).contains("/FontDescriptor"));
+        assert!(words(&live).contains("Searchable"), "live text");
+        assert!(
+            !String::from_utf8_lossy(&curves).contains("/Font"),
+            "no font"
+        );
+        assert!(!words(&curves).contains("Searchable"), "curves");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2690,6 +3398,144 @@ mod tests {
         let before = page.clone();
         fit_contents_to_page(&mut page, false);
         assert_eq!(page, before);
+    }
+
+    /// A blend prints as it is drawn when the print moves or recolours
+    /// its objects: with Fit to page (the end object running off the
+    /// page), with the selection printed as the page, and as a negative,
+    /// the steps lie between the start and the end as printed and their
+    /// colours run between the printed colours. The steps were evaluated
+    /// from the copy of the end object the blend keeps, which the print
+    /// left where (and as) it was on the page (#1541).
+    #[test]
+    fn a_blend_prints_between_its_objects_as_printed() {
+        use tracedraw_core::{live::Effect, Color, Fill};
+        let mut app = App::headless();
+        let square = |app: &mut App, r: Rect, c: Color| {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("square");
+            app.run(Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Solid(c),
+            });
+            id
+        };
+        // On an A4 page: the start inside, the end running off the right.
+        let a = square(
+            &mut app,
+            Rect::new(20.0, 100.0, 40.0, 120.0),
+            Color::rgb8(255, 0, 0),
+        );
+        let b = square(
+            &mut app,
+            Rect::new(180.0, 100.0, 260.0, 180.0),
+            Color::rgb8(0, 0, 255),
+        );
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.selection = vec![a, b];
+        // The start, the end and the steps of the first sheet, on the
+        // sheet: (bounds, colour) each.
+        let printed_blend = |doc: &Document| {
+            let mut start = None;
+            let mut end = None;
+            let mut steps = Vec::new();
+            for c in doc.pages[0].layers.iter().flat_map(|l| &l.shapes) {
+                let ShapeKind::ClipFrame { contents, .. } = &c.kind else {
+                    continue;
+                };
+                for s in contents {
+                    let on_sheet = |s: &tracedraw_core::Shape| {
+                        let mut s = s.clone();
+                        s.transform_by(c.transform);
+                        (s.bounds(), s.fill.preview_color().expect("a colour"))
+                    };
+                    if s.effects.iter().any(|e| matches!(e, Effect::Blend { .. })) {
+                        let ev = tracedraw_core::live::evaluate(s);
+                        start = Some(on_sheet(s));
+                        steps.extend(ev.below.iter().chain(&ev.above).map(on_sheet));
+                    } else if s.effects.is_empty() {
+                        end = Some(on_sheet(s));
+                    }
+                }
+            }
+            (start.expect("start"), end.expect("end"), steps)
+        };
+        let between = |(start, end, steps): &((Rect, Color), (Rect, Color), Vec<(Rect, Color)>)| {
+            assert_eq!(steps.len(), 3);
+            let (s, e) = (start.0.center(), end.0.center());
+            // From the start to the end, the middle step half way.
+            for (i, (b, _)) in steps.iter().enumerate() {
+                let want = s.lerp(e, (i + 1) as f64 / 4.0);
+                let got = b.center();
+                assert!((got - want).hypot() < 1e-6, "{i}: {got:?}, not {want:?}");
+            }
+            let [r0, g0, b0] = start.1.to_rgb8();
+            let [r1, g1, b1] = end.1.to_rgb8();
+            let [r, g, bl] = steps[1].1.to_rgb8();
+            let mid = |x: u8, y: u8| (x as i32 + y as i32) / 2;
+            assert!(
+                (r as i32 - mid(r0, r1)).abs() <= 1
+                    && (g as i32 - mid(g0, g1)).abs() <= 1
+                    && (bl as i32 - mid(b0, b1)).abs() <= 1,
+                "{:?} between {:?} and {:?}",
+                steps[1].1,
+                start.1,
+                end.1
+            );
+        };
+        let fit = PrintState {
+            fit_to_page: true,
+            ..PrintState::default()
+        };
+        let p = printed_blend(&print_sheets(&app, &fit));
+        assert!(
+            p.1 .0.x1 <= 210.0 + 1e-6,
+            "shrunk onto the page: {:?}",
+            p.1 .0
+        );
+        between(&p);
+        let selection = PrintState {
+            range: 3,
+            ..PrintState::default()
+        };
+        between(&printed_blend(&print_sheets(&app, &selection)));
+        let negative = PrintState {
+            invert: true,
+            ..PrintState::default()
+        };
+        let p = printed_blend(&print_sheets(&app, &negative));
+        assert_eq!(p.0 .1.to_rgb8(), [0, 255, 255]);
+        between(&p);
+        // Exported alone, the start keeps its steps running to the end's
+        // place beside it.
+        app.selection = vec![a];
+        let (doc, bounds) = export_document(
+            &app,
+            &ExportState {
+                selection_only: true,
+                ..ExportState::default()
+            },
+        );
+        let s = doc.pages[0].layers[0].shapes[0].clone();
+        let ev = tracedraw_core::live::evaluate(&s);
+        let last = ev
+            .above
+            .last()
+            .or(ev.below.first())
+            .expect("steps")
+            .bounds()
+            .center();
+        // Moved with the start: the last step three quarters of the way
+        // from the start's centre (30, 110) to the end's (220, 140).
+        let want = tracedraw_core::geometry::Point::new(172.5 - bounds.x0, 132.5 - bounds.y0);
+        assert!((last - want).hypot() < 1e-6, "{last:?}, not {want:?}");
     }
 }
 

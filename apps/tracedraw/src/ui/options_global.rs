@@ -292,7 +292,7 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
     hint(ui, "options.cdr_version_hint");
 }
 
-/// Options > Global > Bitmap Tracing: Quick Trace's preset and what every
+/// Options > Global > Bitmap Tracing: the automatic trace's preset and what every
 /// trace starts with.
 pub fn bitmap_tracing_page(app: &mut App, ui: &mut Ui) {
     let t = &mut app.settings.tracing;

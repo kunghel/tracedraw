@@ -16,12 +16,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.29.0"
+version = "0.35.0"
 edition = "2021"
-authors = ["Ighor Toth"]
+authors = ["TraceDraw members and contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/igtoth/tracedraw"
-homepage = "https://github.com/igtoth/tracedraw"
+repository = "https://github.com/tracedraw/tracedraw"
+homepage = "https://github.com/tracedraw/tracedraw"
 rust-version = "1.89"
 
 [workspace.dependencies]
@@ -41,11 +41,13 @@ ttf-parser = { version = "0.25", features = ["gvar-alloc"] }
 rustybuzz = "0.20"
 unicode-general-category = "1.1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `unbounded_depth` lets the `.tdraw` reader lift the JSON reader's
+# 128-level nesting limit (see `Document::from_json`).
+serde_json = { version = "1", features = ["unbounded_depth"] }
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 encoding_rs = "0.8"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.36"

@@ -24,7 +24,11 @@ The product name is **TraceDraw** in prose; machine names are `tracedraw`
    software are never used. File formats go by their usual names (`.cdr`,
    `.ai`, `.psd`, a format owner's name in a file dialog filter, a header
    string a format requires) only to describe compatibility; copyright
-   notices that a license requires stay in `ATTRIBUTION.md`. Never decompile any program and never use
+   notices that a license requires stay in `ATTRIBUTION.md`. The one
+   exception is the trademark notice (README, `PRIVACY.md`, the About
+   box, the web page and the store listings), which names the owner of
+   the `.cdr` format's trademark to state that TraceDraw is independent
+   of it; keep its wording the same everywhere. Never decompile any program and never use
    decompiled code or dumps, not even in conversations with AI tools.
    Format readers come from public format notes and from inspecting files
    we own; never port code from libcdr or any other implementation.
@@ -102,6 +106,11 @@ behind it, and never add a feature without updating the row.
 
 - `cargo test --workspace` before every commit.
 - Commits carry a `Signed-off-by:` line (DCO, see `CONTRIBUTING.md`).
+  Commits keep their author's own name and address, maintainers
+  included; only the project's own account (the organization's owner)
+  commits and signs off as `TraceDraw Maintainers <contact@tracedraw.org>`.
+  No personal name or address goes into the repository's files, packages
+  or listings (contributors' GitHub handles in `CONTRIBUTORS.md` aside).
 - `cargo build -p tracedraw` and `cargo clippy --workspace` must stay
   warning-free (CI runs clippy with `-D warnings` on the library crates,
   on the pinned toolchain 1.97.0; use the same version locally so the

@@ -165,7 +165,7 @@ their own crypt filter and signature contents are left alone.
   An empty `ActualText` or one of soft hyphens leaves the glyphs (a
   hyphen drawn at a line end) their own characters
   (`pdf_import::tests::hindi_drawn_apart_or_with_actual_text_comes_in_as_typed_words`).
-- Hindi written by Publish to PDF with its font comes back as the typed
+- Hindi written by Export as PDF with its font comes back as the typed
   words, shaped to the glyphs of the original: all 59 words of the
   Devanagari corpus (35 came back wrong before, with letters doubled,
   signs lost or a space inside the word)

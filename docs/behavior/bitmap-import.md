@@ -2,7 +2,7 @@
 
 File > Import (Ctrl+I) of a PNG, JPEG, BMP, GIF, TIFF or WebP file
 embeds the image as a bitmap object centred on the page and remembers
-the file (Bitmaps > Update from Link reads it again).
+the file (Image > Update from Link reads it again).
 
 ## The bitmap editor
 

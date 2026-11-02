@@ -25,7 +25,6 @@ vedere [Opzioni di personalizzazione](../customize/customization.md#commands).
 | [[tool.attract_repel]] |  | [→](../lines-shapes/distortion-tools.md#attract-repel) |
 | [[tool.smudge]] | <kbd>V</kbd> | [→](../lines-shapes/distortion-tools.md#smudge) |
 | [[tool.roughen]] | <kbd>E</kbd> | [→](../lines-shapes/distortion-tools.md#roughen) |
-| [[tool.variable_outline]] |  | [→](../lines-shapes/outlines.md#variable-outline) |
 
 ## Ritaglio e gomma {#crop-erase}
 
@@ -58,6 +57,7 @@ vedere [Opzioni di personalizzazione](../customize/customization.md#commands).
 | [[tool.painterly_brush]] |  | [→](../lines-shapes/artistic-media.md#painterly-brush) |
 | [[tool.shape_recognition]] | <kbd>Shift+S</kbd> | [→](../lines-shapes/shape-recognition.md#shape-recognition) |
 | [[tool.sketch]] | <kbd>S</kbd> | [→](../lines-shapes/shape-recognition.md#sketch) |
+| [[tool.variable_outline]] |  | [→](../lines-shapes/outlines.md#variable-outline) |
 
 ## Forme {#shapes}
 

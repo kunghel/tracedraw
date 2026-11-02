@@ -1,10 +1,10 @@
-# Document properties
+# Document info
 
 [[menu.file > menu.file.document_properties]] opens the
 [[docprops.title]] dialog box. It keeps information about the drawing, such
 as its title and author, and reports everything the drawing holds.
 
-![The Document Properties dialog box](../../img/pages-layout-document-properties.png)
+![The Document Info dialog box](../../img/pages-layout-document-properties.png)
 
 ## Describing the drawing {#fields}
 

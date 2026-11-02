@@ -74,7 +74,7 @@ key.
 ## Picture commands while the service cannot make pictures
 
 AI Generate's picture modes, Remix, Create vectors (picture + trace),
-Remove Background (Bitmaps menu, Object > AI Generate, the property bar,
+Remove Background (Image menu, Object > AI Generate, the property bar,
 the AI Generate button's list, a bitmap's context menu) and AI Art
 Styles stay greyed while the service makes drawings only. Their hover
 tip says the chosen AI service makes drawings only and to choose one
