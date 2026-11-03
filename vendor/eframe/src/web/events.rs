@@ -93,6 +93,9 @@ pub(crate) fn install_event_handlers(runner_ref: &WebRunner) -> Result<(), JsVal
     install_pointerup(runner_ref, &document)?;
     install_pointerdown(runner_ref, &canvas)?;
     install_mouseleave(runner_ref, &canvas)?;
+    // TraceDraw: a pen's pressure while it moves, also outside the canvas
+    // during a drag (#1410).
+    install_pen_pressure(runner_ref, &document)?;
 
     install_touchstart(runner_ref, &canvas)?;
     // Use `document` here to notice if the user drag outside of the canvas:
@@ -558,6 +561,8 @@ fn install_pointerdown(runner_ref: &WebRunner, target: &EventTarget) -> Result<(
         |event: web_sys::PointerEvent, runner: &mut AppRunner| {
             let modifiers = modifiers_from_mouse_event(&event);
             runner.input.set_modifiers(modifiers);
+            // TraceDraw: the pen's pressure before its press (#1410).
+            push_pen_pressure(runner, &event);
             let mut should_stop_propagation = true;
             if let Some(button) = button_from_mouse_event(&event) {
                 let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
@@ -597,6 +602,9 @@ fn install_pointerup(runner_ref: &WebRunner, target: &EventTarget) -> Result<(),
             runner.input.set_modifiers(modifiers);
 
             let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
+
+            // TraceDraw: a lifted pen has no pressure (#1410).
+            push_pen_pressure(runner, &event);
 
             if is_interested_in_pointer_event(
                 runner,
@@ -664,6 +672,65 @@ fn is_interested_in_pointer_event(runner: &AppRunner, pos: egui::Pos2) -> bool {
         .input(|i| i.pointer.any_down() || i.any_touches());
 
     is_hovering_canvas || is_pointer_down
+}
+
+/// TraceDraw: the pressure of a pen's pointer event as a moving touch
+/// with a force, which TraceDraw's raw input hook reads and takes out
+/// (see `pen_pressure.rs`, #1410). Nothing for a mouse or a touch. The
+/// pen's position and buttons still come from the mouse events as before.
+///
+/// One reading per event: the app samples a drag once per frame, so the
+/// readings `getCoalescedEvents` would add between frames would be read
+/// and dropped (the last of them is the event's own).
+fn push_pen_pressure(runner: &mut AppRunner, event: &web_sys::PointerEvent) {
+    let reading =
+        runner
+            .input
+            .pen
+            .reading(&event.pointer_type(), event.pressure(), event.buttons());
+    if let Some(force) = reading {
+        let pos = pos_from_mouse_event(runner.canvas(), event, runner.egui_ctx());
+        runner.input.raw.events.push(super::pen_pressure::pen_touch(
+            event.pointer_id(),
+            pos,
+            force,
+        ));
+    }
+}
+
+/// TraceDraw: a pen's pressure as it moves (over the canvas, or anywhere
+/// during a drag) and when the browser cancels it (#1410).
+fn install_pen_pressure(runner_ref: &WebRunner, target: &EventTarget) -> Result<(), JsValue> {
+    runner_ref.add_event_listener(
+        target,
+        "pointermove",
+        |event: web_sys::PointerEvent, runner| {
+            if event.pointer_type() == super::pen_pressure::PEN
+                && is_interested_in_pointer_event(
+                    runner,
+                    egui::pos2(event.client_x() as f32, event.client_y() as f32),
+                )
+            {
+                push_pen_pressure(runner, &event);
+                runner.needs_repaint.repaint();
+            }
+        },
+    )?;
+    runner_ref.add_event_listener(
+        target,
+        "pointercancel",
+        |event: web_sys::PointerEvent, runner| {
+            if event.pointer_type() == super::pen_pressure::PEN {
+                let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
+                runner.input.raw.events.push(super::pen_pressure::pen_touch(
+                    event.pointer_id(),
+                    pos,
+                    None,
+                ));
+                runner.needs_repaint.repaint();
+            }
+        },
+    )
 }
 
 fn install_mousemove(runner_ref: &WebRunner, target: &EventTarget) -> Result<(), JsValue> {

@@ -127,6 +127,7 @@ jiff = { version = "0.2", features = ["js"] }
 # Reads back the PDFs the tests publish; ICC profiles built for tests.
 [dev-dependencies]
 lopdf = { version = "0.46", default-features = false }
+roxmltree = "0.21"
 tracedraw-core = { workspace = true, features = ["test-profiles"] }
 
 [package.metadata.deb]

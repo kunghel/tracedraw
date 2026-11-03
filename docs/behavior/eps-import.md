@@ -4,7 +4,18 @@ File > Open and File > Import accept `.eps`, `.ps` and `.prn` (print
 files: PostScript a printer driver wrote, often after a printer job
 header, which is skipped up to the first `%!`), and `.ai` files that
 start with `%!` (the PostScript-based versions of that format; the later
-PDF-based ones go through the PDF import). A file that is not PostScript
+PDF-based ones go through the PDF import). A classic `.ai` file whose
+header carries the format's version comments (`%AI5_FileFormat`,
+`%%AI8_CreatorVersion` or an `%AI3_` comment) and whose prolog brings no
+procedure set of its own, as the files of TraceDraw's Illustrator 8
+export (see `export.md`, AI files), is run with the format's operators
+defined first in PostScript: paths (`m`, `l`, `L`, `c`, `C`, `v`, `V`,
+`y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`, `N`, with the
+fill and outline colours kept apart), compound paths (`*u`, `*U`),
+clipping groups (`q`, `W`, `Q`), groups (`u`, `U`), process and grey
+colours (`k`, `K`, `g`, `G`), outline settings and layers; operators
+beyond those are reported as undefined and skipped (#1728,
+`ai::tests::classic_ai_reads_back_with_its_page_and_objects`). A file that is not PostScript
 (a `.prn` file in a printer's own language, for one) is refused with a
 message. The file is run by
 a PostScript interpreter (`crates/io/src/eps_import.rs`) that records

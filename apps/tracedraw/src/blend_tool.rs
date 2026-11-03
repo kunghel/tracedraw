@@ -23,6 +23,10 @@ pub enum BlendHandle {
     Start,
     /// The crossed square on the end object.
     End,
+    /// The line between the squares, away from them and the sliders: a
+    /// drag moves the start and the end objects together, so the whole
+    /// blend moves.
+    Line,
 }
 
 /// A drag of the start or end square: the object it moves, where the
@@ -34,6 +38,9 @@ pub struct EndDrag {
     pub shape: ShapeId,
     pub press: Point,
     pub applied: bool,
+    /// A drag of the line: the end object, which moves with the start
+    /// one (`shape`).
+    pub with: Option<ShapeId>,
 }
 
 /// The undo label of a start or end square's move.
@@ -46,17 +53,27 @@ pub const SLIDER_OFFSET_PX: f32 = 6.0;
 
 /// Where along the line, from the start (0) to the end (1), the middle
 /// step of a blend with acceleration `a` lands: where the slider shows
-/// (`tracedraw_core::live::blend_middle`: `0.5 - 0.45 a`, so the slider
-/// goes as far toward the start at +1 as toward the end at -1, #1261).
+/// (`tracedraw_core::live::blend_middle`, so the slider goes as far
+/// toward the start at +1 as toward the end at -1, #1261).
 pub fn slider_fraction(a: f64) -> f64 {
     tracedraw_core::live::blend_middle(a)
 }
 
 /// The acceleration that puts the middle step at `f` along the line,
-/// within -1..1 (the inverse of [`slider_fraction`]).
+/// within -1..1 (the inverse of [`slider_fraction`], which falls as the
+/// acceleration rises).
 pub fn accel_for_fraction(f: f64) -> f64 {
     let f = if f.is_finite() { f } else { 0.5 };
-    let a = (0.5 - f) / 0.45;
+    let (mut lo, mut hi) = (-1.0f64, 1.0f64);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if slider_fraction(mid) > f {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let a = (lo + hi) / 2.0;
     // Two decimals, as the bar and the panel show it (in percent).
     ((a * 100.0).round() / 100.0).clamp(-1.0, 1.0)
 }
@@ -82,6 +99,7 @@ impl BlendControls {
             BlendHandle::Colors => self.accel_colors,
             BlendHandle::Start => return self.start,
             BlendHandle::End => return self.end,
+            BlendHandle::Line => return self.start + (self.end - self.start) * 0.5,
         };
         self.start + (self.end - self.start) * slider_fraction(a)
     }
@@ -156,16 +174,40 @@ impl App {
         }
         let n = screen_normal(a, b) * SLIDER_OFFSET_PX;
         // The object slider wins where the two overlap.
-        [(BlendHandle::Objects, n), (BlendHandle::Colors, -n)]
+        let slider = [(BlendHandle::Objects, n), (BlendHandle::Colors, -n)]
             .into_iter()
             .find(|(h, off)| (view.to_screen(c.slider_point(*h)) + *off - at).length() <= HANDLE_PX)
-            .map(|(h, _)| h)
+            .map(|(h, _)| h);
+        if slider.is_some() {
+            return slider;
+        }
+        // The line, within the pick distance, when both ends are objects
+        // that can move.
+        let movable = matches!(
+            self.selected_blends().into_iter().next(),
+            Some((
+                _,
+                Effect::Blend {
+                    end_id: Some(_),
+                    ..
+                }
+            ))
+        );
+        (movable && crate::effect_line::near_segment(c.start, c.end, p, self.line_pick_tol()))
+            .then_some(BlendHandle::Line)
     }
 
     /// The slider `h` dragged to `p`: the blend's acceleration follows,
     /// the other one too when the accelerations are linked. A drag is one
     /// undo step.
+    #[cfg(test)]
     pub fn drag_blend_handle(&mut self, h: BlendHandle, p: Point) {
+        self.drag_blend_handle_to(h, p, false);
+    }
+
+    /// [`App::drag_blend_handle`]; a drag of the line keeps its move
+    /// horizontal or vertical with `ctrl`.
+    pub fn drag_blend_handle_to(&mut self, h: BlendHandle, p: Point, ctrl: bool) {
         let Some(c) = self.blend_controls() else {
             return;
         };
@@ -174,7 +216,8 @@ impl App {
         let (objects, colors) = match h {
             BlendHandle::Objects => (true, link),
             BlendHandle::Colors => (link, true),
-            BlendHandle::Start | BlendHandle::End => return self.drag_blend_end(p),
+            BlendHandle::Start | BlendHandle::End => return self.drag_blend_end(p, false),
+            BlendHandle::Line => return self.drag_blend_end(p, ctrl),
         };
         if objects {
             self.blend_accel_objects = a;
@@ -211,12 +254,21 @@ impl App {
         self.blend_handle_drag = Some(h);
         self.effect_edit_step = None;
         self.blend_end_drag = None;
-        if matches!(h, BlendHandle::Start | BlendHandle::End) {
+        if matches!(h, BlendHandle::Start | BlendHandle::End | BlendHandle::Line) {
             let Some((start, e)) = self.selected_blends().into_iter().next() else {
                 return false;
             };
+            let with = match (h, &e) {
+                (
+                    BlendHandle::Line,
+                    Effect::Blend {
+                        end_id: Some(end), ..
+                    },
+                ) => Some(*end),
+                _ => None,
+            };
             let shape = match (h, e) {
-                (BlendHandle::Start, _) => start,
+                (BlendHandle::Start | BlendHandle::Line, _) => start,
                 (
                     _,
                     Effect::Blend {
@@ -231,18 +283,21 @@ impl App {
                 shape,
                 press: p,
                 applied: false,
+                with,
             });
         }
         true
     }
 
     /// The start or end square dragged to `p`: its object moves with it,
-    /// the steps following, as one undo step for the whole drag.
-    fn drag_blend_end(&mut self, p: Point) {
+    /// the steps following, as one undo step for the whole drag. The line
+    /// dragged moves both objects (kept straight with `ctrl`), so the
+    /// whole blend keeps its length and angle.
+    fn drag_blend_end(&mut self, p: Point, ctrl: bool) {
         let Some(d) = self.blend_end_drag else {
             return;
         };
-        let delta = p - d.press;
+        let delta = crate::effect_line::constrain_move(p - d.press, ctrl);
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return;
         }
@@ -250,7 +305,7 @@ impl App {
             let _ = self.engine.undo();
         }
         let cmd = tracedraw_core::Command::TransformShapes {
-            shapes: vec![d.shape],
+            shapes: std::iter::once(d.shape).chain(d.with).collect(),
             transform: tracedraw_core::geometry::Affine::translate(delta),
         };
         match self.engine.run_batch(MOVE_LABEL, &[cmd]) {
@@ -273,6 +328,10 @@ impl App {
         let Some(d) = self.blend_end_drag.take() else {
             return;
         };
+        // The line moved the whole blend: nothing to drop it on.
+        if d.handle == BlendHandle::Line {
+            return;
+        }
         let Some((start, e)) = self.selected_blends().into_iter().next() else {
             return;
         };
@@ -380,7 +439,7 @@ mod tests {
         assert!(slider_fraction(-0.5) > 0.5);
         // As far one way as the other (#1261).
         assert!((slider_fraction(1.0) + slider_fraction(-1.0) - 1.0).abs() < 1e-9);
-        assert!((slider_fraction(1.0) - 0.05).abs() < 1e-9);
+        assert!((slider_fraction(1.0) - 0.1055).abs() < 1e-4);
         for a in [-0.9, -0.5, -0.25, 0.0, 0.3, 0.75, 1.0] {
             let back = accel_for_fraction(slider_fraction(a));
             assert!((back - a).abs() < 0.011, "{a} -> {back}");

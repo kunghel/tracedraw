@@ -155,6 +155,53 @@ fn file_face(f: &ttf_parser::Face) -> Option<(u16, bool)> {
     Some((weight, be16(os2, 62) & 1 != 0))
 }
 
+/// The weight and slant text of `face` is written with when its font
+/// file holds another face of the family than the text asks for, one
+/// TraceDraw draws as it is: regular "Khand" text drawn by the only
+/// "Khand" file found, the bold one, is written as "Khand" at 700, the
+/// face the file holds and the drawing shows. Written at 400 beside the
+/// embedded bold face, the program that reads the file asked for
+/// "Khand-Normal", reported it missing although Khand was installed and
+/// left the embedded face out when saving the file again; its own files
+/// name such text at 700 (#1733, #1484). `None` keeps the text's style.
+///
+/// The face is told within the family the text names: by the file's
+/// style bits (`fsSelection` bold and italic) when that is the font's
+/// family (name ID 1, as "Khand" is for the bold file), by its weight
+/// when it is the font's typographic family (name ID 16: "Khand" for a
+/// "Khand Medium" file, written at 500). A style the file lacks that
+/// TraceDraw draws by thickening or slanting it (bold text in a regular
+/// face, italic text in an upright one) is kept, as are variable fonts,
+/// stand-ins of other families and faces named with a weight (see
+/// [`split_family`]).
+pub(crate) fn drawn_style(face: &FontFace) -> Option<(u16, bool)> {
+    let f = ttf_parser::Face::parse(face.data.as_deref()?, 0).ok()?;
+    let (weight, italic) = file_face(&f)?;
+    let named = |name: String| name.trim().eq_ignore_ascii_case(face.family.trim());
+    let asked = if face.bold { 700 } else { 400 };
+    let written = if named(english_name(&f, 1)) {
+        let os2 = f
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"OS/2"))
+            .unwrap_or(&[]);
+        if face.bold || be16(os2, 62) & 0x20 != 0 {
+            700
+        } else {
+            400
+        }
+    } else if named(typographic_family(&f)) {
+        if face.bold {
+            700
+        } else {
+            weight
+        }
+    } else {
+        return None;
+    };
+    let italic = face.italic || italic;
+    (written != asked || italic != face.italic).then_some((written, italic))
+}
+
 /// The kind of a face's outlines as files name it in the font table, the
 /// embedding header and the `technology` member of style strings: 5 for
 /// PostScript outlines (`CFF `, `CFF2`), 4 for TrueType outlines in a
@@ -199,6 +246,10 @@ pub(crate) fn face_tech(faces: &[FontFace]) -> FaceTech {
         let tech = (outline_kind(&f), english_name(&f, 5));
         if let Some((head, _)) = split_family(&face.family, face.bold, faces) {
             out.entry((head, face.bold, face.italic))
+                .or_insert_with(|| tech.clone());
+        } else if let Some((weight, italic)) = drawn_style(face) {
+            // Under the style the text is written with (#1733).
+            out.entry((face.family.clone(), weight == 700, italic))
                 .or_insert_with(|| tech.clone());
         }
         out.entry((face.family.clone(), face.bold, face.italic))
@@ -498,6 +549,9 @@ fn plan(
             if !inf.own {
                 inf.flags = inf.requested;
             }
+        } else if let Some((w, italic)) = drawn_style(face) {
+            // The text is written as the face its file holds (#1733).
+            inf.requested = weight_flags(w, italic);
         }
         if let Some(p) = out.iter_mut().find(|p| {
             p.number == numbers[i]

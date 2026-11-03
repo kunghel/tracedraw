@@ -752,7 +752,9 @@ fn the_blend_tool_picks_a_text_blend_and_its_sliders_tune_it() {
     else {
         panic!("still a blend");
     };
-    assert!(accel_objects > 0.3, "{accel_objects}");
+    // (The middle step 30 % of the way: about 0.28 on the files' curve,
+    // #1192.)
+    assert!(accel_objects > 0.2, "{accel_objects}");
     assert_eq!(accel_colors, 0.0);
     assert_eq!((end_id, steps), (Some(b), 20));
     assert_eq!(app.selection, vec![a], "the blend stays selected");
@@ -788,7 +790,7 @@ fn the_blend_tool_picks_a_text_blend_and_its_sliders_tune_it() {
     else {
         panic!("still a blend");
     };
-    assert!(accel_colors < -0.3, "{accel_colors}");
+    assert!(accel_colors < -0.2, "{accel_colors}");
     assert_eq!(o2, accel_objects, "the object slider stays");
     assert_eq!(app.engine.history_labels().0.len(), undo_before + 2);
 }

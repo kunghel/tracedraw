@@ -195,43 +195,157 @@ pub fn trf(key: &str, args: &[(&str, &str)]) -> String {
     s
 }
 
-/// Pick the language from the system locale (`LANG`, `LC_ALL`, or the
-/// platform API later), returning a shipped code.
-pub fn system_language() -> &'static str {
-    let env = std::env::var("LC_ALL")
-        .or_else(|_| std::env::var("LANG"))
-        .unwrap_or_default();
-    language_for_locale(&env)
+/// The saved language that means "follow the system's language": the
+/// user picked System language in Options. An empty saved language means
+/// no language was ever picked: the installer's choice, then the system's.
+pub const SYSTEM: &str = "system";
+
+/// The supported language with this code, compared without case.
+pub fn supported(code: &str) -> Option<&'static str> {
+    LANGUAGES
+        .iter()
+        .map(|(c, _)| *c)
+        .find(|c| c.eq_ignore_ascii_case(code.trim()))
 }
 
-/// The interface language for a locale such as `pt_BR.UTF-8`, `zh_TW` or
-/// `de`; English when none matches.
-pub fn language_for_locale(locale: &str) -> &'static str {
-    let env = locale.to_lowercase().replace('_', "-");
-    // Chinese written in Traditional characters: Taiwan, Hong Kong, Macau.
-    if ["zh-tw", "zh-hk", "zh-mo", "zh-hant"]
-        .iter()
-        .any(|t| env.starts_with(t))
-    {
-        return "zh-TW";
-    }
-    for (code, _) in LANGUAGES.iter() {
-        if env.starts_with(&code.to_lowercase()) {
-            return code;
+/// The interface language for one locale name: a POSIX locale
+/// (`pt_BR.UTF-8`, `sr_RS@latin`), a BCP 47 tag (`zh-Hant-HK`, `pt-PT`)
+/// or a bare language (`de`). The closest supported language: the same
+/// language in another region (Portuguese of Portugal reads Brazilian
+/// Portuguese), Chinese by its script or region (Hant, TW, HK, MO:
+/// Traditional; otherwise Simplified). `None` for `C`, `POSIX`, an empty
+/// name or a language TraceDraw does not have.
+pub fn match_locale(locale: &str) -> Option<&'static str> {
+    // Drop the encoding and the modifier, then split into subtags.
+    let name = locale.trim();
+    let name = name.split(['.', '@']).next().unwrap_or("");
+    let lower = name.to_ascii_lowercase().replace('_', "-");
+    let mut parts = lower.split('-').filter(|p| !p.is_empty());
+    let lang = parts.next()?;
+    let rest: Vec<&str> = parts.collect();
+    match lang {
+        "c" | "posix" => None,
+        "zh" => {
+            let traditional = rest
+                .iter()
+                .any(|p| matches!(*p, "hant" | "tw" | "hk" | "mo"));
+            let simplified = rest.contains(&"hans");
+            Some(if traditional && !simplified {
+                "zh-TW"
+            } else {
+                "zh-CN"
+            })
         }
+        // The older code of Indonesian, still sent by some systems.
+        "in" => Some("id"),
+        _ => LANGUAGES.iter().map(|(c, _)| *c).find(|c| {
+            c.split('-')
+                .next()
+                .is_some_and(|base| base.eq_ignore_ascii_case(lang))
+        }),
     }
-    for (code, _) in LANGUAGES.iter() {
-        let base = code.split('-').next().unwrap_or(code);
-        if env.starts_with(base) {
-            return code;
-        }
+}
+
+/// The first of the system's languages, in its order of preference,
+/// that TraceDraw has.
+pub fn best_language<S: AsRef<str>>(locales: &[S]) -> Option<&'static str> {
+    locales.iter().find_map(|l| match_locale(l.as_ref()))
+}
+
+/// The interface language for a Windows language identifier (LANGID,
+/// as `GetUserDefaultUILanguage` gives it). The installer has the same
+/// table in Pascal (`AppLanguageForLangId` in
+/// `packaging/windows/tracedraw.iss`); a test keeps the two equal.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn language_for_langid(id: u16) -> Option<&'static str> {
+    let primary = id & 0x3ff;
+    Some(match primary {
+        0x09 => "en",
+        0x04 => match id {
+            // Taiwan, Hong Kong, Macau and the neutral Traditional.
+            0x0404 | 0x0c04 | 0x1404 | 0x7c04 => "zh-TW",
+            _ => "zh-CN",
+        },
+        0x39 => "hi",
+        0x0a => "es",
+        0x0c => "fr",
+        0x01 => "ar",
+        0x45 => "bn",
+        0x19 => "ru",
+        0x16 => "pt-BR",
+        0x21 => "id",
+        0x07 => "de",
+        0x11 => "ja",
+        0x10 => "it",
+        0x13 => "nl",
+        0x15 => "pl",
+        0x1f => "tr",
+        0x05 => "cs",
+        _ => return None,
+    })
+}
+
+/// The language the Windows installer recorded: [`SYSTEM`] when the
+/// user left System language, else one of our codes. `None` for nothing
+/// recorded or a value this version does not know.
+pub fn installer_choice(value: &str) -> Option<&'static str> {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case(SYSTEM) {
+        return Some(SYSTEM);
     }
-    "en"
+    supported(v)
+}
+
+/// The interface language at start. The language picked in Options
+/// (`saved`, a supported code) always wins; [`SYSTEM`] follows the
+/// system. Nothing picked (an empty or unknown `saved`): the installer's
+/// choice (`installer`, as recorded), then the system's languages
+/// (`system`, in order of preference), then English.
+pub fn startup_language<S: AsRef<str>>(
+    saved: &str,
+    installer: Option<&str>,
+    system: &[S],
+) -> &'static str {
+    let from_system = || best_language(system).unwrap_or("en");
+    if saved.trim().eq_ignore_ascii_case(SYSTEM) {
+        return from_system();
+    }
+    if let Some(code) = supported(saved) {
+        return code;
+    }
+    match installer.and_then(installer_choice) {
+        Some(SYSTEM) | None => from_system(),
+        Some(code) => code,
+    }
+}
+
+/// [`startup_language`] with the installer's choice and the system's
+/// languages read from this machine.
+pub fn startup_language_here(saved: &str) -> &'static str {
+    if supported(saved).is_some() {
+        return startup_language::<&str>(saved, None, &[]);
+    }
+    let installer = crate::system_locale::installer_language();
+    let system = crate::system_locale::preferred_languages();
+    let lang = startup_language(saved, installer.as_deref(), &system);
+    log::info!(
+        "interface language {lang} (saved {saved:?}, installer {installer:?}, system {system:?})"
+    );
+    lang
+}
+
+/// The language the system prefers, as one of ours (English if none).
+pub fn system_language() -> &'static str {
+    best_language(&crate::system_locale::preferred_languages()).unwrap_or("en")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn language_for_locale(locale: &str) -> &'static str {
+        match_locale(locale).unwrap_or("en")
+    }
 
     #[test]
     fn locales_choose_the_interface_language() {
@@ -247,6 +361,140 @@ mod tests {
         assert_eq!(language_for_locale("pt_BR.UTF-8"), "pt-BR");
         assert_eq!(language_for_locale("sv_SE"), "en");
         assert_eq!(language_for_locale(""), "en");
+    }
+
+    #[test]
+    fn locales_match_the_closest_supported_language() {
+        // Another region of a shipped language.
+        assert_eq!(match_locale("pt-PT"), Some("pt-BR"));
+        assert_eq!(match_locale("pt_PT.UTF-8"), Some("pt-BR"));
+        assert_eq!(match_locale("es-MX"), Some("es"));
+        assert_eq!(match_locale("fr-CA"), Some("fr"));
+        assert_eq!(match_locale("de-CH"), Some("de"));
+        assert_eq!(match_locale("en-GB"), Some("en"));
+        // Chinese by script, then region.
+        assert_eq!(match_locale("zh-Hant"), Some("zh-TW"));
+        assert_eq!(match_locale("zh-Hant-HK"), Some("zh-TW"));
+        assert_eq!(match_locale("zh-Hans-HK"), Some("zh-CN"));
+        assert_eq!(match_locale("zh-Hans"), Some("zh-CN"));
+        assert_eq!(match_locale("zh-MO"), Some("zh-TW"));
+        assert_eq!(match_locale("zh"), Some("zh-CN"));
+        // Codes compared whole, not by their first letters.
+        assert_eq!(match_locale("arn-CL"), None);
+        assert_eq!(match_locale("ido"), None);
+        assert_eq!(match_locale("in_ID"), Some("id"));
+        assert_eq!(match_locale("sr_RS@latin"), None);
+        assert_eq!(match_locale("C"), None);
+        assert_eq!(match_locale("POSIX"), None);
+        assert_eq!(match_locale("C.UTF-8"), None);
+        assert_eq!(match_locale("  "), None);
+        // The first shipped language of a list of preferences.
+        assert_eq!(best_language(&["sv-SE", "nb", "de-AT"]), Some("de"));
+        assert_eq!(best_language(&["sv-SE"]), None);
+        assert_eq!(best_language::<&str>(&[]), None);
+    }
+
+    #[test]
+    fn windows_language_ids_map_to_our_codes() {
+        assert_eq!(language_for_langid(0x0409), Some("en"));
+        assert_eq!(language_for_langid(0x0809), Some("en"));
+        assert_eq!(language_for_langid(0x0416), Some("pt-BR"));
+        assert_eq!(language_for_langid(0x0816), Some("pt-BR"));
+        assert_eq!(language_for_langid(0x0404), Some("zh-TW"));
+        assert_eq!(language_for_langid(0x0c04), Some("zh-TW"));
+        assert_eq!(language_for_langid(0x1404), Some("zh-TW"));
+        assert_eq!(language_for_langid(0x0804), Some("zh-CN"));
+        assert_eq!(language_for_langid(0x1004), Some("zh-CN"));
+        assert_eq!(language_for_langid(0x0407), Some("de"));
+        assert_eq!(language_for_langid(0x0c0a), Some("es"));
+        assert_eq!(language_for_langid(0x0405), Some("cs"));
+        assert_eq!(language_for_langid(0x041d), None); // Swedish
+                                                       // Every shipped language has an id.
+        for (code, _) in LANGUAGES {
+            assert!(
+                (0..0x8000u16).any(|id| language_for_langid(id) == Some(code)),
+                "{code}"
+            );
+        }
+    }
+
+    /// The installer's Pascal table (`AppLanguageForLangId`) gives the
+    /// same code as `language_for_langid` for every language id, and its
+    /// list of languages to pick from is ours.
+    #[test]
+    fn the_installer_maps_languages_as_the_app_does() {
+        let iss = include_str!("../../../packaging/windows/tracedraw.iss");
+        let mut primaries = Vec::new();
+        for line in iss.lines() {
+            let line = line.trim();
+            // `$09: Result := 'en';`
+            let Some((id, rest)) = line.split_once(": Result := '") else {
+                continue;
+            };
+            let Some(id) = id.strip_prefix('$') else {
+                continue;
+            };
+            let id = u16::from_str_radix(id, 16).expect("hex id");
+            let code = rest.trim_end_matches("';");
+            if id <= 0x3ff {
+                // A primary language, in another region than the first.
+                assert_eq!(language_for_langid(0x0800 | id), Some(code), "{id:#x}");
+                primaries.push(id);
+            } else {
+                assert_eq!(language_for_langid(id), Some(code), "{id:#x}");
+            }
+        }
+        assert_eq!(
+            primaries.len(),
+            LANGUAGES.len() - 1,
+            "one per language, Chinese apart"
+        );
+        // The choices of the installer's page: every code, in our order.
+        let codes: Vec<&str> = iss
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("AddAppLanguage('"))
+            .filter_map(|l| l.split('\'').next())
+            .collect();
+        let ours: Vec<&str> = LANGUAGES.iter().map(|(c, _)| *c).collect();
+        assert_eq!(codes, ours);
+    }
+
+    #[test]
+    fn the_installer_value_is_a_code_or_system() {
+        assert_eq!(installer_choice("system"), Some(SYSTEM));
+        assert_eq!(installer_choice("System"), Some(SYSTEM));
+        assert_eq!(installer_choice("pt-BR"), Some("pt-BR"));
+        assert_eq!(installer_choice("pt-br"), Some("pt-BR"));
+        assert_eq!(installer_choice(" de "), Some("de"));
+        assert_eq!(installer_choice("klingon"), None);
+        assert_eq!(installer_choice(""), None);
+    }
+
+    /// Picked in Options > installer > system > English.
+    #[test]
+    fn the_start_language_follows_the_precedence() {
+        let system = ["sv-SE", "fr-FR"];
+        // A language picked in Options always wins.
+        assert_eq!(startup_language("de", Some("ja"), &system), "de");
+        assert_eq!(startup_language("zh-TW", Some("system"), &system), "zh-TW");
+        // An English that was picked (or saved by an older version) stays.
+        assert_eq!(startup_language("en", Some("ja"), &system), "en");
+        // System language picked in Options: the system, not the installer.
+        assert_eq!(startup_language("system", Some("ja"), &system), "fr");
+        assert_eq!(startup_language("system", None, &["sv"]), "en");
+        // Nothing picked: the installer's language.
+        assert_eq!(startup_language("", Some("ja"), &system), "ja");
+        // The installer left at System language: the system's.
+        assert_eq!(startup_language("", Some("system"), &system), "fr");
+        // No installer (zip, Linux, macOS, Store), or a value we do not
+        // know: the system's.
+        assert_eq!(startup_language("", None, &system), "fr");
+        assert_eq!(startup_language("", Some("xx"), &system), "fr");
+        assert_eq!(startup_language("", None, &["pt-PT"]), "pt-BR");
+        // An unknown saved language counts as none picked.
+        assert_eq!(startup_language("sv", Some("it"), &system), "it");
+        // Nothing at all: English.
+        assert_eq!(startup_language::<&str>("", None, &[]), "en");
     }
 
     #[test]

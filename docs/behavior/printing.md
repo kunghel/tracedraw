@@ -122,6 +122,23 @@ has one.
   plate and its box in the print preview; before, the sheets lost the
   list and only the four process plates printed (#779,
   `export::tests::separations_print_a_plate_for_each_spot_ink`).
+  Pictures are split into their inks too (#1659): a picture that keeps
+  its ink channels (a CMYK image of a `.cdr` file) prints each ink as it
+  holds it, so cyan ink alone prints on the cyan plate alone and black
+  ink alone on the black plate; any other picture (RGB, greyscale, or
+  made CMYK by Convert Colors or Image > Mode, whose pixels changed) has
+  its pixels converted to CMYK with the drawing's colour management, the
+  conversion vector colours take: RGB red prints magenta and yellow, a
+  grey picture black ink alone (while neutral greys go to black). A spot
+  channel prints on its spot plate. Each pixel keeps its alpha on every
+  plate, so transparency, masks and clip frames print as they show.
+  Channels kept from a file belong to the pixels they came with: once
+  the pixels change (an effect, a mode, a resample) the pixels are
+  converted instead, and Convert Colors to RGB drops them. A picture is
+  split once per print job and its plates are cached, so Print Preview
+  redrawing a plate does not split it again
+  (`export::tests::separations_split_pictures_into_their_inks`). Before,
+  pictures printed whole on every plate.
 - Composite: Print text in black (fills, outlines and character colours
   of every text); Always overprint black (100 % black fills and outlines
   overprint).
@@ -195,7 +212,9 @@ same function (`export::print_sheets`).
   in grey; some show the colours those inks print together (process
   colours keep the channels ticked, a spot colour shows when its ink is
   ticked and is paper otherwise;
-  `print_preview::tests::plates_split_the_sheet_by_ink`).
+  `print_preview::tests::plates_split_the_sheet_by_ink`). Pictures follow
+  the ticked inks pixel by pixel (#1659,
+  `print_preview::tests::plates_split_pictures_by_ink`).
 - A plate shows the ink's coverage in grey, black = full ink, as the
   separations print; registration colour shows on every plate.
 - Paper margins (left, right, top, bottom, mm, 0 at first) keep the
@@ -313,6 +332,8 @@ With any mark on, a 12 mm margin (plus the bleed) surrounds the pages.
 - `export::tests::copies_repeat_sheets_collated_or_not_and_ps_gets_its_level`
 
 - `ui::print_preview::tests::plates_split_the_sheet_by_ink`
+- `ui::print_preview::tests::plates_split_pictures_by_ink`
+- `export::tests::separations_split_pictures_into_their_inks`
 - `ui::print_preview::tests::the_settings_key_ignores_copies_and_preflight`
 
 - `imposition::tests::booklets_pair_the_pages_for_folding`

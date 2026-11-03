@@ -561,10 +561,11 @@ impl App {
     /// A rectangle's corners as the bar shows them: measured on the page
     /// and in the order they lie there (the top left field is the corner
     /// seen at the top left, also on a rectangle turned by 180 degrees,
-    /// flipped or stretched across its own side, #1670). `None` for other
-    /// kinds.
+    /// flipped or stretched across its own side, #1670), at the size they
+    /// are drawn: a size given larger than the rectangle holds shows as
+    /// the size it is shrunk to (#1757). `None` for other kinds.
     pub fn corners_as_seen(&self, s: &Shape) -> Option<Corners> {
-        Some(s.page_corners()?.as_seen(self.seen_transform(s)))
+        Some(s.drawn_page_corners()?.as_seen(self.seen_transform(s)))
     }
 
     /// The corners of the selected rectangles as the bar shows them

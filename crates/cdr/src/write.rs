@@ -326,9 +326,6 @@ const LAYER_DESKTOP: u32 = 0x11;
 const ARG_BLEND: u32 = 3000;
 const ARG_BLEND_LINK: u32 = 12020;
 const ARG_BLEND_LINK_SINCE_23: u32 = 12040;
-/// Bytes 44 to 48 of the blend argument: 0x780 in every blend of the
-/// three files whose acceleration is even (0x480 where it is set).
-const BLEND_FLAGS: u32 = 0x780;
 /// The flags of a blend's linked group ([1, 0, 0, 0x18] in the version
 /// 9 and 25 files; version 13 has byte 1 = 8).
 const BLEND_GROUP_FLAGS: [u8; 4] = [1, 0, 0, 0x18];
@@ -3508,6 +3505,8 @@ struct Writer<'a> {
     /// [`Previews::embed_fonts`]).
     embed_fonts: bool,
     split_families: HashMap<(String, bool), Option<(String, u16)>>,
+    /// What [`fonts::drawn_style`] said for each face the runs name.
+    drawn_styles: HashMap<(String, bool, bool), Option<(u16, bool)>>,
     /// The technology and version of the faces the runs name (see
     /// [`fonts::FaceTech`]).
     tech: fonts::FaceTech,
@@ -3651,6 +3650,7 @@ impl<'a> Writer<'a> {
             faces: &[],
             embed_fonts: false,
             split_families: HashMap::new(),
+            drawn_styles: HashMap::new(),
             tech: fonts::FaceTech::new(),
             run_faces: Vec::new(),
             layer_slots: Vec::new(),
@@ -3680,6 +3680,36 @@ impl<'a> Writer<'a> {
                 }
             };
             let Some((family, weight)) = split else {
+                // Text drawn by a face of its family that is not the one
+                // it asks for (regular text drawn by the bold file) goes
+                // out as that face (#1733).
+                let key = (sp.font_family.clone(), sp.bold, sp.italic);
+                let drawn = match self.drawn_styles.get(&key) {
+                    Some(d) => *d,
+                    None => {
+                        let d = self
+                            .faces
+                            .iter()
+                            .find(|f| {
+                                f.family == sp.font_family
+                                    && f.bold == sp.bold
+                                    && f.italic == sp.italic
+                            })
+                            .and_then(fonts::drawn_style);
+                        self.drawn_styles.insert(key, d);
+                        d
+                    }
+                };
+                if let Some((weight, italic)) = drawn {
+                    if let Some(file_sp) = out.get_or_insert_with(|| spans.to_vec()).get_mut(i) {
+                        file_sp.italic = italic;
+                        match weight {
+                            700 => file_sp.bold = true,
+                            400 => {}
+                            w => file_sp.set_variation("wght", Some(f64::from(w))),
+                        }
+                    }
+                }
                 continue;
             };
             if let Some(file_sp) = out.get_or_insert_with(|| spans.to_vec()).get_mut(i) {
@@ -4461,11 +4491,13 @@ impl<'a> Writer<'a> {
     /// and the centres of the two ends (argument 3000). A reader draws
     /// the steps between the two and keeps the blend live, so its steps
     /// and acceleration can be changed there. The upper object goes
-    /// first, as files store objects; `end_upper` says which. The
-    /// acceleration, rotation, path and colour direction are not written
-    /// (their place in the record is not known; even steps result); a
-    /// version 14+ package names the start object in its own member so
-    /// TraceDraw opens the blend with all its settings.
+    /// first, as files store objects; `end_upper` says which. From
+    /// version 23 the record also holds the accelerations, the rotation
+    /// and loop, Apply to sizing and the colour direction
+    /// ([`crate::blend_record`], #1192), counted from the lower object;
+    /// a path is not written. A version 14+ package names the start
+    /// object in its own member so TraceDraw opens the blend with all its
+    /// settings.
     fn live_blend(
         &mut self,
         s: &Shape,
@@ -4474,9 +4506,31 @@ impl<'a> Writer<'a> {
         centre: Point,
         depth: usize,
     ) -> Placed {
-        let Some(tracedraw_core::live::Effect::Blend { steps, options, .. }) = s.effects.first()
+        let Some(tracedraw_core::live::Effect::Blend {
+            steps,
+            options,
+            accel_objects,
+            accel_colors,
+            rotation,
+            ..
+        }) = s.effects.first()
         else {
             return self.object(s, centre, depth);
+        };
+        // The settings as the record counts them, from the lower object
+        // (#1192).
+        let settings = crate::blend_record::Settings {
+            accel_objects: *accel_objects,
+            accel_colors: *accel_colors,
+            rotation: *rotation,
+            loop_rotation: options.loop_rotation,
+            accel_sizing: options.accel_sizing,
+            color_blend: options.color_blend,
+        };
+        let settings = if end_upper {
+            settings
+        } else {
+            settings.reversed()
         };
         let blend = s.effects[0].clone();
         if s.shadow.is_some_and(|sh| sh.opacity > 0.0) {
@@ -4530,7 +4584,17 @@ impl<'a> Writer<'a> {
             let c = x.bounds().center() - centre.to_vec2();
             arg.i32(units(c.x)).i32(units(c.y));
         }
-        arg.u32(BLEND_FLAGS).zeros(8).f64(0.0).f64(0.0).zeros(16);
+        if self.v.0 >= crate::blend_record::SETTINGS_SINCE {
+            // Accelerations, rotation, loop, sizing and colour direction
+            // where the version 27 files of #1192 keep them.
+            arg.bytes(&crate::blend_record::encode(&settings));
+        } else {
+            arg.u32(crate::blend_record::DEFAULT_FLAGS)
+                .zeros(8)
+                .f64(0.0)
+                .f64(0.0);
+        }
+        arg.zeros(16);
         let number = self.next_spnd;
         self.next_spnd += 1;
         let mut body = vec![chunk(b"spnd", number.to_le_bytes().to_vec())];

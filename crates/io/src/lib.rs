@@ -2,6 +2,7 @@
 //! native `.tdraw` file.
 
 #![allow(clippy::field_reassign_with_default)]
+pub mod ai;
 pub mod dxf;
 pub mod emf;
 pub mod eps;
@@ -271,6 +272,50 @@ mod tests {
         Color, Fill, Pattern, Stroke,
     };
 
+    /// #1331: an inverted star (negative sharpness) reopens as it was
+    /// saved, and the SVG export
+    /// draws the inverted outline.
+    #[test]
+    fn inverted_stars_round_trip_in_native_files_and_export_their_outline() {
+        use tracedraw_core::geometry::{Affine, Shape as _};
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Polygon {
+                rect: Rect::new(20.0, 20.0, 80.0, 80.0),
+                points: 5,
+                sharpness: -0.7,
+                complex: None,
+                twist: 0.0,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        doc.layer_mut(layer).unwrap().shapes.push(s.clone());
+        let path = std::env::temp_dir().join(format!(
+            "tracedraw-inverted-star-{}-{:?}.tdraw",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        save_native(&doc, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let back = load_native(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("\"sharpness\": -0.7"), "{text}");
+        assert_eq!(back, doc);
+        // SVG: the outline as the model draws it, inner points past the
+        // centre (y flipped to the SVG's top-left origin).
+        let h = doc.pages[0].size.height;
+        let flip = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]);
+        let want = svg::path_data(&(flip * s.page_path()));
+        let out = svg::page_to_svg(&doc, 0);
+        assert!(out.contains(&want), "{want}\n{out}");
+        let second = s.page_path().elements()[1].end_point().unwrap();
+        assert!(second.y < 50.0, "{second:?}");
+        assert!(s.page_path().bounding_box().width() > 0.0);
+    }
+
     #[test]
     fn open_curves_lose_their_fill_in_vector_exports() {
         use tracedraw_core::geometry::{BezPath, Point};
@@ -468,6 +513,47 @@ mod tests {
         assert!(json.contains("\"fixed\": true"), "{json}");
         assert_eq!(Document::from_json(&json).unwrap(), doc);
         // SVG and PDF draw the outline the rectangle shows.
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let svg = svg_import::parse(&svg::page_to_svg(&doc, 0), &mut ids).expect("svg");
+        let pdf = pdf_import::to_document(
+            pdf_import::parse(&pdf::document_to_pdf(&doc), &mut ids).expect("pdf"),
+            "t",
+        );
+        let pdf_shapes: Vec<Shape> = pdf.all_layers().flat_map(|l| l.shapes.clone()).collect();
+        for (what, shapes) in [("svg", svg.shapes), ("pdf", pdf_shapes)] {
+            let got: f64 = shapes.iter().map(|s| s.page_path().area().abs()).sum();
+            assert!((got - area).abs() < 1.0, "{what}: {got} vs {area}");
+        }
+    }
+
+    /// A corner past half the shorter side, where its neighbours leave it
+    /// room, is kept by the native format and drawn the same in SVG and
+    /// PDF (#1757).
+    #[test]
+    fn a_corner_taking_a_whole_side_survives_native_svg_and_pdf() {
+        use tracedraw_core::geometry::{Affine, Shape as _};
+        use tracedraw_core::{CornerKind, Corners};
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.fixed = true;
+        c.radii[Corners::TOP_LEFT] = 10.0;
+        c.radii[Corners::TOP_RIGHT] = 80.0;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 100.0, 80.0), c),
+        );
+        s.transform = Affine::translate((20.0, 20.0));
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        s.stroke = None;
+        // Quarter circles of 10 and 80 mm, nothing shrunk.
+        let area = s.page_path().area().abs();
+        let want = 8000.0 - (4.0 - std::f64::consts::PI) / 4.0 * (100.0 + 6400.0);
+        assert!((area - want).abs() < 2.0, "{area} vs {want}");
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let json = doc.to_json().unwrap();
+        assert_eq!(Document::from_json(&json).unwrap(), doc);
         let mut ids = tracedraw_core::id::IdSource::default();
         let svg = svg_import::parse(&svg::page_to_svg(&doc, 0), &mut ids).expect("svg");
         let pdf = pdf_import::to_document(

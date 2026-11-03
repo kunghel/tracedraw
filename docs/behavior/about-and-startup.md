@@ -138,7 +138,21 @@ and `--reset-settings` starts open windows of their own.
   command line (`instance::with_files_opened_by_system`), since the
   window that failed had them only in its inbox. The
   `CFBundleDocumentTypes` of `packaging/macos/Info.plist` offer TraceDraw
-  for `.tdraw` and `.cdr`. Not yet tried on a Mac.
+  for `.tdraw` and `.cdr` by content type, not by extension only: Finder
+  keeps the default program of a file per content type (Get Info >
+  Open with > Change All, and a double click go through it), and a type
+  given by extension only matches none of the system's. The system types
+  `.cdr` files as disk images (`com.apple.disk-image-cdr`, kind
+  "DVD/CD-R Master Image", opened by the disk image mounter), so the
+  `.cdr` entry names that type and `dev.tracedraw.cdr` (imported, for
+  systems without a `.cdr` type of their own), as an Editor with the rank
+  Alternate: TraceDraw never takes `.cdr` files over by itself, but Change
+  All makes it their default program and a double click then opens them
+  in TraceDraw. `.tdraw` is TraceDraw's own type (`dev.tracedraw.tdraw`,
+  exported, Owner). The same two formats as the Linux launcher and the
+  Windows installers (#1504). Checked by
+  `macos_package::tests`; the association itself is not yet tried on a
+  Mac.
 - Android: the app is offered for opening, editing and sharing drawings,
   pictures, SVG and PDF from other apps (a file manager's Open with, a
   mail's attachment, Share; the intent filters of

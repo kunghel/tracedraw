@@ -137,6 +137,15 @@ fn parse_here(bytes: &[u8], ids: &mut IdSource, stack_budget: usize) -> Result<I
     let start = postscript_start(ps).ok_or("not a PostScript file")?;
     let ps = &ps[start..];
     let bbox = bounding_box(ps);
+    // A classic Illustrator file that names no procedure set: its
+    // operators, defined first in PostScript (#1728).
+    let with_procs;
+    let ps = if classic_ai_without_procs(ps) {
+        with_procs = [CLASSIC_AI_PROCS.as_bytes(), b"\n", ps].concat();
+        &with_procs[..]
+    } else {
+        ps
+    };
     let mut interp = Interp::new(ps, ids, bbox);
     interp.stack_budget = stack_budget;
     interp.install_systemdict();
@@ -213,6 +222,64 @@ fn parse_here(bytes: &[u8], ids: &mut IdSource, stack_budget: usize) -> Result<I
 }
 
 /// `%%HiResBoundingBox` or `%%BoundingBox` in points.
+/// The operators of the classic (PostScript-based) Illustrator format
+/// that TraceDraw writes, as the public format specification describes
+/// them, in PostScript: path construction (`m`, `l`, `L`, `c`, `C`,
+/// `v`, `V`, `y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`,
+/// `N`), compound paths (`*u`, `*U`), clipping (`W` in a `q` ... `Q`
+/// group), groups (`u`, `U`), process and grey colours for the fill
+/// (`k`, `g`) and the outline (`K`, `G`), outline settings and layers.
+/// The fill and outline colours are kept apart, as the format keeps
+/// them; the parts of a compound path are painted together at its end.
+const CLASSIC_AI_PROCS: &str = "\
+/_f {0 0 0 1 setcmykcolor} def /_s {0 0 0 1 setcmykcolor} def
+/_cp false def /_pp {} def /_clip false def
+/k {[ 5 1 roll /setcmykcolor load ] cvx /_f exch def} def
+/K {[ 5 1 roll /setcmykcolor load ] cvx /_s exch def} def
+/g {[ exch /setgray load ] cvx /_f exch def} def
+/G {[ exch /setgray load ] cvx /_s exch def} def
+/w {setlinewidth} def /j {setlinejoin} def /J {setlinecap} def
+/M {setmiterlimit} def /d {setdash} def
+/m {moveto} def /l {lineto} def /L {lineto} def /c {curveto} def /C {curveto} def
+/v {currentpoint 6 2 roll curveto} def /V {currentpoint 6 2 roll curveto} def
+/y {2 copy curveto} def /Y {2 copy curveto} def
+/_F {gsave _f fill grestore} def /_S {gsave _s stroke grestore} def
+/_done {_clip {clip /_clip false def} if newpath} def
+/_paint {_cp {/_pp exch def} {exec _done} ifelse} def
+/F {{_F} _paint} def /f {closepath F} def
+/S {{_S} _paint} def /s {closepath S} def
+/B {{_F _S} _paint} def /b {closepath B} def
+/N {{} _paint} def /n {closepath N} def
+/W {/_clip true def} def
+/*u {/_cp true def} def /*U {/_cp false def _pp _done /_pp {} def} def
+/u {} def /U {} def /q {gsave} def /Q {grestore} def
+/Lb {clear} def /Ln {pop} def /LB {} def
+/A {pop} def /O {pop} def /R {pop} def /D {pop} def
+";
+
+/// The file is a classic Illustrator file (its header carries the
+/// format's version comments) that defines none of the format's
+/// operators itself: no procedure set in its prolog.
+fn classic_ai_without_procs(ps: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&ps[..ps.len().min(64 << 10)]);
+    let mut classic = false;
+    for line in head.lines() {
+        if line.starts_with("%AI5_FileFormat")
+            || line.starts_with("%%AI8_CreatorVersion")
+            || line.starts_with("%AI3_")
+        {
+            classic = true;
+        }
+        if line.starts_with("%%BeginResource") || line.starts_with("%%BeginProcSet") {
+            return false;
+        }
+        if line.starts_with("%%EndProlog") {
+            break;
+        }
+    }
+    classic
+}
+
 fn bounding_box(ps: &[u8]) -> Option<Rect> {
     let head = String::from_utf8_lossy(&ps[..ps.len().min(64 << 10)]);
     let mut lo: Option<Rect> = None;

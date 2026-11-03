@@ -52,5 +52,7 @@ do download mais recente, porque a Store certifica cada versão antes.
   travada deixou, como a versão para computador faz depois de uma falha (veja
   [Backup automático e recuperação](open-and-save.md#recovery)). Limpar os
   dados do site os remove.
-- **Pressão da caneta.** Uma caneta funciona como mouse, mas o navegador não
-  repassa a pressão, então os traços têm largura uniforme.
+- **Pressão da caneta.** A pressão da caneta define a largura da Mão livre e
+  das Pinceladas como na versão para computador, quando o navegador a repassa
+  (as versões atuais do Chrome, Edge, Firefox e Safari repassam quando o
+  sistema a informa).

@@ -22,7 +22,12 @@ The Transparency tool shows a gradient mask's nodes as Interactive Fill
 shows a fill's (`fill_tool.rs`, #448): start, end and skew handle, the
 nodes between and the midpoint slider of each blend; a drag sets the
 line (a gradient mask there already keeps its nodes), a double click on
-the line adds a node and on a node removes it. Edits are one undo step
+the line adds a node and on a node removes it. A drag that starts on the
+line itself, away from the nodes and the midpoint sliders (within the
+pick distance of Options > Nodes and Handles), moves the whole mask by
+the pointer's way, the line keeping its length and angle; Ctrl keeps
+that move horizontal or vertical; the pointer is the move cursor over
+the line (`effect_line_tests::the_transparency_line_moves_the_whole_mask`). Edits are one undo step
 "Transparency" per drag; the fill is left alone
 (`fill_tool::tests::the_transparency_mask_has_nodes_and_a_midpoint`).
 

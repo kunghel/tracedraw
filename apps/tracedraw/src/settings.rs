@@ -341,6 +341,10 @@ pub struct Settings {
     /// symmetry is edited (off at first: outlines in red).
     #[serde(default)]
     pub symmetry_full_preview: bool,
+    /// The Corners docker's Preview: the result drawn on the page as a
+    /// dashed outline while the docker is open (on at first, #1759).
+    #[serde(default = "default_true")]
+    pub corners_preview: bool,
     /// Options > Edit: decimal places of distances in the property bar
     /// and the status bar.
     #[serde(default = "default_precision")]
@@ -431,6 +435,10 @@ pub struct Settings {
     /// its own name. Built-in palettes' files are never changed.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub palette_names: std::collections::BTreeMap<String, String>,
+    /// The palettes the user made in TraceDraw (New Palette, Duplicate),
+    /// which have no file: their names and colours, in the list's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_palettes: Vec<UserPalette>,
     /// Tool settings new objects take.
     #[serde(default)]
     pub tools: ToolPrefs,
@@ -1091,6 +1099,15 @@ pub fn palette_id(p: &crate::palette::Palette) -> String {
     }
 }
 
+/// A palette made in TraceDraw (no file behind it), kept in the
+/// preferences: its name (its [`palette_id`]) and its colours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UserPalette {
+    pub name: String,
+    pub colors: Vec<(String, tracedraw_core::Color)>,
+}
+
 /// [`PaletteBarPrefs::palette`] of a bar showing the document palette.
 pub const DOCUMENT_PALETTE: &str = "document";
 
@@ -1710,6 +1727,7 @@ impl Default for Settings {
             constrain_angle: default_constrain_angle(),
             symmetry_show_lines: true,
             symmetry_full_preview: false,
+            corners_preview: true,
             precision: default_precision(),
             nodes: NodePrefs::default(),
             clip_frame: ClipFramePrefs::default(),
@@ -1733,6 +1751,7 @@ impl Default for Settings {
             palette_bars: Vec::new(),
             main_palette: String::new(),
             palette_names: Default::default(),
+            user_palettes: Vec::new(),
             tools: ToolPrefs::default(),
             view: ViewPrefs::default(),
             panels: PanelPrefs::default(),
@@ -2577,6 +2596,37 @@ mod tests {
         s.touch_recent(std::path::Path::new("/f11.tdraw"));
         assert_eq!(s.recent_files.len(), 10);
         assert_eq!(s.recent_files[0], PathBuf::from("/f11.tdraw"));
+    }
+
+    /// A settings file of an older version keeps its language, whatever
+    /// the installer or the system say; a new one has none picked.
+    #[test]
+    fn old_settings_files_keep_their_language() {
+        for code in ["en", "de", "pt-BR"] {
+            let old: Settings =
+                serde_json::from_str(&format!("{{\"language\":\"{code}\"}}")).expect("old file");
+            assert_eq!(
+                crate::i18n::startup_language(&old.language, Some("ja"), &["fr-FR"]),
+                code
+            );
+        }
+        let fresh: Settings = serde_json::from_str("{}").expect("empty file");
+        assert_eq!(fresh.language, "");
+        assert_eq!(Settings::default().language, "");
+        assert_eq!(
+            crate::i18n::startup_language(&fresh.language, Some("ja"), &["fr-FR"]),
+            "ja"
+        );
+        assert_eq!(
+            crate::i18n::startup_language(&fresh.language, None, &["fr-FR"]),
+            "fr"
+        );
+        // System language picked in Options is saved as such.
+        let mut s = Settings::default();
+        s.language = crate::i18n::SYSTEM.into();
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&s).expect("json")).expect("back");
+        assert_eq!(back.language, crate::i18n::SYSTEM);
     }
 
     #[test]

@@ -345,10 +345,47 @@ pub fn for_tool(
         {
             ToolCursor::ShapeArrow(shape_mark(app, pos))
         }
-        // The fill's handles move.
-        Tool::InteractiveFill
-            if matches!(app.drag, Drag::FountainHandle { .. })
-                || pos.is_some_and(|s| app.fountain_handle_at(app.view.to_page(s)).is_some()) =>
+        // The fill's (or the mask's) handles and its line move.
+        Tool::InteractiveFill | Tool::Transparency
+            if matches!(
+                app.drag,
+                Drag::FountainHandle { .. } | Drag::FountainLine { .. }
+            ) || pos.is_some_and(|s| {
+                let p = app.view.to_page(s);
+                app.fountain_handle_at(p).is_some() || app.fountain_on_line(p)
+            }) =>
+        {
+            ToolCursor::System(egui::CursorIcon::Move)
+        }
+        // An effect's control line moves the whole effect.
+        Tool::DropShadow
+            if matches!(app.drag, Drag::ShadowLine { .. })
+                || pos.is_some_and(|s| app.shadow_on_line(app.view.to_page(s))) =>
+        {
+            ToolCursor::System(egui::CursorIcon::Move)
+        }
+        Tool::Extrude
+            if app.extrude_drag.is_some_and(|d| d.line)
+                || pos.is_some_and(|s| app.extrusion_line_at(app.view.to_page(s)).is_some()) =>
+        {
+            ToolCursor::System(egui::CursorIcon::Move)
+        }
+        Tool::Blend
+            if app.blend_handle_drag == Some(crate::blend_tool::BlendHandle::Line)
+                || (app.blend_handle_drag.is_none()
+                    && pos.is_some_and(|s| {
+                        app.blend_handle_at(app.view.to_page(s))
+                            == Some(crate::blend_tool::BlendHandle::Line)
+                    })) =>
+        {
+            ToolCursor::System(egui::CursorIcon::Move)
+        }
+        Tool::Distort
+            if app
+                .distort_drag
+                .as_ref()
+                .is_some_and(|d| d.grab == crate::distort_tool::Grab::Line)
+                || pos.is_some_and(|s| app.distortion_line_at(app.view.to_page(s))) =>
         {
             ToolCursor::System(egui::CursorIcon::Move)
         }

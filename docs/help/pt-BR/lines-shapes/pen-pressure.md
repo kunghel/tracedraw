@@ -49,12 +49,18 @@ A pressão vem ligada. Para desenhar com a caneta em largura uniforme, desligue
 | Linux com X11 | sim | sim |
 | Linux com Wayland | não (veja abaixo) | não |
 | macOS | sim | sim |
-| Versão para navegador | sim | não |
+| Versão para navegador | sim | sim, quando o navegador informa (veja abaixo) |
 
 Num ambiente Wayland (o padrão de vários sistemas Linux) a caneta ainda não
 chega ao TraceDraw. Inicie o TraceDraw com `tracedraw --x11` num terminal: a
 janela então abre pelo XWayland, onde a caneta move o ponteiro, clica e
 informa a pressão.
+
+Na versão para navegador a pressão vem do navegador: o Chrome, o Edge, o
+Firefox e o Safari atuais passam a pressão da caneta adiante quando o sistema
+a informa. Um mouse nunca dá pressão, e uma caneta que sempre informa o mesmo
+valor do meio é tratada como caneta sem pressão, então desenha com largura
+uniforme.
 
 > **Dica:** Para mais controle sobre o traço depois, desenhe com pressão e
 > então ajuste os nós de largura com a ferramenta [[tool.variable_outline]].

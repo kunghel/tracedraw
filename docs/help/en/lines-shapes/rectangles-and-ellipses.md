@@ -37,7 +37,11 @@ when nothing is selected:
   circle cut inwards) or **Chamfered** (a straight cut).
 - The four sizes: top left, top right, bottom left and bottom right. The size
   is the radius, or for a chamfer how far from the corner the cut starts. A
-  corner is at most half the shorter side.
+  corner can take what the corners beside it leave of its two sides: on a
+  100 x 80 mm rectangle with a 10 mm corner at the top left and square
+  corners at the bottom, the top right corner can be 80 mm. When two corners
+  are too big for the side they share, all the corners are drawn smaller by
+  the same amount and the fields show the sizes drawn.
 - **Edit corners together** (the lock, on at first) gives all four the size
   you type in one.
 - **Relative corner scaling** (on at first): the corners grow and shrink with

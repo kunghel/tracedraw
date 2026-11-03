@@ -61,6 +61,26 @@ change marked `TraceDraw:` in a comment.
   moves while files are dragged over the page, so TraceDraw could not
   tell a drop on the drawing (import) from one on the menus or tabs
   (open in a tab of its own), and the hint always said "Drop to open".
+- Change: in the browser, a pen's pointer events send its pressure
+  (#1410). The published web layer reads a force from touch events only
+  and drops the `pressure` of pointer events, so a graphics tablet's pen
+  drew Freehand and Brush Strokes at an even width. `web/events.rs`
+  now listens for `pointermove` and `pointercancel` on the document and
+  reads the pen's pressure at `pointerdown` and `pointerup`
+  (`push_pen_pressure`), and sends it as the patched winit copy does on
+  X11 and macOS: an `egui::Event::Touch` of phase `Move` only, of a
+  device of its own (`PEN_DEVICE`), with the reading as `force`, which
+  TraceDraw's raw input hook reads and takes out (`pen.rs`,
+  `docs/behavior/pen-pressure.md`). The pen's position and buttons
+  still come from the mouse events, as before. Only `pointerType` `pen`
+  gives pressure: the mouse (whose 0.5 while pressed means no pressure)
+  and touches (whose force still comes from the touch events) send
+  nothing; a hovering or lifted pen, or a reading of 0, sends no force;
+  0.5 counts as no pressure until a pen has given another reading
+  (`WebInput::pen`), since a pen that cannot measure pressure reports
+  0.5 while pressed. The arithmetic is in `web/pen_pressure.rs`, which
+  uses nothing of the crate but egui; TraceDraw's tests include and run
+  it (`eframe_web_pen_pressure::tests`).
 - Drop the copy and the `[patch.crates-io]` entry when the workspace moves
   to egui/eframe 0.37 or later: what holds that back is the egui 0.37
   API migration across the app. The fixed-function painter has no

@@ -21,6 +21,9 @@ buttons that choose what it draws:
 
 - **Star**: a star with the given number of points (5 at first) and
   **sharpness** (0.5 at first; 0 makes a polygon, 1 the thinnest spikes).
+  A negative sharpness inverts the star: its inner points come out on the
+  other side of the centre. Dragging an inner point through the centre
+  with the Shape tool does the same.
 - **Complex star**: a star whose sides cross, made by joining each point to
   one further on (9 points and sharpness 2 at first). Its middle stays
   empty. With some numbers of points it is made of several closed shapes, as

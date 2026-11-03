@@ -137,6 +137,86 @@ impl StillGeometry {
         }
         StillGeometry(out)
     }
+
+    /// The snapping geometry of `shapes` where they stand, outlines in
+    /// pieces of at most [`STILL_PIECE`] segments: what a move snaps to of
+    /// where the selection started (#1765). Built once a move, so a long
+    /// curve costs a frame no more than a short one.
+    pub fn of_shapes(shapes: &[Shape]) -> Self {
+        use tracedraw_core::geometry::{BezPath, PathEl, Shape as _};
+        let mut g = Vec::new();
+        for s in shapes {
+            snap_points::geometry(s, Affine::IDENTITY, &text_baselines, &mut g);
+        }
+        let mut out = Vec::new();
+        for geo in g {
+            let (path, points) = match geo {
+                Geo::Outline { path, points } => (path, points),
+                Geo::Nodes(ps) => {
+                    for chunk in ps.chunks(STILL_PIECE) {
+                        let b = chunk
+                            .iter()
+                            .fold(None::<Rect>, |r, q| {
+                                Some(r.map_or(Rect::from_points(*q, *q), |r| r.union_pt(*q)))
+                            })
+                            .unwrap_or(Rect::ZERO);
+                        out.push((b, Geo::Nodes(chunk.to_vec())));
+                    }
+                    continue;
+                }
+                e @ Geo::Ellipse { center, rx, ry, .. } => {
+                    let r = rx.hypot() + ry.hypot();
+                    out.push((Rect::from_points(center, center).inflate(r, r), e));
+                    continue;
+                }
+                Geo::Center(c) => {
+                    out.push((Rect::from_points(c, c), Geo::Center(c)));
+                    continue;
+                }
+                Geo::Baseline(a, b) => {
+                    out.push((Rect::from_points(a, b), Geo::Baseline(a, b)));
+                    continue;
+                }
+            };
+            // The outline in pieces, each starting where the last ended;
+            // a closed subpath's closing side is spelled out.
+            let mut piece = BezPath::new();
+            let mut count = 0;
+            let mut first = Point::ZERO;
+            let mut last = Point::ZERO;
+            let mut flush = |piece: &mut BezPath, count: &mut usize, at: Point| {
+                if *count > 0 {
+                    let done = std::mem::take(piece);
+                    out.push((done.bounding_box(), Geo::Outline { path: done, points }));
+                }
+                *count = 0;
+                piece.move_to(at);
+            };
+            for el in path.elements() {
+                let el = match *el {
+                    PathEl::MoveTo(p) => {
+                        flush(&mut piece, &mut count, p);
+                        first = p;
+                        last = p;
+                        continue;
+                    }
+                    PathEl::ClosePath if last != first => PathEl::LineTo(first),
+                    PathEl::ClosePath => continue,
+                    el => el,
+                };
+                if count == STILL_PIECE {
+                    flush(&mut piece, &mut count, last);
+                }
+                piece.push(el);
+                count += 1;
+                if let Some(p) = el.end_point() {
+                    last = p;
+                }
+            }
+            flush(&mut piece, &mut count, last);
+        }
+        StillGeometry(out)
+    }
 }
 
 /// The alignment targets of the last frame and what they were built from.
@@ -424,6 +504,13 @@ impl App {
         snap_points::best(&found, true, true)
     }
 
+    /// Where the selection stands, as a move snaps to it once it has
+    /// left its start (#1765): the document keeps the selection there
+    /// until the move ends.
+    pub fn selection_start_geometry(&self) -> StillGeometry {
+        StillGeometry::of_shapes(&self.selected_rc())
+    }
+
     /// Snap a pointer position (drawing tools, text placement).
     pub fn snap_point(&self, p: Point) -> Point {
         self.snap_point_excluding(p, &[])
@@ -657,14 +744,31 @@ impl App {
     /// Snap a translation of the selection: its snap point `source`
     /// (when the move began on one) onto another object's point or edge;
     /// otherwise an edge or the centre of its bounds onto a guideline, the
-    /// grid, the page or another object's bounds.
-    pub fn snap_move_from(&self, source: Option<Point>, bounds: Rect, d: Vec2) -> Vec2 {
+    /// grid, the page or another object's bounds. With `start` (built
+    /// once the pointer has left the snapping radius of where the move
+    /// began, see [`App::selection_start_geometry`]) the
+    /// selection's own points and edges where it started count as another
+    /// object's: a node carried onto where another of its nodes was, or
+    /// back onto where it was, or along where one of its edges ran
+    /// (#1765). Its box does not: only the grabbed point snaps to its
+    /// start. The selection as it moves never attracts itself.
+    pub fn snap_move_from(
+        &self,
+        source: Option<Point>,
+        bounds: Rect,
+        d: Vec2,
+        start: Option<&StillGeometry>,
+    ) -> Vec2 {
         if self.snap.off {
             return d;
         }
         let enabled = self.snap_enabled();
         if let (true, Some(src)) = (enabled, source) {
-            if let Some(t) = self.object_snap(src + d, &self.selection, &[], true, true) {
+            let own = match start {
+                Some(g) => self.still_near(g, src + d),
+                None => Vec::new(),
+            };
+            if let Some(t) = self.object_snap(src + d, &self.selection, &own, true, true) {
                 self.acquire_anchor(t);
                 self.snap_mark.set(Some(t));
                 return t.point - src;
@@ -1254,10 +1358,10 @@ mod tests {
         // the point is 1.5 mm off the guideline, while the box's edges
         // (41.5 and 101.5) and centre (71.5) are far from it.
         let grab = Point::new(20.0, 35.0);
-        let d = app.snap_move_from(Some(grab), b, Vec2::new(31.5, 0.0));
+        let d = app.snap_move_from(Some(grab), b, Vec2::new(31.5, 0.0), None);
         assert!((d.x - 30.0).abs() < 1e-9 && d.y.abs() < 1e-9, "{d:?}");
         // Beyond the radius the move is as the pointer made it.
-        let d = app.snap_move_from(Some(grab), b, Vec2::new(35.0, 0.0));
+        let d = app.snap_move_from(Some(grab), b, Vec2::new(35.0, 0.0), None);
         assert!((d.x - 35.0).abs() < 1e-9, "{d:?}");
     }
 
@@ -1273,7 +1377,7 @@ mod tests {
         app.select(vec![id]);
         let b = app.selection_bounds().unwrap();
         // The right edge dragged to x = 51 lands on the guideline.
-        let d = app.snap_move_from(None, b, Vec2::new(11.0, 0.0));
+        let d = app.snap_move_from(None, b, Vec2::new(11.0, 0.0), None);
         assert!((b.x1 + d.x - 50.0).abs() < 1e-9, "{d:?}");
     }
 
@@ -1339,7 +1443,7 @@ mod tests {
         assert_eq!(src, Some(Point::new(30.0, 30.0)));
         let b = app.selection_bounds().unwrap();
         // Dropped near the other rectangle's top right corner.
-        let d = app.snap_move_from(src, b, Vec2::new(107.0, 88.0));
+        let d = app.snap_move_from(src, b, Vec2::new(107.0, 88.0), None);
         assert_eq!(Point::new(30.0, 30.0) + d, Point::new(140.0, 120.0));
         assert_eq!(app.snap_mark.get().map(|m| m.mode), Some(SnapMode::Node));
     }
@@ -1360,7 +1464,7 @@ mod tests {
         // the grabbed point lands on that edge each time and slides along
         // it with the pointer.
         for dy in [60.0, 85.0] {
-            let d = app.snap_move_from(src, b, Vec2::new(61.5, dy));
+            let d = app.snap_move_from(src, b, Vec2::new(61.5, dy), None);
             assert!((40.0 + d.x - 100.0).abs() < 1e-9, "{d:?}");
             assert!((d.y - dy).abs() < 1e-9, "{d:?}");
             assert_eq!(app.snap_mark.get().map(|m| m.mode), Some(SnapMode::Edge));
@@ -1373,8 +1477,69 @@ mod tests {
             }
         }
         // Far from it, it lets go.
-        let d = app.snap_move_from(src, b, Vec2::new(50.0, 60.0));
+        let d = app.snap_move_from(src, b, Vec2::new(50.0, 60.0), None);
         assert!((d.x - 50.0).abs() < 1e-9, "{d:?}");
+    }
+
+    /// A move snaps to where the selection itself was when it began (its
+    /// nodes, midpoints, centre and edges), once it has left the snapping
+    /// radius of its start; before that nothing of its own attracts it,
+    /// so it moves freely off its place (#1765).
+    #[test]
+    fn a_move_snaps_to_where_the_selection_started() {
+        let mut app = app();
+        app.settings.snap.threshold_px = 3.0;
+        let moving = rect(&mut app, 20.0, 20.0, 40.0, 60.0);
+        app.select(vec![moving]);
+        let b = app.selection_bounds().unwrap();
+        let start = app.selection_start_geometry();
+        let start = Some(&start);
+        // Grabbed at its top right node.
+        let src = app.selection_snap_source(Point::new(39.5, 59.5));
+        assert_eq!(src, Some(Point::new(40.0, 60.0)));
+        // Still near its start: the move is as the pointer made it, the
+        // node does not stick to where it was.
+        let d = app.snap_move_from(src, b, Vec2::new(1.0, -1.5), None);
+        assert_eq!(d, Vec2::new(1.0, -1.5));
+        // Carried near where its top left node was: it lands there.
+        app.snap_mark.set(None);
+        let d = app.snap_move_from(src, b, Vec2::new(-18.5, 1.0), start);
+        assert_eq!(Point::new(40.0, 60.0) + d, Point::new(20.0, 60.0));
+        assert_eq!(app.snap_mark.get().map(|m| m.mode), Some(SnapMode::Node));
+        // Brought back near its start after leaving it: exactly home.
+        let d = app.snap_move_from(src, b, Vec2::new(1.0, -1.5), start);
+        assert_eq!(d, Vec2::ZERO);
+        // Carried near the middle of where its left side was: the midpoint.
+        let d = app.snap_move_from(src, b, Vec2::new(-21.5, -19.0), start);
+        assert_eq!(Point::new(40.0, 60.0) + d, Point::new(20.0, 40.0));
+        assert_eq!(
+            app.snap_mark.get().map(|m| m.mode),
+            Some(SnapMode::Midpoint)
+        );
+        // Grabbed at its centre and carried near where its bottom right
+        // node was.
+        let src = app.selection_snap_source(Point::new(30.5, 40.5));
+        assert_eq!(src, Some(Point::new(30.0, 40.0)));
+        let d = app.snap_move_from(src, b, Vec2::new(11.0, -19.0), start);
+        assert_eq!(Point::new(30.0, 40.0) + d, Point::new(40.0, 20.0));
+        // Far from where it was: the pointer's move.
+        let d = app.snap_move_from(src, b, Vec2::new(60.0, 70.0), start);
+        assert_eq!(d, Vec2::new(60.0, 70.0));
+        // Carried along where its right side ran: it slides on that line.
+        let src = Some(Point::new(40.0, 60.0));
+        let d = app.snap_move_from(src, b, Vec2::new(1.5, -15.0), start);
+        assert_eq!(d, Vec2::new(0.0, -15.0));
+        assert_eq!(app.snap_mark.get().map(|m| m.mode), Some(SnapMode::Edge));
+        // Moved by no point of its own, its box does not line up with
+        // where it stood (only other objects' boxes catch it).
+        let d = app.snap_move_from(None, b, Vec2::new(70.0, 1.5), start);
+        assert_eq!(d, Vec2::new(70.0, 1.5));
+        // Snapping to objects off (and to the page, whose left edge the
+        // box would meet): nothing of its own counts.
+        app.snap.objects = false;
+        app.snap.page = false;
+        let d = app.snap_move_from(src, b, Vec2::new(-18.5, 1.0), start);
+        assert_eq!(d, Vec2::new(-18.5, 1.0));
     }
 
     #[test]
@@ -1414,12 +1579,12 @@ mod tests {
         let moving = rect(&mut app, 10.0, 10.0, 30.0, 30.0);
         app.select(vec![moving]);
         let b = app.selection_bounds().unwrap();
-        let d = app.snap_move_from(None, b, Vec2::new(0.0, 91.0));
+        let d = app.snap_move_from(None, b, Vec2::new(0.0, 91.0), None);
         assert!((b.y1 + d.y - 120.0).abs() < 1e-9, "{d:?}");
         assert!(!app.live_guides.borrow().lines.is_empty());
         // The boxes are measured once while nothing changes.
         let first = app.align_cache.borrow().as_ref().map(|c| c.targets.clone());
-        app.snap_move_from(None, b, Vec2::new(0.0, 90.5));
+        app.snap_move_from(None, b, Vec2::new(0.0, 90.5), None);
         let second = app.align_cache.borrow().as_ref().map(|c| c.targets.clone());
         assert!(matches!((first, second), (Some(a), Some(b)) if std::rc::Rc::ptr_eq(&a, &b)));
     }

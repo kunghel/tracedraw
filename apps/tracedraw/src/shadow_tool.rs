@@ -144,8 +144,40 @@ impl App {
         self.set_shadow(Some(sh), true);
     }
 
-    /// Move a shadow handle of the selected shadow to `p`.
-    pub fn drag_shadow_handle(&mut self, handle: ShadowHandle, p: Point) {
+    /// The selected shadow's line from its start to its end passes within
+    /// the pick distance of `p`, away from its handles (Drop Shadow tool):
+    /// a drag from there moves the shadow by its line.
+    pub fn shadow_on_line(&self, p: Point) -> bool {
+        if self.tool != crate::tools::Tool::DropShadow || self.shadow_handle_at(p).is_some() {
+            return false;
+        }
+        let Some((_, sh, b)) = self.selected_shadow() else {
+            return false;
+        };
+        crate::effect_line::near_segment(sh.anchor(b), sh.end_point(b), p, self.line_pick_tol())
+    }
+
+    /// A drag on the shadow's line, pressed at `press` when the shadow's
+    /// end was at `end`, is at `p`: the end moves by the pointer's way
+    /// (kept straight with `ctrl`), so the whole shadow follows; its start
+    /// stays where it stands on the object. The first move of a drag is an
+    /// undo step "Drop Shadow", the next ones replace it (`begun`).
+    pub fn drag_shadow_line(
+        &mut self,
+        press: Point,
+        end: Point,
+        p: Point,
+        ctrl: bool,
+        begun: bool,
+    ) {
+        let d = crate::effect_line::constrain_move(p - press, ctrl);
+        self.drag_shadow_handle(ShadowHandle::End, end + d, begun);
+    }
+
+    /// Move a shadow handle of the selected shadow to `p`: a new undo step
+    /// "Drop Shadow" at the first move of a drag, replaced by the next
+    /// ones (`begun`), so a drag is one step.
+    pub fn drag_shadow_handle(&mut self, handle: ShadowHandle, p: Point, begun: bool) {
         let Some((_, mut sh, b)) = self.selected_shadow() else {
             return;
         };
@@ -182,7 +214,7 @@ impl App {
             }
         }
         self.shadow_default = sh;
-        self.set_shadow(Some(sh), true);
+        self.set_shadow(Some(sh), begun);
     }
 
     /// A field of the Drop Shadow property bar changed to `sh`: it becomes
@@ -422,17 +454,17 @@ mod tests {
         let [(_, end), (_, slider), (_, start)] = shadow_handles(&sh, b);
         assert_eq!(start, b.center());
         assert_eq!(app.shadow_handle_at(end), Some(ShadowHandle::End));
-        app.drag_shadow_handle(ShadowHandle::End, Point::new(50.0, 40.0));
+        app.drag_shadow_handle(ShadowHandle::End, Point::new(50.0, 40.0), false);
         let sh = shadow(&app, id).expect("shadow");
         assert!((sh.offset.x - 10.0).abs() < 1e-9 && (sh.offset.y + 10.0).abs() < 1e-9);
         let _ = slider;
         // The slider three quarters of the way along: 75 %.
         let a = sh.anchor(b);
         let e = sh.end_point(b);
-        app.drag_shadow_handle(ShadowHandle::Opacity, a + (e - a) * 0.75);
+        app.drag_shadow_handle(ShadowHandle::Opacity, a + (e - a) * 0.75, false);
         assert!((shadow(&app, id).expect("shadow").opacity - 0.75).abs() < 1e-9);
         // The start moved to the top edge stands the shadow there.
-        app.drag_shadow_handle(ShadowHandle::Start, Point::new(40.0, 79.0));
+        app.drag_shadow_handle(ShadowHandle::Start, Point::new(40.0, 79.0), false);
         let per = shadow(&app, id)
             .and_then(|s| s.perspective)
             .expect("perspective");

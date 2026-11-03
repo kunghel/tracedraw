@@ -280,6 +280,11 @@ pub struct ExtrudeDrag {
     /// `anchor` (the object's middle).
     pub handle: bool,
     pub anchor: Point,
+    /// The drag took the line from `anchor` to the handle (not the handle
+    /// itself), pressed at `press`: the handle moves by the pointer's way
+    /// from there, so the line keeps its length and angle.
+    pub line: bool,
+    pub press: Point,
 }
 
 fn is_extrude(e: &Effect) -> bool {
@@ -458,19 +463,51 @@ impl App {
         out
     }
 
+    /// The selected extrusion whose line (from the object's middle to its
+    /// handle) passes within the pick distance of `p`, away from the
+    /// handle: its object, handle and middle.
+    pub fn extrusion_line_at(&self, p: Point) -> Option<(ShapeId, Point, Point)> {
+        let tol = self.line_pick_tol();
+        let handles = self.extrusion_handles();
+        if handles.iter().any(|(_, h, _)| (*h - p).hypot() <= tol) {
+            return None;
+        }
+        handles
+            .into_iter()
+            .find(|(_, h, mid)| crate::effect_line::near_segment(*mid, *h, p, tol))
+    }
+
     /// Start a drag at `at` (page space). False when nothing is there.
+    /// On the handle it takes the handle; elsewhere on the line to it, the
+    /// whole line, which the drag moves; else a new extrusion of the
+    /// object pressed. Each drag is one undo step.
     pub fn begin_extrude(&mut self, at: Point) -> bool {
-        let tol = 6.0 / self.view.zoom.max(1e-6) as f64;
+        let tol = self.line_pick_tol();
         if let Some((id, h, anchor)) = self
             .extrusion_handles()
             .into_iter()
             .find(|(_, h, _)| (*h - at).hypot() <= tol)
         {
+            self.effect_edit_step = None;
             self.extrude_drag = Some(ExtrudeDrag {
                 id,
                 start: h,
                 handle: true,
                 anchor,
+                line: false,
+                press: at,
+            });
+            return true;
+        }
+        if let Some((id, h, anchor)) = self.extrusion_line_at(at) {
+            self.effect_edit_step = None;
+            self.extrude_drag = Some(ExtrudeDrag {
+                id,
+                start: h,
+                handle: true,
+                anchor,
+                line: true,
+                press: at,
             });
             return true;
         }
@@ -490,14 +527,29 @@ impl App {
             start: at,
             handle: false,
             anchor: at,
+            line: false,
+            press: at,
         });
         true
     }
 
     /// The pointer moved to `p` during a drag.
+    #[cfg(test)]
     pub fn drag_extrude(&mut self, p: Point) {
+        self.drag_extrude_to(p, false);
+    }
+
+    /// The pointer moved to `p` during a drag; a drag of the line keeps
+    /// its move horizontal or vertical with `ctrl`.
+    pub fn drag_extrude_to(&mut self, p: Point, ctrl: bool) {
         let Some(dd) = self.extrude_drag else {
             return;
+        };
+        // The line: its handle goes by the pointer's way from the press.
+        let p = if dd.line {
+            dd.start + crate::effect_line::constrain_move(p - dd.press, ctrl)
+        } else {
+            p
         };
         let Some((local, parent)) = self.extrude_frames(dd.id) else {
             self.extrude_drag = None;
@@ -533,7 +585,10 @@ impl App {
             self.begin_extrude(origin);
         }
         if response.dragged_by(PointerButton::Primary) && self.extrude_drag.is_some() {
-            self.drag_extrude(p);
+            let ctrl = response
+                .ctx
+                .input(|i| i.modifiers.ctrl || i.modifiers.command);
+            self.drag_extrude_to(p, ctrl);
         }
         if response.drag_stopped() {
             self.extrude_drag = None;

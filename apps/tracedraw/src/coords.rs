@@ -150,7 +150,7 @@ pub struct CoordsState {
     pub proportional: bool,
     pub angle: f64,
     pub points: u32,
-    /// A star's sharpness, 0.01 to 0.99.
+    /// A star's sharpness, 0.01 to 0.99, or -0.01 to -0.99 inverted.
     pub sharpness: f64,
     /// A complex star's sharpness, 1 up to what its points allow.
     pub complex_sharpness: u32,
@@ -405,7 +405,10 @@ impl CoordsState {
                     CoordKind::Star => ShapeKind::Polygon {
                         rect,
                         points: self.points.clamp(3, 500),
-                        sharpness: self.sharpness.clamp(0.01, 0.99),
+                        sharpness: crate::ui::propbar::sharpness_from_pct(
+                            self.sharpness * 100.0,
+                            self.sharpness,
+                        ),
                         complex: None,
                         twist: 0.0,
                     },
@@ -608,7 +611,7 @@ impl CoordsState {
                         self.complex_sharpness = *k;
                         CoordKind::ComplexStar
                     }
-                    None if *sharpness > 0.0 => {
+                    None if tracedraw_core::geometry::is_star_sharpness(*sharpness) => {
                         self.sharpness = *sharpness;
                         CoordKind::Star
                     }

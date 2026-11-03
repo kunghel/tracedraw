@@ -5,14 +5,15 @@
 //! dragged is one of them); an
 //! ellipse's node opens a pie when the pointer is inside the ellipse and
 //! an arc outside it; a polygon's nodes move with all their mirrored
-//! counterparts (vertices together, the points between them together).
+//! counterparts (vertices together, the points between them together;
+//! the points between them can cross the centre into an inverted star).
 //! A B-spline shows its control points instead of its nodes: dragging
 //! one reshapes the spline, a double-click on the control polygon adds
 //! one there and a double-click on a control point removes it.
 
 use tracedraw_core::{
     document::{axis_scale, EllipseArc, Shape, ShapeKind},
-    geometry::{Point, Rect, Vec2},
+    geometry::{self, Point, Rect, Vec2},
 };
 
 /// A node of a rectangle, ellipse or polygon.
@@ -151,10 +152,10 @@ fn vertex_angle(n: usize, i: usize) -> f64 {
 
 /// Distance of the points between vertices from the centre, as a part of
 /// the vertices' distance: the star's inner points, or the middle of a
-/// polygon's sides.
+/// polygon's sides. Negative past the centre: an inverted star.
 fn inner_ratio(n: usize, sharpness: f64) -> f64 {
-    if sharpness > 0.0 {
-        1.0 - sharpness.clamp(0.0, 1.0)
+    if geometry::is_star_sharpness(sharpness) {
+        geometry::star_inner_ratio(sharpness)
     } else {
         (std::f64::consts::PI / n as f64).cos()
     }
@@ -222,7 +223,8 @@ pub fn drag_constrained(
         (ShapeKind::Rect { .. }, KindNode::Corner { corner, vertical }) => {
             let (rect, c) = start.kind.rect_corners()?;
             let rect = rect.abs();
-            let page = start.page_corners()?;
+            // From the corners as drawn, where the nodes are.
+            let page = start.drawn_page_corners()?;
             let (sx, sy) = axis_scale(start.transform);
             let (cp, _, _) = *c.ends(rect, (sx, sy)).get(corner)?;
             // Edge directions from the corner towards the rectangle's middle.
@@ -256,7 +258,21 @@ pub fn drag_constrained(
                     }
                 }
             }
-            start.with_page_corners(next)
+            let kind = start.with_page_corners(next)?;
+            let (_, mut c) = kind.rect_corners()?;
+            if single {
+                // One corner goes as far as its neighbours leave it room on
+                // both its sides, past half the shorter side (#1757); the
+                // others keep their size.
+                let room = c.room(corner, rect, (sx, sy));
+                if let Some(r) = c.radii.get_mut(corner) {
+                    *r = r.min(room);
+                }
+            } else {
+                // Corners growing together stop where they fill a side.
+                c = c.fitted(rect, (sx, sy));
+            }
+            Some(ShapeKind::rect_with_corners(rect, c))
         }
         (ShapeKind::Ellipse { rect, arc }, KindNode::EllipseStart | KindNode::EllipseEnd) => {
             let c = rect.center();
@@ -365,33 +381,50 @@ pub fn drag_constrained(
                 Some(ShapeKind::Polygon {
                     rect: grown,
                     points: *points,
-                    sharpness: (1.0 - k).clamp(0.001, 0.999),
+                    sharpness: geometry::star_sharpness_for_ratio(k),
                     complex: None,
                     twist: *twist,
                 })
             } else if complex.is_some() {
                 None
             } else {
-                // In or out sharpens the star; around the centre turns the
+                // In or out sharpens the star, and through the centre
+                // inverts it: the points come out on the far side (a
+                // negative sharpness, #1331). Around the centre turns the
                 // points between the vertices (a twisted star), unless
                 // Ctrl keeps the turn they have.
-                let twist = if single {
-                    *twist
+                let untwisted = vertex_angle(n, index) - std::f64::consts::PI / n as f64;
+                let at = ((lp.y - c.y) / ry).atan2((lp.x - c.x) / rx);
+                let was = clamp_twist(*twist);
+                let (ratio, twist) = if single {
+                    // Which side of the centre, along the points' turn.
+                    let along = (at - untwisted - was).cos();
+                    (if along < 0.0 { -rho } else { rho }, *twist)
                 } else {
-                    let untwisted = vertex_angle(n, index) - std::f64::consts::PI / n as f64;
-                    let at = ((lp.y - c.y) / ry).atan2((lp.x - c.x) / rx);
+                    // The pointer's turn read on this side of the centre
+                    // or, inverted, on the far side: whichever is nearer
+                    // the turn the points had, so a drag through the
+                    // centre inverts the star rather than turning it
+                    // half a turn.
                     let turn = wrap((at - untwisted).to_degrees()).to_radians();
+                    let far = wrap((at - untwisted).to_degrees() + 180.0).to_radians();
+                    let off = |t: f64| wrap((t - was).to_degrees()).abs();
+                    let (ratio, turn) = if off(far) < off(turn) {
+                        (-rho, far)
+                    } else {
+                        (rho, turn)
+                    };
                     // A drag straight in or out stays untwisted.
                     if turn.abs() < 1f64.to_radians() {
-                        0.0
+                        (ratio, 0.0)
                     } else {
-                        clamp_twist(turn)
+                        (ratio, clamp_twist(turn))
                     }
                 };
                 Some(ShapeKind::Polygon {
                     rect: *rect,
                     points: *points,
-                    sharpness: (1.0 - rho).clamp(0.001, 0.999),
+                    sharpness: geometry::star_sharpness_for_ratio(ratio),
                     complex: None,
                     twist,
                 })
@@ -669,6 +702,41 @@ mod tests {
         assert_eq!(page_radius(&moved, 0), 0.0);
     }
 
+    /// With Ctrl one corner goes past half the shorter side as far as its
+    /// neighbours leave it room; the others keep their size (#1757).
+    #[test]
+    fn one_corner_dragged_takes_what_its_neighbours_leave() {
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 5.0;
+        c.radii[Corners::TOP_LEFT] = 4.0;
+        let s = rect(c);
+        let node = KindNode::Corner {
+            corner: Corners::TOP_RIGHT,
+            vertical: true,
+        };
+        let mut turn = 0.0;
+        let dragged = |c: &Shape, y: f64, turn: &mut f64| {
+            let mut moved = c.clone();
+            moved.kind = drag(c, node, Point::new(40.0, y), true, [false; 4], turn).unwrap();
+            moved
+        };
+        // Down the right side to 16 mm from the top: more than half the
+        // 20 mm side.
+        let moved = dragged(&s, 4.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 16.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::TOP_LEFT), 4.0);
+        // Past the bottom: the whole side, and no further.
+        let moved = dragged(&s, -10.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 20.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::TOP_LEFT), 4.0);
+        // A bottom right corner of 6 leaves it 14.
+        let mut c2 = c;
+        c2.radii[Corners::BOTTOM_RIGHT] = 6.0;
+        let moved = dragged(&rect(c2), -10.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 14.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::BOTTOM_RIGHT), 6.0);
+    }
+
     #[test]
     fn rounded_corners_grow_by_the_same_amount() {
         let mut c = Corners::uniform(2.0, CornerKind::Scallop);
@@ -916,6 +984,109 @@ mod tests {
         .expect("vertex");
         assert!(
             matches!(k, ShapeKind::Polygon { twist, .. } if (twist - (at - untwisted)).abs() < 1e-9)
+        );
+    }
+
+    /// #1331: an inner node dragged through the centre comes out on the
+    /// other side: an inverted star (negative sharpness), not a star
+    /// turned half a turn, and not stopped at the centre.
+    #[test]
+    fn inner_nodes_cross_the_centre_into_an_inverted_star() {
+        let s = Shape::new(
+            ShapeId(1),
+            ShapeKind::Polygon {
+                rect: Rect::new(-10.0, -10.0, 10.0, 10.0),
+                points: 5,
+                sharpness: 0.5,
+                complex: None,
+                twist: 0.0,
+            },
+        );
+        let between = KindNode::Polygon {
+            outer: false,
+            index: 0,
+        };
+        let untwisted = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI / 5.0;
+        // Through the centre to 3 mm on the other side, with and without
+        // Ctrl.
+        let p = Point::new(-3.0 * untwisted.cos(), -3.0 * untwisted.sin());
+        for ctrl in [false, true] {
+            let mut turn = 0.0;
+            let k = drag(&s, between, p, ctrl, [false; 4], &mut turn).expect("dragged");
+            let ShapeKind::Polygon {
+                sharpness, twist, ..
+            } = k
+            else {
+                panic!("{k:?}");
+            };
+            assert!((sharpness + 0.7).abs() < 1e-9, "ctrl {ctrl}: {sharpness}");
+            assert_eq!(twist, 0.0, "ctrl {ctrl}");
+            let inverted = Shape {
+                kind: k.clone(),
+                ..s.clone()
+            };
+            // Every inner node sits on the far side of the centre, the
+            // dragged one under the pointer; the outer ones stay put.
+            for (node, q) in nodes(&inverted) {
+                let KindNode::Polygon { outer, index } = node else {
+                    panic!("{node:?}");
+                };
+                let a = vertex_angle(5, index);
+                let want = if outer {
+                    Point::new(10.0 * a.cos(), 10.0 * a.sin())
+                } else {
+                    let b = a - std::f64::consts::PI / 5.0;
+                    Point::new(-3.0 * b.cos(), -3.0 * b.sin())
+                };
+                assert!((q - want).hypot() < 1e-9, "{node:?}: {q:?} {want:?}");
+            }
+            assert!((nodes(&inverted)[1].1 - p).hypot() < 1e-9);
+            // The outline draws the same points.
+            let path = inverted.page_path();
+            let drawn: Vec<Point> = path
+                .elements()
+                .iter()
+                .filter_map(|e| e.end_point())
+                .collect();
+            for (_, q) in nodes(&inverted) {
+                assert!(drawn.iter().any(|d| (*d - q).hypot() < 1e-9), "{q:?}");
+            }
+            // Dragged back through the centre: a plain star again.
+            let back = Point::new(4.0 * untwisted.cos(), 4.0 * untwisted.sin());
+            let k = drag(&inverted, between, back, ctrl, [false; 4], &mut turn).expect("back");
+            assert!(
+                matches!(k, ShapeKind::Polygon { sharpness, twist, .. } if (sharpness - 0.6).abs() < 1e-9 && twist == 0.0),
+                "{k:?}"
+            );
+        }
+        // A vertex pulled out keeps the inverted inner points where they are.
+        let inverted = Shape {
+            kind: ShapeKind::Polygon {
+                rect: Rect::new(-10.0, -10.0, 10.0, 10.0),
+                points: 5,
+                sharpness: -0.7,
+                complex: None,
+                twist: 0.0,
+            },
+            ..s.clone()
+        };
+        let top = KindNode::Polygon {
+            outer: true,
+            index: 0,
+        };
+        let mut turn = 0.0;
+        let k = drag(
+            &inverted,
+            top,
+            Point::new(0.0, 20.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
+        assert!(
+            matches!(k, ShapeKind::Polygon { sharpness, .. } if (sharpness + 0.85).abs() < 1e-9),
+            "{k:?}"
         );
     }
 

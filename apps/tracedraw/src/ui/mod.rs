@@ -453,7 +453,11 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     let palette_beside = palette_spot == bars::PaletteSpot::Beside;
     let palette_edge = palette_spot == bars::PaletteSpot::Edge;
     let show_palette = app.settings.palette.show_palette;
-    let show_doc_palette = show_palette && app.settings.palette.show_document;
+    // A document palette taken out into a bar of its own shows there, not
+    // in the row as well.
+    let show_doc_palette = show_palette
+        && app.settings.palette.show_document
+        && !app.extra_palettes.iter().any(|r| r.document);
     if show_palette && !palette_beside && palette_dock.horizontal() {
         palette_rows(app, ui, palette_dock == Dock::Top, palette_frame);
     }

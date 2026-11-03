@@ -225,12 +225,12 @@ round their corners with their own handles either way.
 
 | Action | Behaviour |
 |---|---|
-| Drag a rectangle corner node | every corner grows or shrinks by the same amount, in the current corner style; a square corner has one node, a cut one a node at each end |
-| Ctrl+drag a corner node | that corner only; Ctrl counts as it is held during the drag, also pressed after the button (#1325) |
+| Drag a rectangle corner node | every corner grows or shrinks by the same amount, in the current corner style, until two corners fill a side; a square corner has one node, a cut one a node at each end |
+| Ctrl+drag a corner node | that corner only, as far as the neighbouring corners leave it room on both its sides (past half the shorter side when they are smaller, a whole side when they are square; #1757, `kind_nodes::tests::one_corner_dragged_takes_what_its_neighbours_leave`); Ctrl counts as it is held during the drag, also pressed after the button (#1325) |
 | Click a corner node; Shift+click or Ctrl+click; marquee or freehand marquee over corner nodes | chooses that corner alone; adds the corner to the chosen ones or takes it out; chooses the corners with a node inside (on every selected rectangle). Chosen corners' nodes are filled (#671) |
 | Drag a chosen corner node | the chosen corners only, all by the same amount, so two or three corners round together and the others keep theirs (#671) |
 | Drag an ellipse node | pie when the pointer is inside the ellipse, arc outside; a whole ellipse's node starts at the top and the way it turns picks which end it becomes; with Ctrl held (at the press or later) the angle goes in steps of the constrain angle (15 degrees at first; a whole ellipse's node counts its turn from the top) (#1340) |
-| Drag a polygon node | its mirrored nodes follow: a vertex moves every vertex in or out (the points between them stay, and keep their turn); a point between two vertices moves all of those: in or out sharpens the star, around the centre turns them (a twisted star; within 1 degree of straight it stays untwisted; Ctrl keeps the turn they have, held at the press or later; it was read at the press for rectangle corners only, so it did nothing on a star, #1331) |
+| Drag a polygon node | its mirrored nodes follow: a vertex moves every vertex in or out (the points between them stay, and keep their turn); a point between two vertices moves all of those: in or out sharpens the star, and through the centre it comes out on the far side, an inverted star (negative sharpness, down to -0.99; dragged back through the centre it is a plain star again). The pointer's turn is read on the near or the far side of the centre, whichever is nearer the turn the points had at the press, so a drag straight through inverts the star rather than turning its points half a turn; with Ctrl the side is the one the pointer is on along the kept turn. It used to stop short of the centre, sharpness held to 0.001..0.999 (#1331, `kind_nodes::tests::inner_nodes_cross_the_centre_into_an_inverted_star`). Around the centre turns them (a twisted star; within 1 degree of straight it stays untwisted; Ctrl keeps the turn they have, held at the press or later; it was read at the press for rectangle corners only, so it did nothing on a star, #1331) |
 
 Rectangles, ellipses and polygons show these nodes and the property bar
 shows their controls (corners, pie and arc, points) while the Shape tool
@@ -332,6 +332,7 @@ Reduce Nodes, Curve smoothness.
 - `kind_nodes::tests::the_ellipse_node_opens_a_pie_inside_and_an_arc_outside`
 - `kind_nodes::tests::polygon_nodes_move_together`
 - `kind_nodes::tests::points_between_the_vertices_twist_the_star`
+- `kind_nodes::tests::inner_nodes_cross_the_centre_into_an_inverted_star` (#1331)
 - `pick_drag_tests::a_bspline_keeps_its_control_points_for_the_shape_tool`
 - `tracedraw_core::command::tests::a_spline_follows_its_control_points_until_the_outline_is_changed_otherwise`
 - `geometry::tests::twisting_turns_the_points_between_the_vertices` (core): the

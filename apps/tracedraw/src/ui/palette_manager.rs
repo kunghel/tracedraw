@@ -1,9 +1,10 @@
 //! The Palette Manager docker: a toolbar (filter, Open Palette, the
-//! document palette from the drawing or the selection), the swatch size
-//! slider and rows of the selected palette's bar, then the palettes in
-//! three sections (Built-in, My Palettes, Document Palette). Each palette
-//! is a row with an eye (shown in a bar or not), its name, a strip of its
-//! first colours, and its colour count, colour model and where it shows.
+//! document palette from the drawing or the selection), New Palette, the
+//! swatch size slider and rows of the selected palette's bar, then the
+//! palettes in three sections (Built-in, My Palettes, Document Palette).
+//! Each palette is a row with an eye (shown in a bar or not), a Show bar
+//! / Hide bar button and the bar's place, its name, a strip of its first
+//! colours, and its colour count, colour model and where it shows.
 //! A click selects a palette, a double click on its name renames it, the
 //! three-dot button or a right click opens its menu (Open as Palette Bar
 //! or Close Palette Bar, Edit, Rename, Reset Name, Duplicate, Lock,
@@ -138,16 +139,19 @@ pub fn model_key(colors: &[(String, Color)]) -> &'static str {
 }
 
 /// Where `sel` shows, in words.
+/// The short name of a bar's place (Top, Bottom, Left, Right, Floating).
+fn place_key(dock: Dock) -> &'static str {
+    match dock {
+        Dock::Top => "palette.edge_top",
+        Dock::Bottom => "palette.edge_bottom",
+        Dock::Left => "palette.edge_left",
+        Dock::Right => "palette.edge_right",
+        Dock::Floating => "palette.float",
+    }
+}
+
 fn shown_text(app: &App, sel: Selected) -> String {
-    let place = |dock: Dock| {
-        tr(match dock {
-            Dock::Top => "palette.edge_top",
-            Dock::Bottom => "palette.edge_bottom",
-            Dock::Left => "palette.edge_left",
-            Dock::Right => "palette.edge_right",
-            Dock::Floating => "palette.float",
-        })
-    };
+    let place = |dock: Dock| tr(place_key(dock));
     match bar_of(app, sel) {
         Some(Row::Main) => trf(
             "palette.shown_default",
@@ -176,6 +180,15 @@ fn shown_text(app: &App, sel: Selected) -> String {
 pub fn show(app: &mut App, ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = 4.0;
     toolbar(app, ui);
+    // New Palette: an empty palette of one's own, shown in a bar of its
+    // own at once, so several palettes stand in bars side by side.
+    if ui
+        .button(tr("palette.new"))
+        .rich_tip(tr("palette.new_tip"))
+        .clicked()
+    {
+        crate::ui::palette_bars::start_new_palette(app);
+    }
     ui.add_space(2.0);
     size_controls(app, ui);
     ui.add_space(4.0);
@@ -445,7 +458,7 @@ fn size_controls(app: &mut App, ui: &mut Ui) {
                         })
                         .response
                         .rich_tip(tr("palette.rows_tip"));
-                    ui.label(tr("palette.rows"));
+                    ui.label(tr("palette.rows_of_selected_bar"));
                 });
             }
         });
@@ -590,6 +603,7 @@ fn palette_row(app: &mut App, ui: &mut Ui, i: usize) {
         pos2(rect.right() - 26.0, rect.top() + 2.0),
         Vec2::splat(24.0),
     );
+    let controls = bar_controls(app, ui, i, sel, shown, rect, more.left() - 4.0);
     let p = ui.painter();
     let name_galley = p.layout_no_wrap(name.clone(), crate::theme::bold(12.0), Tokens::text());
     let name_rect = Rect::from_min_size(pos2(left, rect.top() + 5.0), name_galley.size());
@@ -603,7 +617,7 @@ fn palette_row(app: &mut App, ui: &mut Ui, i: usize) {
     }
     // The first colours.
     let strip_top = rect.top() + 22.0;
-    let room = (more.left() - left - 4.0).max(0.0);
+    let room = (controls - left - 4.0).max(0.0);
     let n = (((room + 1.0) / (CHIP + 1.0)).floor() as usize).min(PREVIEW);
     let p = ui.painter();
     for (k, (_, c)) in app.palettes[i].colors.iter().take(n).enumerate() {
@@ -625,7 +639,8 @@ fn palette_row(app: &mut App, ui: &mut Ui, i: usize) {
         tr(model),
         shown_text(app, sel)
     );
-    p.text(
+    let meta_clip = Rect::from_min_max(pos2(left, rect.top()), pos2(controls - 2.0, rect.bottom()));
+    p.with_clip_rect(meta_clip.intersect(p.clip_rect())).text(
         pos2(left, rect.bottom() - 9.0),
         egui::Align2::LEFT_CENTER,
         meta,
@@ -679,6 +694,77 @@ fn palette_row(app: &mut App, ui: &mut Ui, i: usize) {
         }
     }
     let _ = rect;
+}
+
+/// Width of a palette row's Show bar / Hide bar button and place list.
+const BAR_CONTROLS_W: f32 = 92.0;
+
+/// A palette row's Show bar / Hide bar button and, while its bar shows,
+/// the list of where the bar is (Top, Bottom, Left, Right, Floating),
+/// right-aligned up to `right`. Returns their left edge.
+fn bar_controls(
+    app: &mut App,
+    ui: &mut Ui,
+    i: usize,
+    sel: Selected,
+    shown: bool,
+    rect: Rect,
+    right: f32,
+) -> f32 {
+    let left = right - BAR_CONTROLS_W;
+    let id = egui::Id::new(("palette_manager_bar", i));
+    // The last palette shown keeps its bar.
+    let can = !shown || app.visible_palettes.len() > 1;
+    let button = Rect::from_min_size(pos2(left, rect.top() + 4.0), vec2(BAR_CONTROLS_W, 20.0));
+    let label = tr(if shown {
+        "palette.hide_bar"
+    } else {
+        "palette.show_bar"
+    });
+    // In a child of its own: the row's layout stays as it is.
+    let mut at = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(button)
+            .id_salt(id.with("btn")),
+    );
+    let resp = at
+        .add_sized(
+            button.size(),
+            egui::Button::new(egui::RichText::new(label).size(11.0))
+                .truncate()
+                .selected(shown),
+        )
+        .rich_tip(tr(if shown {
+            "palette.hide_bar_tip"
+        } else {
+            "palette.show_bar_tip"
+        }));
+    if resp.clicked() && can {
+        app.toggle_palette(i);
+        return left;
+    }
+    if let Some(bar) = bar_of(app, sel).filter(|_| shown) {
+        let now = crate::ui::palette::strip_prefs(app, bar).dock;
+        let name = |dock: Dock| tr(place_key(dock));
+        let place = Rect::from_min_size(pos2(left, rect.top() + 28.0), vec2(BAR_CONTROLS_W, 20.0));
+        let locked = app.settings.bars.locked;
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place).id_salt(id));
+        child.add_enabled_ui(!locked, |ui| {
+            egui::ComboBox::from_id_salt(id.with("place"))
+                .selected_text(egui::RichText::new(name(now)).size(11.0))
+                .width(BAR_CONTROLS_W - 4.0)
+                .show_ui(ui, |ui| {
+                    for (dock, _) in crate::ui::palette_bars::PLACES {
+                        if ui.selectable_label(now == dock, name(dock)).clicked() {
+                            crate::ui::palette_bars::set_dock(app, bar, dock, None);
+                        }
+                    }
+                })
+                .response
+                .rich_tip(tr("palette.bar_place_tip"));
+        });
+    }
+    left
 }
 
 /// The palette whose row lies under `at`.
@@ -1044,6 +1130,156 @@ mod tests {
 
     /// The list's eye opens a palette in a bar and closes it; its actions
     /// duplicate, rename, move and delete palettes.
+    /// Runs the New Palette window over `frames` frames of `events`.
+    fn new_palette_frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+        clock: &std::cell::Cell<f64>,
+    ) {
+        clock.set(clock.get() + 0.05);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0))),
+            events,
+            time: Some(clock.get()),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            crate::ui::palette_bars::new_palette_window(app, ui.ctx())
+        });
+        out.textures_delta.clear();
+    }
+
+    /// New Palette asks for a name ("Palette 1" at first), makes an
+    /// empty palette of the user's under My Palettes, shows it at once
+    /// in a bar of its own docked at the bottom, and keeps it in the
+    /// preferences; four of them stand in four bars.
+    #[test]
+    fn new_palette_makes_a_named_empty_palette_shown_in_its_own_bar() {
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let mut app = App::headless();
+        let before = app.palettes.len();
+        crate::ui::palette_bars::start_new_palette(&mut app);
+        assert_eq!(app.palette_new.as_deref(), Some("Palette 1"));
+        new_palette_frame(&ctx, &mut app, Vec::new(), &clock);
+        new_palette_frame(&ctx, &mut app, Vec::new(), &clock);
+        let all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        new_palette_frame(&ctx, &mut app, vec![all], &clock);
+        new_palette_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("Brand".into())],
+            &clock,
+        );
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        new_palette_frame(&ctx, &mut app, vec![enter], &clock);
+        new_palette_frame(&ctx, &mut app, Vec::new(), &clock);
+        assert!(app.palette_new.is_none());
+        assert_eq!(app.palettes.len(), before + 1);
+        let i = before;
+        let p = &app.palettes[i];
+        assert_eq!(p.name, "Brand");
+        assert!(p.colors.is_empty() && !p.builtin && p.path.is_none());
+        assert!(app.visible_palettes.contains(&i));
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|r| r.index == i)
+            .expect("a bar of its own");
+        assert_eq!(app.settings.palette_bars[k].dock, Dock::Bottom);
+        assert_eq!(app.palette_manager.selected, Selected::Palette(i));
+        assert_eq!(app.settings.user_palettes.len(), 1);
+        assert_eq!(app.settings.user_palettes[0].name, "Brand");
+        // The next names count on; a name taken gets a number.
+        assert_eq!(app.next_palette_name(), "Palette 1");
+        let a = app.new_palette("").expect("Palette 1");
+        assert_eq!(app.palettes[a].name, "Palette 1");
+        assert_eq!(app.next_palette_name(), "Palette 2");
+        let b = app.new_palette("Brand").expect("another Brand");
+        assert_eq!(app.palettes[b].name, "Brand 2");
+        let c = app
+            .new_palette(&app.next_palette_name())
+            .expect("Palette 2");
+        assert_eq!(app.palettes[c].name, "Palette 2");
+        // Four palettes of the user's, each in a bar at the bottom.
+        let bottom = app
+            .settings
+            .palette_bars
+            .iter()
+            .filter(|b| b.dock == Dock::Bottom)
+            .count();
+        assert_eq!(bottom, 4);
+        assert_eq!(app.visible_palettes.len(), 5);
+        // Colours added, saved and read back: the palettes and their bars.
+        assert!(app.add_colors_to_palette(i, &[Color::rgb8(10, 20, 30)]));
+        app.sync_settings();
+        let json = serde_json::to_string(&app.settings).expect("saved");
+        let back: crate::settings::Settings = serde_json::from_str(&json).expect("read");
+        let mut again = App::headless();
+        again.apply_settings(back);
+        let j = again
+            .palettes
+            .iter()
+            .position(|p| p.name == "Brand")
+            .expect("Brand back");
+        assert_eq!(again.palettes[j].colors.len(), 1);
+        assert_eq!(again.palettes[j].colors[0].1, Color::rgb8(10, 20, 30));
+        assert!(again.visible_palettes.contains(&j));
+        assert_eq!(again.extra_palettes.len(), 4);
+        // Built-in palettes take no colours.
+        assert!(!again.add_colors_to_palette(0, &[Color::rgb8(1, 2, 3)]));
+    }
+
+    /// Each palette's row has a Show bar / Hide bar button: it opens the
+    /// palette in a bar of its own and closes it again; while shown, the
+    /// row's list moves the bar.
+    #[test]
+    fn show_bar_and_hide_bar_toggle_the_palette_s_bar() {
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let mut app = App::headless();
+        run(&ctx, &mut app, Vec::new(), &clock);
+        let gray = app
+            .palettes
+            .iter()
+            .position(|p| p.key == "palette.grayscale")
+            .expect("grayscale");
+        let row = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new(("palette_manager_row", gray))))
+            .expect("the grayscale row");
+        let button = pos2(row.right() - 30.0 - BAR_CONTROLS_W / 2.0, row.top() + 14.0);
+        click(&ctx, &mut app, button, &clock);
+        assert!(app.visible_palettes.contains(&gray), "Show bar shows it");
+        assert_eq!(app.extra_palettes.len(), 1);
+        assert_eq!(bar_of(&app, Selected::Palette(gray)), Some(Row::Extra(0)));
+        click(&ctx, &mut app, button, &clock);
+        assert!(!app.visible_palettes.contains(&gray), "Hide bar hides it");
+        assert!(app.extra_palettes.is_empty());
+        // The default bar's palette, the only one shown, keeps its bar.
+        let main = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new(("palette_manager_row", 0))))
+            .expect("the default palette's row");
+        let main_button = pos2(
+            main.right() - 30.0 - BAR_CONTROLS_W / 2.0,
+            main.top() + 14.0,
+        );
+        click(&ctx, &mut app, main_button, &clock);
+        assert_eq!(app.visible_palettes, vec![0]);
+    }
+
     #[test]
     fn the_list_shows_hides_and_manages_palettes() {
         let ctx = crate::theme::ui_context();

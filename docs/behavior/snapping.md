@@ -64,7 +64,21 @@ Drawing tools snap the pointer. A move with the Pick tool that starts on
 one of the selection's points (a node, a midpoint, a quadrant or the
 centre within the radius) carries that point onto another object's point
 or edge; otherwise the selection's box edges and centre snap to
-guidelines, the grids, the page and the other objects' boxes. A scale
+guidelines, the grids, the page and the other objects' boxes. Once
+the pointer has gone further than the snapping radius from where the
+move began, that grabbed point also snaps to the selection's own points
+and edges where they were at the start, by the modes on (nodes,
+midpoints, quadrants, centres, edges): a square grabbed by a node lands
+with it exactly where another of its nodes was, a node or centre slides
+along the line one of its sides ran on, and a move brought back near its
+start returns exactly there. Before the pointer leaves that radius
+nothing of the selection's own attracts it, so a short move is as the
+pointer makes it and the selection never sticks to itself; the
+selection as it moves is never a target, and its box does not line up
+with where it stood. That geometry is found once a move, in pieces of at
+most 16 segments each with its bounds, as for a node drag below (#1765,
+`snap::tests::a_move_snaps_to_where_the_selection_started`,
+`pick_drag_tests::a_move_snaps_to_where_the_selection_started`). A scale
 handle being dragged snaps like the pointer of a drawing tool, leaving
 out the selection's own points. The pointer turning the selection (a
 rotate handle without Ctrl) snaps to the points of other objects and of
@@ -111,6 +125,11 @@ other object's point or edge takes it first
 - `snap::tests::drawing_tools_snap_to_object_points_and_show_the_mark`
 - `snap::tests::snapping_to_objects_turns_off_but_the_page_stays`
 - `snap::tests::a_move_carries_its_snap_point_onto_another_object`
+- Given a 50 x 30 mm rectangle grabbed at its centre, when it is dropped
+  3 px off where the middle of its right side was, then it moves exactly
+  25 mm right; dragged away and back to 3 px off its start, it is back
+  exactly where it was; a 6 px drag moves it 6 px
+  (`pick_drag_tests::a_move_snaps_to_where_the_selection_started`).
 - Given a rectangle converted to curves, when its top right node is
   dragged with the Shape tool to 3 px off its bottom left node, then it
   lands on that node

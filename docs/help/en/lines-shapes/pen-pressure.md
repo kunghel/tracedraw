@@ -46,12 +46,18 @@ The pressure is on at first. To draw with the pen at an even width, turn off
 | Linux with X11 | yes | yes |
 | Linux with Wayland | no (see below) | no |
 | macOS | yes | yes |
-| Browser version | yes | no |
+| Browser version | yes | yes, where the browser reports it (see below) |
 
 On a Wayland desktop (the default of several Linux systems) the pen does not
 reach TraceDraw yet. Start TraceDraw with `tracedraw --x11` from a terminal:
 the window then opens through XWayland, where the pen moves the pointer,
 clicks and reports its pressure.
+
+In the browser version the pressure comes from the browser: current
+Chrome, Edge, Firefox and Safari pass a pen's pressure on when the
+system reports it. A mouse never gives pressure, and a pen that always
+reports the same middle value is taken as a pen without pressure, so it
+draws an even width.
 
 > **Tip:** For more control over the stroke afterwards, draw with pressure,
 > then adjust the width nodes with the [[tool.variable_outline]] tool.

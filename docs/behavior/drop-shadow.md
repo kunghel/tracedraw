@@ -87,8 +87,16 @@ a bar on the line at the opacity (start = 0 %, end = 100 %).
 - Dragging the bar sets the opacity (whole per cent).
 - Dragging the start to another edge stands the shadow on that edge;
   to the middle makes it flat. The end stays where it was.
+- Dragging the dashed line (within the pick distance of Options > Nodes
+  and Handles, away from the squares and the bar) moves the whole
+  shadow: its end goes as far as the pointer, as a drag on the shadow
+  itself does, and the start stays where it stands on the object (the
+  centre or the edge). Ctrl keeps the move horizontal or vertical. The
+  pointer is the move cursor over the line
+  (`effect_line_tests::the_shadow_line_moves_the_shadow`).
 - A palette colour dropped on the end square becomes the shadow colour
   (one undo step).
+- Each drag of a handle or the line is one undo step of its own.
 
 The squares are 12 pixels wide and a press within 11 pixels of one
 takes it, whatever the zoom (#1323).

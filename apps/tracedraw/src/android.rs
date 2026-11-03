@@ -94,11 +94,7 @@ fn android_main(app: AndroidApp) {
         settings.workspace = crate::app::Workspace::Touch.id().into();
         settings.save();
     }
-    crate::i18n::set_language(&if settings.language.is_empty() {
-        crate::i18n::system_language().to_string()
-    } else {
-        settings.language.clone()
-    });
+    crate::i18n::set_language(crate::i18n::startup_language_here(&settings.language));
     let options = eframe::NativeOptions {
         android_app: Some(app),
         renderer: eframe::Renderer::Wgpu,

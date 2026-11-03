@@ -4,7 +4,8 @@
 //! messages show. See docs/behavior/options.md.
 
 use crate::ui::dialogs::{
-    ExportState, PrintState, EXPORT_FORMATS, EXPORT_SCALE_RANGE, EXPORT_SIZE_UNITS, PDF_STANDARDS,
+    ExportState, PrintState, AI_VERSIONS, EXPORT_FORMATS, EXPORT_SCALE_RANGE, EXPORT_SIZE_UNITS,
+    PDF_STANDARDS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -265,6 +266,8 @@ pub struct ExportPreset {
     pub selection_only: bool,
     pub all_pages: bool,
     pub pdf_standard: usize,
+    /// AI: PDF-compatible (0) or classic version 8 (1, #1728).
+    pub ai_version: usize,
     pub bleed_mm: f64,
     pub output_condition: String,
     pub webp_lossless: bool,
@@ -304,6 +307,7 @@ impl ExportPreset {
             selection_only: st.selection_only,
             all_pages: st.all_pages,
             pdf_standard: st.pdf_standard,
+            ai_version: st.ai_version,
             bleed_mm: st.bleed_mm,
             output_condition: st.output_condition.clone(),
             webp_lossless: st.webp_lossless,
@@ -328,6 +332,9 @@ impl ExportPreset {
         st.all_pages = self.all_pages;
         if self.pdf_standard < PDF_STANDARDS.len() {
             st.pdf_standard = self.pdf_standard;
+        }
+        if self.ai_version < AI_VERSIONS.len() {
+            st.ai_version = self.ai_version;
         }
         if self.bleed_mm.is_finite() {
             st.bleed_mm = self.bleed_mm.clamp(0.0, 50.0);
@@ -876,6 +883,33 @@ mod tests {
         app.recall_export_format(&mut st, png);
         app.recall_export_format(&mut st, pdf);
         assert!(!st.all_pages);
+    }
+
+    /// The AI export's kind (PDF-compatible or classic version 8) is
+    /// kept in a preset and comes back; an unknown one is ignored (#1728).
+    #[test]
+    fn a_preset_keeps_the_ai_version() {
+        let st = ExportState {
+            ai_version: 1,
+            ..ExportState::default()
+        };
+        let p = ExportPreset::from_state("old ai", &st);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ExportPreset = serde_json::from_str(&json).unwrap();
+        let mut fresh = ExportState::default();
+        back.apply(&mut fresh);
+        assert!(fresh.classic_ai());
+        // Presets saved before the choice existed: PDF-compatible.
+        let old: ExportPreset = serde_json::from_str(r#"{"name": "x"}"#).unwrap();
+        let mut fresh = ExportState::default();
+        old.apply(&mut fresh);
+        assert!(!fresh.classic_ai());
+        let bad = ExportPreset {
+            ai_version: 9,
+            ..ExportPreset::default()
+        };
+        bad.apply(&mut fresh);
+        assert_eq!(fresh.ai_version, 0);
     }
 
     /// Choosing a format in the Export dialog brings back how that format

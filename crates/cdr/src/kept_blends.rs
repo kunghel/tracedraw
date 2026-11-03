@@ -12,7 +12,7 @@
 //! the linked group has no place for (accelerations, rotation, a path,
 //! the colour direction). The reader gives the blend the reader made
 //! from the linked group those settings (and its direction: the group
-//! names the upper object as the start, the member says which object
+//! names the lower object as the start, the member says which object
 //! is), or turns a drawn group back into its start object with its blend
 //! to the end object, so a blend saved by TraceDraw comes back as the
 //! blend it was. Other readers leave the member alone; a file without
@@ -137,7 +137,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<KeptBlend> {
 /// object (which takes the group's id) with the blend to its end object.
 /// A blend written live (`count` 0) names its start object: the blend
 /// the reader made from the file's linked group, on that object or on
-/// the end object (the group names the upper object as its start),
+/// the end object (the group names the lower object as its start),
 /// gives way to the kept one between the same two objects. A group or a
 /// pair that does not hold what the member says (another program
 /// changed the drawing) stays as it is. Returns how many blends came

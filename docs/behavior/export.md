@@ -22,8 +22,8 @@ Office presets start with their own (see `options.md`).
   exported before comes back with All pages or Current page as it was
   exported (a page list comes back as All pages, since it belongs to
   one drawing; #1161, `prefs::tests::pdf_exports_every_page_by_default`).
-- PDF, AI, PostScript, PRN and HTML write one file holding the pages
-  chosen (a multi-page PDF). The other formats (SVG, EPS, DXF, EMF, WMF,
+- PDF, AI (PDF-compatible), PostScript, PRN and HTML write one file holding the pages
+  chosen (a multi-page PDF). The other formats (SVG, EPS, AI of version 8, DXF, EMF, WMF,
   PLT, PSD and the bitmap formats) hold one page: with more than one
   page they write one file per page, the name given with the page's
   number after a dash ("name-1.png", "name-3.png" for pages 1 and 3);
@@ -39,7 +39,8 @@ Office presets start with their own (see `options.md`).
 | JPEG | resolution, quality (1 to 100) |
 | BMP, TIFF, PSD | resolution |
 | PDF | Export all text as curves (off at first: every text becomes filled outlines, so the file needs no fonts and cannot be searched; #1382, `export::tests::export_pdf_text_as_curves_holds_no_font`), standard (PDF 1.4, PDF/X-1a, PDF/X-3, PDF/X-4), bleed, output condition for PDF/X; the author, subject and keywords come from the drawing's properties (File > Export as PDF has bookmarks and protection, see `publish-to-pdf.md`) |
-| SVG, EPS, AI, DXF, HTML, EMF, WMF, PLT | none |
+| AI | Compatibility: PDF-compatible (the default) or Illustrator 8 (EPS-based); see "AI files" below (#1728) |
+| SVG, EPS, DXF, HTML, EMF, WMF, PLT | none |
 | PostScript (`.ps`), PRN (`.prn`) | none; every exported page in one file (All pages, else the current page), each page setting its size with `setpagedevice` and ending with `showpage` (Document Structuring Conventions 3.0); a `.prn` print file is the same PostScript, to send to a PostScript printer |
 
 - Bitmap formats show Size: a width and a height and their unit (px,
@@ -65,7 +66,7 @@ Office presets start with their own (see `options.md`).
   way and scaling by the pixel count of the export (times the pages
   exported); a format of one page per file counts the first page's file
   once per page. It shows as "about 820 KB" or "about 3.4 MB".
-- Text in PDF and AI files is text with its fonts embedded as subsets
+- Text in PDF and PDF-compatible AI files is text with its fonts embedded as subsets
   (in PDF unless Export all text as curves is on),
   as Export as PDF writes it by default (see `publish-to-pdf.md`, Text
   and fonts). Vector formats write curves with their own segments:
@@ -155,6 +156,71 @@ dialog's choices, and Export for Web and Office keep their own (#617,
   the file with the last choices (Options > Global > File Formats keeps
   them); Export for Web and for Office still show their dialog.
 - PDF and AI files: Title (the drawing's title when empty) and Tags,
-  written as the file's title and keywords.
+  written as the file's title and keywords (a classic AI file keeps the
+  title in its `%%Title` comment and has no place for tags).
 - Checks: `ui::dialogs::tests::the_export_list_puts_the_common_formats_first`.
 
+## AI files
+
+The AI format comes in two kinds, chosen under Compatibility when the
+format is AI (#1728). The choice is kept with the other choices of the
+last AI export and in export presets.
+
+- PDF-compatible (the default, and what every earlier version wrote): a
+  PDF with the `.ai` extension, as the newer versions of that format
+  are. It keeps everything the drawing holds (text with its fonts,
+  fountain fills, pictures, transparency) and holds every page chosen.
+  The default stays so that nobody's exports change without asking.
+- Illustrator 8 (EPS-based): the classic file of version 8, PostScript
+  as the public "Adobe Illustrator File Format Specification" describes
+  it, for programs that read only those files (3D and engraving
+  programs among them). The file starts `%!PS-Adobe-3.0` with
+  `%%Creator: TraceDraw`, `%%AI8_CreatorVersion: 8.0`, `%%Title`,
+  `%%BoundingBox` and `%%HiResBoundingBox` (the page, in points, from
+  0 0), `%AI5_FileFormat 4.0`, `%AI3_ColorUsage`, `%AI3_TemplateBox`,
+  `%AI3_TileBox`, `%AI5_ArtSize` and `%AI5_NumLayers`; its prolog and
+  setup are empty (the file names no procedure set). Each printable,
+  visible layer is a layer of the file (`%AI5_BeginLayer`, `Lb`, `Ln`,
+  `LB`). Objects are written in the format's own operators:
+  - paths with `m`, `L` and `C` (quadratic segments as the cubic that
+    draws the same curve), painted with `f`/`F` (fill), `s`/`S`
+    (outline), `b`/`B` (both) or `n`/`N` (neither), the lower case for
+    closed paths; an object of several subpaths is a compound path
+    (`*u` ... `*U`). Even-odd filled objects have their nested subpaths
+    turned to run against the ones around them, so a winding fill keeps
+    their holes; subpaths crossing each other may fill differently.
+  - groups as `u` ... `U`; clip frames and fountain fills as clipping
+    groups (`q`, the clipping path marked `W` and painted `n`, the
+    contents, `Q`).
+  - colours as process colours: `c m y k k` for the fill and `K` for the
+    outline; RGB and other colours are converted with the built-in
+    conversion (black = 1 - the largest of R, G, B), spot colours as
+    their process equivalent, Registration as 100 % of every ink.
+  - outlines with `w` (width in points, 0 for hairlines), `j`, `J`,
+    `M` and `[...] 0 d` (dashes scaled by the width); arrowheads as
+    filled paths.
+  - text as filled curves (the letters' outlines), always.
+  - fountain fills as 64 bands of solid colour (neighbouring bands of
+    the same colour merged): strips across a linear fill's direction,
+    discs for a radial fill (conical and square fills as linear), inside
+    a clipping group of the object, its outline over them.
+  - pattern, texture and mesh fills as their average colour; live
+    effects (blends, contours, extrusions and the like) as the objects
+    they draw, grouped.
+  - pictures, and the bitmap effects of vector objects (shadows,
+    blurs), are left out: the vector object is written without them;
+    transparency is not kept. Use PDF-compatible for those.
+  One file holds one page (one artboard, whose box is the page): with
+  several pages each is written to its own numbered file, as for EPS.
+  TraceDraw opens these files again through its PostScript reader,
+  which defines the format's operators for a classic AI file that
+  brings no procedure set of its own (see `eps-import.md`).
+  Whether a given program accepts the file depends on what that program
+  checks; the files follow the specification, but no other program was
+  available to test them.
+- Checks: `export::tests::export_ai_writes_pdf_compatible_or_classic_version_8`,
+  `ai::tests::classic_ai_starts_with_the_header_the_format_asks_for`,
+  `ai::tests::classic_ai_groups_paths_and_colours_balance`,
+  `ai::tests::a_ring_s_hole_runs_the_other_way`,
+  `ai::tests::fountains_become_clipped_bands_and_pictures_are_left_out`,
+  `ai::tests::classic_ai_reads_back_with_its_page_and_objects`.

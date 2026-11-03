@@ -348,6 +348,11 @@ pub enum Drag {
         /// The selection's snap point under the pointer when the move
         /// began: it snaps to other objects' points.
         source: Option<Point>,
+        /// Where the selection's points and edges were when the move
+        /// began, built once the pointer has gone further than the
+        /// snapping radius from there: from then on the grabbed point
+        /// snaps to them too (#1765).
+        start_geometry: Option<std::rc::Rc<crate::snap::StillGeometry>>,
     },
     /// Scaling the selection with a handle; `anchor` stays fixed (the
     /// centre with Shift).
@@ -505,6 +510,22 @@ pub enum Drag {
         /// The drag's undo step is recorded (the next moves join it).
         begun: bool,
     },
+    /// Moving the whole fill (or transparency) by its line: the press
+    /// point and the start node's place then (Interactive Fill,
+    /// Transparency).
+    FountainLine {
+        press: Point,
+        origin: Point,
+        /// The drag's undo step is recorded (the next moves join it).
+        begun: bool,
+    },
+    /// Moving a drop shadow by its line: the press point and the shadow's
+    /// end then (Drop Shadow).
+    ShadowLine {
+        press: Point,
+        end: Point,
+        begun: bool,
+    },
     /// Zoom tool rubber band.
     ZoomBox {
         start: Point,
@@ -536,6 +557,8 @@ pub enum Drag {
     ShadowHandle {
         handle: crate::shadow_tool::ShadowHandle,
         grab: tracedraw_core::geometry::Vec2,
+        /// The drag's undo step is recorded (the next moves replace it).
+        begun: bool,
     },
     /// Dragging a selection across the text being edited (Text tool).
     TextSelect,
@@ -1623,6 +1646,13 @@ pub struct App {
     pub palette_drag: Option<Option<Color>>,
     /// Where the document palette is this frame (a drop target).
     pub doc_palette_rect: Option<egui::Rect>,
+    /// Where the bars of the user's own palettes were last drawn, by
+    /// palette: a colour dropped there joins that palette (while its bar
+    /// is still shown). Kept from frame to frame, since a drop is handled
+    /// while the rows are drawn, before later bars say where they are.
+    pub palette_drop_rects: Vec<(usize, egui::Rect)>,
+    /// The New Palette window, open: the name typed.
+    pub palette_new: Option<String>,
     /// The pointer on screen, wherever it is (drops outside the drawing).
     pub pointer_screen: Option<egui::Pos2>,
     /// The Shaping docker's operation, and what Weld, Trim and Intersect
@@ -2669,6 +2699,8 @@ impl App {
             export_assets: crate::export_assets::ExportAssets::new(),
             palette_drag: None,
             doc_palette_rect: None,
+            palette_drop_rects: Vec::new(),
+            palette_new: None,
             pointer_screen: None,
             page_size_all: true,
             object_origin: (1, 1),
@@ -3125,12 +3157,7 @@ impl App {
         s.bars.migrate();
         s.migrate_ai();
         self.ai.key = crate::ai::remembered_key(&s.ai);
-        let lang = if s.language.is_empty() {
-            crate::i18n::system_language().to_string()
-        } else {
-            s.language.clone()
-        };
-        crate::i18n::set_language(&lang);
+        crate::i18n::set_language(crate::i18n::startup_language_here(&s.language));
         self.workspace = Workspace::from_id(&s.workspace);
         self.set_workspace(self.workspace);
         // The bars as they were left, over the workspace's own.
@@ -3159,7 +3186,8 @@ impl App {
         self.units = Units::from_id(&s.units);
         self.settings = s;
         self.apply_color_settings();
-        // The palette bars as they were left.
+        // The palettes made in TraceDraw, then the bars as they were left.
+        self.restore_user_palettes();
         self.rebuild_palette();
     }
 
@@ -3326,6 +3354,7 @@ impl App {
     /// Copy the editor's state (workspace, snapping, toolbox, units...)
     /// into the preferences, without writing them.
     pub fn sync_settings(&mut self) {
+        self.store_user_palettes();
         self.settings.workspace = self.workspace.id().into();
         self.settings.snap.grid = self.snap.grid;
         self.settings.snap.guides = self.snap.guides;
@@ -3347,7 +3376,10 @@ impl App {
             .collect();
         self.settings.duplicate_offset_mm = [self.duplicate_offset.x, self.duplicate_offset.y];
         self.settings.units = self.units.id().into();
-        self.settings.language = crate::i18n::language();
+        // `settings.language` is what the user picked (empty for nothing
+        // yet, `system` for System language), not the language shown: a
+        // language that came from the installer or the system stays
+        // free to follow them (docs/behavior/language.md).
         self.settings.shown_bars = Some(self.shown_bars());
         self.settings.dockers = Some(self.docker_setup());
     }
@@ -3412,7 +3444,8 @@ impl App {
             }
         };
         self.polygon_points = t.polygon_points.clamp(3, 500);
-        self.star_sharpness = finite(t.star_sharpness, 0.0, 1.0, 0.5);
+        // Negative: inverted stars (#1331).
+        self.star_sharpness = finite(t.star_sharpness, -1.0, 1.0, 0.5);
         self.star_complex = t.star_complex;
         use tracedraw_core::geometry::{complex_star_max_sharpness, COMPLEX_STAR_MIN_POINTS};
         self.complex_points = t.complex_points.clamp(COMPLEX_STAR_MIN_POINTS, 500);
@@ -9760,6 +9793,18 @@ mod tests {
 
     /// The preferences are saved when something changed, not every
     /// second, and not while Options is open (Cancel puts them back).
+    #[test]
+    fn a_language_not_picked_is_not_saved_as_picked() {
+        let mut app = App::headless();
+        // Nothing picked yet: the language shown came from the installer
+        // or the system and is not written as a choice.
+        for saved in ["", crate::i18n::SYSTEM, "de", "en"] {
+            app.settings.language = saved.into();
+            app.sync_settings();
+            assert_eq!(app.settings.language, saved);
+        }
+    }
+
     #[test]
     fn preferences_are_saved_when_they_change() {
         let mut app = App::headless();

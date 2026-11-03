@@ -915,6 +915,7 @@ fn the_pointer_shows_what_a_press_would_do() {
         total: Vec2::ZERO,
         start_bounds: Rect::ZERO,
         source: None,
+        start_geometry: None,
     };
     assert_eq!(cursor(&app, empty), ToolCursor::DragMove { copy: false });
     app.drag_copy = true;
@@ -942,6 +943,7 @@ fn the_status_bar_tells_how_far_how_much_and_what_angle() {
         total: Vec2::new(30.0, 40.0),
         start_bounds: Rect::new(10.0, 10.0, 60.0, 40.0),
         source: None,
+        start_geometry: None,
     };
     let text = info(&app);
     assert!(text.contains("50.000") && text.contains("53.1"), "{text}");
@@ -16628,6 +16630,94 @@ fn a_pen_that_only_sends_moving_touches_sets_the_width() {
     assert!(!ctx.input(|i| i.any_touches()));
 }
 
+/// A primary drag from `from` to `to` in the browser, as the patched web
+/// layer turns it into egui events (#1410): each pointer event of kind
+/// `pointer_type` gives a pointer move (the browser's mouse event) and,
+/// through `PenPressure::reading`, the pen's moving touch with the
+/// `pressure(t)` the browser reported at `t` along the drag. The pointer
+/// hovers first, and the last frame lifts it (`buttons` 0).
+fn browser_drag(
+    ctx: &egui::Context,
+    app: &mut App,
+    pointer_type: &str,
+    from: Pos2,
+    to: Pos2,
+    pressure: &dyn Fn(f32) -> f32,
+) {
+    use crate::eframe_web_pen_pressure::{pen_touch, PenPressure};
+    let mut pen = PenPressure::default();
+    let mut pointer = |pos: Pos2, pressure: f32, buttons: u16| -> Vec<Event> {
+        let mut events = vec![Event::PointerMoved(pos)];
+        if let Some(force) = pen.reading(pointer_type, pressure, buttons) {
+            events.push(pen_touch(1, pos, force));
+        }
+        events
+    };
+    let mods = Modifiers::NONE;
+    frame(ctx, app, pointer(from, 0.0, 0), mods);
+    let mut down = pointer(from, pressure(0.0), 1);
+    down.push(button(from, true, PointerButton::Primary, mods));
+    frame(ctx, app, down, mods);
+    let steps = 20;
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        frame(
+            ctx,
+            app,
+            pointer(from + (to - from) * t, pressure(t), 1),
+            mods,
+        );
+    }
+    let mut up = pointer(to, 0.0, 0);
+    up.push(button(to, false, PointerButton::Primary, mods));
+    frame(ctx, app, up, mods);
+    frame(ctx, app, Vec::new(), mods);
+}
+
+/// A pen in the browser (#1410): its pointer events' pressure sets the
+/// width of a Freehand line as on the desktop, and egui never takes it
+/// for a touch screen. The mouse, whose pointer events report 0.5 while
+/// pressed, and a pen that cannot measure pressure (a constant 0.5) draw
+/// an even outline.
+#[test]
+fn a_pen_in_the_browser_sets_the_width() {
+    let (ctx, mut app, _) = setup();
+    app.set_tool(Tool::Freehand);
+    app.select(Vec::new());
+    let at = |y: f64| {
+        (
+            app.view.to_screen(Point::new(80.0, y)),
+            app.view.to_screen(Point::new(180.0, y)),
+        )
+    };
+    let (row1, row2, row3) = (at(100.0), at(120.0), at(140.0));
+    let before = shape_count(&app);
+    let hard_then_light = |t: f32| if t < 0.5 { 0.9 } else { 0.2 };
+    browser_drag(&ctx, &mut app, "pen", row1.0, row1.1, &hard_then_light);
+    assert_eq!(shape_count(&app), before + 1);
+    let st = last_stroke(&app);
+    assert!(!st.widths.is_empty(), "the outline follows the pressure");
+    let (start, end) = end_widths(&st.widths);
+    assert!(start > end * 2.0, "{start} vs {end}");
+    assert!(app.pen_pressure.is_none(), "the pen was lifted");
+    assert!(!ctx.input(|i| i.has_touch_screen()));
+    assert!(!ctx.input(|i| i.any_touches()));
+
+    // The mouse: 0.5 while pressed is no pressure.
+    browser_drag(&ctx, &mut app, "mouse", row2.0, row2.1, &|_| 0.5);
+    assert_eq!(shape_count(&app), before + 2);
+    assert!(last_stroke(&app).widths.is_empty());
+
+    // A pen without pressure (a fresh page: no pen measured yet).
+    let (ctx, mut app, _) = setup();
+    app.set_tool(Tool::Freehand);
+    app.select(Vec::new());
+    let before = shape_count(&app);
+    browser_drag(&ctx, &mut app, "pen", row3.0, row3.1, &|_| 0.5);
+    assert_eq!(shape_count(&app), before + 1);
+    assert!(last_stroke(&app).widths.is_empty());
+}
+
 /// A Repeat Copies copy made at the docker: the horizontal field
 /// typed into (its whole value selected on focus), then Apply clicked.
 /// Returns the bounds of the copy selected after Apply.
@@ -17620,4 +17710,300 @@ fn a_blend_s_start_object_shows_its_own_box_and_handles() {
     let g = app.selection_bounds().expect("box");
     assert!(close(g.x0, 20.0) && close(g.x1, 176.0), "{g:?}");
     assert!(close(g.y0, 100.0) && close(g.y1, 150.0), "{g:?}");
+}
+
+/// Drags with the left button from `from` to `to` over a few frames.
+fn drag_between(ctx: &egui::Context, app: &mut App, from: Pos2, to: Pos2) {
+    frame(ctx, app, vec![Event::PointerMoved(from)], Modifiers::NONE);
+    frame(
+        ctx,
+        app,
+        vec![button(from, true, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    for k in 1..=8 {
+        let p = from + (to - from) * (k as f32 / 8.0);
+        frame(ctx, app, vec![Event::PointerMoved(p)], Modifiers::NONE);
+    }
+    frame(
+        ctx,
+        app,
+        vec![button(to, false, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    }
+}
+
+/// The rect of the docked panel `id` in the last frame.
+fn panel_rect(ctx: &egui::Context, id: egui::Id) -> Option<egui::Rect> {
+    egui::PanelState::load(ctx, id).map(|s| s.outer_rect)
+}
+
+/// The grip at the start of a docked palette row.
+fn grip_of(r: egui::Rect) -> Pos2 {
+    Pos2::new(r.left() + 5.0, r.center().y)
+}
+
+/// Dragging the document palette row out by its grip floats the document
+/// palette, not the default palette above it; dropped back at the bottom
+/// it is the row under the drawing again.
+#[test]
+fn dragging_the_document_palette_out_floats_it_alone() {
+    use crate::ui::bars::{Bar, Dock};
+    use crate::ui::palette::Row;
+    let (ctx, mut app, _) = setup();
+    assert!(app.settings.palette.show_document);
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
+    let row = panel_rect(&ctx, egui::Id::new("document_palette")).expect("the document row");
+    let main = panel_rect(&ctx, egui::Id::new("palette")).expect("the default palette");
+    assert!(row.top() >= main.bottom() - 1.0, "{row:?} under {main:?}");
+    drag_between(&ctx, &mut app, grip_of(row), Pos2::new(800.0, 450.0));
+    assert_eq!(
+        app.settings.bars.dock(Bar::Palette),
+        Dock::Bottom,
+        "the default palette stays docked"
+    );
+    assert_eq!(app.extra_palettes.len(), 1);
+    assert!(app.extra_palettes[0].document);
+    assert_eq!(app.settings.palette_bars[0].dock, Dock::Floating);
+    assert!(panel_rect(&ctx, egui::Id::new("palette")).is_some());
+    let window = ctx
+        .memory(|m| m.area_rect(crate::ui::palette_bars::window_id(Row::Extra(0))))
+        .expect("the document palette's window");
+    assert!(window.contains(Pos2::new(800.0, 450.0 + 4.0)), "{window:?}");
+    // Its title dragged to the bottom edge: the row again.
+    let title = Pos2::new(window.left() + 30.0, window.top() + 6.0);
+    drag_between(&ctx, &mut app, title, Pos2::new(800.0, 995.0));
+    assert!(app.extra_palettes.is_empty());
+    assert!(app.settings.palette_bars.is_empty());
+    assert!(app.settings.palette.show_document);
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
+    let row = panel_rect(&ctx, egui::Id::new("document_palette")).expect("the row is back");
+    let window = ctx.memory(|m| m.area_rect(crate::ui::palette_bars::window_id(Row::Extra(0))));
+    assert!(window.is_none_or(|w| !w.intersects(row)), "{window:?}");
+}
+
+/// Dragging the default palette out floats it alone; the document row
+/// stays docked under the drawing, and the default palette docks back.
+#[test]
+fn dragging_the_default_palette_out_floats_it_alone() {
+    use crate::ui::bars::{Bar, Dock};
+    let (ctx, mut app, _) = setup();
+    let main = panel_rect(&ctx, egui::Id::new("palette")).expect("the default palette");
+    drag_between(&ctx, &mut app, grip_of(main), Pos2::new(800.0, 450.0));
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Floating);
+    assert!(app.settings.palette_bars.is_empty());
+    assert!(app.settings.palette.show_document);
+    assert!(panel_rect(&ctx, egui::Id::new("document_palette")).is_some());
+    let window = ctx
+        .memory(|m| {
+            m.area_rect(crate::ui::palette_bars::window_id(
+                crate::ui::palette::Row::Main,
+            ))
+        })
+        .expect("the default palette's window");
+    let title = Pos2::new(window.left() + 30.0, window.top() + 6.0);
+    drag_between(&ctx, &mut app, title, Pos2::new(800.0, 995.0));
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
+    assert!(app.settings.palette.show_document);
+    assert!(app.settings.palette_bars.is_empty());
+}
+
+/// A further palette bar dragged out by its grip floats by itself; the
+/// default palette and the document row stay, and it docks back.
+#[test]
+fn dragging_a_further_palette_bar_out_floats_it_alone() {
+    use crate::ui::bars::{Bar, Dock};
+    use crate::ui::palette::Row;
+    let (ctx, mut app, _) = setup();
+    let gray = app
+        .palettes
+        .iter()
+        .position(|p| p.key == "palette.grayscale")
+        .expect("grayscale palette");
+    let id = crate::settings::palette_id(&app.palettes[gray]);
+    app.open_palette_bar(&id);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let bar = panel_rect(&ctx, egui::Id::new(("palette_extra", Row::Extra(0)))).expect("the bar");
+    drag_between(&ctx, &mut app, grip_of(bar), Pos2::new(800.0, 450.0));
+    assert_eq!(app.settings.palette_bars[0].dock, Dock::Floating);
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
+    assert!(app.settings.palette.show_document);
+    assert!(panel_rect(&ctx, egui::Id::new("document_palette")).is_some());
+    let window = ctx
+        .memory(|m| m.area_rect(crate::ui::palette_bars::window_id(Row::Extra(0))))
+        .expect("the bar's window");
+    let title = Pos2::new(window.left() + 30.0, window.top() + 6.0);
+    drag_between(&ctx, &mut app, title, Pos2::new(800.0, 995.0));
+    assert_eq!(app.settings.palette_bars[0].dock, Dock::Bottom);
+    assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
+    assert!(app.settings.palette.show_document);
+}
+
+/// A palette made with New Palette shows in a bar of its own at the
+/// bottom; a swatch of the default palette dragged onto that bar joins
+/// the new palette (and its bar shows it), and the objects stay as
+/// they were.
+#[test]
+fn a_colour_dropped_on_a_new_palette_s_bar_joins_it() {
+    use crate::ui::palette::Row;
+    let (ctx, mut app, id) = setup();
+    let i = app.new_palette("Brand").expect("a new palette");
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let k = app
+        .extra_palettes
+        .iter()
+        .position(|r| r.index == i)
+        .expect("its bar");
+    let bar = egui::PanelState::load(&ctx, egui::Id::new(("palette_extra", Row::Extra(k))))
+        .map(|s| s.outer_rect)
+        .expect("the bar shows");
+    let main = egui::PanelState::load(&ctx, egui::Id::new("palette"))
+        .map(|s| s.outer_rect)
+        .expect("the default palette");
+    assert!(app.palettes[i].colors.is_empty());
+    let fill_before = app.doc().find_shape(id).map(|s| s.fill.clone());
+    // The fourth swatch of the default palette.
+    let from = Pos2::new(main.left() + 77.0 + 21.0 * 3.5, main.top() + 12.0);
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        Pos2::new(bar.center().x, bar.center().y),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert_eq!(app.palettes[i].colors.len(), 1, "the colour joined");
+    assert_eq!(app.extra_palettes[k].colors.len(), 1, "its bar shows it");
+    assert_eq!(app.settings.user_palettes[0].colors.len(), 1, "kept");
+    assert_eq!(
+        app.doc().find_shape(id).map(|s| s.fill.clone()),
+        fill_before
+    );
+    // Add Colors from Selection: the selected object's fill joins too.
+    assert!(app.add_selection_colors_to_palette(i));
+    assert!(app.palettes[i]
+        .colors
+        .iter()
+        .any(|(_, c)| *c == tracedraw_core::Color::rgb8(200, 30, 30)));
+}
+
+/// Bars docked at the bottom read from the top down in their order: a
+/// new palette's bar comes under the bars opened before it.
+#[test]
+fn bottom_palette_bars_stack_in_their_order() {
+    use crate::ui::palette::Row;
+    let (ctx, mut app, _) = setup();
+    for name in ["One", "Two", "Three", "Four"] {
+        app.new_palette(name).expect("a new palette");
+    }
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let tops: Vec<f32> = (0..4)
+        .map(|k| {
+            egui::PanelState::load(&ctx, egui::Id::new(("palette_extra", Row::Extra(k))))
+                .map(|s| s.outer_rect.top())
+                .expect("each bar shows")
+        })
+        .collect();
+    assert!(tops.windows(2).all(|w| w[0] < w[1]), "{tops:?}");
+}
+
+/// A selection moved with the Pick tool snaps to where it was when the
+/// move began: grabbed at its centre and dropped 3 px off where the middle
+/// of its right side was, it lands there exactly; dragged away and brought
+/// back 3 px off its start, it is back exactly where it was. A short drag
+/// that never leaves the snapping radius moves as the pointer does, so the
+/// selection does not stick to itself (#1765).
+#[test]
+fn a_move_snaps_to_where_the_selection_started() {
+    let (ctx, mut app, id) = setup();
+    let start = bounds(&app, id);
+    let centre = app.view.to_screen(Point::new(35.0, 25.0));
+    let off = egui::vec2(3.0, 3.0);
+    // Onto where the right side's midpoint was.
+    let to = app.view.to_screen(Point::new(60.0, 25.0)) + off;
+    drag(&ctx, &mut app, centre, to, Modifiers::NONE, Vec::new());
+    let b = bounds(&app, id);
+    assert!(
+        (b.x0 - 35.0).abs() < 1e-9 && (b.y0 - 10.0).abs() < 1e-9,
+        "{b:?}"
+    );
+    app.undo();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // A short drag inside the radius: as the pointer moved it.
+    drag(
+        &ctx,
+        &mut app,
+        centre,
+        centre + off * 2.0,
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let b = bounds(&app, id);
+    let want = 6.0 / app.view.zoom as f64;
+    assert!(
+        (b.x0 - start.x0 - want).abs() < 1e-3 && (start.y0 - b.y0 - want).abs() < 1e-3,
+        "{b:?} not moved by {want}"
+    );
+    app.undo();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    // Away and back again.
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(centre)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            centre,
+            true,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    for p in [
+        centre + egui::vec2(40.0, 0.0),
+        centre + egui::vec2(80.0, 10.0),
+        centre + egui::vec2(40.0, 5.0),
+        centre + off,
+    ] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(p)],
+            Modifiers::NONE,
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            centre + off,
+            false,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let b = bounds(&app, id);
+    assert!(
+        (b.x0 - start.x0).abs() < 1e-9 && (b.y0 - start.y0).abs() < 1e-9,
+        "{b:?}"
+    );
 }

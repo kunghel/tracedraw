@@ -51,5 +51,7 @@ version first.
   version does after a crash (see
   [Auto-backup and recovery](open-and-save.md#recovery)). Clearing the
   site's data removes them.
-- **Pen pressure.** A pen works as a mouse, but the browser does not pass
-  its pressure on, so strokes have an even width.
+- **Pen pressure.** A pen's pressure sets the width of Freehand and Brush
+  Strokes as on the desktop, where the browser passes it on (current
+  Chrome, Edge, Firefox and Safari do when the system reports it). See
+  [Drawing with a graphics tablet](../lines-shapes/pen-pressure.md).

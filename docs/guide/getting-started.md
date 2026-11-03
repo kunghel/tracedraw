@@ -23,7 +23,11 @@ install it:
    | Linux (x86_64) | the `.deb` package (`_amd64`), `tracedraw-<version>-linux-amd64.AppImage` or `tracedraw-<version>-linux-x86_64.tar.gz` |
    | Linux (arm64: Raspberry Pi 4/5 with a 64-bit system, ARM laptops) | the `.deb` package (`_arm64`), `tracedraw-<version>-linux-arm64.AppImage` or `tracedraw-<version>-linux-arm64.tar.gz` |
 
-3. Install or unpack it as you would any program on your system.
+3. Install or unpack it as you would any program on your system. The
+   Windows installer asks which language TraceDraw starts in; System
+   language, selected at first, follows the language of Windows. Other
+   copies start in the system's language. Change it at any time under
+   Tools > Options > Global > General.
 
 The downloads are not code-signed yet:
 

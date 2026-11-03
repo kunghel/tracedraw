@@ -23,6 +23,7 @@
 //! failure: opening a file must always yield a document.
 #![forbid(unsafe_code)]
 
+mod blend_record;
 pub mod check;
 pub mod cmx;
 pub mod container;

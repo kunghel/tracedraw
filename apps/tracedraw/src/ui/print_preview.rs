@@ -121,7 +121,7 @@ pub fn shown_page_inks(
             _ => {}
         }
     }
-    Some(crate::export::inks_page(page, process, &spots))
+    Some(crate::export::inks_page(page, process, &spots, &doc.inks))
 }
 
 /// The names of the plates, translated for the process inks.
@@ -940,6 +940,54 @@ mod tests {
             }),
             "all at first"
         );
+    }
+
+    /// Pictures split by ink in the preview too (#1659): one ink shows
+    /// its plate in grey, some inks the colours they print, every ink
+    /// the picture as it is.
+    #[test]
+    fn plates_split_pictures_by_ink() {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        let img =
+            image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 100]).expect("pixels");
+        let png: tracedraw_core::SharedBytes = crate::bitmap_fx::encode(&img).expect("png").into();
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Bitmap {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: 2,
+                height_px: 1,
+                png: png.clone(),
+                fx: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = None;
+        doc.pages[0].layers[0].shapes.push(s);
+        let pixels = |inks: &[bool]| -> Vec<[u8; 4]> {
+            let p = shown_page_inks(&doc, 0, inks, true).expect("page");
+            let ShapeKind::Bitmap { png, .. } = &p.layers[0].shapes[0].kind else {
+                panic!("a picture");
+            };
+            let img = crate::bitmap_fx::decode(png).expect("decodes");
+            img.pixels().map(|p| p.0).collect()
+        };
+        // Yellow alone: the red pixel full ink, the blue one none; the
+        // alpha stays.
+        let yellow = pixels(&[false, false, true, false]);
+        assert!(yellow[0][0] < 26 && yellow[0][3] == 255, "{yellow:?}");
+        assert!(yellow[1][0] > 229 && yellow[1][3] == 100, "{yellow:?}");
+        // Cyan and yellow: the red pixel prints yellow only.
+        let some = pixels(&[true, false, true, false]);
+        let [r, g, b, _] = some[0];
+        assert!(r > 200 && g > 200 && b < 80, "{some:?}");
+        // Every ink: the picture as it is.
+        let all = shown_page_inks(&doc, 0, &[true; 4], true).expect("page");
+        assert!(matches!(
+            &all.layers[0].shapes[0].kind,
+            ShapeKind::Bitmap { png: p, .. } if tracedraw_core::SharedBytes::ptr_eq(p, &png)
+        ));
     }
 
     /// With Print separations on, a box for each ink stands under that

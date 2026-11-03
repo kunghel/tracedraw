@@ -17,7 +17,7 @@ Multipoint curve. The chosen object's name is shown under the buttons.
 |---|---|
 | Rectangle, Ellipse | Position: the origin point (3 x 3 selector, centre by default) and its x, y; Object size: width and height (diameters), Set proportional; Angle of rotation (about the origin point); Bounding box: lower-left and upper-right corners, only while the angle is 0 |
 | Square, Circle | Position as above; the side or the diameter; Angle of rotation |
-| Polygon, Star, Complex star | Points or sides (complex stars 5..500, others 3..500); star sharpness 1..99, complex star sharpness 1..(points - 1) / 2 - 1; Angle of rotation (about the centre); Bounding circle: centre x, y, horizontal and vertical diameters of the ellipse the vertices lie on, Set proportional |
+| Polygon, Star, Complex star | Points or sides (complex stars 5..500, others 3..500); star sharpness 1..99 or -1..-99 (inverted), complex star sharpness 1..(points - 1) / 2 - 1; Angle of rotation (about the centre); Bounding circle: centre x, y, horizontal and vertical diameters of the ellipse the vertices lie on, Set proportional |
 | Regular polygon | Points or sides; Side length (the diameter is side / sin(180° / points)); Angle of rotation; Bounding circle: centre and diameter |
 | 2-point line | Start point and endpoint; Line length and Angle of rotation (changing them moves the endpoint) |
 | Multipoint curve | The points (number, x, y; click chooses one), the chosen point's x and y, Add point, Delete point, Set point interactively, Auto-close/open curve (closes only with three points or more) |

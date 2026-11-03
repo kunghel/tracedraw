@@ -32,6 +32,7 @@ pub mod nodes;
 pub mod painterly;
 pub mod paragraphs;
 pub mod patch;
+pub mod picture_inks;
 mod press;
 pub mod shadow;
 pub mod shaping;

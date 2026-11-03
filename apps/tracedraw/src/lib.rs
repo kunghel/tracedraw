@@ -62,6 +62,9 @@ mod documents;
 mod drawing_scale;
 mod drop_files;
 mod drop_menu;
+mod effect_line;
+#[cfg(test)]
+mod effect_line_tests;
 mod effects_ui;
 mod encode;
 mod envelope_edit;
@@ -104,6 +107,8 @@ mod kind_nodes;
 mod knife;
 mod lens;
 mod live_guides;
+#[cfg(test)]
+mod macos_package;
 mod macro_forms;
 mod macros;
 mod mcp;
@@ -131,6 +136,7 @@ mod perspective_draw;
 #[cfg(test)]
 mod pick_drag_tests;
 mod picture_mosaic;
+mod picture_plates;
 mod placeholder;
 mod preflight;
 mod prefs;
@@ -169,6 +175,7 @@ mod styles;
 mod symbol_paste;
 mod symmetry_edit;
 mod system_chars;
+mod system_locale;
 mod system_prefs;
 #[cfg(any(target_os = "macos", test))]
 mod system_quit;
@@ -208,6 +215,11 @@ mod x11_clipboard;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/pen_pressure.rs"]
 mod winit_pen_pressure;
+// The pen pressure of the patched eframe's web layer, with its tests
+// (vendor/README.md, #1410), so that the gate runs them.
+#[cfg(test)]
+#[path = "../../../vendor/eframe/src/web/pen_pressure.rs"]
+mod eframe_web_pen_pressure;
 // The queue of files macOS asks to open, of the same copy (#646).
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/opened_files.rs"]
@@ -317,11 +329,9 @@ pub fn run() -> eframe::Result<()> {
         settings = settings.reset_keeping_history();
         settings.save();
     }
-    i18n::set_language(&if settings.language.is_empty() {
-        i18n::system_language().to_string()
-    } else {
-        settings.language.clone()
-    });
+    // The language picked in Options, else the installer's, else the
+    // system's (docs/behavior/language.md).
+    i18n::set_language(i18n::startup_language_here(&settings.language));
     let splash = settings.show_splash && !plain;
     let viewport = if splash {
         // The splash has no frame, so it cannot be dragged larger; it is

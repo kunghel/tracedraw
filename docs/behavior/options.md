@@ -106,7 +106,7 @@ of new rounded connectors, 0 to 1000 mm, 3 mm by default), Mesh Fill
 
 ## Global and Workspaces
 
-Global > General: user interface language; check for updates at start (desktop, asked at first start, see `updates.md`); Reset all settings... (asks
+Global > General: user interface language (System language first, then every language; see `language.md`); check for updates at start (desktop, asked at first start, see `updates.md`); Reset all settings... (asks
 first, then puts every preference back to how TraceDraw comes, keeping
 the recent drawings, the last folder and the window's size; drawings are
 not touched). Global > File Locations: where the preferences and

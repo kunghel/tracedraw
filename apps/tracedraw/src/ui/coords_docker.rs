@@ -440,11 +440,11 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                         ui.label(tr("toolbar.sharpness"));
                         let mut pct = (c.sharpness * 100.0).round();
                         if ui
-                            .add_sized([FIELD_W, 20.0], NumField::new(&mut pct).range(1.0..=99.0))
+                            .add_sized([FIELD_W, 20.0], NumField::new(&mut pct).range(-99.0..=99.0))
                             .rich_tip(crate::ui::tips::keyed("toolbar.sharpness_tip"))
                             .changed()
                         {
-                            c.sharpness = (pct / 100.0).clamp(0.01, 0.99);
+                            c.sharpness = crate::ui::propbar::sharpness_from_pct(pct, c.sharpness);
                         }
                         ui.end_row();
                     }

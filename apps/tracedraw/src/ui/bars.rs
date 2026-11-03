@@ -117,20 +117,37 @@ impl Bar {
         Bar::ROWS.contains(&self)
     }
 
-    /// The height of the toolbar's band in a row, its line included.
+    /// The height of the toolbar's band in a row, its line included, at
+    /// the button size in force (see [`Self::row_height_at`]).
     pub fn row_height(self) -> f32 {
+        self.row_height_at(crate::theme::bar_size())
+    }
+
+    /// The height of the toolbar's band at button size `size`: the room
+    /// for its buttons and the margins above and below them (36 px,
+    /// 53 px for the property bar, up to Medium buttons; taller with
+    /// Large and Extra Large ones, so they are never cut off).
+    pub fn row_height_at(self, size: crate::settings::ButtonSize) -> f32 {
         match self {
-            Bar::Property => 53.0,
-            _ => 36.0,
+            Bar::Property => self.inner_height_at(size) + 16.0,
+            _ => self.inner_height_at(size) + 4.0,
         }
     }
 
-    /// The room the toolbar's buttons take across its row: the band less
-    /// the margins above and below them.
+    /// The room the toolbar's buttons take across its row at the button
+    /// size in force.
     fn inner_height(self) -> f32 {
+        self.inner_height_at(crate::theme::bar_size())
+    }
+
+    /// The room the toolbar's buttons take across its row: the band less
+    /// the margins above and below them. It holds a button of `size`
+    /// (with the property bar's padding round its fields).
+    fn inner_height_at(self, size: crate::settings::ButtonSize) -> f32 {
+        let m = size.metrics();
         match self {
-            Bar::Property => 37.0,
-            _ => 32.0,
+            Bar::Property => 37f32.max(m.prop_button + 9.0),
+            _ => 32f32.max(m.button),
         }
     }
 
@@ -2763,5 +2780,37 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&l).expect("json")).expect("back");
         back.migrate();
         assert_eq!(back.palette, Dock::Right);
+    }
+
+    /// Each button size's docked rows hold their buttons: the band grows
+    /// with Large and Extra Large buttons and keeps today's heights up to
+    /// Medium (36 px, 53 px for the property bar).
+    #[test]
+    fn every_button_size_s_rows_fit_their_buttons() {
+        use crate::settings::ButtonSize;
+        for size in ButtonSize::ALL {
+            let m = size.metrics();
+            for bar in [Bar::Standard, Bar::Property, Bar::Text, Bar::Zoom] {
+                let button = if bar == Bar::Property {
+                    m.prop_button
+                } else {
+                    m.button
+                };
+                let inner = bar.inner_height_at(size);
+                assert!(inner >= button, "{size:?} {bar:?}: {inner} < {button}");
+                assert!(bar.row_height_at(size) >= inner + 4.0, "{size:?} {bar:?}");
+            }
+            if matches!(
+                size,
+                ButtonSize::ExtraSmall | ButtonSize::Small | ButtonSize::Medium
+            ) {
+                assert_eq!(Bar::Standard.row_height_at(size), 36.0, "{size:?}");
+                assert_eq!(Bar::Property.row_height_at(size), 53.0, "{size:?}");
+            }
+        }
+        assert_eq!(Bar::Standard.row_height_at(ButtonSize::Large), 46.0);
+        assert_eq!(Bar::Property.row_height_at(ButtonSize::Large), 63.0);
+        assert_eq!(Bar::Standard.row_height_at(ButtonSize::ExtraLarge), 56.0);
+        assert_eq!(Bar::Property.row_height_at(ButtonSize::ExtraLarge), 71.0);
     }
 }

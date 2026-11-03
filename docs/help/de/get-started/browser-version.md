@@ -52,5 +52,7 @@ kann, weil der Store jede Version zuerst zertifiziert.
   Als App installiert, behält sie die zuletzt verwendete Version und übernimmt
   eine neue beim nächsten Start, nachdem alle ihre Fenster geschlossen waren;
   siehe [Tablets und die Android-App](tablets-and-android.md).
-- **Stiftdruck.** Ein Stift arbeitet wie eine Maus, aber der Browser gibt
-  seinen Druck nicht weiter, daher haben Striche eine gleichmäßige Breite.
+- **Stiftdruck.** Der Druck eines Stifts bestimmt wie auf dem Desktop die
+  Breite von Freihand und Pinselstrichen, sofern der Browser ihn weitergibt
+  (aktuelle Versionen von Chrome, Edge, Firefox und Safari tun das, wenn das
+  System ihn meldet).

@@ -205,6 +205,21 @@ objects open as drawn.
   the files the program that reads `.cdr` files saves have them (#1455,
   #1484; `write::tests::a_face_is_listed_as_the_face_its_font_file_holds`,
   `write::tests::bold_text_in_a_light_face_is_written_as_the_family_bold`).
+- Text drawn by another face of its font than the one it asks for, a
+  face TraceDraw draws as it is, is saved to `.cdr` as that face (with
+  or without Embed fonts): regular Khand text whose only installed file
+  is Khand Bold, drawn bold, is saved as Khand bold (style `weight` 4096
+  and the bold face's font record), as the program that reads `.cdr`
+  files saves the same drawing. Saved as regular beside the embedded
+  bold face, that program asked for "Khand-Normal", reported it missing
+  although Khand was installed and dropped the embedded font when saving
+  again. A face told by its style bits within its family (bold, italic)
+  or by its weight within its typographic family ("Khand Medium" drawing
+  "Khand" is saved at 500); bold and italic that TraceDraw makes by
+  thickening or slanting a face stay as the text asks. The text reads
+  back as that face (#1733;
+  `write::tests::regular_text_drawn_by_the_bold_file_is_written_bold`,
+  `write::tests::text_is_written_as_the_face_that_draws_it`).
 - A version 16+ `.cdr` that the program reading `.cdr` files saved again
   from a TraceDraw file, with embedded fonts, opens with its texts: its
   run records marked as applying nothing still carry a style string,

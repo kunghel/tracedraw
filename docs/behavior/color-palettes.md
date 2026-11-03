@@ -6,9 +6,16 @@ Document Palette shows or hides it). The dotted grip at the start of the
 default palette moves it to another edge (on a side it is a column) or
 into a floating window with as many rows as the Rows setting (see "Moving the bars" in
 `toolbars.md`); where it is put is kept across restarts, in the browser
-too. The document palette stays a row under the drawing window wherever
+too. The document palette is a row under the drawing window wherever
 the default palette is (over the drawing window when the default palette
-is along the top). Window > Toolbars > Color Palette hides or shows the
+is along the top). Each row moves by its own grip: dragging the
+document palette's grip takes it out into a palette bar of its own
+(below) and leaves the default palette where it is, and the default
+palette's grip moves only the default palette. The document palette's
+bar let go at the row's side (the bottom, or the top while the default
+palette is there) is the row again; anywhere else it stays a bar,
+docked or floating. While the document palette has a bar of its own
+its row does not show as well. Window > Toolbars > Color Palette hides or shows the
 default palette. The rows described below are the same along a column,
 turned downwards.
 
@@ -234,14 +241,33 @@ swatches, or on a floating bar's title, opens the same menu.
 
 The Palettes docker: a filter box (the palettes whose name holds it
 show) with Open Palette, the document palette from the drawing and from
-the selection as picture buttons; the Swatch Size box (the selected
-palette's name, a slider with a small swatch at the left, a large one at
-the right and a tick at each named size, the size in words, and the
-bar's Rows); then three sections, Built-in, My Palettes and Document
+the selection as picture buttons; a New Palette... button; the Swatch
+Size box (the selected palette's name, a slider with a small swatch at
+the left, a large one at the right and a tick at each named size, the
+size in words, and "Rows of selected bar", the rows of the selected
+palette's bar); then three sections, Built-in, My Palettes and Document
 Palette.
 
+- New Palette... (the Palette Manager's button, Window > Color Palettes
+  and every palette bar's menu) asks for a name ("Palette 1", "Palette
+  2"..., the first no palette has; a name taken gets a number) and makes
+  an empty palette of the user's under My Palettes, shown at once in a
+  bar of its own docked at the bottom, under the bars there, so several
+  palettes stand in bars one above the other (bars docked at the bottom
+  read from the top down in their order, as the Palette Manager lists
+  them). An empty bar says "Drop
+  colors here to add them to this palette". A swatch dragged from any
+  palette onto the bar of a palette of the user's (not locked) joins it,
+  and the bar's menu has Add Colors from Selection (the fill and outline
+  colours of the selected objects). Palettes made in TraceDraw (New
+  Palette, Duplicate), which have no file, are kept with their colours
+  in the preferences (`user_palettes`).
+
 - Each palette is a row: an eye (open: shown in a bar; a click opens or
-  closes its bar), its name in bold (with a padlock when locked), a
+  closes its bar), a Show bar / Hide bar button that does the same in
+  words (the last palette shown keeps its bar), and while the bar shows
+  a list of where it is (Top, Bottom, Left, Right, Floating) that moves
+  it; its name in bold (with a padlock when locked), a
   strip of its first colours (up to 16, as many as fit), and its colour
   count, colour model (CMYK, RGB, Grayscale, Spot, Mixed, Empty) and
   where it shows (Default bar or Bar, and the edge or Floating; Not

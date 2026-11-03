@@ -564,6 +564,86 @@ impl Corners {
         Corners { radii, ..seen }
     }
 
+    /// Corner `i`'s size, a negative or non-finite one counting as 0.
+    fn radius(&self, i: usize) -> f64 {
+        match self.radii.get(i) {
+            Some(r) if r.is_finite() => r.max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// The radii with negative and non-finite sizes made 0 (square).
+    pub fn sanitized(&self) -> Corners {
+        Corners {
+            radii: [0, 1, 2, 3].map(|i| self.radius(i)),
+            ..*self
+        }
+    }
+
+    /// Page length of one unit of the rectangle along x and y as the
+    /// radii count it: `scale` for fixed corners, 1 for scaling ones.
+    fn units(&self, scale: (f64, f64)) -> (f64, f64) {
+        if self.fixed {
+            (scale.0.abs().max(1e-9), scale.1.abs().max(1e-9))
+        } else {
+            (1.0, 1.0)
+        }
+    }
+
+    /// The factor every corner is drawn at in `rect` (see `layout` for
+    /// `scale`): 1 while the two corners on each side together are at
+    /// most as long as the side, else the side's length over their sum
+    /// for the tightest side. So one corner can take a whole side when
+    /// its neighbours leave it room, and only corners too big together
+    /// are shrunk (#1757).
+    pub fn fit_factor(&self, rect: Rect, scale: (f64, f64)) -> f64 {
+        let rect = rect.abs();
+        let (sx, sy) = self.units(scale);
+        // Sizes in the units the radii are in.
+        let (w, h) = (rect.width() * sx, rect.height() * sy);
+        let fit = |side: f64, a: usize, b: usize| {
+            let side = if side.is_finite() { side.max(0.0) } else { 0.0 };
+            let sum = self.radius(a) + self.radius(b);
+            if sum > side && sum > 0.0 {
+                side / sum
+            } else {
+                1.0
+            }
+        };
+        fit(w, Self::TOP_LEFT, Self::TOP_RIGHT)
+            .min(fit(w, Self::BOTTOM_LEFT, Self::BOTTOM_RIGHT))
+            .min(fit(h, Self::TOP_LEFT, Self::BOTTOM_LEFT))
+            .min(fit(h, Self::TOP_RIGHT, Self::BOTTOM_RIGHT))
+    }
+
+    /// The largest size corner `i` can have in `rect` (see `layout` for
+    /// `scale`) with the other corners as they are and nothing shrunk:
+    /// what its neighbour leaves of each of the two sides it is on, in
+    /// the units the radii are in. The horizontal neighbour of a corner
+    /// is `i ^ 1`, the vertical one `i ^ 2`.
+    pub fn room(&self, i: usize, rect: Rect, scale: (f64, f64)) -> f64 {
+        let rect = rect.abs();
+        let (sx, sy) = self.units(scale);
+        let (w, h) = (rect.width() * sx, rect.height() * sy);
+        let room = (w - self.radius(i ^ 1)).min(h - self.radius(i ^ 2));
+        if room.is_finite() {
+            room.max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// These corners at the size they are drawn in `rect` (see
+    /// `fit_factor`), in the units the radii are in.
+    pub fn fitted(&self, rect: Rect, scale: (f64, f64)) -> Corners {
+        let k = self.fit_factor(rect, scale);
+        let c = self.sanitized();
+        Corners {
+            radii: c.radii.map(|r| r * k),
+            ..c
+        }
+    }
+
     /// Each corner in drawing order (counter-clockwise from the bottom
     /// right): its index, the corner point, the edge directions into and
     /// out of it, and how far the cut runs along each edge, all in the
@@ -571,42 +651,16 @@ impl Corners {
     /// the rectangle's x and y axes; fixed corners are divided by it so
     /// that they keep their size on the page. The two corners on a side
     /// together are at most as long as the side: when they would be
-    /// longer, every corner shrinks by the same factor, so equal corners
-    /// are at most half the shorter side and a single corner can take a
-    /// whole side.
+    /// longer, every corner shrinks by the same factor (`fit_factor`), so
+    /// equal corners are at most half the shorter side and a single
+    /// corner can take a whole side.
     fn layout(&self, rect: Rect, scale: (f64, f64)) -> [CornerAt; 4] {
         let rect = rect.abs();
-        let (sx, sy) = if self.fixed {
-            (scale.0.abs().max(1e-9), scale.1.abs().max(1e-9))
-        } else {
-            (1.0, 1.0)
-        };
-        // Sizes in the units the radii are in, then each corner as an
-        // ellipse in local space.
-        let (w, h) = (rect.width() * sx, rect.height() * sy);
-        let radius = |i: usize| {
-            let r = self.radii[i];
-            if r.is_finite() {
-                r.max(0.0)
-            } else {
-                0.0
-            }
-        };
-        let fit = |side: f64, a: usize, b: usize| {
-            let sum = radius(a) + radius(b);
-            if sum > side.max(0.0) && sum > 0.0 {
-                side.max(0.0) / sum
-            } else {
-                1.0
-            }
-        };
-        let shrink = fit(w, Self::TOP_LEFT, Self::TOP_RIGHT)
-            .min(fit(w, Self::BOTTOM_LEFT, Self::BOTTOM_RIGHT))
-            .min(fit(h, Self::TOP_LEFT, Self::BOTTOM_LEFT))
-            .min(fit(h, Self::TOP_RIGHT, Self::BOTTOM_RIGHT));
+        let (sx, sy) = self.units(scale);
+        let shrink = self.fit_factor(rect, scale);
         let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
         let at = |index: usize, p: Point, d_in: Vec2, d_out: Vec2| {
-            let r = radius(index) * shrink;
+            let r = self.radius(index) * shrink;
             // The part of the corner's size along a direction.
             let along = |d: Vec2| if d.x != 0.0 { r / sx } else { r / sy };
             CornerAt {
@@ -739,7 +793,10 @@ pub enum ShapeKind {
     /// star: each vertex joined to the one `complex + 1` further on, so the
     /// sides cross (`sharpness` and `twist` are then unused). `twist`
     /// turns the points between the vertices about the centre (radians,
-    /// counter-clockwise): a twisted star.
+    /// counter-clockwise): a twisted star. `sharpness` 0 is a polygon,
+    /// 0 to 1 a star whose inner points come in toward the centre, 0 to
+    /// -1 an inverted star whose inner points lie past it
+    /// (`geometry::star_inner_ratio`).
     Polygon {
         rect: Rect,
         points: u32,
@@ -1928,6 +1985,11 @@ pub struct Shape {
     /// object never set it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cmyk_bitmap: bool,
+    /// A bitmap's ink channels as it prints (a `.cdr` CMYK image's C,
+    /// M, Y and K bytes), which colour separations print from while they
+    /// fit the pixels (#1659, [`crate::picture_inks`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_inks: Option<Box<crate::picture_inks::PictureInks>>,
     /// Further fills, painted over `fill` in order (see [`Shape::layers`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_fills: Vec<Fill>,
@@ -2237,6 +2299,7 @@ impl Shape {
             opacity_mask: None,
             parked_effects: Vec::new(),
             cmyk_bitmap: false,
+            picture_inks: None,
             extra_fills: Vec::new(),
             extra_strokes: Vec::new(),
             raster_fx: None,
@@ -2537,29 +2600,37 @@ impl Shape {
         );
     }
 
+    /// A rectangle's corners as they are drawn, measured on the page:
+    /// `page_corners` with every corner shrunk by the factor that fits
+    /// the two corners on each side into it (`Corners::fit_factor`), the
+    /// sizes the property bar shows. `None` for other kinds.
+    pub fn drawn_page_corners(&self) -> Option<Corners> {
+        let (rect, c) = self.kind.rect_corners()?;
+        let k = c.fit_factor(rect, axis_scale(self.transform));
+        let page = self.page_corners()?.sanitized();
+        Some(Corners {
+            radii: page.radii.map(|r| r * k),
+            ..page
+        })
+    }
+
     /// This rectangle with corners measured on the page (as
-    /// `page_corners` gives them), each at most half the shorter side.
-    /// `None` for other kinds.
+    /// `page_corners` gives them). A corner is not cut to half the
+    /// shorter side: the sizes are kept as given, and the drawing shrinks
+    /// every corner by the same factor only when the two on a side
+    /// together are longer than it (`Corners::fit_factor`, #1757).
+    /// Negative and non-finite sizes become square corners. `None` for
+    /// other kinds.
     pub fn with_page_corners(&self, page: Corners) -> Option<ShapeKind> {
         let (rect, _) = self.kind.rect_corners()?;
         let rect = rect.abs();
-        let (sx, sy) = axis_scale(self.transform);
-        let limit = (rect.width() * sx).min(rect.height() * sy) / 2.0;
-        let mut c = page;
-        let fit = |r: f64, limit: f64| {
-            if r.is_finite() {
-                r.clamp(0.0, limit.max(0.0))
-            } else {
-                0.0
-            }
-        };
-        c.radii = c.radii.map(|r| fit(r, limit));
+        let mut c = page.sanitized();
         if !c.fixed {
+            let (sx, sy) = axis_scale(self.transform);
             let k = sx.min(sy).max(1e-9);
-            let local_limit = rect.width().min(rect.height()) / 2.0;
-            c.radii = c.radii.map(|r| fit(r / k, local_limit));
+            c.radii = c.radii.map(|r| r / k);
         }
-        Some(ShapeKind::rect_with_corners(rect, c))
+        Some(ShapeKind::rect_with_corners(rect, c.sanitized()))
     }
 
     /// Lay a parent's uniform transparency over the shape's own, as when a
@@ -2673,8 +2744,9 @@ impl Shape {
     }
 
     /// A rectangle that one round radius describes (what formats with a
-    /// single radius store): the rectangle, the radius in its space and the
-    /// transform that places it, usually the shape's own. A stretched
+    /// single radius store): the rectangle, the radius drawn in its space
+    /// (at most half the shorter side) and the transform that places it,
+    /// usually the shape's own. A stretched
     /// rectangle whose corners keep their size has the stretch moved into
     /// the rectangle's size, so that its corners stay circles of their page
     /// radius; not when the stretch also widens a scaling outline or the
@@ -2690,8 +2762,19 @@ impl Shape {
             return None;
         };
         let t = self.transform;
+        // The radius drawn: equal corners stop at half the shorter side,
+        // and files get that size rather than one they might draw
+        // differently.
+        let half = rect.width().abs().min(rect.height().abs()) / 2.0;
+        let local = |r: f64| {
+            if r.is_finite() {
+                r.clamp(0.0, half)
+            } else {
+                0.0
+            }
+        };
         let Some(c) = corners else {
-            return Some((*rect, *radius, t));
+            return Some((*rect, local(*radius), t));
         };
         if c.is_square() {
             return Some((*rect, 0.0, t));
@@ -2700,7 +2783,7 @@ impl Shape {
             return None;
         }
         if !c.fixed {
-            return Some((*rect, c.radii[0], t));
+            return Some((*rect, local(c.radii[0]), t));
         }
         let (sx, sy) = axis_scale(t);
         if sx < 1e-9 || sy < 1e-9 {
@@ -6611,6 +6694,79 @@ mod tests {
         assert!((ends[Corners::TOP_RIGHT].1.y - (37.0 - 30.0 * k)).abs() < 1e-9);
     }
 
+    /// A corner set on the page is not cut to half the shorter side: it
+    /// may take what its neighbours on both its sides leave (#1757).
+    #[test]
+    fn one_corner_may_take_what_its_neighbours_leave() {
+        // 100 x 80 mm, top left 10, top right 80: the top side holds 90
+        // of 100, the right side 80 of 80, so nothing shrinks.
+        for fixed in [true, false] {
+            let mut s = rect_shape(100.0, 80.0, Corners::default());
+            s.transform = Affine::scale(2.0);
+            let c = Corners {
+                radii: [20.0, 160.0, 0.0, 0.0],
+                fixed,
+                ..Corners::default()
+            };
+            s.kind = s.with_page_corners(c).unwrap();
+            assert_eq!(s.page_corners().unwrap().radii, [20.0, 160.0, 0.0, 0.0]);
+            assert_eq!(
+                s.drawn_page_corners().unwrap().radii,
+                [20.0, 160.0, 0.0, 0.0]
+            );
+            let ends = s
+                .kind
+                .rect_corners()
+                .unwrap()
+                .1
+                .ends(Rect::new(0.0, 0.0, 100.0, 80.0), axis_scale(s.transform));
+            // A quarter circle down the whole right side.
+            assert!((ends[Corners::TOP_RIGHT].1 - Point::new(100.0, 0.0)).hypot() < 1e-9);
+            assert!((ends[Corners::TOP_RIGHT].2 - Point::new(20.0, 80.0)).hypot() < 1e-9);
+        }
+    }
+
+    /// On a thin rectangle the corners of one long side can each be
+    /// larger than half the short side when their neighbours are smaller;
+    /// corners shrink, all by the same factor, only once the two on a
+    /// side together are longer than it (#1757).
+    #[test]
+    fn corners_shrink_only_when_a_side_is_too_short_for_its_two() {
+        let mut s = rect_shape(100.0, 20.0, Corners::default());
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.fixed = true;
+        // A tab: 16 and 4 on the right side (20 of 20), 16 on the top left
+        // with 4 below it.
+        c.radii = [16.0, 16.0, 4.0, 4.0];
+        s.kind = s.with_page_corners(c).unwrap();
+        assert_eq!(s.page_corners().unwrap().radii, [16.0, 16.0, 4.0, 4.0]);
+        assert_eq!(
+            s.drawn_page_corners().unwrap().radii,
+            [16.0, 16.0, 4.0, 4.0]
+        );
+        // The area cut matches four quarter circles of those sizes (drawn
+        // as cubics, a hair outside the circle).
+        let cut = (4.0 - std::f64::consts::PI) / 4.0 * (2.0 * 256.0 + 2.0 * 16.0);
+        assert!((area(&s) - (2000.0 - cut)).abs() < 0.2, "{}", area(&s));
+        // 18 over 4 on the right side: 22 on 20, so every corner is drawn
+        // at 20 / 22 of its size; what was typed is kept.
+        c.radii = [16.0, 18.0, 4.0, 4.0];
+        s.kind = s.with_page_corners(c).unwrap();
+        assert_eq!(s.page_corners().unwrap().radii, [16.0, 18.0, 4.0, 4.0]);
+        let k = 20.0 / 22.0;
+        let drawn = s.drawn_page_corners().unwrap().radii;
+        for (d, r) in drawn.iter().zip([16.0, 18.0, 4.0, 4.0]) {
+            assert!((d - r * k).abs() < 1e-9, "{drawn:?}");
+        }
+        // Equal corners still stop at half the shorter side.
+        s.kind = s
+            .with_page_corners(Corners::uniform(30.0, CornerKind::Round))
+            .unwrap();
+        assert_eq!(s.drawn_page_corners().unwrap().radii, [10.0; 4]);
+        // Formats with one radius get the size that is drawn.
+        assert_eq!(s.plain_rect().unwrap().1, 10.0);
+    }
+
     #[test]
     fn fixed_corners_keep_their_size_when_scaled() {
         let r = 4.0;
@@ -6674,11 +6830,19 @@ mod tests {
             s.plain_rect(),
             Some((Rect::new(0.0, 0.0, 20.0, 10.0), 3.0, s.transform))
         );
-        // Fixed corners are stored as page sizes, limited by the page box.
+        // Fixed corners are stored as page sizes, as typed, and drawn
+        // fitted to the page box.
         let mut c = Corners::uniform(50.0, CornerKind::Scallop);
         c.fixed = true;
         let kind = s.with_page_corners(c).unwrap();
-        assert_eq!(kind.rect_corners().unwrap().1.radii, [10.0; 4]);
+        assert_eq!(kind.rect_corners().unwrap().1.radii, [50.0; 4]);
+        let mut fitted = s.clone();
+        fitted.kind = kind;
+        assert_eq!(fitted.drawn_page_corners().unwrap().radii, [10.0; 4]);
+        // Negative and non-finite sizes are square corners.
+        c.radii = [-1.0, f64::NAN, f64::INFINITY, 2.0];
+        let kind = s.with_page_corners(c).unwrap();
+        assert_eq!(kind.rect_corners().unwrap().1.radii, [0.0, 0.0, 0.0, 2.0]);
         // A fixed round radius on a uniformly scaled rectangle is still one radius.
         c.kind = CornerKind::Round;
         c.radii = [4.0; 4];
@@ -6757,6 +6921,19 @@ mod tests {
         let json = serde_json::to_string(&twisted).unwrap();
         assert!(json.contains("twist"));
         assert_eq!(serde_json::from_str::<ShapeKind>(&json).unwrap(), twisted);
+        // An inverted star (#1331) keeps its negative sharpness; an older
+        // file's star reads with the sharpness it had.
+        assert!(matches!(old, ShapeKind::Polygon { sharpness, .. } if sharpness == 0.5));
+        let inverted = ShapeKind::Polygon {
+            rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+            points: 5,
+            sharpness: -0.3,
+            complex: None,
+            twist: 0.0,
+        };
+        let json = serde_json::to_string(&inverted).unwrap();
+        assert!(json.contains("\"sharpness\":-0.3"), "{json}");
+        assert_eq!(serde_json::from_str::<ShapeKind>(&json).unwrap(), inverted);
     }
 
     #[test]

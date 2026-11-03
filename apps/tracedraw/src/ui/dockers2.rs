@@ -2679,10 +2679,20 @@ fn corners(app: &mut App, ui: &mut Ui) {
         );
     }
     app.corners = c;
-    // Preview what Apply would do.
+    ui.add_space(6.0);
+    ui.checkbox(&mut app.settings.corners_preview, tr("dialog.preview"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.preview",
+            "docker.corners_preview_desc",
+        ));
+    // Preview what Apply would do, unless Preview is off (#1759).
     let preview = app.corner_preview();
     let valid = !preview.is_empty();
-    app.docker_preview = preview;
+    app.docker_preview = if app.settings.corners_preview {
+        preview
+    } else {
+        Vec::new()
+    };
     ui.add_space(8.0);
     if ui
         .add_enabled(valid, egui::Button::new(tr("docker.apply")))
@@ -3440,5 +3450,85 @@ mod find_properties_tests {
         app.undo();
         assert_eq!(fill(&app, a), Some(Fill::Solid(red)), "one undo step");
         assert_eq!(fill(&app, c), Some(Fill::Solid(red)));
+    }
+}
+
+#[cfg(test)]
+mod corners_docker_tests {
+    use super::*;
+
+    /// The Corners panel's Preview box hides the dashed result on the
+    /// drawing and brings it back; it is on at first, kept in the
+    /// settings, and Apply still works with it off (#1759).
+    #[test]
+    fn the_corners_preview_can_be_turned_off() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| corners(app, ui));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let click = |app: &mut App, key: &str| {
+            let texts = run(app, Vec::new());
+            let at = texts
+                .iter()
+                .find(|(t, _)| *t == tr(key))
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("{key} shown"));
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            run(app, vec![button(true)]);
+            run(app, vec![button(false)]);
+        };
+        assert!(app.settings.corners_preview, "on at first");
+        assert!(crate::settings::Settings::default().corners_preview);
+        run(&mut app, Vec::new());
+        assert_eq!(app.docker_preview.len(), 1, "the preview shows");
+        click(&mut app, "dialog.preview");
+        assert!(!app.settings.corners_preview, "the box turned it off");
+        run(&mut app, Vec::new());
+        assert!(app.docker_preview.is_empty(), "no preview on the drawing");
+        // Kept in the settings file.
+        let json = serde_json::to_string(&app.settings).expect("settings");
+        let back: crate::settings::Settings = serde_json::from_str(&json).expect("read back");
+        assert!(!back.corners_preview);
+        // Apply is still offered and works without the preview.
+        click(&mut app, "docker.apply");
+        assert!(matches!(
+            app.doc().find_shape(id).map(|s| &s.kind),
+            Some(tracedraw_core::ShapeKind::Path { .. })
+        ));
+        click(&mut app, "dialog.preview");
+        assert!(app.settings.corners_preview, "and back on");
     }
 }

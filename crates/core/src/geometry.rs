@@ -84,7 +84,9 @@ pub fn ellipse_arc_path(rect: Rect, start_deg: f64, end_deg: f64, pie: bool) -> 
 /// `rect`, with its first vertex at the top.
 ///
 /// `points` is the number of vertices; `sharpness` in `0.0..1.0` pulls every
-/// other vertex toward the centre, turning a polygon into a star.
+/// other vertex toward the centre, turning a polygon into a star, and a
+/// negative one puts those points past the centre: an inverted star (see
+/// [`star_inner_ratio`]).
 pub fn polygon_path(rect: Rect, points: u32, sharpness: f64) -> BezPath {
     twisted_polygon_path(rect, points, sharpness, 0.0)
 }
@@ -108,6 +110,43 @@ pub fn twisted_polygon_path(rect: Rect, points: u32, sharpness: f64, twist: f64)
     }
     path.close_path();
     path
+}
+
+/// Whether `sharpness` makes a polygon a star: any finite value but 0
+/// (a negative one an inverted star).
+pub fn is_star_sharpness(sharpness: f64) -> bool {
+    sharpness.is_finite() && sharpness != 0.0
+}
+
+/// The distance of a star's inner points from its centre, as a part of
+/// the vertices' distance, for a star `sharpness` (not 0). From 0 to 1
+/// the points come in from the rim (`1 - sharpness`) to the centre; from
+/// 0 to -1 they lie past the centre, on the far side (#1331): `-0.5`
+/// puts them half way out on the opposite side, `-1` at the centre again.
+/// The ratio is then negative: `-(1 - |sharpness|)`.
+pub fn star_inner_ratio(sharpness: f64) -> f64 {
+    if !sharpness.is_finite() {
+        return 1.0;
+    }
+    let s = sharpness.clamp(-1.0, 1.0);
+    if s < 0.0 {
+        -(1.0 + s)
+    } else {
+        1.0 - s
+    }
+}
+
+/// The star sharpness whose inner points sit at `ratio` of the vertices'
+/// distance from the centre, negative past it: the inverse of
+/// [`star_inner_ratio`], kept a star (its size between 0.001 and 0.999)
+/// on either side.
+pub fn star_sharpness_for_ratio(ratio: f64) -> f64 {
+    let r = if ratio.is_finite() { ratio } else { 0.0 };
+    if r < 0.0 {
+        -(1.0 + r).clamp(0.001, 0.999)
+    } else {
+        (1.0 - r).clamp(0.001, 0.999)
+    }
 }
 
 /// The fewest points a complex star has.
@@ -170,10 +209,10 @@ fn polygon_unit_vertices(
     } else {
         0.0
     };
-    let star = sharpness > 0.0 || twist != 0.0;
+    let star = is_star_sharpness(sharpness) || twist != 0.0;
     // A plain polygon turned keeps its sides' middles as the inner points.
-    let inner = if sharpness > 0.0 {
-        1.0 - sharpness.clamp(0.0, 1.0)
+    let inner = if is_star_sharpness(sharpness) {
+        star_inner_ratio(sharpness)
     } else {
         (std::f64::consts::PI / points as f64).cos()
     };
@@ -603,6 +642,42 @@ mod tests {
             .filter(|e| matches!(e, PathEl::LineTo(_)))
             .count();
         assert_eq!(n, 9);
+    }
+
+    /// #1331: a negative sharpness puts the inner points past the centre.
+    #[test]
+    fn negative_sharpness_inverts_the_star() {
+        let r = Rect::new(-10.0, -10.0, 10.0, 10.0);
+        let pts = |s: f64| -> Vec<Point> {
+            polygon_path(r, 5, s)
+                .elements()
+                .iter()
+                .filter_map(|e| e.end_point())
+                .collect()
+        };
+        let (plain, inverted) = (pts(0.7), pts(-0.7));
+        assert_eq!(inverted.len(), 10);
+        for i in 0..10 {
+            if i % 2 == 0 {
+                // The vertices stay.
+                assert!((plain[i] - inverted[i]).hypot() < 1e-9);
+            } else {
+                // Each inner point mirrored through the centre.
+                assert!((plain[i].to_vec2() + inverted[i].to_vec2()).hypot() < 1e-9);
+            }
+        }
+        assert!((star_inner_ratio(-0.7) + 0.3).abs() < 1e-12);
+        assert!((star_inner_ratio(0.7) - 0.3).abs() < 1e-12);
+        assert_eq!(star_inner_ratio(-1.0), 0.0);
+        for s in [0.001, 0.3, 0.999, -0.001, -0.3, -0.999] {
+            assert!((star_sharpness_for_ratio(star_inner_ratio(s)) - s).abs() < 1e-12);
+        }
+        // Kept a star on both sides, never 0.
+        assert_eq!(star_sharpness_for_ratio(2.0), 0.001);
+        assert_eq!(star_sharpness_for_ratio(-2.0), -0.001);
+        assert_eq!(star_sharpness_for_ratio(0.0), 0.999);
+        assert!(is_star_sharpness(-0.5) && !is_star_sharpness(0.0));
+        assert!(!is_star_sharpness(f64::NAN));
     }
 
     #[test]

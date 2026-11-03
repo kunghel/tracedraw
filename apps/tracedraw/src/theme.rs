@@ -574,19 +574,48 @@ pub fn icon_in(side: f32, button: f32, icon: f32) -> f32 {
 }
 
 /// The default button size and the toolbox's, as an index into
-/// `ButtonSize::ALL` plus one (0: not set yet, Medium).
-static BAR_SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-static TOOLBOX_SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// `ButtonSize::ALL` plus one (0: not set yet, Medium). Tests run on
+/// threads of their own and each keeps its own sizes, so a test that sizes
+/// the buttons never changes the layout another test is checking.
+#[cfg(not(test))]
+static BAR_SIZE: AtomicU8 = AtomicU8::new(0);
+#[cfg(not(test))]
+static TOOLBOX_SIZE: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+thread_local! {
+    static BAR_SIZE: AtomicU8 = const { AtomicU8::new(0) };
+    static TOOLBOX_SIZE: AtomicU8 = const { AtomicU8::new(0) };
+}
 
-fn stored_size(cell: &std::sync::atomic::AtomicU8) -> crate::settings::ButtonSize {
+fn size_of_index(n: u8) -> crate::settings::ButtonSize {
     use crate::settings::ButtonSize;
-    match cell.load(Ordering::Relaxed) {
+    match n {
         0 => ButtonSize::Medium,
         n => ButtonSize::ALL
             .get(usize::from(n) - 1)
             .copied()
             .unwrap_or(ButtonSize::Medium),
     }
+}
+
+#[cfg(not(test))]
+fn stored_size(cell: &AtomicU8) -> crate::settings::ButtonSize {
+    size_of_index(cell.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+fn stored_size(cell: &'static std::thread::LocalKey<AtomicU8>) -> crate::settings::ButtonSize {
+    size_of_index(cell.with(|c| c.load(Ordering::Relaxed)))
+}
+
+#[cfg(not(test))]
+fn store_size(cell: &AtomicU8, n: u8) {
+    cell.store(n, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn store_size(cell: &'static std::thread::LocalKey<AtomicU8>, n: u8) {
+    cell.with(|c| c.store(n, Ordering::Relaxed));
 }
 
 fn size_index(size: crate::settings::ButtonSize) -> u8 {
@@ -622,8 +651,8 @@ pub fn set_button_sizes(
     bars: crate::settings::ButtonSize,
     toolbox: Option<crate::settings::ButtonSize>,
 ) {
-    BAR_SIZE.store(size_index(bars), Ordering::Relaxed);
-    TOOLBOX_SIZE.store(size_index(toolbox.unwrap_or(bars)), Ordering::Relaxed);
+    store_size(&BAR_SIZE, size_index(bars));
+    store_size(&TOOLBOX_SIZE, size_index(toolbox.unwrap_or(bars)));
 }
 
 pub fn visuals() -> Visuals {

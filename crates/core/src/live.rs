@@ -1201,26 +1201,49 @@ pub struct ContourParams {
     pub accel_colors: f64,
 }
 
-/// Where the middle step of a blend with acceleration `a` (-1 to 1)
-/// lands, as a share of the way from the start: `0.5 - 0.45 a`, so at
-/// +1 it is 5 % from the start and at -1 5 % from the end, the same
-/// distance either way (#1261: the exponent `1 + a` put it 25 % from
-/// the start at +1 and 3 % from the end at -1, so the slider went all
-/// the way on one side only).
-pub fn blend_middle(a: f64) -> f64 {
+/// The factor of a blend's acceleration at its ends (-1 and 1): `1.3 ^
+/// 25`, as the `.cdr` blend records hold it (#1192: every acceleration
+/// of the reporter's files is `1.3 ^ (s / 4)` for a whole `s` from -100
+/// to 100, and the extremes are exactly this and its inverse).
+pub const BLEND_ACCEL_FACTOR: f64 = 705.641_001_486_682_3;
+
+/// The factor `k` of acceleration `a` (-1 to 1): `BLEND_ACCEL_FACTOR ^
+/// -a`, so a positive acceleration gives a factor below 1. Out of range
+/// values are held to it, a value that is not a number reads as 0.
+pub fn blend_accel_factor(a: f64) -> f64 {
     let a = if a.is_finite() {
         a.clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    0.5 - 0.45 * a
+    BLEND_ACCEL_FACTOR.powf(-a)
 }
 
-/// The exponent a blend's steps take for acceleration `a`: step `t` is
-/// placed at `t ^ blend_exponent(a)`, the middle step at
-/// [`blend_middle`]`(a)`.
-pub fn blend_exponent(a: f64) -> f64 {
-    blend_middle(a).ln() / 0.5f64.ln()
+/// Where a blend step `t` of the way from the start (0 to 1) lies with
+/// acceleration `a` (-1 to 1), as a share of the way: `ln(1 + (k - 1) t)
+/// / ln k` with `k` = [`blend_accel_factor`]`(a)`, so the steps' places
+/// form an even run of `k ^ t'` (#1192: the step places of the
+/// reporter's files, measured on the pictures they carry, follow this
+/// curve within a pixel). A positive acceleration packs the steps toward
+/// the start, a negative one toward the end, the same distance either
+/// way.
+pub fn blend_place(t: f64, a: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    let ln_k = blend_accel_factor(a).ln();
+    if ln_k.abs() < 1e-9 {
+        return t;
+    }
+    // ln(1 + (k - 1) t) without losing digits for small (k - 1) t.
+    ((ln_k.exp_m1() * t).ln_1p() / ln_k).clamp(0.0, 1.0)
+}
+
+/// Where the middle step of a blend with acceleration `a` (-1 to 1)
+/// lands, as a share of the way from the start: [`blend_place`]`(0.5,
+/// a)`, about 10.5 % from the start at +1 and as far from the end at -1
+/// (#1261 wanted the same distance either way; #1192 the curve of the
+/// `.cdr` files).
+pub fn blend_middle(a: f64) -> f64 {
+    blend_place(0.5, a)
 }
 
 /// `t` (0 to 1) bent by an acceleration `a` (-1 to 1): `t ^ 4^a`, so a
@@ -1375,7 +1398,6 @@ fn blend(
     let bb = b.bounding_box();
     let ca_center = ba.center();
     let cb_center = bb.center();
-    let middle = ca_center.midpoint(cb_center);
     let size = |r: Rect| (r.width() + r.height()) / 2.0;
     let mut out = Vec::new();
     for (i, p) in paths.into_iter().enumerate() {
@@ -1386,8 +1408,8 @@ fn blend(
         } else {
             (i + 1) as f64 / (n + 1) as f64
         };
-        let to = t.powf(blend_exponent(accel_objects));
-        let tc = t.powf(blend_exponent(accel_colors));
+        let to = blend_place(t, accel_objects);
+        let tc = blend_place(t, accel_colors);
         let mut s = start.clone();
         s.effects.clear();
         s.shadow = None;
@@ -1408,15 +1430,18 @@ fn blend(
                 extra = Affine::scale_about(wanted / even, center);
             }
         }
+        // Each step turns about its own centre by its share of the
+        // rotation; in a loop its centre also leaves the straight way
+        // (see `loop_place`). Turned about the middle of the two objects
+        // instead, the last steps of a loop landed far from the end
+        // (#1192).
         if rotation != 0.0 {
-            let pivot = if options.loop_rotation {
-                middle
-            } else {
-                center
-            };
-            extra = Affine::rotate_about(rotation.to_radians() * to, pivot) * extra;
+            extra = Affine::rotate_about(rotation.to_radians() * to, center) * extra;
         }
-        if path_samples.is_none() && to != t {
+        if rotation != 0.0 && options.loop_rotation && path_samples.is_none() {
+            let at = loop_place(ca_center, cb_center, rotation, to);
+            extra = Affine::translate(at - center) * extra;
+        } else if path_samples.is_none() && to != t {
             // Off a path the object acceleration moves the steps toward
             // one end: each goes where its accelerated place lies between
             // the two objects' centres (the steps stay evenly sized unless
@@ -1464,6 +1489,24 @@ fn blend(
         out.push(s);
     }
     out
+}
+
+/// Where the centre of a looped blend's step `t` of the way (0 to 1)
+/// lies, for a blend from centre `a` to centre `b` turning by
+/// `rotation` degrees: `a` turned by `rotation * t` about the middle of
+/// the two and `b` turned back by `rotation * (1 - t)` about it, mixed
+/// `t` of the way. The steps leave `a` and reach `b` along a curve that
+/// bends to the right of the way for a positive (counterclockwise)
+/// turn: a half circle about the middle at 180 degrees, a curl through
+/// the middle at 360 (#1192: the pictures of the reporter's files at
+/// -360 to 360 degrees show these curves; turning about the middle alone
+/// left the last steps far from `b`).
+fn loop_place(a: Point, b: Point, rotation: f64, t: f64) -> Point {
+    let m = a.midpoint(b);
+    let turn = rotation.to_radians();
+    let from_a = Affine::rotate_about(turn * t, m) * a;
+    let from_b = Affine::rotate_about(turn * (t - 1.0), m) * b;
+    from_a.lerp(from_b, t)
 }
 
 /// The transformation `t` of the way from `a` to `b` (0 to 1): the point
@@ -1527,8 +1570,9 @@ pub struct BlendOptions {
     /// Along a path: the distance between steps, mm (the step count then
     /// follows from the path's length). `None`: the step count.
     pub spacing: Option<f64>,
-    /// The rotation turns the steps about the middle between the two
-    /// objects instead of about each step's own centre.
+    /// The steps' centres leave the straight way between the two
+    /// objects along a curve the rotation bends ([`loop_place`]); without
+    /// it each step only turns about its own centre.
     pub loop_rotation: bool,
     /// Along a path: the steps spread over the whole path, its ends
     /// included.
@@ -2697,13 +2741,14 @@ mod tests {
     /// start at +1 as toward the end at -1 (#1261).
     #[test]
     fn blend_acceleration_goes_as_far_either_way() {
-        assert!((blend_exponent(0.0) - 1.0).abs() < 1e-12);
-        let at = |a: f64| 0.5f64.powf(blend_exponent(a));
-        assert!((at(1.0) - 0.05).abs() < 1e-9);
-        assert!((at(-1.0) - 0.95).abs() < 1e-9);
+        assert!((blend_middle(0.0) - 0.5).abs() < 1e-12);
+        let at = blend_middle;
+        let far = 0.105_461;
+        assert!((at(1.0) - far).abs() < 1e-5, "{}", at(1.0));
+        assert!((at(-1.0) - (1.0 - far)).abs() < 1e-5);
         assert!((at(0.5) + at(-0.5) - 1.0).abs() < 1e-9);
-        assert!((blend_exponent(f64::NAN) - 1.0).abs() < 1e-12);
-        assert!((at(7.0) - 0.05).abs() < 1e-9, "held to the range");
+        assert!((blend_middle(f64::NAN) - 0.5).abs() < 1e-12);
+        assert!((at(7.0) - far).abs() < 1e-5, "held to the range");
         // Two squares 100 mm apart blended with one step: the step's
         // centre lands where the middle step should, either way.
         let square = |id: u64, x: f64| {
@@ -2735,8 +2780,61 @@ mod tests {
             steps[0].bounds().center().x
         };
         assert!((steps_at(0.0) - 55.0).abs() < 1e-6, "{}", steps_at(0.0));
-        assert!((steps_at(1.0) - 10.0).abs() < 1e-6, "{}", steps_at(1.0));
-        assert!((steps_at(-1.0) - 100.0).abs() < 1e-6, "{}", steps_at(-1.0));
+        let near = 5.0 + 100.0 * far;
+        assert!((steps_at(1.0) - near).abs() < 1e-3, "{}", steps_at(1.0));
+        assert!(
+            (steps_at(-1.0) - (110.0 - near)).abs() < 1e-3,
+            "{}",
+            steps_at(-1.0)
+        );
+    }
+
+    /// A looped blend's steps leave the start and reach the end along
+    /// the curves the `.cdr` files' pictures show (#1192): a half circle
+    /// about the middle at 180 degrees, bending right of the way for a
+    /// positive turn, and a curl through the middle at 360.
+    #[test]
+    fn a_looped_blend_curves_from_one_end_to_the_other() {
+        let (a, b) = (Point::new(0.0, 0.0), Point::new(100.0, 0.0));
+        for r in [90.0, -90.0, 180.0, 360.0, -320.0] {
+            assert!((loop_place(a, b, r, 0.0) - a).hypot() < 1e-9);
+            assert!((loop_place(a, b, r, 1.0) - b).hypot() < 1e-9);
+        }
+        let half = loop_place(a, b, 180.0, 0.5);
+        assert!((half - Point::new(50.0, -50.0)).hypot() < 1e-9, "{half:?}");
+        let quarter = loop_place(a, b, 180.0, 0.25);
+        assert!(((quarter - Point::new(50.0, 0.0)).hypot() - 50.0).abs() < 1e-9);
+        assert!(loop_place(a, b, 90.0, 0.5).y < -1.0);
+        assert!(loop_place(a, b, -90.0, 0.5).y > 1.0);
+        assert!((loop_place(a, b, 360.0, 0.5) - Point::new(50.0, 0.0)).hypot() < 1e-9);
+    }
+
+    /// The steps of an accelerated blend lie where the `.cdr` files'
+    /// blends put them (#1192): `t' = ln(1 + (k - 1) t) / ln k` with
+    /// `k = 1.3 ^ (-25 a)`, measured on the pictures of the reporter's
+    /// files (a = 0.37: the first of 50 steps at 7.6 % of the way, the
+    /// tenth at 45.5 %, read here from the end the file counts from).
+    #[test]
+    fn blend_steps_follow_the_file_s_acceleration_curve() {
+        assert!((blend_accel_factor(-1.0) - BLEND_ACCEL_FACTOR).abs() < 1e-9);
+        assert!((BLEND_ACCEL_FACTOR - 1.3f64.powi(25)).abs() < 1e-9);
+        // The factor 1.3 ^ (37 / 4) of the file, its steps measured from
+        // the lower object (`1 - t'` of the upper one's).
+        let a = 0.37;
+        let from_lower = |k: usize| 1.0 - blend_place(1.0 - k as f64 / 51.0, a);
+        assert!((from_lower(1) - 0.0759).abs() < 0.002, "{}", from_lower(1));
+        assert!((from_lower(10) - 0.455).abs() < 0.003, "{}", from_lower(10));
+        // Even at 0, monotonic, ends held.
+        assert!((blend_place(0.3, 0.0) - 0.3).abs() < 1e-12);
+        assert_eq!(blend_place(0.0, 1.0), 0.0);
+        assert!((blend_place(1.0, -1.0) - 1.0).abs() < 1e-12);
+        let mut last = 0.0;
+        for k in 1..100 {
+            let p = blend_place(k as f64 / 100.0, -0.8);
+            assert!(p > last);
+            last = p;
+        }
+        assert!((blend_place(0.5, 1e-12) - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -3596,8 +3694,8 @@ mod tests {
         let steps = blend(full, Some(line), 0.0);
         let first = steps[0].bounds().center();
         assert!((first.x - 0.0).abs() < 1.0, "{first:?}");
-        // Loop: the steps turn about the middle between the objects, so
-        // they leave the straight line between them.
+        // Loop: the steps' centres leave the straight line between the
+        // objects.
         let looped = BlendOptions {
             loop_rotation: true,
             ..Default::default()

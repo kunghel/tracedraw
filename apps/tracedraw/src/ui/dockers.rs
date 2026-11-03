@@ -2697,7 +2697,11 @@ pub fn kind_id(k: &ShapeKind) -> &'static str {
         ShapeKind::Polygon {
             complex: Some(_), ..
         } => "ComplexStar",
-        ShapeKind::Polygon { sharpness, .. } if *sharpness > 0.0 => "Star",
+        ShapeKind::Polygon { sharpness, .. }
+            if tracedraw_core::geometry::is_star_sharpness(*sharpness) =>
+        {
+            "Star"
+        }
         ShapeKind::Polygon { .. } => "Polygon",
         ShapeKind::Path { .. } => "Curve",
         ShapeKind::Text { .. } => "Text",
@@ -2722,7 +2726,7 @@ pub fn kind_name(k: &ShapeKind) -> String {
             let n = points.to_string();
             if complex.is_some() {
                 trf("kind.complex_star_n", &[("n", &n)])
-            } else if *sharpness > 0.0 {
+            } else if tracedraw_core::geometry::is_star_sharpness(*sharpness) {
                 trf("kind.star_n", &[("n", &n)])
             } else {
                 trf("kind.polygon_n", &[("n", &n)])

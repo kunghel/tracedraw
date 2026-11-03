@@ -4282,6 +4282,7 @@ dependencies = [
  "pollster 0.4.0",
  "qrcode",
  "rfd",
+ "roxmltree 0.21.1",
  "rqrr",
  "serde",
  "serde_json",

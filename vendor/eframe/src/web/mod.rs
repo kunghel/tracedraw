@@ -9,6 +9,8 @@ mod dropped_file;
 mod events;
 mod input;
 mod panic_handler;
+// TraceDraw: a pen's pressure from its pointer events (#1410).
+mod pen_pressure;
 mod text_agent;
 mod web_logger;
 mod web_runner;

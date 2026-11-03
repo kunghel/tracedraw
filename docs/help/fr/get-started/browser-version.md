@@ -55,5 +55,7 @@ sur le dernier téléchargement, car le Store certifie d'abord chaque version.
   Installée comme application, elle garde la version utilisée en dernier et
   prend la nouvelle au démarrage suivant, une fois toutes ses fenêtres
   fermées ; voir [Tablettes et l'application Android](tablets-and-android.md).
-- **Pression du stylet.** Un stylet fonctionne comme une souris, mais le
-  navigateur ne transmet pas sa pression : les traits ont une largeur égale.
+- **Pression du stylet.** La pression d'un stylet règle la largeur des
+  traits à main levée et des coups de pinceau comme sur ordinateur, lorsque
+  le navigateur la transmet (les versions actuelles de Chrome, Edge, Firefox
+  et Safari le font quand le système la fournit).

@@ -80,8 +80,14 @@ parallel, or Small back when they have a vanishing point.
   as the vanishing point. One undo step per drag.
 - The selected extrusion's handle is a square with a cross, joined to
   the object's middle by a dashed line: the vanishing point, or the
-  middle of a parallel body's copy. A drag that starts on it (within 6
-  pixels) moves it.
+  middle of a parallel body's copy. A drag that starts on it (within the
+  pick distance of Options > Nodes and Handles, 6 pixels at first)
+  moves it to the pointer. A drag that starts on the dashed line, away
+  from the handle, moves the handle by the pointer's way, so the line
+  keeps its length and angle from where it is (its other end stays on
+  the object's middle); Ctrl keeps that move horizontal or vertical,
+  and the pointer is the move cursor over the line. Each drag is one
+  undo step (`effect_line_tests::the_extrusion_line_moves_its_vanishing_point`).
 - A click selects the object under the pointer (or nothing). Groups and
   bitmaps are not extruded.
 

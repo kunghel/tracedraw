@@ -3622,6 +3622,153 @@ impl App {
         self.rebuild_palette();
     }
 
+    /// The name New Palette suggests: "Palette 1", "Palette 2"... the
+    /// first no palette has yet.
+    pub fn next_palette_name(&self) -> String {
+        let taken = |name: &str| {
+            (0..self.palettes.len()).any(|i| {
+                self.palettes
+                    .get(i)
+                    .is_some_and(|p| crate::settings::palette_id(p) == name)
+                    || self.palette_name(i) == name
+            })
+        };
+        (1..)
+            .map(|n| trf("palette.new_default", &[("n", &n.to_string())]))
+            .find(|name| !taken(name))
+            .unwrap_or_default()
+    }
+
+    /// New Palette: an empty palette of the user's named `name` (made
+    /// unique), under My Palettes, shown at once in a bar of its own
+    /// docked at the bottom (under the bars there). Its index.
+    pub fn new_palette(&mut self, name: &str) -> Option<usize> {
+        let base = name.trim();
+        let base = if base.is_empty() {
+            self.next_palette_name()
+        } else {
+            base.to_string()
+        };
+        let taken = |app: &Self, n: &str| {
+            app.palettes
+                .iter()
+                .any(|p| crate::settings::palette_id(p) == n)
+                || n == crate::settings::DOCUMENT_PALETTE
+        };
+        let mut name = base.clone();
+        let mut k = 2;
+        while taken(self, &name) {
+            name = format!("{base} {k}");
+            k += 1;
+        }
+        self.palettes.push(crate::palette::Palette {
+            name: name.clone(),
+            key: "",
+            colors: Vec::new(),
+            builtin: false,
+            path: None,
+        });
+        let i = self.palettes.len() - 1;
+        self.open_palette_bar(&name);
+        if let Some(b) = self
+            .settings
+            .palette_bars
+            .iter_mut()
+            .find(|b| b.palette == name)
+        {
+            b.dock = crate::ui::bars::Dock::Bottom;
+        }
+        self.store_user_palettes();
+        self.palette_manager.selected = crate::ui::palette_manager::Selected::Palette(i);
+        Some(i)
+    }
+
+    /// Palette `i` takes colours dropped on it or added from the
+    /// selection: one of the user's, not locked.
+    pub fn palette_takes_colors(&self, i: usize) -> bool {
+        self.palettes.get(i).is_some_and(|p| !p.builtin) && !self.palette_locked(i)
+    }
+
+    /// Add `colors` to the user's palette `i` (those it has not got yet),
+    /// its bar shows them at once. Says whether any was added.
+    pub fn add_colors_to_palette(&mut self, i: usize, colors: &[Color]) -> bool {
+        if !self.palette_takes_colors(i) {
+            return false;
+        }
+        let named: Vec<(String, Color)> = colors
+            .iter()
+            .map(|c| (crate::ui::palette::name_of(self, *c), *c))
+            .collect();
+        let Some(p) = self.palettes.get_mut(i) else {
+            return false;
+        };
+        let mut added = false;
+        for (name, c) in named {
+            if !p.colors.iter().any(|(_, x)| *x == c) {
+                p.colors.push((name, c));
+                added = true;
+            }
+        }
+        if added {
+            if let Some(path) = p.path.clone() {
+                if let Err(e) = crate::palette::save_palette(p, &path) {
+                    log::warn!("palette {}: {e}", path.display());
+                }
+            }
+            self.store_user_palettes();
+            self.rebuild_palette();
+        }
+        added
+    }
+
+    /// The fill and outline colours of the selection join the user's
+    /// palette `i`.
+    pub fn add_selection_colors_to_palette(&mut self, i: usize) -> bool {
+        if !self.has_document() {
+            return false;
+        }
+        let mut colors = Vec::new();
+        Self::colors_of(&self.selected_shapes(), &mut colors);
+        self.add_colors_to_palette(i, &colors)
+    }
+
+    /// Keep the palettes made in TraceDraw (no file behind them) in the
+    /// preferences.
+    pub fn store_user_palettes(&mut self) {
+        self.settings.user_palettes = self
+            .palettes
+            .iter()
+            .filter(|p| !p.builtin && p.key.is_empty() && p.path.is_none())
+            .map(|p| crate::settings::UserPalette {
+                name: p.name.clone(),
+                colors: p.colors.clone(),
+            })
+            .collect();
+    }
+
+    /// The palettes made in TraceDraw, from the preferences, back in the
+    /// list (those not in it yet).
+    pub fn restore_user_palettes(&mut self) {
+        let stored = self.settings.user_palettes.clone();
+        for u in stored {
+            if u.name.is_empty()
+                || self
+                    .palettes
+                    .iter()
+                    .any(|p| crate::settings::palette_id(p) == u.name)
+            {
+                continue;
+            }
+            self.palettes.push(crate::palette::Palette {
+                name: u.name,
+                key: "",
+                colors: u.colors,
+                builtin: false,
+                path: None,
+            });
+        }
+    }
+
     /// Palette `i` is locked: the Palette Editor shows it without changing
     /// it.
     pub fn palette_locked(&self, i: usize) -> bool {

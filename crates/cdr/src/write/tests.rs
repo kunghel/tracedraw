@@ -495,6 +495,67 @@ fn corners_one_radius_cannot_hold_are_written_as_curves_and_stretched_fixed_ones
     }
 }
 
+/// A corner larger than half the shorter side where its neighbours leave
+/// it room goes out as the curve drawn, and equal corners given more than
+/// the rectangle holds go out at the size drawn (#1757).
+#[test]
+fn corners_past_half_the_shorter_side_are_written_as_drawn() {
+    use tracedraw_core::{CornerKind, Corners};
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut tab = Corners::uniform(0.0, CornerKind::Round);
+    tab.radii[Corners::TOP_LEFT] = 10.0;
+    tab.radii[Corners::TOP_RIGHT] = 80.0;
+    let mut shapes = Vec::new();
+    for (rect, corners) in [
+        (Rect::new(0.0, 0.0, 100.0, 80.0), tab),
+        (
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            Corners::uniform(50.0, CornerKind::Round),
+        ),
+    ] {
+        let mut s = Shape::new(ids.shape(), ShapeKind::rect_with_corners(rect, corners));
+        s.transform = Affine::translate((20.0, 10.0));
+        s.fill = Fill::Solid(Color::BLACK);
+        shapes.push(s);
+    }
+    doc.pages[0].layers[0].shapes = shapes.clone();
+    doc.set_ids(ids);
+    let pi = std::f64::consts::PI;
+    let tab_area = 8000.0 - (4.0 - pi) / 4.0 * (100.0 + 6400.0);
+    let round_area = 800.0 - (4.0 - pi) * 100.0;
+    for v in versions() {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 2, "{v}: {:?}", rep.warnings);
+        for (i, (a, b, want)) in [
+            (&shapes[0], &read[0], tab_area),
+            (&shapes[1], &read[1], round_area),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (aa, ab) = (a.page_path().area().abs(), b.page_path().area().abs());
+            assert!((aa - want).abs() < 2.0, "{v} {i}: {aa} vs {want}");
+            assert!((aa - ab).abs() < 0.5, "{v} {i}: {aa} vs {ab}");
+            let (ba, bb) = (a.bounds(), b.bounds());
+            assert!(
+                (ba.x0 - bb.x0).abs() < 0.01 && (ba.y1 - bb.y1).abs() < 0.01,
+                "{v} {i}"
+            );
+        }
+        if v < 15 {
+            // One radius: the 10 mm the equal corners are drawn at.
+            assert!(
+                matches!(read[1].kind, ShapeKind::Rect { radius, .. } if (radius - 10.0).abs() < 0.01),
+                "{v}: {:?}",
+                read[1].kind
+            );
+        }
+    }
+}
+
 #[test]
 fn complex_stars_are_written_as_curves() {
     let mut doc = doc_with(Vec::new());
@@ -514,6 +575,58 @@ fn complex_stars_are_written_as_curves() {
     doc.set_ids(ids);
     for v in [7, 12, 16, 22] {
         complex_star_reads_back(&doc, &star, v);
+    }
+}
+
+/// #1331: an inverted star (negative sharpness) goes out as the curve it
+/// draws, like every polygon, and reads back with the same nodes: inner
+/// points past the centre.
+#[test]
+fn inverted_stars_are_written_as_the_curves_they_draw() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut star = Shape::new(
+        ids.shape(),
+        ShapeKind::Polygon {
+            rect: Rect::new(10.0, 10.0, 50.0, 50.0),
+            points: 5,
+            sharpness: -0.6,
+            complex: None,
+            twist: 0.0,
+        },
+    );
+    star.fill = Fill::Solid(Color::BLACK);
+    doc.pages[0].layers[0].shapes = vec![star.clone()];
+    doc.set_ids(ids);
+    let points = |s: &Shape| -> Vec<Point> {
+        s.page_path()
+            .elements()
+            .iter()
+            .filter_map(|e| e.end_point())
+            .collect()
+    };
+    let want = points(&star);
+    // The first inner point, right of the top vertex on a plain star,
+    // lies past the centre (below it).
+    assert!(want[1].y < 30.0, "{want:?}");
+    for v in [7, 12, 16, 22, 27] {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{:?}", rep.warnings);
+        assert!(
+            matches!(read[0].kind, ShapeKind::Path { .. }),
+            "v{v}: {:?}",
+            read[0].kind
+        );
+        let got = points(&read[0]);
+        for p in &want {
+            // Within the file's unit (0.0001 mm), rounded.
+            assert!(
+                got.iter().any(|q| (*q - *p).hypot() < 1e-3),
+                "v{v}: {p:?} not in {got:?}"
+            );
+        }
     }
 }
 
@@ -4552,11 +4665,22 @@ fn a_blend_goes_out_live_from_version_9() {
                     "{v} {end_below}: centre {got:?}, not {want:?}"
                 );
             }
-            assert_eq!(
-                u32::from_le_bytes(b[44..48].try_into().expect("u32")),
-                0x780,
-                "{v}"
-            );
+            // The settings from version 23 (#1192), counted from the
+            // lower object: the accelerations (0.25 and -0.5 from the
+            // start) as their factors, the flags without the even marks;
+            // before 23 the default record.
+            let flags = u32::from_le_bytes(b[44..48].try_into().expect("u32"));
+            let factor = |at: usize| f64::from_le_bytes(b[at..at + 8].try_into().expect("f64"));
+            if v >= 23 {
+                let sign = if end_below { -1.0 } else { 1.0 };
+                let k = tracedraw_core::live::BLEND_ACCEL_FACTOR;
+                assert_eq!(flags, 0x80, "{v}");
+                assert!((factor(56) - k.powf(sign * 0.5)).abs() < 1e-9, "{v}");
+                assert!((factor(64) - k.powf(sign * -0.25)).abs() < 1e-9, "{v}");
+            } else {
+                assert_eq!(flags, 0x780, "{v}");
+                assert_eq!((factor(56), factor(64)), (0.0, 0.0), "{v}");
+            }
             // The list: text, group, text.
             let order = orders
                 .iter()
@@ -4569,8 +4693,8 @@ fn a_blend_goes_out_live_from_version_9() {
                 ("obj ", "obj "),
                 "{v}: {order:?}"
             );
-            // Read without the member: two texts, the upper one with the
-            // blend to the lower.
+            // Read without the member: two texts, the lower one with the
+            // blend to the upper (the record counts from the lower one).
             let back = open_as_drawn(&bytes);
             let read = &back.pages[0].layers[0].shapes;
             assert_eq!(read.len(), 2, "{v}: {read:?}");
@@ -4583,19 +4707,84 @@ fn a_blend_goes_out_live_from_version_9() {
                 ("ABC".into(), "XYZ".into()),
                 "{v}"
             );
-            let (holder, other) = if end_below { (si, ei) } else { (ei, si) };
+            let (holder, other) = (0, 1);
             assert!(
                 read[other].effects.is_empty(),
                 "{v} {end_below}: {:?}",
                 read[other].effects
             );
-            let [tracedraw_core::live::Effect::Blend { steps, end_id, .. }] =
-                read[holder].effects.as_slice()
+            let [tracedraw_core::live::Effect::Blend {
+                steps,
+                end_id,
+                accel_objects,
+                accel_colors,
+                ..
+            }] = read[holder].effects.as_slice()
             else {
                 panic!("{v} {end_below}: {:?}", read[holder].effects);
             };
             assert_eq!((*steps, *end_id), (7, Some(read[other].id)), "{v}");
+            // From 23 the accelerations come back, seen from the lower
+            // object (the other way round when the start was the upper).
+            let (o, c) = match (v >= 23, end_below) {
+                (false, _) => (0.0, 0.0),
+                (true, false) => (0.25, -0.5),
+                (true, true) => (-0.25, 0.5),
+            };
+            assert!(
+                (*accel_objects - o).abs() < 1e-9 && (*accel_colors - c).abs() < 1e-9,
+                "{v} {end_below}: {accel_objects} {accel_colors}"
+            );
             assert_eq!(step_boxes(&read[holder]).len(), 7, "{v}");
+        }
+    }
+}
+
+/// From version 23 the blend record carries the rotation, Loop, Apply
+/// to sizing and the colour direction too (#1192), counted from the
+/// lower object: read back without TraceDraw's member, a blend from the
+/// lower object keeps them all, one from the upper object comes back on
+/// the lower one with its colours turning the other way. The files pass
+/// the checker.
+#[test]
+fn a_blend_s_rotation_loop_and_colours_go_into_the_record() {
+    use tracedraw_core::live::{ColorBlend, Effect};
+    for end_below in [false, true] {
+        let mut doc = text_blend(6, end_below);
+        let si = if end_below { 1 } else { 0 };
+        if let Some(Effect::Blend {
+            rotation, options, ..
+        }) = doc.pages[0].layers[0].shapes[si].effects.first_mut()
+        {
+            *rotation = -45.5;
+            options.loop_rotation = true;
+            options.accel_sizing = true;
+            options.color_blend = ColorBlend::Clockwise;
+        }
+        for v in [23u16, 25, 27] {
+            let bytes = document_to_cdr_version(&doc, v);
+            let findings = crate::check::check_bytes(&bytes).expect("checks");
+            assert!(findings.is_empty(), "{v} {end_below}: {findings:?}");
+            let back = open_as_drawn(&bytes);
+            let read = &back.pages[0].layers[0].shapes;
+            let [Effect::Blend {
+                rotation,
+                accel_objects,
+                options,
+                ..
+            }] = read[0].effects.as_slice()
+            else {
+                panic!("{v} {end_below}: {:?}", read[0].effects);
+            };
+            assert_eq!(*rotation, -45.5, "{v}");
+            assert!(options.loop_rotation && options.accel_sizing, "{v}");
+            let (colour, accel) = if end_below {
+                (ColorBlend::CounterClockwise, -0.25)
+            } else {
+                (ColorBlend::Clockwise, 0.25)
+            };
+            assert_eq!(options.color_blend, colour, "{v} {end_below}");
+            assert!((accel_objects - accel).abs() < 1e-9, "{v} {end_below}");
         }
     }
 }
@@ -5662,7 +5851,7 @@ fn a_face_with_typographic_names_is_written_under_its_family() {
 /// again (#986): from version 14 (a package) the start text comes back
 /// with its blend to the end text, settings and all, its steps where
 /// they were. Versions 9 to 13 (RIFF files, no member) read the blend
-/// the file holds: on the upper text, with the file's settings (#1192);
+/// the file holds: on the lower text, with the record's settings (#1192);
 /// versions 7 and 8 keep the drawn group.
 #[test]
 fn a_text_blend_opens_live_again() {
@@ -5697,7 +5886,7 @@ fn a_text_blend_opens_live_again_with(end_below: bool) {
             continue;
         }
         if v < 14 {
-            let holder = if end_below { si } else { ei };
+            let holder = 0;
             let [tracedraw_core::live::Effect::Blend { steps, end_id, .. }] =
                 read[holder].effects.as_slice()
             else {
@@ -5748,8 +5937,8 @@ fn a_text_blend_opens_live_again_with(end_below: bool) {
 
 /// A blend whose objects another program changed (its start object
 /// gone, its end another object), or a member that does not read, opens
-/// as the reader made it from the file (the blend on the upper text,
-/// with the file's settings), never fails (#986, #1192).
+/// as the reader made it from the file (the blend on the lower text,
+/// with the record's settings), never fails (#986, #1192).
 #[test]
 fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
     let doc = text_blend(4, false);
@@ -5783,20 +5972,20 @@ fn a_kept_blend_that_no_longer_matches_opens_as_drawn() {
     ));
     assert_eq!((accel(&live, 0), accel(&live, 1)), (Some(0.25), None));
     // A start the file no longer has: the file's blend stays as read,
-    // on the upper text with even acceleration.
+    // on the lower text (here the start) with the record's acceleration.
     kept[0].group = 9999;
     let drawn = open(&kept);
-    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (Some(0.25), None));
     // An end that is another object: the same.
     kept = crate::kept_blends::decode(&member);
     kept[0].end = Some(9999);
     let drawn = open(&kept);
-    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (Some(0.25), None));
     // A member of a drawn group that is not a group: left alone.
     kept = crate::kept_blends::decode(&member);
     kept[0].count = 5;
     let drawn = open(&kept);
-    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (None, Some(0.0)));
+    assert_eq!((accel(&drawn, 0), accel(&drawn, 1)), (Some(0.25), None));
     for junk in [&b""[..], b"{", b"{\"format\":2,\"blends\":[]}", b"[1,2]"] {
         assert!(crate::kept_blends::decode(junk).is_empty());
     }
@@ -7243,8 +7432,9 @@ fn package_fonts(bytes: &[u8]) -> PackageFonts {
 /// (TraceDraw listed it at 0x40, regular, with the PostScript name and
 /// style of the bold face, and the program that reads the file reported
 /// Khand missing although it was installed, #1484), its face block and
-/// EOT header say bold and upright, the records describe both the face
-/// the text asks for and the face listed, and the kind is the outlines'
+/// EOT header say bold and upright, the text is written as that face
+/// (#1733, see `regular_text_drawn_by_the_bold_file_is_written_bold`),
+/// and the kind is the outlines'
 /// as files give it: 2 for TrueType outlines, 4 when the font is signed
 /// (a `DSIG` table), in the table, the member and the style strings'
 /// `technology`, beside the font's version string.
@@ -7298,17 +7488,23 @@ fn a_face_is_listed_as_the_face_its_font_file_holds() {
         let eot = &m[2705..];
         assert_eq!(eot[27], 0, "upright");
         assert_eq!(u32_at(eot, 28), 700, "the font's weight");
-        // The text's face (regular) and the listed one (bold), both of
-        // the embedded font.
-        for want in [0x40, 0x1000] {
-            assert!(
-                p.records
-                    .iter()
-                    .any(|r| *r == (number, want, true, "Khand-Bold".to_string())),
-                "{want:#x}: {:?}",
-                p.records
-            );
-        }
+        // The text is written as the face the file holds (#1733): the
+        // record of the bold face describes the embedded font, and no
+        // record says the font embedded is a regular face.
+        assert!(
+            p.records
+                .iter()
+                .any(|r| *r == (number, 0x1000, true, "Khand-Bold".to_string())),
+            "{:?}",
+            p.records
+        );
+        assert!(
+            !p.records
+                .iter()
+                .any(|r| r.0 == number && r.1 == 0x40 && r.2),
+            "{:?}",
+            p.records
+        );
         assert!(
             p.styles.contains(r#""version":"Version 1.102;PS 1.0","#),
             "{}",
@@ -7324,7 +7520,7 @@ fn a_face_is_listed_as_the_face_its_font_file_holds() {
         };
         assert_eq!(
             (spans[0].font_family.as_str(), spans[0].bold),
-            ("Khand", false)
+            ("Khand", true)
         );
     }
 }
@@ -7445,4 +7641,238 @@ fn bold_text_in_a_light_face_is_written_as_the_family_bold() {
             ("Khand", true, true, true)
         );
     }
+}
+
+/// `font` with the OS/2 `fsSelection` bits `bits`.
+fn with_fs_selection(font: &[u8], bits: u16) -> Vec<u8> {
+    let mut f = font.to_vec();
+    let be32 = |b: &[u8], at: usize| u32::from_be_bytes(b[at..at + 4].try_into().expect("u32"));
+    let n = u16::from_be_bytes([f[4], f[5]]) as usize;
+    let dir = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &f[r..r + 4] == b"OS/2")
+        .expect("OS/2");
+    let at = be32(&f, dir + 8) as usize;
+    f[at + 62..at + 64].copy_from_slice(&bits.to_be_bytes());
+    f
+}
+
+/// A "Khand" bold file as the one of issue #1733: name ID 1 "Khand",
+/// subfamily "Bold", weight 700, `fsSelection` bold.
+fn khand_bold_file() -> Vec<u8> {
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    with_fs_selection(
+        &with_weight(
+            &with_names(
+                BOLD,
+                &[
+                    (1, "Khand"),
+                    (2, "Bold"),
+                    (4, "Khand Bold"),
+                    (5, "Version 1.102;PS 1.0"),
+                    (6, "Khand-Bold"),
+                ],
+            ),
+            700,
+        ),
+        0x20,
+    )
+}
+
+/// Regular "Khand" text drawn by the only "Khand" file installed, the
+/// bold one, is written as "Khand" bold, as the program that reads the
+/// files writes the same drawing: style strings at `weight` 4096, the
+/// font table entry, the face block and the `font` record of the
+/// embedded face at 0x1000. Written at 64 beside the embedded bold face,
+/// that program asked for "Khand-Normal", reported it missing although
+/// Khand was installed, drew the text with a stand-in and dropped the
+/// embedded font when saving again (#1733, #1484, #1455). Saved without
+/// embedding too; the text reads back as bold "Khand".
+#[test]
+fn regular_text_drawn_by_the_bold_file_is_written_bold() {
+    let bold = std::sync::Arc::new(khand_bold_file());
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("abhishek", "Khand", 72.0)],
+        TextAlign::Left,
+    )]);
+    for embed in [true, false] {
+        let previews = Previews {
+            fonts: vec![FontFace {
+                family: "Khand".into(),
+                bold: false,
+                italic: false,
+                data: Some(bold.clone()),
+            }],
+            embed_fonts: embed,
+            ..Default::default()
+        };
+        let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+        let p = package_fonts(&bytes);
+        assert!(
+            p.styles.contains(r#""italic":"0","weight":"4096""#),
+            "{embed}: {}",
+            p.styles
+        );
+        assert!(
+            !p.styles.contains(r#""weight":"64""#),
+            "{embed}: {}",
+            p.styles
+        );
+        // The technology and version of the face stay filled.
+        assert!(p.styles.contains(r#""version":"Version 1.102;PS 1.0","#));
+        assert!(p.styles.contains(r#""technology":"2","#));
+        assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
+        let (number, flags, family, _, style) = p.entries[0].clone();
+        assert_eq!(
+            (flags, family.as_str(), style.as_str()),
+            (0x1000, "Khand", "Bold")
+        );
+        assert_eq!(p.members.len(), usize::from(embed));
+        if embed {
+            let m = &p.members[0];
+            assert_eq!(
+                u32::from_le_bytes(m[2163..2167].try_into().expect("u32")),
+                0x1000
+            );
+        }
+        let bold_record = p
+            .records
+            .iter()
+            .find(|r| r.0 == number && r.1 == 0x1000)
+            .expect("the bold face's record");
+        assert_eq!(bold_record.2, embed, "{:?}", p.records);
+        assert!(
+            !p.records
+                .iter()
+                .any(|r| r.0 == number && r.1 == 0x40 && r.2),
+            "no regular face is said to be embedded: {:?}",
+            p.records
+        );
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("not text");
+        };
+        assert_eq!(
+            (
+                spans[0].font_family.as_str(),
+                spans[0].bold,
+                spans[0].italic
+            ),
+            ("Khand", true, false)
+        );
+    }
+}
+
+/// [`fonts::drawn_style`]: the face a file holds is written for the
+/// text it draws as it is (a bold or italic face of the family named,
+/// by its style bits; a weight of the typographic family named, by its
+/// weight), and the text's own style is kept where TraceDraw thickens or
+/// slants a face for it, for stand-ins of other families and when the
+/// file is the face asked for.
+#[test]
+fn text_is_written_as_the_face_that_draws_it() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let bold = std::sync::Arc::new(khand_bold_file());
+    let regular = std::sync::Arc::new(with_fs_selection(
+        &with_weight(&with_names(REGULAR, &[(1, "Khand"), (2, "Regular")]), 400),
+        0x40,
+    ));
+    let italic = std::sync::Arc::new(with_fs_selection(
+        &with_weight(&with_names(REGULAR, &[(1, "Khand"), (2, "Italic")]), 400),
+        0x01,
+    ));
+    let medium = std::sync::Arc::new(with_fs_selection(
+        &with_weight(
+            &with_names(
+                REGULAR,
+                &[
+                    (1, "Khand Medium"),
+                    (2, "Regular"),
+                    (16, "Khand"),
+                    (17, "Medium"),
+                ],
+            ),
+            500,
+        ),
+        0x40,
+    ));
+    let face = |data: &std::sync::Arc<Vec<u8>>, family: &str, b: bool, i: bool| FontFace {
+        family: family.into(),
+        bold: b,
+        italic: i,
+        data: Some(data.clone()),
+    };
+    // Regular and italic text drawn by the bold face: bold.
+    assert_eq!(
+        fonts::drawn_style(&face(&bold, "Khand", false, false)),
+        Some((700, false))
+    );
+    assert_eq!(
+        fonts::drawn_style(&face(&bold, "Khand", false, true)),
+        Some((700, true))
+    );
+    // Upright text drawn by the italic face: italic.
+    assert_eq!(
+        fonts::drawn_style(&face(&italic, "Khand", false, false)),
+        Some((400, true))
+    );
+    // Regular "Khand" drawn by the medium face: at 500.
+    assert_eq!(
+        fonts::drawn_style(&face(&medium, "Khand", false, false)),
+        Some((500, false))
+    );
+    // Kept: the face asked for, bold thickened, italic slanted, a
+    // stand-in of another family, no file.
+    assert_eq!(fonts::drawn_style(&face(&bold, "Khand", true, false)), None);
+    assert_eq!(
+        fonts::drawn_style(&face(&regular, "Khand", false, false)),
+        None
+    );
+    assert_eq!(
+        fonts::drawn_style(&face(&regular, "Khand", true, false)),
+        None
+    );
+    assert_eq!(
+        fonts::drawn_style(&face(&regular, "Khand", false, true)),
+        None
+    );
+    assert_eq!(
+        fonts::drawn_style(&face(&bold, "Arial", false, false)),
+        None
+    );
+    let none = FontFace {
+        data: None,
+        ..face(&bold, "Khand", false, false)
+    };
+    assert_eq!(fonts::drawn_style(&none), None);
+
+    // Upright text drawn by the italic face goes out italic, the
+    // record and entry of the italic face alone describing it.
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![text_shape(
+        &mut ids,
+        vec![TextSpan::new("abhishek", "Khand", 12.0)],
+        TextAlign::Left,
+    )]);
+    let previews = Previews {
+        fonts: vec![face(&italic, "Khand", false, false)],
+        embed_fonts: true,
+        ..Default::default()
+    };
+    let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+    let p = package_fonts(&bytes);
+    assert!(
+        p.styles.contains(r#""italic":"1","weight":"64""#),
+        "{}",
+        p.styles
+    );
+    assert_eq!(p.entries[0].1, 0x80);
+    assert!(
+        !p.records.iter().any(|r| r.1 == 0x40 && r.2),
+        "{:?}",
+        p.records
+    );
 }

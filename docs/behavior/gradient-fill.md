@@ -101,6 +101,18 @@ the dashed ellipse their frame makes, square fills the parallelogram.
   line and keeps its length.
 - Skew handle: sets the second axis on its own, so a radial fill
   becomes an ellipse and a linear fill's bands slant.
+- The line: a drag that starts on the line from the start to the end
+  (within the pick distance of Options > Nodes and Handles, 6 pixels at
+  first) away from the nodes and the midpoint sliders moves the whole
+  fill: the start, the end and the skew handle all go as far as the
+  pointer, so the line keeps its length and angle and the colour nodes
+  ride on it. Ctrl keeps the move horizontal or vertical, whichever is
+  longer. The nodes and the sliders win where they are on the line; the
+  pointer is the move cursor over the line and the nodes; one undo step
+  per drag (`App::drag_fountain_line`,
+  `effect_line_tests::the_fill_line_moves_the_whole_fill_for_every_kind`).
+  Linear, radial, conical and square fills alike; a shaped fill has no
+  line, and pattern and texture fills have no frame on the canvas.
 
 Colour nodes on the line (#330): every stop is a node on the line from
 the start to the end, at `start + pos (end - start)` (the first is the

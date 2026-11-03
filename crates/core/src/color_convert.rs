@@ -115,6 +115,11 @@ pub fn convert_shape(s: &mut Shape, f: &dyn Fn(Color) -> Color, to: ColorTarget)
             s.cmyk_bitmap = cmyk;
             n += 1;
         }
+        // An RGB picture prints its pixels through the colour
+        // management, not the inks it was read with (#1659).
+        if !cmyk {
+            s.picture_inks = None;
+        }
     }
     let saved = heavy.then(|| {
         std::mem::replace(
@@ -124,7 +129,11 @@ pub fn convert_shape(s: &mut Shape, f: &dyn Fn(Color) -> Color, to: ColorTarget)
             },
         )
     });
+    // The ink channels hold no colour to convert; kept out of the
+    // serialised form with the pixels.
+    let inks = s.picture_inks.take();
     n += convert_value(s, f);
+    s.picture_inks = inks;
     if let Some(mut kind) = saved {
         match &mut kind {
             ShapeKind::Group { children } => {
@@ -388,8 +397,23 @@ mod tests {
             bitmaps_changing_mode(&doc, &[], ColorTarget::Rgb),
             vec![ShapeId(1)]
         );
+        let set_inks = |doc: &mut Document| {
+            if let ShapeKind::Group { children } = &mut doc.pages[0].layers[0].shapes[0].kind {
+                children[0].picture_inks = Some(Box::new(crate::picture_inks::PictureInks::cmyk(
+                    b"png",
+                    vec![0u8; 4].into(),
+                )));
+            }
+        };
+        let has_inks = |doc: &Document| match &doc.pages[0].layers[0].shapes[0].kind {
+            ShapeKind::Group { children } => children[0].picture_inks.is_some(),
+            _ => panic!("group"),
+        };
+        set_inks(&mut doc);
         assert_eq!(convert_document(&mut doc, &[], ColorTarget::Rgb, false), 1);
         assert!(!inside(&doc));
+        // An RGB picture no longer prints from its CMYK channels (#1659).
+        assert!(!has_inks(&doc));
         // The mode survives the saved form.
         let json = serde_json::to_string(&doc.pages[0].layers[0].shapes[0]).unwrap_or_default();
         assert!(!json.contains("cmyk_bitmap"), "off is the default: {json}");

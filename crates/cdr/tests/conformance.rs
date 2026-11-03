@@ -66,7 +66,7 @@ fn keeps_group_names(v: u16) -> bool {
 }
 
 /// A blend goes out live from version 9 (its two ends with a linked group
-/// between them, #1192), so it reads back as a blend, on the upper object
+/// between them, #1192), so it reads back as a blend, on the lower object
 /// before 14 and on its start object from 14 (the package member);
 /// versions 7 and 8 hold the drawn group.
 fn keeps_live_blends(v: u16) -> bool {
@@ -1365,11 +1365,11 @@ fn blends_contours_envelopes_and_extrusions() {
         // objects) in versions 7 and 8; from 9 a live blend between the
         // start and the end, which is an object of its own in the file
         // (one object more). A RIFF file (9 to 13) puts the blend on the
-        // upper object, the end; from 14 the package member gives it
-        // back to the start (#1192).
+        // lower object, here the start, as the package member does from
+        // 14 (#1192).
         let mut shapes: Vec<Shape> = shapes.to_vec();
         if keeps_live_blends(r.v) {
-            let (holder, other) = if r.v >= 14 { (0, 1) } else { (1, 0) };
+            let (holder, other) = (0, 1);
             let [Effect::Blend {
                 steps, end, end_id, ..
             }] = shapes[holder].effects.as_slice()

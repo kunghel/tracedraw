@@ -33,11 +33,20 @@ curve stays open.
   included (a node moves between the normals of its two segments), so
   every point of the zigzag is a tooth's tip, the pattern runs unbroken
   through the nodes and the ends of an open curve are tips too, not
-  points left on the curve (#1108). With a tilt the teeth lean: on a
-  line, tilted 60 degrees, every tip is `amplitude` from its point on
-  the line along the normal turned by 60 degrees, so the zigzag is
-  sheared toward a sawtooth; tilted 180 it is the same zigzag with its
-  sides swapped (#1671). A closed outline whose count of tips would be
+  points left on the curve (#1108). With a tilt the teeth lean, and
+  only the tips lean (#1736): the points on the side of the outline the
+  handle is on (the normal's side for a tilt under 90 degrees either
+  way, the other side past it) stay `amplitude` from the segment and
+  move along it by `amplitude * tan(tilt)`, onto the normal turned by
+  `tilt` from their point on it, while the points on the other side
+  stay where the upright teeth have them, `amplitude` straight out. A
+  lean so neither moves the bases nor changes the zigzag's height: it
+  is `2 * amplitude` high, half to each side of the outline, whatever
+  the tilt, as in the reference files of #1671 and #1736. Near 90
+  degrees the move along the segment is held at ten times the
+  amplitude. On a line tilted 60 degrees the zigzag is sheared toward
+  a sawtooth; tilted 180 it is the same zigzag with its sides swapped
+  (#1671). A closed outline whose count of tips would be
   odd takes one line more on its last segment, so the last tip
   alternates with the first. Random scales each tooth by a fixed
   pseudo-random share of its height (the same every time it is drawn);
@@ -102,7 +111,11 @@ curve stays open.
   slider on the line (a small circle). A drag that starts on one
   (within 6 pixels, or half the handle size and 2 more for larger
   handles, `App::distort_pick_px`; the centre first, then the slider, then the end) takes it: the diamond
-  moves the centre; the end handle is a square along the line at
+  moves the centre; a drag on the line between them (within the pick
+  distance of Options > Nodes and Handles) moves the centre by the
+  pointer's way, the line with it at its length and angle, Ctrl keeping
+  that move horizontal or vertical, the pointer the move cursor over the
+  line (`effect_line_tests::the_distortion_line_moves_its_centre`); the end handle is a square along the line at
   `amount / 100` of `r` for Push and Pull (the other way when negative;
   dragging it sets the amount from its distance and the side from
   where it is) and at four times the amplitude for the Zipper (the
@@ -182,6 +195,8 @@ curve stays open.
 - `distort::tests::twister_keeps_the_far_points_and_turns_the_inside`
 - `distort::tests::a_zipped_line_starts_and_ends_on_tips`
 - `distort::tests::the_teeth_lean_by_the_tilt`
+- `distort::tests::tilted_teeth_keep_their_bases_and_their_height`
+- `distort::tests::tilted_teeth_still_follow_the_handle_and_smooth_ones_never_cross`
 - `distort::tests::smooth_teeth_are_waves_that_never_cross`
 - `distort::tests::a_twisted_line_is_a_smooth_spiral_to_its_ends`
 - `distort::tests::older_files_and_odd_values_read`
@@ -219,9 +234,20 @@ curve stays open.
   lines between eight points, all teeth's tips, the two ends included,
   alternately on each side of the line.
 - Given a 130 mm line and Zipper with amplitude 8, frequency 15 and
-  tilt 60, then each of the 17 tips is 8 mm from its point on the line
-  along the line's normal turned by 60 degrees, alternately each way;
-  with tilt 180 the tips are those of tilt 0 mirrored in the line.
+  tilt 60, then each of the 8 tips on the handle's side lies on the
+  line's normal turned by 60 degrees from its point on the line, 8 mm
+  from the line, and each of the 9 points on the other side is 8 mm
+  straight out from its point on the line, where tilt 0 puts it; with
+  tilt 180 the points are those of tilt 0 mirrored in the line.
+- Given the same line tilted 30, -30, 60 or -75 degrees, then the
+  bases stay where tilt 0 has them, the tips are 8 mm from the line
+  moved `-8 tan(tilt)` mm along it, and the zigzag is 16 mm high, 8 mm
+  to each side, as upright; tilted 150 the tips are on the other side;
+  tilted 90 the tips stay within 80 mm of their place (#1736).
+- Given the same line and a smooth Zipper tilted 25 degrees, then the
+  waves go through the same points as the sharp one and each runs on
+  along the line, never turning back, within the amplitude of it,
+  crossing it once.
 - Given a 130 mm line and a smooth Zipper with amplitude 10 and
   frequency 15 (tips every 8.1 mm, taller than they are apart), then
   each of the 16 waves runs on along the line within its own stretch
@@ -232,7 +258,8 @@ curve stays open.
   side 8 mm straight down, then the teeth are upright (tilt 0) and 2 mm
   high and the end handle is where the drag ended; the handle taken and
   dragged round to 30 degrees off the normal leans the teeth 30 degrees
-  (every tip on that side is 2 cos 30 mm off the side), the handle under
+  (every point on that side is still 2 mm off the side and the bases
+  stay where the upright teeth have them, #1736), the handle under
   the pointer; tilt 0 typed on the bar puts the handle back on the
   normal.
 - Given a 20 mm square with Push and Pull 50 selected, then its end

@@ -9,6 +9,7 @@ Fillets, scallops or chamfers the corners of the selected objects.
 | Operation | Fillet | Fillet, Scallop or Chamfer |
 | Radius | 2 mm | Fillet: the arc tangent to both sides, its centre equidistant from them. Scallop: measured from the corner, the notch is a quarter of that circle |
 | Chamfer distance A, B | 2 mm, locked | A back along the side the path comes in on, B along the side it leaves on (the order the path is drawn in); the lock makes B equal to A |
+| Preview | on | draws the result on the drawing; remembered in the settings |
 | Apply | | disabled when nothing selected has a corner the values fit |
 
 - A corner is a node where two segments meet at an angle; smooth and
@@ -29,8 +30,10 @@ Fillets, scallops or chamfers the corners of the selected objects.
   `corners::tests::fillets_on_a_stretched_object_are_round`). The cut is
   part of the curve: it is not live and does not change if the object
   is stretched later.
-- While the panel is open, the result is previewed on the drawing as a
-  dashed outline in the selection colour.
+- While the panel is open and Preview is ticked, the result is
+  previewed on the drawing as a dashed outline in the selection colour.
+  Untick Preview to see the objects as they are with the panel still
+  open (#1759); Apply works the same either way.
 - One undo step ("Fillet", "Scallop" or "Chamfer").
 
 Rectangles keep their own corner settings when rounded from the property

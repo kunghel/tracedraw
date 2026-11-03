@@ -70,8 +70,16 @@ pub fn numbered_path(path: &Path, number: usize, ext: &str) -> std::path::PathBu
 
 pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, String> {
     let (_, ext) = EXPORT_FORMATS[st.format];
-    let (doc, _) = export_document(app, st);
-    if ExportState::one_file_for_all_pages(ext) {
+    let (mut doc, _) = export_document(app, st);
+    if ext == "ai" && st.classic_ai() {
+        // The classic AI file's `%%Title`, as the PDF-compatible one's.
+        doc.title = if st.title.trim().is_empty() {
+            app.document_title().trim_end_matches('*').to_string()
+        } else {
+            st.title.trim().to_string()
+        };
+    }
+    if st.one_file_holds_the_pages(ext) {
         let bytes = document_file(app, &doc, ext, st)?;
         crate::files::write(path, bytes).map_err(|e| e.to_string())?;
         return Ok(trf(
@@ -159,6 +167,8 @@ fn page_file(doc: &Document, k: usize, ext: &str, st: &ExportState) -> Result<Ve
     Ok(match ext {
         "svg" => tracedraw_io::svg::page_to_svg(doc, k).into_bytes(),
         "eps" => tracedraw_io::eps::page_to_eps(doc, k).into_bytes(),
+        // The classic AI file: one artboard, so one page per file (#1728).
+        "ai" if st.classic_ai() => tracedraw_io::ai::page_to_ai8(doc, k).into_bytes(),
         "dxf" => tracedraw_io::dxf::page_to_dxf(doc, k).into_bytes(),
         "emf" => tracedraw_io::emf::page_to_emf(doc, k),
         "wmf" => tracedraw_io::emf::page_to_wmf(doc, k),
@@ -348,6 +358,7 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
         "svg" => Some(tracedraw_io::svg::page_to_svg(&doc, 0).len() * pages),
         "eps" => Some(tracedraw_io::eps::page_to_eps(&doc, 0).len() * pages),
         "ps" | "prn" => Some(tracedraw_io::eps::document_to_ps(&doc).len()),
+        "ai" if st.classic_ai() => Some(tracedraw_io::ai::page_to_ai8(&doc, 0).len() * pages),
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
         "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
             let enc = if ext == "psd" { "tif" } else { ext };
@@ -1233,6 +1244,8 @@ pub fn plates(doc: &Document) -> Vec<(Plate, String)> {
 
 /// One plate of a page: every colour turned into the grey of the ink's
 /// coverage (black = full ink); registration colour prints on all plates.
+/// Pictures show the coverage of the plate's ink, pixel by pixel, with
+/// their alpha (#1659, `picture_plates`).
 pub fn plate_page(
     page: &tracedraw_core::document::Page,
     plate: Plate,
@@ -1265,6 +1278,9 @@ pub fn plate_page(
                 }
             }
             map_colors(s, &coverage);
+            crate::picture_plates::swap_pictures(s, &|pic| {
+                crate::picture_plates::plate_picture(pic, plate)
+            });
         }
     }
     p
@@ -1273,12 +1289,20 @@ pub fn plate_page(
 /// A page as printed with only some inks (#571): process colours keep
 /// the channels of the inks on, spot colours show when their ink is on
 /// and are paper otherwise; registration colour prints with every ink.
+/// Pictures keep the inks on, pixel by pixel (#1659); `inks` are the
+/// drawing's spot inks, for the colour a picture's spot channel shows.
 pub fn inks_page(
     page: &tracedraw_core::document::Page,
     process: [bool; 4],
     spots: &[u32],
+    inks: &[tracedraw_core::document::Ink],
 ) -> tracedraw_core::document::Page {
     use tracedraw_core::{Color, Fill};
+    let spot_colors: Vec<(u32, [u8; 3])> = inks
+        .iter()
+        .filter(|i| spots.contains(&i.id))
+        .map(|i| (i.id, i.color(1.0).to_rgb8()))
+        .collect();
     let spots = spots.to_vec();
     let keep = move |c: Color| -> Color {
         let on = |i: usize, v: f32| if process[i] { v } else { 0.0 };
@@ -1311,6 +1335,9 @@ pub fn inks_page(
                 }
             }
             map_colors(s, &keep);
+            crate::picture_plates::swap_pictures(s, &|pic| {
+                crate::picture_plates::inks_picture(pic, process, &spot_colors)
+            });
         }
     }
     p
@@ -2425,6 +2452,172 @@ mod tests {
         );
     }
 
+    /// A drawing of one picture of `rgba` pixels (`w` wide), with `inks`
+    /// as its ink channels when given, and a spot ink with id 7.
+    fn picture_doc(
+        w: u32,
+        rgba: &[u8],
+        inks: Option<(Vec<tracedraw_core::picture_inks::PictureInk>, Vec<u8>)>,
+    ) -> Document {
+        use tracedraw_core::picture_inks::PictureInks;
+        let h = (rgba.len() / 4) as u32 / w;
+        let img = image::RgbaImage::from_raw(w, h, rgba.to_vec()).expect("pixels");
+        let png: tracedraw_core::SharedBytes = crate::bitmap_fx::encode(&img).expect("png").into();
+        let mut doc = Document::new("p", tracedraw_core::Size::new(50.0, 50.0));
+        doc.inks.push(tracedraw_core::document::Ink {
+            id: 7,
+            name: "Gold".into(),
+            cmyk: [0.0, 0.2, 0.8, 0.1],
+        });
+        let id = doc.ids_mut().shape();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: w,
+                height_px: h,
+                png: png.clone(),
+                fx: None,
+            },
+        );
+        s.fill = tracedraw_core::Fill::None;
+        s.stroke = None;
+        if let Some((inks, planes)) = inks {
+            let n = inks.len() as u32;
+            let gray = image::GrayImage::from_raw(w, h * n, planes).expect("planes");
+            let mut out = std::io::Cursor::new(Vec::new());
+            gray.write_to(&mut out, image::ImageFormat::Png)
+                .expect("png");
+            s.cmyk_bitmap = true;
+            s.picture_inks = Some(Box::new(PictureInks {
+                inks,
+                png: out.into_inner().into(),
+                of: tracedraw_core::picture_inks::fingerprint(&png),
+            }));
+        }
+        doc.pages[0].layers[0].shapes.push(s);
+        doc
+    }
+
+    /// The pixels of the picture on each plate (C, M, Y, K, then the spot
+    /// inks), found inside groups and clip frames.
+    fn plate_pixels(doc: &Document) -> Vec<Vec<[u8; 4]>> {
+        fn find(s: &tracedraw_core::Shape) -> Option<&tracedraw_core::SharedBytes> {
+            match &s.kind {
+                ShapeKind::Bitmap { png, .. } => Some(png),
+                ShapeKind::Group { children } => children.iter().find_map(find),
+                ShapeKind::ClipFrame { contents, .. } => contents.iter().find_map(find),
+                _ => None,
+            }
+        }
+        separations_doc(doc)
+            .pages
+            .iter()
+            .map(|p| {
+                let png = p.layers[0].shapes.iter().find_map(find).expect("picture");
+                let img = crate::bitmap_fx::decode(png).expect("decodes");
+                img.pixels().map(|p| p.0).collect()
+            })
+            .collect()
+    }
+
+    /// Separations split pictures into their inks (#1659): a CMYK
+    /// picture prints each ink it holds on its plate, an RGB or grey one
+    /// is converted to CMYK, a spot channel goes to its spot plate, and
+    /// the picture's alpha stays on every plate.
+    #[test]
+    fn separations_split_pictures_into_their_inks() {
+        use tracedraw_core::picture_inks::PictureInk;
+        let ink = |p: &[u8; 4]| 255 - p[0];
+        // A CMYK picture of cyan ink alone (its screen pixels a cyan
+        // that converts back to some magenta too): only the cyan plate.
+        let process: Vec<PictureInk> = (0..4).map(PictureInk::Process).collect();
+        let doc = picture_doc(
+            1,
+            &[0, 174, 239, 255],
+            Some((process.clone(), vec![255, 0, 0, 0])),
+        );
+        let plates = plate_pixels(&doc);
+        assert_eq!(plates.len(), 5, "C, M, Y, K and the spot plate");
+        let inks: Vec<u8> = plates.iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [255, 0, 0, 0, 0]);
+        // Black ink alone stays on the black plate.
+        let doc = picture_doc(1, &[35, 31, 32, 255], Some((process, vec![0, 0, 0, 255])));
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [0, 0, 0, 255, 0]);
+        // RGB red: magenta and yellow.
+        let doc = picture_doc(1, &[255, 0, 0, 255], None);
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[3] < 26 && inks[4] == 0, "{inks:?}");
+        assert!(inks[1] > 230 && inks[2] > 230, "{inks:?}");
+        // A grey picture lands on the black plate.
+        let doc = picture_doc(2, &[128, 128, 128, 255, 0, 0, 0, 255], None);
+        let plates = plate_pixels(&doc);
+        for (i, plate) in plates.iter().enumerate() {
+            let inks: Vec<u8> = plate.iter().map(ink).collect();
+            if i == 3 {
+                assert!(inks[0] > 100 && inks[1] == 255, "{inks:?}");
+            } else {
+                assert_eq!(inks, [0, 0], "plate {i}");
+            }
+        }
+        // Transparency: the alpha of every pixel on every plate.
+        let doc = picture_doc(3, &[255, 0, 0, 0, 255, 0, 0, 128, 0, 0, 0, 255], None);
+        for plate in plate_pixels(&doc) {
+            assert_eq!(
+                plate.iter().map(|p| p[3]).collect::<Vec<_>>(),
+                [0, 128, 255]
+            );
+        }
+        // A spot channel prints on its spot plate only.
+        let doc = picture_doc(
+            1,
+            &[200, 160, 60, 255],
+            Some((vec![PictureInk::Spot(7)], vec![204])),
+        );
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [0, 0, 0, 0, 204]);
+        // Channels that no longer fit the pixels (the picture changed)
+        // give way to the pixels: this red is magenta and yellow.
+        let mut doc = picture_doc(
+            1,
+            &[255, 0, 0, 255],
+            Some((
+                (0..4).map(PictureInk::Process).collect(),
+                vec![255, 0, 0, 0],
+            )),
+        );
+        if let Some(inks) = &mut doc.pages[0].layers[0].shapes[0].picture_inks {
+            inks.of ^= 1;
+        }
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[1] > 230, "{inks:?}");
+        // Inside a clip frame (clipped, as it shows) the picture splits too.
+        let mut doc = picture_doc(1, &[255, 0, 0, 255], None);
+        let pic = doc.pages[0].layers[0].shapes.remove(0);
+        let id = doc.ids_mut().shape();
+        let frame = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 5.0, 5.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let id = doc.ids_mut().shape();
+        doc.pages[0].layers[0]
+            .shapes
+            .push(tracedraw_core::Shape::new(
+                id,
+                ShapeKind::ClipFrame {
+                    frame: Box::new(frame),
+                    contents: vec![pic],
+                },
+            ));
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[2] > 230, "{inks:?}");
+    }
+
     /// File > Export of the current page, every page or a list of pages:
     /// one numbered file per page for the formats of one page, one file
     /// with every page chosen for PDF, its text as curves when asked
@@ -2551,6 +2744,58 @@ mod tests {
             numbered_path(Path::new("/x/name"), 2, "png"),
             Path::new("/x/name-2.png")
         );
+    }
+
+    /// "AI" writes the PDF-compatible file by default, and the classic
+    /// version 8 file (PostScript, one page per file) when chosen, for
+    /// programs that read only those (#1728).
+    #[test]
+    fn export_ai_writes_pdf_compatible_or_classic_version_8() {
+        let mut app = App::headless();
+        for k in 0..2 {
+            if k > 0 {
+                app.add_page();
+            }
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            });
+        }
+        let dir = std::env::temp_dir().join(format!("tracedraw-1728-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ai = EXPORT_FORMATS.iter().position(|f| f.1 == "ai").unwrap();
+        let st = |version: usize| ExportState {
+            format: ai,
+            all_pages: true,
+            ai_version: version,
+            title: "Logo (curves)".into(),
+            ..ExportState::default()
+        };
+        // The default: one PDF-compatible file with both pages, as before.
+        assert!(!ExportState::default().classic_ai());
+        export(&mut app, &dir.join("pdf.ai"), &st(0)).expect("pdf-compatible");
+        let bytes = std::fs::read(dir.join("pdf.ai")).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Classic: one PostScript file per page, each with the AI header.
+        assert!(st(1).classic_ai() && !st(1).one_file_holds_the_pages("ai"));
+        export(&mut app, &dir.join("old.ai"), &st(1)).expect("classic");
+        for name in ["old-1.ai", "old-2.ai"] {
+            let text = std::fs::read_to_string(dir.join(name)).expect(name);
+            assert!(text.starts_with("%!PS-Adobe-3.0\n"), "{name}");
+            assert!(text.contains("\n%%AI8_CreatorVersion: 8.0\n"));
+            assert!(text.contains("\n%AI5_FileFormat 4.0\n"));
+            assert!(text.contains("\n%%BoundingBox: 0 0 596 842\n"));
+            assert!(text.contains("\n%%Title: (Logo \\(curves\\))\n"), "{text}");
+        }
+        // It opens again as a PostScript-based .ai, with the rectangle.
+        assert_eq!(App::file_kind(&dir.join("old-1.ai")), "eps");
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let bytes = std::fs::read(dir.join("old-1.ai")).unwrap();
+        let back = tracedraw_io::eps_import::parse(&bytes, &mut ids).expect("reads");
+        assert!(!back.shapes.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Export to PDF with text as curves holds no font (#1382).

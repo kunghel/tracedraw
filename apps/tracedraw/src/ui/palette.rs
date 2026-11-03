@@ -177,6 +177,16 @@ pub fn shows_document(app: &App, which: Row) -> bool {
     }
 }
 
+/// The user's own palette `which` shows (a bar of its own, not the
+/// document palette), when it takes colours dropped on it.
+pub fn user_palette_of(app: &App, which: Row) -> Option<usize> {
+    let Row::Extra(k) = which else {
+        return None;
+    };
+    let r = app.extra_palettes.get(k).filter(|r| !r.document)?;
+    app.palette_takes_colors(r.index).then_some(r.index)
+}
+
 /// How many swatches `which` holds, the No Color well included.
 pub fn swatch_count(app: &App, which: Row) -> usize {
     let n = if shows_document(app, which) {
@@ -498,6 +508,17 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     if which == Row::Document {
         app.doc_palette_rect = Some(rect);
     }
+    // A palette of the user's takes colours dropped on its bar.
+    let own = user_palette_of(app, which);
+    if let Some(i) = own {
+        app.palette_drop_rects.retain(|(k, _)| *k != i);
+        app.palette_drop_rects.push((i, rect));
+    }
+    let hint = if is_doc {
+        Some("palette.document_hint")
+    } else {
+        own.map(|_| "palette.user_empty_hint")
+    };
     let painter = ui.painter_at(rect);
     let ax = Axis {
         vertical,
@@ -542,7 +563,12 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
             crate::ui::palette_bars::grip_zone(app, ui, k, grip_rect);
         }
         Row::Extra(_) => {}
-        _ if !floating => {
+        // The document palette row moves by itself too (as a bar of its
+        // own), never the default palette above it.
+        Row::Document if !floating => {
+            crate::ui::palette_bars::document_grip_zone(app, ui, grip_rect);
+        }
+        Row::Main if !floating => {
             crate::ui::bars::grip_zone(
                 app,
                 ui,
@@ -687,11 +713,11 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     });
     let shown = slots.min(count.saturating_sub(scroll));
     if shown == 0 {
-        if is_doc && !vertical {
+        if let Some(hint) = hint.filter(|_| !vertical) {
             painter.text(
                 ax.point(LEAD + 8.0, EDGE + 11.0),
                 Align2::LEFT_CENTER,
-                tr("palette.document_hint"),
+                tr(hint),
                 FontId::proportional(11.0),
                 Tokens::text_dim(),
             );
@@ -757,11 +783,11 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         let entry = color_index.and_then(|i| colors.get(i));
         swatch(app, ui, &painter, cell, entry, which, index, color_index);
     }
-    if is_doc && shown < slots && colors.is_empty() && !vertical {
+    if let Some(hint) = hint.filter(|_| shown < slots && colors.is_empty() && !vertical) {
         painter.text(
             ax.point(LEAD + shown as f32 * st + 9.0, EDGE + 11.0),
             Align2::LEFT_CENTER,
-            tr("palette.document_hint"),
+            tr(hint),
             FontId::proportional(11.0),
             Tokens::text_dim(),
         );
@@ -1125,6 +1151,15 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
         crate::ui::palette_bars::strip_items(app, ui, which);
     }
     crate::ui::palette_bars::open_bar_items(app, ui);
+    if item(ui, "palette.new", "", true) {
+        crate::ui::palette_bars::start_new_palette(app);
+    }
+    if let Some(i) = user_palette_of(app, which) {
+        let sel = app.has_document() && !app.selection.is_empty();
+        if item(ui, "palette.add_selection_to_palette", "", sel) {
+            app.add_selection_colors_to_palette(i);
+        }
+    }
     if let Row::Extra(k) = which {
         sep(ui);
         if item(ui, "palette.rename", "", true) {
@@ -1349,6 +1384,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
         ctx.data_mut(|d| d.remove::<bool>(shades_fired_id()));
     }
     crate::ui::palette_bars::rename_window(app, ctx);
+    crate::ui::palette_bars::new_palette_window(app, ctx);
 }
 
 /// The expand button toggles the pop-up itself.

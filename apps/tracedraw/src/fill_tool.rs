@@ -38,9 +38,6 @@ pub enum FountainHandle {
     Mid(usize),
 }
 
-/// Screen pixels within which a press takes a node or the line.
-const PICK_PX: f64 = 6.0;
-
 /// The point at `t` (0 at the start, 1 at the end) on the fill's line.
 pub fn on_line(s: Point, e: Point, t: f64) -> Point {
     s + (e - s) * t
@@ -143,12 +140,13 @@ impl App {
         }
     }
 
-    /// The node under a page point, within 6 screen pixels: the start,
+    /// The node under a page point, within the pick distance (Options >
+    /// Nodes and Handles, 6 screen pixels at first): the start,
     /// the end and the skew handle first, then the colour nodes on the
     /// line, then the midpoint sliders.
     pub fn fountain_handle_at(&self, p: Point) -> Option<FountainHandle> {
         let (_, f, b) = self.selected_fountain()?;
-        let tol = PICK_PX / self.view.zoom as f64;
+        let tol = self.line_pick_tol();
         let hs = fountain_handles(&f, b);
         let nearest = |pts: Vec<(FountainHandle, Point)>| {
             pts.into_iter()
@@ -183,7 +181,7 @@ impl App {
     }
 
     /// Where a page point falls on the selected fill's line (0 at the
-    /// start, 1 at the end), within 6 screen pixels of it.
+    /// start, 1 at the end), within the pick distance of it.
     pub fn fountain_line_at(&self, p: Point) -> Option<f64> {
         let (_, f, b) = self.selected_fountain()?;
         let hs = fountain_handles(&f, b);
@@ -191,7 +189,7 @@ impl App {
             return None;
         };
         let t = line_param(*s, *e, p);
-        let tol = PICK_PX / self.view.zoom as f64;
+        let tol = self.line_pick_tol();
         ((0.0..=1.0).contains(&t) && (on_line(*s, *e, t) - p).hypot() <= tol).then_some(t)
     }
 
@@ -442,6 +440,128 @@ impl App {
                 start: rel(s),
                 end: rel(e),
                 skew: rel(k),
+            },
+        );
+        self.set_selected_fountain(id, f, begun);
+    }
+
+    /// A drag pressed at `press` (and noticed at `at`) with Interactive
+    /// Fill or Transparency: on a node or a midpoint slider (they win), it
+    /// takes it; elsewhere on the line from the start to the end, within
+    /// the pick distance, it takes the whole fill, which the drag then
+    /// moves by its line. False when it is on neither.
+    pub fn begin_fountain_drag(&mut self, at: Point, press: Point) -> bool {
+        let held = self
+            .fountain_handle_at(at)
+            .or_else(|| self.fountain_handle_at(press));
+        if let Some(h) = held {
+            if let Some(i) = self.fountain_stop_of(h) {
+                self.fill_node = Some(i);
+            }
+            self.drag = crate::app::Drag::FountainHandle {
+                handle: h,
+                begun: false,
+            };
+            return true;
+        }
+        if !self.fountain_on_line(press) {
+            return false;
+        }
+        let Some((_, f, b)) = self.selected_fountain() else {
+            return false;
+        };
+        let Some(&(_, origin)) = fountain_handles(&f, b).first() else {
+            return false;
+        };
+        self.drag = crate::app::Drag::FountainLine {
+            press,
+            origin,
+            begun: false,
+        };
+        true
+    }
+
+    /// The selected fill's line from the start to the end passes within
+    /// the pick distance of `p`, away from its nodes and midpoint sliders:
+    /// a drag from there moves the whole fill.
+    pub fn fountain_on_line(&self, p: Point) -> bool {
+        if self.fountain_handle_at(p).is_some() {
+            return false;
+        }
+        let Some((_, f, b)) = self.selected_fountain() else {
+            return false;
+        };
+        let hs = fountain_handles(&f, b);
+        let [(_, s), (_, e), _] = hs.as_slice() else {
+            return false;
+        };
+        crate::effect_line::near_segment(*s, *e, p, self.line_pick_tol())
+    }
+
+    /// The pointer of a drag [`App::begin_fountain_drag`] took is at `p`:
+    /// the node it holds follows, or the whole fill moves by its line
+    /// (kept straight with `ctrl`). False when the drag holds neither.
+    pub fn fountain_drag_to(&mut self, p: Point, ctrl: bool) -> bool {
+        use crate::app::Drag;
+        match self.drag {
+            Drag::FountainHandle { handle, begun } => {
+                self.drag_fountain_handle(handle, p, begun);
+                self.drag = Drag::FountainHandle {
+                    handle,
+                    begun: true,
+                };
+                true
+            }
+            Drag::FountainLine {
+                press,
+                origin,
+                begun,
+            } => {
+                self.drag_fountain_line(press, origin, p, ctrl, begun);
+                self.drag = Drag::FountainLine {
+                    press,
+                    origin,
+                    begun: true,
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Move the whole fill by its line: a drag pressed at `press`, when
+    /// the start node was at `origin`, is at `p`. The start, the end and
+    /// the skew handle all move by the pointer's way (kept horizontal or
+    /// vertical with `ctrl`), so the line keeps its length and angle and
+    /// the colour nodes and midpoints ride on it. The first move of a drag
+    /// is an undo step, the next ones join it (`begun`).
+    pub fn drag_fountain_line(
+        &mut self,
+        press: Point,
+        origin: Point,
+        p: Point,
+        ctrl: bool,
+        begun: bool,
+    ) {
+        let Some((id, mut f, b)) = self.selected_fountain() else {
+            return;
+        };
+        let pts = fountain_handles(&f, b);
+        let [(_, s), (_, e), (_, k)] = pts.as_slice() else {
+            return;
+        };
+        let to = origin + crate::effect_line::constrain_move(p - press, ctrl);
+        let d = to - *s;
+        if !(d.x.is_finite() && d.y.is_finite()) {
+            return;
+        }
+        let rel = |q: Point| Fountain::page_to_rel(b, q);
+        f.set_handles(
+            b,
+            FountainHandles {
+                start: rel(*s + d),
+                end: rel(*e + d),
+                skew: rel(*k + d),
             },
         );
         self.set_selected_fountain(id, f, begun);

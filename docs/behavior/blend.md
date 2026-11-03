@@ -9,7 +9,7 @@ Intermediate objects between a start and an end object.
 | Acceleration (objects, colours) | 0 (linear) | -1..1 (the bar: -100..100 %) |
 | Path | none | any curve (the panel's New path), "rotate all objects" |
 | Spacing (along a path) | off, 5 mm | the steps follow from the path's length: `floor(length / spacing) - 1`, 1 to 999 |
-| Loop | off | the rotation turns the steps about the middle between the two objects |
+| Loop | off | with a rotation, the steps' centres leave the straight way and curve from the start to the end (a half circle at 180 degrees, a curl through the middle at 360) |
 | Blend along full path | off | along a path, the first and last steps sit on the path's ends |
 | Apply to sizing | off | the object acceleration changes the steps' sizes too |
 | Color blend | Direct | Direct (straight through RGB), Clockwise (hue increasing), Counterclockwise (hue decreasing), through HSB |
@@ -52,12 +52,13 @@ lets go. The selected blend shows a white square on the start object's
 centre, a crossed one on the end object's, the line between them, and
 two sliders on that line: the object acceleration (triangle above the
 line) and the colour acceleration (triangle below). Each sits where the
-middle step lands, `0.5 - 0.45 acc` of the way from the start, so at
-0 both are halfway, at +1 (100 %) 5 % from the start and at -1 5 % from
-the end: the slider goes as far one way as the other (#1261; the
-exponent `1 + acc` used before put the middle step 25 % from the start
-at +1 and 3 % from the end at -1, so the steps bunched fully at the end
-but only part of the way toward the start). Dragging a slider along the line sets its
+middle step lands (see Formulas), so at 0 both are halfway, at +1
+(100 %) 10.5 % from the start and at -1 10.5 % from the end: the slider
+goes as far one way as the other (#1261; the exponent `1 + acc` used
+before put the middle step 25 % from the start at +1 and 3 % from the
+end at -1, so the steps bunched fully at the end but only part of the
+way toward the start; then, until #1192, the power `t ^ e` with the
+middle step at `0.5 - 0.45 acc`, 5 % from either end at 100 %). Dragging a slider along the line sets its
 acceleration to the one that puts the middle step there (two decimals,
 -1..1): toward the start bunches the steps (or the colours) near the
 start, toward the end near the end. With Link acceleration both
@@ -72,6 +73,15 @@ the move is taken back and that object becomes the new start or end
 with the blend's settings, the old start staying a plain object and the
 selection moving to the new start (#965,
 `text_effect_tests::the_blend_tool_s_end_squares_move_and_pick_the_end_objects`).
+
+Dragging the line between the squares (within the pick distance of
+Options > Nodes and Handles, away from the squares and the sliders, which
+win where they overlap it) moves the start and the end objects together,
+so the whole blend moves with its length and angle kept; Ctrl keeps the
+move horizontal or vertical. One undo step for the drag, and the pointer
+is the move cursor over the line. A blend whose end lives only in the
+effect (no end object) has no line to drag
+(`effect_line_tests::the_blend_line_moves_the_whole_blend`).
 Not yet on the canvas: dropping colours on the squares.
 
 The steps lie between the two objects in the stacking order: with the
@@ -115,10 +125,12 @@ only inside the effect; such a blend draws its end with the steps.
 
 ## Formulas
 
-For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = t ^ e`,
-`e = ln(0.5 - 0.45 acc) / ln(0.5)`, so the middle step lands at
-`0.5 - 0.45 acc` of the way, `tracedraw_core::live::blend_exponent`,
-`live::tests::blend_acceleration_goes_as_far_either_way`):
+For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = ln(1 +
+(K - 1) t) / ln K`, `K = 705.641 ^ (-acc)` (`705.641 = 1.3 ^ 25`), the
+curve and the range the `.cdr` files' blends use, #1192;
+`tracedraw_core::live::blend_place`,
+`live::tests::blend_acceleration_goes_as_far_either_way`,
+`live::tests::blend_steps_follow_the_file_s_acceleration_curve`):
 - Geometry: the end outline is wound the way the start outline is and
   started where it best fits the start outline's first node (the two
   outlines compared as 120 points each, about their own centres and at
@@ -154,7 +166,20 @@ For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = t ^ e`,
   next (#1260,
   `live::tests::a_blend_to_a_turned_copy_turns_its_steps_evenly`). Two
   different outlines are mixed point by point as above.
-- Colour: mixed directly (each colour's values from start to end).
+- Colour: mixed directly (each colour's values from start to end), or
+  through HSB around the hue circle (Clockwise: the hue rising from the
+  start; Counterclockwise: falling), `t'` of the colour acceleration of
+  the way.
+- Rotation: each step turns about its own centre by `rotation * t'`.
+  With Loop its centre also leaves the straight way: the start's centre
+  `A` turned by `rotation * t'` about the middle `M` of the two centres
+  and the end's `B` turned by `rotation * (t' - 1)` about it, mixed `t'`
+  of the way (`(1 - t') R(rotation t') (A - M) + t' R(rotation (t' - 1))
+  (B - M) + M`), so the steps leave the start and reach the end along a
+  curve to the right of the way for a positive rotation: a half circle
+  at 180 degrees, a curl through the middle at 360 (#1192, the pictures
+  of the `.cdr` files; turned about the middle alone, the last steps
+  landed far from the end; `live::tests::a_looped_blend_curves_from_one_end_to_the_other`).
 - Along a path: step `k` is placed at arc length `t' * L` on the path,
   oriented to the tangent when "rotate all objects" is on.
 
@@ -165,14 +190,19 @@ as objects of their own, the upper one first, with the empty linked
 group files hold between them (object type 7, the step count, the
 spacing and the two ends' centres; `docs/cdr-format.md`, Writing,
 Blend), so the program that reads the file shows the steps and edits
-the blend. Read back in TraceDraw the blend is on the start object with
-its settings from version 14 (the package names it in
-`tracedraw/blends.json`); from a RIFF file (9 to 13) it comes back the
-way any file's blend does: on the upper object, even acceleration,
-node-for-node pairing. Versions 7 and 8 get one plain group of the
-start object and its steps as curves (#946). The acceleration, rotation,
-path and colour direction have no known place in the record and are
-not written; the blend's own drop shadow is left out. A blend whose
+the blend. From version 23 the record also holds the object and colour
+accelerations, the rotation, Loop, Apply to sizing and the colour
+direction, counted from the lower object (`docs/cdr-format.md`, Blend
+settings; #1192): a blend whose start is the upper object goes out with
+its accelerations and colour direction turned round, and its rotation,
+which the record turns from the lower object, as it is. Read back in
+TraceDraw the blend is on the start object with its settings from
+version 14 (the package names it in `tracedraw/blends.json`); from a
+RIFF file (9 to 13) it comes back the way any file's blend does: on the
+lower object, even acceleration, node-for-node pairing. Versions 7 and
+8 get one plain group of the start object and its steps as curves
+(#946). A path is not written (no file holding one was seen); the
+blend's own drop shadow is left out. A blend whose
 end is elsewhere (another layer, inside a group, an object with effects
 of its own) stays a drawn group.
 

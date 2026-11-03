@@ -242,6 +242,9 @@ pub enum Grab {
     Object,
     /// The centre marker: the centre moves with the pointer.
     Center,
+    /// The handle line between the centre and the end, away from both:
+    /// the centre moves by the pointer's way, the line with it.
+    Line,
     /// The end handle: the amount or amplitude from its distance to the
     /// centre, the Twister angle from its direction.
     End,
@@ -257,6 +260,8 @@ pub struct DistortDrag {
     /// object's own space (the centre).
     pub start: Point,
     pub center: Point,
+    /// Where the press was (page space).
+    pub press: Point,
     /// Half the object's larger side (page mm): Push and Pull's 100.
     pub reach: f64,
     pub grab: Grab,
@@ -742,8 +747,18 @@ impl App {
                     .find(|h| h.slider.is_some_and(near))
                     .map(|h| (h, Grab::Frequency))
             })
-            .or_else(|| handles.iter().find(|h| near(h.end)).map(|h| (h, Grab::End)));
+            .or_else(|| handles.iter().find(|h| near(h.end)).map(|h| (h, Grab::End)))
+            .or_else(|| {
+                // The line between them, within the pick distance.
+                let tol = self.line_pick_tol();
+                handles
+                    .iter()
+                    .find(|h| crate::effect_line::near_segment(h.center, h.end, at, tol))
+                    .map(|h| (h, Grab::Line))
+            });
         if let Some((h, grab)) = grabbed {
+            // Each drag of a handle or the line is an undo step of its own.
+            self.effect_edit_step = None;
             let Some(s) = self.doc().shape_on_page(h.id) else {
                 return false;
             };
@@ -763,6 +778,7 @@ impl App {
                 id: h.id,
                 start: h.center,
                 center: h.center,
+                press: at,
                 reach,
                 grab,
                 turned,
@@ -797,6 +813,7 @@ impl App {
             id,
             start: at,
             center: s.transform.inverse() * at,
+            press: at,
             reach,
             grab: Grab::Object,
             turned: 0.0,
@@ -861,7 +878,31 @@ impl App {
     }
 
     /// The pointer moved to `p` during a drag.
+    #[cfg(test)]
     pub fn drag_distort(&mut self, p: Point) {
+        self.drag_distort_to(p, false);
+    }
+
+    /// The selected distortion whose handle line passes within the pick
+    /// distance of `p`, away from its centre, slider and end.
+    pub fn distortion_line_at(&self, p: Point) -> bool {
+        let near = self.distort_pick_px() / self.view.zoom.max(1e-6) as f64;
+        let tol = self.line_pick_tol();
+        let handles = self.distortion_handles();
+        let on_handle = handles.iter().any(|h| {
+            (h.center - p).hypot() <= near
+                || (h.end - p).hypot() <= near
+                || h.slider.is_some_and(|q| (q - p).hypot() <= near)
+        });
+        !on_handle
+            && handles
+                .iter()
+                .any(|h| crate::effect_line::near_segment(h.center, h.end, p, tol))
+    }
+
+    /// The pointer moved to `p` during a drag; a drag of the handle line
+    /// keeps its move horizontal or vertical with `ctrl`.
+    pub fn drag_distort_to(&mut self, p: Point, ctrl: bool) {
         let Some(mut dd) = self.distort_drag.clone() else {
             return;
         };
@@ -876,7 +917,14 @@ impl App {
             self.select(vec![dd.id]);
         }
         match dd.grab {
-            Grab::Center => {
+            Grab::Center | Grab::Line => {
+                // The line: the centre goes by the pointer's way from the
+                // press, the end with it.
+                let p = if dd.grab == Grab::Line {
+                    dd.start + crate::effect_line::constrain_move(p - dd.press, ctrl)
+                } else {
+                    p
+                };
                 let local = s.transform.inverse() * p;
                 self.change_distortions("Distortion Center", |d| Some(d.with_center(Some(local))));
                 return;
@@ -1006,7 +1054,10 @@ impl App {
             self.begin_distort(origin);
         }
         if response.dragged_by(PointerButton::Primary) && self.distort_drag.is_some() {
-            self.drag_distort(p);
+            let ctrl = response
+                .ctx
+                .input(|i| i.modifiers.ctrl || i.modifiers.command);
+            self.drag_distort_to(p, ctrl);
         }
         if response.drag_stopped() {
             self.distort_drag = None;
@@ -1615,8 +1666,8 @@ mod tests {
             assert!((p.y.abs() - 2.0).abs() < 1e-6, "upright tip {p:?}");
         }
         // Taken and dragged round, 30 degrees off the normal: the teeth
-        // lean 30 degrees (their tips 2 cos 30 off the side) and the
-        // handle is under the pointer.
+        // lean 30 degrees and the handle is under the pointer. Only the
+        // tips lean, still 2 mm off the side; the bases stay (#1736).
         assert!(app.begin_distort(down));
         assert_eq!(app.distort_drag.as_ref().map(|d| d.grab), Some(Grab::End));
         let round = c + Vec2::from_angle((-90.0f64 - 30.0).to_radians()) * 8.0;
@@ -1631,12 +1682,15 @@ mod tests {
             app.distort.lean()
         );
         assert!((end(&app) - round).hypot() < 1e-6, "{:?}", end(&app));
-        for p in tips(&app) {
-            assert!(
-                (p.y.abs() - 2.0 * 30f64.to_radians().cos()).abs() < 1e-6,
-                "leaning tip {p:?}"
-            );
+        let leaning = tips(&app);
+        for p in &leaning {
+            assert!((p.y.abs() - 2.0).abs() < 1e-6, "leaning tip {p:?}");
         }
+        let kept = low
+            .iter()
+            .filter(|p| leaning.iter().any(|q| (*q - **p).hypot() < 1e-6))
+            .count();
+        assert!(kept > 0, "bases stay: {low:?} {leaning:?}");
         // The bar: tilt 0 puts the handle back on the normal, the teeth
         // upright.
         app.distort.set_lean(0.0);

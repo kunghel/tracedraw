@@ -4016,6 +4016,9 @@ fn window_menu(app: &mut App, ui: &mut Ui) {
             }
         }
         sep(ui);
+        if item(ui, "palette.new", "", true) {
+            crate::ui::palette_bars::start_new_palette(app);
+        }
         if item(ui, "menu.window.palette_open", "", true) {
             app.open_palette_file();
         }

@@ -26,6 +26,7 @@ refuse to load modules from `file://`).
 | System clipboard | text, images and copied files (arboard) | Ctrl+V takes text, pictures and files copied in other programs from the browser's paste event; Edit > Paste reads the clipboard with the browser's clipboard API, which asks once for permission, and pastes the copy made here when the browser refuses (see `clipboard.md`) |
 | Help links | system browser | a new tab |
 | Folder buttons | the system's folder dialog | see "Folder buttons" below (#1399) |
+| Pen pressure | Windows, X11 and macOS (`pen-pressure.md`) | a pen's pointer event `pressure` (Chromium, Firefox, Safari); see "Pen" below (#1410) |
 
 ## Folder buttons
 
@@ -254,6 +255,24 @@ callout off (`user-select: none`, `-webkit-touch-callout: none` in
 dragging on the canvas; the loading text stays selectable so an error
 message can be copied (#1654,
 `web_page::tests::a_drag_on_the_page_selects_no_text`).
+
+## Pen
+
+A graphics tablet's pen, or a stylus on a tablet screen, moves the
+pointer and presses its buttons through the browser's mouse events, as
+before, and its pressure now reaches Freehand and Brush Strokes as on
+the desktop (#1410). The patched web layer reads the `pressure` of the
+pen's pointer events (`pointerType` `pen`) and sends it the way the
+desktop's patched windowing layer does, so the same code
+(`pen.rs`) reads it and the tools behave identically
+(`pen-pressure.md`, "In the browser"). Chromium, Firefox and Safari
+report `pressure` for a pen whose system does. The mouse never gives
+pressure (its pointer events say 0.5 while pressed, which means none);
+a pen whose events say a constant 0.5 has no pressure either and draws
+like the mouse. Touch screens keep their touch events' force as before.
+Tilt is not read, and the browser's coalesced events are not used (the
+tools take one point per frame)
+(`pick_drag_tests::a_pen_in_the_browser_sets_the_width`).
 
 ## Keyboard
 

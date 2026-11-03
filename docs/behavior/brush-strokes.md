@@ -45,7 +45,9 @@ the other modes could be reached from the panel alone (#1681,
   `(1 - p) + p x pressure`, `p` the Pressure setting (0.5 by default:
   half the width at no pressure, the full width at full pressure); the
   calligraphic nib and the sprayer keep their size. Options > Tools >
-  Curve tools > Graphics tablet turns it off.
+  Curve tools > Graphics tablet turns it off. In the browser the pen's
+  pointer events give the pressure (#1410); the mouse gives none there
+  either.
 - Sprayer: objects (circles, squares, stars, hearts, leaves) placed
   from the start every `spacing` mm along the path (so a 40 mm path at
   8 mm gets 6 objects, at 0, 8, ... 40), each sized between 70 % and

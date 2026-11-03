@@ -724,7 +724,7 @@ impl App {
                 }
                 if response.dragged_by(PointerButton::Primary) {
                     if let Some(h) = self.blend_handle_drag {
-                        self.drag_blend_handle(h, p);
+                        self.drag_blend_handle_to(h, p, mods.ctrl || mods.command);
                     } else if let Drag::Connector { current, .. } = &mut self.drag {
                         *current = p;
                     }
