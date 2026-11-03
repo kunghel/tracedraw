@@ -1251,7 +1251,7 @@ impl<'a> Ctx<'a> {
             r.skip(2);
         }
         let _mode = r.uint()?;
-        let _mid_point = r.u8()?;
+        let mid_point = r.u8()?;
         r.skip(1);
         let num_stops = (r.uint()? & 0xffff) as usize;
         if v >= 13 {
@@ -1293,6 +1293,13 @@ impl<'a> Ctx<'a> {
             4 => FountainKind::Square,
             _ => FountainKind::Linear,
         };
+        // A two-colour linear fill mixes its colours half and half at the
+        // mid point (percent of the way from the first, #1257).
+        if kind == FountainKind::Linear && num_stops == 2 && (1..=99).contains(&mid_point) {
+            if let Some(first) = stops.first_mut() {
+                first.mid = f64::from(mid_point) / 100.0;
+            }
+        }
         let mut offset = Point::new(
             (cx as f64 / 100.0).clamp(-1.0, 1.0),
             (cy as f64 / 100.0).clamp(-1.0, 1.0),
@@ -3173,6 +3180,8 @@ impl<'a> Ctx<'a> {
         let mut mesh: Option<Arg> = None;
         // A graded transparency of a version 11 file (a mask and its target).
         let mut v11_mask: Option<(Fill, u8)> = None;
+        // A version 16+ uniform transparency held in argument 8000 (#1706).
+        let mut record_opacity: Option<f64> = None;
 
         for arg in &l.args {
             match arg.ty {
@@ -3184,6 +3193,8 @@ impl<'a> Ctx<'a> {
                     } else if let Some((o, m)) = self.read_transparency_v11(d, *arg) {
                         opacity = o;
                         v11_mask = m;
+                    } else if let Some(o) = self.read_uniform_transparency_record(d, *arg) {
+                        record_opacity = Some(o);
                     } else if let Some(o) = self.read_opacity(d, *arg) {
                         opacity = o;
                     }
@@ -3340,12 +3351,24 @@ impl<'a> Ctx<'a> {
         if opacity >= 1.0 && mask.is_none() {
             if let Some(o) = style_string.as_deref().and_then(text::object_opacity) {
                 opacity = o;
+            } else if let Some(o) = record_opacity.filter(|_| {
+                style_string
+                    .as_deref()
+                    .is_some_and(text::object_transparency_is_uniform_fill)
+            }) {
+                // The style string names a uniform transparency without its
+                // amount; the record in argument 8000 holds it (#1706).
+                opacity = o;
             }
         }
 
         // The page origin is the page centre; ours is the bottom-left.
         let recenter = Affine::translate((page_size.width / 2.0, page_size.height / 2.0));
         let transform = self.pending_text_transform.take().unwrap_or(transform);
+        // The fill's angle is measured from the object's x axis (#1257).
+        if let Fill::Fountain(f) = &mut fill {
+            crate::turn_fountain(f, transform, 1.0);
+        }
         let mut shape = Shape::new(id, kind);
         if matches!(shape.kind, ShapeKind::Path { .. }) {
             shape.node_types = std::mem::take(&mut self.pending_node_types);
@@ -3809,6 +3832,35 @@ impl<'a> Ctx<'a> {
             s.color = Color::Gray { v: grey };
         }
         Some((1.0, Some((Fill::Fountain(mask), 2))))
+    }
+
+    /// The uniform transparency record of a version 16+ object (#1706, a
+    /// version 24 file): argument 8000 holds a record tagged 1300 of 117
+    /// bytes whose body starts with the byte 5 and the record's number,
+    /// with the transparency in percent as an f64 at byte 61 of the body
+    /// (50 in all eight records of the file, whose preview draws those
+    /// objects at half their colour over what lies beneath). The object's
+    /// style string then has a `transparency` fill of type 1 and no amount
+    /// of its own; the caller only uses the value then. Returns the
+    /// opacity, `None` for other records.
+    fn read_uniform_transparency_record(&mut self, d: &'a [u8], arg: Arg) -> Option<f64> {
+        if self.v < 16 || arg.end.checked_sub(arg.off)? < 8 + 117 {
+            return None;
+        }
+        let data = d.get(..arg.end)?;
+        let mut r = self.reader_at(data, arg.off);
+        if r.u32()? != 0x514 || r.u32()? != 117 || r.u8()? != 5 {
+            return None;
+        }
+        r.skip(60);
+        let percent = r.f64()?;
+        if !(0.0..=100.0).contains(&percent) {
+            self.report.warn(format!(
+                "transparency value {percent} out of range; object drawn opaque"
+            ));
+            return None;
+        }
+        Some(1.0 - percent / 100.0)
     }
 
     fn read_opacity(&mut self, d: &'a [u8], arg: Arg) -> Option<f64> {
@@ -6121,6 +6173,150 @@ pub(crate) mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A version 13 fountain fill of type `kind` (24-byte stops): edge
+    /// pad in percent, angle in millionths of a degree, mid point in
+    /// percent, then `(colour, pos)`.
+    fn fountain_fild_v13(
+        id: u32,
+        kind: u8,
+        edge: i16,
+        angle: i32,
+        mid: u8,
+        stops: &[((u8, u8, u8), u32)],
+    ) -> Vec<u8> {
+        let mut g = vec![0u8; 8];
+        g.push(kind);
+        g.extend_from_slice(&[0; 17]);
+        g.extend_from_slice(&i16s(&[edge]));
+        g.extend_from_slice(&i32s(&[angle]));
+        g.extend_from_slice(&i32s(&[0, 0]));
+        g.extend_from_slice(&[0; 2]);
+        g.extend_from_slice(&u32s(&[0x0001_0000]));
+        g.extend_from_slice(&[mid, 0]);
+        g.extend_from_slice(&u32s(&[stops.len() as u32]));
+        g.extend_from_slice(&[0; 3]);
+        for (c, pos) in stops {
+            g.extend_from_slice(&color_bgr(c.0, c.1, c.2));
+            g.extend_from_slice(&[0; 5]);
+            g.extend_from_slice(&u32s(&[*pos]));
+            g.extend_from_slice(&[0; 3]);
+        }
+        let mut fild = u32s(&[id, 1300, (g.len() + 2) as u32]);
+        fild.extend_from_slice(&u16s(&[2]));
+        fild.extend_from_slice(&g);
+        fild
+    }
+
+    /// A version 13 file with one square curve (1 inch) filled with
+    /// `fild` (id 1) and placed by the file matrix `m` (a, c, e, b, d, f).
+    fn fountain_square_v13(fild: Vec<u8>, m: [f64; 6]) -> (Document, ParseReport) {
+        let mut coords = u32s(&[5]);
+        coords.extend_from_slice(&i32s(&[0, 0, 254000, 0, 254000, 254000, 0, 254000, 0, 0]));
+        coords.extend_from_slice(&[0x08, 0x40, 0x40, 0x40, 0x48]);
+        let obj = list(
+            b"obj ",
+            &[
+                chunk(
+                    b"loda",
+                    &loda(OBJ_CURVE, &[(ARG_COORDS, coords), (ARG_FILL, u32s(&[1]))]),
+                ),
+                chunk(b"trfd", &trfd(13, m)),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(13, 2_540_000, 2_540_000)),
+            chunk(b"fild", &fild),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        parse(&riff(b"CDRD", &body), 13)
+    }
+
+    /// A fountain fill's angle is measured from its object's own x axis:
+    /// it turns with the object (#1257). Page 4 of the reporter's version
+    /// 13 file holds a rectangle whose matrix takes its x axis up the
+    /// page and its y axis to the right (stretched 1.82 times), filled
+    /// with a green to white linear fill at -30.47 degrees and an edge pad
+    /// of 17 %; the reference picture shows the green band in the lower
+    /// left corner, its edge running at -30.4 degrees on the page, so the
+    /// colours run up and to the right at 59.53 degrees (-30.47 + 90),
+    /// not stretched with the object. Read as an angle on the page, it ran
+    /// down to the right from a green top left corner.
+    #[test]
+    fn fountain_fill_turns_with_its_object() {
+        let fild = fountain_fild_v13(
+            1,
+            1,
+            17,
+            -30_465_545,
+            50,
+            &[((60, 140, 90), 0), ((255, 255, 255), 100)],
+        );
+        // The rectangle of the reporter's page 4.
+        let (doc, rep) = fountain_square_v13(fild.clone(), [0.0, 1.820_513, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        let s = first_shape(&doc);
+        let Fill::Fountain(f) = &s.fill else {
+            panic!("{:?}", s.fill);
+        };
+        assert!((f.angle - 59.534455).abs() < 1e-6, "{}", f.angle);
+        assert!((f.edge_pad - 0.17).abs() < 1e-9);
+        assert_eq!(f.stops[0].color, Color::rgb8(60, 140, 90));
+        // Turned a quarter the other way without a mirror, stretched, and
+        // not turned: the turn of the object's x axis is added, nothing
+        // else.
+        for (m, want) in [
+            ([0.0, -2.0, 0.0, 1.0, 0.0, 0.0], 59.534455),
+            ([0.0, 1.0, 0.0, -1.0, 0.0, 0.0], -120.465545),
+            ([-1.0, 0.0, 0.0, 0.0, -1.0, 0.0], 149.534455),
+            ([3.0, 0.0, 0.0, 0.0, 0.5, 0.0], -30.465545),
+            ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], -30.465545),
+            ([1.0, 0.7, 0.0, 0.0, 1.0, 0.0], -30.465545),
+        ] {
+            let (doc, _) = fountain_square_v13(fild.clone(), m);
+            let Fill::Fountain(f) = &first_shape(&doc).fill else {
+                panic!("a fountain fill for {m:?}");
+            };
+            assert!((f.angle - want).abs() < 1e-6, "{m:?}: {}", f.angle);
+        }
+    }
+
+    /// The mid point of a two-colour linear fountain fill is where its
+    /// colours are mixed half and half, in percent of the way from the
+    /// first (#1257): the reporter's page 4 (mid point 9) turns from its
+    /// green edge pad to a light green within a few percent of the
+    /// object, and page 3 (32) stays yellow over most of it. Fills of
+    /// three colours or more, and the other kinds, keep their blends
+    /// even (not checked on a file).
+    #[test]
+    fn fountain_fill_mid_point_of_two_colours() {
+        let green_white = [((60, 140, 90), 0), ((255, 255, 255), 100)];
+        let read = |kind: u8, mid: u8, stops: &[((u8, u8, u8), u32)]| {
+            let fild = fountain_fild_v13(1, kind, 0, 0, mid, stops);
+            let (doc, rep) = fountain_square_v13(fild, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            match &first_shape(&doc).fill {
+                Fill::Fountain(f) => f.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let f = read(1, 9, &green_white);
+        assert!((f.stops[0].mid - 0.09).abs() < 1e-9, "{:?}", f.stops);
+        // Half way between green and white 9 % of the way along.
+        let half = f.color_at(0.09).to_rgb8();
+        assert!((half[1] as i32 - 198).abs() <= 1, "{half:?}");
+        assert!(f.color_at(0.5).to_rgb8()[0] > 200);
+        // 50 and values outside 1 to 99 leave the blend even.
+        for mid in [50, 0, 100, 200] {
+            assert!(!read(1, mid, &green_white).has_midpoints(), "{mid}");
+        }
+        // Not used by radial fills or three colours.
+        assert!(!read(2, 9, &green_white).has_midpoints());
+        let three = [((0, 0, 0), 0), ((255, 0, 0), 50), ((255, 255, 255), 100)];
+        assert!(!read(1, 9, &three).has_midpoints());
     }
 
     /// Version 14 files saved by newer releases keep the palette id
@@ -9811,6 +10007,95 @@ pub(crate) mod tests {
         // Truncated records read as no lens.
         let (doc, _) = rect_with_transparency_record(&[1, 0, 0]);
         assert!(first_shape(&doc).effects.is_empty());
+    }
+
+    /// The 117-byte body of a version 24 uniform transparency record
+    /// (tagged 1300), laid out as the file of #1706 holds it: u8 5, the
+    /// record's number, zeros, u32 1 at 29, a number at 33, -1 at 57, the
+    /// transparency in percent (f64) at 61, 2 at 81 and 4 at 105.
+    fn uniform_transparency_record_v24(number: u32, percent: f64) -> Vec<u8> {
+        let mut b = vec![5u8];
+        b.extend_from_slice(&u32s(&[number]));
+        b.resize(29, 0);
+        b.extend_from_slice(&u32s(&[1, 0xa5]));
+        b.resize(57, 0);
+        b.extend_from_slice(&i32s(&[-1]));
+        b.extend_from_slice(&f64s(&[percent, 0.0]));
+        b.resize(81, 0);
+        b.extend_from_slice(&u32s(&[2]));
+        b.resize(105, 0);
+        b.extend_from_slice(&u32s(&[4]));
+        b.resize(117, 0);
+        b
+    }
+
+    #[test]
+    fn version_24_group_with_uniform_transparency_on_its_objects() {
+        // #1706: a group given a uniform transparency of 50 in a version 24
+        // file. The group's own `loda` holds none; each object holds a
+        // style string whose transparency is a fill of type 1 without an
+        // amount, and the amount in a tagged record in argument 8000.
+        let v = 24u16;
+        let json = r#"{"transparency":{"fill":{"type":"1"}},"fill":{"type":"1","primaryColor":"RGB255,USER,102,97,143,100,00000000-0000-0000-0000-000000000000"}}"#;
+        let style_of =
+            |json: &str| [u32s(&[1, json.len() as u32]), json.as_bytes().to_vec()].concat();
+        let style = style_of(json);
+        let square_styled = |style: &[u8], number: u32, record: Option<f64>| {
+            let mut args = vec![(ARG_STYLE_STRING, style.to_vec())];
+            if let Some(p) = record {
+                let body = uniform_transparency_record_v24(number, p);
+                let op = [u32s(&[0x514, body.len() as u32]), body].concat();
+                args.insert(0, (ARG_OPACITY, op));
+            }
+            args.push((ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])));
+            list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args)))
+        };
+        let square = |number: u32, record: Option<f64>| square_styled(&style, number, record);
+        let group_loda = loda(
+            0,
+            &[
+                (12000, u32s(&[0])),
+                (ARG_STYLE_STRING, [u32s(&[1, 2]), b"{}".to_vec()].concat()),
+                (100, u32s(&[8])),
+            ],
+        );
+        let read = |objects: Vec<u8>| {
+            let grp = list(b"grp ", &[chunk(b"loda", &group_loda), objects].concat());
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &grp)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRO", &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            let ShapeKind::Group { children } = &first_shape(&doc).kind else {
+                panic!("not a group: {:?}", first_shape(&doc).kind);
+            };
+            assert_eq!(first_shape(&doc).opacity, 1.0);
+            // In the order of the file (front to back).
+            children.iter().rev().map(|c| c.opacity).collect::<Vec<_>>()
+        };
+        let got = read([square(1, Some(50.0)), square(2, Some(50.0))].concat());
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|o| (o - 0.5).abs() < 1e-9), "{got:?}");
+        // 75 % lets a quarter through; without the record, opaque.
+        let got = read([square(1, Some(75.0)), square(2, None)].concat());
+        assert!((got[0] - 0.25).abs() < 1e-9 && got[1] == 1.0, "{got:?}");
+        // An amount out of range is opaque.
+        let got = read([square(1, Some(250.0)), square(2, Some(50.0))].concat());
+        assert!(got[0] == 1.0 && (got[1] - 0.5).abs() < 1e-9, "{got:?}");
+        // The record counts only when the style string names a uniform
+        // transparency without its amount; its own amount wins.
+        let empty = style_of(r#"{"transparency":{}}"#);
+        let own = style_of(r#"{"transparency":{"fill":{"type":"1"},"uniformTransparency":"0.2"}}"#);
+        let got = read(
+            [
+                square_styled(&empty, 1, Some(50.0)),
+                square_styled(&own, 2, Some(50.0)),
+            ]
+            .concat(),
+        );
+        assert!(got[0] == 1.0 && (got[1] - 0.8).abs() < 1e-9, "{got:?}");
     }
 
     // Arrowheads.

@@ -1965,12 +1965,6 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
     }
 }
 
-/// The opacity an object's version 16+ style string gives it: its
-/// `transparency` section's `uniformTransparency` is the share of the
-/// object that lets the background through (0.3 draws it at 70 %: the
-/// colours of a version 19 file's preview match that). Without it, the
-/// mean of `startTransparency` and `endTransparency` (a graded
-/// transparency drawn uniform, assumed). `None` for an empty section.
 /// The mitre limit (degrees) in an object's version 16+ style string:
 /// `outline.miterLimit` (a file of version 27 holds "28.955024..." for an
 /// outline its program shows with a limit of 29 degrees, #384).
@@ -1995,6 +1989,12 @@ pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
         })
 }
 
+/// The opacity an object's version 16+ style string gives it: its
+/// `transparency` section's `uniformTransparency` is the share of the
+/// object that lets the background through (0.3 draws it at 70 %: the
+/// colours of a version 19 file's preview match that). Without it, the
+/// mean of `startTransparency` and `endTransparency` (a graded
+/// transparency drawn uniform, assumed). `None` for an empty section.
 pub(crate) fn object_opacity(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let Json::Obj(items) = parse_json(t)? else {
@@ -2014,6 +2014,27 @@ pub(crate) fn object_opacity(style: &str) -> Option<f64> {
         None => (get("startTransparency")? + get("endTransparency")?) / 2.0,
     };
     Some((1.0 - amount).clamp(0.0, 1.0))
+}
+
+/// Whether an object's version 16+ style string gives its `transparency`
+/// section a `fill` of `type` 1 (uniform, as in fill sections): a version
+/// 24 file keeps the amount of such a transparency in argument 8000, not in
+/// the style string (#1706).
+pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Some(Json::Obj(items)) = parse_json(t) else {
+        return false;
+    };
+    let Some((_, Json::Obj(tr))) = items.iter().find(|(k, _)| k == "transparency") else {
+        return false;
+    };
+    let Some((_, Json::Obj(fill))) = tr.iter().find(|(k, _)| k == "fill") else {
+        return false;
+    };
+    fill.iter()
+        .find(|(k, _)| k == "type")
+        .and_then(|(_, v)| v.num())
+        .is_some_and(|n| n == 1.0)
 }
 
 /// A graded transparency from an object's version 16+ style string: its

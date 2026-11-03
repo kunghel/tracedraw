@@ -10,6 +10,7 @@
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::ui::dialogs::window;
+use crate::ui::tips::RichTip;
 use egui::{Color32, Context, RichText};
 use std::path::{Path, PathBuf};
 
@@ -33,7 +34,7 @@ impl PackageState {
     /// the last one used, else the home folder).
     pub fn new(app: &App) -> Self {
         let name = app.document_name();
-        if crate::files::ANDROID {
+        if as_zip() {
             // The picker chooses the place.
             return PackageState {
                 folder: String::new(),
@@ -60,7 +61,7 @@ impl PackageState {
 
     /// Why the package cannot be written (an i18n key).
     pub fn problem(&self) -> Option<&'static str> {
-        problem_of(self, crate::files::ANDROID)
+        problem_of(self, as_zip())
     }
 
     /// The name without a `.tdraw` the user may have typed.
@@ -77,7 +78,7 @@ impl PackageState {
             self.note = Some(tr(p));
             return false;
         }
-        if crate::files::ANDROID {
+        if as_zip() {
             app.package_through_picker(self.stem(), self.pdf);
             return true;
         }
@@ -103,6 +104,12 @@ impl PackageState {
     }
 }
 
+/// The package goes out as one zip file where the system's picker says,
+/// with no folder asked for (Android, #1401, #1399).
+fn as_zip() -> bool {
+    crate::files::FolderUse::Package.action() == crate::files::FolderAction::SaveZip
+}
+
 /// Why the package of `st` cannot be written (an i18n key): no folder
 /// (not asked for on Android, `android`) or no usable name.
 pub fn problem_of(st: &PackageState, android: bool) -> Option<&'static str> {
@@ -125,13 +132,23 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PackageState, close: &mut b
             .spacing([8.0, 6.0])
             .show(ui, |ui| {
                 // On Android the system's picker chooses where the zip
-                // goes, after OK.
-                if !crate::files::ANDROID {
+                // goes, after OK; a browser greys Browse with the reason.
+                let action = crate::files::FolderUse::Package.action();
+                if action != crate::files::FolderAction::SaveZip {
                     ui.label(tr("package.folder"));
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut st.folder).desired_width(330.0));
-                        if ui.button(tr("publish.browse")).clicked() {
-                            if let Some(dir) = crate::files::pick_folder() {
+                        let token = match action {
+                            crate::files::FolderAction::PickFolder(token) => Some(token),
+                            _ => None,
+                        };
+                        let mut browse = ui
+                            .add_enabled(token.is_some(), egui::Button::new(tr("publish.browse")));
+                        if let Some(tip) = crate::files::FolderUse::Package.tip() {
+                            browse = browse.rich_disabled_tip(tr(tip));
+                        }
+                        if let (true, Some(token)) = (browse.clicked(), token) {
+                            if let Some(dir) = crate::files::pick_folder(token) {
                                 st.folder = dir.join(st.stem()).display().to_string();
                             }
                         }
@@ -149,7 +166,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PackageState, close: &mut b
         ui.checkbox(&mut st.pdf, tr("package.pdf"));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("package.note")).weak());
-        if crate::files::ANDROID {
+        if as_zip() {
             ui.label(RichText::new(tr("package.android_zip")).weak());
         }
         let note = st.note.clone().unwrap_or_else(|| " ".into());

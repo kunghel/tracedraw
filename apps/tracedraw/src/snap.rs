@@ -271,6 +271,9 @@ impl App {
         if !self.snap_enabled() {
             return x;
         }
+        if let Some(c) = self.guide_axis_point(x, false) {
+            return c;
+        }
         let (xs, _) = self.snap_candidates(&[], false, true);
         self.snap_axis(x, &xs, true).unwrap_or(x)
     }
@@ -281,8 +284,51 @@ impl App {
         if !self.snap_enabled() {
             return y;
         }
+        if let Some(c) = self.guide_axis_point(y, true) {
+            return c;
+        }
         let (_, ys) = self.snap_candidates(&[], false, true);
         self.snap_axis(y, &ys, false).unwrap_or(y)
+    }
+
+    /// The coordinate of the objects' point nearest `v` along one axis
+    /// within the snapping radius: the y of a node, midpoint, quadrant
+    /// or centre (by the modes on) for a horizontal guideline, the x for
+    /// a vertical one. A guideline dragged near a node lands on it, not
+    /// only on the objects' boxes (#1645); a point wins over an edge, as
+    /// it does for the pointer.
+    fn guide_axis_point(&self, v: f64, horizontal: bool) -> Option<f64> {
+        if !self.snap.objects {
+            return None;
+        }
+        let tol = self.snap_tolerance();
+        let mut g = Vec::new();
+        for sh in self
+            .page_layers()
+            .into_iter()
+            .filter(|l| l.visible)
+            .flat_map(|l| &l.shapes)
+        {
+            if !sh.visible {
+                continue;
+            }
+            // Only the objects whose box comes near the guideline.
+            let b = sh.bounds();
+            let (lo, hi) = if horizontal {
+                (b.y0, b.y1)
+            } else {
+                (b.x0, b.x1)
+            };
+            if v < lo - tol || v > hi + tol {
+                continue;
+            }
+            snap_points::geometry(sh, Affine::IDENTITY, &text_baselines, &mut g);
+        }
+        snap_points::points(&g, &self.settings.snap.modes)
+            .into_iter()
+            .map(|p| if horizontal { p.y } else { p.x })
+            .filter(|c| (c - v).abs() <= tol)
+            .min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()))
     }
 
     /// Snap a point to everything but guidelines.
@@ -624,11 +670,31 @@ impl App {
                 return t.point - src;
             }
         }
-        let snapped = if enabled {
+        let mut snapped = if enabled {
             self.snap_move(bounds, d)
         } else {
             d
         };
+        // The grabbed point (a node under the pointer) lands on a
+        // guideline, a baseline or a grid line it comes near, on each
+        // axis, ahead of the box's edges and centre: a curve moved by one
+        // of its nodes puts that node on the guideline (#1645).
+        if let (true, Some(src)) = (enabled, source) {
+            let (xs, ys) = self.snap_candidates(&self.selection, true, false);
+            let q = src + d;
+            let mut hit = false;
+            if let Some(x) = self.snap_axis(q.x, &xs, true) {
+                snapped.x = x - src.x;
+                hit = true;
+            }
+            if let Some(y) = self.snap_axis(q.y, &ys, false) {
+                snapped.y = y - src.y;
+                hit = true;
+            }
+            if hit {
+                self.mark_axis_snap(q, src + snapped);
+            }
+        }
         self.live_guide_move(source, bounds, d, snapped)
     }
 
@@ -1118,6 +1184,81 @@ mod tests {
         assert!(mode(&app, 130.0, 110.0).is_none());
         app.snap.objects = false;
         assert!(mode(&app, 130.0, 120.5).is_none());
+    }
+
+    /// A guideline dragged near a node of a curve lands on the node, not
+    /// only on the edges and centre of the object's box; with the Node
+    /// mode off it stays where the pointer put it (#1645).
+    #[test]
+    fn a_dragged_guideline_snaps_to_a_node() {
+        use tracedraw_core::geometry::BezPath;
+        let mut app = app();
+        // Snapping radius 3 mm at 1 px per mm.
+        app.settings.snap.threshold_px = 3.0;
+        // A triangle whose apex (30, 60) lies on neither its box's edges
+        // (x 10 to 70, y 10 to 60) nor its centre (40, 35).
+        let mut path = BezPath::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((70.0, 10.0));
+        path.line_to((30.0, 60.0));
+        path.close_path();
+        app.new_shape(ShapeKind::Path { path, closed: true })
+            .expect("a triangle");
+        // A vertical guideline 1.5 mm off the apex lands on it.
+        assert!((app.snap_x_without_guides(31.5) - 30.0).abs() < 1e-9);
+        // So does a horizontal one dragged near the apex's height, where
+        // the box's top edge is too (y = 60): the node.
+        assert!((app.snap_y_without_guides(58.5) - 60.0).abs() < 1e-9);
+        // Beyond the radius of every point (the apex at 30, the centroid
+        // at 36.67): nothing.
+        assert!((app.snap_x_without_guides(33.5) - 33.5).abs() < 1e-9);
+        // Midpoints count too (the left side's middle is at x = 20).
+        assert!((app.snap_x_without_guides(21.5) - 20.0).abs() < 1e-9);
+        // With the Node and Midpoint modes off, the apex no longer catches
+        // the guideline; the box's centre (x = 40) still does.
+        app.settings.snap.modes.node = false;
+        app.settings.snap.modes.midpoint = false;
+        assert!((app.snap_x_without_guides(31.5) - 31.5).abs() < 1e-9);
+        assert!((app.snap_x_without_guides(41.5) - 40.0).abs() < 1e-9);
+        // Snapping to objects off: the apex is not a target.
+        app.settings.snap.modes.node = true;
+        app.snap.objects = false;
+        assert!((app.snap_x_without_guides(31.5) - 31.5).abs() < 1e-9);
+    }
+
+    /// The other way round: a curve moved by one of its nodes (the
+    /// selection's snap point under the pointer) puts that node on a
+    /// guideline it comes near, also where none of its box's edges or
+    /// its centre does (#1645).
+    #[test]
+    fn a_curve_moved_by_a_node_puts_the_node_on_a_guideline() {
+        use tracedraw_core::geometry::BezPath;
+        let mut app = app();
+        app.settings.snap.threshold_px = 3.0;
+        let page = app.page;
+        app.run(Command::AddGuide {
+            page,
+            guide: Guide::vertical(50.0),
+        });
+        let mut path = BezPath::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((70.0, 10.0));
+        path.line_to((30.0, 60.0));
+        path.close_path();
+        let id = app
+            .new_shape(ShapeKind::Path { path, closed: true })
+            .expect("a triangle");
+        app.select(vec![id]);
+        let b = app.selection_bounds().unwrap();
+        // Grabbed at the left side's midpoint (20, 35) and moved so that
+        // the point is 1.5 mm off the guideline, while the box's edges
+        // (41.5 and 101.5) and centre (71.5) are far from it.
+        let grab = Point::new(20.0, 35.0);
+        let d = app.snap_move_from(Some(grab), b, Vec2::new(31.5, 0.0));
+        assert!((d.x - 30.0).abs() < 1e-9 && d.y.abs() < 1e-9, "{d:?}");
+        // Beyond the radius the move is as the pointer made it.
+        let d = app.snap_move_from(Some(grab), b, Vec2::new(35.0, 0.0));
+        assert!((d.x - 35.0).abs() < 1e-9, "{d:?}");
     }
 
     #[test]

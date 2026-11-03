@@ -199,14 +199,10 @@ impl Bar {
     /// The size of the bar floating (points), title strip included.
     pub fn floating_size(self, app: &App) -> Vec2 {
         match self {
-            Bar::Toolbox => vec2(crate::ui::toolbox::floating_width(app) + 8.0, 400.0),
-            Bar::Palette => vec2(
-                460.0,
-                crate::ui::palette::thickness(app, crate::ui::palette::Row::Main)
-                    + crate::ui::palette::ROW_H * app.extra_palettes.len() as f32
-                    + TITLE_H
-                    + 4.0,
-            ),
+            Bar::Toolbox => toolbox_window_size(app),
+            Bar::Palette => {
+                crate::ui::palette_bars::floating_window_size(app, crate::ui::palette::Row::Main)
+            }
             Bar::Standard => vec2(940.0, 36.0 + TITLE_H + 4.0),
             Bar::Property => vec2(1100.0, 53.0 + TITLE_H + 4.0),
             Bar::Status => vec2(900.0, 40.0),
@@ -224,6 +220,51 @@ pub type RowPlace = [u32; 2];
 
 /// Height of a floating bar's title strip.
 pub const TITLE_H: f32 = 18.0;
+/// The margin before a floating bar's name in its title.
+const TITLE_PAD: f32 = 6.0;
+/// The least a floating bar's window is wide: room for a few letters of
+/// its name (or the ellipsis) before the close button.
+pub const FLOATING_MIN_W: f32 = 68.0;
+/// The margins round the floating toolbox's grid of buttons: 4 px at
+/// each side, 3 px above and below, and the window's 1 px border.
+pub const TOOLBOX_MARGIN: Vec2 = vec2(10.0, 8.0);
+/// The border of a floating bar's window.
+const WINDOW_STROKE: f32 = 1.0;
+
+/// The room a floating bar's name has in a title `width` wide: after
+/// the margin, before the close button and a gap.
+pub fn title_room(width: f32) -> f32 {
+    (width - TITLE_PAD - TITLE_H - 2.0).max(0.0)
+}
+
+/// A floating bar's name laid out in `room`: cut with an ellipsis when
+/// it is longer (the galley says so, and the title then shows the whole
+/// name as a tooltip).
+pub fn title_galley(ui: &Ui, name: &str, room: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        name.to_string(),
+        egui::FontId::proportional(11.0),
+        Tokens::text(),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// The size of the floating toolbox's window: its grid of buttons (see
+/// `toolbox::flow`) with its margins and title, never narrower than
+/// [`FLOATING_MIN_W`].
+pub fn toolbox_window_size(app: &App) -> Vec2 {
+    let grid = crate::ui::toolbox::floating_flow(app).size;
+    vec2(
+        (grid.x + TOOLBOX_MARGIN.x).max(FLOATING_MIN_W),
+        grid.y + TOOLBOX_MARGIN.y + TITLE_H,
+    )
+}
+
+/// Where the floating toolbox's window was drawn this frame.
+pub fn toolbox_window_id() -> egui::Id {
+    egui::Id::new("floating_toolbox_window")
+}
 /// How near an edge a dropped bar docks there.
 pub const EDGE_ZONE: f32 = 56.0;
 
@@ -238,6 +279,12 @@ pub struct BarLayout {
     pub status: Dock,
     /// Top-left corners of the floating bars (screen points).
     pub toolbox_pos: [f32; 2],
+    /// The room the floating toolbox's grid of buttons was resized to,
+    /// in cells (a button and its gap each, `toolbox::floating_cell`),
+    /// so its columns hold when the buttons change size; None, two
+    /// buttons wide and as tall as its rows. See `toolbox::flow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolbox_size: Option<[f32; 2]>,
     pub palette_pos: [f32; 2],
     pub standard_pos: [f32; 2],
     pub property_pos: [f32; 2],
@@ -297,6 +344,7 @@ impl Default for BarLayout {
             property: Dock::Top,
             status: Dock::Bottom,
             toolbox_pos: [120.0, 160.0],
+            toolbox_size: None,
             palette_pos: [300.0, 600.0],
             standard_pos: [200.0, 140.0],
             property_pos: [200.0, 200.0],
@@ -743,6 +791,21 @@ pub fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
         .show(|ui| crate::ui::menus::body(ui, |ui| menu_body(app, ui, bar)));
 }
 
+/// The entries of a button size list in the bars' menu > Customize:
+/// the five sizes Ctrl+wheel steps through, smallest first, after
+/// "Default" (None) in the toolbox's own list (`with_default`).
+pub fn size_menu(with_default: bool) -> Vec<(&'static str, Option<crate::settings::ButtonSize>)> {
+    let default = with_default.then_some(("bars.size_default", None));
+    default
+        .into_iter()
+        .chain(
+            crate::settings::ButtonSize::ALL
+                .iter()
+                .map(|s| (s.key(), Some(*s))),
+        )
+        .collect()
+}
+
 fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
     use crate::ui::menus::{check, item, radio, radio_if, sep, sub};
     ui.set_min_width(200.0);
@@ -772,8 +835,9 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
     sep(ui);
     sub(ui, "bars.customize", |ui| {
         sub(ui, "bars.default_button_size", |ui| {
-            for size in crate::settings::ButtonSize::ALL {
-                if radio(ui, size.key(), "", app.settings.button_size == size) {
+            for (key, size) in size_menu(false) {
+                let Some(size) = size else { continue };
+                if radio(ui, key, "", app.settings.button_size == size) {
                     app.settings.button_size = size;
                 }
             }
@@ -785,12 +849,9 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
             sep(ui);
             sub(ui, "bars.button_size", |ui| {
                 let own = app.settings.toolbox_button_size;
-                if radio(ui, "bars.size_default", "", own.is_none()) {
-                    app.settings.toolbox_button_size = None;
-                }
-                for size in crate::settings::ButtonSize::ALL {
-                    if radio(ui, size.key(), "", own == Some(size)) {
-                        app.settings.toolbox_button_size = Some(size);
+                for (key, size) in size_menu(true) {
+                    if radio(ui, key, "", own == size) {
+                        app.settings.toolbox_button_size = size;
                     }
                 }
             });
@@ -1256,6 +1317,7 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
                     grip(app, &mut body_ui, *bar, true);
                     let gap = body_ui.spacing().item_spacing.x;
                     let len = toolbar_body(app, &mut body_ui, *bar);
+                    size_buttons_by_wheel(app, &child, slot, *bar);
                     // The length the toolbar takes whole: its margins, grip
                     // and buttons.
                     let natural = (2.0 + 9.0 + gap + len + 4.0).ceil();
@@ -1315,9 +1377,9 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
         Bar::Zoom,
         Bar::Transform,
         Bar::TimeTracker,
-        Bar::Toolbox,
-        Bar::Palette,
     ] {
+        // The floating palette is drawn with the palette bars
+        // (`palette_bars::floating`), which flow and resize.
         if !bar.visible(app) || app.settings.bars.dock(bar) != Dock::Floating {
             continue;
         }
@@ -1348,13 +1410,272 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
                         ui.set_width(size.x);
                         title_strip(app, ui, bar, size.x);
                         let body = ui.scope(|ui| floating_body(app, ui, bar, size)).response;
-                        // The toolbox's buttons and the palette's colors
-                        // open menus of their own.
-                        if !matches!(bar, Bar::Toolbox | Bar::Palette) {
+                        // The palette's colors open menus of their own.
+                        if bar != Bar::Palette {
                             menu_anywhere(app, ui, bar, body.rect, false);
+                            // Ctrl+wheel over a floating toolbar sizes
+                            // the bars' buttons.
+                            size_buttons_by_wheel(app, ui, body.rect, bar);
                         }
                     });
             });
+    }
+    floating_toolbox(app, ctx);
+}
+
+/// Ctrl+wheel over a toolbar (in `rect`) steps the default button size,
+/// as the bars' menu > Customize > Default Button Size does: up larger,
+/// down smaller. The wheel is taken, so the bar does not slide with it
+/// and the drawing does not zoom.
+pub fn size_buttons_by_wheel(app: &mut App, ui: &Ui, rect: Rect, bar: Bar) {
+    if let Some(steps) = ctrl_wheel_steps(ui, rect, egui::Id::new(("bar_size_wheel", bar as u8))) {
+        app.settings.button_size = app.settings.button_size.stepped(steps);
+    }
+}
+
+/// Ctrl+wheel over `rect` (the pointer there, on this layer): the
+/// notches turned, up positive, parts of a notch adding up as over a
+/// field (`field::wheel_steps`); None when the wheel did not turn with
+/// Ctrl (or Command) there. A turn takes the wheel, so nothing scrolls
+/// with it; the drawing zooms only with the wheel over the drawing
+/// itself.
+pub fn ctrl_wheel_steps(ui: &Ui, rect: Rect, id: egui::Id) -> Option<i32> {
+    if !ui.rect_contains_pointer(rect) {
+        return None;
+    }
+    let with_ctrl = ui.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::MouseWheel { modifiers, .. } if modifiers.ctrl || modifiers.command
+            )
+        })
+    });
+    if !with_ctrl {
+        return None;
+    }
+    crate::ui::field::wheel_steps(ui, id)
+}
+
+/// An edge or a corner of the floating toolbox being dragged: the
+/// window's right and bottom edges to keep in place while its left or
+/// top edge moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct ToolboxResize {
+    keep_right: Option<f32>,
+    keep_bottom: Option<f32>,
+}
+
+fn toolbox_resize_id() -> egui::Id {
+    egui::Id::new("floating_toolbox_resize")
+}
+
+/// Whether an edge or a corner of the floating toolbox is being dragged
+/// (the grid then follows the pointer rather than settling on its rows).
+pub fn toolbox_resizing(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<ToolboxResize>(toolbox_resize_id()))
+        .is_some()
+}
+
+/// The floating toolbox: a window hugging its grid of buttons, with the
+/// title strip, that can be resized at its edges and corners. Dragging
+/// an edge asks for that room, the grid flows to fit it (two columns in
+/// a tall narrow window, more columns and fewer rows in a wider one, a
+/// row or two in a wide short one; see `toolbox::flow`), and the window
+/// follows the grid; the size is kept in the preferences
+/// (`bars.toolbox_size`). Dragging the left or the top edge keeps the
+/// opposite edge in place.
+fn floating_toolbox(app: &mut App, ctx: &egui::Context) {
+    let bar = Bar::Toolbox;
+    if !bar.visible(app) || app.settings.bars.dock(bar) != Dock::Floating {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let size = toolbox_window_size(app);
+    let mut pos = app.settings.bars.pos(bar);
+    let resize: Option<ToolboxResize> = ctx.data(|d| d.get_temp(toolbox_resize_id()));
+    if let Some(r) = resize {
+        if let Some(right) = r.keep_right {
+            pos.x = right - size.x;
+        }
+        if let Some(bottom) = r.keep_bottom {
+            pos.y = bottom - size.y;
+        }
+    }
+    // Keep the title on the screen.
+    pos.x = pos
+        .x
+        .clamp(screen.left(), (screen.right() - 60.0).max(screen.left()));
+    pos.y = pos
+        .y
+        .clamp(screen.top(), (screen.bottom() - TITLE_H).max(screen.top()));
+    if resize.is_some() && app.settings.bars.pos(bar) != pos {
+        app.settings.bars.set_pos(bar, pos);
+    }
+    let area = egui::Area::new(egui::Id::new(("floating_bar", bar as u8)))
+        .fixed_pos(pos)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(Tokens::panel())
+                .stroke(Stroke::new(
+                    WINDOW_STROKE,
+                    crate::theme::Tokens::window_border(),
+                ))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 3],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(50),
+                })
+                .show(ui, |ui| {
+                    // The title, then the grid with its margins: the
+                    // window is exactly as large as `toolbox_window_size`
+                    // says.
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+                    ui.set_width(size.x - 2.0 * WINDOW_STROKE);
+                    title_strip(app, ui, bar, size.x - 2.0 * WINDOW_STROKE);
+                    floating_body(app, ui, bar, size);
+                });
+            let window = frame.response.rect;
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(toolbox_window_id(), window));
+            crate::ui::toolbox::size_by_wheel(app, ui, window);
+            toolbox_resize_handles(app, ui, window);
+        });
+    let _ = area;
+}
+
+/// The edges and corners of the floating toolbox's window: dragging one
+/// asks the grid for the room between the pointer and the opposite edge.
+fn toolbox_resize_handles(app: &mut App, ui: &mut Ui, window: Rect) {
+    const GRAB: f32 = 5.0;
+    const OUT: f32 = 3.0;
+    const CORNER: f32 = 12.0;
+    let grid: Rect = ui
+        .ctx()
+        .data(|d| d.get_temp(crate::ui::toolbox::floating_grid_id()))
+        .unwrap_or(window);
+    let (l, t, r, b) = (window.left(), window.top(), window.right(), window.bottom());
+    // (left, top, right, bottom) edges each handle moves, and its zone.
+    let handles: [(bool, bool, bool, bool, Rect, egui::CursorIcon); 8] = [
+        (
+            true,
+            true,
+            false,
+            false,
+            Rect::from_min_max(pos2(l - OUT, t - OUT), pos2(l + CORNER, t + CORNER)),
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        (
+            false,
+            true,
+            true,
+            false,
+            Rect::from_min_max(pos2(r - CORNER, t - OUT), pos2(r + OUT, t + CORNER)),
+            egui::CursorIcon::ResizeNeSw,
+        ),
+        (
+            true,
+            false,
+            false,
+            true,
+            Rect::from_min_max(pos2(l - OUT, b - CORNER), pos2(l + CORNER, b + OUT)),
+            egui::CursorIcon::ResizeNeSw,
+        ),
+        (
+            false,
+            false,
+            true,
+            true,
+            Rect::from_min_max(pos2(r - CORNER, b - CORNER), pos2(r + OUT, b + OUT)),
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        (
+            true,
+            false,
+            false,
+            false,
+            Rect::from_min_max(pos2(l - OUT, t + CORNER), pos2(l + GRAB, b - CORNER)),
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (
+            false,
+            false,
+            true,
+            false,
+            Rect::from_min_max(pos2(r - GRAB, t + CORNER), pos2(r + OUT, b - CORNER)),
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (
+            false,
+            true,
+            false,
+            false,
+            Rect::from_min_max(pos2(l + CORNER, t - OUT), pos2(r - CORNER, t + GRAB)),
+            egui::CursorIcon::ResizeVertical,
+        ),
+        (
+            false,
+            false,
+            false,
+            true,
+            Rect::from_min_max(pos2(l + CORNER, b - GRAB), pos2(r - CORNER, b + OUT)),
+            egui::CursorIcon::ResizeVertical,
+        ),
+    ];
+    let mut resizing = None;
+    for (k, (left, top, right, bottom, zone, cursor)) in handles.into_iter().enumerate() {
+        let resp = ui.interact(zone, egui::Id::new(("toolbox_resize", k)), Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(cursor);
+        }
+        let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged()) else {
+            continue;
+        };
+        let mut asked = crate::ui::toolbox::floating_asked(app);
+        if !asked.y.is_finite() {
+            asked.y = grid.height();
+        }
+        let mut keep = ToolboxResize::default();
+        if right {
+            asked.x = p.x - grid.left();
+        }
+        if bottom {
+            asked.y = p.y - grid.top();
+        }
+        if left {
+            asked.x = grid.right() - p.x;
+            keep.keep_right = Some(window.right());
+        }
+        if top {
+            asked.y = grid.bottom() - p.y;
+            keep.keep_bottom = Some(window.bottom());
+        }
+        // A side edge alone asks for a width: the rows then take the
+        // height they need (the grid settles on it when the drag ends).
+        if (left || right) && !(top || bottom) {
+            asked.y = crate::ui::toolbox::FREE_HEIGHT;
+        }
+        app.settings.bars.toolbox_size = Some(crate::ui::toolbox::floating_cells(
+            app,
+            Vec2::new(asked.x.max(1.0), asked.y.max(1.0)),
+        ));
+        resizing = Some(keep);
+        break;
+    }
+    let id = toolbox_resize_id();
+    match resizing {
+        Some(keep) => {
+            ui.ctx().data_mut(|d| d.insert_temp(id, keep));
+            ui.ctx().request_repaint();
+        }
+        None => {
+            if toolbox_resizing(ui.ctx()) {
+                ui.ctx().data_mut(|d| d.remove::<ToolboxResize>(id));
+                ui.ctx().request_repaint();
+            }
+        }
     }
 }
 
@@ -1362,15 +1683,19 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
 /// the bar (docking it near an edge); a double click docks it back.
 fn title_strip(app: &mut App, ui: &mut Ui, bar: Bar, width: f32) {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, TITLE_H), Sense::click_and_drag());
+    let name = tr(bar.key());
+    let galley = title_galley(ui, &name, title_room(width));
     let p = ui.painter();
     p.rect_filled(rect, 0.0, crate::theme::Tokens::tab_strip());
-    p.text(
-        pos2(rect.left() + 6.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        tr(bar.key()),
-        egui::FontId::proportional(11.0),
-        Tokens::text(),
+    let text_pos = pos2(
+        rect.left() + TITLE_PAD,
+        rect.center().y - galley.size().y / 2.0,
     );
+    let cut = galley.elided;
+    p.galley(text_pos, galley, Tokens::text());
+    // A name cut short (a long translation in a narrow window) shows
+    // whole as a tooltip.
+    let resp = if cut { resp.rich_tip(&name) } else { resp };
     let close = Rect::from_center_size(
         pos2(rect.right() - TITLE_H / 2.0, rect.center().y),
         vec2(TITLE_H, TITLE_H),
@@ -1427,10 +1752,6 @@ fn floating_body(app: &mut App, ui: &mut Ui, bar: Bar, size: Vec2) {
         Bar::Palette => {
             ui.set_width(size.x);
             crate::ui::palette::palette_row(app, ui);
-            // The further palettes shown, under it (#1164).
-            for which in crate::ui::palette::extra_rows(app) {
-                crate::ui::palette::extra_palette_row(app, ui, which);
-            }
         }
         Bar::Standard => {
             egui::Frame::new()
@@ -1464,6 +1785,286 @@ fn floating_body(app: &mut App, ui: &mut Ui, bar: Bar, size: Vec2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Customize > Default Button Size and Toolbox Toolbar > Button Size
+    /// list the five sizes Ctrl+wheel steps through, in the same order,
+    /// each with its own name.
+    #[test]
+    fn the_size_menus_list_the_five_wheel_sizes() {
+        use crate::settings::ButtonSize;
+        let bars = size_menu(false);
+        let toolbox = size_menu(true);
+        assert_eq!(bars.len(), 5);
+        assert_eq!(toolbox.len(), 6);
+        assert_eq!(toolbox[0], ("bars.size_default", None));
+        assert_eq!(&toolbox[1..], &bars[..]);
+        let mut wheel = ButtonSize::ExtraSmall;
+        for (key, size) in &bars {
+            assert_eq!(*size, Some(wheel));
+            assert_ne!(crate::i18n::tr(key), *key, "{key} has a name");
+            wheel = wheel.stepped(1);
+        }
+        let names: std::collections::HashSet<String> =
+            bars.iter().map(|(k, _)| crate::i18n::tr(k)).collect();
+        assert_eq!(names.len(), 5);
+    }
+
+    /// One frame of the whole window with `events`, the keys held first.
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>, mods: egui::Modifiers) {
+        let mut all = vec![egui::Event::ModifiersChanged(mods)];
+        all.extend(events);
+        let input = egui::RawInput {
+            screen_rect: Some(screen()),
+            events: all,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn wheel(at: Pos2, dy: f32, mods: egui::Modifiers) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: mods,
+            },
+        ]
+    }
+
+    /// A drag of the left button from `from` to `to`, in steps.
+    fn drag(ctx: &egui::Context, app: &mut App, from: Pos2, to: Pos2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            ctx,
+            app,
+            vec![egui::Event::PointerMoved(from)],
+            egui::Modifiers::NONE,
+        );
+        frame(ctx, app, vec![button(from, true)], egui::Modifiers::NONE);
+        for k in 1..=8 {
+            let p = from + (to - from) * (k as f32 / 8.0);
+            frame(
+                ctx,
+                app,
+                vec![egui::Event::PointerMoved(p)],
+                egui::Modifiers::NONE,
+            );
+        }
+        frame(ctx, app, vec![button(to, false)], egui::Modifiers::NONE);
+        for _ in 0..3 {
+            frame(ctx, app, Vec::new(), egui::Modifiers::NONE);
+        }
+    }
+
+    /// Where the floating toolbox's window was drawn in the last frame.
+    fn drawn_window(ctx: &egui::Context) -> Rect {
+        ctx.data(|d| d.get_temp(toolbox_window_id()))
+            .expect("the window was drawn")
+    }
+
+    /// Where the floating toolbox's grid was drawn in the last frame.
+    fn drawn_grid(ctx: &egui::Context) -> Rect {
+        ctx.data(|d| d.get_temp(crate::ui::toolbox::floating_grid_id()))
+            .expect("the grid was drawn")
+    }
+
+    /// A floating bar's name is cut with an ellipsis where the title is
+    /// too narrow for it, and shows whole where there is room; the
+    /// least width leaves room for the close button and a few letters.
+    #[test]
+    fn floating_titles_fit_their_windows() {
+        assert!(title_room(FLOATING_MIN_W) >= 24.0);
+        assert_eq!(title_room(10.0), 0.0);
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // The longest names of the toolbox among the languages.
+            for long in [
+                "Hilfsmittelpalette",
+                "Набор инструментов",
+                "Caixa de ferramentas",
+            ] {
+                let cut = title_galley(ui, long, title_room(FLOATING_MIN_W));
+                assert!(cut.elided, "{long}");
+                assert!(cut.size().x <= title_room(FLOATING_MIN_W) + 0.5, "{long}");
+                assert!(
+                    cut.rows.iter().any(|r| r.text().ends_with('\u{2026}')),
+                    "{long}: {:?}",
+                    cut.rows.iter().map(|r| r.text()).collect::<Vec<_>>()
+                );
+                let whole = title_galley(ui, long, title_room(300.0));
+                assert!(!whole.elided, "{long}");
+                assert_eq!(whole.text(), long);
+            }
+            // The English name fits a window two buttons wide at the
+            // least width.
+            let english = title_galley(ui, "Toolbox", title_room(FLOATING_MIN_W));
+            assert!(!english.elided);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// The floating toolbox in the real window. Dragging an edge reflows
+    /// its grid: the right edge dragged outwards gives more buttons to a
+    /// row and fewer rows, the window hugging them; the left edge dragged
+    /// inwards gives fewer and keeps the right edge where it was; the
+    /// bottom edge dragged upwards widens the rows until they fit. The
+    /// size settles on the grid's own and is kept in the preferences, in
+    /// cells. Ctrl+wheel over the window steps its buttons' size (up
+    /// larger, down smaller) and leaves the drawing's zoom alone, as does
+    /// the plain wheel over it, while over the drawing beside it the
+    /// wheel zooms as before. (The button sizes are shared by every
+    /// window drawn in the process, so no frame here runs at another
+    /// size than the default: the size stepped is read and put back.)
+    #[test]
+    fn the_floating_toolbox_resizes_by_its_edges_and_by_ctrl_wheel() {
+        let _sizes = crate::theme::button_sizes_lock();
+        use crate::settings::ButtonSize;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        assert!(app.settings.bars.set_dock(Bar::Toolbox, Dock::Floating));
+        app.settings.bars.set_pos(Bar::Toolbox, pos2(700.0, 300.0));
+        for _ in 0..4 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let window = drawn_window(&ctx);
+        assert_eq!(window.min, pos2(700.0, 300.0));
+        assert!(window.contains_rect(drawn_grid(&ctx)));
+        assert!(window.width() >= FLOATING_MIN_W);
+
+        // Two buttons to a row at first.
+        let before = crate::ui::toolbox::floating_flow(&app);
+        assert!(before.rows.iter().all(|n| *n <= 2), "{:?}", before.rows);
+        // The right edge, 300 px to the right.
+        let edge = pos2(window.right() - 2.0, window.center().y);
+        drag(&ctx, &mut app, edge, edge + vec2(300.0, 0.0));
+        let wide = crate::ui::toolbox::floating_flow(&app);
+        assert!(wide.rows[0] >= 6, "{:?}", wide.rows);
+        assert!(wide.rows.len() < before.rows.len());
+        assert_eq!(
+            app.settings.bars.toolbox_size,
+            Some(crate::ui::toolbox::floating_cells(&app, wide.size)),
+            "settled on the grid"
+        );
+        assert!(!toolbox_resizing(&ctx));
+        let window = drawn_window(&ctx);
+        assert_eq!(window.min, pos2(700.0, 300.0), "the corner stayed");
+        assert!(window.width() > 250.0, "{window:?}");
+        // The left edge dragged inwards: fewer to a row, the right edge
+        // where it was.
+        let right = window.right();
+        let edge = pos2(window.left() + 2.0, window.center().y);
+        drag(&ctx, &mut app, edge, edge + vec2(150.0, 0.0));
+        let narrower = crate::ui::toolbox::floating_flow(&app);
+        assert!(
+            narrower.rows[0] < wide.rows[0] && narrower.rows.len() > wide.rows.len(),
+            "{:?} {:?}",
+            narrower.rows,
+            wide.rows
+        );
+        let window = drawn_window(&ctx);
+        assert!(
+            (window.right() - right).abs() <= 1.0,
+            "{} vs {right}",
+            window.right()
+        );
+        assert!(window.left() > 800.0, "{window:?}");
+        // The bottom edge dragged upwards: the rows widen to fit.
+        let edge = pos2(window.center().x, window.bottom() - 2.0);
+        drag(
+            &ctx,
+            &mut app,
+            edge,
+            edge - vec2(0.0, window.height() * 0.6),
+        );
+        let flat = crate::ui::toolbox::floating_flow(&app);
+        assert!(flat.rows.len() < narrower.rows.len(), "{:?}", flat.rows);
+        assert!(flat.size.y < narrower.size.y);
+        assert!(drawn_window(&ctx).height() < window.height());
+
+        // Ctrl+wheel over the window: the toolbox's own button size
+        // steps up and down, and the drawing keeps its zoom.
+        let zoom = app.view.zoom;
+        assert_eq!(app.settings.toolbox_button_size, None);
+        assert_eq!(app.settings.button_size, ButtonSize::Small);
+        let over = drawn_grid(&ctx).center();
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(over)],
+            egui::Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, 1.0, egui::Modifiers::CTRL),
+            egui::Modifiers::CTRL,
+        );
+        assert_eq!(app.settings.toolbox_button_size, Some(ButtonSize::Medium));
+        app.settings.toolbox_button_size = None;
+        frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, -1.0, egui::Modifiers::CTRL),
+            egui::Modifiers::CTRL,
+        );
+        assert_eq!(
+            app.settings.toolbox_button_size,
+            Some(ButtonSize::ExtraSmall)
+        );
+        app.settings.toolbox_button_size = None;
+        // The default button size (the other bars) stays.
+        assert_eq!(app.settings.button_size, ButtonSize::Small);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_eq!(app.view.zoom, zoom);
+        assert_eq!(crate::ui::toolbox::floating_flow(&app).rows, flat.rows);
+        // The plain wheel over the window: no zoom, no size.
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, 1.0, egui::Modifiers::NONE),
+            egui::Modifiers::NONE,
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_eq!(app.view.zoom, zoom);
+        assert_eq!(app.settings.toolbox_button_size, None);
+        // Over the drawing, away from the window, the wheel zooms.
+        let canvas = app.canvas_rect;
+        let away = pos2(canvas.left() + 40.0, canvas.top() + 40.0);
+        assert!(!drawn_window(&ctx).contains(away));
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(away)],
+            egui::Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            wheel(away, 1.0, egui::Modifiers::NONE),
+            egui::Modifiers::NONE,
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_ne!(app.view.zoom, zoom);
+        // Back at its first place, the size is forgotten.
+        reset(&mut app);
+        assert_eq!(app.settings.bars.toolbox_size, None);
+    }
 
     fn screen() -> Rect {
         Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))

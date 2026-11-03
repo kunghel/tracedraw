@@ -163,6 +163,14 @@ meets the start) `Path` objects with the toolbox defaults.
   polygon, and stays inside the points' hull (quadratic with three
   points, a line with two). While drawing, the control polygon shows
   dashed with the curve over it, both following the pointer.
+- The preview is the curve a click would make: the pointer is a
+  tentative next control point. Right after a click the pointer is on
+  the point just placed and adds nothing, so the preview is the curve
+  through the points placed so far, with no doubled end point; a second
+  click on the last point places no second point. Finishing makes the
+  last preview without the tentative point (#1506). The last spans of
+  the curve still change as points are added, as a B-spline's do: each
+  point shapes the spans next to it.
 - Double-click, Enter or Esc finishes (Esc with one point drops it);
   clicking the first point (once there are three) closes it into the periodic spline,
   smooth all round. The result is a curve object (its nodes are the
@@ -173,7 +181,9 @@ meets the start) `Path` objects with the toolbox defaults.
   from the end node of the selected curve joins that curve and keeps no
   control points.
 - Checked by `geometry::tests::bsplines_start_and_end_on_their_ends_and_stay_inside`,
-  `pick_drag_tests::bspline_clicks_place_control_points_of_a_smooth_curve`
+  `pick_drag_tests::bspline_clicks_place_control_points_of_a_smooth_curve`,
+  `pick_drag_tests::bspline_preview_is_the_curve_that_is_made`,
+  `pick_drag_tests::bspline_double_click_makes_the_previewed_curve`
   and `pick_drag_tests::a_bspline_keeps_its_control_points_for_the_shape_tool`.
 
 ## Polyline and 2-point line

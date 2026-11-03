@@ -21,6 +21,15 @@
   <link rel="preload" href="./tracedraw_bg.wasm" as="fetch" type="application/wasm" crossorigin>
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #d4d4d4; }
+    /* A drag with the button held, or a finger held down, is the editor's
+       (a marquee, a move), not the browser's text selection: without this
+       Safari on iPad selected the whole page while dragging on the canvas
+       and offered its callout (#1654). The loading text stays selectable
+       so an error message can be copied. */
+    html, body, canvas#tracedraw {
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    #loading { user-select: text; -webkit-user-select: text; }
     /* The canvas keeps clear of a tablet's rounded corners, camera notch
        and status bar when the page fills the screen as an installed app
        (viewport-fit=cover): eframe sizes the editor from the canvas's

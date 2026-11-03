@@ -10,7 +10,13 @@ marks on its edge.
   mirrored or stretched edges, the colour for a solid one), the original
   area dashed in blue and the grommets as circles of their size, with
   "Height: ..., Width: ..." of the final page in the document's units at
-  the bottom.
+  the bottom. Mirrored and stretched edges are told apart in the band:
+  diagonal hatching for the design flipped over the edge, streaks
+  running straight out from the page's edge for the edge drawn outwards
+  (one mark every half border width, or every 1/80 of the page's longer
+  side when that is more); the same grey band stood for both (#1332,
+  `border_grommet::band_marks`). When grommets are on but have no room
+  (see below) the preview says so in red at its top.
 - On the right, in titled boxes:
   - **Source**: Page, or Selection (only with something selected): the
     selection's box becomes the page.
@@ -49,7 +55,13 @@ marks on its edge.
 - Count mode places the number per edge (corners included); spacing
   mode one every spacing along each edge. Corner marks are shared by the
   two edges that meet there; a page too small for the margin and
-  diameter gets no marks.
+  diameter gets no marks: the grommets have room when the inset of
+  their centres from the outer edge (the margin plus the radius, or
+  half the border when they go in it) is at most half the final page's
+  width and height (`border_grommet::grommets_fit`). Without room the
+  preview says so and OK reports it in the status bar instead of "0
+  grommet marks" (#1332,
+  `border_grommet::tests::grommets_without_room_say_so_and_the_preview_tells_the_border_kinds_apart`).
 - Marks are placed on the page after the border has been applied.
 
 ## Checks (tests in `border_grommet.rs`)

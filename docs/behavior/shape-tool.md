@@ -92,14 +92,14 @@ Properties.
 | Ctrl+click node | adds it to the node selection, or takes it out |
 | Shift+click node | selects the run of nodes from the last selected one to it, along the subpath (the shorter way round on a closed one); Shift+clicking the run's end again selects the other way round; on another subpath it adds the node |
 | Tab, Shift+Tab | the next or previous node of the curve, wrapping round |
-| Marquee | Rectangular (default) or Freehand, picked in the property bar's Selection mode list; a freehand marquee selects the nodes inside the loop drawn (even-odd); Alt+drag draws a freehand marquee whatever the mode, also starting over a curve, and Alt+Shift adds its nodes to the chosen ones (#1341, `pick_drag_tests::alt_drag_with_the_shape_tool_is_a_freehand_node_marquee`) |
+| Marquee | Rectangular (default) or Freehand, picked in the property bar's Selection mode list; a freehand marquee selects the nodes inside the loop drawn (even-odd); Alt+drag draws a freehand marquee whatever the mode, also starting over a curve, and Alt+Shift adds its nodes to the chosen ones (#1341, `pick_drag_tests::alt_drag_with_the_shape_tool_is_a_freehand_node_marquee`). A marquee keeps the selected objects, also when it starts over another object (the one behind the curve, or the group holding it), so the curve being edited stays the one edited; only with nothing selected does a drag that starts over an object select it first (#1594, `pick_drag_tests::a_node_marquee_over_another_object_keeps_the_curve_being_edited`) |
 | Ctrl+A, Select all nodes button | every node of the selected curves |
 
 ## Moving and editing
 
 | Action | Behaviour |
 |---|---|
-| Drag node | move the selected nodes; Ctrl constrains. While the pointer moves, the page keeps the picture it had before the drag and the curve being edited follows as the thin line of the node colour the tool draws over it (its outline, with any width nodes, brush, arrowheads or effects, is not made again every frame, #1259, #509); the picture with the moved nodes and the full outline is made once, on release, never while the pointer moves or pauses with the button held. A segment bend, a handle drag and a node transform drag the same way |
+| Drag node | move the selected nodes; Ctrl constrains. A drag that starts on a node not yet chosen chooses it alone, with Ctrl too (Ctrl then only keeps the move to one axis, from the first drag, #1325, `pick_drag_tests::ctrl_drag_on_an_unchosen_node_moves_that_node_alone_constrained`); with Shift it adds the node (or the run up to it) to the chosen ones, which move together. While the pointer moves, the page keeps the picture it had before the drag and the curve being edited follows as the thin line of the node colour the tool draws over it (its outline, with any width nodes, brush, arrowheads or effects, is not made again every frame, #1259, #509); the picture with the moved nodes and the full outline is made once, on release, never while the pointer moves or pauses with the button held. A segment bend, a handle drag and a node transform drag the same way |
 | Click segment | chooses that segment: it is drawn over in the main colour with its handles, its end node is not shown as chosen (To Line and To Curve act on the segment through it), and the spot clicked gets a small round mark; Add Node (+ or the property bar button) puts the new node at that spot |
 | Drag segment | bends it: the point grabbed follows the pointer exactly while both end nodes stay; a straight (or closing) segment becomes a curve first; both control points move, the nearer one more (by `k (1 - t) d` and `k t d` with `k = 1 / (3 t (1 - t) ((1 - t)² + t²))`, `t` the grabbed point's place along the segment, kept within 0.02 to 0.98, `d` the drag); a smooth or symmetrical end node stays so, its other handle turning along, and a node made cusp keeps its other handle where it is even when its handles line up (the type chosen for the node counts, not how its handles read, #1140); one undo step (Bend Segment) |
 | Drag handle | smooth nodes move the opposite handle to stay collinear; symmetrical also keep the length; with Ctrl or Shift the handle keeps to the constrain angle about its node (on the page), the node keeping its type (#510, `pick_drag_tests::ctrl_or_shift_keeps_a_handle_to_the_constrain_angle`); the page keeps its picture while the handle moves, as for a node drag (#1259) |
@@ -162,18 +162,25 @@ A curve being edited shows a small white circle with a ring in the node
 colour inside each corner (a node where two segments meet at an angle,
 as the Corners panel counts them), 18 px from the node along the middle
 of the corner (#635), when Options > Nodes and Handles > Show corner
-rounding rings on curve nodes is on. That preference is off at first, so
-the widgets do not get in the way of node editing (#884); it is saved
-with the other preferences. With it off no widget shows and a press where
+rounding rings on curve nodes is on. That preference is on at first; it
+can be turned off so the widgets do not get in the way of node editing
+(#884), and it is saved with the other preferences. With it off no widget shows and a press where
 one would sit works as any other press of the Shape tool. Rectangles
 round their corners with their own handles either way.
 
-- With no node chosen every corner has one (a curve with more than 32
-  corners shows none, so a traced outline is not covered in them); with
-  nodes chosen only their corners do.
-- Dragging a widget into its corner rounds the corners with a fillet,
-  live: with no node chosen every corner of the curve, with nodes chosen
-  only theirs. The radius is the one whose arc's middle has moved into
+- Every corner has one (a curve with more than 32 corners shows them
+  only on chosen nodes, so a traced outline is not covered in them). A
+  chosen corner's widget is filled with the node colour.
+- Options > Nodes and Handles > Round one corner at a time (on at first,
+  under the rings option): a Ctrl+click (Cmd on macOS) on a widget
+  chooses its corner, a second Ctrl+click takes it out, so one corner or
+  several can be chosen. Turned off, the widgets work as before: with
+  nodes chosen only their corners show one, a drag rounds every corner
+  or the chosen nodes' corners, and Shift and Ctrl change nothing.
+- Dragging a widget into its corner rounds that corner alone with a
+  fillet, live. When its node is one of the chosen nodes, the chosen
+  nodes' corners round together; with Shift held at the press, every
+  corner of the curve rounds together. The radius is the one whose arc's middle has moved into
   the dragged corner as far as the pointer has moved along it
   (`r = d / (1 / sin(theta / 2) - 1)` for a corner of angle `theta`), at
   most the largest radius every rounded corner still fits (a side two
@@ -190,10 +197,10 @@ round their corners with their own handles either way.
   radius is read back from the arc. Its widget sits 18 px off the
   middle of the arc, along the middle of the corner. Dragging it takes
   the corner back to the sharp corner its sides meet at and rounds that
-  again, starting from the radius it had: with no node chosen every
-  corner of the curve (sharp or rounded) takes the new radius, with
-  nodes chosen only theirs (a rounded corner is chosen by any node of
-  its arc). Dragging back past the corner makes it sharp. Arcs between
+  again, starting from the radius it had: that corner alone, the chosen
+  nodes' corners when it is one of them, or with Shift every corner of
+  the curve (sharp or rounded) takes the new radius (a rounded corner is
+  chosen by any node of its arc). Dragging back past the corner makes it sharp. Arcs between
   curved sides, scallops and chamfers are not found again.
 - On a stretched or skewed curve corners round on the page, so a new
   rounding is round, also on a curve stretched after other corners were

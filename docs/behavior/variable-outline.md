@@ -21,6 +21,11 @@ length with width nodes.
   node's reach handles (the dots at its ends) changes its reach. One undo
   step per drag (#479,
   `width_nodes_slide_along_the_path_and_their_handles_change_the_reach`).
+  On a closed path (one closed subpath: an ellipse, a rectangle, a closed
+  curve) a node slides on past the path's start and comes round, kept
+  between the nodes either side of it round the loop; the nodes keep
+  their path order and the picked ones stay picked (#1322,
+  `a_node_slides_round_a_closed_path_past_its_start`).
 - Picking several nodes: Shift+click picks the nodes from the picked one
   to the one clicked; Ctrl+click adds a node or takes it out; a plain
   click picks one alone. A drag that starts on a picked node changes
@@ -45,6 +50,12 @@ length with width nodes.
 - The ends of the path keep half the outline width on each side unless
   a node sits on them. Between neighbouring nodes `a` and `b` the reach
   eases with `s = u^2 (3 - 2u)`, `u = (t - t_a) / (t_b - t_a)`.
+  A closed path (one closed subpath) has no ends: the last node and the
+  first are neighbours across the path's start, and the reach eases
+  between them the same way (the last node a turn back before the first,
+  the first a turn on after the last), so a single node gives the whole
+  loop its reach (#1322, `style::tests::width_around_a_loop_eases_across_its_seam`,
+  `shaping::tests::a_closed_loops_variable_band_runs_on_across_its_seam`).
 - The band is built from the path flattened to 0.05 mm and cut into
   pieces no longer than 1/256 of its length (at least 0.05 mm), with
   `n = sqrt(6 dw / (8 * 0.005))` pieces (48 to 512) between

@@ -68,6 +68,19 @@ the version on the right).
   than 95 % of the monitor) centred on the monitor, then maximized in
   the next frames when it was left maximized or when that size does
   not fit the monitor (a small screen; see Window state below).
+- The window system applies that size a few frames later. The frame
+  that asks for it and every frame until the window has its size (or,
+  when it starts maximized, until it is maximized and fills the screen)
+  are drawn plain in the interface's background colour, for at most one
+  second (`splash::GROW_SECONDS`); the editor's first frame is drawn at
+  the window's final size. The editor used to draw at once: its first
+  frames came at the splash's size while the window grew, so the grown
+  window showed the last splash frame in its top left corner, the
+  editor squeezed below it and torn, leftover pixels over the rest for
+  half a second to a second on X11 (#1673,
+  `splash::tests::the_main_window_is_drawn_plain_until_it_has_grown`,
+  `splash::tests::a_window_that_starts_maximized_is_drawn_plain_until_it_fills_the_screen`,
+  `splash::tests::a_window_that_never_grows_gets_the_editor_after_a_second`).
 - The splash window is made resizable too, though it has no frame to
   drag: a window made not resizable stays at its size for good under
   some window managers (Xfwm4), and the main window could then neither
@@ -401,6 +414,9 @@ screen, and after 6 requests; each request is logged (#787,
 - `splash::tests::the_status_names_the_file_being_opened`
 - `splash::tests::the_main_window_keeps_a_sensible_size`
 - `splash::tests::the_main_window_is_centred`
+- `splash::tests::the_main_window_is_drawn_plain_until_it_has_grown`
+- `splash::tests::a_window_that_starts_maximized_is_drawn_plain_until_it_fills_the_screen`
+- `splash::tests::a_window_that_never_grows_gets_the_editor_after_a_second`
 - `splash::tests::a_splash_frame_draws_and_then_starts_the_editor`
 - `splash::tests::the_editor_does_not_wait_for_system_fonts_the_language_does_not_need`
 - `splash::tests::a_language_that_needs_a_system_font_waits_for_it`

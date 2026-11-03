@@ -47,12 +47,55 @@ struct NodeDrag {
 }
 
 /// Sorted nodes, with the index the node at `keep` ends up at.
-pub(crate) fn sorted(mut nodes: Vec<WidthNode>, keep: usize) -> (Vec<WidthNode>, usize) {
-    let marked: Vec<(usize, WidthNode)> = nodes.drain(..).enumerate().collect();
-    let mut marked = marked;
+pub(crate) fn sorted(nodes: Vec<WidthNode>, keep: usize) -> (Vec<WidthNode>, usize) {
+    let (nodes, map) = sorted_map(nodes);
+    let at = map.get(keep).copied().unwrap_or(0);
+    (nodes, at)
+}
+
+/// Sorted nodes, with where each one went: `map[old] = new`.
+pub(crate) fn sorted_map(nodes: Vec<WidthNode>) -> (Vec<WidthNode>, Vec<usize>) {
+    let mut marked: Vec<(usize, WidthNode)> = nodes.into_iter().enumerate().collect();
     marked.sort_by(|a, b| a.1.at.total_cmp(&b.1.at));
-    let at = marked.iter().position(|(i, _)| *i == keep).unwrap_or(0);
-    (marked.into_iter().map(|(_, n)| n).collect(), at)
+    let mut map = vec![0; marked.len()];
+    for (new, (old, _)) in marked.iter().enumerate() {
+        if let Some(m) = map.get_mut(*old) {
+            *m = new;
+        }
+    }
+    (marked.into_iter().map(|(_, n)| n).collect(), map)
+}
+
+/// Where a node sliding to `t` along the path may go: between its
+/// neighbours (a little short of them, so the nodes keep their order) and
+/// within the ends of an open path; round a `closed` loop the neighbours
+/// are the nodes either side of it round the loop, the seam between, so
+/// a node slides on past the start of the path and comes round (#1322).
+pub(crate) fn slide_target(nodes: &[WidthNode], index: usize, t: f64, closed: bool) -> f64 {
+    const GAP: f64 = 1e-4;
+    let n = nodes.len();
+    if !closed || n <= 1 {
+        let lo = index
+            .checked_sub(1)
+            .and_then(|k| nodes.get(k))
+            .map_or(0.0, |m| m.at + GAP);
+        let hi = nodes.get(index + 1).map_or(1.0, |m| m.at - GAP);
+        return if closed {
+            t.rem_euclid(1.0)
+        } else {
+            t.clamp(lo.min(hi), hi.max(lo))
+        };
+    }
+    let prev = nodes.get((index + n - 1) % n).map_or(0.0, |m| m.at);
+    let next = nodes.get((index + 1) % n).map_or(0.0, |m| m.at);
+    // The way round from the node behind to the one ahead; with one other
+    // node they are the same node and the way is the whole loop.
+    let arc = match (next - prev).rem_euclid(1.0) {
+        a if a <= 1e-9 => 1.0,
+        a => a,
+    };
+    let d = (t - prev).rem_euclid(1.0).clamp(GAP, (arc - GAP).max(GAP));
+    (prev + d).rem_euclid(1.0)
 }
 
 impl App {
@@ -252,7 +295,13 @@ impl App {
                 }
                 // The outline under the pointer.
                 if let Some((t, d, _)) = tracedraw_core::shaping::locate_on_path(&path, p) {
-                    let (l, r) = tracedraw_core::style::width_at(stroke.width, &stroke.widths, t);
+                    let closed = tracedraw_core::shaping::is_single_loop(&path);
+                    let (l, r) = tracedraw_core::style::width_around(
+                        stroke.width,
+                        &stroke.widths,
+                        t,
+                        closed,
+                    );
                     if d <= (l.max(r) * scale) + grab {
                         let mut nodes = stroke.widths.clone();
                         nodes.push(WidthNode {
@@ -330,20 +379,27 @@ impl App {
             let Some((t, _, _)) = tracedraw_core::shaping::locate_on_path(&path, p) else {
                 return;
             };
-            // Between its neighbours, so the nodes keep their order.
+            // Between its neighbours, so the nodes keep their order; round
+            // a closed loop it may pass the seam, and the nodes are put
+            // back in path order, the picked ones followed (#1322).
             let mut nodes = stroke.widths.clone();
-            let lo = drag
-                .index
-                .checked_sub(1)
-                .and_then(|k| nodes.get(k))
-                .map_or(0.0, |m| m.at + 1e-4);
-            let hi = nodes.get(drag.index + 1).map_or(1.0, |m| m.at - 1e-4);
+            let closed = tracedraw_core::shaping::is_single_loop(&path);
+            let at = slide_target(&nodes, drag.index, t, closed);
             if let Some(m) = nodes.get_mut(drag.index) {
-                m.at = t.clamp(lo.min(hi), hi.max(lo));
+                m.at = at;
             }
+            let (nodes, map) = sorted_map(nodes);
             self.set_width_nodes(drag.shape, nodes, drag.recorded);
+            self.vo.node = self.vo.node.and_then(|k| map.get(k).copied());
+            self.vo.more = self
+                .vo
+                .more
+                .iter()
+                .filter_map(|k| map.get(*k).copied())
+                .collect();
             if let Some(d) = self.vo.drag.as_mut() {
                 d.recorded = true;
+                d.index = map.get(drag.index).copied().unwrap_or(drag.index);
             }
             return;
         }
@@ -648,6 +704,98 @@ mod tests {
         assert_eq!(widths(&app, id).len(), 1);
         app.undo();
         assert_eq!(widths(&app, id).len(), 3);
+    }
+
+    /// A circle, 100 mm across, from (0, 0): its path starts at the right
+    /// and runs through the top, so `t` of the way round lies at
+    /// `360 t` degrees from the right.
+    fn circle_app() -> (App, ShapeId) {
+        let mut app = App::headless();
+        let layer = app.active_layer().expect("a layer");
+        let id = app.engine.new_shape_id();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Ellipse {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 100.0, 100.0),
+                arc: None,
+            },
+        );
+        s.stroke = Some(Stroke::new(tracedraw_core::Color::BLACK, 2.0));
+        app.run(Command::AddShape { layer, shape: s });
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::VariableOutline;
+        app.view.zoom = 4.0;
+        (app, id)
+    }
+
+    fn on_circle(t: f64, out: f64) -> Point {
+        let a = t * std::f64::consts::TAU;
+        Point::new(50.0 + (50.0 + out) * a.cos(), 50.0 + (50.0 + out) * a.sin())
+    }
+
+    /// #1322: on a closed path a node slides on past the path's start and
+    /// comes round, the nodes staying in path order with the picked one
+    /// followed; a node added at the seam takes the reach eased across
+    /// it, not the plain outline's.
+    #[test]
+    fn a_node_slides_round_a_closed_path_past_its_start() {
+        let (mut app, id) = circle_app();
+        // A node nine tenths of the way round, 6 mm each way.
+        app.variable_outline_press(on_circle(0.9, 0.0), false);
+        app.variable_outline_drag(on_circle(0.9, 6.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 1);
+        assert!(
+            (w[0].at - 0.9).abs() < 0.01 && (w[0].left - 6.0).abs() < 0.05,
+            "{w:?}"
+        );
+        // Dragged on along the path, past the start, to a tenth of the way.
+        app.variable_outline_press(on_circle(0.9, 0.0), false);
+        app.variable_outline_drag(on_circle(0.95, 0.0));
+        app.variable_outline_drag(on_circle(0.1, 0.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 1);
+        assert!((w[0].at - 0.1).abs() < 0.01, "{w:?}");
+        assert!((w[0].left - 6.0).abs() < 0.05 && (w[0].right - 6.0).abs() < 0.05);
+        // A second node halfway round, 1 mm each way (the reach there is
+        // 6 mm all round, as the loop has no ends).
+        app.variable_outline_press(on_circle(0.5, 0.0), false);
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 2);
+        assert!((w[1].left - 6.0).abs() < 0.05, "{w:?}");
+        app.variable_outline_drag(on_circle(0.5, 1.0));
+        app.vo.drag = None;
+        // The first node, dragged backwards through the start to eight
+        // tenths: it comes last in path order and stays the picked one.
+        app.variable_outline_press(on_circle(0.1, 0.0), false);
+        app.variable_outline_drag(on_circle(0.05, 0.0));
+        app.variable_outline_drag(on_circle(0.8, 0.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 2);
+        assert!(
+            (w[0].at - 0.5).abs() < 0.01 && (w[1].at - 0.8).abs() < 0.01,
+            "{w:?}"
+        );
+        assert!((w[1].left - 6.0).abs() < 0.05 && (w[0].left - 1.0).abs() < 0.05);
+        assert_eq!(app.vo.node, Some(1));
+        // It cannot pass the other node: pulled to six tenths it stops
+        // just short of the node at a half... from the other side.
+        app.variable_outline_press(on_circle(0.8, 0.0), false);
+        app.variable_outline_drag(on_circle(0.75, 0.0));
+        app.variable_outline_drag(on_circle(0.52, 0.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!(w[0].at < w[1].at && (w[1].at - 0.52).abs() < 0.01, "{w:?}");
+        // One undo step per drag.
+        app.undo();
+        let w = widths(&app, id);
+        assert!((w[1].at - 0.8).abs() < 0.01, "{w:?}");
+        // On an open path the ends still stop a node (the line test above).
+        assert!((slide_target(&w, 1, 0.95, false) - 0.95).abs() < 1e-9);
+        assert!((slide_target(&w, 0, 0.9, false) - (w[1].at - 1e-4)).abs() < 1e-9);
     }
 
     /// A node pressed on its centre slides along the path when the drag

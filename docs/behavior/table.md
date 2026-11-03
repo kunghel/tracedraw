@@ -10,9 +10,18 @@
 - Property bar: rows (default 3), columns (default 4), cell fill (off by
   default; a colour when on), border width (hairline by default),
   border colour and style (solid, dashed, dotted), then the hint. With a
-  table selected, the fill and border fields edit that table; otherwise
-  they set the defaults for the next one. With cells selected the bar
-  acts on them (see "Selected cells" below).
+  table selected, the fields edit that table: Rows and Columns show its
+  counts and change them, rows added at the bottom as tall as the last
+  one or taken away there, columns at the right as wide as the last one,
+  the other cells keeping their text and formatting, one "Table Rows" or
+  "Table Columns" undo step each (#1680,
+  `table::tests::the_bar_counts_resize_the_selected_table`); otherwise
+  the fields set the defaults for the next one. With cells selected the
+  bar acts on them (see "Selected cells" below).
+- A table selected with the Pick tool shows the same fields after the
+  object fields (X, Y, W, H), without the hint, so its rows, columns,
+  fill and borders change without a change of tool (#1680,
+  `ui::table_bar::tests::a_table_selected_with_the_pick_tool_shows_the_table_fields`).
 - Drag on empty canvas: a table with equal row heights and column
   widths filling the rectangle (a drag smaller than 1 mm either way
   draws nothing). Cells have a 1 mm margin on every side.

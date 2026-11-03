@@ -284,9 +284,14 @@ pub fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
 }
 
-/// Write a whole file; in a browser, download it under the path's name.
+/// Write a whole file; in a browser, download it under the path's name
+/// (or keep it in memory, under [`MEMORY_ROOT`]).
 pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
     let path = path.as_ref();
+    if in_memory(path) {
+        store(path, bytes.as_ref().to_vec());
+        return Ok(());
+    }
     if WEB {
         let name = path
             .file_name()
@@ -401,12 +406,16 @@ pub fn write_creating(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::i
     std::fs::write(path, bytes)
 }
 
-/// Delete a file (in a browser, only in the auto-backup folder).
+/// Delete a file (in a browser, only in the auto-backup folder and the
+/// folders kept in memory).
 pub fn remove(path: impl AsRef<Path>) -> std::io::Result<()> {
     #[cfg(target_arch = "wasm32")]
     if in_web_backups(path.as_ref()) {
         crate::web::backups::remove(path.as_ref());
         return Ok(());
+    }
+    if in_memory(path.as_ref()) {
+        forget(path.as_ref());
     }
     if WEB {
         return Ok(());
@@ -414,9 +423,135 @@ pub fn remove(path: impl AsRef<Path>) -> std::io::Result<()> {
     std::fs::remove_file(path)
 }
 
-/// Choose a folder (desktop only; `None` when cancelled, in a browser or
-/// on Android, where the editor never needs a folder of its own).
-pub fn pick_folder() -> Option<PathBuf> {
+/// The kind of system the app runs on, where what a dialog can do
+/// depends on it (#1399).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Desktop,
+    Web,
+    Android,
+}
+
+impl Platform {
+    /// The platform of this build.
+    pub const fn current() -> Platform {
+        if WEB {
+            Platform::Web
+        } else if ANDROID {
+            Platform::Android
+        } else {
+            Platform::Desktop
+        }
+    }
+}
+
+/// The places where the desktop asks for a folder (#1399).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderUse {
+    /// The Export docker's folder: the assets are written into it.
+    ExportAssets,
+    /// File > Package: the drawing, its pictures and fonts.
+    Package,
+    /// Font Manager > Add Folder: its fonts are read.
+    FontFolder,
+    /// Print Merge's pictures folder: the pictures cells name are read.
+    MergePictures,
+    /// Picture Mosaic's library: its pictures are read.
+    MosaicLibrary,
+    /// Options > Text > Spelling, More dictionaries: Hunspell files read.
+    DictionaryFolder,
+    /// Options > Save, the backup made before saving.
+    BackupFolder,
+    /// Options > Save, the auto-backups.
+    AutoBackupFolder,
+}
+
+impl FolderUse {
+    #[cfg(test)]
+    pub const ALL: [FolderUse; 8] = [
+        FolderUse::ExportAssets,
+        FolderUse::Package,
+        FolderUse::FontFolder,
+        FolderUse::MergePictures,
+        FolderUse::MosaicLibrary,
+        FolderUse::DictionaryFolder,
+        FolderUse::BackupFolder,
+        FolderUse::AutoBackupFolder,
+    ];
+
+    /// What the folder button does in this build.
+    pub fn action(self) -> FolderAction {
+        folder_action(self, Platform::current())
+    }
+
+    /// The tip that says why the button does what it does in this build
+    /// (an i18n key), `None` on the desktop.
+    pub fn tip(self) -> Option<&'static str> {
+        folder_tip(self, Platform::current())
+    }
+}
+
+/// What a folder button does (#1399).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderAction {
+    /// The system's folder dialog ([`pick_folder`]), on the desktop.
+    PickFolder(FolderToken),
+    /// The files are written into one zip file, downloaded in a browser
+    /// and saved where the system's save picker says on Android.
+    SaveZip,
+    /// The files a folder would hold are chosen with the open picker,
+    /// several at once.
+    OpenFiles,
+    /// No folder can be chosen: the button is greyed, with this tip (an
+    /// i18n key) saying why.
+    Unavailable(&'static str),
+}
+
+/// Leave to show the system's folder dialog: only [`folder_action`] makes
+/// one, and only for the desktop, so no dialog asks for a folder in a
+/// browser or on Android, where none can be picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderToken(());
+
+/// What the button of `place` does on `platform`. The desktop picks a
+/// folder; elsewhere a folder that is only written into becomes one zip
+/// file, a folder that is read becomes several picked files, and the
+/// backup folders, which the app writes on its own later, cannot be
+/// chosen.
+pub fn folder_action(place: FolderUse, platform: Platform) -> FolderAction {
+    use FolderAction::*;
+    use FolderUse::*;
+    match (platform, place) {
+        (Platform::Desktop, _) => PickFolder(FolderToken(())),
+        // File > Package is greyed in a browser (#1416).
+        (Platform::Web, Package) => Unavailable("package.desktop_only"),
+        (_, ExportAssets | Package) => SaveZip,
+        (_, FontFolder | MergePictures | MosaicLibrary | DictionaryFolder) => OpenFiles,
+        (Platform::Web, BackupFolder | AutoBackupFolder) => Unavailable("folder.backup_web"),
+        (Platform::Android, BackupFolder | AutoBackupFolder) => {
+            Unavailable("folder.backup_android")
+        }
+    }
+}
+
+/// The tip of the button of `place` on `platform` (an i18n key): why it
+/// writes a zip, opens files or is greyed; `None` where it picks a folder.
+pub fn folder_tip(place: FolderUse, platform: Platform) -> Option<&'static str> {
+    let web = platform == Platform::Web;
+    match folder_action(place, platform) {
+        FolderAction::PickFolder(_) => None,
+        FolderAction::SaveZip if web => Some("folder.zip_web"),
+        FolderAction::SaveZip => Some("folder.zip_android"),
+        FolderAction::OpenFiles if web => Some("folder.files_web"),
+        FolderAction::OpenFiles => Some("folder.files_android"),
+        FolderAction::Unavailable(key) => Some(key),
+    }
+}
+
+/// Choose a folder with the system's dialog (`None` when cancelled). The
+/// token comes from [`folder_action`], which gives one on the desktop only.
+pub fn pick_folder(token: FolderToken) -> Option<PathBuf> {
+    let _ = token;
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         rfd::FileDialog::new().pick_folder()
@@ -427,13 +562,133 @@ pub fn pick_folder() -> Option<PathBuf> {
     }
 }
 
+/// Where the browser keeps the files of [`gather`] and [`zip_written`]
+/// in memory, as if they were in folders.
+const MEMORY_ROOT: &str = "/memory";
+
+/// True for a path the browser keeps in memory ([`MEMORY_ROOT`]).
+fn in_memory(path: &Path) -> bool {
+    WEB && path.starts_with(MEMORY_ROOT)
+}
+
+/// The folder for the app's own work called `name`: under
+/// [`MEMORY_ROOT`] in a browser, in the temporary folder elsewhere.
+fn work_dir(name: &str) -> PathBuf {
+    if WEB {
+        return PathBuf::from(MEMORY_ROOT).join(name);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::temp_dir()
+            .join(format!("tracedraw-work-{}", std::process::id()))
+            .join(name)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        PathBuf::from(MEMORY_ROOT).join(name)
+    }
+}
+
+/// Empty `dir` (made when missing; in a browser, its files forgotten).
+fn clear_dir(dir: &Path) -> std::io::Result<()> {
+    if WEB {
+        STORE.with(|s| s.borrow_mut().retain(|p, _| !p.starts_with(dir)));
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir)
+}
+
+/// Picked files put together in a folder of their own called `key`, for
+/// code that reads a folder (Print Merge's pictures, the Picture Mosaic
+/// library) where no folder can be picked (#1399): copies in the
+/// temporary folder (Android), kept in memory in a browser. The files
+/// the folder held before are gone. The folder.
+pub fn gather(key: &str, paths: &[PathBuf]) -> std::io::Result<PathBuf> {
+    let dir = work_dir(&format!("picked-{}", safe_file_name(key)));
+    clear_dir(&dir)?;
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| safe_file_name(&n.to_string_lossy()))
+            .unwrap_or_else(|| "file".into());
+        let bytes = read(path)?;
+        write(dir.join(name), bytes)?;
+    }
+    Ok(dir)
+}
+
+/// True for a folder [`gather`] made.
+pub fn is_gathered(dir: &Path) -> bool {
+    dir.parent() == Some(work_dir("").as_path())
+        && dir
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("picked-"))
+}
+
+/// The files `fill` writes (with [`write`]) into the folder it is given,
+/// as one zip file with each file under `top/`, in name order (#1399):
+/// where no folder can be picked, the files go where the user says as
+/// one file. The folder is gone afterwards.
+pub fn zip_written(top: &str, fill: impl FnOnce(&Path)) -> Result<Vec<u8>, String> {
+    static WORK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let work = work_dir(&format!("zip-{n}"));
+    let top = safe_file_name(top);
+    let dir = work.join(&top);
+    clear_dir(&dir).map_err(|e| e.to_string())?;
+    fill(&dir);
+    let mut files = list_dir(&dir);
+    files.sort();
+    let entries: Result<Vec<(String, Vec<u8>)>, String> = files
+        .iter()
+        .map(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            read(p)
+                .map(|b| (format!("{top}/{name}"), b))
+                .map_err(|e| e.to_string())
+        })
+        .collect();
+    let _ = clear_dir(&work);
+    if !WEB {
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    zip_entries(&entries?)
+}
+
+/// Named files as one zip file (deflated).
+pub fn zip_entries(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, data) in entries {
+        zip.start_file(name.as_str(), options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(data).map_err(|e| e.to_string())?;
+    }
+    zip.finish()
+        .map(|c| c.into_inner())
+        .map_err(|e| e.to_string())
+}
+
 /// The files directly inside a folder (not its subfolders), in no
 /// particular order; empty when it cannot be read, and in a browser
-/// outside the auto-backup folder.
+/// outside the auto-backup folder and the folders kept in memory.
 pub fn list_dir(path: impl AsRef<Path>) -> Vec<PathBuf> {
     #[cfg(target_arch = "wasm32")]
     if in_web_backups(path.as_ref()) {
         return crate::web::backups::list(path.as_ref());
+    }
+    if in_memory(path.as_ref()) {
+        let dir = path.as_ref();
+        return STORE.with(|s| {
+            s.borrow()
+                .keys()
+                .filter(|p| p.parent() == Some(dir))
+                .cloned()
+                .collect()
+        });
     }
     if WEB {
         return Vec::new();
@@ -898,8 +1153,8 @@ impl Dialog {
         }
     }
 
-    /// Pick one or more files and run `then` with their paths (one file in
-    /// a browser).
+    /// Pick one or more files and run `then` with their paths: at once
+    /// natively, on a later frame in a browser and on Android.
     pub fn pick_files(self, app: &mut App, then: impl FnOnce(&mut App, Vec<PathBuf>) + 'static) {
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
@@ -913,7 +1168,10 @@ impl Dialog {
             }
         }
         #[cfg(target_arch = "wasm32")]
-        self.pick_file(app, move |app, p| then(app, vec![p]));
+        {
+            let _ = app;
+            self.web_pick_many(Box::new(then));
+        }
         #[cfg(target_os = "android")]
         {
             let _ = app;
@@ -958,6 +1216,17 @@ impl Dialog {
         if let Some(path) = self.save_path() {
             then(app, path);
         }
+    }
+
+    /// Save `bytes` where the user says ([`Dialog::save_file`]); a
+    /// failed write is told on the status line.
+    pub fn save_bytes(self, app: &mut App, bytes: impl Into<Vec<u8>>) {
+        let bytes = bytes.into();
+        self.save_file(app, move |app, path| {
+            if let Err(e) = write(&path, bytes) {
+                app.status = e.to_string();
+            }
+        });
     }
 
     /// The name offered for a new file: the one set, with the first
@@ -1024,8 +1293,42 @@ impl Dialog {
         d.pick_file()
     }
 
+    /// The browser's picker for several files: each is kept under
+    /// `/upload/<name>` and `then` runs with them all on a later frame.
     #[cfg(target_arch = "wasm32")]
-    fn web_pick(self, then: Job) {
+    fn web_pick_many(self, then: Box<dyn FnOnce(&mut App, Vec<PathBuf>)>) {
+        let d = self.web_dialog();
+        wasm_bindgen_futures::spawn_local(async move {
+            let Some(handles) = d.pick_files().await else {
+                return;
+            };
+            let mut paths = Vec::new();
+            for handle in handles {
+                let path = PathBuf::from("/upload").join(handle.file_name());
+                store(&path, handle.read().await);
+                paths.push(path);
+            }
+            if paths.is_empty() {
+                return;
+            }
+            // One job for them all, under the first path; the others are
+            // forgotten once it ran.
+            let first = paths[0].clone();
+            let job: Job = Box::new(move |app: &mut App, _| {
+                let rest = paths.clone();
+                then(app, paths);
+                for p in rest.iter().skip(1) {
+                    forget(p);
+                }
+            });
+            FINISHED.with(|f| f.borrow_mut().push((job, first)));
+            crate::web::request_repaint();
+        });
+    }
+
+    /// The browser's picker with the filters, where they help.
+    #[cfg(target_arch = "wasm32")]
+    fn web_dialog(&self) -> rfd::AsyncFileDialog {
         let mut d = rfd::AsyncFileDialog::new();
         // On an iPhone, iPad or Android device the picker can grey out
         // every file whose extension the system does not know, `.cdr`
@@ -1037,6 +1340,12 @@ impl Dialog {
                 d = d.add_filter(name, &exts);
             }
         }
+        d
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn web_pick(self, then: Job) {
+        let d = self.web_dialog();
         wasm_bindgen_futures::spawn_local(async move {
             let Some(handle) = d.pick_file().await else {
                 return;
@@ -1180,6 +1489,199 @@ mod tests {
             "Graphic1.pdf"
         );
         assert_eq!(Dialog::new().suggested_name(), "drawing");
+    }
+
+    /// Every folder button has one behaviour per platform (#1399): the
+    /// desktop picks a folder; a browser and Android never do (no folder
+    /// can be picked there), and get a zip for folders written into, the
+    /// open picker for folders read, or a greyed button with its reason.
+    #[test]
+    fn folder_buttons_pick_a_folder_on_the_desktop_only() {
+        use FolderAction::*;
+        use FolderUse::*;
+        for place in FolderUse::ALL {
+            assert!(
+                matches!(folder_action(place, Platform::Desktop), PickFolder(_)),
+                "{place:?}"
+            );
+            assert_eq!(folder_tip(place, Platform::Desktop), None, "{place:?}");
+            for platform in [Platform::Web, Platform::Android] {
+                let action = folder_action(place, platform);
+                assert!(!matches!(action, PickFolder(_)), "{place:?} {platform:?}");
+                // Never silent: each says why it does what it does.
+                let tip = folder_tip(place, platform).expect("a tip");
+                assert!(crate::i18n::has_english(tip), "{tip}");
+                if let Unavailable(key) = action {
+                    assert_eq!(tip, key);
+                }
+            }
+        }
+        let table = |platform| {
+            FolderUse::ALL
+                .iter()
+                .map(|&p| folder_action(p, platform))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            table(Platform::Web),
+            [
+                SaveZip,
+                Unavailable("package.desktop_only"),
+                OpenFiles,
+                OpenFiles,
+                OpenFiles,
+                OpenFiles,
+                Unavailable("folder.backup_web"),
+                Unavailable("folder.backup_web"),
+            ]
+        );
+        assert_eq!(
+            table(Platform::Android),
+            [
+                SaveZip,
+                SaveZip,
+                OpenFiles,
+                OpenFiles,
+                OpenFiles,
+                OpenFiles,
+                Unavailable("folder.backup_android"),
+                Unavailable("folder.backup_android"),
+            ]
+        );
+        assert_eq!(
+            folder_tip(ExportAssets, Platform::Web),
+            Some("folder.zip_web")
+        );
+        assert_eq!(
+            folder_tip(MosaicLibrary, Platform::Android),
+            Some("folder.files_android")
+        );
+        assert_eq!(Platform::current(), Platform::Desktop);
+        assert!(matches!(FontFolder.action(), PickFolder(_)));
+    }
+
+    /// The app's sources outside this file, as (path, text).
+    fn app_sources() -> Vec<(String, String)> {
+        fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().collect();
+            entries.sort_by_key(|e| e.path());
+            for e in entries {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push((
+                        p.display().to_string(),
+                        std::fs::read_to_string(&p).unwrap(),
+                    ));
+                }
+            }
+        }
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&src, &mut out);
+        out.retain(|(p, _)| !p.ends_with("files.rs"));
+        out
+    }
+
+    /// No dialog shows the folder dialog on its own: each one asks
+    /// `FolderUse::action` for the running platform, whose leave to pick
+    /// a folder (the token [`pick_folder`] takes) exists on the desktop
+    /// only. The six dialogs of #1399 and Options all go through it.
+    #[test]
+    fn no_dialog_picks_a_folder_without_asking_the_platform() {
+        let sources = app_sources();
+        for (path, text) in &sources {
+            assert!(!text.contains("pick_folder()"), "{path}");
+            assert!(!text.contains("folder_action("), "{path}");
+            assert!(!text.contains("FolderToken"), "{path}");
+            if text.contains("files::pick_folder(") {
+                assert!(text.contains(".action()"), "{path}");
+            }
+        }
+        for name in [
+            "export_docker.rs",
+            "package_dialog.rs",
+            "font_manager.rs",
+            "print_merge_docker.rs",
+            "options.rs",
+            "picture_mosaic_docker.rs",
+            "export_assets.rs",
+        ] {
+            let (_, text) = sources
+                .iter()
+                .find(|(p, _)| p.ends_with(&format!("/{name}")))
+                .expect(name);
+            assert!(text.contains("FolderUse::"), "{name}");
+        }
+    }
+
+    /// Presets, masks, scripts, macro exports and palettes are saved
+    /// through `Dialog::save_file`, which asks the system's save picker
+    /// on Android (#1402): `save_path`, which saves there without asking,
+    /// is left to Export as PDF's Browse, which Android does not show.
+    #[test]
+    fn saves_ask_where_on_android() {
+        for (path, text) in app_sources() {
+            if text.contains(".save_path()") {
+                assert!(path.ends_with("publish_pdf.rs"), "{path}");
+            }
+        }
+    }
+
+    /// Picked files gathered into a folder of their own read like any
+    /// folder (Print Merge's pictures, the Picture Mosaic library), and a
+    /// new pick replaces the files of the last (#1399).
+    #[test]
+    fn picked_files_gather_into_a_folder() {
+        let src = std::env::temp_dir().join(format!("tracedraw-gather-src-{}", std::process::id()));
+        std::fs::create_dir_all(&src).unwrap();
+        let (a, b) = (src.join("a.png"), src.join("b c.jpg"));
+        std::fs::write(&a, [1u8, 2]).unwrap();
+        std::fs::write(&b, [3u8]).unwrap();
+        let dir = gather("test pictures", &[a.clone(), b.clone()]).unwrap();
+        assert!(is_gathered(&dir), "{}", dir.display());
+        assert!(!is_gathered(&src));
+        let mut names: Vec<String> = list_dir(&dir)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a.png", "b c.jpg"]);
+        assert_eq!(read(dir.join("a.png")).unwrap(), [1, 2]);
+        let again = gather("test pictures", std::slice::from_ref(&b)).unwrap();
+        assert_eq!(again, dir);
+        assert_eq!(list_dir(&dir).len(), 1);
+        assert!(gather("test pictures", &[src.join("missing.png")]).is_err());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The files written into the folder `zip_written` gives come back as
+    /// one zip, each under the top folder, in name order; the folder is
+    /// gone afterwards (#1399).
+    #[test]
+    fn written_files_come_back_as_one_zip() {
+        let mut seen = PathBuf::new();
+        let zip = zip_written("Flyer", |dir| {
+            seen = dir.to_path_buf();
+            write(dir.join("b.svg"), "<svg/>").unwrap();
+            write(dir.join("a.png"), [9u8; 4]).unwrap();
+        })
+        .unwrap();
+        assert!(!seen.exists(), "{}", seen.display());
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+        let names: Vec<String> = archive
+            .file_names()
+            .map(|n| n.unwrap().to_string())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(sorted, ["Flyer/a.png", "Flyer/b.svg"]);
+        let mut svg = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("Flyer/b.svg").unwrap(), &mut svg)
+            .unwrap();
+        assert_eq!(svg, "<svg/>");
     }
 
     #[test]

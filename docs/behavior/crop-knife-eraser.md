@@ -155,8 +155,20 @@
   bounds the band does not touch are left alone.
 - Click: erases a dot of the nib's size.
 - Double-click an object: deletes it whole.
-- Bitmaps, groups and clip frames are not erased (erasing bitmaps by
-  masking is not implemented).
+- A clip frame is erased through its frame (#1672), as Crop and the
+  Knife take it: the frame loses the band and becomes a closed curve
+  with its fill, outline and id, in the clip frame's space; the
+  contents stay inside, untouched, and are clipped by what is left of
+  the frame, so they are gone along the band and nowhere else. The clip
+  frame stays one object (a band across it leaves a frame of several
+  parts); a clip frame whose frame is erased away is deleted with its
+  contents. This takes a cropped picture too: its outline gets the hole.
+  A frame that is a group is not erased. One undo step with the other
+  objects erased
+  (`shape_tool::eraser_tests::a_clip_frame_is_erased_through_its_frame`,
+  `shape_tool::eraser_tests::a_clip_frame_under_the_pointer_is_erased_and_one_erased_away_goes`).
+- Bitmaps and groups are not erased (erasing bitmaps by masking is not
+  implemented).
 
 ## Checks
 
@@ -174,6 +186,8 @@
 - `ui::crop_bar::tests::the_bar_and_the_area_draw`
 - `knife::tests::straight_cuts_split_closed_objects`
 - `knife::tests::freehand_cuts_and_open_curves`
+- `shape_tool::eraser_tests::a_band_through_a_rectangle_splits_it_and_a_dot_outside_does_nothing`
+- `shape_tool::eraser_tests::a_clip_frame_is_erased_through_its_frame`
 
 - Given a 40 x 20 mm rectangle and a 4 mm vertical band through its
   middle, when erased, then the object is a path with two subpaths and
@@ -181,3 +195,7 @@
 - Given a dot 100 mm away, then the object is unchanged.
 - Given a 100 mm band across the whole rectangle, then the object is
   deleted.
+- Given a 40 x 40 mm clip frame holding a 30 x 30 mm square and a 4 mm
+  vertical band through its middle, when erased, then it is still the
+  clip frame, its frame is a curve of two parts with the frame's fill,
+  the contents are unchanged, and one undo brings the frame back whole.

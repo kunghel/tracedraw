@@ -100,11 +100,15 @@ impl App {
     pub fn right_drag_input(&mut self, response: &Response, p: Point) -> bool {
         let constrain = response.ctx.input(|i| i.modifiers.command);
         if response.drag_started_by(egui::PointerButton::Secondary) {
-            let Some(id) = self.hit_test(p) else {
-                return false;
-            };
-            if !self.selection.contains(&id) {
-                self.select(vec![id]);
+            // A right drag from a selected object, also one covered by
+            // another object there, moves the selection as it is (#1684).
+            if !self.selection_under(p) {
+                let Some(id) = self.hit_test(p) else {
+                    return false;
+                };
+                if !self.selection.contains(&id) {
+                    self.select(vec![id]);
+                }
             }
             self.right_drag = Some(RightDrag {
                 start: p,

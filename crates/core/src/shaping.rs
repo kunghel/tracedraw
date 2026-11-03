@@ -1601,6 +1601,19 @@ pub fn point_on_path(path: &BezPath, t: f64) -> Option<(Point, [f64; 2])> {
     last
 }
 
+/// Whether the path is one closed loop: a single subpath that is closed,
+/// so its end runs on into its start (an ellipse, a rectangle, a closed
+/// curve). A variable outline's reach then eases across the seam and a
+/// width node slides round past it (#1322).
+pub fn is_single_loop(path: &BezPath) -> bool {
+    let els = path.elements();
+    let moves = els
+        .iter()
+        .filter(|e| matches!(e, PathEl::MoveTo(_)))
+        .count();
+    moves == 1 && matches!(els.last(), Some(PathEl::ClosePath))
+}
+
 /// The area of a variable-width outline: every segment of the flattened
 /// path widened by the reach `width_at` gives at its ends (left and right
 /// separately), joined with wedges at the corners; butt ends.
@@ -1625,7 +1638,10 @@ pub fn variable_band_within(
     if total <= 1e-12 {
         return BezPath::new();
     }
-    let reach = |s: f64| crate::style::width_at(base, nodes, s / total);
+    // One closed loop has no ends: the reach runs on across its seam
+    // (#1322).
+    let closed = is_single_loop(path);
+    let reach = |s: f64| crate::style::width_around(base, nodes, s / total, closed);
     // Short pieces so the width can change along long straight segments,
     // split at the nodes so their reach is met exactly.
     let step = (total / 256.0).max(0.05);
@@ -2924,6 +2940,38 @@ mod tests {
         assert!((t - 0.25).abs() < 1e-9 && (d - 3.0).abs() < 1e-9 && !left);
     }
 
+    /// #1322: an ellipse is one closed loop, so a single wide node gives
+    /// the band that width all the way round, across the seam at the
+    /// ellipse's start too; the open arc of the same size thins to the
+    /// base width at its ends.
+    #[test]
+    fn a_closed_loops_variable_band_runs_on_across_its_seam() {
+        use super::{is_single_loop, variable_band};
+        use crate::geometry::{ellipse_arc_path, ellipse_path, BezPath, Point, Rect, Shape as _};
+        use crate::style::WidthNode;
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let circle = ellipse_path(rect);
+        assert!(is_single_loop(&circle));
+        let band = variable_band(&circle, 2.0, &[WidthNode::symmetric(0.5, 10.0)]);
+        let b = band.bounding_box();
+        // 5 mm out on every side, the seam (the start, at the right) too.
+        assert!((b.x1 - 105.0).abs() < 0.05, "{b:?}");
+        assert!((b.x0 + 5.0).abs() < 0.05, "{b:?}");
+        assert!(band.contains(Point::new(104.5, 50.0)));
+        assert!(band.contains(Point::new(104.5, 52.0)));
+        assert!(band.contains(Point::new(104.5, 48.0)));
+        // The open arc: half the base width (1 mm) at its ends.
+        let arc = ellipse_arc_path(rect, 0.0, 359.0, false);
+        assert!(!is_single_loop(&arc));
+        let b = variable_band(&arc, 2.0, &[WidthNode::symmetric(0.5, 10.0)]).bounding_box();
+        assert!((b.x1 - 101.0).abs() < 0.1, "{b:?}");
+        // Two loops are not one.
+        let mut two = circle.clone();
+        two.extend(ellipse_path(Rect::new(20.0, 20.0, 80.0, 80.0)));
+        assert!(!is_single_loop(&two));
+        assert!(!is_single_loop(&BezPath::new()));
+    }
+
     #[test]
     fn closed_variable_bands_have_no_gaps_at_the_corners() {
         use super::variable_band;
@@ -2953,9 +3001,14 @@ mod tests {
         let path = Rect::new(0.0, 0.0, 113.0, 91.0).to_path(0.01);
         let total = 2.0 * (113.0 + 91.0);
         let c = (113.0 + 91.0 + 113.0) / total;
+        // The rectangle is a closed loop, so a thin node at its start
+        // (its end) makes the reach fall away down the left side; without
+        // one the reach would ease all the way round to the first node
+        // (#1322).
         let nodes = [
             WidthNode::symmetric(c - 9.0 / total, 0.2),
             WidthNode::symmetric(c - 0.3 / total, 118.0),
+            WidthNode::symmetric(1.0, 0.2),
         ];
         let band = variable_band(&path, 0.2, &nodes);
         // 20 mm down the left side the reach has fallen to about 51.6 mm

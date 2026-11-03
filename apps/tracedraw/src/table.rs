@@ -142,6 +142,53 @@ impl App {
         }
     }
 
+    /// The rows and columns of the selected table, without a copy of it
+    /// (the property bar reads them every frame).
+    pub fn selected_table_counts(&self) -> Option<(u32, u32)> {
+        if self.selection.len() != 1 {
+            return None;
+        }
+        let (_, s) = self.doc().shape(self.selection[0]).ok()?;
+        match &s.kind {
+            ShapeKind::Table(t) => Some((t.rows(), t.cols())),
+            _ => None,
+        }
+    }
+
+    /// Give the selected table `rows` rows and `cols` columns (the Rows
+    /// and Columns fields of the property bar with a table selected,
+    /// #1680): rows are added at the bottom as tall as the last one and
+    /// columns at the right as wide as the last one, or taken away
+    /// there; the other cells keep their text and formatting. One undo
+    /// step for the rows and one for the columns.
+    pub fn table_set_counts(&mut self, rows: u32, cols: u32) {
+        let Some((id, mut t)) = self.selected_table() else {
+            return;
+        };
+        let rows = rows.clamp(1, 1000);
+        let cols = cols.clamp(1, 1000);
+        if rows != t.rows() {
+            let have = t.rows();
+            if rows > have {
+                t.insert_rows(have, rows - have, have - 1);
+            } else {
+                t.remove_rows(rows, have - rows);
+            }
+            self.table_edit = None;
+            self.set_table_as(id, t.clone(), "Table Rows");
+        }
+        if cols != t.cols() {
+            let have = t.cols();
+            if cols > have {
+                t.insert_cols(have, cols - have, have - 1);
+            } else {
+                t.remove_cols(cols, have - cols);
+            }
+            self.table_edit = None;
+            self.set_table_as(id, t, "Table Columns");
+        }
+    }
+
     fn set_table(&mut self, id: ShapeId, mut t: Table) {
         t.refit();
         self.run(Command::SetShapeKind {
@@ -1000,6 +1047,43 @@ mod tests {
 
     use super::*;
     use tracedraw_core::geometry::Rect;
+
+    /// The property bar's Rows and Columns with a table selected change
+    /// that table: rows come and go at the bottom, columns at the right,
+    /// the text in the other cells stays, each count its own undo step.
+    /// They only set the next table's counts before (#1680).
+    #[test]
+    fn the_bar_counts_resize_the_selected_table() {
+        let mut app = App::headless();
+        let t = Table::new(Rect::new(10.0, 10.0, 130.0, 40.0), 3, 4, None);
+        let id = app.new_shape(ShapeKind::Table(t)).unwrap();
+        app.select(vec![id]);
+        app.table_click(id, Point::new(12.0, 38.0), false);
+        app.cell_insert("Kept");
+        let steps = app.engine.history_labels().0.len();
+        app.table_set_counts(5, 2);
+        let (_, t) = app.selected_table().unwrap();
+        assert_eq!((t.rows(), t.cols()), (5, 2));
+        assert_eq!(t.cells.len(), 10);
+        assert_eq!(cell_text(&t, 0, 0), "Kept");
+        // New rows as tall as the last one (10 mm), the columns kept.
+        assert!(t.row_heights.iter().all(|h| (h - 10.0).abs() < 1e-9));
+        assert!((t.rect.height() - 50.0).abs() < 1e-9);
+        assert!((t.rect.width() - 60.0).abs() < 1e-9);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 2);
+        assert!(app.table_edit.is_none());
+        // Back to 3 x 4 by undo, and the same counts change nothing.
+        app.undo();
+        app.undo();
+        let (_, t) = app.selected_table().unwrap();
+        assert_eq!((t.rows(), t.cols()), (3, 4));
+        app.table_set_counts(3, 4);
+        assert_eq!(app.engine.history_labels().0.len(), steps);
+        // Without a selected table the counts are for the next table.
+        app.selection.clear();
+        app.table_set_counts(7, 7);
+        assert_eq!(app.engine.history_labels().0.len(), steps);
+    }
 
     #[test]
     fn click_edits_cell_and_tab_moves_on() {

@@ -57,6 +57,34 @@ pub(crate) fn mirror_centred_stops(f: &mut tracedraw_core::Fountain) {
     }
 }
 
+/// Files measure a fountain fill's angle from its object's own x axis:
+/// the fill turns with the object (#1257); ours is an angle on the page.
+/// Turn `f` by `sign` times the angle the object's matrix `t` turns its x
+/// axis by (1 reading, -1 writing). The matrix's stretch and skew leave
+/// the angle as it is, as does a mirror (only where the x axis goes
+/// counts). A matrix that does not turn the x axis changes nothing.
+pub(crate) fn turn_fountain(
+    f: &mut tracedraw_core::Fountain,
+    t: tracedraw_core::Affine,
+    sign: f64,
+) {
+    let [a, b, ..] = t.as_coeffs();
+    let unturned = a > 0.0 && b.abs() <= 1e-12 * a;
+    if !(a.is_finite() && b.is_finite()) || unturned || a.hypot(b) < 1e-12 {
+        return;
+    }
+    let turned = f.angle + sign * b.atan2(a).to_degrees();
+    if !turned.is_finite() {
+        return;
+    }
+    // Kept within (-180, 180].
+    let mut angle = turned.rem_euclid(360.0);
+    if angle > 180.0 {
+        angle -= 360.0;
+    }
+    f.angle = angle;
+}
+
 /// Read a `.cdr` file into a document. The report lists what was skipped.
 pub fn open(path: impl AsRef<Path>) -> Result<(tracedraw_core::Document, ParseReport)> {
     let bytes = std::fs::read(path.as_ref())?;

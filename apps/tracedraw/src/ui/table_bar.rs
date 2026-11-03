@@ -40,14 +40,10 @@ fn length(ui: &mut Ui, app: &App, mm: f64, min_mm: f64) -> Option<f64> {
     r.changed().then(|| units.to_mm(v))
 }
 
-/// The Table tool's bar.
-pub fn table_bar(app: &mut App, ui: &mut Ui) {
-    crate::ui::toolbar::dim_labelled_as(ui, "toolbar.rows", "table.rows_desc", |ui| {
-        ui.add(crate::ui::field::NumField::new(&mut app.table_rows).range(1..=100))
-    });
-    crate::ui::toolbar::dim_labelled_as(ui, "toolbar.columns", "table.columns_desc", |ui| {
-        ui.add(crate::ui::field::NumField::new(&mut app.table_cols).range(1..=100))
-    });
+/// The Table tool's bar, also shown for a table selected with the Pick
+/// tool (`drawing` false: without the drawing hint, #1680).
+pub fn table_bar(app: &mut App, ui: &mut Ui, drawing: bool) {
+    counts(app, ui);
     vsep(ui);
     let target = app.table_target();
     let cells = app.table_edit.is_some() && target.is_some();
@@ -68,8 +64,33 @@ pub fn table_bar(app: &mut App, ui: &mut Ui) {
         vsep(ui);
         cell_text(app, ui);
     }
-    vsep(ui);
-    dim(ui, "toolbar.drag_to_draw_table");
+    if drawing {
+        vsep(ui);
+        dim(ui, "toolbar.drag_to_draw_table");
+    }
+}
+
+/// Rows and Columns: of the selected table, which they change (rows at
+/// the bottom, columns at the right, #1680), else of the next table.
+fn counts(app: &mut App, ui: &mut Ui) {
+    let selected = app.selected_table_counts();
+    let (mut rows, mut cols) = selected.unwrap_or((app.table_rows, app.table_cols));
+    let r = crate::ui::toolbar::dim_labelled_as(ui, "toolbar.rows", "table.rows_desc", |ui| {
+        ui.add(crate::ui::field::NumField::new(&mut rows).range(1..=100))
+    });
+    let c =
+        crate::ui::toolbar::dim_labelled_as(ui, "toolbar.columns", "table.columns_desc", |ui| {
+            ui.add(crate::ui::field::NumField::new(&mut cols).range(1..=100))
+        });
+    if !(r.changed() || c.changed()) {
+        return;
+    }
+    if selected.is_some() {
+        app.table_set_counts(rows, cols);
+    } else {
+        app.table_rows = rows;
+        app.table_cols = cols;
+    }
 }
 
 /// Width and height of the selected cells.
@@ -442,6 +463,87 @@ mod tests {
         app.selected_table().unwrap().1
     }
 
+    /// The texts the property bar draws.
+    fn bar_texts(app: &mut App) -> Vec<String> {
+        let ctx = crate::theme::ui_context();
+        let mut texts = Vec::new();
+        // Twice: the first frame only lays out the bar.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(6000.0, 60.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| crate::ui::toolbar::property_bar(app, ui),
+            );
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    /// A table selected with the Pick tool gets the Table tool's fields
+    /// on the property bar (rows, columns, the border), without the
+    /// drawing hint; a rectangle does not. The Rows and Columns fields
+    /// show the selected table's counts, not the next table's (#1680).
+    #[test]
+    fn a_table_selected_with_the_pick_tool_shows_the_table_fields() {
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::Pick;
+        app.table_rows = 8;
+        app.table_cols = 3;
+        let t = Table::new(Rect::new(0.0, 0.0, 40.0, 20.0), 2, 5, None);
+        let id = app.new_shape(ShapeKind::Table(t)).unwrap();
+        let r = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(50.0, 0.0, 60.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
+        app.select(vec![id]);
+        let rows = crate::i18n::tr("toolbar.rows");
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&rows), "{texts:?}");
+        assert!(
+            texts.contains(&crate::i18n::tr("toolbar.border")),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.contains(&crate::i18n::tr("toolbar.drag_to_draw_table")),
+            "{texts:?}"
+        );
+        // The fields hold the table's 2 and 5, not the defaults 8 and 3.
+        assert!(
+            texts.contains(&"2".to_string()) && texts.contains(&"5".to_string()),
+            "{texts:?}"
+        );
+        assert!(!texts.contains(&"8".to_string()), "{texts:?}");
+        app.select(vec![r]);
+        let texts = bar_texts(&mut app);
+        assert!(!texts.contains(&rows), "{texts:?}");
+        // The Table tool with that table selected shows its counts too,
+        // with the drawing hint.
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Table;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&"5".to_string()), "{texts:?}");
+        assert!(
+            texts.contains(&crate::i18n::tr("toolbar.drag_to_draw_table")),
+            "{texts:?}"
+        );
+    }
+
     #[test]
     fn the_count_dialog_inserts_and_splits() {
         let mut app = App::headless();
@@ -477,7 +579,7 @@ mod tests {
         let ctx = crate::theme::ui_context();
         let draw = |app: &mut App| {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                ui.horizontal(|ui| table_bar(app, ui));
+                ui.horizontal(|ui| table_bar(app, ui, true));
             });
             out.textures_delta.clear();
         };

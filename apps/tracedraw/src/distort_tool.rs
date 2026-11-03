@@ -5,16 +5,18 @@
 //! it about the point the drag started on (off the object too, #1442):
 //! Push and Pull by the drag's length, a full half width of the object
 //! being 100, pushed when the pointer is right of the start and pulled
-//! when left; Zipper with teeth a quarter of the drag's length high;
+//! when left; Zipper with teeth a quarter of the drag's length high,
+//! leaning the way the drag goes from the outline's normal (#1671);
 //! Twister by the angle the pointer turned about the start, whole turns
 //! included. The handle line goes from the start to the pointer in any
 //! direction, not along an axis (#1442, `HandleLine`). A selected
 //! distortion shows its handles: the centre (a diamond, dragged to move
 //! it), a line to the end handle (a square whose distance from the
-//! centre is the Push and Pull amount or the Zipper amplitude; a circle
-//! whose angle about the centre is the Twister angle, whole turns
-//! counted while it is dragged round) and, for the Zipper, a slider on
-//! the line for the frequency (#1122). Each drag is one undo step; a
+//! centre is the Push and Pull amount or the Zipper amplitude, the
+//! Zipper's line leaning with its teeth; a circle whose angle about the
+//! centre is the Twister angle, whole turns counted while it is dragged
+//! round) and, for the Zipper, a slider on the line for the frequency
+//! (#1122). Each drag is one undo step; a
 //! drag off the handles adds a new distortion over the ones the object
 //! has, the handles and the bar edit the newest (#1442).
 //!
@@ -24,10 +26,10 @@
 use crate::app::App;
 use serde::{Deserialize, Serialize};
 use tracedraw_core::{
-    distort::{Distort, MAX_FREQUENCY},
-    geometry::{Point, Shape as _, Vec2},
+    distort::{Distort, MAX_FREQUENCY, MAX_TILT},
+    geometry::{BezPath, Point, Shape as _, Vec2},
     live::Effect,
-    Command, ShapeId, ShapeKind,
+    Command, Shape, ShapeId, ShapeKind,
 };
 
 /// The kind of distortion.
@@ -71,13 +73,16 @@ pub struct DistortSettings {
     pub mode: DistortMode,
     /// Push and Pull, percent of the nodes' distance (-200 to 200).
     pub amount: f64,
-    /// Zipper: the teeth's height (mm), how many on each segment, and
-    /// its options.
+    /// Zipper: the teeth's height (mm), how many on each segment, its
+    /// options and the teeth's lean from the outline's normal (degrees,
+    /// -180 to 180; older preferences have none, #1671).
     pub amplitude: f64,
     pub frequency: u32,
     pub random: bool,
     pub smooth: bool,
     pub local: bool,
+    #[serde(default)]
+    pub tilt: f64,
     /// Twister: whole turns, degrees more (0 to 359) and the direction.
     pub turns: u32,
     pub degrees: f64,
@@ -94,6 +99,7 @@ impl Default for DistortSettings {
             random: false,
             smooth: false,
             local: false,
+            tilt: 0.0,
             turns: 0,
             degrees: 90.0,
             clockwise: true,
@@ -120,10 +126,43 @@ impl DistortSettings {
             amount: fin(self.amount, -200.0, 200.0, d.amount),
             amplitude: fin(self.amplitude, 0.0, 100.0, d.amplitude),
             frequency: self.frequency.min(MAX_FREQUENCY),
+            tilt: fin(self.tilt, -MAX_TILT, MAX_TILT, d.tilt),
             turns: self.turns.min(MAX_TURNS),
             degrees: fin(self.degrees, 0.0, 359.0, d.degrees),
             ..self
         }
+    }
+
+    /// The Zipper's lean as the bar shows it: the tilt folded into -90 to
+    /// 90 degrees, since teeth leaning `t` and `t + 180` are the same
+    /// zigzag with its sides swapped; the tilt itself keeps which side of
+    /// the outline the handle line is on (#1671).
+    pub fn lean(&self) -> f64 {
+        if !self.tilt.is_finite() {
+            return 0.0;
+        }
+        (self.tilt - 180.0 * (self.tilt / 180.0).round()).round()
+    }
+
+    /// The lean typed on the bar: the tilt takes it, keeping the side the
+    /// handle line is on.
+    pub fn set_lean(&mut self, lean: f64) {
+        if !lean.is_finite() {
+            return;
+        }
+        let side = if self.tilt.is_finite() {
+            180.0 * (self.tilt / 180.0).round()
+        } else {
+            0.0
+        };
+        let mut tilt = lean.clamp(-90.0, 90.0) + side;
+        while tilt > 180.0 {
+            tilt -= 360.0;
+        }
+        while tilt <= -180.0 {
+            tilt += 360.0;
+        }
+        self.tilt = tilt;
     }
 
     /// The Twister angle, degrees (counterclockwise positive).
@@ -150,6 +189,7 @@ impl DistortSettings {
                 random: self.random,
                 smooth: self.smooth,
                 local: self.local,
+                tilt_deg: self.tilt,
             },
             DistortMode::Twister => Distort::Twister {
                 angle_deg: self.angle(),
@@ -169,6 +209,7 @@ impl DistortSettings {
                 random,
                 smooth,
                 local,
+                tilt_deg,
                 ..
             } => {
                 self.amplitude = amplitude;
@@ -176,6 +217,7 @@ impl DistortSettings {
                 self.random = random;
                 self.smooth = smooth;
                 self.local = local;
+                self.tilt = tilt_deg;
             }
             Distort::Twister { angle_deg, .. } => {
                 let a = if angle_deg.is_finite() {
@@ -232,14 +274,15 @@ pub struct DistortDrag {
 /// Where a drag left an object's handle line (#1442, #1263): the line is
 /// free, it goes from the centre toward the pointer in any direction and
 /// stays there when let go. It holds for distortions of its kind; one of
-/// another kind takes the default line (to the right).
+/// another kind takes the default line (to the right). The Zipper's line
+/// is not kept here: it stands on the outline's normal turned by the
+/// teeth's tilt, which the distortion itself holds (#1671).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HandleLine {
     pub mode: DistortMode,
     /// The line's direction (radians, page space, counterclockwise from
     /// the right): the push side for Push and Pull (a negative amount
-    /// goes the other way), the end's direction for the Zipper, the
-    /// direction of a Twister angle of zero.
+    /// goes the other way), the direction of a Twister angle of zero.
     pub angle: f64,
     /// The Twister's handle length (page mm), as far as it was dragged;
     /// half the object's larger side until it has been.
@@ -266,9 +309,11 @@ pub struct DistortHandles {
     pub center: Point,
     /// The end of the handle line: a square at the amount (Push and
     /// Pull, half the object's larger side being 100, the other way when
-    /// negative) or four times the amplitude (Zipper, as the drag that
-    /// made it) from the centre along the line the drag left (to the
-    /// right until one has, `HandleLine`); a circle on the Twister's
+    /// negative) from the centre along the line the drag left (to the
+    /// right until one has, `HandleLine`), or four times the amplitude
+    /// (Zipper, as the drag that made it) along the outline's normal at
+    /// the point nearest the centre turned by the teeth's tilt, so the
+    /// line leans with the teeth (#1671); a circle on the Twister's
     /// angle, half the larger side away.
     pub end: Point,
     /// Zipper: the frequency slider, `frequency / MAX_FREQUENCY` of the
@@ -276,7 +321,8 @@ pub struct DistortHandles {
     pub slider: Option<Point>,
 }
 
-/// How near (pixels) a press must be to a handle to take it.
+/// How near (pixels) a press must be to a handle to take it, at least:
+/// larger handles are taken anywhere on them (`App::distort_pick_px`).
 const HANDLE_PICK_PX: f64 = 6.0;
 
 /// The distance of the Zipper's end handle for an amplitude.
@@ -294,6 +340,76 @@ pub fn distortion_of(effects: &[Effect]) -> Option<Distort> {
         Effect::Distort(d) => Some(*d),
         _ => None,
     })
+}
+
+/// The outline the newest distortion among `effects` is applied to, in
+/// the object's own space: the object's own outline as the distortions
+/// before the newest leave it (each is applied to the result of the ones
+/// before it, #1442). With `all`, as all of them leave it: the outline
+/// a new distortion goes on.
+fn distortion_input(s: &Shape, effects: &[Effect], all: bool) -> BezPath {
+    let newest = effects
+        .iter()
+        .rposition(|e| matches!(e, Effect::Distort(_)))
+        .filter(|_| !all)
+        .unwrap_or(effects.len());
+    let mut path = s.local_path();
+    for e in &effects[..newest] {
+        if let Effect::Distort(d) = e {
+            path = tracedraw_core::distort::distort(&path, *d);
+        }
+    }
+    path
+}
+
+/// A direction in the object's own space as it shows on the page (the
+/// transform's turn, scale and skew, not its shift), as a unit vector;
+/// to the right when it vanishes.
+fn page_direction(s: &Shape, v: Vec2) -> Vec2 {
+    let d = s.transform * (Point::ZERO + v) - s.transform * Point::ZERO;
+    if d.hypot() > 1e-12 && d.x.is_finite() && d.y.is_finite() {
+        d / d.hypot()
+    } else {
+        Vec2::new(1.0, 0.0)
+    }
+}
+
+/// The Zipper's handle line on the page (a unit vector) for teeth that
+/// lean `tilt_deg` on the outline `input` about `center` (both in the
+/// object's own space): the outline's normal at the point nearest the
+/// centre, turned by the tilt (#1671).
+fn zipper_line_dir(s: &Shape, input: &BezPath, center: Point, tilt_deg: f64) -> Vec2 {
+    let zero = tracedraw_core::distort::zipper_zero_direction(input, center);
+    let tilt = if tilt_deg.is_finite() {
+        tilt_deg.to_radians()
+    } else {
+        0.0
+    };
+    page_direction(s, Vec2::from_angle(zero.atan2() + tilt))
+}
+
+/// The teeth's lean (degrees, -180 to 180) that puts the Zipper's handle
+/// line along `dir` on the page: the turn from the outline's normal at
+/// the point nearest `center` to `dir`, measured in the object's own
+/// space (#1671). None when `dir` vanishes or the object is flat.
+fn zipper_tilt_toward(s: &Shape, input: &BezPath, center: Point, dir: Vec2) -> Option<f64> {
+    if dir.hypot() < 1e-9 || s.transform.determinant().abs() < 1e-12 {
+        return None;
+    }
+    let inv = s.transform.inverse();
+    let local = inv * (Point::ZERO + dir) - inv * Point::ZERO;
+    if local.hypot() < 1e-12 || !local.x.is_finite() || !local.y.is_finite() {
+        return None;
+    }
+    let zero = tracedraw_core::distort::zipper_zero_direction(input, center);
+    let mut tilt = (local.atan2() - zero.atan2()).to_degrees();
+    while tilt > 180.0 {
+        tilt -= 360.0;
+    }
+    while tilt <= -180.0 {
+        tilt += 360.0;
+    }
+    Some(tilt.clamp(-MAX_TILT, MAX_TILT))
 }
 
 /// `effects` with the newest distortion replaced in place by `d` (added
@@ -513,6 +629,7 @@ impl App {
                     Distort::Zipper {
                         amplitude,
                         frequency,
+                        tilt_deg,
                         ..
                     } => {
                         let a = if amplitude.is_finite() {
@@ -522,6 +639,10 @@ impl App {
                         };
                         let len = a * AMPLITUDE_REACH;
                         let t = frequency.min(MAX_FREQUENCY) as f64 / MAX_FREQUENCY as f64;
+                        // The line leans with the teeth: the outline's
+                        // normal at the nearest point, turned by the tilt.
+                        let input = distortion_input(&s, &s.effects, false);
+                        let dir = zipper_line_dir(&s, &input, local, tilt_deg);
                         (center + dir * len, Some(center + dir * (len * t)))
                     }
                     Distort::Twister { angle_deg, .. } => {
@@ -553,6 +674,13 @@ impl App {
                 })
             })
             .collect()
+    }
+
+    /// How near (pixels) a press must be to a handle to take it: 6, or
+    /// out to the edge of a handle drawn larger by Options > Nodes and
+    /// Handles > Handle size (#1574).
+    pub fn distort_pick_px(&self) -> f64 {
+        HANDLE_PICK_PX.max(self.handle_size() as f64 / 2.0 + 2.0)
     }
 
     /// The handle line of `id`'s distortion of kind `mode`: where a drag
@@ -599,7 +727,7 @@ impl App {
     /// Start a drag at `at` (page space): on a handle, take it; on an
     /// object, distort it about `at`. False when there is nothing there.
     pub fn begin_distort(&mut self, at: Point) -> bool {
-        let tol = HANDLE_PICK_PX / self.view.zoom.max(1e-6) as f64;
+        let tol = self.distort_pick_px() / self.view.zoom.max(1e-6) as f64;
         let near = |p: Point| (p - at).hypot() <= tol;
         let handles = self.distortion_handles();
         // The centre first, then the slider (it can sit on the line's
@@ -763,6 +891,14 @@ impl App {
                 let mut sett = self.distort;
                 sett.take(&current);
                 let d = p - dd.start;
+                // The Zipper's line stands on the outline the zipper is
+                // applied to, about its centre (the object's own space).
+                let zipper_input = || {
+                    let center = current
+                        .center()
+                        .unwrap_or_else(|| s.local_path().bounding_box().center());
+                    (distortion_input(&s, &s.effects, false), center)
+                };
                 match (sett.mode, dd.grab) {
                     (DistortMode::PushPull, _) => {
                         let (amount, angle) = Self::push_pull_of(d, dd.reach);
@@ -775,15 +911,19 @@ impl App {
                         // Along the line, whichever way it goes.
                         let len = sett.amplitude * AMPLITUDE_REACH;
                         if len > 1e-9 {
-                            let dir = self.handle_line(dd.id, DistortMode::Zipper).dir();
+                            let (input, center) = zipper_input();
+                            let dir = zipper_line_dir(&s, &input, center, sett.tilt);
                             let t = (d.dot(dir) / len).clamp(0.0, 1.0);
                             sett.frequency = (t * MAX_FREQUENCY as f64).round() as u32;
                         }
                     }
                     (DistortMode::Zipper, _) => {
                         sett.amplitude = (d.hypot() / AMPLITUDE_REACH).clamp(0.0, 100.0);
-                        if d.hypot() > 1e-9 {
-                            self.set_handle_angle(dd.id, DistortMode::Zipper, d.atan2());
+                        // The teeth lean the way the handle is dragged
+                        // from the outline's normal (#1671).
+                        let (input, center) = zipper_input();
+                        if let Some(tilt) = zipper_tilt_toward(&s, &input, center, d) {
+                            sett.tilt = tilt;
                         }
                     }
                     (DistortMode::Twister, _) => {
@@ -815,8 +955,13 @@ impl App {
             }
             DistortMode::Zipper => {
                 self.distort.amplitude = (d.hypot() / AMPLITUDE_REACH).clamp(0.0, 100.0);
-                if d.hypot() > 1e-9 {
-                    self.set_handle_angle(dd.id, mode, d.atan2());
+                // A new zipper goes on the outline as the distortions the
+                // object has leave it; its teeth lean the way the drag
+                // goes from that outline's normal at the centre (#1671).
+                let base = dd.base.as_deref().unwrap_or(&s.effects);
+                let input = distortion_input(&s, base, true);
+                if let Some(tilt) = zipper_tilt_toward(&s, &input, dd.center, d) {
+                    self.distort.tilt = tilt;
                 }
             }
             DistortMode::Twister => {
@@ -1160,26 +1305,29 @@ mod tests {
             })
         );
         assert_eq!(steps(&app), before + 1, "one undo step for the drag");
-        // Zipper: the square four times the amplitude away; the slider
-        // frequency / 100 of the way.
+        // Zipper: the square four times the amplitude away along the
+        // outline's normal at the point nearest the centre (the first
+        // side of the square, going right along the bottom, its normal
+        // up, #1671); the slider frequency / 100 of the way.
         app.distort.amplitude = 20.0;
         app.distort.frequency = 10;
         app.set_distort_mode(DistortMode::Zipper);
         let h = app.distortion_handles()[0].clone();
-        assert!((h.end - Point::new(90.0, 10.0)).hypot() < 1e-9, "{h:?}");
-        assert_eq!(h.slider, Some(Point::new(18.0, 10.0)));
-        assert!(app.begin_distort(Point::new(18.0, 10.0)));
+        assert!((h.end - Point::new(10.0, 90.0)).hypot() < 1e-9, "{h:?}");
+        let slider = h.slider.expect("a slider");
+        assert!((slider - Point::new(10.0, 18.0)).hypot() < 1e-9, "{h:?}");
+        assert!(app.begin_distort(slider));
         assert_eq!(
             app.distort_drag.as_ref().map(|d| d.grab),
             Some(Grab::Frequency)
         );
-        app.drag_distort(Point::new(30.0, 10.5));
+        app.drag_distort(Point::new(10.5, 30.0));
         app.distort_drag = None;
         assert!(matches!(
             effect(&app, id),
             Some(Distort::Zipper { frequency: 25, .. })
         ));
-        assert!(app.begin_distort(Point::new(90.0, 10.0)));
+        assert!(app.begin_distort(Point::new(10.0, 90.0)));
         assert_eq!(app.distort_drag.as_ref().map(|d| d.grab), Some(Grab::End));
         app.drag_distort(Point::new(10.0, 50.0));
         app.distort_drag = None;
@@ -1403,6 +1551,109 @@ mod tests {
             panic!("a twister");
         };
         assert!((angle_deg - 160.0).abs() <= 1.0, "{angle_deg}");
+    }
+
+    /// #1671: the Zipper's teeth lean the way the handle is dragged from
+    /// the outline's normal, and the handle line leans with them. A drag
+    /// from the middle of a square's bottom side straight down (along
+    /// the normal) makes upright teeth with the handle where the drag
+    /// ended; the handle taken and dragged round 30 degrees leans the
+    /// teeth 30 degrees, the handle under the pointer; a tilt typed on
+    /// the bar turns the handle back.
+    #[test]
+    fn a_zipper_drag_leans_the_teeth() {
+        let mut app = App::headless();
+        app.tool = Tool::Distort;
+        let id = square(&mut app);
+        app.select(vec![id]);
+        app.distort.mode = DistortMode::Zipper;
+        app.distort.frequency = 3;
+        let c = Point::new(10.0, 0.0);
+        let down = Point::new(10.0, -8.0);
+        assert!(app.begin_distort(c));
+        app.drag_distort(Point::new(10.0, -4.0));
+        app.drag_distort(down);
+        app.distort_drag = None;
+        let Some(Distort::Zipper {
+            amplitude,
+            tilt_deg,
+            center,
+            ..
+        }) = effect(&app, id)
+        else {
+            panic!("a zipper: {:?}", effect(&app, id));
+        };
+        assert!((amplitude - 2.0).abs() < 1e-9, "{amplitude}");
+        assert_eq!(center, Some(c));
+        assert!(
+            tilt_deg.abs() < 1e-9 || (tilt_deg.abs() - 180.0).abs() < 1e-9,
+            "upright: {tilt_deg}"
+        );
+        assert_eq!(app.distort.lean(), 0.0);
+        let end = |app: &App| app.distortion_handles()[0].end;
+        assert!((end(&app) - down).hypot() < 1e-6, "{:?}", end(&app));
+        // The tips on the bottom side stand 2 mm off it.
+        let tips = |app: &App| -> Vec<Point> {
+            let s = app.doc().find_shape(id).expect("square");
+            tracedraw_core::live::evaluate(s)
+                .main
+                .page_path()
+                .elements()
+                .iter()
+                .filter_map(|e| match e {
+                    tracedraw_core::geometry::PathEl::MoveTo(p)
+                    | tracedraw_core::geometry::PathEl::LineTo(p)
+                    | tracedraw_core::geometry::PathEl::CurveTo(_, _, p) => Some(*p),
+                    _ => None,
+                })
+                .filter(|p| p.y.abs() < 2.5 && p.x > 2.5 && p.x < 17.5)
+                .collect()
+        };
+        let low = tips(&app);
+        assert!(!low.is_empty());
+        for p in &low {
+            assert!((p.y.abs() - 2.0).abs() < 1e-6, "upright tip {p:?}");
+        }
+        // Taken and dragged round, 30 degrees off the normal: the teeth
+        // lean 30 degrees (their tips 2 cos 30 off the side) and the
+        // handle is under the pointer.
+        assert!(app.begin_distort(down));
+        assert_eq!(app.distort_drag.as_ref().map(|d| d.grab), Some(Grab::End));
+        let round = c + Vec2::from_angle((-90.0f64 - 30.0).to_radians()) * 8.0;
+        app.drag_distort(round);
+        app.distort_drag = None;
+        let Some(Distort::Zipper { tilt_deg, .. }) = effect(&app, id) else {
+            panic!("a zipper");
+        };
+        assert!(
+            (app.distort.lean().abs() - 30.0).abs() < 1e-6,
+            "{tilt_deg} shown as {}",
+            app.distort.lean()
+        );
+        assert!((end(&app) - round).hypot() < 1e-6, "{:?}", end(&app));
+        for p in tips(&app) {
+            assert!(
+                (p.y.abs() - 2.0 * 30f64.to_radians().cos()).abs() < 1e-6,
+                "leaning tip {p:?}"
+            );
+        }
+        // The bar: tilt 0 puts the handle back on the normal, the teeth
+        // upright.
+        app.distort.set_lean(0.0);
+        app.apply_distort_settings();
+        assert!((end(&app) - down).hypot() < 1e-6, "{:?}", end(&app));
+        for p in tips(&app) {
+            assert!((p.y.abs() - 2.0).abs() < 1e-6, "upright tip {p:?}");
+        }
+        // Folding: a tilt of 150 shows as -30 and keeps its side.
+        let mut s = DistortSettings {
+            tilt: 150.0,
+            ..Default::default()
+        };
+        assert_eq!(s.lean(), -30.0);
+        s.set_lean(20.0);
+        assert_eq!(s.tilt, -160.0);
+        assert_eq!(s.lean(), 20.0);
     }
 
     #[test]

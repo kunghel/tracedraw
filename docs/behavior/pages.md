@@ -50,6 +50,17 @@ Checked by `ui::propbar::tests::the_page_size_list_offers_a_custom_size`,
 `ui::dialogs::tests::page_size_presets_are_distinct_and_keep_their_names`,
 `ui::dialogs::tests::a_page_size_finds_its_name`.
 
+## Page Spacing
+
+Page > Page Spacing, after Page Layout: a submenu of presets (0, 5, 10,
+20, 30 and 50 mm, the one in use marked) and Custom..., a dialog with
+one number field in the document's units (0 to 1000 mm) that OK applies.
+It sets the space between the pages of the Multipage View, the same
+value as Document Setup > Layout > Page spacing; one undo step, saved
+with the drawing (see `multipage-view.md`,
+`ui::menus::tests::the_page_menu_sets_the_page_spacing`,
+`ui::dialogs::tests::the_page_spacing_dialog_sets_the_drawing_s_spacing`).
+
 ## Fit Page to Selection, Fit Page to Drawing
 
 Page > Fit Page to Selection (pale with nothing selected) and Fit

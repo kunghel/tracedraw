@@ -154,7 +154,9 @@ To use the Font Manager:
   levels down). Its fonts can be used in drawings at once and at every start
   while the folder is in the libraries, without installing them one by one;
   removing the folder takes them out again (fonts installed on their own
-  stay). **Add font** installs one file at once.
+  stay). In the browser and on Android, where no folder can be read, it
+  lets you choose several font files at once instead. **Add font** installs
+  one file at once.
 - **Install** makes the picked fonts available in TraceDraw, now and at every
   start. **Uninstall** removes them; the system's own fonts are protected.
 - **Add to collection** and **Remove from collection** organize fonts; drag

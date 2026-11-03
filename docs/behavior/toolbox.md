@@ -37,16 +37,71 @@
   it (the Outline flyout is hidden by default) and Reset toolbox.
 - The toolbox starts docked on the left. Its grip (the dots above the
   first button) drags it to another edge, where it is a column or a row,
-  or into a floating window two buttons wide (see "Moving the bars" in
-  `toolbars.md`). Flyouts open away from the edge the toolbox is on.
+  or into a floating window, two buttons wide at first, that reflows
+  when it is resized (see "Floating toolbox" below and "Moving the
+  bars" in `toolbars.md`). Flyouts open away from the edge the toolbox
+  is on.
+
+## Floating toolbox
+
+- The floating window holds the buttons in rows, left to right then
+  down, in the room asked for (`ui::toolbox::flow`): a button goes on
+  the row while it fits, with a 1 px gap before it and, where a group
+  ends before it, a separator cell (a vertical line, 5 px) between the
+  two groups; else it starts the next row. Where a group ends at a
+  row's end, a horizontal line (3 px) lies between the rows. The "+"
+  button is the last cell. When the rows stand taller than the height
+  asked for (by more than half a button), they get wider, a button at a
+  time, until they fit it or make one row. So a tall narrow window
+  gives two columns (or one), a wider one more columns and fewer rows,
+  a wide short one a row or two.
+- The window hugs the grid: it is the grid, 4 px of margin at each side
+  and 3 px above and below, the 1 px border and the title, never
+  narrower than the title's least width (`bars::FLOATING_MIN_W`, 68 px,
+  room for the close button and a few letters). Dragging an edge or a
+  corner of the window (the pointer shows the resize arrows over them)
+  asks the grid for the room between the pointer and the opposite edge,
+  and the grid follows live: a side edge asks for a width and the rows
+  take the height they need, the top or the bottom edge asks for a
+  height and the rows widen to fit it, a corner asks for both. The
+  edge opposite the one dragged stays in place. When the drag ends the
+  size settles on the grid's own.
+- The size is kept in the preferences (`bars.toolbox_size`), in cells
+  of the grid (a button and its gap each,
+  `ui::toolbox::floating_cell`), so a toolbox three buttons wide stays
+  three wide when its buttons change size; none kept, two buttons
+  wide. Reset Bar Positions forgets it. A workspace file carries it
+  with the bars' layout (an unusable size reads as none).
+- Flyouts open to the right of the button while the grid is taller than
+  wide, and under it while it is wider (a row or two); moving onto
+  another button of the grid switches flyouts, moving off the grid
+  closes them.
+- Checks: `ui::toolbox::tests::a_floating_toolbox_flows_to_the_room_asked_for`,
+  `ui::toolbox::tests::the_floating_toolbox_starts_two_buttons_wide_and_keeps_its_size`,
+  `ui::bars::tests::the_floating_toolbox_resizes_by_its_edges_and_by_ctrl_wheel`,
+  `workspace_file::tests::odd_files_are_refused_or_tamed`.
 
 ## Button size and captions
 
 The bars' menu (right-click a bar) > Customize sizes the buttons (Default
 Button Size for every bar; Toolbox Toolbar > Button Size for the toolbox
-alone) and chooses what they show: Image Only (the icon, 22 px at the
-medium size, scaled with the button), Caption Only (the tool's name) or
+alone) and chooses what they show: Image Only (the icon, its box 16,
+20, 24, 32 or 40 px from Extra Small to Extra Large, so the icon grows
+with the button; a column squeezed to fit a short window shrinks it in
+proportion, `theme::icon_in`, `ui::toolbox::tests::icons_grow_with_every_button_size`),
+Caption Only (the tool's name) or
 Caption to Right (both). See `toolbars.md`, "Moving the bars".
+
+Ctrl+wheel over the toolbox (docked or floating) steps its own button
+size by the notches turned, up larger and down smaller, through the
+five sizes from Extra Small to Extra Large (held at both ends), as
+Toolbox Toolbar > Button Size does; the floating toolbox keeps its room
+in cells, so it stays as many buttons wide at every size. The wheel is
+taken, so the
+toolbox does not slide with it and the drawing does not zoom
+(`ui::toolbox::size_by_wheel`, `settings::ButtonSize::stepped`,
+`ui::bars::tests::the_floating_toolbox_resizes_by_its_edges_and_by_ctrl_wheel`,
+`settings::tests::the_wheel_steps_the_button_and_swatch_sizes_within_their_ranges`).
 
 Docked on a side, the toolbox fits the window's height: when its buttons
 do not fit, they get shorter (their icons smaller) down to 22 px, and

@@ -456,8 +456,10 @@ pub(crate) fn edit_spans(app: &mut App, f: impl Fn(&mut TextSpan) + Clone) {
                 para,
                 on_path,
             } => {
-                let mut spans = spans.clone();
-                spans.iter_mut().for_each(f.clone());
+                // The characters chosen with the Shape tool, else all of
+                // them (#1662).
+                let chosen = app.chosen_chars(s.id);
+                let spans = crate::text_nodes::apply_to_chars(spans, &chosen, f.clone());
                 Some(tracedraw_core::Command::SetShapeKind {
                     shape: s.id,
                     kind: ShapeKind::Text {
@@ -569,6 +571,12 @@ pub fn text_docker(app: &mut App, ui: &mut Ui) {
             .into_iter()
             .find(|s| matches!(s.kind, ShapeKind::Text { .. }))
     });
+    // With the Shape tool the property bar does not read the text fields:
+    // the docker reads them itself, from the first chosen character
+    // (#1662).
+    if let Some(t) = first.as_ref().filter(|_| app.chosen_chars_active()) {
+        app.sync_text_defaults_from(t.id);
+    }
     let from = (app.settings.text_docker_from as usize).min(SECTIONS.len() - 1);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -733,10 +741,9 @@ fn style_name(picks: &[(String, (String, bool, bool))], now: &(String, bool, boo
 }
 
 fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
-    let span = first.and_then(|t| match &t.kind {
-        ShapeKind::Text { spans, .. } => spans.first().cloned(),
-        _ => None,
-    });
+    // The character at the caret, the first one chosen with the Shape
+    // tool, else the text's first (#1662).
+    let span = first.and_then(|t| app.shown_span(t));
     let mut changed = false;
     ui.horizontal(|ui| {
         let w = ui.available_width()
@@ -1150,15 +1157,16 @@ pub(crate) fn font_axes_button(app: &mut App, ui: &mut Ui, salt: &str) {
     }
 }
 
-/// The text fill: the selected characters' colour while editing, else the
-/// text objects' fill (span colours give way to it).
+/// The text fill: the selected characters' colour while editing (or the
+/// characters chosen with the Shape tool), else the text objects' fill
+/// (span colours give way to it).
 fn set_text_fill(app: &mut App, fill: Option<Fill>) {
     if app.table_edit.is_some() {
         let f = Some(fill.unwrap_or(Fill::None));
         app.cells_apply_style(move |sp| sp.fill = f.clone());
         return;
     }
-    if app.text_selection_active() {
+    if app.text_selection_active() || app.chosen_chars_active() {
         app.apply_fill(fill.unwrap_or(Fill::None));
         return;
     }

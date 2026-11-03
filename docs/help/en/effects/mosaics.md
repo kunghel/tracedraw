@@ -54,5 +54,5 @@ Open the [[docker.picture_mosaic]] panel with
      mosaic is in pixels. The panel shows the resulting size.
 4. Click [[docker.apply]].
 
-> **Note:** Picture libraries need the desktop version; the browser version
-> cannot read folders.
+> **Note:** The browser and Android versions cannot read folders: there,
+> **Browse** lets you choose the pictures themselves, several at once.

@@ -27,4 +27,6 @@ objects.
 
 Characters that files cannot have in their name become `_`, and two assets
 with the same name get " (2)", " (3)" and so on. The status bar says how many
-files were written. In the browser, every file is downloaded.
+files were written. In the browser and on Android no folder can be chosen:
+the files go out together as one zip file, downloaded in the browser and
+saved where you choose on Android.

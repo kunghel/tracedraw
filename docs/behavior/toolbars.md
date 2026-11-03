@@ -144,7 +144,8 @@ split by thin lines:
 7. Snap Off (Alt+Q), pressed while snapping is off; Snap To with the
    snapping list.
 8. Options (the TraceDraw options).
-9. Launch: Font Manager, Welcome Screen, Color Management.
+9. Launch, an icon with the list arrow (its name in the tooltip): Font
+   Manager, Welcome Screen, Color Management.
 
 Buttons that need a drawing, and Snap To, are disabled on the Welcome
 Screen, also when drawings are open behind it; the property bar and the
@@ -191,12 +192,23 @@ pointer and notch after notch steps it (#783,
 `ui::field::tests::the_wheel_steps_a_field_in_a_long_bar_without_sliding_the_bar`,
 `ui::field::tests::the_wheel_steps_a_field_in_a_scrolling_panel_without_scrolling_it`,
 `ui::propbar::tests::the_wheel_over_the_outline_width_in_a_long_bar_keeps_the_bar_still`).
-Every step applies at once, one undo step each, whether or not the box
+Every step applies at once, whether or not the box
 holds the focus: the rotation angle, the scale percentages, the arc
 angles, the dimension text size and line width, the corner radii and the
 Transform toolbar's fields took only the first click after the box was
 clicked into (the one that took the focus from it) and then none
 (`ui::propbar::tests::every_click_on_the_rotation_arrows_turns_the_selection`).
+The steps one field makes in a row are one undo step: a turn of the
+wheel, clicks on the arrows or a drag on them or on the label, from 1 to
+100, is one step named after the change ("Transform" for the size
+fields), whose Undo puts back the value from before the first step and
+whose Redo gives the value where the steps stopped. A step joins the one
+before when it comes from the same field, to the same selection, with
+the same kind of change, at most 0.8 s after the field's last step (any
+pause while one drag is held), and nothing else changed the drawing in
+between; another command, an Undo or Redo, another field or another
+drawing starts a new step. The same holds for the outline width box and
+for sliders stepped with the wheel (`step_merge::tests`).
 
 - Pick tool, nothing selected (page bar): page size list; page width and
   height; fit page to drawing (Layout's command, pale on an empty page);
@@ -229,7 +241,8 @@ clicked into (the one that took the focus from it) and then none
   a notch as 100 points or 3 lines), parts of a notch from a touchpad or
   a fine wheel add up until they make one (50 points make a notch), and
   what has added up is dropped when the wheel turns the other way or the
-  pointer leaves the box. One undo step a notch. With nothing selected
+  pointer leaves the box. The notches of one turn of the wheel are one
+undo step, as in the number fields. With nothing selected
   the wheel does nothing (#663).
 - Zoom and Pan tools: the zoom box, Zoom In, Zoom Out, Zoom to Selected,
   to All Objects, to Page, to Page Width, to Page Height.
@@ -250,6 +263,16 @@ the mouse wheel over the bar (away from a number field) slides it too. The items
 the bar and work as there (the bar is drawn once). A bar that fits shows
 no buttons; the slide is worked out again when the window changes size
 (`ui::overflow::tests`).
+
+Ctrl+wheel over a toolbar (docked or floating) steps the default button
+size (the bars' menu > Customize > Default Button Size) by the notches
+turned: up larger, down smaller, through the five sizes from Extra
+Small to Extra Large (held at both ends); over the toolbox
+it steps the toolbox's own size (see `toolbox.md`), over a palette the
+swatch size (see `color-palettes.md`). The wheel is taken, so the bar
+does not slide with it and the drawing does not zoom; the plain wheel
+slides a bar as before (`ui::bars::ctrl_wheel_steps`,
+`ui::bars::size_buttons_by_wheel`, `settings::ButtonSize::stepped`).
 
 Dialogs taller (or wider) than the window keep their size inside a
 window that fits the screen, and their body scrolls; dockers scroll as
@@ -311,11 +334,17 @@ bar move (`ui/bars.rs`).
   below the menu bar.
 - A floating bar is a small window with a grey border and a shadow: an
   18 px title with the bar's name at 11 px and a close button, then the
-  bar. Dragging the title moves it (near an edge it docks), a double
-  click puts the bar back at its first place, and the close button hides
-  it (Window > Toolbars shows it again). The floating toolbox is a grid
-  two buttons wide whose flyouts open to its right; the floating palette
-  is one row 460 px wide.
+  bar. A name longer than the title's room (a long translation in a
+  narrow window) is cut with an ellipsis and shows whole as a tooltip
+  of the title; a window is never narrower than 68 px, room for the
+  close button and a few letters (`ui::bars::title_room`,
+  `ui::bars::tests::floating_titles_fit_their_windows`). Dragging the
+  title moves it (near an edge it docks), a double click puts the bar
+  back at its first place, and the close button hides it (Window >
+  Toolbars shows it again). The floating toolbox is a grid two buttons
+  wide at first that reflows when its window is resized by its edges
+  and corners (see "Floating toolbox" in `toolbox.md`); the floating
+  palette is one row 460 px wide.
 - The palette docks at each side in two places: at the window's edge
   (a row across the whole window inside the toolbars, or a column
   outside the toolbox and the docker column) or beside the drawing (a
@@ -373,13 +402,40 @@ bar move (`ui/bars.rs`).
   menu stays open after the button comes up, until an entry is picked, a
   click lands outside it or Esc is pressed; each click opens one menu,
   shown once a frame (`pick_drag_tests::a_right_click_on_any_toolbar_keeps_the_bar_menu_open`, #994).
-- Customize holds: Default Button Size (Small, Medium, Large, Small at
-  first: the buttons of every bar are 24, 32 or 40 px square, the
-  property bar's 21, 28 or 35; `settings.button_size`, `theme::set_button_sizes`); Toolbox
+- Customize holds: Default Button Size (Extra Small, Small, Medium,
+  Large, Extra Large, Small at first, the same five sizes Ctrl+wheel
+  steps through). The icons grow with the buttons; the padding around
+  them grows more slowly, and separators keep their size:
+
+  | Size | Toolbox icon box | Toolbox and standard bar button | Standard bar icon | Property bar icon | Property bar button |
+  |---|---|---|---|---|---|
+  | Extra Small | 16 px | 22 px | 16 px | 14 px | 20 px |
+  | Small | 20 px | 26 px | 20 px | 18 px | 24 px |
+  | Medium | 24 px | 32 px | 24 px | 22 px | 28 px |
+  | Large | 32 px | 42 px | 28 px | 24 px | 38 px |
+  | Extra Large | 40 px | 52 px | 34 px | 28 px | 46 px |
+
+  The icon box is the side of the icon's 24 unit grid (toolbox 16, 20,
+  24, 32, 40 px: a whole pixel every 3, 6, 1, 3 and 3 units, so the
+  icons stay sharp). The standard bars' command pictures use the same
+  box up to Medium. At Large and Extra Large the standard and property
+  bars draw their icons at about 5/6 of the toolbox's box (standard 28
+  and 34 px, property bar 24 and 28 px, whole even pixels so they sit
+  centred on the pixel grid), which leaves 7 px of margin each side at
+  Large and 9 px at Extra Large; drawn at the full box their heavier
+  pictures filled the button almost to its edges. The toolbox keeps the
+  full box (`settings::tests::large_bar_icons_keep_a_margin`). The
+  toolbox's flyouts list their tools with 18 px icons up to Medium, 24
+  px at Large and 30 px at Extra Large. Settings saved with three sizes
+  keep them (`settings.button_size`, `settings::ButtonSize::metrics`,
+  `theme::set_button_sizes`, `ui::bars::size_menu`,
+  `settings::tests::each_button_size_has_a_larger_icon_and_proportional_padding`,
+  `settings::tests::saved_button_sizes_keep_their_meaning`,
+  `ui::bars::tests::the_size_menus_list_the_five_wheel_sizes`); Toolbox
   Toolbar (Reset to Default: every flyout shown as at first, each button
   on its first tool, the default size and icons only; Button Size:
-  Default, which follows the default button size, or its own Small,
-  Medium or Large, `settings.toolbox_button_size`; Image Only, Caption
+  Default, which follows the default button size, or its own size
+  among the same five, `settings.toolbox_button_size`; Image Only, Caption
   Only or Caption to Right, `settings.toolbox_captions`: with captions
   every toolbox button is as wide as the widest tool name of the flyouts
   shown, plus 6 px each side, so the column keeps one width whichever

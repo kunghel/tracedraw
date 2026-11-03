@@ -3283,6 +3283,90 @@ mod pdfx_tests {
         )));
     }
 
+    /// A PDF written with crop marks opens again with its marks in
+    /// registration colour and its spot colours on their inks: a
+    /// Separation colour at full tint is full ink, not white (#1703).
+    #[test]
+    fn crop_marks_and_spot_colors_come_back_from_the_pdf() {
+        let mut doc = doc_with_transparent_rect();
+        doc.inks.push(tracedraw_core::document::Ink {
+            id: 7,
+            name: "Gold 871".into(),
+            cmyk: [0.0, 0.2, 0.8, 0.1],
+        });
+        doc.pages[0].layers[0].shapes[1].fill = Fill::Solid(doc.inks[0].color(0.5));
+        doc.pages[0].layers[0].shapes[1].opacity = 1.0;
+        let mut mark = Shape::new(
+            tracedraw_core::ShapeId(0),
+            ShapeKind::Path {
+                path: {
+                    let mut p = tracedraw_core::BezPath::new();
+                    p.move_to((-8.0, 0.0));
+                    p.line_to((-4.0, 0.0));
+                    p
+                },
+                closed: false,
+            },
+        );
+        mark.fill = Fill::None;
+        mark.stroke = Some(tracedraw_core::Stroke::new(Color::Registration, 0.1));
+        let opts = PdfOptions {
+            bleed_mm: 3.0,
+            marks_margin_mm: 12.0,
+            page_marks: vec![vec![mark]],
+            ..Default::default()
+        };
+        let bytes = document_to_pdf_with(&doc, &opts);
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let imp = crate::pdf_import::parse(&bytes, &mut ids).expect("opens");
+        let back = crate::pdf_import::to_document(imp, "marks");
+        fn all(shapes: &[Shape], out: &mut Vec<Shape>) {
+            for s in shapes {
+                out.push(s.clone());
+                match &s.kind {
+                    ShapeKind::Group { children } => all(children, out),
+                    ShapeKind::ClipFrame { frame, contents } => {
+                        all(std::slice::from_ref(frame.as_ref()), out);
+                        all(contents, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut shapes = Vec::new();
+        all(&back.pages[0].layers[0].shapes, &mut shapes);
+        let strokes: Vec<Color> = shapes
+            .iter()
+            .filter_map(|s| s.stroke.as_ref().map(|st| st.color))
+            .collect();
+        assert!(
+            strokes.contains(&Color::Registration),
+            "the crop mark keeps registration colour: {strokes:?}"
+        );
+        assert!(
+            !strokes.iter().any(|c| c.to_rgb8() == [255, 255, 255]),
+            "no white strokes: {strokes:?}"
+        );
+        assert_eq!(back.inks.len(), 1, "{:?}", back.inks);
+        let ink = &back.inks[0];
+        assert_eq!(ink.name, "Gold 871");
+        for (a, b) in ink.cmyk.iter().zip([0.0, 0.2, 0.8, 0.1]) {
+            assert!((a - b).abs() < 1e-3, "{:?}", ink.cmyk);
+        }
+        let spot = shapes
+            .iter()
+            .find_map(|s| match s.fill {
+                Fill::Solid(c @ Color::Spot { .. }) => Some(c),
+                _ => None,
+            })
+            .expect("the spot fill");
+        let Color::Spot { ink: id, tint, .. } = spot else {
+            unreachable!()
+        };
+        assert_eq!(id, ink.id);
+        assert!((tint - 0.5).abs() < 1e-3, "{spot:?}");
+    }
+
     #[test]
     fn x4_keeps_transparency_and_rgb() {
         let doc = doc_with_transparent_rect();

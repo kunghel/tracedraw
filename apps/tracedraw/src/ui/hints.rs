@@ -764,7 +764,12 @@ fn object_page(app: &mut App, ui: &mut Ui, kind: ObjectKind) -> Option<HintPage>
     title(ui, &tr(&format!("hintobj.{id}.title")));
     for n in 1..=2 {
         bullet_row(ui, |ui| {
-            rich(ui, &emphasize_keys(&tr(&format!("hintobj.{id}.{n}"))));
+            rich(
+                ui,
+                &emphasize_keys(&crate::shortcuts::shown_in(tr(&format!(
+                    "hintobj.{id}.{n}"
+                )))),
+            );
         });
         ui.add_space(6.0);
     }

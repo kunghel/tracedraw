@@ -36,11 +36,15 @@ Save names another). It holds the time the session last checked in
   closes, when the Android app goes to the background (the system may end
   it there without another word) and in the browser as below.
 - A program closed with unsaved drawings left (`App::leave_session`): the
-  system quit it without asking (the Quit of the macOS menu, a log-out) or
-  the renderer check closed the window. The drawings are backed up, the
-  backups stay and the marker is written with a check-in time of 0, so the
-  next start offers them at once. With no drawing left unsaved (File >
-  Exit and the close button ask about each first) the exit is clean.
+  system quit it without asking, or the renderer check closed the window.
+  The drawings are backed up, the backups stay and the marker is written
+  with a check-in time of 0, so the next start offers them at once. With
+  no drawing left unsaved (File > Exit and the close button ask about
+  each first) the exit is clean. On macOS, Command+Q, the application
+  menu's and the Dock's Quit and a log-out ask about unsaved drawings as
+  File > Exit does (#1669, `docs/behavior/documents.md`); the backup on
+  leaving remains for a quit that comes before the first frame or that
+  the system forces.
 - An idle window still checks in: it draws a frame each minute while it
   has a marker, so another window never takes it for gone.
 - The Android app is one process: a marker found when it starts belongs to

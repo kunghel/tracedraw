@@ -7,7 +7,8 @@ ativo: tamanho da página, layout, fundo, sangramento, réguas, grade e
 linhas-guia. Clicar duas vezes em uma régua ou na borda da página também a abre.
 Escolha uma página na lista à esquerda. As alterações aparecem na hora;
 [[dialog.ok]] as mantém e [[dialog.cancel]] desfaz tudo. **Salvar como padrão**
-guarda as configurações de grade, réguas e linhas-guia para novos desenhos.
+guarda as configurações de grade, réguas e linhas-guia e o espaçamento entre
+páginas para novos desenhos.
 
 ## Geral {#general}
 
@@ -52,6 +53,9 @@ uma mostrada em [[options.scope_all]], [[options.scope_odd]] ou
 [[options.scope_even]]. Os botões acrescentam uma nova camada mestra para
 todas as páginas, ímpares ou pares. Veja
 [Camadas mestras](../objects/objects-and-layers.md#master-layers).
+[[options.page_spacing]] (30 mm de início) é o espaço entre as páginas da
+[Vista de várias páginas](multipage-view.md#page-spacing), nas unidades do
+desenho.
 
 ## Fundo {#background}
 

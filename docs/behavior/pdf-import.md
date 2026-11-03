@@ -13,17 +13,54 @@ the active layer.
 - Paths: all construction operators, fill rules (even-odd is recorded as
   object data), strokes with width, caps, joins and dashes scaled by the
   CTM, constant alpha from ExtGStates (`ca`, `CA`).
-- Colour: DeviceGray/RGB/CMYK, ICCBased (by component count), Indexed,
-  Separation and DeviceN (as tints), CalRGB/Lab (as RGB).
-- Clipping: `W`/`W*` paths become clip frames around the objects they
-  clip; the intersection of nested clips is approximated by the inner
-  one (or the shared rectangle). Objects fully inside a clip are not
-  wrapped; text that is at least 60 % inside is left unclipped because
+- Colour: DeviceGray/RGB/CMYK, ICCBased (by component count), CalRGB/Lab
+  (as RGB), and the special spaces of ISO 32000-1, 8.6.6 (#1703):
+  - Separation: the operand is a tint, 0 no ink and 1 full ink. The
+    colourant `All` is the registration colour at full tint (crop and
+    registration marks, as Export as PDF writes them) and that share of
+    every process ink below it; `None` paints nothing (the fill or outline
+    goes); `Cyan`, `Magenta`, `Yellow` and `Black` are that process ink.
+    Any other name is a spot ink: the drawing gets an ink of that name
+    (Color docker, separations), one per name, whose process stand-in is
+    the alternate space's colour at tint 1 from the tint transform, and
+    the object a spot colour at the tint. A tint transform that cannot be
+    evaluated (a PostScript calculator function) leaves black as the
+    stand-in, with a warning.
+  - DeviceN: one colourant reads as its Separation. Several mix as
+    process inks: the process names as themselves, the others by the
+    stand-in of the Separation space the attributes' `Colorants` give them
+    (black, with a warning, without one).
+  - Indexed: the operand picks the entry of the lookup table (clamped to
+    `hival`), read in the base space, so a Separation base gives spot
+    colours too.
+  - `cs` and `CS` start a Separation or DeviceN space at full tint and an
+    Indexed space at entry 0.
+  - Open puts the file's inks in the new drawing. Import adds them to the
+    drawing's inks in the same undo step: an ink of a name the drawing
+    has is that ink, the others get numbers of their own.
+  - Pictures in a Separation space (samples and DCT) and DeviceN space
+    show their tints as ink the same way; their inks are not added to the
+    drawing, the picture keeping its pixels.
+- Clipping (ISO 32000-1, 8.5.4): the clipping path is set after the
+  painting operator that follows `W` or `W*`, is saved and restored with
+  `q`/`Q`, and each new one is intersected with the one in force (the
+  exact overlap of the two areas; a rectangle round the old clip leaves
+  it as it is). `W` reads the path with the nonzero rule: it is turned
+  into its nonzero area, so an outline drawn twice or the middle of a
+  self-crossing star stays inside; `W*` reads it even-odd. Subpaths with
+  no segment (a lone `m` before `W n`) are left out. A form's `BBox`
+  clips its content the same way. The objects drawn one after the other
+  under the same clip go together in one clip frame whose frame is that
+  clip; another clip, or an object the clip leaves alone, closes it.
+  Objects are judged by the box their ink covers (the outline's box
+  grown by the stroke's reach): one outside the clip is dropped, one
+  inside a rectangular clip goes on the page without a frame. Text that
+  is at least 60 % inside a rectangular clip is left unclipped because
   substitute fonts change its width.
 - Form XObjects (recursively, 12 levels), annotation appearance streams
   (stamps, form fields; links and popups skipped).
 - Images: Flate/LZW/raw samples at 1, 2, 4, 8 and 16 bits with Gray, RGB,
-  CMYK and Indexed spaces, Decode arrays, image masks (filled with
+  CMYK, Indexed, Separation and DeviceN spaces, Decode arrays, image masks (filled with
   black), SMask soft masks (resampled nearest), DCTDecode through the
   JPEG decoder. JPX images become a grey box. Inline images (`BI`) are
   read with their abbreviated keys expanded.
@@ -123,7 +160,23 @@ their own crypt filter and signature contents are left alone.
   12 pt bold; `[(Se) -250 (cond)] TJ` gives "Se cond".
 - A form XObject with a Matrix is placed by it and takes the page's
   `ca`; a rectangle painted under `W n` becomes a clip frame.
+- A disc set as the clip, then twelve lines crossing it, gives one clip
+  frame with the disc as frame and every line that reaches the disc
+  inside it; lines that miss it are dropped (#1616).
+- Two overlapping discs set as clips one inside the other give a clip
+  frame shaped as their lens; after `Q` the first disc clips again.
 - A type 2 axial shading pattern becomes a two-stop linear gradient.
+- `/Separation /All` at `1 SCN` gives a registration-colour outline,
+  `/Cyan` 100 % cyan, `/None` no outline, a spot name at `0.4 scn` a spot
+  colour at 40 % on an ink of that name whose stand-in is the alternate
+  colour at tint 1; an Indexed index takes its table entry; a DeviceN of
+  `Cyan` and `Black` gives C and K (`pdf_import::tests::separation_devicen_and_indexed_colors`).
+  A 1-bit Separation picture shows 1 as the ink and 0 as white
+  (`separation_picture_tints_are_ink`). A drawing published with crop
+  marks and a spot colour opens with registration-colour marks and the
+  spot colour on its ink (`pdf::pdfx_tests::crop_marks_and_spot_colors_come_back_from_the_pdf`);
+  imported into a drawing, the inks join the drawing's by name
+  (`app::tests::pdf_spot_inks_come_into_the_drawing`) (#1703).
 - A raw 2 x 1 RGB image gives a 2 x 1 bitmap at the CTM's rectangle,
   also when the file starts with a PostScript preamble (`.ai`).
 - Garbage and truncated input return an error, never a panic.

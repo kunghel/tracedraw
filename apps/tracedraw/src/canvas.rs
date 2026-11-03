@@ -317,19 +317,15 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
         // The pointer as the next node would take it (the constrain key:
         // in steps of the constrain angle).
         let ctrl = painter.ctx().input(|i| app.constrain_held(&i.modifiers));
-        let preview = if c.dragging_handle {
-            None
-        } else {
-            app.pointer_page
-                .map(|p| app.curve_point(app.snap_point(p), ctrl))
-        };
+        let preview = app.curve_preview_point(ctrl);
         let path = c.path(preview);
         if c.bspline {
             // The control polygon, dashed, as the curve is drawn.
-            let mut poly: Vec<egui::Pos2> = c.nodes.iter().map(|n| view.to_screen(n.0)).collect();
-            if let Some(p) = preview {
-                poly.push(view.to_screen(p));
-            }
+            let poly: Vec<egui::Pos2> = c
+                .bspline_controls(preview)
+                .into_iter()
+                .map(|p| view.to_screen(p))
+                .collect();
             for w in poly.windows(2) {
                 painter.extend(egui::Shape::dashed_line(
                     &[w[0], w[1]],
@@ -470,7 +466,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             0
         };
     // Paragraph text being resized keeps its letters while the frame
-    // follows the drag (the text flows anew on release).
+    // follows the drag (the drag outline shows the text flowed anew).
     let preview_ids = preview.map(|t| {
         let ids: Vec<_> = app
             .selection
@@ -1384,8 +1380,13 @@ pub fn draw_transform_outline(app: &App, painter: &Painter, t: Affine) {
     let halo = EStroke::new(3.0, Color32::from_white_alpha(220));
     let line = EStroke::new(1.0, Tokens::DRAG_OUTLINE);
     for s in app.selected_rc().iter() {
-        // What the release will make: rounded corners keep their size.
-        let mut paths = vec![s.page_path_after(t)];
+        // What the release will make: rounded corners keep their size,
+        // and a paragraph text flows anew in the frame it is given (when
+        // that is quick enough to do every frame, #1327).
+        let mut paths = vec![match app.live_frame(s.id, t) {
+            Some(live) => live.outline.clone(),
+            None => s.page_path_after(t),
+        }];
         // A symmetry out of edit mode goes whole: its copies too, also
         // those of one inside a group.
         let mut moved = s.clone();
@@ -1566,7 +1567,7 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
         // no frame of its own, so the objects' outlines stay in view.
         // Objects chosen inside a group show round handles.
         let nested = app.selection_nested();
-        let size = crate::interaction::HANDLE_SIZE;
+        let size = app.handle_size();
         // Black with a white edge, so they show on a dark drawing (#670).
         let edge = EStroke::new(1.0, Color32::WHITE);
         for (_, p) in app.handle_positions(bounds) {
@@ -1696,9 +1697,11 @@ pub(crate) fn text_frame_color(f: &crate::text_frames::ShownFrame) -> Color32 {
 /// screen: hanging under its middle, below the bottom handle of the
 /// selection (it sat under that handle, so dragging the frame taller
 /// started a text link instead, #503).
-pub fn flow_tab_rect(a: Pos2, b: Pos2) -> ERect {
+/// `handle` is the selection handles' size (`App::handle_size`): the tab
+/// hangs 3.5 points below the handle's far edge.
+pub fn flow_tab_rect(a: Pos2, b: Pos2, handle: f32) -> ERect {
     let mid = a + (b - a) * 0.5;
-    let top = crate::interaction::HANDLE_OFFSET + crate::interaction::HANDLE_SIZE / 2.0 + 2.0;
+    let top = handle + 3.5;
     ERect::from_min_size(mid + egui::vec2(-6.0, top), egui::vec2(12.0, 9.0))
 }
 
@@ -1706,9 +1709,9 @@ pub fn flow_tab_rect(a: Pos2, b: Pos2) -> ERect {
 /// over its middle, above the top handle of the selection, as the flow
 /// tab hangs under the bottom edge. A click on it says which frame's text
 /// flows into this one.
-pub fn flow_in_tab_rect(a: Pos2, b: Pos2) -> ERect {
+pub fn flow_in_tab_rect(a: Pos2, b: Pos2, handle: f32) -> ERect {
     let mid = a + (b - a) * 0.5;
-    let gap = crate::interaction::HANDLE_OFFSET + crate::interaction::HANDLE_SIZE / 2.0 + 2.0;
+    let gap = handle + 3.5;
     ERect::from_min_size(mid + egui::vec2(-6.0, -gap - 9.0), egui::vec2(12.0, 9.0))
 }
 
@@ -1761,7 +1764,7 @@ fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
         // the text does not fit, two links when it flows on, empty on a
         // picked frame; a click on it says where the text flows on.
         if f.overflow || f.chosen {
-            let tab = flow_tab_rect(pts[0], pts[1]);
+            let tab = flow_tab_rect(pts[0], pts[1], app.handle_size());
             let ink = if f.overflow { red } else { color };
             painter.rect(
                 tab,
@@ -1789,7 +1792,7 @@ fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
         // links when another frame flows into it, else empty; a click on
         // an empty one says which frame flows in.
         if f.chosen {
-            let tab = flow_in_tab_rect(pts[3], pts[2]);
+            let tab = flow_in_tab_rect(pts[3], pts[2], app.handle_size());
             painter.rect(
                 tab,
                 0.0,

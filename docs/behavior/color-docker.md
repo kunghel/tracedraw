@@ -53,10 +53,14 @@ Window > Panels > Color, Shift+F11, and Outline Colour (Shift+F12).
   new colour as the fill in front, the first selected object's outline
   colour behind it, a red diagonal for none; with nothing selected the
   outline colour new objects get; the tip gives both codes), the
-  eyedropper button, which picks the Color Eyedropper tool, and the
+  eyedropper button (the Color Eyedropper tool's own icon, as in the
+  toolbox; it showed the outline pen's picture, #1485), which picks the
+  Color Eyedropper tool, and the
   "..." button that drops the other actions (see below). Under the
-  swatch, Fill and Outline (small, pale with nothing selected) apply
-  the new colour to the selection. After a sample, "Use sampled
+  swatch, Fill and Outline (small framed buttons, pale with nothing
+  selected; they were bare words) apply
+  the new colour to the selection
+  (`ui::color_docker::tests::the_eyedropper_button_shows_its_tool_and_fill_and_outline_are_buttons`). After a sample, "Use sampled
   #rrggbb" under them makes it the new colour.
 
 ## The lock and the other actions

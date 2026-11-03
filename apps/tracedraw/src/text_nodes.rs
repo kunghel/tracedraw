@@ -11,7 +11,7 @@ use crate::app::App;
 use tracedraw_core::{
     document::{spans_apply, spans_char_count, spans_text, ShapeKind, TextSpan},
     geometry::{Affine, Point, Vec2},
-    Command, Shape, ShapeId,
+    Color, Command, Fill, Shape, ShapeId, Stroke,
 };
 
 /// Millimetres per point.
@@ -247,6 +247,41 @@ impl App {
             .collect()
     }
 
+    /// Characters are chosen with the Shape tool on a selected text (no
+    /// text being edited): a format, a fill or an outline colour goes to
+    /// them, not to the whole text, as to characters selected while
+    /// editing (#1662).
+    pub fn chosen_chars_active(&self) -> bool {
+        self.text_edit.is_none()
+            && !self.node_selection.is_empty()
+            && self
+                .node_texts()
+                .iter()
+                .any(|s| !self.chosen_chars(s.id).is_empty())
+    }
+
+    /// The character whose style the text fields show for text `id`: the
+    /// one before the caret while it is edited, else the first character
+    /// chosen with the Shape tool; `None` means the text's first.
+    pub fn shown_char(&self, id: ShapeId) -> Option<usize> {
+        if let Some(te) = &self.text_edit {
+            return (te.shape == id).then(|| te.caret.saturating_sub(1));
+        }
+        self.chosen_chars(id).into_iter().min()
+    }
+
+    /// The span the text fields show for `s` (see `shown_char`); `None`
+    /// for other kinds.
+    pub fn shown_span(&self, s: &Shape) -> Option<TextSpan> {
+        let ShapeKind::Text { spans, .. } = &s.kind else {
+            return None;
+        };
+        self.shown_char(s.id)
+            .and_then(|c| span_at(spans, c))
+            .or(spans.first())
+            .cloned()
+    }
+
     /// The character node under the pointer (5 px).
     pub fn text_node_at(&self, p: Point) -> Option<(ShapeId, usize)> {
         let tol = 5.0 / self.view.zoom.max(1e-6) as f64;
@@ -405,6 +440,63 @@ impl App {
         if let Err(e) = self.engine.run_batch(label, &cmds) {
             self.status = e.to_string();
         }
+    }
+
+    /// The characters chosen with the Shape tool get their own fill, as
+    /// an undo step of its own ("Character Fill"); false (nothing done)
+    /// without chosen characters (#1662).
+    pub fn chosen_chars_apply_fill(&mut self, fill: Fill) -> bool {
+        if !self.chosen_chars_active() {
+            return false;
+        }
+        self.set_char_attrs("Character Fill", move |sp| sp.fill = Some(fill.clone()));
+        true
+    }
+
+    /// The characters chosen with the Shape tool get their own outline in
+    /// `color` (from their outline, else the text's, else the default
+    /// pen); `None` takes the outline off them. One undo step ("Character
+    /// Outline"); false without chosen characters (#1662).
+    pub fn chosen_chars_apply_outline_color(&mut self, color: Option<Color>) -> bool {
+        if !self.chosen_chars_active() {
+            return false;
+        }
+        let mut cmds = Vec::new();
+        for (s, chars) in self.char_targets() {
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                continue;
+            };
+            let base = s.stroke.clone();
+            let spans = apply_to_chars(spans, &chars, |sp| {
+                sp.outline = Some(match color {
+                    Some(c) => {
+                        let mut st = sp
+                            .outline
+                            .clone()
+                            .filter(|o| o.width > 0.0)
+                            .or_else(|| base.clone())
+                            .unwrap_or_default();
+                        st.color = c;
+                        st
+                    }
+                    // Width 0: no outline on these characters.
+                    None => Stroke {
+                        width: 0.0,
+                        ..Stroke::default()
+                    },
+                });
+            });
+            if let Some(kind) = with_spans(&s, spans) {
+                cmds.push(Command::SetShapeKind { shape: s.id, kind });
+            }
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        if let Err(e) = self.engine.run_batch("Character Outline", &cmds) {
+            self.status = e.to_string();
+        }
+        true
     }
 
     /// Text > Straighten Text: the target characters lose their offsets
@@ -580,6 +672,80 @@ mod tests {
             panic!();
         };
         assert_eq!(spans.len(), 1, "{spans:?}");
+    }
+
+    /// Text Properties (Ctrl+T), the palette and the outline colour on
+    /// characters chosen with the Shape tool: the format goes to those
+    /// characters, not to the whole text, as to characters selected while
+    /// editing (#1662).
+    #[test]
+    fn chosen_characters_take_the_format_fill_and_outline() {
+        use tracedraw_core::Fill;
+        let (mut app, id) = text_app("abc");
+        let spans_of = |app: &App| match &app.doc().find_shape(id).expect("text").kind {
+            ShapeKind::Text { spans, .. } => spans.clone(),
+            _ => panic!("text"),
+        };
+        let object_fill = app.doc().find_shape(id).expect("text").fill.clone();
+        assert!(!app.chosen_chars_active());
+        app.node_selection = vec![(id, 1)];
+        assert!(app.chosen_chars_active());
+        assert_eq!(app.shown_char(id), Some(1));
+        // The style fields, read from the chosen character: bold goes to
+        // it only.
+        app.sync_text_defaults_from(id);
+        assert!(!app.text_bold);
+        app.text_bold = true;
+        app.apply_text_style();
+        let spans = spans_of(&app);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|sp| (sp.text.as_str(), sp.bold))
+                .collect::<Vec<_>>(),
+            vec![("a", false), ("b", true), ("c", false)]
+        );
+        // The docker shows that character.
+        let s = app.doc().find_shape(id).cloned().expect("text");
+        assert!(app.shown_span(&s).expect("span").bold);
+        app.sync_text_defaults_from(id);
+        assert!(app.text_bold);
+        // The docker's other character settings.
+        crate::ui::text_docker::edit_spans(&mut app, |sp| sp.underline = true);
+        let spans = spans_of(&app);
+        assert_eq!(
+            spans.iter().map(|sp| sp.underline).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        // A colour from the palette and an outline colour.
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        app.apply_fill(Fill::Solid(red));
+        app.apply_outline_color(Some(blue));
+        let spans = spans_of(&app);
+        assert_eq!(spans[1].fill, Some(Fill::Solid(red)));
+        assert_eq!(spans[0].fill, None);
+        assert_eq!(spans[2].fill, None);
+        assert_eq!(spans[1].outline.as_ref().map(|o| o.color), Some(blue));
+        assert!(spans[0].outline.is_none() && spans[2].outline.is_none());
+        let s = app.doc().find_shape(id).expect("text");
+        assert_eq!(s.fill, object_fill);
+        assert!(s.stroke.is_none());
+        assert_eq!(app.engine.undo_label(), Some("Character Outline"));
+        // With nothing chosen, the whole text, as before: the fields read
+        // the first character again, and bold turned on there goes to all.
+        app.node_selection.clear();
+        assert!(!app.chosen_chars_active());
+        app.sync_text_defaults_from(id);
+        assert!(!app.text_bold);
+        app.text_bold = true;
+        app.apply_text_style();
+        assert!(spans_of(&app).iter().all(|sp| sp.bold));
+        // Paragraph settings go to the chosen characters' paragraphs.
+        let (mut app, id) = text_app("ab\ncd");
+        assert_eq!(app.paragraph_range(id), None);
+        app.node_selection = vec![(id, 4), (id, 3)];
+        assert_eq!(app.paragraph_range(id), Some((3, 5)));
     }
 
     #[test]

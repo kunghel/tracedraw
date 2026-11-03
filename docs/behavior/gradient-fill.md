@@ -75,7 +75,8 @@ release point, keeping the kind and colours of a gradient the object
 already has (a linear black to white one otherwise); the skew handle
 goes square to the line, as far from the start as the end. A click on
 an object with a gradient picks it (its nodes show); on one without, it
-gives the default fill; Ctrl constrains the angle to 15 degree steps;
+gives the default fill; Ctrl constrains the angle to steps of the
+constrain angle (15 degrees at first, #1661);
 dragging a palette colour onto a stop recolours it; dragging a colour
 onto the fill line adds a stop.
 

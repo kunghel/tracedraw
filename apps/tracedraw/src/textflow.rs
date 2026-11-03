@@ -219,7 +219,9 @@ impl App {
             .find(|f| {
                 let a = self.view.to_screen(f.corners[0]);
                 let b = self.view.to_screen(f.corners[1]);
-                crate::canvas::flow_tab_rect(a, b).expand(2.0).contains(at)
+                crate::canvas::flow_tab_rect(a, b, self.handle_size())
+                    .expand(2.0)
+                    .contains(at)
             })
             .map(|f| f.id)
     }
@@ -233,7 +235,7 @@ impl App {
             .find(|f| {
                 let a = self.view.to_screen(f.corners[3]);
                 let b = self.view.to_screen(f.corners[2]);
-                crate::canvas::flow_in_tab_rect(a, b)
+                crate::canvas::flow_in_tab_rect(a, b, self.handle_size())
                     .expand(2.0)
                     .contains(at)
             })
@@ -277,9 +279,9 @@ impl App {
         };
         let (a, b) = (self.view.to_screen(a), self.view.to_screen(b));
         Some(if self.text_link_incoming {
-            crate::canvas::flow_in_tab_rect(a, b).center()
+            crate::canvas::flow_in_tab_rect(a, b, self.handle_size()).center()
         } else {
-            crate::canvas::flow_tab_rect(a, b).center()
+            crate::canvas::flow_tab_rect(a, b, self.handle_size()).center()
         })
     }
 
@@ -544,6 +546,7 @@ mod tests {
         let tab = crate::canvas::flow_tab_rect(
             app.view.to_screen(Point::new(10.0, 10.0)),
             app.view.to_screen(Point::new(40.0, 10.0)),
+            app.handle_size(),
         );
         assert!(tab.top() > edge.y);
         assert_eq!(app.flow_tab_at(tab.center()), Some(a));

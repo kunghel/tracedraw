@@ -1741,10 +1741,19 @@ impl WidthNode {
     }
 }
 
-/// The left and right reach of a variable outline at `t` (0 to 1): the
-/// path's ends keep half the base width unless a node sits there, and
-/// the reach eases between neighbouring nodes.
+/// The left and right reach of a variable outline at `t` (0 to 1) on an
+/// open path: the path's ends keep half the base width unless a node
+/// sits there, and the reach eases between neighbouring nodes.
 pub fn width_at(base: f64, nodes: &[WidthNode], t: f64) -> (f64, f64) {
+    width_around(base, nodes, t, false)
+}
+
+/// [`width_at`] on a path that is `closed` (one loop): the loop has no
+/// ends, so the reach eases across its seam too, from the last node on
+/// to the first as between any two neighbours, and a node can sit
+/// anywhere round the loop (#1322). With `closed` false it is
+/// [`width_at`].
+pub fn width_around(base: f64, nodes: &[WidthNode], t: f64, closed: bool) -> (f64, f64) {
     let half = (base / 2.0).max(0.0);
     let t = t.clamp(0.0, 1.0);
     let mut prev = WidthNode {
@@ -1757,18 +1766,45 @@ pub fn width_at(base: f64, nodes: &[WidthNode], t: f64) -> (f64, f64) {
         left: half,
         right: half,
     };
+    let mut found_prev = false;
     let mut found_next = false;
+    let mut first = None;
+    let mut last = None;
     for n in nodes {
         let n = WidthNode {
             at: n.at.clamp(0.0, 1.0),
             left: n.left.max(0.0),
             right: n.right.max(0.0),
         };
+        if first.is_none_or(|f: WidthNode| n.at < f.at) {
+            first = Some(n);
+        }
+        if last.is_none_or(|l: WidthNode| n.at >= l.at) {
+            last = Some(n);
+        }
         if n.at <= t {
             prev = n;
+            found_prev = true;
         } else if !found_next {
             next = n;
             found_next = true;
+        }
+    }
+    if closed {
+        // Across the seam: before the first node the last one is the
+        // neighbour behind (a turn back), after the last node the first
+        // one is the neighbour ahead (a turn on).
+        if let (false, Some(l)) = (found_prev, last) {
+            prev = WidthNode {
+                at: l.at - 1.0,
+                ..l
+            };
+        }
+        if let (false, Some(f)) = (found_next, first) {
+            next = WidthNode {
+                at: f.at + 1.0,
+                ..f
+            };
         }
     }
     let span = next.at - prev.at;
@@ -1869,6 +1905,49 @@ impl Default for Stroke {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1322: on a closed loop the reach eases across the seam from the
+    /// last node to the first, the same at `t` 0 and 1, and one node
+    /// alone gives the whole loop its reach; an open path still keeps
+    /// half the base width at its ends.
+    #[test]
+    fn width_around_a_loop_eases_across_its_seam() {
+        let two = [
+            WidthNode::symmetric(0.2, 10.0),
+            WidthNode::symmetric(0.8, 2.0),
+        ];
+        // Open: the ends keep half the base width (1 mm).
+        assert_eq!(width_at(2.0, &two, 0.0), (1.0, 1.0));
+        assert_eq!(width_at(2.0, &two, 1.0), (1.0, 1.0));
+        // Closed: halfway from the 1 mm node to the 5 mm one, 3 mm on
+        // both sides of the seam, and the same reach at 0 and at 1.
+        let (l0, r0) = width_around(2.0, &two, 0.0, true);
+        let (l1, r1) = width_around(2.0, &two, 1.0, true);
+        assert!(
+            (l0 - 3.0).abs() < 1e-9 && (r0 - 3.0).abs() < 1e-9,
+            "{l0} {r0}"
+        );
+        assert!(
+            (l1 - 3.0).abs() < 1e-9 && (r1 - 3.0).abs() < 1e-9,
+            "{l1} {r1}"
+        );
+        // Just past the seam the reach is on its way to the 5 mm node,
+        // without a step.
+        let (l, _) = width_around(2.0, &two, 0.01, true);
+        assert!(l > 3.0 && l < 3.2, "{l}");
+        // Between the nodes it eases as on an open path.
+        assert_eq!(width_around(2.0, &two, 0.5, true), width_at(2.0, &two, 0.5));
+        // One node: its reach all the way round; none: the base width.
+        let one = [WidthNode::symmetric(0.9, 10.0)];
+        for t in [0.0, 0.3, 0.9, 1.0] {
+            assert_eq!(width_around(2.0, &one, t, true), (5.0, 5.0), "{t}");
+        }
+        assert_eq!(width_around(2.0, &[], 0.5, true), (1.0, 1.0));
+        assert_eq!(
+            width_around(2.0, &two, 0.5, false),
+            width_at(2.0, &two, 0.5)
+        );
+    }
 
     /// #804: a double-click inside a mesh puts a node exactly where it
     /// was, also in a cell pulled out of shape, its colour mixed from

@@ -776,6 +776,43 @@ impl Shape {
             .reduce(|a, b| a.union(b))
             .unwrap_or_else(|| self.bounds())
     }
+
+    /// The object starts a blend whose end is an object of the drawing
+    /// (see [`Shape::own_visual_bounds`]).
+    pub fn starts_linked_blend(&self) -> bool {
+        self.effects.iter().any(|e| {
+            matches!(
+                e,
+                Effect::Blend {
+                    end_id: Some(_),
+                    ..
+                }
+            )
+        })
+    }
+
+    /// The object's own box, the one it is selected and transformed by:
+    /// [`Shape::visual_bounds`] without the steps of a blend it starts
+    /// whose end is an object of the drawing. Those steps lie between the
+    /// two objects, each of which has a box of its own (#1540); a group
+    /// holding the blend still spans them, and a blend whose end lives
+    /// only in the effect (older files) is one object, steps included.
+    pub fn own_visual_bounds(&self) -> Rect {
+        if !self.starts_linked_blend() {
+            return self.visual_bounds();
+        }
+        let mut own = self.clone();
+        own.effects.retain(|e| {
+            !matches!(
+                e,
+                Effect::Blend {
+                    end_id: Some(_),
+                    ..
+                }
+            )
+        });
+        own.visual_bounds()
+    }
 }
 
 impl Effect {
@@ -3068,6 +3105,7 @@ mod tests {
                 random: false,
                 smooth: false,
                 local: true,
+                tilt_deg: 0.0,
             },
         ] {
             s.effects = vec![Effect::Distort(how)];
@@ -3325,6 +3363,56 @@ mod tests {
             options: BlendOptions::default(),
         });
         assert_eq!(evaluate(&s).above.len(), MAX_BLEND_STEPS as usize);
+    }
+
+    /// The box of a blend's start object is the object itself: the steps
+    /// lie between it and the end object, which has a box of its own
+    /// (#1540). A blend from an older file, whose end lives only in the
+    /// effect, is one object and keeps the whole blend in its box.
+    #[test]
+    fn a_blend_start_s_own_box_leaves_the_steps_out() {
+        let a = rect_shape();
+        let mut b = rect_shape();
+        b.transform = Affine::translate((100.0, 0.0));
+        let mut s = a.clone();
+        s.effects.push(Effect::Blend {
+            end: Box::new(b.clone()),
+            steps: 5,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+            rotation: 0.0,
+            path: None,
+            rotate_on_path: false,
+            end_id: Some(b.id),
+            options: BlendOptions::default(),
+        });
+        assert!(s.starts_linked_blend());
+        let own = s.own_visual_bounds();
+        assert!((own.x0 - a.bounds().x0).abs() < 1e-9, "{own:?}");
+        assert!((own.x1 - a.bounds().x1).abs() < 1e-9, "{own:?}");
+        // What it draws still reaches the steps next to the end.
+        assert!(s.visual_bounds().x1 > a.bounds().x1 + 50.0);
+        // Other live effects of the start object stay in its box.
+        let mut nodes = crate::envelope::default_nodes(a.bounds());
+        nodes[5].y += 10.0;
+        let frame = crate::envelope::Frame::from_parts(&nodes, &[], &[]).expect("frame");
+        let mut warped = s.clone();
+        warped.effects.insert(
+            0,
+            Effect::from_envelope(&frame, false, crate::envelope::Mapping::Putty),
+        );
+        let own = warped.own_visual_bounds();
+        assert!((own.y1 - (a.bounds().y1 + 10.0)).abs() < 0.5, "{own:?}");
+        assert!(own.x1 < a.bounds().x1 + 1.0, "{own:?}");
+        // The end only in the effect: the whole blend.
+        let mut old = s.clone();
+        if let Some(Effect::Blend { end_id, .. }) = old.effects.last_mut() {
+            *end_id = None;
+        }
+        assert!(!old.starts_linked_blend());
+        assert_eq!(old.own_visual_bounds(), old.visual_bounds());
+        // Without a blend, the visual bounds.
+        assert_eq!(a.own_visual_bounds(), a.visual_bounds());
     }
 
     #[test]

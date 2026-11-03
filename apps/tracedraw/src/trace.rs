@@ -733,7 +733,7 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     let colors: Vec<[u8; 3]> = src.pixels().map(|p| [p[0], p[1], p[2]]).collect();
     // One flat colour split in two by its noise, when the art has fewer
     // colours than asked for, is one colour again (#611).
-    let palette = merge_split_colors(&mut labels, palette, &colors);
+    let palette = merge_split_colors(&mut labels, w, h, palette, &colors);
     // Shades no eye tells apart (the three blacks and seven whites the
     // colour reduction makes of a black and white drawing's noise) are
     // one colour, in any picture: each would be a curve of its own.
@@ -1622,11 +1622,18 @@ fn dissolve_fringes(
         else {
             continue;
         };
+        // The band's colour lies between the two, or near one of them
+        // (the ringing of a compressed edge overshoots the colour beside
+        // it: a cream band along a yellow's edge with black).
+        let explained = between_loosely(cl, ca, cb, 2.0)
+            || within_blend(cl, ca, cb)
+            || distance2(cl, ca) < EDGE_CONTRAST * EDGE_CONTRAST
+            || distance2(cl, cb) < EDGE_CONTRAST * EDGE_CONTRAST;
         if (nb as f64) < 0.1 * edges
             || 2 * sa < na
             || 2 * sb < nb
             || distance2(ca, cb) < EDGE_CONTRAST * EDGE_CONTRAST
-            || !between(cl, ca, cb)
+            || !explained
         {
             continue;
         }
@@ -1738,18 +1745,54 @@ fn distance2(a: [u8; 3], b: [u8; 3]) -> u32 {
 /// Whether `c` lies between `a` and `b`: near the segment joining them in
 /// RGB, as the anti-aliased pixels of their edge do.
 fn between(c: [u8; 3], a: [u8; 3], b: [u8; 3]) -> bool {
+    off_segment(c, a, b).is_some_and(|(d, slack)| d <= slack)
+}
+
+/// Whether `c` lies between `a` and `b` with `loose` times the usual
+/// slack: the blends of a compressed edge drift off the segment (its
+/// colour is stored coarser than its brightness), and a palette colour
+/// made of them with it.
+fn between_loosely(c: [u8; 3], a: [u8; 3], b: [u8; 3], loose: f64) -> bool {
+    off_segment(c, a, b).is_some_and(|(d, slack)| d <= slack * loose)
+}
+
+/// Whether `c` is a blend of `a` and `b` as a compressed picture stores
+/// one: its brightness between theirs, and each of its two colour
+/// differences (blue and red against the brightness) between theirs,
+/// each within the slack of [`off_segment`]. Compression keeps the
+/// brightness of an edge sharp and smears its colour over several
+/// pixels, so the pixels along an edge of black and yellow run from
+/// black to a pale, greyish yellow instead of along the segment between
+/// the two: in brightness and colour differences taken apart, they lie
+/// between the two all the same.
+fn within_blend(c: [u8; 3], a: [u8; 3], b: [u8; 3]) -> bool {
+    let Some((_, slack)) = off_segment(c, a, b) else {
+        return false;
+    };
+    let yc = |v: [u8; 3]| {
+        let y = 0.299 * v[0] as f64 + 0.587 * v[1] as f64 + 0.114 * v[2] as f64;
+        [y, v[2] as f64 - y, v[0] as f64 - y]
+    };
+    let (c, a, b) = (yc(c), yc(a), yc(b));
+    (0..3).all(|k| c[k] >= a[k].min(b[k]) - slack && c[k] <= a[k].max(b[k]) + slack)
+}
+
+/// How far `c` lies from the segment joining `a` and `b` in RGB, and
+/// the slack within which it counts as between them; `None` when `a`
+/// and `b` are one colour.
+fn off_segment(c: [u8; 3], a: [u8; 3], b: [u8; 3]) -> Option<(f64, f64)> {
     let f = |v: [u8; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
     let (c, a, b) = (f(c), f(a), f(b));
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let len2 = ab.iter().map(|v| v * v).sum::<f64>();
     if len2 < 1.0 {
-        return false;
+        return None;
     }
     let t = (ab.iter().zip(&ac).map(|(p, q)| p * q).sum::<f64>() / len2).clamp(0.0, 1.0);
     let d2 = (0..3).map(|k| (ac[k] - t * ab[k]).powi(2)).sum::<f64>();
     let slack = (0.08 * len2.sqrt()).max(12.0);
-    d2 <= slack * slack
+    Some((d2.sqrt(), slack))
 }
 
 /// The farthest apart (RGB distance) two colours split from one are.
@@ -1769,11 +1812,13 @@ const FLAT_ART_SHARE: f64 = 0.85;
 /// joined colour at their mean.
 fn merge_split_colors(
     labels: &mut [usize],
+    w: usize,
+    h: usize,
     mut palette: Vec<[u8; 3]>,
     colors: &[[u8; 3]],
 ) -> Vec<[u8; 3]> {
     let n = palette.len();
-    if labels.len() != colors.len() || n < 2 {
+    if labels.len() != colors.len() || labels.len() != w * h || n < 2 {
         return palette;
     }
     let mut count = vec![0f64; n];
@@ -1802,6 +1847,12 @@ fn merge_split_colors(
         }
         i
     }
+    // Shades scattered through each other (more pixel edges shared
+    // than the smaller has pixels, nearly) are one colour's noise too,
+    // however tight each shade is: with many colours asked for, the
+    // colour reduction cuts a flat colour into shades so narrow that
+    // none spreads as far as the next.
+    let shared = shared_edges(labels, w, h, n);
     let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
     for a in 0..n {
         for b in a + 1..n {
@@ -1809,7 +1860,8 @@ fn merge_split_colors(
                 continue;
             }
             let d = (distance2(palette[a], palette[b]) as f64).sqrt();
-            if d < SPLIT_REACH && d < spread[a] + spread[b] {
+            let mixed = shared[a * n + b] as f64 >= INTERLEAVED * count[a].min(count[b]);
+            if d < SPLIT_REACH && (d < spread[a] + spread[b] || mixed) {
                 pairs.push((d, a, b));
             }
         }
@@ -1823,6 +1875,13 @@ fn merge_split_colors(
     // edge do not chain two distinct colours into one.
     let mut total: Vec<(f64, [f64; 3])> = (0..n).map(|l| (count[l], sum[l])).collect();
     let mean = |t: &(f64, [f64; 3])| -> [f64; 3] { std::array::from_fn(|d| t.1[d] / t.0) };
+    // The colours of each group: two groups join only when every colour
+    // of one lies within `SPLIT_REACH` of every colour of the other (the
+    // shades of one colour all lie near each other), so a run of shades
+    // each near the next (a pink cheek, its blends with the yellow
+    // around it, the yellow's own shades) does not chain into one mean
+    // colour none of them had.
+    let mut members: Vec<Vec<usize>> = (0..n).map(|l| vec![l]).collect();
     for (_, a, b) in pairs {
         let (ra, rb) = (find(&mut root, a), find(&mut root, b));
         if ra == rb {
@@ -1830,7 +1889,14 @@ fn merge_split_colors(
         }
         let (ma, mb) = (mean(&total[ra]), mean(&total[rb]));
         let d2: f64 = (0..3).map(|d| (ma[d] - mb[d]).powi(2)).sum();
-        if d2 >= SPLIT_REACH * SPLIT_REACH {
+        let near = |p: &usize, q: &usize| {
+            (distance2(palette[*p], palette[*q]) as f64) < SPLIT_REACH * SPLIT_REACH
+        };
+        if d2 >= SPLIT_REACH * SPLIT_REACH
+            || !members[ra]
+                .iter()
+                .all(|p| members[rb].iter().all(|q| near(p, q)))
+        {
             continue;
         }
         root[rb] = ra;
@@ -1839,6 +1905,8 @@ fn merge_split_colors(
         for d in 0..3 {
             total[ra].1[d] += t.1[d];
         }
+        let moved = std::mem::take(&mut members[rb]);
+        members[ra].extend(moved);
     }
     // Flat art only: once joined, a few colours cover nearly all of it.
     // In a photo neighbouring colours of a gradient lie as near as their
@@ -1909,6 +1977,33 @@ fn compact_palette(labels: &mut [usize], palette: Vec<[u8; 3]>) -> Vec<[u8; 3]> 
 /// to be one colour's noise.
 const INTERLEAVED: f64 = 0.6;
 
+/// How many pixel edges each two of `n` labels share (`n` by `n`,
+/// symmetric; transparent pixels count for nothing).
+fn shared_edges(labels: &[usize], w: usize, h: usize, n: usize) -> Vec<u32> {
+    let mut shared = vec![0u32; n * n];
+    if labels.len() != w * h {
+        return shared;
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let a = labels[y * w + x];
+            for b in [
+                (x + 1 < w).then(|| labels[y * w + x + 1]),
+                (y + 1 < h).then(|| labels[(y + 1) * w + x]),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if a != b && a < n && b < n {
+                    shared[a * n + b] += 1;
+                    shared[b * n + a] += 1;
+                }
+            }
+        }
+    }
+    shared
+}
+
 /// Whether each of the `n` labels is a solid colour: at least half its
 /// pixels flat (their eight neighbours of the label too), as the
 /// colours of the art are and the shades of its edges and noise are not.
@@ -1926,6 +2021,113 @@ fn solid_colors(labels: &[usize], w: usize, h: usize, n: usize) -> Vec<bool> {
         .iter()
         .map(|(all, f)| *all > 0 && 2 * f >= *all)
         .collect()
+}
+
+/// Which colours are colours of their own (`n` of them): at least half
+/// their pixels flat (`flat`: the eight neighbours share the colour), or
+/// a core somewhere, a flat pixel whose eight neighbours are flat too (a
+/// block of five by five). The others only line edges: the fringes of a
+/// blurred or compressed edge, a pixel or two wide however long. A small
+/// feature (the cheek of a face a dozen pixels across) has few flat
+/// pixels against its edge, but a core; a fringe band never has one.
+/// Returns, per colour, whether it is a colour of its own and whether it
+/// is a fringe: fewer than one pixel in `FRINGE_FLAT_SHARE` flat, as a
+/// band a pixel or two wide is, while the bands of a photo's gradient,
+/// no colours of their own either, are flat inside.
+fn colors_of_their_own(
+    labels: &[usize],
+    flat: &[bool],
+    w: usize,
+    h: usize,
+    n: usize,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut count = vec![(0u32, 0u32, false); n];
+    for (i, (l, f)) in labels.iter().zip(flat).enumerate() {
+        let Some(c) = count.get_mut(*l) else { continue };
+        c.0 += 1;
+        c.1 += *f as u32;
+        if *f && !c.2 {
+            let (x, y) = (i % w, i / w);
+            c.2 = x > 0
+                && y > 0
+                && x + 1 < w
+                && y + 1 < h
+                && (y - 1..=y + 1).all(|v| (x - 1..=x + 1).all(|u| flat[v * w + u]));
+        }
+    }
+    let own = count
+        .iter()
+        .map(|(all, f, core)| *all > 0 && (2 * f >= *all || *core))
+        .collect();
+    let fringe = count
+        .iter()
+        .map(|(all, f, _)| *all > 0 && f * FRINGE_FLAT_SHARE < *all)
+        .collect();
+    (own, fringe)
+}
+
+/// One pixel in this many of a colour's pixels flat at most for the
+/// colour to be a fringe.
+const FRINGE_FLAT_SHARE: u32 = 8;
+
+/// Which pixels lie in a band between two colours of their own: the
+/// pixels of the other colours, taken together in connected regions
+/// whatever their colours, where the region touches two colours of
+/// their own, the second along a tenth of its edge at least. The
+/// fringes of an edge do; the glint in an eye, a few shades of white
+/// none of them a colour of its own, touches the dark of the eye alone
+/// and is no fringe, whatever the colours further off.
+fn band_regions(labels: &[usize], real: &[bool], w: usize, h: usize) -> Vec<bool> {
+    let mut band = vec![false; w * h];
+    let mut seen = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut region: Vec<usize> = Vec::new();
+    let is_real = |l: usize| real.get(l).copied().unwrap_or(true);
+    for start in 0..w * h {
+        if seen[start] || is_real(labels[start]) {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        region.clear();
+        let mut edges = 0u32;
+        let mut touches: Vec<(usize, u32)> = Vec::new();
+        while let Some(i) = stack.pop() {
+            region.push(i);
+            let (x, y) = (i % w, i / w);
+            let near = [
+                (x > 0).then(|| i - 1),
+                (x + 1 < w).then(|| i + 1),
+                (y > 0).then(|| i - w),
+                (y + 1 < h).then(|| i + w),
+            ];
+            for j in near.into_iter().flatten() {
+                let m = labels[j];
+                if !is_real(m) {
+                    if !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                    continue;
+                }
+                edges += 1;
+                if m == usize::MAX {
+                    continue;
+                }
+                match touches.iter_mut().find(|(k, _)| *k == m) {
+                    Some((_, n)) => *n += 1,
+                    None => touches.push((m, 1)),
+                }
+            }
+        }
+        touches.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        if touches.len() >= 2 && 10 * touches[1].1 >= edges {
+            for &i in &region {
+                band[i] = true;
+            }
+        }
+    }
+    band
 }
 
 /// Join the palette colours nearer each other than `reach` (RGB
@@ -1957,25 +2159,7 @@ fn merge_near_colors(
         }
     }
     let solid = solid_colors(labels, w, h, n);
-    // How many pixel edges each two labels share.
-    let mut shared = vec![0u32; n * n];
-    for y in 0..h {
-        for x in 0..w {
-            let a = labels[y * w + x];
-            for b in [
-                (x + 1 < w).then(|| labels[y * w + x + 1]),
-                (y + 1 < h).then(|| labels[(y + 1) * w + x]),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                if a != b && a < n && b < n {
-                    shared[a * n + b] += 1;
-                    shared[b * n + a] += 1;
-                }
-            }
-        }
-    }
+    let shared = shared_edges(labels, w, h, n);
     let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
     for a in 0..n {
         for b in a + 1..n {
@@ -2008,6 +2192,7 @@ fn merge_near_colors(
     }
     let mean = |t: &(f64, [f64; 3])| -> [f64; 3] { std::array::from_fn(|d| t.1[d] / t.0) };
     let mut has_solid = solid;
+    let mut size = vec![1usize; n];
     for (_, a, b) in pairs {
         let (ra, rb) = (find(&mut root, a), find(&mut root, b));
         if ra == rb {
@@ -2016,9 +2201,15 @@ fn merge_near_colors(
         let (ma, mb) = (mean(&total[ra]), mean(&total[rb]));
         let d2: f64 = (0..3).map(|d| (ma[d] - mb[d]).powi(2)).sum();
         // A group holds one solid colour at most, and stays its colour.
-        if d2 >= reach * reach || (has_solid[ra] && has_solid[rb]) {
+        // The means matter once a group has grown (a run of shades must
+        // not chain); two lone colours within reach of each other join
+        // whatever their pixels' means, which the palette colour (moved
+        // onto its commonest pixel) may miss by a little.
+        let grown = size[ra] > 1 || size[rb] > 1;
+        if (grown && d2 >= reach * reach) || (has_solid[ra] && has_solid[rb]) {
             continue;
         }
+        size[ra] += size[rb];
         let (keep, gone) = if has_solid[ra] || (!has_solid[rb] && total[ra].0 >= total[rb].0) {
             (ra, rb)
         } else {
@@ -2074,17 +2265,12 @@ fn settle_edges(
         return;
     }
     let flat = flat_pixels(labels, w, h);
-    // Colours of their own: half their pixels flat or more. The others
-    // only line edges (the fringes of a blurred or compressed edge) and
-    // take the colours of their own beside them, flat pixels and all.
-    let mut count = vec![(0u32, 0u32); palette.len()];
-    for (l, f) in labels.iter().zip(&flat) {
-        if let Some(c) = count.get_mut(*l) {
-            c.0 += 1;
-            c.1 += *f as u32;
-        }
-    }
-    let real: Vec<bool> = count.iter().map(|(n, f)| 2 * f >= *n).collect();
+    // Colours of their own: half their pixels flat or more, or a core
+    // of flat pixels somewhere. The others only line edges (the fringes
+    // of a blurred or compressed edge) and take the colours of their own
+    // beside them, flat pixels and all.
+    let (real, fringes) = colors_of_their_own(labels, &flat, w, h, palette.len());
+    let banded = band_regions(labels, &real, w, h);
     let mut changes: Vec<(usize, usize)> = Vec::new();
     let mut near: Vec<usize> = Vec::new();
     for i in 0..w * h {
@@ -2096,9 +2282,15 @@ fn settle_edges(
             continue;
         }
         let (x, y) = (i % w, i / w);
+        // A pixel of a fringe colour in a band between two colours of
+        // their own looks twice as far: the fringes of a compressed edge
+        // come in several shades, bands side by side, and from the inner
+        // band the colour across the outer one lies past `EDGE_REACH`.
+        let fringe = banded[i] && fringes.get(own).copied().unwrap_or(false);
+        let reach = if fringe { 2 * EDGE_REACH } else { EDGE_REACH };
         near.clear();
-        for v in y.saturating_sub(EDGE_REACH)..=(y + EDGE_REACH).min(h - 1) {
-            for u in x.saturating_sub(EDGE_REACH)..=(x + EDGE_REACH).min(w - 1) {
+        for v in y.saturating_sub(reach)..=(y + reach).min(h - 1) {
+            for u in x.saturating_sub(reach)..=(x + reach).min(w - 1) {
                 let j = v * w + u;
                 if flat[j] && real[labels[j]] && !near.contains(&labels[j]) {
                     near.push(labels[j]);
@@ -2109,23 +2301,60 @@ fn settle_edges(
             continue;
         }
         let c = colors[i];
-        let mut by_distance: Vec<(u32, usize)> = near
-            .iter()
-            .filter_map(|l| palette.get(*l).map(|p| (distance2(c, *p), *l)))
-            .collect();
-        by_distance.sort_unstable();
-        let to = match by_distance[..] {
-            [(da, a), (_, b), ..] => {
-                let (pa, pb) = (palette[a], palette[b]);
-                if between(c, pa, pb) {
-                    Some(if nearer_first(c, pa, pb) { a } else { b })
-                } else {
-                    (da < EDGE_JOIN * EDGE_JOIN).then_some(a)
+        // The two colours whose edge the pixel lies on: the pair of the
+        // colours of their own around it whose segment its colour is
+        // nearest, when it is between them (not the two nearest it: a
+        // grey of a black edge on white lies nearer a pale blue beside
+        // them than black). Of a fringe colour, the palette colour
+        // stands for the pixel when its own colour is off every
+        // segment (the blends of a compressed edge drift in colour), and
+        // the slack is twice as wide, or the colour a compressed blend of
+        // the two ([`within_blend`]); between two colours, or near one,
+        // it is their edge all the same.
+        let edge_of = |col: [u8; 3], blend: bool| -> Option<(usize, usize)> {
+            let mut best: Option<(f64, usize, usize)> = None;
+            for (k, &a) in near.iter().enumerate() {
+                for &b in &near[k + 1..] {
+                    let (Some(&pa), Some(&pb)) = (palette.get(a), palette.get(b)) else {
+                        continue;
+                    };
+                    if let Some((d, slack)) = off_segment(col, pa, pb) {
+                        let fits = if blend {
+                            d <= 2.0 * slack || within_blend(col, pa, pb)
+                        } else {
+                            d <= slack
+                        };
+                        if fits && best.is_none_or(|(bd, _, _)| d < bd) {
+                            best = Some((d, a, b));
+                        }
+                    }
                 }
             }
-            [(da, a)] => (da < EDGE_JOIN * EDGE_JOIN).then_some(a),
-            [] => None,
+            best.map(|(_, a, b)| (a, b))
         };
+        let side = |(a, b): (usize, usize)| {
+            if nearer_first(c, palette[a], palette[b]) {
+                a
+            } else {
+                b
+            }
+        };
+        let nearest = |col: [u8; 3], within: u32| -> Option<usize> {
+            near.iter()
+                .filter_map(|l| palette.get(*l).map(|p| (distance2(col, *p), *l)))
+                .min()
+                .filter(|(d, _)| *d < within * within)
+                .map(|(_, l)| l)
+        };
+        let to = edge_of(c, false)
+            .map(side)
+            .or_else(|| nearest(c, EDGE_JOIN))
+            .or_else(|| {
+                let po = palette.get(own).copied().filter(|_| fringe)?;
+                edge_of(po, true)
+                    .map(side)
+                    .or_else(|| nearest(po, EDGE_CONTRAST))
+            });
         if let Some(to) = to {
             changes.push((i, to));
         }
@@ -2246,6 +2475,11 @@ fn dot_area(detail: f64) -> usize {
 /// colour around it to be a dot of the art rather than noise.
 const DOT_CONTRAST: u32 = 64;
 
+/// How far (RGB distance) a dot must stand from every colour around it
+/// to be kept from `GLINT_AREA` pixels at any detail.
+const GLINT_CONTRAST: u32 = 160;
+const GLINT_AREA: usize = 4;
+
 /// Give every 4-connected patch of one label smaller than `min_area`
 /// pixels the label of the neighbours outside it whose colour is
 /// nearest its own, when one is within `SPLIT_REACH`, else the label most
@@ -2253,7 +2487,10 @@ const DOT_CONTRAST: u32 = 64;
 /// piece of a dark letter split into several dark shades joins the other
 /// shades and stays a letter, where the colour around it would erase it
 /// (#611). Patches joined into others are looked at again, until none
-/// is left.
+/// is left. First the colours with fewer pixels in all than `min_area`
+/// join each other when within `TINY_REACH`: a glint blurred into a
+/// white and two greys, a pixel or two of each, is one speck of nine
+/// pixels, not nine specks of one that pass their pixels around.
 fn despeckle(
     labels: &mut [usize],
     w: usize,
@@ -2266,10 +2503,73 @@ fn despeckle(
     if min_area <= 1 || labels.len() != w * h {
         return;
     }
+    join_tiny_colors(labels, min_area, palette);
     for _ in 0..4 {
         if !despeckle_pass(labels, w, h, min_area, keep_area, palette, cancel) || cancelled(cancel)
         {
             break;
+        }
+    }
+}
+
+/// How far apart (RGB distance) two colours of fewer pixels than the
+/// speck area can be and join: twice [`SPLIT_REACH`], as the shades a
+/// small bright mark is blurred into lie further apart than the noise
+/// of a flat colour.
+const TINY_REACH: f64 = 2.0 * SPLIT_REACH;
+
+/// Join the colours with fewer than `min_area` pixels in all to each
+/// other, nearest pairs first, within `TINY_REACH`, each group keeping
+/// the colour with most pixels. The colours of substance are left
+/// alone: a speck beside one takes it or stands out from it by place.
+fn join_tiny_colors(labels: &mut [usize], min_area: usize, palette: &[[u8; 3]]) {
+    let n = palette.len();
+    let mut count = vec![0usize; n];
+    for l in labels.iter() {
+        if let Some(c) = count.get_mut(*l) {
+            *c += 1;
+        }
+    }
+    let tiny: Vec<usize> = (0..n)
+        .filter(|a| count[*a] > 0 && count[*a] < min_area)
+        .collect();
+    let mut pairs: Vec<(u32, usize, usize)> = Vec::new();
+    for (k, &a) in tiny.iter().enumerate() {
+        for &b in &tiny[k + 1..] {
+            let d = distance2(palette[a], palette[b]);
+            if d < (TINY_REACH * TINY_REACH) as u32 {
+                pairs.push((d, a, b));
+            }
+        }
+    }
+    if pairs.is_empty() {
+        return;
+    }
+    pairs.sort_unstable();
+    let mut root: Vec<usize> = (0..n).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    for (_, a, b) in pairs {
+        let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+        if ra == rb {
+            continue;
+        }
+        let (keep, gone) = if count[ra] >= count[rb] {
+            (ra, rb)
+        } else {
+            (rb, ra)
+        };
+        root[gone] = keep;
+        count[keep] += count[gone];
+    }
+    for l in labels.iter_mut() {
+        if *l < n {
+            *l = find(&mut root, *l);
         }
     }
 }
@@ -2372,15 +2672,19 @@ fn despeckle_pass(
                     let (x, y) = (i % w, i / w);
                     (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
                 }
-                (patch.len() >= keep_area
-                    && x1 > x0
-                    && y1 > y0
-                    && counts.keys().all(|k| {
-                        palette
-                            .get(*k)
-                            .is_some_and(|p| distance2(own, *p) >= DOT_CONTRAST * DOT_CONTRAST)
-                    }))
-                .then_some(())
+                // A dot standing out strongly from everything around it
+                // (the white glint in a black eye) is drawn from four
+                // pixels however low the detail: noise differs from its
+                // surroundings by far less once the picture is quietened.
+                let contrast = counts
+                    .keys()
+                    .map(|k| palette.get(*k).map_or(0, |p| distance2(own, *p)))
+                    .min()
+                    .unwrap_or(0);
+                let big_enough = patch.len() >= keep_area
+                    || (patch.len() >= GLINT_AREA && contrast >= GLINT_CONTRAST * GLINT_CONTRAST);
+                (big_enough && x1 > x0 && y1 > y0 && contrast >= DOT_CONTRAST * DOT_CONTRAST)
+                    .then_some(())
             };
             if near.is_none() && side().is_none() && stands_out().is_some() {
                 continue;
@@ -4956,5 +5260,121 @@ mod tests {
         inside[2][0] = true;
         assert_eq!(stacking_order(&inside, &[200, 10, 50]), vec![1, 2, 0]);
         assert_eq!(stacking_order(&[], &[]), Vec::<usize>::new());
+    }
+
+    /// The fringe of a compressed edge drifts off the segment between the
+    /// two colours (its colour is stored coarser than its brightness): a
+    /// band three pixels wide of a yellow overshooting towards orange,
+    /// along the edge of black and yellow, is no colour of the art and
+    /// goes to the colours either side, with the Photo presets' many
+    /// colours as with Clipart (#611). Before, it lay too far from the
+    /// segment to be the edge's blend and too far from yellow to join
+    /// it, and became a sliver of its own along every such edge.
+    #[test]
+    fn off_segment_fringes_of_a_compressed_edge_go_to_the_colours_either_side() {
+        let band = [232u8, 192, 90];
+        let img: RgbaImage = ImageBuffer::from_fn(120, 80, |x, _| match x {
+            0..=49 => Rgba([0, 0, 0, 255]),
+            50..=52 => Rgba([band[0], band[1], band[2], 255]),
+            _ => Rgba([250, 205, 40, 255]),
+        });
+        for preset in [
+            Preset::HighQualityImage,
+            Preset::LowQualityImage,
+            Preset::Clipart,
+        ] {
+            let mut s = preset.settings();
+            s.remove = Remove::None;
+            let t = trace(&img, &s);
+            let colours: Vec<[u8; 3]> = t.iter().map(|t| t.color.to_rgb8()).collect();
+            assert!(
+                colours.iter().all(|c| distance2(*c, band) > 30 * 30),
+                "{preset:?}: the band stayed: {colours:?}"
+            );
+            assert!(
+                colours.iter().any(|c| c[1] < 30) && colours.iter().any(|c| c[1] > 180),
+                "{preset:?}: black and yellow: {colours:?}"
+            );
+            // Black and yellow meet: the band's pixels are covered.
+            let out = render_traced(&t, 120, 80, 1.0);
+            for x in 48..56 {
+                assert_eq!(
+                    out.get_pixel(x, 40)[3],
+                    255,
+                    "{preset:?}: page shows at {x}"
+                );
+            }
+        }
+    }
+
+    /// Shades of one colour split by noise join, but a run of shades,
+    /// each near the next, is not one colour: two groups join only when
+    /// every colour of one is near every colour of the other (#611). A
+    /// pink cheek, the blends of its blurred edge and the yellow around
+    /// it chained into a mean colour none of them had.
+    #[test]
+    fn split_shades_join_but_a_run_of_shades_does_not_chain() {
+        // Four colours in bands, each 23.6 apart from the next, the
+        // first and third 47 apart. Their pixels scatter round them so
+        // each pair lies nearer than the sum of their spreads.
+        let shades = [
+            [240u8, 150, 110],
+            [226, 164, 96],
+            [212, 178, 82],
+            [198, 192, 68],
+        ];
+        let (w, h) = (80usize, 40usize);
+        let mut labels = Vec::with_capacity(w * h);
+        let mut colors = Vec::with_capacity(w * h);
+        for i in 0..w * h {
+            let (x, y) = (i % w, i / w);
+            let l = y / 10;
+            let sign = if (x + y) % 2 == 0 { 15i32 } else { -15 };
+            labels.push(l);
+            colors.push(std::array::from_fn(|k| {
+                (shades[l][k] as i32 + sign).clamp(0, 255) as u8
+            }));
+        }
+        let palette = merge_split_colors(&mut labels, w, h, shades.to_vec(), &colors);
+        let at = |y: usize| labels[y * w + 5];
+        assert_eq!(at(0), at(10), "the first two shades join: {palette:?}");
+        assert_eq!(at(20), at(30), "the last two shades join: {palette:?}");
+        assert_ne!(at(0), at(20), "the run does not chain: {palette:?}");
+        let pink = palette[at(0)];
+        assert!(
+            distance2(pink, [233, 157, 103]) <= 4 * 4,
+            "the pink group's colour is their mean: {pink:?}"
+        );
+    }
+
+    /// The glint in a dark eye, a few white pixels standing out from the
+    /// black around them, stays at the low detail of the Low quality
+    /// image preset, which otherwise drops every patch under some forty
+    /// pixels (#611). Noise never differs from its surroundings by that
+    /// much once the picture is quietened.
+    #[test]
+    fn a_glint_standing_out_in_a_dark_eye_stays_at_low_detail() {
+        let img: RgbaImage = ImageBuffer::from_fn(100, 100, |x, y| {
+            let (dx, dy) = (x as f32 - 50.0, y as f32 - 50.0);
+            if (44..47).contains(&x) && (44..47).contains(&y) {
+                Rgba([255, 255, 255, 255])
+            } else if dx * dx + dy * dy <= 15.0 * 15.0 {
+                Rgba([0, 0, 0, 255])
+            } else {
+                Rgba([250, 205, 40, 255])
+            }
+        });
+        let s = Preset::LowQualityImage.settings();
+        let t = trace(&img, &s);
+        let colours: Vec<[u8; 3]> = t.iter().map(|t| t.color.to_rgb8()).collect();
+        assert!(
+            colours.iter().any(|c| c[0] > 90 && c[2] > 80),
+            "the glint: {colours:?}"
+        );
+        // Still no speck of noise: a lone off pixel in the yellow goes.
+        let mut noisy = img.clone();
+        noisy.put_pixel(20, 20, Rgba([240, 190, 60, 255]));
+        let t = trace(&noisy, &s);
+        assert_eq!(t.len(), colours.len(), "{:?}", color_counts(&t));
     }
 }

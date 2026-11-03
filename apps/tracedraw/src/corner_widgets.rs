@@ -67,6 +67,8 @@ pub struct Widget {
     pub corner: Corner,
     pub depth: f64,
     pub at: egui::Pos2,
+    /// Its corner is chosen (one of its nodes is among the chosen nodes).
+    pub chosen: bool,
 }
 
 /// The drag of a corner widget: the curve as it was, with the rounded
@@ -182,11 +184,19 @@ impl App {
                 .filter(|(s, _)| s == id)
                 .map(|(_, i)| *i)
                 .collect();
-            if chosen.is_empty() && list.len() > MAX_WIDGETS {
+            // A curve with many corners shows only the chosen ones'
+            // widgets; otherwise every corner has one.
+            // With one corner at a time off, chosen nodes show only their
+            // corners' widgets, as before.
+            let many = list.len() > MAX_WIDGETS;
+            if chosen.is_empty() && many {
                 continue;
             }
+            let only_chosen =
+                many || (!chosen.is_empty() && !self.settings.nodes.corner_one_at_a_time);
             for spot in list {
-                if !chosen.is_empty() && !spot.nodes.iter().any(|n| chosen.contains(n)) {
+                let is_chosen = spot.nodes.iter().any(|n| chosen.contains(n));
+                if only_chosen && !is_chosen {
                     continue;
                 }
                 let c = &spot.corner;
@@ -206,6 +216,7 @@ impl App {
                     corner: *c,
                     depth: spot.depth,
                     at: node + d.normalized() * WIDGET_OFFSET_PX,
+                    chosen: is_chosen,
                 });
             }
         }
@@ -223,8 +234,41 @@ impl App {
             .map(|(w, _)| w)
     }
 
-    /// Begin dragging the widget `w` from the page point `p`.
-    pub fn start_corner_drag(&mut self, w: Widget, p: Point) -> bool {
+    /// The nodes that choose the widget's corner: its node, or every node
+    /// of its rounded corner's arc.
+    fn widget_nodes(&self, w: &Widget) -> Vec<usize> {
+        let cache = self.corner_cache.borrow();
+        cache
+            .curves
+            .iter()
+            .filter(|(id, _, _)| *id == w.shape)
+            .flat_map(|(_, _, list)| list.iter())
+            .find(|s| s.corner.node == w.corner.node && s.stretched == w.stretched)
+            .map(|s| s.nodes.clone())
+            .unwrap_or_else(|| vec![w.corner.node])
+    }
+
+    /// Ctrl+click on a widget: its corner is added to the chosen corners,
+    /// or taken out when it is chosen already, so one corner or several
+    /// can be chosen and then rounded together by dragging one of them.
+    pub fn toggle_corner_widget(&mut self, w: Widget) {
+        let nodes = self.widget_nodes(&w);
+        if w.chosen {
+            self.node_selection
+                .retain(|(id, i)| !(*id == w.shape && nodes.contains(i)));
+        } else {
+            if let Some(n) = nodes.first() {
+                self.node_selection.push((w.shape, *n));
+            }
+        }
+        self.segment_spot = None;
+    }
+
+    /// Begin dragging the widget `w` from the page point `p`. The drag
+    /// rounds the widget's own corner; when that corner's node is among
+    /// the chosen nodes, every chosen node's corner; with `all` (Shift),
+    /// every corner of the curve.
+    pub fn start_corner_drag(&mut self, w: Widget, p: Point, all: bool) -> bool {
         let Some(s) = self.doc().find_shape(w.shape) else {
             return false;
         };
@@ -244,16 +288,27 @@ impl App {
         // On the page, or in the curve's own space for a corner rounded
         // before the curve was stretched (#1000).
         let path = &(w.space * path.clone());
+        let rounded = fillets(path);
         let chosen: Vec<usize> = self
             .node_selection
             .iter()
             .filter(|(id, _)| *id == w.shape)
             .map(|(_, i)| *i)
             .collect();
+        // The widget's own nodes: its corner's node, or every node of its
+        // rounded corner.
+        let own = self.widget_nodes(&w);
+        let one_at_a_time = self.settings.nodes.corner_one_at_a_time;
+        let chosen = if all {
+            Vec::new()
+        } else if !one_at_a_time || w.chosen || own.iter().any(|n| chosen.contains(n)) {
+            chosen
+        } else {
+            own
+        };
         // The rounded corners the drag changes become sharp again first
-        // (#872): every one with no node chosen, else those of the chosen
-        // nodes; the chosen nodes are renumbered to match.
-        let rounded = fillets(path);
+        // (#872): every one with Shift, else those of the nodes taken;
+        // the nodes taken are renumbered to match.
         let which: Vec<usize> = rounded
             .iter()
             .enumerate()
@@ -363,15 +418,20 @@ impl App {
 }
 
 /// Draw the corner widgets: white circles with a ring in the node
-/// colour, over the nodes.
+/// colour, over the nodes; a chosen corner's is filled with the colour.
 pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
     for w in app.corner_widgets() {
-        painter.circle(
-            w.at,
-            WIDGET_RADIUS_PX,
-            egui::Color32::WHITE,
-            egui::Stroke::new(1.5, color),
-        );
-        painter.circle_filled(w.at, 1.5, color);
+        let fill = if w.chosen {
+            color
+        } else {
+            egui::Color32::WHITE
+        };
+        painter.circle(w.at, WIDGET_RADIUS_PX, fill, egui::Stroke::new(1.5, color));
+        let dot = if w.chosen {
+            egui::Color32::WHITE
+        } else {
+            color
+        };
+        painter.circle_filled(w.at, 1.5, dot);
     }
 }

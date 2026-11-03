@@ -711,7 +711,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         .merge_state
         .as_ref()
         .and_then(|st| st.pictures.as_ref())
-        .map(|p| p.display().to_string());
+        .map(|p| folder_label(p));
     if headers.is_empty() {
         ui.label(
             egui::RichText::new(tr("merge.no_data"))
@@ -749,10 +749,11 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             ui.label(tr("merge.pictures_folder"));
             ui.horizontal(|ui| {
-                pick_folder = ui
-                    .button("\u{1F4C2}")
-                    .rich_tip(tr("merge.pictures_folder_tip"))
-                    .clicked();
+                let tip = match crate::files::FolderUse::MergePictures.tip() {
+                    Some(why) => format!("{}\n{}", tr("merge.pictures_folder_tip"), tr(why)),
+                    None => tr("merge.pictures_folder_tip"),
+                };
+                pick_folder = ui.button("\u{1F4C2}").rich_tip(tip).clicked();
                 let shown = folder
                     .clone()
                     .unwrap_or_else(|| tr("merge.pictures_folder_data"));
@@ -863,11 +864,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             app.create_merged_document(true);
         }
         if pick_folder {
-            if let Some(dir) = crate::files::pick_folder() {
-                if let Some(st) = app.merge_state.as_mut() {
-                    st.pictures = Some(dir);
-                }
-            }
+            choose_pictures(app);
         }
         if clear_folder {
             if let Some(st) = app.merge_state.as_mut() {
@@ -887,9 +884,76 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// The pictures folder as the docker shows it: its path, or how many
+/// pictures were picked in its place (#1399).
+fn folder_label(dir: &std::path::Path) -> String {
+    if crate::files::is_gathered(dir) {
+        let n = crate::print_merge::folder_pictures(dir).len();
+        return crate::i18n::trf("folder.picked_n", &[("n", &n.to_string())]);
+    }
+    dir.display().to_string()
+}
+
+/// The pictures folder button: a folder on the desktop; where no folder
+/// can be read, the pictures themselves, several at once, put together
+/// as the folder (#1399).
+fn choose_pictures(app: &mut App) {
+    match crate::files::FolderUse::MergePictures.action() {
+        crate::files::FolderAction::PickFolder(token) => {
+            if let Some(dir) = crate::files::pick_folder(token) {
+                if let Some(st) = app.merge_state.as_mut() {
+                    st.pictures = Some(dir);
+                }
+            }
+        }
+        crate::files::FolderAction::OpenFiles => {
+            crate::files::Dialog::new()
+                .add_filter(
+                    "Pictures",
+                    &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"],
+                )
+                .pick_files(app, |app, paths| {
+                    match crate::files::gather("merge-pictures", &paths) {
+                        Ok(dir) => {
+                            if let Some(st) = app.merge_state.as_mut() {
+                                st.pictures = Some(dir);
+                            }
+                        }
+                        Err(e) => app.status = e.to_string(),
+                    }
+                });
+        }
+        crate::files::FolderAction::SaveZip | crate::files::FolderAction::Unavailable(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pictures picked where no folder can be read (#1399) serve as the
+    /// pictures folder: a cell's name finds its picture there, and the
+    /// docker counts them instead of showing a temporary path.
+    #[test]
+    fn picked_pictures_serve_as_the_pictures_folder() {
+        let src = std::env::temp_dir().join(format!("tracedraw-merge-pick-{}", std::process::id()));
+        std::fs::create_dir_all(&src).unwrap();
+        let photo = src.join("1024.png");
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([10, 20, 30, 255]))
+            .save(&photo)
+            .unwrap();
+        let dir = crate::files::gather("merge-pictures", &[photo]).unwrap();
+        let _ = std::fs::remove_dir_all(&src);
+        assert_eq!(
+            folder_label(&dir),
+            crate::i18n::trf("folder.picked_n", &[("n", "1")])
+        );
+        let pic =
+            crate::print_merge::picture_in("1024", std::slice::from_ref(&dir)).expect("found");
+        assert_eq!(pic.px, (4, 2));
+        assert_eq!(folder_label(std::path::Path::new("/photos")), "/photos");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use crate::print_merge::FieldKind;
     use crate::ui::dialogs::PrintMergeState;
 

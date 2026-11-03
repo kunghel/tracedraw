@@ -91,7 +91,17 @@ pointer, so a curve of thousands of nodes drags as fast as without it
 (`frame_times_of_a_node_drag_on_a_long_curve`).
 
 A guideline being dragged (or dragged out of a ruler) and the ruler origin
-snap to everything except guidelines.
+snap to everything except guidelines. Along its axis a guideline lines up
+with the objects' points by the modes on (nodes, segment midpoints, an
+ellipse's quadrants, centres), which win over the objects' box edges, the
+page and the grids; before, only the boxes' edges and centres caught it,
+so a guideline could not be put on a curve's node (#1645,
+`snap::tests::a_dragged_guideline_snaps_to_a_node`). The other way round,
+an object moved by its snap point under the pointer (a node, a midpoint,
+a centre) puts that point on a guideline, a baseline or a grid line it
+comes near, on each axis, ahead of its box's edges and centre, when no
+other object's point or edge takes it first
+(`snap::tests::a_curve_moved_by_a_node_puts_the_node_on_a_guideline`).
 
 ## Checks
 

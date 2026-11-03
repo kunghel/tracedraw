@@ -7,7 +7,7 @@
 
 use crate::app::{App, Units};
 use crate::i18n::{tr, trf};
-use crate::settings::{AutoCenter, NodeShape, NodeSize, Startup};
+use crate::settings::{AutoCenter, HandleSize, NodeShape, NodeSize, Startup};
 use crate::theme::Tokens;
 use crate::ui::chrome;
 use crate::ui::tips::RichTip;
@@ -1152,6 +1152,24 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
         );
 
         ui.end_row();
+        // The Pick tool's selection handles (#1285).
+        row_label(ui, &tr("options.handle_size"));
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::pair("options.handle_size", "options.handle_size_tip"),
+            |ui| {
+                combo(
+                    ui,
+                    "handle_size",
+                    &mut n.handles,
+                    &HandleSize::ALL,
+                    |v| tr(v.key()),
+                    100.0,
+                );
+            },
+        );
+
+        ui.end_row();
     });
     chrome::section(ui, &tr("options.node_shape"));
     grid("node_shapes").show(ui, |ui| {
@@ -1218,6 +1236,15 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
         ));
     ui.checkbox(&mut n.corner_widgets, tr("options.corner_widgets"))
         .rich_tip(tr("options.corner_widgets_tip"));
+    ui.add_enabled_ui(n.corner_widgets, |ui| {
+        ui.indent("corner_one_at_a_time", |ui| {
+            ui.checkbox(
+                &mut n.corner_one_at_a_time,
+                tr("options.corner_one_at_a_time"),
+            )
+            .rich_tip(tr("options.corner_one_at_a_time_tip"));
+        });
+    });
     ui.horizontal(|ui| {
         ui.label(tr("options.node_pick_distance"));
         ui.add(
@@ -1709,12 +1736,23 @@ fn dynamic_guides_page(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// A read-only path with a Browse button that picks a folder (desktop).
-fn path_field(ui: &mut Ui, dir: &mut Option<std::path::PathBuf>, fallback: String) {
+/// A read-only path with a Browse button for the folder of `place`: it
+/// picks a folder on the desktop; elsewhere it is greyed with the reason,
+/// or (a folder that is read) true comes back when it is pressed, for the
+/// caller to pick the files (#1399).
+fn path_field(
+    ui: &mut Ui,
+    dir: &mut Option<std::path::PathBuf>,
+    fallback: String,
+    place: crate::files::FolderUse,
+) -> bool {
+    use crate::files::FolderAction;
     let text = dir
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or(fallback);
+    let action = place.action();
+    let mut files = false;
     ui.horizontal(|ui| {
         ui.add_enabled(
             false,
@@ -1724,19 +1762,29 @@ fn path_field(ui: &mut Ui, dir: &mut Option<std::path::PathBuf>, fallback: Strin
             "options.folder",
             "options.folder_tip",
         ));
-        if ui
-            .add_enabled(!crate::files::WEB, egui::Button::new(tr("options.browse")))
-            .rich_tip(crate::ui::tips::pair(
-                "options.browse",
-                "options.browse_tip",
-            ))
-            .clicked()
-        {
-            if let Some(p) = crate::files::pick_folder() {
-                *dir = Some(p);
+        let tip = match place.tip() {
+            Some(why) => crate::ui::tips::pair("options.browse", why),
+            None => crate::ui::tips::pair("options.browse", "options.browse_tip"),
+        };
+        let browse = ui
+            .add_enabled(
+                !matches!(action, FolderAction::Unavailable(_)),
+                egui::Button::new(tr("options.browse")),
+            )
+            .rich_tip_always(tip);
+        if browse.clicked() {
+            match action {
+                FolderAction::PickFolder(token) => {
+                    if let Some(p) = crate::files::pick_folder(token) {
+                        *dir = Some(p);
+                    }
+                }
+                FolderAction::OpenFiles => files = true,
+                FolderAction::SaveZip | FolderAction::Unavailable(_) => {}
             }
         }
     });
+    files
 }
 
 fn save_page(app: &mut App, ui: &mut Ui) {
@@ -1771,7 +1819,12 @@ fn save_page(app: &mut App, ui: &mut Ui) {
                 b.before_save_dir = None;
             }
             ui.add_enabled_ui(choose, |ui| {
-                path_field(ui, &mut b.before_save_dir, String::new());
+                path_field(
+                    ui,
+                    &mut b.before_save_dir,
+                    String::new(),
+                    crate::files::FolderUse::BackupFolder,
+                );
             });
         });
     });
@@ -1793,18 +1846,18 @@ fn save_page(app: &mut App, ui: &mut Ui) {
             ));
             ui.label(tr("options.minutes"));
         });
-        // A browser keeps them in the page's storage: no folder.
-        if !crate::files::WEB {
-            ui.add_enabled_ui(b.auto, |ui| {
-                path_field(
-                    ui,
-                    &mut b.auto_dir,
-                    crate::app::App::auto_backup_dir_default()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                );
-            });
-        }
+        // A browser keeps them in the page's storage and Android in the
+        // app's folder: Browse is greyed with the reason (#1399).
+        ui.add_enabled_ui(b.auto, |ui| {
+            path_field(
+                ui,
+                &mut b.auto_dir,
+                crate::app::App::auto_backup_dir_default()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                crate::files::FolderUse::AutoBackupFolder,
+            );
+        });
     });
 }
 
@@ -2097,16 +2150,21 @@ fn dictionary_download_row(app: &mut App, ui: &mut Ui) {
             ))
             .clicked()
         {
-            crate::files::Dialog::new()
-                .add_filter("Hunspell", &["dic", "aff"])
-                .pick_files(app, |app, paths| {
-                    let n = dl::add_files(&paths);
-                    app.status =
-                        crate::i18n::trf("status.dictionaries_added", &[("n", &n.to_string())]);
-                });
+            add_dictionary_files(app);
         }
     });
     ui.data_mut(|d| d.insert_temp(chosen_id, code));
+}
+
+/// Pick Hunspell files (`.dic` and `.aff`, several at once) and add them
+/// to TraceDraw's own dictionaries.
+fn add_dictionary_files(app: &mut App) {
+    crate::files::Dialog::new()
+        .add_filter("Hunspell", &["dic", "aff"])
+        .pick_files(app, |app, paths| {
+            let n = crate::dictionary_download::add_files(&paths);
+            app.status = crate::i18n::trf("status.dictionaries_added", &[("n", &n.to_string())]);
+        });
 }
 
 /// The dictionary offered first: the interface language's when the
@@ -2226,6 +2284,7 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
                 });
         });
     let own = crate::spell::own_folder();
+    let mut add_files = false;
     grid("dictionary_folders").show(ui, |ui| {
         // A browser has no folders: its dictionaries are downloaded or
         // added below.
@@ -2281,7 +2340,14 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
             crate::ui::tips::pair("options.more_dictionaries", "options.more_dictionaries_tip"),
             |ui| {
                 ui.horizontal(|ui| {
-                    path_field(ui, &mut p.dictionary_folder, String::new());
+                    // Where no folder can be read, Browse picks the
+                    // Hunspell files, as Add Dictionary Files does (#1399).
+                    add_files = path_field(
+                        ui,
+                        &mut p.dictionary_folder,
+                        String::new(),
+                        crate::files::FolderUse::DictionaryFolder,
+                    );
                     if ui
                         .add_enabled(
                             p.dictionary_folder.is_some(),
@@ -2297,6 +2363,9 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
 
         ui.end_row();
     });
+    if add_files {
+        add_dictionary_files(app);
+    }
     dictionary_download_row(app, ui);
     if ui
         .button(tr("options.refresh_dictionaries"))
@@ -2790,7 +2859,7 @@ fn color_palette_page(app: &mut App, ui: &mut Ui) {
             "options.palette_no_color_tip",
         ));
     // Rows of the default palette (columns docked on a side, #610).
-    p.rows = p.rows.clamp(1, 3);
+    p.rows = p.rows.min(crate::settings::MAX_ROWS);
     grid("palette_rows").show(ui, |ui| {
         row_label(ui, &tr("options.palette_rows"));
         crate::ui::tips::tip_over(
@@ -2801,13 +2870,50 @@ fn color_palette_page(app: &mut App, ui: &mut Ui) {
                     ui,
                     "opt_palette_rows",
                     &mut p.rows,
-                    &[1, 2, 3],
-                    |n| n.to_string(),
-                    60.0,
+                    &[1, 2, 3, 4, 5, 6, 7, 8, crate::settings::ROWS_FIT],
+                    |n| {
+                        if n == crate::settings::ROWS_FIT {
+                            tr("palette.rows_fit")
+                        } else {
+                            n.to_string()
+                        }
+                    },
+                    90.0,
                 );
             },
         );
-
+        ui.end_row();
+        // The swatch size, as the palette menu names its steps; a size
+        // set with Ctrl+wheel between two shows as it is.
+        row_label(ui, &tr("options.palette_swatch_size"));
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::pair(
+                "options.palette_swatch_size",
+                "options.palette_swatch_size_tip",
+            ),
+            |ui| {
+                let mut sizes: Vec<u8> = crate::settings::SWATCH_STEPS
+                    .iter()
+                    .map(|(s, _)| *s)
+                    .collect();
+                if !sizes.contains(&p.swatch_size) {
+                    sizes.push(p.swatch_size);
+                    sizes.sort_unstable();
+                }
+                combo(
+                    ui,
+                    "opt_palette_swatch_size",
+                    &mut p.swatch_size,
+                    &sizes,
+                    |n| match crate::settings::swatch_step_of(n) {
+                        Some(i) => tr(crate::settings::SWATCH_STEPS[i].1),
+                        None => crate::i18n::trf("palette.size_custom", &[("n", &n.to_string())]),
+                    },
+                    140.0,
+                );
+            },
+        );
         ui.end_row();
     });
     crate::ui::chrome::section(ui, &tr("options.palette_right_button"));
@@ -3068,6 +3174,18 @@ fn commands_page(app: &mut App, ui: &mut Ui) {
             .color(Tokens::text_dim())
             .size(11.0),
     );
+    // The shortcuts the browser keeps and the keys that replace them
+    // there (#1409).
+    if crate::shortcuts::web_keys() {
+        ui.label(
+            egui::RichText::new(trf(
+                "options.browser_keys",
+                &[("keys", &crate::shortcuts::browser_keys_list())],
+            ))
+            .color(Tokens::text_dim())
+            .size(11.0),
+        );
+    }
     let category_name = |c: Option<&str>| match c {
         None => tr("options.all_commands"),
         Some(TOOLBOX) => tr("menu.window.toolbar_toolbox"),
@@ -4283,7 +4401,7 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
         ui.label(egui::RichText::new(tr("options.mcp_window_hint")).color(Tokens::text_dim()));
         if let Some(link) = &app.mcp_link {
             ui.label(
-                egui::RichText::new(crate::i18n::trf(
+                egui::RichText::new(trf(
                     "options.mcp_window_port",
                     &[("port", &link.info.port.to_string())],
                 ))
@@ -4569,6 +4687,7 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
         });
         app.fit_pending = true;
     }
+    page_spacing_row(app, ui);
     ui.separator();
     ui.strong(tr("options.master_layers"));
     type MasterRow = (
@@ -4634,6 +4753,33 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
     // Which kinds of master layer are drawn in front of the page's
     // layers, now and when made (#1132, #1477).
     crate::ui::objects_docker::master_front_choices(app, ui);
+}
+
+/// Document Setup > Layout: the space between the pages of the
+/// Multipage View, in the document's units (a document property; Save as
+/// Default keeps it for new drawings).
+fn page_spacing_row(app: &mut App, ui: &mut Ui) {
+    let u = app.units;
+    grid("doc_page_spacing").show(ui, |ui| {
+        row_label(ui, &tr("options.page_spacing"));
+        let mut v = u.from_mm(app.page_spacing());
+        let r = ui
+            .add_sized(
+                [100.0, 22.0],
+                crate::ui::field::NumField::new(&mut v)
+                    .range(0.0..=u.from_mm(tracedraw_core::document::MAX_PAGE_SPACING))
+                    .speed(0.1)
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "options.page_spacing",
+                "options.page_spacing_tip",
+            ));
+        if r.changed() {
+            app.set_page_spacing(u.to_mm(v));
+        }
+        ui.end_row();
+    });
 }
 
 fn background_page(app: &mut App, ui: &mut Ui) {

@@ -20,11 +20,30 @@ page, cut by the new outline, not squeezed into its new box (see
 
 The Transparency tool shows a gradient mask's nodes as Interactive Fill
 shows a fill's (`fill_tool.rs`, #448): start, end and skew handle, the
-nodes between and the midpoint slider of each blend; a drag across an
-object sets the line (a gradient mask there already keeps its nodes), a
-double click on the line adds a node and on a node removes it. Edits are
-one undo step "Transparency" per drag; the fill is left alone
+nodes between and the midpoint slider of each blend; a drag sets the
+line (a gradient mask there already keeps its nodes), a double click on
+the line adds a node and on a node removes it. Edits are one undo step
+"Transparency" per drag; the fill is left alone
 (`fill_tool::tests::the_transparency_mask_has_nodes_and_a_midpoint`).
+
+What a drag that sets the line acts on (#1661,
+`pick_drag_tests::the_transparency_tool_drags_on_the_selection_and_ctrl_constrains`):
+
+- With a selection, pressed inside the box of a selected object (also
+  where another object covers it, or where its own mask makes it
+  see-through) or on no object: every selected object gets the line, as
+  it lies on the page, one undo step; the selection stays.
+- Pressed on an unselected object outside the selected ones: that object
+  is picked and gets the line, as Interactive Fill picks the object a
+  drag starts on.
+- With nothing selected: the object under the press is picked and gets
+  it; a drag over no object does nothing.
+
+Ctrl (Cmd on macOS) keeps the line in steps of the constrain angle
+(set in Options, 15 degrees at first) about where the drag
+began, as for lines and the other angle drags; Interactive Fill's drag
+does the same
+(`pick_drag_tests::ctrl_keeps_an_interactive_fill_drag_to_the_constrain_angle`).
 
 Clear Transparency, a button at the end of the Transparency tool's bar
 and of the Properties docker's transparency part (greyed while no

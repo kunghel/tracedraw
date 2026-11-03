@@ -181,8 +181,19 @@ step: each held point goes to its node or to the same share of its
 segment, the dimension line or arc moves as far as the held points
 moved on average, and the label reads the new value. A point on a
 stretched edge keeps its share of the edge, so a dimension between two
-sides of a rectangle grows with it. A dimension moved by itself lets go
-of the object, as does one whose object, node or segment is gone
+sides of a rectangle grows with it.
+
+A dimension moved by itself (dragged, nudged, or scaled, turned or
+skewed without the object it measures) stays held to it (#1492): its
+held points go back on their nodes or segments and only the rest of it
+keeps the move, so a linear dimension's line moves along its normal (a
+move along the measured points changes nothing) and an angular one's
+arc to the new radius; a measured point held to nothing moves with it.
+While it is dragged it is shown moved whole; on release it settles on
+the object, in the same undo step. Moved together with its object, it
+goes along unchanged. Only Break Apart frees it from the object (its
+pieces are then no longer a dimension); a dimension lets go of the
+object by itself only when its object, node or segment is gone
 (deleted, or the outline now has fewer segments).
 
 ## Convert to Curves
@@ -263,7 +274,11 @@ ones made next; the style is kept in the preferences
 - `dimensions::tests::dimensions_redraw_for_their_style_and_their_size`
 - `dimensions::tests::previews_and_segments`
 - `dimensions::tests::a_dimension_follows_the_object_it_measures` (two
-  corners of a rectangle; moved by itself it lets go)
+  corners of a rectangle; moved or turned by itself it stays held, Break
+  Apart frees it)
+- `dimensions::tests::a_dimension_moved_by_itself_stays_on_its_object`
+  (a circle's diameter and an angle on a rectangle's corners)
+- `pick_drag_tests::a_dragged_dimension_stays_on_the_circle_it_measures`
 - `dimensions::tests::a_dimension_between_two_edges_follows_the_object`
   (two sides of a rectangle: moved, scaled, given a new size, saved)
 - `dimensions::tests::a_dimension_lets_go_of_a_deleted_object`

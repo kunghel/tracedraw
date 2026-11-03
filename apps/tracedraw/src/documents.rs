@@ -65,6 +65,13 @@ pub struct DocSlot {
     /// The drawing's rendered page, kept while another drawing is active
     /// (its window shows it when windows are tiled or cascaded).
     pub raster: crate::raster::Raster,
+    /// The window's pictures of the drawing's other pages in the
+    /// Multipage View, keyed by page id: ids repeat between drawings, so
+    /// each window keeps its own (#1663).
+    pub page_rasters: std::collections::HashMap<PageId, crate::raster::Raster>,
+    /// The drawing copied for the other pages' renders, kept with the
+    /// drawing: revisions repeat between drawings too (#1663).
+    pub page_snapshot: Option<(u64, std::sync::Arc<Document>)>,
     /// Where the drawing's canvas began on screen when it was last drawn
     /// (see `App::anchor_view`).
     pub view_anchor: Option<egui::Pos2>,
@@ -95,6 +102,8 @@ impl Default for DocSlot {
             pivots: Default::default(),
             picked_layer: None,
             raster: Default::default(),
+            page_rasters: Default::default(),
+            page_snapshot: None,
             view_anchor: None,
         }
     }
@@ -120,6 +129,7 @@ impl App {
         std::mem::swap(&mut self.open_view_pending, &mut slot.open_view_pending);
         std::mem::swap(&mut self.picked_layer, &mut slot.picked_layer);
         std::mem::swap(self.raster.get_mut(), &mut slot.raster);
+        std::mem::swap(self.page_rasters.get_mut(), &mut slot.page_rasters);
         std::mem::swap(&mut self.view_anchor, &mut slot.view_anchor);
         // Measured in another window.
         *self.visual_cache.get_mut() = (u64::MAX, Default::default());
@@ -141,6 +151,7 @@ impl App {
         std::mem::swap(&mut self.missing_fonts, &mut slot.missing_fonts);
         std::mem::swap(&mut self.units, &mut slot.units);
         std::mem::swap(&mut self.pivots, &mut slot.pivots);
+        std::mem::swap(self.page_snapshot.get_mut(), &mut slot.page_snapshot);
         *self.visual_cache.get_mut() = (u64::MAX, Default::default());
     }
 
@@ -311,6 +322,8 @@ impl App {
         self.pivots = Default::default();
         self.picked_layer = None;
         *self.raster.get_mut() = Default::default();
+        self.page_rasters.get_mut().clear();
+        *self.page_snapshot.get_mut() = None;
         self.view_anchor = None;
         self.docs.push(DocSlot::default());
         self.active_doc = self.docs.len() - 1;
@@ -483,6 +496,8 @@ impl App {
         self.pivots = Default::default();
         self.picked_layer = None;
         *self.raster.get_mut() = Default::default();
+        self.page_rasters.get_mut().clear();
+        *self.page_snapshot.get_mut() = None;
         self.view_anchor = None;
         // Its message in the status bar goes with it (#1128).
         self.status.clear();

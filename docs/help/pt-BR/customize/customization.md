@@ -72,6 +72,8 @@ volta para a barra um botão que você tirou.
 
 - [[options.palette_auto_update]] e [[options.palette_show_document]] (ambos
   ligados).
+- **Linhas** (de 1 a 8, ou Ajustar) e **Tamanho das amostras** (de
+  Extrapequeno a Extragrande) da paleta padrão.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (ligado), e o que
   o [[options.palette_right_button]] faz: [[options.palette_set_outline]] (de
   início) ou abrir o [[options.palette_context_menu]].

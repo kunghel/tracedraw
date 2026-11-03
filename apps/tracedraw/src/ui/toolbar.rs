@@ -18,7 +18,11 @@ fn vsep(ui: &mut Ui) {
 fn std_btn() -> f32 {
     Tokens::bar_button()
 }
-const STD_ICON: f32 = 20.0;
+/// The side of a standard toolbar icon's box at the default button size
+/// (20 px at Small, 24 px at Medium; the bars' menu > Customize).
+fn std_icon() -> f32 {
+    Tokens::bar_icon()
+}
 
 fn std_frame(ui: &Ui, rect: egui::Rect, hovered: bool, pressed: bool) {
     if pressed {
@@ -62,7 +66,7 @@ fn std_button(
     let resp = resp.on_hover_ui(|ui| rich_tip(ui, tip));
     icons::draw_action(
         ui.painter(),
-        egui::Rect::from_center_size(rect.center(), Vec2::splat(STD_ICON)),
+        egui::Rect::from_center_size(rect.center(), Vec2::splat(std_icon())),
         action,
         if enabled {
             Tokens::icon()
@@ -82,7 +86,7 @@ fn std_list_button(ui: &mut Ui, action: icons::Action, tip: &str) -> egui::Respo
     let resp = resp.on_hover_ui(|ui| rich_tip(ui, tip));
     let icon = egui::Rect::from_center_size(
         egui::pos2(rect.left() + std_btn() / 2.0, rect.center().y),
-        Vec2::splat(STD_ICON),
+        Vec2::splat(std_icon()),
     );
     icons::draw_action(ui.painter(), icon, action, Tokens::icon());
     let c = egui::pos2(rect.right() - 7.0, rect.center().y + 1.0);
@@ -107,7 +111,10 @@ pub(crate) fn rich_tip(ui: &mut Ui, tip: &str) {
 /// The tip of the standard bar's button `key`: its title and the
 /// description kept under `key_desc`.
 fn tip(key: &str) -> String {
-    format!("{}\n{}", tr(key), tr(&format!("{key}_desc")))
+    // In the browser version a shortcut the browser keeps shows the key
+    // that replaces it (#1409).
+    let title = crate::shortcuts::shown_in(tr(key));
+    format!("{}\n{}", title, tr(&format!("{key}_desc")))
 }
 
 /// The small arrow after a button that opens its list.
@@ -362,7 +369,7 @@ fn std_pic_button(
     let resp = resp.on_hover_ui(|ui| rich_tip(ui, tip));
     crate::ui::propbar::draw_pic(
         ui.painter(),
-        egui::Rect::from_center_size(rect.center(), Vec2::splat(STD_ICON + 2.0)),
+        egui::Rect::from_center_size(rect.center(), Vec2::splat(std_icon() + 2.0)),
         pic,
         if enabled {
             Tokens::icon()
@@ -738,7 +745,7 @@ fn tool_item(app: &mut App, ui: &mut Ui, t: Tool) {
     let resp = resp.on_hover_ui(|ui| rich_tip(ui, &t.name()));
     icons::draw(
         ui.painter(),
-        egui::Rect::from_center_size(rect.center(), Vec2::splat(STD_ICON)),
+        egui::Rect::from_center_size(rect.center(), Vec2::splat(std_icon())),
         t,
         Tokens::icon(),
     );
@@ -768,7 +775,7 @@ fn command_item(app: &mut App, ui: &mut Ui, key: &str) {
     if picture {
         crate::ui::menus::draw_menu_picture(
             ui.painter(),
-            egui::Rect::from_center_size(rect.center(), Vec2::splat(STD_ICON)),
+            egui::Rect::from_center_size(rect.center(), Vec2::splat(std_icon())),
             key,
             Tokens::icon(),
         );
@@ -867,36 +874,9 @@ fn snap_to_button(app: &mut App, ui: &mut Ui, bar: &str, doc: bool) {
 
 /// Launch: the other tools that come with the editor.
 fn launch_button(app: &mut App, ui: &mut Ui, bar: &str) {
-    // Launch: the other tools that come with the editor.
-    let (rect, launch) = ui.allocate_exact_size(Vec2::new(108.0, std_btn()), egui::Sense::click());
-    let launch = launch.rich_tip(crate::ui::tips::keyed("toolbar.launch"));
-    std_frame(ui, rect, launch.hovered(), false);
-    icons::draw_action(
-        ui.painter(),
-        egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 14.0, rect.center().y),
-            Vec2::splat(STD_ICON),
-        ),
-        icons::Action::Launch,
-        Tokens::icon(),
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 30.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        tr("toolbar.launch"),
-        egui::FontId::proportional(13.0),
-        Tokens::text(),
-    );
-    let c = egui::pos2(rect.right() - 9.0, rect.center().y);
-    ui.painter().add(egui::epaint::PathShape::convex_polygon(
-        vec![
-            c + Vec2::new(-4.0, -2.0),
-            c + Vec2::new(4.0, -2.0),
-            c + Vec2::new(0.0, 2.5),
-        ],
-        Tokens::text_dim(),
-        egui::Stroke::NONE,
-    ));
+    // Launch: the other tools that come with the editor. An icon with
+    // the list arrow, like Options; the name is in the tooltip.
+    let launch = std_list_button(ui, icons::Action::Launch, &tip("toolbar.launch"));
     egui::Popup::menu(&launch)
         .id(egui::Id::new(("launch_menu", bar)))
         .show(|ui| {
@@ -1082,6 +1062,99 @@ pub(crate) fn dim_labelled<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) 
     dim_labelled_as(ui, key, &format!("{key}_desc"), add)
 }
 
+/// The Brush Strokes tool's bar: the mode list (Preset, Brush, Sprayer,
+/// Calligraphic, Expression), the width, then the mode's own fields:
+/// the nib angle (Calligraphic), the stroke shape (Preset, Brush), the
+/// sprayed shape and spacing (Sprayer), the pressure (Expression). The
+/// bar held the calligraphic fields only, with no way to another mode
+/// (#1681).
+fn brush_strokes_bar(app: &mut App, ui: &mut Ui) {
+    use crate::media::MediaMode;
+    dim_labelled_as(ui, "toolbar.brush_mode", "toolbar.brush_mode_desc", |ui| {
+        egui::ComboBox::from_id_salt("brush_mode")
+            .selected_text(tr(app.media_mode.key()))
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                for m in MediaMode::ALL {
+                    ui.selectable_value(&mut app.media_mode, m, tr(m.key()))
+                        .rich_tip_with(|| {
+                            format!("{}\n{}", tr(m.key()), tr(&format!("{}_desc", m.key())))
+                        });
+                }
+            });
+    });
+    dim_labelled_as(ui, "toolbar.width", "docker.media_width_desc", |ui| {
+        ui.add(
+            crate::ui::field::NumField::new(&mut app.media_width)
+                .speed(0.1)
+                .range(0.2..=50.0)
+                .suffix(" mm"),
+        )
+    });
+    let shapes: &[&str] = match app.media_mode {
+        MediaMode::Preset | MediaMode::Brush => &crate::media::BRUSH_KEYS,
+        MediaMode::Sprayer => &crate::media::SPRAY_KEYS,
+        MediaMode::Calligraphic | MediaMode::Expression => &[],
+    };
+    if !shapes.is_empty() {
+        dim_labelled_as(
+            ui,
+            "toolbar.stroke_shape",
+            "toolbar.stroke_shape_desc",
+            |ui| {
+                let current = shapes
+                    .get(app.media_preset)
+                    .or(shapes.first())
+                    .map(|k| tr(k))
+                    .unwrap_or_default();
+                egui::ComboBox::from_id_salt("brush_shape")
+                    .selected_text(current)
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for (i, k) in shapes.iter().enumerate() {
+                            ui.selectable_value(&mut app.media_preset, i, tr(k))
+                                .rich_tip_with(|| {
+                                    format!("{}\n{}", tr(k), tr("docker.media_preset_desc"))
+                                });
+                        }
+                    });
+            },
+        );
+    }
+    match app.media_mode {
+        MediaMode::Calligraphic => {
+            dim_labelled_as(ui, "docker.nib_angle", "docker.nib_angle_desc", |ui| {
+                ui.add(
+                    crate::ui::field::NumField::new(&mut app.media_angle)
+                        .speed(1.0)
+                        .range(0.0..=180.0)
+                        .suffix("°"),
+                )
+            });
+        }
+        MediaMode::Sprayer => {
+            dim_labelled_as(ui, "docker.spacing", "docker.spray_spacing_desc", |ui| {
+                ui.add(
+                    crate::ui::field::NumField::new(&mut app.media_spacing)
+                        .speed(0.5)
+                        .range(1.0..=50.0)
+                        .suffix(" mm"),
+                )
+            });
+        }
+        MediaMode::Expression => {
+            dim_labelled_as(ui, "docker.pressure", "docker.pressure_desc", |ui| {
+                ui.add(
+                    crate::ui::field::NumField::new(&mut app.media_pressure)
+                        .speed(0.05)
+                        .range(0.0..=1.0),
+                )
+            });
+        }
+        MediaMode::Preset | MediaMode::Brush => {}
+    }
+}
+
 /// [`dim_labelled`] with the description kept under `desc_key`.
 pub(crate) fn dim_labelled_as<R>(
     ui: &mut Ui,
@@ -1198,6 +1271,20 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 object_properties(app, ui);
                 vsep(ui);
                 crate::ui::dimension_bar::dimension_bar(app, ui);
+            }
+            Tool::Pick | Tool::FreeformPick
+                if shapes.len() == 1
+                    && shapes
+                        .first()
+                        .is_some_and(|s| matches!(s.kind, ShapeKind::Table(_))) =>
+            {
+                // A table selected with the Pick tool: the object fields,
+                // then the Table tool's fields, so its rows, columns,
+                // fill and borders change without a change of tool
+                // (#1680).
+                object_properties(app, ui);
+                vsep(ui);
+                crate::ui::table_bar::table_bar(app, ui, false);
             }
             Tool::Pick | Tool::FreeformPick
                 if shapes
@@ -1392,31 +1479,9 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 }
             }
             Tool::CommonShapes => common_shapes_bar(app, ui),
-            Tool::Table => crate::ui::table_bar::table_bar(app, ui),
+            Tool::Table => crate::ui::table_bar::table_bar(app, ui, true),
             Tool::PainterlyBrush => crate::painterly_tool::painterly_bar(app, ui),
-            Tool::BrushStrokes => {
-                ui.label(
-                    egui::RichText::new(tr("media.calligraphic"))
-                        .color(Tokens::text_dim())
-                        .size(11.0),
-                );
-                dim_labelled_as(ui, "toolbar.width", "toolbar.media_width_desc", |ui| {
-                    ui.add(
-                        crate::ui::field::NumField::new(&mut app.media_width)
-                            .speed(0.1)
-                            .range(0.2..=50.0)
-                            .suffix(" mm"),
-                    )
-                });
-                dim_labelled(ui, "docker.nib_angle", |ui| {
-                    ui.add(
-                        crate::ui::field::NumField::new(&mut app.media_angle)
-                            .speed(1.0)
-                            .range(0.0..=180.0)
-                            .suffix("°"),
-                    )
-                });
-            }
+            Tool::BrushStrokes => brush_strokes_bar(app, ui),
             Tool::ParallelDimension
             | Tool::HorizontalVerticalDimension
             | Tool::SegmentDimension
@@ -2037,7 +2102,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
     if pic_button(
         ui,
         Pic::TextProperties,
-        &format!("{} (Ctrl+T)", tr("toolbar.text_properties")),
+        &crate::shortcuts::shown_in(format!("{} (Ctrl+T)", tr("toolbar.text_properties"))),
         true,
         docker_open,
     )
@@ -2048,7 +2113,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
     if pic_button(
         ui,
         Pic::EditText,
-        &format!("{} (Ctrl+Shift+T)", tr("menu.text.edit_text")),
+        &crate::shortcuts::shown_in(format!("{} (Ctrl+Shift+T)", tr("menu.text.edit_text"))),
         is_text,
         false,
     )
@@ -2785,7 +2850,10 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
         if pic_button(
             ui,
             Pic::ToCurves,
-            &format!("{} (Ctrl+Q)", tr("menu.object.convert_to_curves")),
+            &crate::shortcuts::shown_in(format!(
+                "{} (Ctrl+Q)",
+                tr("menu.object.convert_to_curves")
+            )),
             app.can_convert_to_curves(),
             false,
         )

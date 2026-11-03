@@ -68,9 +68,12 @@ OK opens a drawing with the given name, number of pages (each named
 for rasterised effects), primary colour mode and profiles, and switches
 the property bar's units to the chosen drawing units. New text in it is
 black in its primary colour mode (100 % K in CMYK, RGB black in RGB),
-and an outline turned on in Properties is black in that mode too, so a
-CMYK drawing's colour pickers start in CMYK; defaults the user set
-(Tools > Save as Defaults) stay as set. The dialog's values
+and so are the outline of new graphics and an outline turned on in
+Properties, so a CMYK drawing's colour pickers start in CMYK and an RGB
+drawing's in RGB. Only the untouched default black follows the mode:
+colours the user set and saved (Tools > Save as Defaults), a chosen
+black included, stay exactly as saved (see
+[object-styles.md](object-styles.md#default-properties)). The dialog's values
 are kept in the settings file (`new_document`) for the next time.
 
 ## Checks

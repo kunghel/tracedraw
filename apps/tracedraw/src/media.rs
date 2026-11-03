@@ -361,6 +361,61 @@ mod tests {
     use super::*;
     use tracedraw_core::geometry::Shape as _;
 
+    /// The texts the property bar draws.
+    fn bar_texts(app: &mut App) -> Vec<String> {
+        let ctx = crate::theme::ui_context();
+        let mut texts = Vec::new();
+        // Twice: the first frame only lays out the bar.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(6000.0, 60.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| crate::ui::toolbar::property_bar(app, ui),
+            );
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    /// The Brush Strokes property bar has the mode list the hint speaks
+    /// of, showing the mode in use, and the mode's own fields: the nib
+    /// angle for Calligraphic, the shape and spacing for Sprayer, the
+    /// shape for Preset. It held the calligraphic fields only (#1681).
+    #[test]
+    fn the_property_bar_lists_the_brush_modes() {
+        use crate::i18n::tr;
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::BrushStrokes;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr("toolbar.brush_mode")), "{texts:?}");
+        assert!(texts.contains(&tr("media.calligraphic")), "{texts:?}");
+        assert!(texts.contains(&tr("docker.nib_angle")), "{texts:?}");
+        app.media_mode = MediaMode::Sprayer;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr("media.sprayer")), "{texts:?}");
+        assert!(texts.contains(&tr(SPRAY_KEYS[0])), "{texts:?}");
+        assert!(texts.contains(&tr("docker.spacing")), "{texts:?}");
+        assert!(!texts.contains(&tr("docker.nib_angle")), "{texts:?}");
+        app.media_mode = MediaMode::Preset;
+        app.media_preset = 2;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr(BRUSH_KEYS[2])), "{texts:?}");
+        assert!(!texts.contains(&tr("docker.spacing")), "{texts:?}");
+    }
+
     /// A brush stroke stays the path drawn, open and editable, with the
     /// brush as its live outline (#829): its nodes are few curves, and it
     /// is drawn as wide as the brush.

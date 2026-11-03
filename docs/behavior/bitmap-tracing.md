@@ -208,21 +208,28 @@ can be undone.
    Split colours (#611): in flat art (the 8 commonest colours cover 85 %
    of the pixels) two colours of the palette nearer each other than 40
    (RGB distance) and than the sum of their spreads (the root mean
-   square distance of their pixels from them) are one colour split by
-   its noise, and join, at the mean of their pixels; two groups join only
-   while their means stay within 40, so the in-between colours along an
-   edge do not chain two colours into one. The steps of a gradient and
-   distinct colours however close (a 246 grey on white) lie further apart
-   than their spread and stay; photos are left as they are.
+   square distance of their pixels from them), or that near and
+   scattered through each other (they share at least 0.6 pixel edges
+   per pixel of the smaller), are one colour split by its noise, and
+   join, at the mean of their pixels; two groups join only while their
+   means stay within 40 and every colour of one lies within 40 of every
+   colour of the other, so a run of shades each near the next (a pink
+   cheek, the blends of its blurred edge, the yellow round it) does not
+   chain into one mean colour none of them had. The steps of a gradient
+   and distinct colours however close (a 246 grey on white) lie further
+   apart than their spread and stay; photos are left as they are.
    Near shades: below detail 95, two palette colours nearer than
    `10 + (100 - detail) / 2` (30 at the Clipart detail) join, nearest
-   first and while the means of their groups stay that near, when one is
-   solid (at least half its pixels flat) and the other not (the fringe
-   of a black), or when their pixels are scattered through each other
-   (they share at least 0.6 pixel edges per pixel of the smaller: a flat
-   colour's noise split in shades). Two solid colours, however close (a
-   246 grey logo on white), and the bands of a gradient stay. A group
-   keeps its solid member's colour; rounds repeat until nothing joins.
+   first, when one is solid (at least half its pixels flat) and the
+   other not (the fringe of a black), or when their pixels are scattered
+   through each other (they share at least 0.6 pixel edges per pixel of
+   the smaller: a flat colour's noise split in shades); once a group has
+   grown, another joins it only while the means of their pixels stay
+   that near, so a run of shades does not chain, while two lone colours
+   that near join whatever their pixels' means. Two solid colours,
+   however close (a 246 grey logo on white), and the bands of a gradient
+   stay. A group keeps its solid member's colour; rounds repeat until
+   nothing joins.
    Then each palette colour moves onto the commonest exact colour of its
    pixels when that is within 16, so a black traces as #000000 and the
    art keeps its own colours. Black and white is left out of both: its
@@ -232,26 +239,62 @@ can be undone.
    trace's own colours.
 2. Edges (#611, #1250, off at detail 95 and up, where the specks stay
    too): a pixel is flat when its 8 neighbours share its colour, and a
-   colour is a colour of its own when at least half its pixels are flat;
-   the others only line the edges (the fringes of a blurred or
-   compressed edge, a video frame, a scaled screenshot). A pixel that is
-   not flat, or is of such a fringe colour, with no flat pixel of its own
-   colour (of its own) within 4 px, looks at the flat pixels of colours
-   of their own within 4 px: when its colour lies between the two
-   nearest of them (within `max(12, 0.08 * distance)` of the RGB segment
-   joining them) it takes the one it is nearer along that segment, so
-   the edge runs where the art's anti-aliasing puts it; beside one flat
-   colour only, it takes it when within 48. Lines of their own colour
-   (text, a hairline on a fill) keep it.
+   colour is a colour of its own when at least half its pixels are flat
+   or it has a core somewhere (a flat pixel whose 8 neighbours are flat
+   too: a block of 5 by 5; a small feature such as the cheek of a face
+   a dozen pixels across has few flat pixels against its edge, but a
+   core); the others only line the edges (the fringes of a blurred or
+   compressed edge, a video frame, a scaled screenshot). A colour with
+   fewer than one pixel in 8 flat is a fringe colour (a band a pixel or
+   two wide however long; the bands of a photo's gradient, no colours
+   of their own either, are flat inside), and its pixels are fringe
+   pixels where they lie in a band between two colours of their own:
+   the pixels of the colours that are none, taken together whatever
+   their colours, in a 4-connected region touching two colours of their
+   own, the second along a tenth of the region's edge at least (the
+   glint in an eye, a few shades of white none of them a colour of its
+   own, touches the dark of the eye alone and is no fringe). A pixel
+   that is not flat, or is of a colour that is none of its own, with no
+   flat pixel of its own colour (of its own) within reach, looks at the
+   flat pixels of colours of their own within reach (4 px; 8 px for a
+   fringe pixel, since the fringes of a compressed edge come in several
+   shades, bands side by side, and from the inner band the colour across
+   the outer one lies further): of every pair of them it takes the pair whose RGB
+   segment its colour is nearest, when it lies between them (within
+   `max(12, 0.08 * distance)` of the segment; not the two colours
+   nearest it, as a grey of a black edge on white lies nearer a pale blue
+   beside them than black), and goes to the one it is nearer along that
+   segment, so the edge runs where the art's anti-aliasing puts it;
+   else it takes the nearest colour when within 48. A fringe pixel
+   whose own colour lies off every segment (the blends of a compressed
+   edge drift in colour, which is stored coarser than brightness, and
+   overshoot the colours either side) is placed by its palette colour
+   instead, between a pair with twice the slack, or a compressed blend
+   of the pair (its brightness, and each of its two colour differences
+   against the brightness, between theirs within the slack: along an
+   edge of black and yellow the pixels run from black to a pale,
+   greyish yellow, which lies off the segment yet between the two in
+   brightness and colour taken apart), or joins the colour of its own
+   within 64 of its palette colour, going to the side its own colour is
+   nearer. Lines of their own colour (text, a hairline on a fill) keep
+   it: they lie far from every colour around them and off every
+   segment.
    Fringe bands (#1250): a 4-connected patch at most 5 px thick (twice
    its area over its edge count), of a colour between the two colours
    it touches most (at least 64 apart, the second on a tenth of its
-   edges or more), both solid where they touch it (at least half their
+   edges or more; between with twice the slack above, a compressed
+   blend of the two as above, or within 64 of one of the two, as the
+   overshooting band of a compressed edge is),
+   both solid where they touch it (at least half their
    pixels there flat or beside a flat pixel of their colour), is the
    soft edge of the two: each of its pixels takes the one its own colour
    is nearer along the segment joining them. The pieces of a thin letter
    in two shades stay, the other shade being no solid area.
-   Specks: every 4-connected patch of one colour smaller than
+   Specks: first the colours with fewer pixels in all than the speck
+   size below join each other when within 80 (a glint blurred into a
+   white and two greys, a pixel or two of each, is one speck of nine
+   pixels, not nine specks of one pixel passing their pixels around);
+   then every 4-connected patch of one colour smaller than
    `round(((100 - detail) / 10)^2)` pixels (none at detail 100, 4 at 80,
    16 at 60, 42 at 35) takes the colour of a neighbour, so stray dots and
    the fringes of soft edges make no curves of their own: the neighbour
@@ -259,9 +302,12 @@ can be undone.
    colour lies between two neighbours at least 64 apart (the anti-aliased
    part of a thin dark stroke on a light fill), the one it is nearer;
    else, when its colour is at least 64 from every neighbour's, it has
-   at least a quarter of the speck size (2 pixels at least) and spans
-   two pixels both ways, it is a dot of the art (a halftone dot, the end
-   of a hatch line) and stays; else the one most of its neighbours have.
+   at least a quarter of the speck size (2 pixels at least; 4 pixels are
+   enough when it stands at least 160 from every neighbour, the glint in
+   a dark eye, which noise never does once the picture is quietened) and
+   spans two pixels both ways, it is a dot of the art (a halftone dot,
+   the end of a hatch line) and stays; else the one most of its
+   neighbours have.
    Patches joined into others are looked at again (up to 4 passes), so a
    letter split into several dark shades stays a letter. Transparent
    pixels are left alone.

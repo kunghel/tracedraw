@@ -1620,6 +1620,51 @@ fn version_16_and_later_files_are_a_complete_package() {
         .any(|n| n.expect("name").starts_with("previews/")));
 }
 
+/// Files measure a fountain fill's angle from its object's x axis
+/// (#1257): a turned object's fill is written turned back by the object's
+/// turn and reads back at the angle it has on the page.
+#[test]
+fn fills_of_turned_objects_keep_their_angle_on_the_page() {
+    use tracedraw_core::{Fountain, FountainKind};
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut shapes = Vec::new();
+    for (turn, angle) in [(90.0f64, 59.5), (0.0, -30.5), (180.0, 10.0), (-30.0, 120.0)] {
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(-20.0, -10.0, 20.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.transform = Affine::translate((100.0, 50.0)) * Affine::rotate(turn.to_radians());
+        s.fill = Fill::Fountain(Fountain::two(
+            FountainKind::Linear,
+            Color::rgb8(0, 128, 0),
+            Color::WHITE,
+            angle,
+        ));
+        s.stroke = None;
+        shapes.push(s);
+    }
+    doc.pages[0].layers[0].shapes = shapes;
+    doc.set_ids(ids);
+    let want = [59.5, -30.5, 10.0, 120.0];
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let shapes = &back.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 4, "{v}: {:?}", rep.warnings);
+        for (s, want) in shapes.iter().zip(want) {
+            let Fill::Fountain(f) = &s.fill else {
+                panic!("{v}: {:?}", s.fill);
+            };
+            assert!((f.angle - want).abs() < 1e-4, "{v}: {} for {want}", f.angle);
+        }
+    }
+}
+
 #[test]
 fn centred_gradients_are_written_from_their_edge_and_read_back() {
     use tracedraw_core::{Fountain, FountainKind, Stop};

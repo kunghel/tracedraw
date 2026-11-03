@@ -18,8 +18,8 @@ use tracedraw_core::{
 /// Two fields stacked: 19 px each, sharing their middle border.
 pub const BAR_H: f32 = 37.0;
 const ROW: f32 = 19.0;
-/// Icon buttons are 28 px square with an 18 px icon.
-/// A property bar button's side: 28 px at the medium button size.
+/// A property bar button's side: 28 px at the medium button size, with
+/// a [`Tokens::prop_icon`] icon.
 fn btn() -> f32 {
     crate::theme::Tokens::prop_button()
 }
@@ -1255,13 +1255,46 @@ pub fn pic_button(ui: &mut Ui, pic: Pic, tip: &str, enabled: bool, pressed: bool
     frame(ui, rect, enabled && resp.hovered(), pressed);
     draw_pic(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        Rect::from_center_size(rect.center(), Vec2::splat(Tokens::prop_icon())),
         pic,
         if enabled {
             Tokens::icon()
         } else {
             Tokens::border()
         },
+    );
+    resp.rich_tip(tip)
+}
+
+/// An icon button of the bar showing a tool's own icon (the toolbox's),
+/// for a button that picks that tool; `pressed` draws it pushed in
+/// (#1485).
+pub fn tool_button(
+    ui: &mut Ui,
+    tool: crate::tools::Tool,
+    tip: &str,
+    enabled: bool,
+    pressed: bool,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::splat(btn()),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    frame(ui, rect, enabled && resp.hovered(), pressed);
+    let color = if enabled {
+        crate::ui::icons::tool_color(tool, Tokens::icon())
+    } else {
+        Tokens::border()
+    };
+    crate::ui::icons::draw(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(Tokens::prop_icon())),
+        tool,
+        color,
     );
     resp.rich_tip(tip)
 }
@@ -2791,14 +2824,19 @@ impl CornerEdit {
 }
 
 /// Apply a corner edit to the selected rectangles, or to the defaults for
-/// new ones when none is selected.
+/// new ones when none is selected. A size is for the corner seen at that
+/// position on the page: on a rectangle turned by 180 degrees, flipped
+/// or stretched across its own side, the top left field edits the corner
+/// that lies at the top left (#1670).
 pub fn edit_corners(app: &mut App, edit: CornerEdit) {
     let together = app.corners_together;
     let cmds: Vec<Command> = app
         .selected_rc()
         .iter()
         .filter_map(|s| {
-            let kind = s.with_page_corners(edit.apply(s.page_corners()?, together))?;
+            let t = app.seen_transform(s);
+            let seen = edit.apply(s.page_corners()?.as_seen(t), together);
+            let kind = s.with_page_corners(Corners::from_seen(seen, t))?;
             (kind != s.kind).then_some(Command::SetShapeKind { shape: s.id, kind })
         })
         .collect();
@@ -2824,13 +2862,14 @@ pub fn edit_corners(app: &mut App, edit: CornerEdit) {
 }
 
 /// Rectangle corners: the corner style, the four sizes (top left over
-/// bottom left, then top right over bottom right) with the lock that edits
-/// them together, and relative corner scaling.
+/// bottom left, then top right over bottom right, each the corner seen at
+/// that position on the page) with the lock that edits them together, and
+/// relative corner scaling.
 pub fn rectangle_part(app: &mut App, ui: &mut Ui) {
     let current = app
         .selected_rc()
         .iter()
-        .find_map(|s| s.page_corners())
+        .find_map(|s| app.corners_as_seen(s))
         .unwrap_or(app.rect_corners);
     // Values that differ across the selected rectangles show as mixed.
     let mix = app.selection_corner_mix().map_or([false; 6], |(_, m)| m);
@@ -3916,6 +3955,74 @@ mod tests {
         app.undo();
         let s = app.selected_rc()[0].clone();
         assert!(!s.page_corners().unwrap().fixed);
+    }
+
+    /// The corner fields are the corners as they lie on the page: on a
+    /// rectangle turned by 180 degrees or flipped, the top left field
+    /// shows and edits the corner seen at the top left (#1670).
+    #[test]
+    fn corner_fields_edit_the_corner_seen_at_their_position() {
+        use std::f64::consts::PI;
+        use tracedraw_core::geometry::Shape as _;
+        let mut app = App::headless();
+        app.corners_together = false;
+        let id = app
+            .new_shape(ShapeKind::rect_with_corners(
+                R::new(0.0, 0.0, 40.0, 20.0),
+                Corners::tool_default(),
+            ))
+            .expect("a rectangle");
+        app.select(vec![id]);
+        // Turned by 180 degrees about the origin: the page top left (-40,
+        // 0) is the rectangle's own bottom right.
+        app.transform_selection(Affine::rotate(PI));
+        edit_corners(&mut app, CornerEdit::Size(Corners::TOP_LEFT, 5.0));
+        let s = app.selected_rc()[0].clone();
+        assert_eq!(s.page_corners().unwrap().radii, [0.0, 0.0, 0.0, 5.0]);
+        assert_eq!(app.corners_as_seen(&s).unwrap().radii, [5.0, 0.0, 0.0, 0.0]);
+        let (_, mix) = app.selection_corner_mix().unwrap();
+        assert_eq!(mix, [false; 6]);
+        let path = s.page_path();
+        let b = path.bounding_box();
+        assert!((b.x0 + 40.0).abs() < 1e-9 && b.y1.abs() < 1e-9, "{b:?}");
+        // The cut is at the top left of the page, the other corners whole.
+        assert!(!path.contains(Point::new(-39.5, -0.5)));
+        for p in [(-0.5, -0.5), (-39.5, -19.5), (-0.5, -19.5)] {
+            assert!(path.contains(Point::new(p.0, p.1)), "{p:?}");
+        }
+        // Flipped across as well: top left on the page is now the
+        // rectangle's own bottom left.
+        app.transform_selection(Affine::scale_non_uniform(-1.0, 1.0));
+        edit_corners(&mut app, CornerEdit::Size(Corners::TOP_LEFT, 3.0));
+        let s = app.selected_rc()[0].clone();
+        assert_eq!(s.page_corners().unwrap().radii, [0.0, 0.0, 3.0, 5.0]);
+        assert_eq!(app.corners_as_seen(&s).unwrap().radii, [3.0, 5.0, 0.0, 0.0]);
+        let path = s.page_path();
+        let b = path.bounding_box();
+        assert!(!path.contains(Point::new(b.x0 + 0.5, b.y1 - 0.5)));
+        assert!(!path.contains(Point::new(b.x1 - 0.5, b.y1 - 0.5)));
+        assert!(path.contains(Point::new(b.x0 + 0.5, b.y0 + 0.5)));
+        // Two rectangles whose top left corners, as seen, are the same
+        // size are not mixed, whatever their own order.
+        let other = app
+            .new_shape(ShapeKind::rect_with_corners(
+                R::new(50.0, 0.0, 90.0, 20.0),
+                Corners {
+                    radii: [3.0, 5.0, 0.0, 0.0],
+                    ..Corners::tool_default()
+                },
+            ))
+            .expect("a rectangle");
+        app.select(vec![id, other]);
+        let (shown, mix) = app.selection_corner_mix().unwrap();
+        assert_eq!(shown.radii, [3.0, 5.0, 0.0, 0.0]);
+        assert_eq!(mix, [false; 6]);
+        // The lock sets every corner, wherever it lies.
+        app.corners_together = true;
+        edit_corners(&mut app, CornerEdit::Size(Corners::BOTTOM_RIGHT, 2.0));
+        for s in app.selected_rc().iter() {
+            assert_eq!(s.page_corners().unwrap().radii, [2.0; 4]);
+        }
     }
 
     #[test]

@@ -294,7 +294,7 @@ fn tone_curve_part(
     hist: Option<&[u32; 256]>,
     image: Option<&image::RgbaImage>,
     picked: Option<image::Rgba<u8>>,
-    status: &mut String,
+    app: &mut App,
 ) {
     use crate::bitmap_modes::ToneCurve;
     use crate::fx::adjust::{
@@ -538,16 +538,13 @@ fn tone_curve_part(
                     ))
                     .clicked()
                 {
-                    if let Some(path) = crate::files::Dialog::new()
-                        .add_filter(tr("dialog.tone_curve_preset"), &["json"])
-                        .set_file_name("tone curve.json")
-                        .save_path()
-                    {
-                        if let Ok(json) = serde_json::to_string_pretty(&*params) {
-                            if let Err(e) = crate::files::write(&path, json) {
-                                *status = e.to_string();
-                            }
-                        }
+                    // The save dialog, a download, or the system's save
+                    // picker on Android (#1402).
+                    if let Ok(json) = serde_json::to_string_pretty(&*params) {
+                        crate::files::Dialog::new()
+                            .add_filter(tr("dialog.tone_curve_preset"), &["json"])
+                            .set_file_name("tone curve.json")
+                            .save_bytes(app, json);
                     }
                 }
             });
@@ -954,14 +951,7 @@ fn effect_settings(
         let thumb = preview.map(|p| p.img);
         if spec.id == "tone_curve" {
             let hist = thumb.as_ref().map(|t| histogram(t));
-            tone_curve_part(
-                ui,
-                st,
-                hist.as_ref(),
-                thumb.as_deref(),
-                node_pick,
-                &mut app.status,
-            );
+            tone_curve_part(ui, st, hist.as_ref(), thumb.as_deref(), node_pick, app);
         } else if spec.params.is_empty() {
             ui.label(tr("dialog.no_settings"));
         } else {

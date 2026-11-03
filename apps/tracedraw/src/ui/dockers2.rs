@@ -370,7 +370,10 @@ fn default_properties(app: &mut App, ui: &mut Ui) {
                     .rich_tip(tr("defaults.reset_hint"))
                     .clicked()
                 {
-                    let fresh = ObjectDefaults::default().get(kind).clone();
+                    // The defaults of the drawing's mode, their black
+                    // following the colour mode again.
+                    let mode = app.doc().metadata.primary_color_mode;
+                    let fresh = ObjectDefaults::for_mode(mode).get(kind).clone();
                     app.set_default_properties(kind, |p| *p = fresh);
                 }
                 let from = ui
@@ -382,9 +385,13 @@ fn default_properties(app: &mut App, ui: &mut Ui) {
                 if from.clicked() {
                     if let Some(s) = &first {
                         let (fill, stroke) = (s.fill.clone(), s.stroke.clone());
+                        // Colours taken from an object are the user's
+                        // own, even a black.
                         app.set_default_properties(kind, |p| {
                             p.fill = fill;
                             p.stroke = stroke;
+                            p.choose_fill(kind);
+                            p.choose_outline(kind);
                         });
                     }
                 }
@@ -940,13 +947,13 @@ fn scripts(app: &mut App, ui: &mut Ui) {
             ))
             .clicked()
         {
-            if let Some(p) = crate::files::Dialog::new()
+            // The save dialog, a download, or the system's save picker on
+            // Android (#1402).
+            let source = app.script_source.clone();
+            crate::files::Dialog::new()
                 .add_filter(lang, &[ext])
                 .set_file_name(format!("macro.{ext}"))
-                .save_path()
-            {
-                let _ = crate::files::write(p, &app.script_source);
-            }
+                .save_bytes(app, source);
         }
         if ui
             .button(tr("docker.clear"))
@@ -1158,106 +1165,7 @@ fn script_editor(app: &mut App, ui: &mut Ui) {
 }
 
 fn palettes(app: &mut App, ui: &mut Ui) {
-    let n = app.palettes.len();
-    for i in 0..n {
-        let name = app.palettes[i].display_name();
-        let count = app.palettes[i].colors.len();
-        let on = app.visible_palettes.contains(&i);
-        let locked = app.palette_locked(i);
-        let builtin = app.palettes[i].builtin;
-        ui.horizontal(|ui| {
-            let mut v = on;
-            if ui
-                .checkbox(&mut v, format!("{name} ({count})"))
-                .rich_tip_with(|| format!("{name}\n{}", tr("docker.palette_show_desc")))
-                .changed()
-            {
-                app.toggle_palette(i);
-            }
-            if ui
-                .small_button(tr("docker.edit"))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.edit",
-                    "docker.palette_edit_desc",
-                ))
-                .clicked()
-            {
-                app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(
-                    crate::ui::dialogs::PaletteEditorState {
-                        palette: i,
-                        ..Default::default()
-                    },
-                );
-            }
-            // The padlock: a locked palette is not changed by the Palette
-            // Editor (built-in palettes never are) (#1343).
-            if !builtin {
-                let key = if locked {
-                    "docker.palette_unlock"
-                } else {
-                    "docker.palette_lock"
-                };
-                if ui
-                    .add(egui::Button::selectable(locked, tr(key)).small())
-                    .rich_tip(crate::ui::tips::pair(key, "docker.palette_lock_desc"))
-                    .clicked()
-                {
-                    app.toggle_palette_lock(i);
-                }
-            }
-        });
-    }
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button(tr("menu.window.palette_open"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_open"))
-            .clicked()
-        {
-            app.open_palette_file();
-        }
-        if ui
-            .button(tr("menu.window.palette_from_document"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_from_document"))
-            .clicked()
-        {
-            app.palette_from_document();
-        }
-        if ui
-            .button(tr("menu.window.palette_from_selection"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_from_selection"))
-            .clicked()
-        {
-            app.palette_from_selection();
-        }
-    });
-    let dp = app.doc().palette.clone();
-    ui.label(trf(
-        "docker.document_palette_n",
-        &[("n", &dp.len().to_string())],
-    ));
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-        for c in dp {
-            let [r, g, b] = c.to_rgb8();
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-            let resp = resp.rich_tip_with(|| {
-                format!(
-                    "{}\n{}",
-                    crate::app::color_description(c),
-                    tr("docker.palette_chip_desc")
-                )
-            });
-            ui.painter()
-                .rect_filled(rect, 1.0, egui::Color32::from_rgb(r, g, b));
-            if resp.clicked() {
-                app.apply_fill(Fill::Solid(c));
-            }
-            if resp.secondary_clicked() {
-                app.apply_outline_color(Some(c));
-            }
-        }
-    });
+    crate::ui::palette_manager::show(app, ui);
 }
 
 fn current_effect<F: Fn(&Effect) -> bool>(app: &App, f: F) -> Option<Effect> {
@@ -2234,16 +2142,13 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         })
         .clicked()
         {
+            // The save dialog, a download, or the system's save picker on
+            // Android (#1402).
             let text = app.mask.to_text();
-            if let Some(path) = crate::files::Dialog::new()
+            crate::files::Dialog::new()
                 .add_filter(tr("docker.mask_file"), &["msk"])
                 .set_file_name("mask.msk".to_string())
-                .save_path()
-            {
-                if let Err(e) = crate::files::write(&path, text) {
-                    app.status = e.to_string();
-                }
-            }
+                .save_bytes(app, text);
         }
         if icon_btn(ui, true, &tr("docker.mask_open"), |p, r, c| {
             crate::ui::icons::draw_action(p, r, crate::ui::icons::Action::Open, c)

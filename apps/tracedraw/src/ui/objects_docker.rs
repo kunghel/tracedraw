@@ -124,7 +124,7 @@ pub fn object_label(s: &Shape) -> String {
 }
 
 /// An eye, open when `on`, else closed (a lid line), centred in `r`.
-fn paint_eye(ui: &Ui, r: Rect, on: bool) {
+pub(crate) fn paint_eye(ui: &Ui, r: Rect, on: bool) {
     let p = ui.painter();
     let c = r.center();
     let color = if on {
@@ -200,7 +200,7 @@ fn paint_lock(ui: &Ui, r: Rect, locked: bool) {
 }
 
 /// A padlock in `color`, shut when `locked`, else open.
-fn paint_padlock(p: &Painter, r: Rect, locked: bool, color: Color32) {
+pub(crate) fn paint_padlock(p: &Painter, r: Rect, locked: bool, color: Color32) {
     let c = r.center();
     let body = Rect::from_center_size(c + Vec2::new(0.0, 2.0), Vec2::new(9.0, 7.0));
     p.rect_filled(body, 1.0, color);
@@ -471,46 +471,22 @@ pub fn objects_docker(app: &mut App, ui: &mut Ui) {
             ui.set_width(ui.available_width());
             objects(app, ui);
         });
-    // Ctrl+wheel over the list makes the thumbnails larger or smaller.
-    if ui.rect_contains_pointer(out.inner_rect) {
-        let notch = wheel_notches(ui, true);
-        zoom_thumbs(app, notch);
+    // Ctrl+wheel over the list makes the thumbnails larger or smaller, a
+    // step a notch on the desktop and in the browser alike (#1406).
+    if let Some(steps) =
+        crate::ui::bars::ctrl_wheel_steps(ui, out.inner_rect, egui::Id::new("objects_thumb_wheel"))
+    {
+        zoom_thumbs(app, steps);
     }
     bottom_bar(app, ui);
 }
 
-/// Wheel notches this frame (up is positive), only those with Ctrl (or
-/// Cmd) held when `ctrl`, else all of them.
-fn wheel_notches(ui: &Ui, ctrl: bool) -> f32 {
-    ui.input(|i| {
-        i.events
-            .iter()
-            .map(|e| match e {
-                egui::Event::MouseWheel {
-                    unit,
-                    delta,
-                    modifiers,
-                    ..
-                } if !ctrl || modifiers.command || modifiers.ctrl => {
-                    let d = delta.y + delta.x;
-                    match unit {
-                        egui::MouseWheelUnit::Line => d,
-                        egui::MouseWheelUnit::Point => d / 50.0,
-                        egui::MouseWheelUnit::Page => d * 10.0,
-                    }
-                }
-                _ => 0.0,
-            })
-            .sum()
-    })
-}
-
-/// The thumbnails `notch` wheel notches larger (smaller when negative).
-fn zoom_thumbs(app: &mut App, notch: f32) {
-    if notch.abs() < 0.5 {
+/// The thumbnails `steps` steps larger (smaller when negative).
+fn zoom_thumbs(app: &mut App, steps: i32) {
+    if steps == 0 {
         return;
     }
-    let steps = notch.round().clamp(-4.0, 4.0);
+    let steps = steps.clamp(-4, 4) as f32;
     app.settings.object_thumb_size = crate::object_thumbs::clamp_size(
         app.settings.object_thumb_size + steps * crate::object_thumbs::STEP,
     );
@@ -1308,8 +1284,9 @@ fn thumb_size_control(app: &mut App, ui: &mut Ui, r: Rect) {
     );
     app.settings.object_thumb_size = clamp_size(size);
     if ui.rect_contains_pointer(r) {
-        let notch = wheel_notches(ui, false);
-        zoom_thumbs(app, notch);
+        if let Some(steps) = crate::ui::field::wheel_steps(ui, egui::Id::new("objects_bar_wheel")) {
+            zoom_thumbs(app, steps);
+        }
     }
 }
 
@@ -1930,12 +1907,14 @@ mod tests {
             wheel(Pos2::new(200.0, 60.0), 1.0, egui::Modifiers::NONE),
         );
         assert_eq!(app.settings.object_thumb_size, DEFAULT_SIZE);
-        frame(
-            &ctx,
-            &mut app,
-            400.0,
-            wheel(Pos2::new(200.0, 60.0), 2.0, egui::Modifiers::CTRL),
-        );
+        for _ in 0..2 {
+            frame(
+                &ctx,
+                &mut app,
+                400.0,
+                wheel(Pos2::new(200.0, 60.0), 1.0, egui::Modifiers::CTRL),
+            );
+        }
         assert_eq!(app.settings.object_thumb_size, DEFAULT_SIZE + 2.0 * STEP);
         // (Responses are read a frame late.)
         frame(&ctx, &mut app, 400.0, Vec::new());
@@ -1952,15 +1931,68 @@ mod tests {
         );
         assert_eq!(app.settings.object_thumb_size, DEFAULT_SIZE + STEP);
         // Never past the largest size.
-        for _ in 0..10 {
+        for _ in 0..30 {
             frame(
                 &ctx,
                 &mut app,
                 400.0,
-                wheel(Pos2::new(200.0, 60.0), 4.0, egui::Modifiers::CTRL),
+                wheel(Pos2::new(200.0, 60.0), 1.0, egui::Modifiers::CTRL),
             );
         }
         assert_eq!(app.settings.object_thumb_size, MAX_SIZE);
+    }
+
+    /// In the browser a wheel notch comes as three lines (Firefox) or as
+    /// 100 pixels (Chromium): Ctrl+wheel over the list and the wheel over
+    /// the bar's slider still change the thumbnail size by one step a
+    /// notch, as on the desktop; they took three or two (#1406). Half a
+    /// browser notch from a touchpad adds up to a step with the next half.
+    #[test]
+    fn a_browser_wheel_notch_steps_the_thumbnail_size_once() {
+        use crate::object_thumbs::{DEFAULT_SIZE, STEP};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.new_shape(rect_kind()).expect("shape");
+        app.selection.clear();
+        frame(&ctx, &mut app, 400.0, Vec::new());
+        let turn = |at: Pos2, unit, dy: f32, modifiers| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit,
+                    delta: Vec2::new(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                },
+            ]
+        };
+        let list = Pos2::new(200.0, 60.0);
+        let bar = Pos2::new(200.0, 385.0);
+        let ctrl = egui::Modifiers::CTRL;
+        let none = egui::Modifiers::NONE;
+        use egui::MouseWheelUnit::{Line, Point};
+        crate::ui::field::set_web_wheel(true);
+        let mut size = DEFAULT_SIZE;
+        for (at, unit, dy, mods, step) in [
+            (list, Line, 3.0, ctrl, 1.0),
+            (list, Point, 100.0, ctrl, 1.0),
+            (list, Line, -3.0, ctrl, -1.0),
+            (bar, Point, -100.0, none, -1.0),
+            (bar, Line, 3.0, none, 1.0),
+            (list, Point, 50.0, ctrl, 0.0),
+            (list, Point, 50.0, ctrl, 1.0),
+        ] {
+            frame(&ctx, &mut app, 400.0, turn(at, unit, dy, mods));
+            size += step * STEP;
+            assert_eq!(app.settings.object_thumb_size, size, "{unit:?} {dy}");
+        }
+        // The desktop's notch, one line or 50 points, is one step as before.
+        crate::ui::field::set_web_wheel(false);
+        for (unit, dy) in [(Line, -1.0), (Point, -50.0)] {
+            frame(&ctx, &mut app, 400.0, turn(list, unit, dy, ctrl));
+            size -= STEP;
+            assert_eq!(app.settings.object_thumb_size, size, "{unit:?} {dy}");
+        }
     }
 
     /// A drawing of thousands of objects: only the rows in sight get

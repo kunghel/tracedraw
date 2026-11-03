@@ -842,56 +842,80 @@ impl FontManagerState {
     }
 }
 
+/// Add the picked font files: kept for the next start on every
+/// platform, a copy of a document the Android picker returned, the bytes
+/// in the browser's storage (#1400). The status line counts the faces
+/// added, or tells the first failure.
+fn add_picked_fonts(app: &mut App, paths: &[PathBuf]) {
+    let dir = kept_fonts_dir();
+    let mut faces = 0;
+    let mut failed = None;
+    for path in paths {
+        match add_font_in(
+            tracedraw_text::fonts(),
+            &mut app.settings.font_manager,
+            path,
+            keep_for(path, crate::files::WEB),
+            dir.as_deref(),
+            |p| crate::files::read(p),
+        ) {
+            Ok(added) => faces += added.len(),
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
+    }
+    app.font_families = tracedraw_text::fonts().available_families();
+    app.status = match failed {
+        Some(e) if faces == 0 => trf("font_manager.add_failed", &[("e", &e)]),
+        _ => trf("font_manager.installed_n", &[("n", &faces.to_string())]),
+    };
+    app.save_settings();
+}
+
+/// The Add Folder buttons work: they pick a folder or the font files.
+fn folder_enabled(folder: crate::files::FolderUse) -> bool {
+    !matches!(folder.action(), crate::files::FolderAction::Unavailable(_))
+}
+
 /// Carry out an action.
 fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
     let fonts = tracedraw_text::fonts();
     let prefs = &mut app.settings.font_manager;
     match a {
-        Action::AddFolder => {
-            if let Some(dir) = crate::files::pick_folder() {
-                if !prefs.folders.contains(&dir) {
-                    prefs.folders.push(dir.clone());
+        Action::AddFolder => match crate::files::FolderUse::FontFolder.action() {
+            crate::files::FolderAction::PickFolder(token) => {
+                if let Some(dir) = crate::files::pick_folder(token) {
+                    if !prefs.folders.contains(&dir) {
+                        prefs.folders.push(dir.clone());
+                    }
+                    fonts.set_font_roots(&prefs.folders);
+                    // Its fonts are usable at once, without Install (#866).
+                    let files = catalog::font_files(&dir);
+                    let added = fonts.install_paths(&files);
+                    log::info!("fonts of {}: {}", dir.display(), added.join(", "));
+                    st.note = Some(trf(
+                        "font_manager.installed_n",
+                        &[("n", &files.len().to_string())],
+                    ));
+                    app.font_families = fonts.available_families();
+                    st.library = Library::Folder(dir);
+                    app.save_settings();
                 }
-                fonts.set_font_roots(&prefs.folders);
-                // Its fonts are usable at once, without Install (#866).
-                let files = catalog::font_files(&dir);
-                let added = fonts.install_paths(&files);
-                log::info!("fonts of {}: {}", dir.display(), added.join(", "));
-                st.note = Some(trf(
-                    "font_manager.installed_n",
-                    &[("n", &files.len().to_string())],
-                ));
-                app.font_families = fonts.available_families();
-                st.library = Library::Folder(dir);
-                app.save_settings();
             }
-        }
+            // No folder can be read: the fonts it would hold are picked,
+            // several at once, and added as Add Font adds one (#1399).
+            crate::files::FolderAction::OpenFiles => {
+                crate::files::Dialog::new()
+                    .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
+                    .pick_files(app, |app, paths| add_picked_fonts(app, &paths));
+            }
+            crate::files::FolderAction::SaveZip | crate::files::FolderAction::Unavailable(_) => {}
+        },
         Action::AddFont => {
             crate::files::Dialog::new()
                 .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
-                .pick_file(app, |app, path| {
-                    // Kept for the next start on every platform: a copy of
-                    // a document the Android picker returned, the bytes in
-                    // the browser's storage (#1400).
-                    let dir = kept_fonts_dir();
-                    let added = add_font_in(
-                        tracedraw_text::fonts(),
-                        &mut app.settings.font_manager,
-                        &path,
-                        keep_for(&path, crate::files::WEB),
-                        dir.as_deref(),
-                        |p| crate::files::read(p),
-                    );
-                    app.font_families = tracedraw_text::fonts().available_families();
-                    app.status = match added {
-                        Ok(added) => trf(
-                            "font_manager.installed_n",
-                            &[("n", &added.len().to_string())],
-                        ),
-                        Err(e) => trf("font_manager.add_failed", &[("e", &e)]),
-                    };
-                    app.save_settings();
-                });
+                .pick_file(app, |app, path| add_picked_fonts(app, &[path]));
         }
         Action::Install(faces) => {
             let paths: Vec<PathBuf> = faces
@@ -1009,13 +1033,15 @@ fn menu_row(
     let any = !selected.is_empty();
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(tr("font_manager.menu_file"), |ui| {
-            if ui
-                .add_enabled(
-                    !crate::files::WEB && !crate::files::ANDROID,
-                    egui::Button::new(tr("font_manager.add_folder")),
-                )
-                .clicked()
-            {
+            let folder = crate::files::FolderUse::FontFolder;
+            let mut add = ui.add_enabled(
+                folder_enabled(folder),
+                egui::Button::new(tr("font_manager.add_folder")),
+            );
+            if let Some(tip) = folder.tip() {
+                add = add.rich_tip_always(tr(tip));
+            }
+            if add.clicked() {
                 actions.push(Action::AddFolder);
                 ui.close();
             }
@@ -1336,15 +1362,12 @@ fn toolbar(
     let any = !selected.is_empty();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if icon_button(
-            ui,
-            Icon::AddFolder,
-            &tr("font_manager.add_folder"),
-            !crate::files::WEB && !crate::files::ANDROID,
-            false,
-        )
-        .clicked()
-        {
+        let folder = crate::files::FolderUse::FontFolder;
+        let tip = match folder.tip() {
+            Some(why) => format!("{}\n{}", tr("font_manager.add_folder"), tr(why)),
+            None => tr("font_manager.add_folder"),
+        };
+        if icon_button(ui, Icon::AddFolder, &tip, folder_enabled(folder), false).clicked() {
             actions.push(Action::AddFolder);
         }
         if icon_button(ui, Icon::AddFont, &tr("font_manager.add_font"), true, false).clicked() {

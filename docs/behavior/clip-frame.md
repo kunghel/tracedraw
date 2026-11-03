@@ -81,6 +81,11 @@ frame is edited node by node, and the clip frame stays one
   `knife::tests::a_clip_frame_is_cut_through_its_frame`). The pieces
   come out selected; one undo step. A cropped picture (a clip frame
   holding one bitmap) is cut as a picture, see `crop-knife-eraser.md`.
+- The Eraser erases a clip frame through its frame (#1672): the frame
+  loses the band, keeping its fill, outline and id, and the contents
+  stay inside, clipped by what is left, so they are gone along the
+  band; a frame erased away deletes the clip frame. One undo step
+  (`shape_tool::eraser_tests::a_clip_frame_is_erased_through_its_frame`).
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame

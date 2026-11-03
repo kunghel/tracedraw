@@ -43,6 +43,8 @@ pub struct FontSystem {
     /// each added.
     carried: RwLock<Vec<(Vec<String>, DocumentFont)>>,
     cache: Mutex<HashMap<String, CachedOutline>>,
+    /// Texts shaped lately, by [`FontSystem::shaping_key`].
+    shaped: Mutex<HashMap<String, Arc<Shaped>>>,
     /// Families the application can fetch when text asks for them (the
     /// browser build's font folder), sorted; see
     /// [`FontSystem::offer_families`].
@@ -1290,6 +1292,30 @@ fn script_fonts(c: char) -> &'static [&'static str] {
     }
 }
 
+/// How many texts' shaped glyphs [`FontSystem::shaped`] keeps.
+const SHAPED_KEPT: usize = 64;
+
+/// How many glyphs [`FontSystem::shaped`] keeps in all (each holds its
+/// outline): a longer text is not kept.
+const SHAPED_GLYPHS: usize = 30_000;
+
+/// A text shaped: its glyphs in paragraphs (split at newlines), where
+/// each paragraph starts in the concatenated span text, the number of
+/// characters, and each span's metrics. Everything but the line breaking,
+/// which the frame decides.
+struct Shaped {
+    paragraphs: Vec<Vec<Glyph>>,
+    para_starts: Vec<usize>,
+    total_chars: usize,
+    metrics: Vec<Metrics>,
+}
+
+impl Shaped {
+    fn glyphs(&self) -> usize {
+        self.paragraphs.iter().map(Vec::len).sum()
+    }
+}
+
 /// One shaped glyph, positioned relative to the pen of its line.
 #[derive(Clone)]
 struct Glyph {
@@ -1527,7 +1553,17 @@ const ANDROID_FONT_DIRS: [&str; 3] = ["/system/fonts", "/product/fonts", "/vendo
 /// own font folders): the folders the font database reads at startup,
 /// each once. A font under one of them counts as in it for the font
 /// list's filter, whatever subfolder it lies in (#867).
+///
+/// Read once and kept: on Linux the list comes from the fontconfig
+/// configuration, which is parsed in full (some milliseconds), and the
+/// font list asked for it with every family it looked at.
 pub fn system_font_roots() -> Vec<std::path::PathBuf> {
+    static ROOTS: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
+    ROOTS.get_or_init(read_system_font_roots).clone()
+}
+
+/// [`system_font_roots`] read from the system now.
+fn read_system_font_roots() -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     #[cfg(windows)]
     out.extend(windows_font_roots(&|name| std::env::var(name).ok()));
@@ -1731,6 +1767,7 @@ impl FontSystem {
             document_families: RwLock::new(Vec::new()),
             carried: RwLock::new(Vec::new()),
             cache: Mutex::new(HashMap::new()),
+            shaped: Mutex::new(HashMap::new()),
             offered: RwLock::new(Vec::new()),
             requests: Mutex::new((Vec::new(), Vec::new())),
             fallbacks: Mutex::new(HashMap::new()),
@@ -1827,6 +1864,9 @@ impl FontSystem {
     /// Fonts were added: drop what was laid out or chosen without them.
     fn fonts_changed(&self) {
         if let Ok(mut c) = self.cache.lock() {
+            c.clear();
+        }
+        if let Ok(mut c) = self.shaped.lock() {
             c.clear();
         }
         if let Ok(mut f) = self.fallbacks.lock() {
@@ -3494,24 +3534,42 @@ impl FontSystem {
 
     /// Full layout of a text object.
     pub fn layout(&self, req: &TextRequest) -> TextLayout {
-        self.layout_with(req, false)
+        self.layout_with(req, false, false)
     }
 
     /// The glyphs of a text object as its fonts draw them, placed as
     /// [`FontSystem::layout`] places its outline, and its other marks
     /// (underlines, strike lines, added hyphens) as curves.
     pub fn glyph_layout(&self, req: &TextRequest) -> GlyphLayout {
-        self.layout_with(req, true).glyph_layout
+        self.layout_with(req, true, false).glyph_layout
     }
 
-    fn layout_with(&self, req: &TextRequest, collect: bool) -> TextLayout {
+    /// [`FontSystem::layout`] of the part of a paragraph text its frame
+    /// shows: the line breaking stops at the first line that does not
+    /// fit, so a long text that overflows a small frame costs no more
+    /// than what shows. `path`, `overflow` and `fitted_chars` are those of
+    /// the whole layout; `lines`, `baselines` and `bounds` end at that
+    /// line. For a frame being resized, laid out anew every frame (#1327).
+    pub fn layout_fitted(&self, req: &TextRequest) -> TextLayout {
+        self.layout_with(req, false, true)
+    }
+
+    /// True when the glyphs of `req` are shaped and kept (see
+    /// [`FontSystem::shaped`]): laying it out in another frame only
+    /// breaks its lines.
+    pub fn is_shaped(&self, req: &TextRequest) -> bool {
+        let key = self.shaping_key(req, 1.0);
+        self.shaped.lock().is_ok_and(|c| c.contains_key(&key))
+    }
+
+    fn layout_with(&self, req: &TextRequest, collect: bool, fitted_only: bool) -> TextLayout {
         if req.para.fit_to_frame && req.frame.is_some() {
             // Scale the font size so the text fills the frame height.
             let (mut lo, mut hi) = (0.1, 20.0);
             let mut best = 1.0;
             for _ in 0..14 {
                 let mid = (lo + hi) / 2.0;
-                let l = self.layout_scaled(req, mid, false);
+                let l = self.layout_scaled(req, mid, false, fitted_only);
                 if l.overflow {
                     hi = mid;
                 } else {
@@ -3519,44 +3577,64 @@ impl FontSystem {
                     lo = mid;
                 }
             }
-            return self.layout_scaled(req, best, collect);
+            return self.layout_scaled(req, best, collect, fitted_only);
         }
-        self.layout_scaled(req, 1.0, collect)
+        self.layout_scaled(req, 1.0, collect, fitted_only)
     }
 
-    fn layout_scaled(&self, req: &TextRequest, size_scale: f64, collect: bool) -> TextLayout {
-        let spans = req.spans;
-        if spans.is_empty() {
-            return TextLayout {
-                path: BezPath::new(),
-                bounds: Rect::ZERO,
-                glyphs: 0,
-                overflow: false,
-                fitted_chars: 0,
-                baselines: Vec::new(),
-                lines: Vec::new(),
-                glyph_layout: GlyphLayout::default(),
-                vertical: false,
-            };
-        }
-        let para = req.para;
-        // Vertical text is laid out as written lines in a frame turned on
-        // its side (the columns run down the frame's height), and turned
-        // into columns as the glyphs are placed; see `orient` below.
-        let vertical = para.vertical && req.on_path.is_none();
-        let frame = req.frame.map(|f| {
-            if vertical {
-                Size::new(f.height, f.width)
-            } else {
-                f
-            }
+    /// The key of a text's shaped glyphs: what [`FontSystem::cache_key`]
+    /// holds but the frame, which only the line breaking uses, and the
+    /// font scale of Fit Text to Frame.
+    fn shaping_key(&self, req: &TextRequest, size_scale: f64) -> String {
+        let all = Self::cache_key(&TextRequest {
+            spans: req.spans,
+            frame: None,
+            align: req.align,
+            para: req.para,
+            on_path: None,
         });
-        let turn = tracedraw_core::document::vertical_line_frame();
-        // Each paragraph's alignment and style: its own, or the object's.
-        let styles = tracedraw_core::paragraphs::paragraph_styles(spans, req.align, para);
-        let fallback = (req.align, para.clone());
-        let style_of =
-            |pi: usize| -> &(TextAlign, ParagraphStyle) { styles.get(pi).unwrap_or(&fallback) };
+        format!("{}|{}|{all}", self.generation(), size_scale.to_bits())
+    }
+
+    /// The glyphs of a text in paragraphs, shaped, kept for the texts laid
+    /// out last: a paragraph frame being resized asks for the same text in
+    /// a new frame every frame of the drag, and shaping takes most of a
+    /// layout (#1327).
+    fn shaped<'s>(
+        &self,
+        req: &TextRequest,
+        size_scale: f64,
+        style_of: &dyn Fn(usize) -> &'s (TextAlign, ParagraphStyle),
+    ) -> Arc<Shaped> {
+        let key = self.shaping_key(req, size_scale);
+        if let Ok(c) = self.shaped.lock() {
+            if let Some(hit) = c.get(&key) {
+                return hit.clone();
+            }
+        }
+        let shaped = Arc::new(self.shape_paragraphs(req.spans, size_scale, style_of));
+        let glyphs = shaped.glyphs();
+        if glyphs <= SHAPED_GLYPHS {
+            if let Ok(mut c) = self.shaped.lock() {
+                // Few: what is kept is for the texts being worked on now.
+                let kept: usize = c.values().map(|s| s.glyphs()).sum();
+                if c.len() >= SHAPED_KEPT || kept + glyphs > SHAPED_GLYPHS {
+                    c.clear();
+                }
+                c.insert(key, shaped.clone());
+            }
+        }
+        shaped
+    }
+
+    /// Shape `spans` into paragraphs of glyph runs, and the metrics of
+    /// each span (see [`Shaped`]).
+    fn shape_paragraphs<'s>(
+        &self,
+        spans: &[TextSpan],
+        size_scale: f64,
+        style_of: &dyn Fn(usize) -> &'s (TextAlign, ParagraphStyle),
+    ) -> Shaped {
         let metrics: Vec<Metrics> = spans
             .iter()
             .map(|s| {
@@ -3567,8 +3645,7 @@ impl FontSystem {
                 self.metrics(&scaled)
             })
             .collect();
-
-        // 1. Split the spans into paragraphs of glyph runs. `char_idx`
+        // Split the spans into paragraphs of glyph runs. `char_idx`
         // counts characters of the concatenated span text, newlines and
         // tabs included, so lines can report where they start.
         let mut paragraphs: Vec<Vec<Glyph>> = vec![Vec::new()];
@@ -3694,6 +3771,63 @@ impl FontSystem {
             }
         }
         let total_chars = char_idx;
+        Shaped {
+            paragraphs,
+            para_starts,
+            total_chars,
+            metrics,
+        }
+    }
+
+    fn layout_scaled(
+        &self,
+        req: &TextRequest,
+        size_scale: f64,
+        collect: bool,
+        fitted_only: bool,
+    ) -> TextLayout {
+        let spans = req.spans;
+        if spans.is_empty() {
+            return TextLayout {
+                path: BezPath::new(),
+                bounds: Rect::ZERO,
+                glyphs: 0,
+                overflow: false,
+                fitted_chars: 0,
+                baselines: Vec::new(),
+                lines: Vec::new(),
+                glyph_layout: GlyphLayout::default(),
+                vertical: false,
+            };
+        }
+        let para = req.para;
+        // Vertical text is laid out as written lines in a frame turned on
+        // its side (the columns run down the frame's height), and turned
+        // into columns as the glyphs are placed; see `orient` below.
+        let vertical = para.vertical && req.on_path.is_none();
+        let frame = req.frame.map(|f| {
+            if vertical {
+                Size::new(f.height, f.width)
+            } else {
+                f
+            }
+        });
+        let turn = tracedraw_core::document::vertical_line_frame();
+        // Each paragraph's alignment and style: its own, or the object's.
+        let styles = tracedraw_core::paragraphs::paragraph_styles(spans, req.align, para);
+        let fallback = (req.align, para.clone());
+        let style_of =
+            |pi: usize| -> &(TextAlign, ParagraphStyle) { styles.get(pi).unwrap_or(&fallback) };
+        // 1. The glyphs, shaped once per text and kept: a frame being
+        // resized only breaks them into lines anew (#1327).
+        let shaped = self.shaped(req, size_scale, &style_of);
+        let Shaped {
+            paragraphs,
+            para_starts,
+            total_chars,
+            metrics,
+        } = &*shaped;
+        let total_chars = *total_chars;
 
         // 2. Flow the paragraphs into lines: break them to the room each
         // line has (the column, less indents, drop caps and the objects the
@@ -3748,7 +3882,7 @@ impl FontSystem {
         let mut col = 0usize;
         let mut y = 0.0f64; // top of the frame or baseline of artistic text
         let mut prev_para: Option<usize> = None;
-        for (pi, glyphs) in paragraphs.iter().enumerate() {
+        'paragraphs: for (pi, glyphs) in paragraphs.iter().enumerate() {
             let (_, ps) = style_of(pi);
             let m_para = glyphs
                 .first()
@@ -3760,7 +3894,7 @@ impl FontSystem {
             let para_start = para_starts.get(pi).copied().unwrap_or(0);
             let Some(w) = col_width else {
                 // Artistic text: one line a paragraph.
-                let m = line_metrics(glyphs, &metrics, m_para);
+                let m = line_metrics(glyphs, metrics, m_para);
                 let advance = if pi == 0 {
                     0.0
                 } else {
@@ -3796,7 +3930,7 @@ impl FontSystem {
                     glyph_advance: g.advance,
                 }
             });
-            let mut br = Breaker::new(glyphs, ps.hyphenate, &metrics, pi, para_start);
+            let mut br = Breaker::new(glyphs, ps.hyphenate, metrics, pi, para_start);
             let mut row = 0usize;
             // How far a line moves down from the one before it.
             let advance_of = |m: &Metrics, first: bool, prev: Option<usize>| -> f64 {
@@ -3965,6 +4099,10 @@ impl FontSystem {
                     lines.push(line);
                 }
                 row += 1;
+                // The rest does not show: no need to break it into lines.
+                if fitted_only && overflow {
+                    break 'paragraphs;
+                }
                 if br.done() {
                     break;
                 }
@@ -5546,6 +5684,91 @@ mod tests {
         });
         assert!(wrapped.bounds.height() > one_line.bounds.height() * 2.0);
         assert!(!wrapped.overflow);
+    }
+
+    /// A text laid out in another frame is shaped once: the second
+    /// frame breaks the glyphs kept from the first into lines, and gives
+    /// the layout a fresh shaping gives (#1327).
+    #[test]
+    fn a_text_in_a_new_frame_is_broken_anew_from_the_glyphs_kept() {
+        if !has_fonts() {
+            return;
+        }
+        // A font system of its own: other tests empty the shared one's.
+        let f = FontSystem::load();
+        let spans = [span(
+            "one two three four five six seven eight nine ten eleven twelve",
+        )];
+        let para = ParagraphStyle::default();
+        let req = |w: f64| TextRequest {
+            spans: &spans,
+            frame: Some(Size::new(w, 100.0)),
+            align: TextAlign::Left,
+            para: &para,
+            on_path: None,
+        };
+        let styles = tracedraw_core::paragraphs::paragraph_styles(&spans, TextAlign::Left, &para);
+        let fallback = (TextAlign::Left, para.clone());
+        let style_of =
+            |pi: usize| -> &(TextAlign, ParagraphStyle) { styles.get(pi).unwrap_or(&fallback) };
+        let wide = f.shaped(&req(80.0), 1.0, &style_of);
+        let narrow = f.shaped(&req(30.0), 1.0, &style_of);
+        assert!(Arc::ptr_eq(&wide, &narrow), "shaped once for both frames");
+        let from_kept = f.layout(&req(30.0));
+        f.shaped.lock().unwrap().clear();
+        let fresh = f.layout(&req(30.0));
+        assert_eq!(from_kept.lines.len(), fresh.lines.len());
+        assert!(from_kept.lines.len() > f.layout(&req(80.0)).lines.len());
+        assert_eq!(from_kept.path, fresh.path);
+        assert_eq!(from_kept.fitted_chars, fresh.fitted_chars);
+        // Other words are shaped on their own.
+        let other = [span("other words")];
+        let o = f.shaped(
+            &TextRequest {
+                spans: &other,
+                ..req(30.0)
+            },
+            1.0,
+            &style_of,
+        );
+        assert!(!Arc::ptr_eq(&o, &narrow));
+        assert!(f.is_shaped(&req(55.0)));
+        assert!(!f.is_shaped(&TextRequest {
+            spans: &[span("never laid out")],
+            ..req(30.0)
+        }));
+    }
+
+    /// The layout of what a frame shows stops breaking lines at the first
+    /// that does not fit, and draws what the whole layout draws.
+    #[test]
+    fn the_fitted_layout_draws_what_the_whole_one_does() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let text = "one two three four five six seven eight nine ten ".repeat(40);
+        let spans = [span(&text)];
+        let para = ParagraphStyle::default();
+        let req = |h: f64| TextRequest {
+            spans: &spans,
+            frame: Some(Size::new(40.0, h)),
+            align: TextAlign::Left,
+            para: &para,
+            on_path: None,
+        };
+        for h in [15.0, 40.0, 2000.0] {
+            let whole = f.layout(&req(h));
+            let fitted = f.layout_fitted(&req(h));
+            assert_eq!(fitted.path, whole.path, "{h}");
+            assert_eq!(fitted.overflow, whole.overflow);
+            assert_eq!(fitted.fitted_chars, whole.fitted_chars);
+            if whole.overflow {
+                assert!(fitted.lines.len() < whole.lines.len());
+            } else {
+                assert_eq!(fitted.lines, whole.lines);
+            }
+        }
     }
 
     #[test]
@@ -8117,6 +8340,24 @@ mod font_folders {
         assert_eq!(f.folder_of(&file), Some(root.join("google")));
         assert!(!system_font_roots().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The system's font folders are read once: the font list asks for
+    /// them with every family it looks at, and reading them parses the
+    /// whole fontconfig configuration on Linux (1.4 ms on a small one,
+    /// so a list of a thousand families spent over a second in it).
+    /// A thousand calls after the first take a few milliseconds, where
+    /// a thousand fresh reads took over a second.
+    #[test]
+    fn system_font_roots_are_read_once() {
+        let first = system_font_roots();
+        assert_eq!(first, read_system_font_roots());
+        let t = std::time::Instant::now();
+        for _ in 0..1000 {
+            assert_eq!(system_font_roots(), first);
+        }
+        let cached = t.elapsed();
+        assert!(cached < std::time::Duration::from_millis(100), "{cached:?}");
     }
 
     /// The system's folders are the ones the font database reads, so a

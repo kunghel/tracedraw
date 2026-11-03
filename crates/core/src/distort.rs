@@ -12,19 +12,24 @@
 //!   along the line from the centre through its node: pushed corners
 //!   become spikes, pulled corners curl.
 //! - Zipper puts `frequency` teeth on every segment: the segment is cut
-//!   into `2 * frequency` equal steps of its parameter, the inner points
+//!   into `frequency + 1` equal steps of its parameter and the points
 //!   alternate `amplitude` to one side of the segment and to the other,
-//!   the nodes stay. Random scales each tooth by a fixed pseudo-random
-//!   share; Local scales them by how near they are to the centre (full at
-//!   the centre, none at the farthest node); Smooth rounds the teeth.
-//! - Twister turns every point about the centre by `angle` times its
-//!   distance over the farthest distance, so the centre stays and the
-//!   farthest point turns by the whole angle. The outline is first cut
-//!   into short steps so the turn bends it smoothly.
+//!   along the segment's normal turned by `tilt_deg`, so the teeth lean
+//!   (#1671). Random scales each tooth by a fixed pseudo-random share;
+//!   Local scales them by how near they are to the centre (full at the
+//!   centre, none at the farthest node); Smooth draws a wave through the
+//!   tips, a sine's shape, which never crosses itself however high the
+//!   teeth are.
+//! - Twister turns every point about the centre by `angle` times one
+//!   less its distance over the farthest distance, so the points at the
+//!   centre turn by the whole angle and the farthest point stays where it
+//!   is: the outline keeps its place and its outer shape, the inside
+//!   swirls (#1674). The outline is first cut into short steps so the
+//!   turn bends it smoothly.
 
 use crate::geometry::{
-    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveDeriv, PathEl, PathSeg, Point,
-    Rect, Shape as _, Vec2,
+    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveDeriv, ParamCurveNearest,
+    PathEl, PathSeg, Point, Rect, Shape as _, Vec2,
 };
 use kurbo::QuadBez;
 
@@ -40,7 +45,9 @@ pub enum Distort {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         center: Option<Point>,
     },
-    /// Teeth `amplitude` mm high, `frequency` on each segment.
+    /// Teeth `amplitude` mm high, `frequency` on each segment, leaning
+    /// `tilt_deg` from the outline's normal (-180 to 180, counterclockwise
+    /// when positive; older files have none, upright teeth).
     Zipper {
         amplitude: f64,
         frequency: u32,
@@ -52,9 +59,11 @@ pub enum Distort {
         smooth: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         local: bool,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        tilt_deg: f64,
     },
-    /// Turned about the centre, `angle_deg` at the farthest point
-    /// (counterclockwise when positive).
+    /// Turned about the centre, `angle_deg` at the centre and none at
+    /// the farthest point (counterclockwise when positive).
     Twister {
         angle_deg: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +91,7 @@ impl Distort {
                 random,
                 smooth,
                 local,
+                tilt_deg,
                 ..
             } => Distort::Zipper {
                 amplitude,
@@ -90,6 +100,7 @@ impl Distort {
                 random,
                 smooth,
                 local,
+                tilt_deg,
             },
             Distort::Twister { angle_deg, .. } => Distort::Twister {
                 angle_deg,
@@ -99,15 +110,21 @@ impl Distort {
     }
 }
 
-/// The highest Zipper frequency and amplitude, and the largest Twister
-/// angle (degrees) and Push and Pull amount taken.
+/// The highest Zipper frequency and amplitude, the largest Twister
+/// angle (degrees) and Push and Pull amount taken, and the farthest a
+/// Zipper's teeth lean either way (degrees).
 pub const MAX_FREQUENCY: u32 = 100;
 pub const MAX_AMPLITUDE: f64 = 1000.0;
 pub const MAX_ANGLE: f64 = 3600.0;
 pub const MAX_AMOUNT: f64 = 200.0;
+pub const MAX_TILT: f64 = 180.0;
 
 fn finite(p: Point) -> bool {
     p.x.is_finite() && p.y.is_finite()
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// Apply `how` to `path`.
@@ -142,6 +159,7 @@ pub fn distort_in(path: &BezPath, b: Rect, how: Distort) -> BezPath {
             random,
             smooth,
             local,
+            tilt_deg,
             ..
         } => {
             let a = if amplitude.is_finite() {
@@ -149,14 +167,22 @@ pub fn distort_in(path: &BezPath, b: Rect, how: Distort) -> BezPath {
             } else {
                 0.0
             };
+            let tilt = if tilt_deg.is_finite() {
+                tilt_deg.clamp(-MAX_TILT, MAX_TILT).to_radians()
+            } else {
+                0.0
+            };
             zipper(
                 path,
                 c,
-                a,
-                frequency.min(MAX_FREQUENCY),
-                random,
-                smooth,
-                local,
+                Teeth {
+                    amplitude: a,
+                    frequency: frequency.min(MAX_FREQUENCY),
+                    random,
+                    smooth,
+                    local,
+                    tilt,
+                },
             )
         }
         Distort::Twister { angle_deg, .. } => {
@@ -339,18 +365,90 @@ fn between(a: Vec2, b: Vec2) -> Vec2 {
     }
 }
 
-fn zipper(
-    path: &BezPath,
-    c: Point,
+/// The unit normal of `path` at its point nearest to `c` (left of the
+/// outline's direction there): the direction a Zipper's teeth stand in
+/// with no tilt, the one its handle line shows (#1671). To the right
+/// when the path has no segments.
+pub fn zipper_zero_direction(path: &BezPath, c: Point) -> Vec2 {
+    if !finite(c) {
+        return Vec2::new(1.0, 0.0);
+    }
+    let mut best: Option<(f64, Vec2)> = None;
+    for seg in path.segments() {
+        let near = seg.nearest(c, 1e-6);
+        if !near.distance_sq.is_finite() {
+            continue;
+        }
+        if best.is_none_or(|(d, _)| near.distance_sq < d) {
+            let n = normal(&seg, near.t.clamp(0.0, 1.0));
+            if n.hypot() > 0.5 {
+                best = Some((near.distance_sq, n));
+            }
+        }
+    }
+    best.map(|(_, n)| n).unwrap_or(Vec2::new(1.0, 0.0))
+}
+
+/// A Zipper's teeth: their height, how many on each segment, the
+/// options and the lean of the teeth from the normal (radians).
+struct Teeth {
     amplitude: f64,
     frequency: u32,
     random: bool,
     smooth: bool,
     local: bool,
-) -> BezPath {
+    tilt: f64,
+}
+
+/// The handles of a wave's cubic between two tips, a share of the
+/// distance between the tips along the outline: the cubic nearest a
+/// sine's half wave, through the tips with the outline's direction.
+const WAVE_HANDLE: f64 = 0.3642;
+
+/// A wave through the tips `pts` (each with the outline's unit direction
+/// there and the distance along the outline to the next tip): one cubic
+/// from tip to tip, leaving and arriving along the outline, with its
+/// handles `WAVE_HANDLE` of that distance long. The handles never reach
+/// past the middle, so the wave goes on along the outline between two
+/// tips however high they are and never crosses itself (#1671).
+fn wave_path(pts: &[(Point, Vec2, f64)], closed: bool) -> BezPath {
+    let mut out = BezPath::new();
+    let Some(first) = pts.first() else {
+        return out;
+    };
+    out.move_to(first.0);
+    let count = if closed { pts.len() } else { pts.len() - 1 };
+    for i in 0..count {
+        let (p1, t1, along) = pts[i];
+        let (p2, t2, _) = pts[(i + 1) % pts.len()];
+        let h = WAVE_HANDLE * along;
+        out.curve_to(p1 + t1 * h, p2 - t2 * h, p2);
+    }
+    if closed {
+        out.close_path();
+    }
+    out
+}
+
+fn zipper(path: &BezPath, c: Point, teeth: Teeth) -> BezPath {
+    let Teeth {
+        amplitude,
+        frequency,
+        random,
+        smooth,
+        local,
+        tilt,
+    } = teeth;
     if frequency == 0 || amplitude <= 0.0 {
         return path.clone();
     }
+    let (tilt_sin, tilt_cos) = tilt.sin_cos();
+    let lean = |n: Vec2| {
+        Vec2::new(
+            n.x * tilt_cos - n.y * tilt_sin,
+            n.x * tilt_sin + n.y * tilt_cos,
+        )
+    };
     let subs = subpaths(path);
     // The farthest node from the centre, for Local.
     let far = subs
@@ -374,7 +472,11 @@ fn zipper(
         // alternate with the first: its last segment takes one line more
         // when the count would be odd.
         let odd_closed = sub.closed && (count * steps) % 2 == 1;
-        let mut pts = Vec::with_capacity(count * steps + 2);
+        // Each tip, the outline's direction there and the distance along
+        // the outline to the next tip (for the wave).
+        let mut pts: Vec<(Point, Vec2, f64)> = Vec::with_capacity(count * steps + 2);
+        let mut last_base: Option<Point> = None;
+        let mut first_base = sub.start;
         for (i, seg) in sub.segs.iter().enumerate() {
             let last_seg = i + 1 == count;
             let steps = if odd_closed && last_seg {
@@ -419,20 +521,28 @@ fn zipper(
                 if local {
                     a *= (1.0 - (p - c).hypot() / far).clamp(0.0, 1.0);
                 }
-                pts.push(p + n * (sign * a));
+                if let (Some(prev), Some(base)) = (pts.last_mut(), last_base) {
+                    prev.2 = (p - base).hypot();
+                }
+                if pts.is_empty() {
+                    first_base = p;
+                }
+                last_base = Some(p);
+                // The teeth lean `tilt` from the normal; the outline's
+                // direction is the normal turned back a quarter.
+                pts.push((p + lean(n) * (sign * a), Vec2::new(n.y, -n.x), 0.0));
             }
             seg_index += 1;
         }
+        if let (Some(last), Some(base)) = (pts.last_mut(), last_base) {
+            last.2 = (first_base - base).hypot();
+        }
         if smooth {
-            out.extend(
-                crate::geometry::smooth_path(&pts, sub.closed)
-                    .elements()
-                    .iter()
-                    .copied(),
-            );
+            out.extend(wave_path(&pts, sub.closed).elements().iter().copied());
         } else {
+            let tips: Vec<Point> = pts.iter().map(|t| t.0).collect();
             out.extend(
-                crate::geometry::polyline_path(&pts, sub.closed)
+                crate::geometry::polyline_path(&tips, sub.closed)
                     .elements()
                     .iter()
                     .copied(),
@@ -459,9 +569,11 @@ fn twister(path: &BezPath, c: Point, angle: f64) -> BezPath {
     let b = path.bounding_box();
     let size = b.width().max(b.height()).max(1e-6);
     let step = size / 64.0;
-    // The farthest point from the centre turns by the whole angle
-    // (measured on points along the segments; the turn is clamped at
-    // the whole angle for the little a curve may reach beyond them).
+    // The farthest point from the centre stays where it is and the turn
+    // grows toward the centre, where it is the whole angle (#1674): the
+    // outline keeps its outer shape and swirls inside. The distance is
+    // measured on points along the segments; the little a curve may
+    // reach beyond them does not turn either.
     let far = subs
         .iter()
         .flat_map(|s| {
@@ -473,15 +585,21 @@ fn twister(path: &BezPath, c: Point, angle: f64) -> BezPath {
         .map(|p| (p - c).hypot())
         .fold(0.0f64, f64::max)
         .max(1e-9);
-    let rate = angle / far;
+    // The turn falls by `rate` for every unit of distance from the centre.
+    let rate = -angle / far;
     // A point and the direction a curve through it goes after the turn:
-    // `p` turned about `c` by `angle * |p - c| / far`, and its tangent
-    // `d` turned the same with the extra swing of the turn growing with
-    // the distance (the derivative of the turn along the curve).
+    // `p` turned about `c` by `angle * (1 - |p - c| / far)`, and its
+    // tangent `d` turned the same with the extra swing of the turn
+    // changing with the distance (the derivative of the turn along the
+    // curve).
     let turn = |p: Point, d: Vec2| -> (Point, Vec2) {
         let v = p - c;
         let r = v.hypot();
-        let a = (rate * r).clamp(-angle.abs(), angle.abs());
+        let a = if r > far {
+            0.0
+        } else {
+            (angle + rate * r).clamp(-angle.abs(), angle.abs())
+        };
         let (sin, cos) = a.sin_cos();
         let rot = |w: Vec2| Vec2::new(w.x * cos - w.y * sin, w.x * sin + w.y * cos);
         let swing = if r < 1e-12 || r > far {
@@ -536,7 +654,7 @@ fn twister(path: &BezPath, c: Point, angle: f64) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{ParamCurveNearest, Rect};
+    use crate::geometry::Rect;
 
     fn square(x: f64, y: f64, s: f64) -> BezPath {
         let mut p = BezPath::new();
@@ -700,7 +818,137 @@ mod tests {
             random,
             smooth,
             local,
+            tilt_deg: 0.0,
         }
+    }
+
+    fn zipper_on_line(amplitude: f64, frequency: u32, smooth: bool, tilt_deg: f64) -> BezPath {
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((130.0, 0.0));
+        distort(
+            &line,
+            Distort::Zipper {
+                amplitude,
+                frequency,
+                center: None,
+                random: false,
+                smooth,
+                local: false,
+                tilt_deg,
+            },
+        )
+    }
+
+    /// #1671: the teeth lean by the tilt from the outline's normal, so a
+    /// zipper is not always upright: tilted 60 degrees on a line, every
+    /// tip is the amplitude away from its point on the line along the
+    /// normal turned by 60 degrees, alternately to each side; the tips'
+    /// direction is the one `zipper_zero_direction` gives turned by the
+    /// tilt.
+    #[test]
+    fn the_teeth_lean_by_the_tilt() {
+        let out = zipper_on_line(8.0, 15, false, 60.0);
+        let n = nodes(&out);
+        assert_eq!(n.len(), 17);
+        // The line runs right, its left normal is up; turned 60 degrees
+        // it is (-sin 60, cos 60).
+        let lean = Vec2::new(-(60f64.to_radians().sin()), 60f64.to_radians().cos());
+        for (i, p) in n.iter().enumerate() {
+            let base = Point::new(130.0 * i as f64 / 16.0, 0.0);
+            let sign = if i % 2 == 1 { 1.0 } else { -1.0 };
+            let want = base + lean * (8.0 * sign);
+            assert!(
+                (*p - want).hypot() < 1e-9,
+                "tip {i}: {p:?}, wanted {want:?}"
+            );
+        }
+        // The non-tilted teeth stand on the normal (the old test).
+        let up = zipper_on_line(8.0, 15, false, 0.0);
+        for (i, p) in nodes(&up).iter().enumerate() {
+            assert!((p.x - 130.0 * i as f64 / 16.0).abs() < 1e-9, "{i}: {p:?}");
+            assert!((p.y.abs() - 8.0).abs() < 1e-9, "{i}: {p:?}");
+        }
+        // Leaning 180 degrees is the same zigzag with its sides swapped.
+        let back = zipper_on_line(8.0, 15, false, 180.0);
+        for (p, q) in nodes(&up).iter().zip(nodes(&back)) {
+            assert!((p.x - q.x).abs() < 1e-9 && (p.y + q.y).abs() < 1e-9);
+        }
+        // The zero direction: the normal at the outline's nearest point.
+        let sq = square(0.0, 0.0, 20.0);
+        let d = zipper_zero_direction(&sq, Point::new(10.0, 2.0));
+        assert!(d.x.abs() < 1e-9 && (d.y.abs() - 1.0).abs() < 1e-9, "{d:?}");
+        let d = zipper_zero_direction(&sq, Point::new(30.0, 11.0));
+        assert!(d.y.abs() < 1e-9 && (d.x.abs() - 1.0).abs() < 1e-9, "{d:?}");
+        assert_eq!(
+            zipper_zero_direction(&BezPath::new(), Point::ZERO),
+            Vec2::new(1.0, 0.0)
+        );
+        // Older files without a tilt read as upright teeth; a tilt of
+        // zero is not written.
+        let z: Distort = serde_json::from_str(
+            r#"{"mode":"zipper","amplitude":2.0,"frequency":12,"tilt_deg":30.0}"#,
+        )
+        .expect("a tilted zipper");
+        assert!(matches!(z, Distort::Zipper { tilt_deg, .. } if tilt_deg == 30.0));
+        let s = serde_json::to_string(&zip(false, false, false)).expect("json");
+        assert!(!s.contains("tilt"), "{s}");
+    }
+
+    /// #1671: a smooth zipper is a wave through the tips the shape of a
+    /// sine: between two tips it goes on along the outline, so the
+    /// waves never cross or join however high the teeth are (10 mm
+    /// teeth every 8 mm), and it crosses the outline midway between the
+    /// tips.
+    #[test]
+    fn smooth_teeth_are_waves_that_never_cross() {
+        let out = zipper_on_line(10.0, 15, true, 0.0);
+        let segs: Vec<PathSeg> = out.segments().collect();
+        assert_eq!(segs.len(), 16);
+        let step = 130.0 / 16.0;
+        for (i, seg) in segs.iter().enumerate() {
+            let mut last_x = f64::NEG_INFINITY;
+            for k in 0..=20 {
+                let p = seg.eval(k as f64 / 20.0);
+                assert!(p.x >= last_x - 1e-9, "wave {i} turns back at {p:?}");
+                assert!(p.y.abs() <= 10.0 + 1e-9, "wave {i} overshoots at {p:?}");
+                last_x = p.x;
+            }
+            // Within its own stretch of the line, crossing it midway.
+            assert!((seg.eval(0.0).x - step * i as f64).abs() < 1e-9);
+            assert!((seg.eval(1.0).x - step * (i + 1) as f64).abs() < 1e-9);
+            let mid = seg.eval(0.5);
+            assert!(mid.y.abs() < 1e-9 && (mid.x - step * (i as f64 + 0.5)).abs() < 1e-9);
+            // A sine's shape: a quarter of the way the wave is at
+            // cos(pi / 4) of the amplitude, within a percent.
+            let q = seg.eval(0.25);
+            let want = (std::f64::consts::PI * (q.x - step * i as f64) / step).cos() * 10.0;
+            assert!((q.y.abs() - want.abs()).abs() < 0.1, "{q:?} vs {want}");
+        }
+        // Leaving and arriving along the line: the tips are the crests.
+        for seg in &segs {
+            let d = seg.eval(0.001) - seg.eval(0.0);
+            assert!(d.y.abs() < d.x.abs() * 0.01, "{d:?}");
+        }
+        // A closed outline's wave closes without a corner.
+        let sq = square(0.0, 0.0, 40.0);
+        let out = distort(
+            &sq,
+            Distort::Zipper {
+                amplitude: 6.0,
+                frequency: 4,
+                center: None,
+                random: false,
+                smooth: true,
+                local: false,
+                tilt_deg: 0.0,
+            },
+        );
+        assert_eq!((subpath_count(&out), closes(&out)), (1, 1));
+        assert!(out
+            .elements()
+            .iter()
+            .all(|e| !matches!(e, PathEl::LineTo(_))));
     }
 
     #[test]
@@ -732,6 +980,7 @@ mod tests {
             random: false,
             smooth: false,
             local: false,
+            tilt_deg: 0.0,
         };
         assert_eq!(distort(&sq, none), sq);
         // Random: smaller teeth, the same each time.
@@ -767,6 +1016,7 @@ mod tests {
                 random: false,
                 smooth: false,
                 local: false,
+                tilt_deg: 0.0,
             },
         );
         let n = nodes(&out);
@@ -794,6 +1044,7 @@ mod tests {
                 random: false,
                 smooth: true,
                 local: false,
+                tilt_deg: 0.0,
             },
         );
         let n = nodes(&out);
@@ -831,6 +1082,7 @@ mod tests {
                 random: false,
                 smooth: false,
                 local: false,
+                tilt_deg: 0.0,
             },
         );
         let n = nodes(&out);
@@ -862,7 +1114,9 @@ mod tests {
 
     /// A straight line with the Twister (#1108) is a smooth spiral from
     /// end to end: every step lies on the true turned curve and the ends
-    /// leave along its direction, not along a straight tail.
+    /// leave along its direction, not along a straight tail. The ends,
+    /// the farthest points, stay where they are and the middle turns by
+    /// the whole angle (#1674).
     #[test]
     fn a_twisted_line_is_a_smooth_spiral_to_its_ends() {
         let mut line = BezPath::new();
@@ -882,12 +1136,19 @@ mod tests {
         let segs: Vec<PathSeg> = out.segments().collect();
         assert!(segs.len() >= 2 * 24 * turns as usize, "{}", segs.len());
         // The true curve: a point at distance r from the middle turned
-        // by r / 50 of the angle.
+        // by 1 - r / 50 of the angle, so the ends stay.
         let angle = (-360.0f64 * turns).to_radians();
         let truth = |y: f64| -> Point {
-            let a = angle * y.abs() / 50.0;
+            let a = angle * (1.0 - y.abs() / 50.0);
             Point::new(-y * a.sin(), y * a.cos())
         };
+        let n = nodes(&out);
+        assert!((n[0] - Point::new(0.0, -50.0)).hypot() < 1e-9, "{:?}", n[0]);
+        assert!(
+            (n[n.len() - 1] - Point::new(0.0, 50.0)).hypot() < 1e-9,
+            "{:?}",
+            n[n.len() - 1]
+        );
         for seg in &segs {
             for k in 0..=4 {
                 let p = seg.eval(k as f64 / 4.0);
@@ -918,8 +1179,11 @@ mod tests {
         }
     }
 
+    /// #1674: the farthest points keep their places and the turn grows
+    /// toward the centre, so the outline does not look rotated as a
+    /// whole: a square's corners stay at the corners and its sides swirl.
     #[test]
-    fn twister_turns_the_far_points_by_the_angle() {
+    fn twister_keeps_the_far_points_and_turns_the_inside() {
         let sq = square(-10.0, -10.0, 20.0);
         let t = distort(
             &sq,
@@ -928,18 +1192,64 @@ mod tests {
                 center: None,
             },
         );
-        // A corner (farthest) turned a quarter: (10, 10) to (-10, 10).
+        // The corners (farthest) stay; the middle of the top side, at
+        // 10 of the corners' 14.14, turns by 90 * (1 - 10 / 14.14).
         let n = nodes(&t);
-        assert!(
-            n.iter()
-                .any(|p| (p.x + 10.0).abs() < 1e-6 && (p.y - 10.0).abs() < 1e-6),
-            "{n:?}"
-        );
+        for corner in [(10.0, 10.0), (-10.0, 10.0), (-10.0, -10.0), (10.0, -10.0)] {
+            let c = Point::new(corner.0, corner.1);
+            assert!(n.iter().any(|p| (*p - c).hypot() < 1e-6), "{c:?} in {n:?}");
+        }
+        let a = (90.0f64 * (1.0 - 10.0 / 200f64.sqrt())).to_radians();
+        let mid = Point::new(-10.0 * a.sin(), 10.0 * a.cos());
+        let off = t
+            .segments()
+            .map(|s| s.nearest(mid, 1e-9).distance_sq.sqrt())
+            .fold(f64::INFINITY, f64::min);
+        assert!(off < 0.02, "{mid:?} off by {off}");
         assert_eq!((subpath_count(&t), closes(&t)), (1, 1));
         // The bounds of a quarter turn of a square about its middle stay
         // near the square's.
         let b = t.bounding_box();
         assert!(b.width() < 30.0 && b.width() > 18.0, "{b:?}");
+        // A star turned two whole turns about its own middle keeps its
+        // tips in place while its inner nodes turn by 1 - 16 / 40 of the
+        // angle.
+        let mut star = BezPath::new();
+        let tip = |i: usize| {
+            let a = std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+            let r = if i % 2 == 0 { 40.0 } else { 16.0 };
+            Point::new(r * a.cos(), r * a.sin())
+        };
+        star.move_to(tip(0));
+        for i in 1..10 {
+            star.line_to(tip(i));
+        }
+        star.close_path();
+        let ts = distort(
+            &star,
+            Distort::Twister {
+                angle_deg: -720.0,
+                center: Some(Point::ZERO),
+            },
+        );
+        let n = nodes(&ts);
+        let inner_turn = (-720.0f64 * (1.0 - 16.0 / 40.0)).to_radians();
+        for i in 0..10 {
+            let want = if i % 2 == 0 {
+                tip(i)
+            } else {
+                let p = tip(i);
+                let (s, c) = inner_turn.sin_cos();
+                Point::new(p.x * c - p.y * s, p.x * s + p.y * c)
+            };
+            assert!(
+                n.iter().any(|p| (*p - want).hypot() < 1e-6),
+                "node {i}: {want:?} not among the nodes"
+            );
+        }
+        let sb = ts.bounding_box();
+        let ob = star.bounding_box();
+        assert!((sb.y1 - ob.y1).abs() < 1e-6, "the top tip stays: {sb:?}");
         // An ellipse (no closing element, but closed) stays closed.
         let e = crate::geometry::ellipse_path(Rect::new(0.0, 0.0, 30.0, 20.0));
         let te = distort(
@@ -983,6 +1293,7 @@ mod tests {
                 random: false,
                 smooth: false,
                 local: false,
+                tilt_deg: 0.0,
                 center: None,
                 ..
             }
@@ -1008,6 +1319,7 @@ mod tests {
                 random: true,
                 smooth: true,
                 local: true,
+                tilt_deg: 0.0,
             },
             Distort::Twister {
                 angle_deg: 1e12,

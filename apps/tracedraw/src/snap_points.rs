@@ -434,6 +434,64 @@ fn add_on(
     }
 }
 
+/// The points of `geo` for the modes on, with no pointer to measure
+/// from: the outlines' nodes and segment midpoints, an ellipse's
+/// quadrants and the centres. What a guideline being dragged lines up
+/// with along its axis (#1645).
+pub fn points(geo: &[Geo], modes: &SnapModes) -> Vec<Point> {
+    let mut out = Vec::new();
+    for g in geo {
+        match g {
+            Geo::Outline { path, points } => {
+                if !*points {
+                    continue;
+                }
+                if modes.node {
+                    out.extend(tracedraw_core::nodes::nodes(path).iter().map(|n| n.pos));
+                }
+                if modes.midpoint {
+                    out.extend(segments(path).iter().map(midpoint));
+                }
+            }
+            Geo::Nodes(ns) => {
+                if modes.node {
+                    out.extend(ns.iter().copied());
+                }
+            }
+            Geo::Ellipse {
+                center,
+                rx,
+                ry,
+                arc,
+            } => {
+                if modes.quadrant {
+                    let inside = |deg: f64| match arc {
+                        None => true,
+                        Some((a, b)) => {
+                            let sweep = (b - a).rem_euclid(360.0);
+                            (deg - a).rem_euclid(360.0) <= sweep + 1e-9
+                        }
+                    };
+                    for deg in [0.0, 90.0, 180.0, 270.0] {
+                        if inside(deg) {
+                            let a = deg.to_radians();
+                            out.push(*center + *rx * a.cos() + *ry * a.sin());
+                        }
+                    }
+                }
+            }
+            Geo::Center(c) => {
+                if modes.center {
+                    out.push(*c);
+                }
+            }
+            Geo::Baseline(..) => {}
+        }
+    }
+    out.retain(|p| p.x.is_finite() && p.y.is_finite());
+    out
+}
+
 /// Every snap target of `geo` within `tol` of `p`, with its distance, for
 /// the modes on. `from` is where the line being drawn starts (for tangent
 /// and perpendicular points).

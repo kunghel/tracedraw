@@ -8,32 +8,110 @@ into a floating window with as many rows as the Rows setting (see "Moving the ba
 `toolbars.md`); where it is put is kept across restarts, in the browser
 too. The document palette stays a row under the drawing window wherever
 the default palette is (over the drawing window when the default palette
-is along the top). Each further palette ticked in Window > Color
-Palettes (or in the Palette Manager) gets a strip of one row of its own
-next to the default palette, in the order ticked, each further from
-it: rows over it at the bottom (under it along the top), columns
-inside it on a side, rows under it in its floating window (#1164). Its menu offers the Palette Editor, the Palette Manager and
-Close Palette, which unticks it. Window > Toolbars > Color Palette hides or shows
-them. The rows described below are the same along a column, turned
-downwards.
+is along the top). Window > Toolbars > Color Palette hides or shows the
+default palette. The rows described below are the same along a column,
+turned downwards.
+
+## Palette bars
+
+Each further palette is a bar of its own (#1164 gave each a strip next
+to the default palette; now each moves by itself). A palette opens in a
+bar from Window > Color Palettes (ticking it), the Palette Manager (its
+eye, or Open as New Palette Bar in its menu), File/palette menu > Open
+Palette, or a palette menu's Open as Palette Bar (every palette not
+shown yet, and the document palette, which can have a bar of its own
+too, with its eyedropper and its menu). A new bar docks where the
+default palette is (at the bottom while that floats), with the default
+palette's swatch size and one row. A palette shows in one bar at most.
+
+- Place: any edge (Top, Bottom: a row beside the drawing, inside the
+  default palette's rows; Left, Right: a column at the window's edge,
+  inside the default palette's column) or Floating. The bar's grip, or
+  the title of its floating window, drags it: near an edge (56 px) it
+  docks there, elsewhere it floats where it is let go (a blue band shows
+  where). The palette menu's Position > Top, Bottom, Left, Right,
+  Floating does the same; a double click on a floating bar's title docks
+  it at the bottom. Lock Toolbars keeps the bars where they are.
+- Each bar has its own Rows and Swatch Size; the default palette's are
+  the ones in Options, which the document palette row under it follows.
+- Close Palette in its menu (or the close button of its floating window)
+  closes the bar.
+- Floating: a small window with the palette's name (cut with an ellipsis
+  and shown whole as a tooltip when it does not fit) and a close button.
+  Its right and bottom edges and the corner between them resize it; the
+  room asked for is kept (`float_size`) and the swatches flow into it
+  (`ui::palette::floating_flow`): along the longer side, as many lines
+  across as whole swatches fit in the shorter one, `lines = floor((across
+  - side - 5) / (side + 1)) + 1`, 1 to 24, so a wide window has rows and
+  a tall one columns; never shorter than the buttons and two swatches.
+  The window is as thick as its whole lines. Rows N in the menu makes a
+  floating palette N lines thick at its length; Fit, as many as show
+  every colour. The default palette floating flows the same way.
+- Kept in the preferences (`palette_bars`: the palette's id, its file's
+  path, built-in key or name, or `document`; `dock`, `pos`,
+  `float_size`, `rows`, `swatch_size`) and in workspace files with the
+  palette part, together with the palette the default bar shows
+  (`main_palette`, empty for the default palette) and the names given
+  to palettes. A palette file not open yet is opened again at start (on
+  the desktop); a bar whose palette is gone closes. Preferences and
+  workspace files written before palette bars existed have none: the
+  default palette alone at the bottom, with its rows and swatch size.
+- Ticking off the default bar's palette while palette bars are open
+  moves the first palette bar's palette into it (its bar closes); the
+  last palette shown stays.
+
+## Names
+
+Every palette can be given a name of the user's (Rename... in its
+palette menu or the Palette Manager, or a double click on its name in
+the Palette Manager): built-in palettes and the document palette too.
+The name shows wherever the palette is listed (the Palette Manager,
+Window > Color Palettes, Open as Palette Bar, a floating bar's title).
+Names are kept in the preferences and workspace files by the palette's
+id (`palette_names`), so a built-in palette's own name and file never
+change; Reset Name (or an empty name, or its own) gives back its own.
+A palette of the user's kept in a `.gpl`, `.tdpal` or `.json` file that
+is not locked gets the name in the file too (`Name:`, `"name"`), and
+opening such a file names the palette from it.
 
 ## Look
 
 - Each row is 25 px: a 1 px `#D8D8D8` line, a pixel of space, the
   swatches (20 x 20 px in a 1 px `#5A5A5A` frame that also separates
   them), a pixel of space. The background is the panel colour `#F4F4F4`.
+- Swatch size: the palette menu's Swatch Size offers five named sizes,
+  Extra Small 10 px, Small 14, Medium 20 (the first size), Large 28 and
+  Extra Large 40 (`settings::SWATCH_STEPS`, all even); Options and the
+  Palette Manager's slider offer the same. Ctrl+wheel over a palette row
+  (or column) keeps its finer steps: larger (wheel up) or smaller (wheel
+  down), 2 px a notch, from 8 to 48 px, so it reaches every named size
+  and the sizes between; a size between two named ones shows in the menu
+  as Custom (n px), no named size ticked. The size belongs to the bar
+  under the pointer (the default palette's for its row and the document
+  palette row); the shades pop-up and the window showing every colour
+  follow the default palette's. The size is kept in the
+  preferences (`palette.swatch_size`, whole points; preferences written
+  before it existed keep 20 px). Rows are 5 px thicker than the swatch.
+  Ctrl+wheel scrolls nothing and the drawing does not zoom; the plain
+  wheel scrolls as before (`settings::swatch_resized`,
+  `ui::palette::tests::ctrl_wheel_sizes_the_swatches_and_the_plain_wheel_scrolls`,
+  `settings::tests::the_wheel_steps_the_button_and_swatch_sizes_within_their_ranges`).
 - From the left: a dotted grip, the palette menu button (a dark triangle),
   the eyedropper (grey on the default palette, which cannot change; dark
   on the document palette), the left scroll arrow, then the swatches from
   77 px. At the right: the right scroll arrow and the button that shows
   every colour at once. Arrows are light grey when they cannot scroll.
-- Rows (the palette menu's Rows > 1 Row, 2 Rows, 3 Rows, and Options >
-  Customization > Color Palette; 1 at first, up to 3): the default
-  palette shows that many rows of swatches (columns when docked on a
+- Rows (the palette menu's Rows > 1 Row to 8 Rows and Fit, and Options >
+  Customization > Color Palette; 1 at first, up to 8; Fit shows as many
+  rows as every colour needs at the length the bar had, at most 8,
+  `palette.rows` 0): each palette bar shows that many rows of swatches (columns when docked on a
   side), each further row making it 21 px thicker. The swatches fill
   line by line: each line holds as many swatches as fit and the next
   line goes on where it ends (with 2 rows, Black and 90% Black sit side
-  by side on the first line). The arrows and the wheel scroll one swatch,
+  by side on the first line). The arrows and the wheel scroll one swatch
+  (a wheel notch is one swatch in the browser too, parts of a notch
+  from a touchpad adding up, #1406,
+  `ui::palette::tests::a_browser_wheel_notch_steps_a_palette_row_once`),
   and the buttons stay on the first row. The document palette keeps one
   row (#610, `ui::palette::tests::the_default_palette_can_show_several_rows`,
   `ui::palette::tests::the_palette_menu_picks_the_rows`).
@@ -103,6 +181,7 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
 | Drag objects (Pick tool) onto the document palette | Their fill and outline colours join it (as Add from Selection); the objects stay where they were; the pointer shows a copy sign there |
 | While dragging a swatch | A chip of the colour follows the pointer: filled over a fill, a ring over an outline; the pointer shows whether letting go changes anything; Esc drops nothing |
 | Scroll arrows, wheel | One swatch at a time (every row moves by one); holding an arrow keeps scrolling |
+| Ctrl+wheel | Larger (up) or smaller (down) swatches, 2 px a notch, 8 to 48 px, kept in the preferences; nothing scrolls or zooms |
 | The show-all button | Every colour of the row in a grid above it (below it, clear of every row, when the palette is along the top; beside a column, clear of every column; #610, `ui::palette::tests::every_colour_opens_clear_of_all_the_rows`); click to apply, click elsewhere or Esc to close |
 | Tooltip | The colour's name in bold, then its values one per line (`C: 60`, `M: 0`, `Y: 40`, `K: 20`; `R: 255`, `G: 0`, `B: 0`) |
 | No drawing shown (Welcome Screen, or none open) | The swatches keep their colours and their tooltips; clicks and drags do nothing and the eyedropper is off (#1082) |
@@ -142,9 +221,47 @@ with no colour that can be read says so in the status bar, #882,
 opened gets a strip of its own next to the default palette, which stays
 first, and the same file opened again replaces the copy already open
 instead of adding another, #1343), Palette Editor..., Palette Manager, the Document
-Palette switch, and Rows > 1 Row, 2 Rows, 3 Rows (a radio choice, kept
-in the preferences, the same setting as in Options). A right click on a row outside the swatches opens the
-same menu.
+Palette switch, Swatch Size (five sizes), Rows (1 Row to 8 Rows, Fit),
+Position (Top, Bottom, Left, Right, Floating), Open as Palette Bar and
+Rename... (radio choices kept in the preferences, the same settings as
+in Options). A palette bar's menu has the Palette Editor, the Palette
+Manager, Swatch Size, Rows, Position, Open as Palette Bar, Rename... and
+Close Palette; the document palette's bar has the document palette's
+items instead of the first two. A right click on a row outside the
+swatches, or on a floating bar's title, opens the same menu.
+
+## Palette Manager
+
+The Palettes docker: a filter box (the palettes whose name holds it
+show) with Open Palette, the document palette from the drawing and from
+the selection as picture buttons; the Swatch Size box (the selected
+palette's name, a slider with a small swatch at the left, a large one at
+the right and a tick at each named size, the size in words, and the
+bar's Rows); then three sections, Built-in, My Palettes and Document
+Palette.
+
+- Each palette is a row: an eye (open: shown in a bar; a click opens or
+  closes its bar), its name in bold (with a padlock when locked), a
+  strip of its first colours (up to 16, as many as fit), and its colour
+  count, colour model (CMYK, RGB, Grayscale, Spot, Mixed, Empty) and
+  where it shows (Default bar or Bar, and the edge or Floating; Not
+  shown). A click selects it, a double click on its name renames it, a
+  row dragged onto another row of its section moves there, and the
+  three-dot button or a right click opens its menu: Open as New Palette
+  Bar or Close Palette Bar, Edit..., Rename..., Reset Name, Duplicate (a
+  palette of the user's named "name copy", then "name copy 2"), Lock or
+  Unlock and Delete Palette (palettes of the user's; the file stays),
+  Move Up, Move Down.
+- The slider sets the swatch size of the selected palette's bar as it
+  moves: 8 to 48 px in the 2 px steps of Ctrl+wheel, taking a named
+  size within 1.5 px of its tick (`ui::palette_manager::slider_size`).
+  A palette not shown has no bar to size: the slider is greyed and says
+  so. The default bar's palette is selected at first.
+- The document palette's row: the eye shows or hides its row under the
+  drawing; its menu opens or closes a bar of its own and renames it.
+  Under it its colours (a click fills, a right click colours the
+  outline) and Add Selection Colors, Add from Document and Clear (one
+  undo step).
 
 ## Palette Manager lock
 
@@ -158,8 +275,9 @@ colours. Locks last for the session (#1343,
 
 ## Options > Customization > Color Palette
 
-Show "No Color" well (on); Rows of the default palette (1, 2 or 3;
-`palette.rows`, 1 at first); right mouse button: Context menu or Set
+Show "No Color" well (on); Rows of the default palette (1 to 8 or Fit;
+`palette.rows`, 1 at first); Swatch size (the five named sizes, a size
+set with Ctrl+wheel between two shown as it is); right mouse button: Context menu or Set
 outline color (default); Show the document palette (on); Automatically
 update the document palette (on).
 
@@ -175,6 +293,16 @@ update the document palette (on).
 - `ui::palette::tests::the_default_palette_can_show_several_rows`
 - `ui::palette::tests::every_colour_opens_clear_of_all_the_rows`
 - `pick_drag_tests::every_palette_shown_gets_a_strip`
+- `pick_drag_tests::every_palette_bar_applies_its_colours_docked_or_floating`
+- `ui::palette_bars::tests` (the menu's sizes, rows 1 to 8 and places;
+  each bar's own rows, size and place; floating flow; resizing a
+  floating palette; bars and names kept in workspace files and the
+  preferences; old preferences give one palette at the bottom; names and
+  Reset Name; a palette file keeps its name)
+- `ui::palette_bars::rename_tests::the_rename_window_takes_the_typed_name`
+- `ui::palette_manager::tests` (the slider's steps, the slider sizes the
+  selected bar, the list's eye, duplicate, move, delete and filter, the
+  colour model)
 - `pick_drag_tests::every_click_on_a_palette_colour_applies_it`
 - `ui::dockers::tests::a_fill_dragged_in_the_picker_is_one_step_and_one_palette_colour`
 - `color_drop::tests` (fill inside, outline on the edge, No Color, an

@@ -322,16 +322,13 @@ fn duotone_settings(ui: &mut Ui, app: &mut App, st: &mut DuotoneState) {
                 ))
                 .clicked()
             {
-                if let Some(path) = crate::files::Dialog::new()
-                    .add_filter(tr("dialog.duotone_inks"), &["json"])
-                    .set_file_name("inks.json")
-                    .save_path()
-                {
-                    if let Ok(json) = serde_json::to_string_pretty(&st.settings) {
-                        if let Err(e) = crate::files::write(&path, json) {
-                            app.status = e.to_string();
-                        }
-                    }
+                // The save dialog, a download, or the system's save
+                // picker on Android (#1402).
+                if let Ok(json) = serde_json::to_string_pretty(&st.settings) {
+                    crate::files::Dialog::new()
+                        .add_filter(tr("dialog.duotone_inks"), &["json"])
+                        .set_file_name("inks.json")
+                        .save_bytes(app, json);
                 }
             }
         });

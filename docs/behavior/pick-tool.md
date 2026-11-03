@@ -2,12 +2,12 @@
 
 | Action | Behaviour |
 |---|---|
-| Click | select the topmost object under the pointer (its fill counts only when filled; otherwise its outline within 3 px; text, groups, tables, bitmaps, clip frames and symbols count anywhere inside their bounds); an object with live effects counts where it is drawn: its warped outline and the objects its effects add, and its selection box encloses them |
+| Click | select the topmost object under the pointer (its fill counts only when filled; otherwise its outline within 3 px, and a thick outline anywhere it shows, out to 3 px beyond its visible edge, at the width it is drawn (scaled with the object when the outline scales with it; #1678, `pick_drag_tests::a_click_on_a_thick_outline_picks_the_object_away_from_its_centre_line`); text, groups, tables, bitmaps, clip frames and symbols count anywhere inside their bounds); an object with live effects counts where it is drawn: its warped outline and the objects its effects add, and its selection box encloses them |
 | Shift+click | add or remove from the selection |
 | Ctrl+click | on a clip frame lying on a layer: Edit Contents, the contents taken out of the frame and the one under the pointer selected (all of them off the contents), see `clip-frame.md` (#982); otherwise the object inside a group, one level further in at each click (the first level inside the topmost group, then the group or object inside that, down to the innermost object); its handles are round, and moving, scaling, colouring or deleting it changes that object only (a group left empty goes); once chosen it is dragged on its own from anywhere on it without Ctrl, while a press on another part of the group takes the whole group (#849, `pick_drag_tests::object_chosen_in_a_group_drags_alone_from_anywhere_on_it`); Ctrl+Shift+click adds one more; a group and an object inside it are never selected together |
 | Alt+click | the object beneath the selected one under the pointer, round to the top again after the bottom one (dig); with nothing there selected, the object beneath the topmost one, so one Alt+click on the object in front takes the one hidden behind it (the topmost itself when it is alone there; #1350, `pick_drag_tests::alt_click_takes_the_object_behind_the_front_one_at_once`); Ctrl+Alt digs through the objects inside groups and clip frames (a clip frame comes after its contents); Shift+Alt adds it |
 | Click on a selected object (any of a selection), or on the centre mark | toggle the rotate/skew handles: curved arrows at the corners, straight double arrows at the sides, the centre of rotation in the middle |
-| Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts); with Alt held at the press the frame starts also over an object that is not selected (a background under the objects; without Alt that press moves the object; #1341, #1350, `pick_drag_tests::alt_drag_selects_also_when_it_starts_over_an_object`); Shift keeps the selection and turns over the objects the frame takes (selected ones are deselected, the others added; the Freehand Pick lasso too, #401); Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
+| Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts); with Alt held at the press the frame starts also over an object, selected or not (the object in front of a hidden one, a background under the objects; without Alt a press on an object moves it; #1341, #1350, `pick_drag_tests::alt_drag_selects_also_when_it_starts_over_an_object`, `pick_drag_tests::alt_drag_over_the_selected_front_object_selects_the_one_behind`); Shift keeps the selection and turns over the objects the frame takes (selected ones are deselected, the others added; the Freehand Pick lasso too, #401); Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
 | Drag the centre mark (the "x") | moves the selection, also where the mark lies on nothing (an outline-only ring) |
 | Space | from another tool, picks the Pick tool; on the Pick tool, goes back to the tool used before it (the Pick tool's key, whatever it is bound to in Options, works the same way); ignored during a drag (it drops a copy there) and while text is edited. A tool key held down counts once: the presses the keyboard repeats while it is held pick nothing (#1502, `pick_drag_tests::holding_space_drops_one_copy_and_picks_once`) |
 | Drag object | move with the pointer (snapped); Ctrl keeps the move horizontal or vertical, whichever is longer; Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached), one copy a press, however long Space is held; let go over the document palette to add the objects' colours to it instead of moving them |
@@ -61,8 +61,14 @@ Ctrl or Alt during the drag changes the result at once.
 The selection box has no frame of its own, so the objects' outlines
 stay in view. Eight solid black square handles with a one-pixel white
 edge (so they show on a dark drawing, #670), 10 interface points
-across, stand just outside it: their centres 6.5 points out from the box
-(a gap of 1.5 points). A corner or side handle scales from where it was
+across by default (Options > Nodes and Handles > Handle size: Small 6,
+Medium 8, Large 10 points, #1285), stand just outside it: their centres
+half a handle plus 1.5 points out from the box (a gap of 1.5 points), and
+a press within half a handle plus 1 point of a centre (never less than
+4 points) takes it
+(`pick_drag_tests::the_handle_size_option_sets_the_handles_size_and_reach`).
+The text flow tabs hang 3.5 points past the handles, whatever their
+size. A corner or side handle scales from where it was
 grabbed, so the box follows the pointer without a jump. Objects chosen
 inside a group show round handles. The centre mark is a small cross.
 
@@ -195,7 +201,13 @@ vertical, Esc cancels it. On release a menu opens there:
 | Cancel | nothing |
 
 The four items that act on the object under the pointer are dimmed when
-there is none. A right click without a drag opens the context menu.
+there is none. A right click without a drag opens the context menu. A
+right click or a right-button drag on a selected object keeps the
+selection, also where another object covers it (an object picked with
+Alt+click or a marquee behind a larger one): the menu and the move are
+for what is selected, not for the object in front; with no selected
+object under the pointer, the topmost object there is selected first
+(#1684, `pick_drag_tests::a_right_click_on_a_covered_selected_object_keeps_the_selection`).
 
 ## Property bar
 

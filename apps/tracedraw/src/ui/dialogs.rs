@@ -914,6 +914,11 @@ pub enum Dialog {
     GoToPage {
         page: usize,
     },
+    /// Page > Page Spacing > Custom: the space between the pages of the
+    /// Multipage View, in the document's units.
+    PageSpacing {
+        value: f64,
+    },
     InsertPage {
         count: u32,
         after: bool,
@@ -1596,6 +1601,27 @@ pub fn show(app: &mut App, ctx: &Context) {
                 });
                 if ok_cancel(ui, &mut close) {
                     app.goto_page(page.saturating_sub(1));
+                }
+            });
+        }
+        Dialog::PageSpacing { value } => {
+            let u = app.units;
+            window(ctx, tr("dialog.page_spacing")).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(tr("dialog.page_spacing_label"));
+                    ui.add(
+                        crate::ui::field::NumField::new(value)
+                            .range(0.0..=u.from_mm(tracedraw_core::document::MAX_PAGE_SPACING))
+                            .speed(0.1)
+                            .suffix(format!(" {}", u.short())),
+                    )
+                    .rich_tip(crate::ui::tips::pair(
+                        "dialog.page_spacing_label",
+                        "dialog.page_spacing_desc",
+                    ));
+                });
+                if ok_cancel(ui, &mut close) {
+                    app.set_page_spacing(u.to_mm(*value));
                 }
             });
         }
@@ -6316,7 +6342,14 @@ fn border_grommet_dialog(
     }
     if ok {
         let n = crate::border_grommet::apply(app, st);
-        app.status = trf("border_grommet.done", &[("n", &n.to_string())]);
+        // Grommets on but none placed: the reason, not "0 marks" (#1332).
+        let no_room =
+            n == 0 && area.is_some_and(|a| !st.grommets_have_room(st.final_size(a.size())));
+        app.status = if no_room {
+            tr("border_grommet.no_room")
+        } else {
+            trf("border_grommet.done", &[("n", &n.to_string())])
+        };
     }
 }
 
@@ -6437,6 +6470,16 @@ fn border_grommet_preview(
     );
     let inner = egui::Rect::from_two_pos(at(b, b), at(b + area.width(), b + area.height()));
     p.rect_filled(inner, 0.0, egui::Color32::WHITE);
+    // Mirrored and stretched edges drawn apart: hatching for the design
+    // flipped over the edge, streaks for the edge drawn outwards; the
+    // same grey band stood for both (#1332).
+    let step = (b / 2.0).max(size.width.max(size.height) / 80.0);
+    for (a, c) in crate::border_grommet::band_marks(st.border, size, b, step) {
+        p.line_segment(
+            [at(a.x, a.y), at(c.x, c.y)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0xB4)),
+        );
+    }
     let blue = egui::Color32::from_rgb(0x33, 0x33, 0xFF);
     for (a, c) in [
         (inner.left_top(), inner.right_top()),
@@ -6470,6 +6513,17 @@ fn border_grommet_preview(
         egui::FontId::proportional(12.0),
         Tokens::text(),
     );
+    // Grommets on but without room on the page: say so, where the
+    // marks would be; nothing was placed with no word why (#1332).
+    if !st.grommets_have_room(size) {
+        p.text(
+            rect.left_top() + egui::vec2(10.0, 8.0),
+            egui::Align2::LEFT_TOP,
+            tr("border_grommet.no_room"),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(0xC0, 0x20, 0x20),
+        );
+    }
 }
 
 fn font_manager_dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &mut bool) {
@@ -6522,6 +6576,7 @@ fn palette_editor_dialog(
         // A locked palette shows as a built-in one does: nothing changes
         // it until it is unlocked in the Palette Manager (#1343).
         let locked = app.palette_locked(st.palette);
+        let mut save_as = None;
         let Some(pal) = app.palettes.get_mut(st.palette) else {
             *close = true;
             return;
@@ -6622,20 +6677,7 @@ fn palette_editor_dialog(
                     .rich_tip(crate::ui::tips::keyed("dialog.save_palette"))
                     .clicked()
                 {
-                    if let Some(p) = crate::files::Dialog::new()
-                        .add_filter(
-                            crate::palette::filter_label(&tr("file.palettes"), &["tdpal", "gpl"]),
-                            &["tdpal", "gpl"],
-                        )
-                        .set_file_name(format!("{}.tdpal", pal.name))
-                        .save_path()
-                    {
-                        if let Err(e) = crate::palette::save_palette(pal, &p) {
-                            log::warn!("{e}");
-                        } else {
-                            pal.path = Some(p);
-                        }
-                    }
+                    save_as = Some(pal.name.clone());
                 }
             });
         } else {
@@ -6648,6 +6690,26 @@ fn palette_editor_dialog(
                 .color(Tokens::text_dim())
                 .size(11.0),
             );
+        }
+        // The save dialog, a download, or the system's save picker on
+        // Android (#1402); the palette keeps the file it was saved as.
+        if let Some(name) = save_as {
+            let index = st.palette;
+            crate::files::Dialog::new()
+                .add_filter(
+                    crate::palette::filter_label(&tr("file.palettes"), &["tdpal", "gpl"]),
+                    &["tdpal", "gpl"],
+                )
+                .set_file_name(format!("{name}.tdpal"))
+                .save_file(app, move |app, p| {
+                    let Some(pal) = app.palettes.get_mut(index) else {
+                        return;
+                    };
+                    match crate::palette::save_palette(pal, &p) {
+                        Ok(()) => pal.path = Some(p),
+                        Err(e) => app.status = e.to_string(),
+                    }
+                });
         }
         if ui
             .button(tr("dialog.close"))
@@ -6756,6 +6818,7 @@ pub(crate) mod tests {
                 name: "Page".into(),
             },
             Dialog::GoToPage { page: 1 },
+            Dialog::PageSpacing { value: 30.0 },
             Dialog::InsertPage {
                 count: 1,
                 after: true,
@@ -7001,6 +7064,23 @@ pub(crate) mod tests {
         assert_eq!(m.rows, vec![vec!["a3".to_string(), "b3".to_string()]]);
         crate::print_merge::delete_records(&mut m, 5..=9);
         assert_eq!(m.rows.len(), 1, "past the end deletes nothing");
+    }
+
+    /// Page > Page Spacing > Custom: the value is in the drawing's units
+    /// and OK sets the drawing's page spacing in mm, one undo step.
+    #[test]
+    fn the_page_spacing_dialog_sets_the_drawing_s_spacing() {
+        let mut app = App::headless();
+        app.units = crate::app::Units::Centimeters;
+        app.dialog = Dialog::PageSpacing { value: 1.5 };
+        let ctx = crate::theme::ui_context();
+        frame(&ctx, &mut app, false);
+        frame(&ctx, &mut app, true);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!((app.page_spacing() - 15.0).abs() < 1e-9);
+        assert_eq!(app.doc().metadata.page_spacing, Some(15.0));
+        app.undo();
+        assert_eq!(app.page_spacing(), 30.0);
     }
 
     #[test]

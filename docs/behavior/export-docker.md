@@ -22,8 +22,12 @@ once, each in its own format, to one folder.
 ## Export
 
 - Export (n) writes the ticked assets to the chosen folder (Browse...
-  chooses it; the first Export asks for one). In the browser every file
-  is downloaded.
+  chooses it; the first Export asks for one). In the browser and the
+  Android app no folder can be picked: the folder row says the assets go
+  out as one zip file, named after the drawing with every asset in a
+  folder of that name, downloaded in the browser and saved where the
+  system's save picker says on Android (#1399,
+  `assets_export_as_one_zip_where_no_folder_can_be_picked`).
 - File names are the asset names with `/ \ : * ? " < > |` and control
   characters replaced by `_`; an empty name is "asset". Two assets that
   would write the same file (ignoring case) get " (2)", " (3)" and so on.

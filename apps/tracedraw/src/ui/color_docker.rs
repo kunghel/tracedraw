@@ -995,11 +995,25 @@ pub fn color(app: &mut App, ui: &mut Ui) {
 /// The text of the button that drops the other actions.
 pub(crate) const MORE_ACTIONS: &str = "...";
 
-/// A small frameless text button; `enabled` or pale.
+/// The strip's eyedropper button: the Color Eyedropper tool's own icon,
+/// as in the toolbox (it showed the outline pen's picture, #1485),
+/// pushed in while that tool is on.
+fn eyedropper_button(app: &App, ui: &mut Ui) -> Response {
+    crate::ui::propbar::tool_button(
+        ui,
+        crate::tools::Tool::ColorEyedropper,
+        &tr("docker.eyedropper"),
+        true,
+        app.tool == crate::tools::Tool::ColorEyedropper,
+    )
+}
+
+/// A small text button with a button's frame, so it reads as one and
+/// not as a label (#1485); `enabled` or pale.
 fn small_action(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     ui.add_enabled(
         enabled,
-        egui::Button::new(egui::RichText::new(text).small()).frame(false),
+        egui::Button::new(egui::RichText::new(text).small()),
     )
 }
 
@@ -1039,15 +1053,7 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
                 ),
             )
         });
-        if crate::ui::propbar::pic_button(
-            ui,
-            crate::ui::propbar::Pic::Pen,
-            &tr("docker.eyedropper"),
-            true,
-            app.tool == crate::tools::Tool::ColorEyedropper,
-        )
-        .clicked()
-        {
+        if eyedropper_button(app, ui).clicked() {
             app.set_tool(crate::tools::Tool::ColorEyedropper);
         }
         ui.menu_button(MORE_ACTIONS, |ui| more_actions(app, ui, c, has))
@@ -1581,6 +1587,87 @@ pub(crate) mod tests {
         out.textures_delta.clear();
         app.run(Command::SetInks { inks: Vec::new() });
         assert!(app.doc().inks.is_empty());
+    }
+
+    /// The shapes a frame of `ctx` paints when `add` runs in an area at
+    /// a fixed place: the second frame, as an area's first frame only
+    /// sizes it and paints placeholders.
+    fn painted(ctx: &egui::Context, add: impl Fn(&mut Ui)) -> Vec<egui::epaint::Shape> {
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        // No fading in: the shapes come out at their full colour.
+        ctx.all_styles_mut(|s| s.animation_time = 0.0);
+        let run = || {
+            ctx.run_ui(input(), |root| {
+                egui::Area::new(egui::Id::new("probe"))
+                    .fixed_pos(egui::pos2(20.0, 20.0))
+                    .fade_in(false)
+                    .show(root.ctx(), |ui| add(ui));
+            })
+        };
+        let mut first = run();
+        first.textures_delta.clear();
+        let mut out = run();
+        // The font texture's update is not applied anywhere here, and a
+        // widget's placeholder shape says nothing about its look.
+        out.textures_delta.clear();
+        out.shapes
+            .into_iter()
+            .map(|c| c.shape)
+            .filter(|s| !matches!(s, egui::epaint::Shape::Noop))
+            .collect()
+    }
+
+    /// #1485: the eyedropper button paints the Color Eyedropper tool's
+    /// own icon (the toolbox's), not the outline pen's picture it showed,
+    /// and Fill and Outline are framed buttons, not bare words.
+    #[test]
+    fn the_eyedropper_button_shows_its_tool_and_fill_and_outline_are_buttons() {
+        use crate::theme::Tokens;
+        use crate::tools::Tool;
+        let ctx = crate::theme::ui_context();
+        let app = App::headless();
+        let button = painted(&ctx, |ui| {
+            eyedropper_button(&app, ui);
+        });
+        let icon = painted(&ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::splat(Tokens::prop_button()),
+                egui::Sense::hover(),
+            );
+            crate::ui::icons::draw(
+                ui.painter(),
+                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(Tokens::prop_icon())),
+                Tool::ColorEyedropper,
+                crate::ui::icons::tool_color(Tool::ColorEyedropper, Tokens::icon()),
+            );
+        });
+        assert!(!icon.is_empty());
+        assert_eq!(button, icon, "the tool's icon, nothing else");
+        let pen = painted(&ctx, |ui| {
+            crate::ui::propbar::pic_button(ui, crate::ui::propbar::Pic::Pen, "tip", true, false);
+        });
+        assert_ne!(button, pen);
+        // Fill and Outline: a frame behind the word.
+        for word in ["Fill", "Outline"] {
+            let shapes = painted(&ctx, |ui| {
+                small_action(ui, true, word);
+            });
+            assert!(
+                shapes
+                    .iter()
+                    .any(|s| matches!(s, egui::epaint::Shape::Rect(_))),
+                "{word}: {shapes:?}"
+            );
+            assert!(shapes
+                .iter()
+                .any(|s| matches!(s, egui::epaint::Shape::Text(_))));
+        }
     }
 
     #[test]

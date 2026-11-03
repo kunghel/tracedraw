@@ -128,7 +128,6 @@ pub enum Glyph {
 
 const RED: Color32 = Color32::from_rgb(0xD0, 0x2B, 0x2B);
 const GREEN: Color32 = Color32::from_rgb(0x1E, 0x9E, 0x3C);
-const BLUE: Color32 = Color32::from_rgb(0x1F, 0x6F, 0xC5);
 const GOLD: Color32 = Color32::from_rgb(0xE8, 0xA3, 0x17);
 
 /// The picture of a menu row, by its key.
@@ -334,8 +333,10 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
         line((cx - h, cy - h), (cx + h, cy + h), st);
         line((cx - h, cy + h), (cx + h, cy - h), st);
     };
+    // The accent of the pages: the icons' blue (#1682).
+    let blue = accent(crate::ui::icons::accent());
     let plus = |cx: f32, cy: f32, h: f32| {
-        let st = Stroke::new(1.6 * k, accent(GREEN));
+        let st = Stroke::new(1.6 * k, blue);
         line((cx - h, cy), (cx + h, cy), st);
         line((cx, cy - h), (cx, cy + h), st);
     };
@@ -415,7 +416,7 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
     let blk = |x0: f32, y0: f32, x1: f32, y1: f32, c: Color32| {
         fillr(x0, y0, x1, y1, c);
     };
-    let blue = accent(BLUE);
+
     let grid = |x0: f32, y0: f32, x1: f32, y1: f32, rows: usize, cols: usize| {
         rect(x0, y0, x1, y1, paper, s);
         for i in 1..rows {
@@ -669,12 +670,15 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             gear(11.5, 11.5, 4.0);
         }
         PageBackground => {
-            fillr(
+            // The page on a backdrop in the accent: a tinted square with
+            // the accent frame, the page over it.
+            rect(
                 1.5,
                 1.5,
                 14.5,
                 14.5,
-                accent(Color32::from_rgb(0x9C, 0xC8, 0xF0)),
+                accent(blue.gamma_multiply(0.22)),
+                Stroke::new(1.0 * k, blue),
             );
             page(4.0, 3.5, 12.0, 13.0);
         }

@@ -6,7 +6,8 @@ use std::time::Instant;
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRunningApplication,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSURL,
@@ -66,6 +67,21 @@ declare_class!(
         #[method(applicationDidFinishLaunching:)]
         fn app_did_finish_launching(&self, notification: &NSNotification) {
             self.did_finish_launching(notification)
+        }
+
+        // TraceDraw: the Quit item of the application menu (Command+Q),
+        // the Dock icon's Quit, a log-out or shut-down all send
+        // `terminate:`, which asks here first. Without this method AppKit
+        // terminates at once and no window hears of it; the program's
+        // handler may take the quit over and ask about unsaved work
+        // (vendor/README.md).
+        #[method(applicationShouldTerminate:)]
+        fn app_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            if crate::quit_request::program_takes_it() {
+                NSApplicationTerminateReply::NSTerminateCancel
+            } else {
+                NSApplicationTerminateReply::NSTerminateNow
+            }
         }
 
         #[method(applicationWillTerminate:)]

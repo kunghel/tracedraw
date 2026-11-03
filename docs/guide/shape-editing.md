@@ -188,7 +188,8 @@ it, or drag a rectangle to remove every stretch it touches, whole.
 Drag over the selected objects (or the object under the pointer) to rub
 out a band. Set the **thickness** (6.35 mm to start with) and a round or
 square nib on the property bar. A click erases a dot; a double-click on
-an object deletes it. Bitmaps, groups and clip frames are not erased.
+an object deletes it. A clip frame is erased through its frame, which
+hides its contents along the band. Bitmaps and groups are not erased.
 
 Detail: [the crop, knife and eraser notes](../behavior/crop-knife-eraser.md).
 

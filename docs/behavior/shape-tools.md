@@ -53,6 +53,18 @@ whatever tool is active.
   shows them as two columns, left corners then right ones). With Edit
   Corners Together (the lock, on by default) a size typed in one field
   goes to all four. A corner is at most half the shorter side.
+- Each field is the corner seen at that position on the page, not the
+  rectangle's own corner of that name: a rectangle turned by 180
+  degrees, flipped, or stretched across its own side with a handle
+  (as a flap is made from a panel) shows and edits in its top left
+  field the corner that lies at the top left (`Corners::seen_through`:
+  the rectangle's x axis counts as horizontal when it leans that way
+  more than it rises, else as vertical, and the y axis as the other
+  one, each with its direction; a rectangle turned by less than 45
+  degrees keeps its corners where they were). The Properties docker's
+  Corners section and the mixed marks read the corners the same way
+  (#1670, `document::tests::corners_are_read_where_they_are_seen`,
+  `ui::propbar::tests::corner_fields_edit_the_corner_seen_at_their_position`).
 - Relative Corner Scaling (off by default for new rectangles): off, the
   corners keep their size on the page when the rectangle is resized, and
   stay circular when it is stretched in one direction only. On, they

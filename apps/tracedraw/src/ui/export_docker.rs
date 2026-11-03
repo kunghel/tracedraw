@@ -172,26 +172,34 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
     }
 
     ui.separator();
-    if !crate::files::WEB {
-        ui.horizontal(|ui| {
-            let folder = app
-                .export_assets
-                .folder
-                .as_ref()
-                .map(|f| f.display().to_string())
-                .unwrap_or_else(|| tr("export_docker.no_folder"));
-            ui.label(egui::RichText::new(folder).size(11.0))
-                .rich_tip(tr("export_docker.folder"));
-            if ui
-                .button(tr("export_docker.browse"))
-                .rich_tip(crate::ui::tips::keyed("export_docker.browse"))
-                .clicked()
-            {
-                if let Some(f) = crate::files::pick_folder() {
-                    app.export_assets.folder = Some(f);
+    match crate::files::FolderUse::ExportAssets.action() {
+        crate::files::FolderAction::PickFolder(token) => {
+            ui.horizontal(|ui| {
+                let folder = app
+                    .export_assets
+                    .folder
+                    .as_ref()
+                    .map(|f| f.display().to_string())
+                    .unwrap_or_else(|| tr("export_docker.no_folder"));
+                ui.label(egui::RichText::new(folder).size(11.0))
+                    .rich_tip(tr("export_docker.folder"));
+                if ui
+                    .button(tr("export_docker.browse"))
+                    .rich_tip(crate::ui::tips::keyed("export_docker.browse"))
+                    .clicked()
+                {
+                    if let Some(f) = crate::files::pick_folder(token) {
+                        app.export_assets.folder = Some(f);
+                    }
                 }
+            });
+        }
+        // No folder can be picked: the files go out as one zip (#1399).
+        _ => {
+            if let Some(tip) = crate::files::FolderUse::ExportAssets.tip() {
+                ui.label(egui::RichText::new(tr(tip)).size(11.0).weak());
             }
-        });
+        }
     }
     let count = app
         .export_assets

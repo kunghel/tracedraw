@@ -247,8 +247,9 @@ impl IndexJob {
     }
 }
 
-/// Start indexing a folder: on worker threads on the desktop, at once in
-/// a browser (which has no folders to read).
+/// Start indexing a folder: on worker threads natively, at once in a
+/// browser (no threads; its folder is the pictures picked, kept in
+/// memory, #1399).
 pub fn start_index(dir: PathBuf) -> IndexJob {
     let paths = library_paths(&dir);
     let done = Arc::new(AtomicUsize::new(0));
@@ -259,9 +260,20 @@ pub fn start_index(dir: PathBuf) -> IndexJob {
         done: done.clone(),
         rx,
     };
-    if paths.is_empty() || crate::files::WEB {
-        // Nothing to read (always so in a browser, which lists no folders).
+    if paths.is_empty() {
         let _ = tx.send(Vec::new());
+        return job;
+    }
+    if crate::files::WEB {
+        let index = paths
+            .iter()
+            .filter_map(|p| {
+                let entry = index_one(p);
+                done.fetch_add(1, Ordering::Relaxed);
+                entry
+            })
+            .collect();
+        let _ = tx.send(index);
         return job;
     }
     std::thread::spawn(move || {

@@ -263,6 +263,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Double-click | select the word |
 | Esc | finish editing and return to the Pick tool; an empty text is removed |
 | Ctrl+Space | finish editing and switch to the Pick tool (Space alone types a space) |
+| F2, Shift+F2, F3, F4, Shift+F4 | zoom as with no text edited (Zoom tool for one zoom, to the selection, out, to fit, to the page) and the editing goes on: the caret and the selected characters stay, typing goes on into the text. After F2's one zoom the tool before comes back with the text still being edited. A key given another command or removed in Options > Customization > Commands is left alone (#1699, `pick_drag_tests::zoom_keys_work_while_editing_text`) |
 | Undo of typing | the typing of one editing session of one text is one step ("Edit Text"); a session folds keystrokes only into its own step, while it is the last one, so editing another text never touches it (#373, `text_editing::tests::editing_a_second_text_keeps_the_edit_of_the_first`) |
 | Undo of a new text | a text started with a click of the Text tool is made in one step with its first characters ("Create Object"): the font, size or colour picked for it before typing and the typing that follows while nothing else happens join that step, so one Undo takes the whole text back and never leaves an empty text object. A text started and left with no characters leaves no object and no undo step; a text emptied by deleting its characters goes in the step that emptied it, so Undo gives it back with its characters (#1481, `text_editing::tests::undoing_a_new_text_leaves_no_empty_text`, `text_editing::tests::a_style_given_before_typing_joins_the_new_text`, `text_editing::tests::a_new_text_left_empty_leaves_no_step`, `text_editing::tests::a_text_emptied_comes_back_with_its_characters`) |
 | Typing while a field has the keyboard (the font search field, a docker's box) | goes to the field only; the text waits until the field lets the keyboard go (#342, `pick_drag_tests::typing_in_a_focused_field_leaves_the_edited_text_alone`) |
@@ -409,7 +410,21 @@ any other object; the steps and sides follow the letters' outlines
   property bar's size and scale fields, changes its frame and the text
   flows anew in it; the letters keep their size and the text's transform
   stays as it was (`text_frames.rs`). While the handle is dragged the
-  frame follows and the letters stay. This holds for text that is
+  frame follows and the drag outline shows the text flowed anew in it,
+  with the line breaks the release makes; the frame turns red when the
+  text no longer fits (a frame of a linked chain takes what fits of the
+  text after it, which flows on). Only the lines that show are broken
+  anew on each frame of the drag, at most once a frame: the text engine
+  keeps the shaped glyphs of the texts laid out last (up to 64 texts and
+  30 000 glyphs). A text whose layout takes longer than a quarter of a
+  60 Hz frame (`LIVE_REFLOW_BUDGET`, 4 ms) three times in a row, or a
+  text longer than 4000 bytes whose glyphs are not kept (a very long
+  one, which would take long to shape), shows its frame alone during the
+  drag, its old outline stretched with it, and flows on release, until
+  the drawing changes. The release is one
+  undo step, as before (#1327,
+  `pick_drag_tests::a_paragraph_frame_reflows_live_while_its_handle_is_dragged`,
+  benchmark `frame_times_of_a_paragraph_frame_resize`). This holds for text that is
   neither turned nor slanted and a scale by positive amounts; turning,
   slanting, mirroring and moving act on the whole text, and a turned
   text scales as a whole. With other objects in the selection each is
@@ -674,6 +689,17 @@ Window > Panels > Glyphs. From the top:
   was not chosen); Ctrl keeps the move horizontal or vertical. The move
   becomes their offsets (layout space, so rotated text moves along its
   own axes). One undo step per drag ("Move Characters").
+- The chosen characters take the format, as characters selected while
+  editing do (#1662): the Text docker's (Ctrl+T) font, style, size,
+  underline, range kerning, background, strikethrough, OpenType
+  features and font axes, a fill from the docker or a palette
+  ("Character Fill") and an outline colour ("Character Outline") go to
+  them only, and the docker's Character fields show the first chosen
+  character (the property bar's text fields are not shown with the
+  Shape tool). The Paragraph settings go to the paragraphs holding the
+  chosen characters. With no character chosen, a change goes to the
+  whole text as before
+  (`text_nodes::tests::chosen_characters_take_the_format_fill_and_outline`).
 - The Interactive horizontal spacing arrow, below the lower right
   corner, changes the character spacing so the end of the widest line
   follows the pointer: `+dx / n` per character for `n` characters on

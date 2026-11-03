@@ -19,15 +19,45 @@ pode abrir mais paletas, criar as suas e editá-las.
 
 As setas nas pontas rolam a paleta, e o botão na ponta direita mostra todas as
 cores de uma vez. Passe o ponteiro sobre uma cor para ver o nome e os valores. O
-botão de menu da paleta, na ponta esquerda, abre o menu da paleta.
+botão de menu da paleta, na ponta esquerda, abre o menu da paleta. A roda do
+mouse sobre a paleta a rola; com <kbd>Ctrl</kbd> pressionado, a roda aumenta
+(roda para cima) ou diminui (roda para baixo) as amostras, de 8 a 48 px, e o
+tamanho fica guardado. O menu da paleta tem **Tamanho das amostras**, com cinco
+tamanhos, de **Extrapequeno** a **Extragrande**, e **Linhas**, de 1 a 8 linhas
+de amostras, ou **Ajustar** para mostrar todas as cores.
 
 A paleta pode ir para outra borda da janela, ou flutuar: arraste-a pela alça
 pontilhada. Com duas ou três linhas, a janela que mostra todas as cores abre
 sem cobrir nenhuma delas.
 
-Cada paleta marcada em [[menu.window > menu.window.color_palettes]] ou no
-Gerenciador de paletas aparece numa faixa própria ao lado da paleta padrão,
-com **Fechar paleta** no menu dela.
+### Várias paletas
+
+Você pode ter várias paletas abertas ao mesmo tempo, cada uma numa barra
+própria: marque-a em [[menu.window > menu.window.color_palettes]], clique no
+olho dela no Gerenciador de paletas, ou escolha-a em **Abrir como barra de
+paleta** no menu de uma paleta. A paleta do documento também pode ter uma
+barra própria.
+
+- Cada barra pode ir para qualquer borda da janela (nas bordas esquerda e
+  direita as amostras ficam em colunas) ou flutuar numa janela pequena:
+  arraste-a pela alça pontilhada ou pelo título, ou escolha um lugar em
+  **Posição** no menu dela.
+- Arraste a borda direita ou de baixo de uma paleta flutuante para mudar o
+  tamanho: as amostras se arrumam em linhas numa janela larga e em colunas
+  numa janela alta.
+- Cada barra tem o próprio **Tamanho das amostras** e as próprias **Linhas**.
+- **Fechar paleta** no menu, ou o botão de fechar da janela, a fecha.
+- As paletas abertas, onde estão, seus tamanhos e linhas ficam guardados, e
+  vão junto nos arquivos de espaço de trabalho.
+
+### Dar nome às paletas
+
+Qualquer paleta, integrada ou a do documento, pode ter um nome seu: escolha
+**Renomear...** no menu dela ou no Gerenciador de paletas, ou clique duas vezes
+no nome dela ali. O nome aparece em todo lugar onde a paleta é listada;
+**Restaurar nome** devolve o nome original. Os arquivos das paletas integradas
+nunca mudam; uma paleta sua salva como `.gpl` ou `.tdpal` guarda o nome no
+arquivo.
 
 Em cada lado, ela pode ficar na borda da janela ou ao lado do desenho, entre o desenho e os painéis ou a caixa de ferramentas daquele lado. Enquanto você a arrasta, uma faixa azul mostra onde ela vai ficar; clique com o botão direito na alça para escolher um lugar em uma lista.
 
@@ -46,25 +76,36 @@ para ela. Para mostrá-la ou ocultá-la, veja
 
 ## O painel Paletas {#palettes-docker}
 
-O painel [[docker.palettes]] lista as paletas que você tem, com o número de
-cores de cada uma. Abra-o com
+O painel [[docker.palettes]] lista as paletas que você tem em três seções,
+**Integradas**, **Minhas paletas** e **Paleta do documento**. Abra-o com
 [[menu.window > menu.window.color_palettes > menu.window.palette_manager]].
 
 ![O painel Paletas](../../img/color-palettes.png)
 
-- Marque uma paleta para mostrá-la abaixo da janela de desenho.
-- [[docker.edit]] a abre no editor de paletas.
-- [[docker.palette_lock]] bloqueia uma paleta que você abriu ou criou, para
-  que o editor de paletas não possa alterá-la; [[docker.palette_unlock]]
-  permite editá-la de novo.
-- [[menu.window.palette_open]] abre um arquivo de paleta (`.tdpal`, `.gpl`,
-  `.ase` ou `.aco`) e a mostra numa linha própria ao lado da paleta padrão.
-  Abrir o mesmo arquivo de novo não acrescenta uma segunda cópia.
-- [[menu.window.palette_from_document]] e
-  [[menu.window.palette_from_selection]] criam uma paleta com as cores usadas
-  no desenho ou na seleção.
-- As cores da paleta do documento aparecem embaixo; clique em uma para
+- Cada paleta mostra as primeiras cores, quantas cores tem, o modelo de cor e
+  onde está sendo exibida. Clique no olho para abri-la numa barra própria, ou
+  para fechar a barra dela.
+- Clique numa paleta para selecioná-la: o controle **Tamanho das amostras**
+  passa a ajustar as amostras da barra dela enquanto você arrasta (as marcas
+  são os cinco tamanhos nomeados), e **Linhas** define as linhas dela.
+- O botão de três pontos, ou o botão direito, abre o menu da paleta: abrir ou
+  fechar a barra, [[docker.edit]], **Renomear...**, **Restaurar nome**,
+  **Duplicar**, [[docker.palette_lock]] (paletas que você abriu ou criou,
+  para que o editor de paletas não as altere; [[docker.palette_unlock]]
+  permite editá-las de novo), **Excluir paleta** (paletas que
+  você abriu ou criou; o arquivo fica), **Mover para cima** e **Mover para
+  baixo**. Você também pode arrastar uma paleta para outro lugar da seção.
+- Digite na caixa de filtro para listar só as paletas cujo nome contém o
+  texto.
+- Os botões ao lado da caixa de filtro: [[menu.window.palette_open]] abre um
+  arquivo de paleta (`.tdpal`, `.gpl`, `.ase` ou `.aco`; abrir o mesmo arquivo
+  de novo não acrescenta uma segunda cópia); [[menu.window.palette_from_document]]
+  e [[menu.window.palette_from_selection]] preenchem a paleta do documento com
+  as cores do desenho ou da seleção.
+- As cores da paleta do documento aparecem na seção dela; clique em uma para
   preencher a seleção, com o botão direito para colorir o contorno.
+  **Adicionar cores da seleção**, **Adicionar do documento** e **Limpar** a
+  alteram.
 
 ## Editar uma paleta {#palette-editor}
 

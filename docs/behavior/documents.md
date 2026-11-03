@@ -62,6 +62,14 @@ changes, then shows the tab to its right, else the one to its left, else
 the Welcome Screen (the empty workspace when its tab is closed). Window > Close All closes every drawing, asking about
 each one with unsaved changes; Cancel stops. File > Exit, Alt+F4 and the
 window's close button do the same and quit when every drawing is closed.
+On macOS so do Command+Q, Quit TraceDraw in the application menu, the
+Dock icon's Quit and a log-out or shut-down (#1669): AppKit asks the
+application before it terminates (`applicationShouldTerminate:` in the
+patched winit, `winit::platform::macos::set_quit_handler`); with an
+unsaved drawing TraceDraw cancels the terminate and the next frame asks
+about each one as File > Exit does (`system_quit`), with none the quit
+goes ahead at once. A log-out with unsaved drawings therefore stops at
+the question, as macOS expects of a document program.
 
 The Window menu lists the open drawings, numbered, with a check on the
 active one.
@@ -71,6 +79,15 @@ active one.
 - `documents::tests::each_drawing_keeps_its_objects_history_and_selection`
 - `documents::tests::closing_moves_to_a_neighbour_then_to_the_welcome_screen`
 - `documents::tests::exit_asks_about_each_unsaved_drawing_then_quits`
+- `system_quit::tests::a_quit_with_an_unsaved_drawing_is_taken_over_and_asks_like_file_exit`,
+  `a_quit_with_no_unsaved_drawing_goes_ahead`,
+  `a_drawing_saved_before_the_frame_quits_without_asking`
+- `winit_quit_request::tests::without_a_handler_the_quit_goes_ahead_and_with_one_the_handler_decides`
+  (the patched winit's part)
+- On a Mac (by hand, no headless check): with an unsaved drawing,
+  Command+Q, the application menu's Quit and the Dock icon's Quit each
+  show the Save / Don't Save / Cancel question; Cancel keeps TraceDraw
+  running, Don't Save quits; with nothing unsaved each quits at once.
 - Given a drawing open and the Welcome Screen shown, when its tab's
   close button is clicked, then the drawing shows and the tab is a house
   half as wide or less; a click on the house shows the Welcome Screen

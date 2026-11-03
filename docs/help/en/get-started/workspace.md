@@ -129,6 +129,18 @@ grip to lock the bars or reset their positions. To show or hide a bar, use
 [[menu.window > menu.window.toolbars]]. You can also save the whole
 arrangement as a workspace; see [Workspaces](../customize/workspaces.md).
 
+A floating toolbox can be resized by the edges and corners of its window,
+and its buttons follow: a tall narrow window holds them two to a row, a
+wider one more to a row in fewer rows, a wide short one in a row or two,
+with the lines between the tool groups kept. The size is remembered. When a
+floating bar's name does not fit its title, the name is shortened with an
+ellipsis; hover the title to read it whole.
+
+Hold <kbd>Ctrl</kbd> and turn the mouse wheel over a toolbar or the toolbox
+to make its buttons larger (wheel up) or smaller (wheel down); the same
+over the color palette makes its swatches larger or smaller. The sizes are
+remembered. The plain wheel still scrolls a bar that does not fit.
+
 The standard toolbar, the property bar, the Text, Zoom and Transform toolbars
 and the time tracker can share a row when docked at the top or the bottom:
 drag a toolbar's grip onto another toolbar's row to put it beside that one,

@@ -994,15 +994,22 @@ impl App {
     /// moved on average; anchors whose object, node or segment is gone
     /// let go. `None` when
     /// nothing changes. A dimension moved on its own (its group has a
-    /// transform the anchored points do not follow) lets go of them all:
-    /// it was pulled off the object on purpose.
+    /// transform the anchored points do not follow) stays held (#1492):
+    /// its anchored points go back on the object and only the rest (the
+    /// dimension line or arc, and a point held to nothing) keeps the
+    /// group's transform. Only Break Apart frees it.
     fn follow_anchors(&self, g: &Shape, d: &Dimension) -> Option<Dimension> {
         if d.anchors.is_empty() {
             return None;
         }
         let doc = self.doc();
         let parent = doc.parent_transform(g.id).unwrap_or(Affine::IDENTITY);
-        let to_local = (parent * g.transform).inverse();
+        let to_page = parent * g.transform;
+        if to_page.determinant().abs() <= 1e-12 {
+            // Flattened: no space to bring the held points back into.
+            return None;
+        }
+        let to_local = to_page.inverse();
         let mut next = d.clone();
         next.anchors.clear();
         let mut moved: Vec<Vec2> = Vec::new();
@@ -1020,16 +1027,15 @@ impl App {
                 next.set_point(a.point, target);
             }
         }
-        if g.transform != Affine::IDENTITY && !moved.is_empty() {
-            // Moved by itself, not with what it measures.
-            let mut loose = d.clone();
-            loose.anchors.clear();
-            return Some(loose);
-        }
         if moved.is_empty() && next.anchors.len() == d.anchors.len() {
             return None;
         }
-        if !moved.is_empty() {
+        // Moved by itself, not with what it measures: the held points are
+        // back on the object (in the group's own space, so the group's
+        // transform, baked in when it is drawn again, leaves them there),
+        // while the line or arc keeps the move.
+        let by_itself = g.transform != Affine::IDENTITY;
+        if !moved.is_empty() && !by_itself {
             let shift = moved.iter().fold(Vec2::ZERO, |s, v| s + *v) / moved.len() as f64;
             match &mut next.measure {
                 Measure::Linear { at, .. } | Measure::Angular { at, .. } => *at += shift,
@@ -1603,7 +1609,7 @@ mod tests {
 
     /// A dimension drawn between two nodes of an object holds to them:
     /// resizing or moving the object takes the dimension along and its
-    /// value follows; a dimension moved by itself lets go; one whose
+    /// value follows; a dimension moved by itself stays held (#1492); one whose
     /// object is deleted lets go (#838).
     #[test]
     fn a_dimension_follows_the_object_it_measures() {
@@ -1655,15 +1661,139 @@ mod tests {
         assert!((a - Point::new(10.0, 60.0)).hypot() < 1e-6, "{a:?}");
         assert!((at.y - 50.0).abs() < 1e-6, "{at:?}");
         assert_eq!(d2.anchors.len(), 2);
-        // The dimension moved by itself lets go of the object.
+        // The dimension moved by itself stays held (#1492): its measured
+        // points stay on the corners, only its line moves.
         app.run(Command::TransformShapes {
             shapes: vec![dim],
             transform: Affine::translate((5.0, 5.0)),
         });
         app.bake_dimensions();
-        let d3 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
-        assert!(d3.anchors.is_empty());
+        let g = app.doc().find_shape(dim).expect("dim");
+        assert_eq!(g.transform, Affine::IDENTITY);
+        let d3 = Dimension::of(g).expect("data");
+        assert_eq!(d3.anchors, d2.anchors);
+        let Measure::Linear { a, b, at } = d3.measure else {
+            panic!("linear");
+        };
+        assert!((a - Point::new(10.0, 60.0)).hypot() < 1e-6, "{a:?}");
+        assert!((b - Point::new(90.0, 60.0)).hypot() < 1e-6, "{b:?}");
+        assert!((at.y - 55.0).abs() < 1e-6, "{at:?}");
         assert!((d3.value() - 80.0).abs() < 1e-6);
+        // And it still follows the object.
+        app.run(Command::TransformShapes {
+            shapes: vec![rect],
+            transform: Affine::translate((0.0, 10.0)),
+        });
+        app.bake_dimensions();
+        let d4 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        let Measure::Linear { a, at, .. } = d4.measure else {
+            panic!("linear");
+        };
+        assert!((a - Point::new(10.0, 70.0)).hypot() < 1e-6, "{a:?}");
+        assert!((at.y - 65.0).abs() < 1e-6, "{at:?}");
+        assert_eq!(d4.anchors.len(), 2);
+        // Turned or scaled by itself it stays held too: the points stay
+        // on the corners, the line goes where the turn took it.
+        app.run(Command::TransformShapes {
+            shapes: vec![dim],
+            transform: Affine::rotate_about(std::f64::consts::PI, Point::new(50.0, 70.0)),
+        });
+        app.bake_dimensions();
+        let d5 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        let Measure::Linear { a, b, at } = d5.measure else {
+            panic!("linear");
+        };
+        assert!((a - Point::new(10.0, 70.0)).hypot() < 1e-6, "{a:?}");
+        assert!((b - Point::new(90.0, 70.0)).hypot() < 1e-6, "{b:?}");
+        assert!((at.y - 75.0).abs() < 1e-6, "{at:?}");
+        assert_eq!(d5.anchors.len(), 2);
+        // Break Apart is what frees it: the pieces are no dimension.
+        app.select(vec![dim]);
+        app.break_apart();
+        assert!(app.doc().find_shape(dim).and_then(Dimension::of).is_none());
+    }
+
+    /// A diameter dimension on a circle, its points on the circle's
+    /// nodes, moved by itself: still held, the line moved along its
+    /// normal; an angular dimension's vertex and sides stay too (#1492).
+    #[test]
+    fn a_dimension_moved_by_itself_stays_on_its_object() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let circle = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(30.0, 30.0, 70.0, 70.0),
+                arc: None,
+            })
+            .expect("circle");
+        let nodes = node_points(app.doc().find_shape(circle).expect("circle"));
+        let (left, right) = (Point::new(30.0, 50.0), Point::new(70.0, 50.0));
+        assert!(
+            nodes.iter().any(|n| (*n - left).hypot() < 1e-6),
+            "{nodes:?}"
+        );
+        app.create_dimension(left, right, Point::new(50.0, 20.0));
+        let dim = app.selection[0];
+        app.run(Command::TransformShapes {
+            shapes: vec![dim],
+            transform: Affine::translate((15.0, -6.0)),
+        });
+        app.bake_dimensions();
+        let d = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        assert_eq!(d.anchors.len(), 2, "{:?}", d.anchors);
+        let Measure::Linear { a, b, at } = d.measure else {
+            panic!("linear");
+        };
+        assert!(
+            (a - left).hypot() < 1e-6 && (b - right).hypot() < 1e-6,
+            "{a:?} {b:?}"
+        );
+        assert!((at.y - 14.0).abs() < 1e-6, "{at:?}");
+        // The circle moved: the dimension goes along.
+        app.run(Command::TransformShapes {
+            shapes: vec![circle],
+            transform: Affine::translate((-20.0, 0.0)),
+        });
+        app.bake_dimensions();
+        let d = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+        let Measure::Linear { a, .. } = d.measure else {
+            panic!("linear");
+        };
+        assert!((a - Point::new(10.0, 50.0)).hypot() < 1e-6, "{a:?}");
+        // Angular: the vertex on a corner of a rectangle, the sides on
+        // its two other corners; moved by itself only its arc moves.
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(100.0, 100.0, 140.0, 130.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+        app.create_angular_dimension(
+            Point::new(100.0, 100.0),
+            Point::new(140.0, 100.0),
+            Point::new(100.0, 130.0),
+            Point::new(110.0, 110.0),
+        );
+        let ang = app.selection[0];
+        let before = Dimension::of(app.doc().find_shape(ang).expect("angle")).expect("data");
+        assert_eq!(before.anchors.len(), 3, "{:?}", before.anchors);
+        app.run(Command::TransformShapes {
+            shapes: vec![ang],
+            transform: Affine::translate((5.0, 5.0)),
+        });
+        app.bake_dimensions();
+        let after = Dimension::of(app.doc().find_shape(ang).expect("angle")).expect("data");
+        assert_eq!(after.anchors, before.anchors);
+        let Measure::Angular { center, a, b, at } = after.measure else {
+            panic!("angular");
+        };
+        assert!(
+            (center - Point::new(100.0, 100.0)).hypot() < 1e-6,
+            "{center:?}"
+        );
+        assert!((a - Point::new(140.0, 100.0)).hypot() < 1e-6, "{a:?}");
+        assert!((b - Point::new(100.0, 130.0)).hypot() < 1e-6, "{b:?}");
+        assert!((at - Point::new(115.0, 115.0)).hypot() < 1e-6, "{at:?}");
     }
 
     /// A dimension drawn between two edges of a rectangle (not its

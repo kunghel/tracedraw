@@ -12,6 +12,19 @@ acrescentada vai para o próximo lugar e as anteriores ficam onde estavam. Cada 
 embaixo; os da página atual ficam na cor normal do texto, os outros
 esmaecidos.
 
+## Espaço entre as páginas {#page-spacing}
+
+As páginas ficam a 30 mm umas das outras de início. Para mudar, escolha
+[[menu.layout > menu.layout.page_spacing]] e um dos valores
+[[menu.layout.page_spacing_0]], [[menu.layout.page_spacing_5]],
+[[menu.layout.page_spacing_10]], [[menu.layout.page_spacing_20]],
+[[menu.layout.page_spacing_30]] ou [[menu.layout.page_spacing_50]], ou
+[[menu.layout.page_spacing_custom]] para digitar qualquer distância nas
+unidades do desenho. [[options.page_spacing]] na página Layout das
+[Opções do documento](document-options.md#layout) também o define. O
+espaçamento é salvo com o desenho, [[menu.edit.undo]] volta ao anterior e
+**Salvar como padrão** nas opções do documento o mantém para novos desenhos.
+
 ## Trabalhar na vista de várias páginas {#working}
 
 - A página atual é editada como sempre: réguas, linhas-guia, grades e a barra de

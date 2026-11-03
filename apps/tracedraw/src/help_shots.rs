@@ -223,6 +223,76 @@ impl Canvas {
     }
 }
 
+/// A canvas overlay rasterised for a test: what `body` paints on a
+/// `w` x `h` point area at `ppp` device pixels per point, read back as
+/// 8-bit RGB over black.
+pub(crate) struct Raster {
+    canvas: Canvas,
+}
+
+impl Raster {
+    /// The device pixel at column `x`, row `y`.
+    pub(crate) fn rgb(&self, x: usize, y: usize) -> [u8; 3] {
+        let p = self.canvas.px[y * self.canvas.w + x];
+        [p[0], p[1], p[2]].map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8)
+    }
+
+    pub(crate) fn save(&self, path: &std::path::Path) {
+        self.canvas.save(path, (0, 0, self.canvas.w, self.canvas.h));
+    }
+}
+
+pub(crate) fn rasterise(w: usize, h: usize, ppp: f32, body: impl FnOnce(&egui::Painter)) -> Raster {
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(ppp);
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w as f32, h as f32),
+        )),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .native_pixels_per_point = Some(ppp);
+    let mut body = Some(body);
+    let mut out = ctx.run_ui(input, |ui| {
+        if let Some(b) = body.take() {
+            b(ui.painter());
+        }
+    });
+    let mut tex = Textures::default();
+    tex.apply(&out.textures_delta);
+    out.textures_delta.clear();
+    let shapes = std::mem::take(&mut out.shapes);
+    let prims = ctx.tessellate(shapes, out.pixels_per_point);
+    // Device pixels: the meshes are in points.
+    let scale = out.pixels_per_point;
+    let prims: Vec<egui::ClippedPrimitive> = prims
+        .into_iter()
+        .map(|mut p| {
+            if let Primitive::Mesh(m) = &mut p.primitive {
+                for v in &mut m.vertices {
+                    v.pos = egui::pos2(v.pos.x * scale, v.pos.y * scale);
+                }
+            }
+            p.clip_rect = egui::Rect::from_min_max(
+                (p.clip_rect.min.to_vec2() * scale).to_pos2(),
+                (p.clip_rect.max.to_vec2() * scale).to_pos2(),
+            );
+            p
+        })
+        .collect();
+    let mut canvas = Canvas::new(
+        (w as f32 * scale).round() as usize,
+        (h as f32 * scale).round() as usize,
+    );
+    canvas.paint(&tex, &prims);
+    Raster { canvas }
+}
+
 /// What a screenshot shows.
 enum Shot {
     /// A menu command that opens a dialog.

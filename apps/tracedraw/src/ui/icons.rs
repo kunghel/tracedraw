@@ -192,20 +192,20 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
 
         // Crop group.
         Tool::Crop => {
-            // A corner cut off a shape; the removed piece floats away as
-            // a ghost, the node on the cut corner.
-            pen.body("M3 5a2 2 0 0 1 2-2h8v8h8v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
-            pen.ghost(&rrect(15.0, 2.5, 6.5, 6.5, 1.0), acc);
-            pen.line("M13 11h-2M13 11v-2", acc);
-            pen.node(13.0, 11.0, true);
+            // Two interlocking corner brackets framing the kept square,
+            // a solid accent dot on the corner being dragged.
+            pen.line("M7 3V17H21", ink);
+            pen.line("M3 7H17V21", ink);
+            pen.rect(15.0, 15.0, 4.0, 4.0, 0.8, acc, 0.0, Color32::TRANSPARENT);
         }
         Tool::Knife => {
-            // A circle split in two, the halves pushed apart, the blade.
-            pen.body("M16.2 4.9A8 8 0 0 0 4.9 16.2Z");
-            pen.body("M19.1 7.8A8 8 0 0 1 7.8 19.1Z");
-            pen.fill("M17 2.5l4.5 4.5-2.5 1-3-3z", acc, false);
-            pen.stroke("M17 2.5l4.5 4.5-2.5 1-3-3z", 1.0, bg);
-            pen.thin("M3 21l3.2-3.2", acc);
+            // A knife on the diagonal: the solid handle at the top right,
+            // a wide blade with a straight back and a curved edge to the
+            // point at the bottom left, the cut it leaves in the accent.
+            let t = pen.rotated(-40.0, 12.0, 12.0);
+            t.fill(&rrect(14.0, 8.5, 8.0, 5.0, 1.6), ink, true);
+            t.body("M2 10H14V16.5C9.5 16.5 5 14.5 2 10Z");
+            pen.line("M3 21.5h6", acc);
         }
         Tool::SegmentDelete => {
             // A curve with the doomed segment a ghost, crossed out.
@@ -217,10 +217,16 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             pen.node(21.0, 5.0, false);
         }
         Tool::Eraser => {
-            // A tilted block, rubbed-out marks on the ground.
-            pen.body("M14.5 3.5L21 10l-8.5 8.5a2 2 0 0 1-2.8 0L5.5 14.3a2 2 0 0 1 0-2.8z");
-            pen.thin("M9 8l7 7", ink);
-            pen.line("M3 20.5h6M6 17.5l-2 3", acc);
+            // A block eraser on its end at 45 degrees: the sleeve solid,
+            // the rubber a body, the rubbed-out mark in the accent.
+            let t = pen.rotated(45.0, 12.0, 12.0);
+            t.body(&rrect(8.5, 3.0, 7.0, 16.0, 1.5));
+            t.fill(
+                "M8.5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V9h-7z",
+                ink,
+                true,
+            );
+            pen.line("M3 21h6", acc);
         }
 
         // Zoom group.
@@ -344,8 +350,9 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
 
         // Rectangle group.
         Tool::Rectangle => {
-            pen.body(&rrect(4.0, 5.0, 16.0, 15.0, 2.0));
-            pen.node(20.0, 5.0, true);
+            // A true square with right-angled corners, on integer units.
+            pen.body(&rrect(4.0, 4.0, 16.0, 16.0, 0.0));
+            pen.node(20.0, 4.0, true);
         }
         Tool::ThreePointRectangle => {
             // A tilted box: two hollow base points, the live third.
@@ -366,8 +373,9 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
 
         // Ellipse group.
         Tool::Ellipse => {
-            pen.circle(12.0, 12.0, 8.5, pen.wash(), LINE, ink);
-            let (x, y) = polar(12.0, 12.0, 8.5, -45.0);
+            // The same 16 unit box as the square.
+            pen.circle(12.0, 12.0, 8.0, pen.wash(), LINE, ink);
+            let (x, y) = polar(12.0, 12.0, 8.0, -45.0);
             pen.node(x, y, true);
         }
         Tool::ThreePointEllipse => {
@@ -392,10 +400,13 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
 
         // Polygon group.
         Tool::Polygon => {
+            // A regular hexagon whose vertical sides sit on units 4 and
+            // 20, the square's sides.
+            let r = 8.0 / 30f32.to_radians().cos();
             let hex: Vec<Pos2> = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0]
                 .iter()
                 .map(|&a| {
-                    let (x, y) = polar(12.0, 12.5, 9.0, a);
+                    let (x, y) = polar(12.0, 12.0, r, a);
                     pt(x, y)
                 })
                 .collect();
@@ -511,15 +522,19 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             pen.node(4.0, 11.0, false);
             pen.node(11.0, 18.0, false);
             pen.node(18.0, 11.0, true);
-            pen.pointer(18.6, 11.8, 0.58, false);
+            pen.pointer(17.4, 11.6, 0.58, false);
         }
 
         // Effects group.
         Tool::DropShadow => {
-            // The shadow as accent hatching behind an opaque box.
-            // (The hatching, cut to the shadow's box 7 to 20.)
-            pen.thin("M7 9L9 7M7 15L15 7M8 20L20 8M14 20L20 14", acc);
-            pen.solid(&rrect(3.0, 3.0, 12.5, 12.5, 2.0));
+            // A square box with its solid shadow offset behind it, the
+            // shadow in the accent.
+            pen.fill(
+                &rrect(8.0, 8.0, 12.0, 12.0, 0.0),
+                Pen::alpha(acc, 0.6),
+                true,
+            );
+            pen.solid(&rrect(4.0, 4.0, 12.0, 12.0, 0.0));
         }
         Tool::Contour => {
             // A triangle with two offset outlines fading outward.
@@ -569,22 +584,13 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
         }
 
         Tool::Transparency => {
-            // Dither dots fading across a circle, the node to handle
-            // gradient bar.
-            for (i, x) in (4..=19).step_by(3).enumerate() {
-                let rad = (1.5 - i as f32 * 0.22).max(0.25);
-                for y in (4..=19).step_by(3) {
-                    let yy = y as f32 + if i % 2 == 1 { 1.5 } else { 0.0 };
-                    let (dx, dy) = (x as f32 - 12.0, yy - 12.0);
-                    if (dx * dx + dy * dy).sqrt() + rad <= 8.5 {
-                        pen.circle(x as f32, yy, rad, acc, 0.0, acc);
-                    }
-                }
-            }
-            pen.circle(12.0, 12.0, 8.5, Color32::TRANSPARENT, LINE, ink);
-            pen.thin("M5.5 18.5L18.5 5.5", acc);
-            pen.node(5.5, 18.5, true);
-            pen.handle(18.5, 5.5, 1.8);
+            // A circle filled with a fade from ink at the left to nothing
+            // at the right, the node to handle gradient bar across it.
+            pen.fade_circle(12.0, 12.0, 8.0, ink, Color32::TRANSPARENT);
+            pen.circle(12.0, 12.0, 8.0, Color32::TRANSPARENT, LINE, ink);
+            pen.thin("M6 18L18 6", acc);
+            pen.node(6.0, 18.0, true);
+            pen.handle(18.0, 6.0, 1.75);
         }
 
         // Eyedropper group: the diagonal pipette with the drop drawn
@@ -608,18 +614,13 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
 
         // Fill group.
         Tool::InteractiveFill => {
-            // A pail tilted over a box filling up, the node on the box.
-            pen.body(&rrect(2.5, 13.0, 9.5, 8.5, 2.0));
-            pen.fill(
-                "M3 17h8.5v2.5a1.5 1.5 0 0 1-1.5 1.5H4.5A1.5 1.5 0 0 1 3 19.5z",
-                acc,
-                false,
-            );
-            let t = pen.rotated(-35.0, 15.5, 9.0);
-            t.body("M11.5 5.5h8l-1 7.5h-6z");
-            t.thin("M12 5.5a3.5 3.5 0 0 1 7 0", ink);
-            pen.stroke("M10 8.5c-1.5 1-3 2.5-4 4.5", 3.0, acc);
-            pen.node(12.0, 13.0, true);
+            // A paint pail, tilted a little, the paint in it in the
+            // accent and a drop leaving the lower lip.
+            let t = pen.rotated(-15.0, 12.0, 14.0);
+            t.fill("M6.6 13.5h10.8l-.8 6.5H7.4z", acc, false);
+            t.body("M5 8h14l-1.5 12h-11z");
+            t.thin("M8 8a4 4 0 0 1 8 0", ink);
+            pen.circle(3.5, 14.0, 1.6, acc, 0.0, acc);
         }
         Tool::AreaFill => {
             // Two rings, the enclosed lens filled.

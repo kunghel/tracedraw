@@ -373,6 +373,9 @@ impl<N: Numeric> NumField<'_, N> {
                 *self.value = N::from_f64(v);
                 resp.mark_changed();
             }
+            // Steps of one turn of the wheel, clicks on the arrows or one
+            // drag are one undo step (see `crate::step_merge`).
+            note_step(id.with("wheel"), dragging);
             return with_arrows(resp, spin_resp);
         }
         if self.mixed {
@@ -427,9 +430,73 @@ fn with_arrows(mut resp: Response, arrows: Response) -> Response {
     resp
 }
 
-/// The points a wheel or touchpad sends for one notch when it counts in
-/// points (browsers send 100 points or 3 lines a notch).
-pub const WHEEL_POINTS_PER_NOTCH: f32 = 50.0;
+/// Raw wheel units one notch of a mouse wheel sends. The desktop
+/// backends report a notch as one line (or 50 points from a
+/// trackpad); browsers report it as three lines or as 100 pixels, so
+/// read as desktop notches a browser notch counted three or two
+/// notches at once (#1016 on the canvas, #1406 everywhere else).
+pub fn wheel_notch(unit: egui::MouseWheelUnit, web: bool) -> f32 {
+    match (unit, web) {
+        (egui::MouseWheelUnit::Line, false) => 1.0,
+        (egui::MouseWheelUnit::Line, true) => 3.0,
+        (egui::MouseWheelUnit::Point, false) => 50.0,
+        (egui::MouseWheelUnit::Point, true) => 100.0,
+        (egui::MouseWheelUnit::Page, _) => 0.1,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: read the wheel as the browser build does (see [`web_wheel`]).
+    static WEB_WHEEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests: read the wheel events of this thread as the browser build does
+/// (`on`) or as the desktop does, to feed browser-style notches to the
+/// widgets.
+#[cfg(test)]
+pub fn set_web_wheel(on: bool) {
+    WEB_WHEEL.with(|w| w.set(on));
+}
+
+/// Whether wheel events come in the browser's units.
+pub fn web_wheel() -> bool {
+    #[cfg(test)]
+    if WEB_WHEEL.with(|w| w.get()) {
+        return true;
+    }
+    crate::files::WEB
+}
+
+/// The notches one wheel event of `delta` raw units turns, up positive,
+/// in the units the desktop (`web` false) or the browser reports: an
+/// event of a notch or more is one notch whatever its size, a smaller one
+/// (a touchpad, a fine wheel) the part of a notch it makes.
+pub fn event_notches(unit: egui::MouseWheelUnit, delta: f32, web: bool) -> f32 {
+    let n = delta / wheel_notch(unit, web);
+    if n.abs() >= 1.0 {
+        n.signum()
+    } else {
+        n
+    }
+}
+
+/// Add the notches of one frame (see [`event_notches`]) to `acc`, the
+/// part of a notch left from earlier frames: the whole steps they make.
+/// The part left starts again when the wheel turns the other way.
+pub fn add_notches(acc: &mut f32, notches: impl IntoIterator<Item = f32>) -> i32 {
+    let mut steps = 0i32;
+    for d in notches {
+        if *acc != 0.0 && acc.signum() != d.signum() {
+            *acc = 0.0;
+        }
+        *acc += d;
+        let whole = acc.trunc();
+        steps += whole as i32;
+        *acc -= whole;
+    }
+    steps
+}
 
 /// The memory key that says a field took the wheel and the smoothed
 /// scroll of that turn is still running.
@@ -480,47 +547,75 @@ pub fn hold_taken_wheel(ctx: &egui::Context) {
     ctx.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
 }
 
+thread_local! {
+    /// The widget stepped this frame (see [`note_step`]).
+    static STEPPED: std::cell::Cell<Option<(egui::Id, bool)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// A number field (or a list or slider stepping with the wheel) stepped
+/// its value this frame by the wheel, its arrows or a drag on them;
+/// `held` while the drag goes on. The steps one such widget makes in a
+/// row, with nothing else done in between, become one undo step
+/// (`crate::step_merge`).
+pub fn note_step(widget: egui::Id, held: bool) {
+    STEPPED.with(|s| s.set(Some((widget, held))));
+}
+
+/// The widget [`note_step`] named since the last call, forgotten.
+pub fn take_step() -> Option<(egui::Id, bool)> {
+    STEPPED.with(|s| s.take())
+}
+
 /// The wheel notches turned this frame over a widget that steps with the
 /// wheel, up positive; `None` when the wheel did not turn. An event of a
 /// notch or more is one step whatever its size; parts of a notch from a
 /// touchpad or a fine wheel add up (in memory under `acc_id`) until they
-/// make one, and start again when the wheel turns the other way. A turn
+/// make one, and start again when the wheel turns the other way. A
+/// browser's notch counts as one, as a desktop notch does (#1406). A turn
 /// takes the wheel ([`take_wheel`]), so nothing around scrolls with it.
 pub fn wheel_steps(ui: &Ui, acc_id: egui::Id) -> Option<i32> {
-    let deltas: Vec<f32> = ui.input(|i| {
+    wheel_steps_with(ui, acc_id, |_| true, false)
+}
+
+/// [`wheel_steps`] counting only the wheel events whose modifiers `keys`
+/// accepts, and their sideways turn too when `sideways` (a palette row
+/// steps with either).
+pub fn wheel_steps_with(
+    ui: &Ui,
+    acc_id: egui::Id,
+    keys: impl Fn(egui::Modifiers) -> bool,
+    sideways: bool,
+) -> Option<i32> {
+    let web = web_wheel();
+    let notches: Vec<f32> = ui.input(|i| {
         i.raw
             .events
             .iter()
             .filter_map(|e| match e {
-                egui::Event::MouseWheel { unit, delta, .. } if delta.y != 0.0 => Some(match unit {
-                    egui::MouseWheelUnit::Line if delta.y.abs() >= 1.0 => delta.y.signum(),
-                    egui::MouseWheelUnit::Line => delta.y,
-                    egui::MouseWheelUnit::Point if delta.y.abs() >= WHEEL_POINTS_PER_NOTCH => {
-                        delta.y.signum()
-                    }
-                    egui::MouseWheelUnit::Point => delta.y / WHEEL_POINTS_PER_NOTCH,
-                    egui::MouseWheelUnit::Page => delta.y.signum(),
-                }),
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } if keys(*modifiers) => {
+                    let d = if sideways { delta.y + delta.x } else { delta.y };
+                    (d != 0.0).then(|| event_notches(*unit, d, web))
+                }
                 _ => None,
             })
             .collect()
     });
-    if deltas.is_empty() {
+    if notches.is_empty() {
         return None;
     }
     take_wheel(ui);
     let mut acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0);
-    let mut steps = 0i32;
-    for d in deltas {
-        if acc != 0.0 && acc.signum() != d.signum() {
-            acc = 0.0;
-        }
-        acc += d;
-        let whole = acc.trunc();
-        steps += whole as i32;
-        acc -= whole;
-    }
+    let steps = add_notches(&mut acc, notches);
     ui.data_mut(|d| d.insert_temp(acc_id, acc));
+    if steps != 0 {
+        note_step(acc_id, false);
+    }
     Some(steps)
 }
 
@@ -764,6 +859,79 @@ mod tests {
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+
+    /// One notch is one step on the desktop and in the browser, in any
+    /// unit the wheel event comes in: the desktop sends a line or 50
+    /// points a notch, a browser three lines (Firefox) or 100 pixels
+    /// (Chromium, Safari). Parts of a browser notch add up per browser
+    /// notch, not per desktop one (#1406).
+    #[test]
+    fn a_wheel_notch_is_one_step_on_the_desktop_and_in_the_browser() {
+        use egui::MouseWheelUnit::{Line, Page, Point};
+        let steps = |turns: &[(egui::MouseWheelUnit, f32)], web: bool| {
+            let mut acc = 0.0;
+            turns
+                .iter()
+                .map(|&(unit, d)| add_notches(&mut acc, [event_notches(unit, d, web)]))
+                .collect::<Vec<i32>>()
+        };
+        assert_eq!(
+            steps(&[(Line, 1.0), (Point, 50.0), (Line, -1.0)], false),
+            [1, 1, -1]
+        );
+        assert_eq!(
+            steps(&[(Line, 3.0), (Point, 100.0), (Line, -3.0)], true),
+            [1, 1, -1]
+        );
+        assert_eq!(steps(&[(Page, 1.0)], true), [1]);
+        // A touchpad's small turns: two halves of a browser notch make one
+        // step (they made two), a turn back starts again.
+        assert_eq!(steps(&[(Point, 50.0), (Point, 50.0)], true), [0, 1]);
+        assert_eq!(steps(&[(Point, 25.0), (Point, 25.0)], false), [0, 1]);
+        assert_eq!(steps(&[(Line, 1.5), (Line, 1.5)], true), [0, 1]);
+        assert_eq!(
+            steps(&[(Point, 60.0), (Point, -60.0), (Point, -40.0)], true),
+            [0, 0, -1]
+        );
+    }
+
+    /// Fed browser-style notches, the wheel over a field steps it once a
+    /// notch, three lines or 100 pixels alike.
+    #[test]
+    fn a_browser_wheel_notch_steps_a_field_once() {
+        let ctx = crate::theme::ui_context();
+        let id = egui::Id::new("web_wheel_test");
+        let clock = std::cell::Cell::new(0.0f64);
+        let run = |events: Vec<egui::Event>| -> Option<i32> {
+            clock.set(clock.get() + 1.0 / 60.0);
+            let input = egui::RawInput {
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut steps = None;
+            let mut out = ctx.run_ui(input, |ui| steps = wheel_steps(ui, id));
+            out.textures_delta.clear();
+            steps
+        };
+        let turn = |unit, dy: f32| egui::Event::MouseWheel {
+            unit,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        use egui::MouseWheelUnit::{Line, Point};
+        set_web_wheel(true);
+        assert_eq!(run(vec![turn(Line, 3.0)]), Some(1));
+        assert_eq!(run(vec![turn(Point, -100.0)]), Some(-1));
+        assert_eq!(run(vec![turn(Point, 30.0)]), Some(0));
+        assert_eq!(run(vec![turn(Point, 30.0)]), Some(0));
+        assert_eq!(run(vec![turn(Point, 40.0)]), Some(1));
+        assert_eq!(run(Vec::new()), None);
+        set_web_wheel(false);
+        assert_eq!(run(vec![turn(Point, 30.0)]), Some(0));
+        assert_eq!(run(vec![turn(Point, 30.0)]), Some(1));
     }
 
     /// The wheel over a number field in a bar longer than its window (the

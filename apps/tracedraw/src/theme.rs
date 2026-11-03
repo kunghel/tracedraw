@@ -523,47 +523,107 @@ impl Tokens {
 
     pub const RULER: f32 = 18.0;
 
-    /// The side of a toolbox button: 32 px at the medium size, scaled by
-    /// the toolbox's button size (the bars' menu > Customize).
+    /// The side of a toolbox button at the toolbox's button size (the
+    /// bars' menu > Customize): 32 px at Medium.
     pub fn tool_button() -> f32 {
-        (32.0 * button_scale(&TOOLBOX_SCALE)).round()
+        toolbox_size().metrics().button
     }
 
-    /// The side of a standard toolbar button: 32 px at the medium size,
-    /// scaled by the default button size.
+    /// The side of a toolbox icon's box (its 24 unit grid) in a button
+    /// of the full side: 24 px at Medium.
+    pub fn tool_icon() -> f32 {
+        toolbox_size().metrics().icon
+    }
+
+    /// The side of a standard toolbar button at the default button size:
+    /// 32 px at Medium.
     pub fn bar_button() -> f32 {
-        (32.0 * button_scale(&BAR_SCALE)).round()
+        bar_size().metrics().button
     }
 
-    /// The side of a property bar button: 28 px at the medium size,
-    /// scaled by the default button size.
+    /// The side of a standard toolbar icon's box: 24 px at Medium, 28
+    /// and 34 px at Large and Extra Large (smaller than the toolbox's,
+    /// see `ButtonMetrics`).
+    pub fn bar_icon() -> f32 {
+        bar_size().metrics().bar_icon
+    }
+
+    /// The side of a property bar button at the default button size:
+    /// 28 px at Medium.
     pub fn prop_button() -> f32 {
-        (28.0 * button_scale(&BAR_SCALE)).round()
+        bar_size().metrics().prop_button
+    }
+
+    /// The side of a property bar icon's box: 22 px at Medium, 24 and
+    /// 28 px at Large and Extra Large.
+    pub fn prop_icon() -> f32 {
+        bar_size().metrics().prop_icon
     }
 }
 
-/// The default button size's scale and the toolbox's, as f32 bits.
-static BAR_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static TOOLBOX_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn button_scale(cell: &std::sync::atomic::AtomicU32) -> f32 {
-    let bits = cell.load(Ordering::Relaxed);
-    if bits == 0 {
-        1.0
+/// The icon box for a button of side `side` whose full size is `button`
+/// with an icon box `icon`: the full icon in a full button, shrunk in the
+/// same proportion (to whole pixels) in a button squeezed to fit, as the
+/// docked toolbox's column does on a short window.
+pub fn icon_in(side: f32, button: f32, icon: f32) -> f32 {
+    if side >= button || button <= 0.0 {
+        icon
     } else {
-        f32::from_bits(bits)
+        (side * icon / button).round().max(1.0)
     }
 }
 
-/// Size the bars' buttons from now on: `bars` for every bar, `toolbox`
-/// for the toolbox (the bars' menu > Customize > Default Button Size and
-/// Toolbox Toolbar > Button Size).
+/// The default button size and the toolbox's, as an index into
+/// `ButtonSize::ALL` plus one (0: not set yet, Medium).
+static BAR_SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static TOOLBOX_SIZE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn stored_size(cell: &std::sync::atomic::AtomicU8) -> crate::settings::ButtonSize {
+    use crate::settings::ButtonSize;
+    match cell.load(Ordering::Relaxed) {
+        0 => ButtonSize::Medium,
+        n => ButtonSize::ALL
+            .get(usize::from(n) - 1)
+            .copied()
+            .unwrap_or(ButtonSize::Medium),
+    }
+}
+
+fn size_index(size: crate::settings::ButtonSize) -> u8 {
+    crate::settings::ButtonSize::ALL
+        .iter()
+        .position(|s| *s == size)
+        .map_or(0, |i| i as u8 + 1)
+}
+
+/// The default button size the bars draw at now.
+pub fn bar_size() -> crate::settings::ButtonSize {
+    stored_size(&BAR_SIZE)
+}
+
+/// The button size the toolbox draws at now.
+pub fn toolbox_size() -> crate::settings::ButtonSize {
+    stored_size(&TOOLBOX_SIZE)
+}
+
+/// Held by the tests that set the button sizes in force to another size
+/// than the default, or that count on them: the sizes are shared by the
+/// whole process.
+#[cfg(test)]
+pub(crate) fn button_sizes_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Size the bars' buttons and icons from now on: `bars` for every bar,
+/// `toolbox` for the toolbox (the bars' menu > Customize > Default Button
+/// Size and Toolbox Toolbar > Button Size).
 pub fn set_button_sizes(
     bars: crate::settings::ButtonSize,
     toolbox: Option<crate::settings::ButtonSize>,
 ) {
-    BAR_SCALE.store(bars.scale().to_bits(), Ordering::Relaxed);
-    TOOLBOX_SCALE.store(toolbox.unwrap_or(bars).scale().to_bits(), Ordering::Relaxed);
+    BAR_SIZE.store(size_index(bars), Ordering::Relaxed);
+    TOOLBOX_SIZE.store(size_index(toolbox.unwrap_or(bars)), Ordering::Relaxed);
 }
 
 pub fn visuals() -> Visuals {

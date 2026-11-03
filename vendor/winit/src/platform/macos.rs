@@ -542,3 +542,17 @@ pub fn set_open_files_handler(
 ) {
     crate::opened_files::set_handler(Box::new(handler));
 }
+
+/// TraceDraw: decide on a quit asked of the whole application (the Quit
+/// item of the application menu and its Command+Q, the Dock icon's Quit,
+/// a log-out or shut-down), which AppKit otherwise carries out at once,
+/// without a `CloseRequested` for any window. The handler returns `true`
+/// to take the request over: the terminate is cancelled and the program
+/// closes its windows itself (after asking about unsaved work); `false`
+/// lets the terminate go ahead. Without a handler it goes ahead. The
+/// handler runs on the main thread, inside the event loop, and must not
+/// block.
+#[cfg(macos_platform)]
+pub fn set_quit_handler(handler: impl Fn() -> bool + Send + 'static) {
+    crate::quit_request::set_handler(Box::new(handler));
+}

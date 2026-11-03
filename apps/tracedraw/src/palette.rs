@@ -348,17 +348,27 @@ pub fn load_palette(path: &std::path::Path) -> Result<Palette, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let name = path
+    let mut name = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Palette".into());
     let colors = match ext.as_str() {
-        "gpl" => parse_gpl(&crate::files::read_to_string(path).map_err(|e| e.to_string())?),
+        "gpl" => {
+            let src = crate::files::read_to_string(path).map_err(|e| e.to_string())?;
+            if let Some(n) = stored_name(&src) {
+                name = n;
+            }
+            parse_gpl(&src)
+        }
         "ase" => parse_ase(&crate::files::read(path).map_err(|e| e.to_string())?),
         "aco" => parse_aco(&crate::files::read(path).map_err(|e| e.to_string())?),
         "xml" => parse_xml(&crate::files::read(path).map_err(|e| e.to_string())?)?,
         "tdpal" | "json" => {
-            parse_tdpal(&crate::files::read_to_string(path).map_err(|e| e.to_string())?)?
+            let src = crate::files::read_to_string(path).map_err(|e| e.to_string())?;
+            if let Some(n) = stored_name(&src) {
+                name = n;
+            }
+            parse_tdpal(&src)?
         }
         other => return Err(format!("unsupported palette format: {other}")),
     };
@@ -369,6 +379,26 @@ pub fn load_palette(path: &std::path::Path) -> Result<Palette, String> {
         builtin: false,
         path: Some(path.to_path_buf()),
     })
+}
+
+/// The name a palette file keeps for its palette: a GIMP palette's
+/// `Name:` line or the `name` of a TraceDraw palette; None when it keeps
+/// none (or an empty one).
+pub fn stored_name(src: &str) -> Option<String> {
+    let name = if src.trim_start().starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(src)
+            .ok()?
+            .get("name")?
+            .as_str()?
+            .to_string()
+    } else {
+        src.lines()
+            .take(8)
+            .find_map(|l| l.trim().strip_prefix("Name:"))?
+            .to_string()
+    };
+    let name: String = name.trim().chars().take(120).collect();
+    (!name.is_empty()).then_some(name)
 }
 
 pub fn save_palette(p: &Palette, path: &std::path::Path) -> Result<(), String> {

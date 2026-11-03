@@ -4757,7 +4757,16 @@ impl<'a> Writer<'a> {
         centre: Point,
     ) -> Placed {
         let v = self.v;
-        let fill_id = self.fill_id(fill);
+        // Files measure a fountain fill's angle from the object's x axis
+        // (#1257); ours is on the page.
+        let fill_id = match fill {
+            Fill::Fountain(f) => {
+                let mut f = f.clone();
+                crate::turn_fountain(&mut f, transform, -1.0);
+                self.fill_id(&Fill::Fountain(f))
+            }
+            _ => self.fill_id(fill),
+        };
         let outline_id = self.outline_id(s.stroke.as_ref());
         let id = self.next_object;
         self.next_object += 1;

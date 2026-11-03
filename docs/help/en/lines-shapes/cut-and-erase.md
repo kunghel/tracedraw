@@ -79,7 +79,9 @@ The [[tool.eraser]] tool (<kbd>X</kbd>) rubs out parts of objects.
 3. Drag over the objects. A click erases one dot.
 
 Erased objects become curves; an object erased completely is deleted.
-Double-click an object with the tool to delete it whole. Bitmaps, groups and
-clip frames are not erased. The defaults of the eraser are on the
+Double-click an object with the tool to delete it whole. A clip frame is
+erased through its frame: the frame loses the band and the contents inside
+are hidden along it, so the eraser cuts through the frame and its contents
+together. Bitmaps and groups are not erased. The defaults of the eraser are on the
 [[tool.eraser]] page of the tool options; see
 [Tool options](../customize/tool-options.md#eraser).

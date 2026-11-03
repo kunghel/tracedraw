@@ -41,7 +41,9 @@ books are not bundled; a book the user owns opens like any palette
   DeviceCMYK alternate through a type 2 function from no ink to the
   stand-in), referred to from the page resources as `/CS<ink>`; the tint
   is the colour value. A spot colour whose ink is no longer on the list
-  prints as its stand-in. PDF/X keeps the Separation spaces.
+  prints as its stand-in. PDF/X keeps the Separation spaces. Opened or
+  imported again, each Separation space is the ink of its name again and
+  each colour in it a spot colour at its tint (see `pdf-import.md`).
 - Separations (Print, or Export with separations): after the C, M, Y and
   K plates, a plate per ink of the list; a spot colour prints on its own
   plate only, at its tint, and on none of the process plates.
@@ -50,6 +52,9 @@ books are not bundled; a book the user owns opens like any palette
 
 - `color::tests::spot_colors_show_and_convert_through_their_stand_in` (core)
 - `pdf::tests::spot_colors_print_on_separation_color_spaces` (io)
+- `pdf::pdfx_tests::crop_marks_and_spot_colors_come_back_from_the_pdf` (io)
+- `pdf_import::tests::separation_devicen_and_indexed_colors` (io)
+- `app::tests::pdf_spot_inks_come_into_the_drawing`
 - `export::tests::spot_inks_get_plates_of_their_own`
 - `ui::color_docker::tests::spot_inks_are_added_applied_and_removed`
 - `palette::tests::colour_book_spot_entries_are_spot_colours`

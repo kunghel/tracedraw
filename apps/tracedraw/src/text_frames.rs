@@ -1,13 +1,99 @@
 //! Paragraph text frames with the Pick tool: scaling a paragraph text with
 //! the handles (or the property bar's size and scale) changes its frame and
 //! the text flows anew in it, the letters keeping their size; turning,
-//! slanting, mirroring and moving act on the whole text as before. Frames
-//! show as dashed lines (Text > Show Text Frames). See
-//! docs/behavior/text.md.
+//! slanting, mirroring and moving act on the whole text as before. While
+//! a handle is dragged the text flows anew in the frame it would get, so
+//! the outline shows the lines the release makes (#1327). Frames show as
+//! dashed lines (Text > Show Text Frames). See docs/behavior/text.md.
 
 use crate::app::App;
-use tracedraw_core::geometry::{Affine, Point, Rect, Size};
-use tracedraw_core::{Command, Shape, ShapeId, ShapeKind};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use tracedraw_core::document::text_outline::TextRequest;
+use tracedraw_core::geometry::{Affine, BezPath, Point, Rect, Size};
+use tracedraw_core::{Command, Shape, ShapeId, ShapeKind, TextSpan};
+
+/// The longest a text's layout may take, in seconds, for it to flow anew
+/// in its frame on every frame of a drag: a quarter of a 60 Hz frame, so
+/// the drag keeps its pace with the rest of the frame's work. A text that
+/// takes longer three times in a row shows its frame only, and flows on
+/// release, until the drawing changes.
+pub const LIVE_REFLOW_BUDGET: f64 = 0.004;
+
+/// How many layouts in a row may take longer than the budget before a
+/// text stops flowing live.
+pub const LIVE_REFLOW_OVER: u32 = 3;
+
+/// The longest text (in bytes of UTF-8) whose glyphs a drag shapes to
+/// flow it live, when the text engine has not kept them: a few
+/// milliseconds of shaping.
+pub const LIVE_SHAPE_BYTES: usize = 4000;
+
+/// A paragraph text flowed in the frame a drag would give it.
+#[derive(Debug, Clone)]
+pub struct LiveFrame {
+    /// The frame laid out (the text's own space).
+    pub frame: Size,
+    /// The letters' outline, page space, as the release places them.
+    pub outline: BezPath,
+    /// The lines that show in the frame.
+    #[cfg(test)]
+    pub lines: usize,
+    /// The text does not fit (and has no frame to flow on into).
+    pub overflow: bool,
+}
+
+/// Live layouts of paragraph texts whose frames are being dragged: one
+/// layout per text and frame size (a frame draws them all from the same
+/// one, so there is at most one layout a frame), kept per document
+/// revision and font generation.
+#[derive(Debug)]
+pub struct LiveReflow {
+    key: (u64, u64),
+    /// [`LIVE_REFLOW_BUDGET`] (tests change it; below zero the live
+    /// reflow is off, the frame following alone as before).
+    pub budget: f64,
+    frames: HashMap<ShapeId, Rc<LiveFrame>>,
+    /// Layouts made per text: the first one shapes the glyphs, which the
+    /// text engine keeps, so it does not count against the budget.
+    layouts: HashMap<ShapeId, u32>,
+    /// Layouts in a row per text that took longer than the budget: one
+    /// alone may be the machine busy with something else.
+    over: HashMap<ShapeId, u32>,
+    /// Texts whose layout took longer than [`LIVE_REFLOW_BUDGET`].
+    slow: HashSet<ShapeId>,
+}
+
+impl Default for LiveReflow {
+    fn default() -> Self {
+        LiveReflow {
+            key: (0, 0),
+            budget: LIVE_REFLOW_BUDGET,
+            frames: HashMap::new(),
+            layouts: HashMap::new(),
+            over: HashMap::new(),
+            slow: HashSet::new(),
+        }
+    }
+}
+
+impl LiveReflow {
+    /// Layouts made so far for `id` in this revision (for tests).
+    #[cfg(test)]
+    pub fn layouts_of(&self, id: ShapeId) -> u32 {
+        self.layouts.get(&id).copied().unwrap_or(0)
+    }
+}
+
+/// The lines of a text's layout that show in its frame.
+#[cfg(test)]
+pub fn shown_lines(layout: &tracedraw_text::TextLayout) -> usize {
+    layout
+        .lines
+        .iter()
+        .filter(|l| l.start_char < layout.fitted_chars)
+        .count()
+}
 
 /// A paragraph text frame as shown on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,6 +236,123 @@ impl App {
         true
     }
 
+    /// The text of paragraph frame `id` flowed anew in the frame `t`
+    /// gives it while a handle is dragged, laid out at most once per frame
+    /// size; `None` when `t` does not resize its frame, or when its layout
+    /// is too slow for a frame ([`LIVE_REFLOW_BUDGET`]): then the frame
+    /// follows alone and the text flows on release, as before (#1327).
+    pub fn live_frame(&self, id: ShapeId, t: Affine) -> Option<Rc<LiveFrame>> {
+        if !self.resizes_text_frame(id, t) {
+            return None;
+        }
+        let s = self.doc().find_shape(id)?;
+        let kind = resized_kind(s, t)?;
+        let ShapeKind::Text {
+            spans,
+            origin,
+            frame: Some(frame),
+            align,
+            para,
+            ..
+        } = &kind
+        else {
+            return None;
+        };
+        let key = (self.engine.revision(), tracedraw_text::fonts().generation());
+        let mut live = self.live_reflow.borrow_mut();
+        if live.key != key {
+            *live = LiveReflow {
+                key,
+                budget: live.budget,
+                ..Default::default()
+            };
+        }
+        if live.budget < 0.0 || live.slow.contains(&id) {
+            return None;
+        }
+        if let Some(f) = live.frames.get(&id).filter(|f| f.frame == *frame) {
+            return Some(f.clone());
+        }
+        // A frame of a linked chain keeps what fits of its text and of
+        // the frames after it, as the release flows it (a copy dragged
+        // off with a right click is not linked).
+        let next = self.next_frame(id).filter(|_| !self.drag_copy);
+        let flowing: Vec<TextSpan>;
+        let spans = if next.is_some() {
+            let chain = self.chain_of(id);
+            let at = chain.iter().position(|c| *c == id).unwrap_or(0);
+            flowing = spans
+                .iter()
+                .cloned()
+                .chain(chain.iter().skip(at + 1).flat_map(|c| {
+                    match self.doc().find_shape(*c).map(|s| &s.kind) {
+                        Some(ShapeKind::Text { spans, .. }) => spans.clone(),
+                        _ => Vec::new(),
+                    }
+                }))
+                .collect();
+            &flowing
+        } else {
+            spans
+        };
+        let req = TextRequest {
+            spans,
+            frame: Some(*frame),
+            align: *align,
+            para,
+            on_path: None,
+        };
+        let fonts = tracedraw_text::fonts();
+        // Shaping a long text anew would hold the drag up at its start:
+        // only a short one is shaped here (the page's picture shaped the
+        // text when it was drawn, and the text engine keeps that).
+        if live.layouts.get(&id).is_none()
+            && !fonts.is_shaped(&req)
+            && spans.iter().map(|s| s.text.len()).sum::<usize>() > LIVE_SHAPE_BYTES
+        {
+            live.slow.insert(id);
+            return None;
+        }
+        let started = web_time::Instant::now();
+        let layout = fonts.layout_fitted(&req);
+        let took = started.elapsed().as_secs_f64();
+        let count = {
+            let n = live.layouts.entry(id).or_insert(0);
+            *n += 1;
+            *n
+        };
+        let over = if count > 1 && took > live.budget {
+            let n = live.over.entry(id).or_insert(0);
+            *n += 1;
+            *n
+        } else {
+            live.over.remove(&id);
+            0
+        };
+        if over >= LIVE_REFLOW_OVER {
+            log::debug!("text {id:?} takes {took:.4} s to lay out: it flows on release");
+            live.slow.insert(id);
+            live.frames.remove(&id);
+            return None;
+        }
+        let place = s.transform
+            * tracedraw_core::document::text_layout_shift(
+                *origin,
+                Some(*frame),
+                false,
+                para.vertical,
+            );
+        let f = Rc::new(LiveFrame {
+            frame: *frame,
+            #[cfg(test)]
+            lines: shown_lines(&layout),
+            overflow: layout.overflow && next.is_none(),
+            outline: place * layout.path,
+        });
+        live.frames.insert(id, f.clone());
+        Some(f)
+    }
+
     /// Paragraph text `s` does not fit its frame (the last frame of a
     /// linked chain included); cached per document revision.
     pub fn text_overflows(&self, s: &Shape) -> bool {
@@ -215,12 +418,16 @@ impl App {
             if !(self.settings.show_text_frames || chosen) {
                 continue;
             }
+            // A frame being resized tells whether its text fits as it
+            // flows in it now.
+            let mut live = None;
             if let Some(t) = preview.filter(|t| selected && self.resizes_text_frame(s.id, *t)) {
                 if let Some(kind) = resized_kind(s, t) {
                     let mut moved = s.clone();
                     moved.kind = kind;
                     c = moved.text_frame_corners().unwrap_or(c);
                 }
+                live = self.live_frame(s.id, t);
             } else if let Some(t) = preview.filter(|_| selected) {
                 c = c.map(|p| t * p);
             }
@@ -231,7 +438,7 @@ impl App {
                 corners: c,
                 chosen,
                 editing: editing == Some(s.id),
-                overflow: self.text_overflows(s),
+                overflow: live.map_or_else(|| self.text_overflows(s), |l| l.overflow),
             });
         }
         out
@@ -306,6 +513,100 @@ mod tests {
         assert_eq!(s.transform, turn);
         // Once turned, a scale scales the text as a whole.
         assert!(!app.resizes_text_frame(id, Affine::scale(2.0)));
+    }
+
+    /// A frame being resized lays its text out once per frame size (the
+    /// canvas asks for it twice a frame), and a text whose layout takes
+    /// longer than the budget goes back to flowing on release (#1327).
+    #[test]
+    fn the_live_reflow_lays_out_once_per_size_and_gives_way_to_a_slow_text() {
+        let mut app = App::headless();
+        let id = paragraph(&mut app);
+        let narrow = |k: f64| {
+            Affine::translate((20.0, 0.0))
+                * Affine::scale_non_uniform(k, 1.0)
+                * Affine::translate((-20.0, 0.0))
+        };
+        let a = app.live_frame(id, narrow(0.5)).expect("flowed");
+        let again = app.live_frame(id, narrow(0.5)).expect("flowed");
+        assert!(Rc::ptr_eq(&a, &again));
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 1);
+        assert!(app.shown_text_frames(Some(narrow(0.5)))[0].chosen);
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 1, "one a size");
+        let wide = app.live_frame(id, narrow(2.0)).expect("flowed");
+        assert!(wide.lines < a.lines, "{} {}", wide.lines, a.lines);
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 2);
+        // A move or a turn is no frame resize.
+        assert!(app.live_frame(id, Affine::translate((5.0, 0.0))).is_none());
+        // Slower than the budget: the frame follows alone from then on.
+        app.live_reflow.borrow_mut().budget = 0.0;
+        assert!(
+            app.live_frame(id, narrow(0.7)).is_some(),
+            "once may be chance"
+        );
+        assert!(app.live_frame(id, narrow(0.6)).is_some());
+        assert!(app.live_frame(id, narrow(0.8)).is_none());
+        assert!(app.live_frame(id, narrow(0.5)).is_none());
+        // The drawing changed: tried again.
+        app.live_reflow.borrow_mut().budget = 1.0;
+        app.transform_selection(narrow(0.9));
+        assert!(app.live_frame(id, narrow(0.5)).is_some());
+    }
+
+    /// A frame of a linked chain flowed live takes the text of the frames
+    /// after it that fits, as the release flows it, and does not show
+    /// red for the rest, which flows on.
+    #[test]
+    fn a_linked_frame_flows_live_with_the_text_after_it() {
+        let mut app = App::headless();
+        tracedraw_text::install();
+        let mk = |app: &mut App, text: &str, y: f64| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new(text, "DejaVu Sans", 12.0)],
+                origin: Point::new(20.0, y),
+                frame: Some(Size::new(40.0, 12.0)),
+                align: tracedraw_core::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("frame")
+        };
+        let a = mk(
+            &mut app,
+            "one two three four five six seven eight nine ten eleven twelve",
+            100.0,
+        );
+        let b = mk(&mut app, "", 50.0);
+        assert!(app.link_frames(a, b));
+        assert_eq!(app.next_frame(a), Some(b), "{}", app.status);
+        app.select(vec![a]);
+        // Twice as tall from the top: more lines of the chain's text.
+        let t = Affine::translate((0.0, 100.0))
+            * Affine::scale_non_uniform(1.0, 2.0)
+            * Affine::translate((0.0, -100.0));
+        let live = app.live_frame(a, t).expect("flowed");
+        assert!(!live.overflow);
+        app.transform_selection(t);
+        let s = app.doc().find_shape(a).expect("a").clone();
+        let ShapeKind::Text {
+            spans,
+            frame,
+            align,
+            para,
+            ..
+        } = &s.kind
+        else {
+            panic!("text");
+        };
+        let after = tracedraw_text::fonts().layout(&TextRequest {
+            spans,
+            frame: *frame,
+            align: *align,
+            para,
+            on_path: None,
+        });
+        assert_eq!(live.lines, shown_lines(&after));
+        assert_eq!(live.outline, s.page_path());
     }
 
     #[test]

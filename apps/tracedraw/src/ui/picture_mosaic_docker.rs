@@ -8,7 +8,6 @@
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::picture_mosaic::{grid, tile_pixels, Composition, Edges, Priority};
-use crate::theme::Tokens;
 use crate::ui::docker_form::{indented, row, section};
 use crate::ui::tips::RichTip;
 use egui::{RichText, Ui};
@@ -17,14 +16,6 @@ use egui::{RichText, Ui};
 /// progress while the folder is read.
 fn library(app: &mut App, ui: &mut Ui) {
     section(ui, Some(&tr("docker.picture_mosaic_library")));
-    if crate::files::WEB {
-        ui.label(
-            RichText::new(tr("docker.picture_mosaic_web"))
-                .color(Tokens::text_dim())
-                .small(),
-        );
-        return;
-    }
     let none = tr("docker.form_none");
     let n = app.picture_mosaic.images.len();
     row(ui, &tr("docker.picture_mosaic_images_label"), |ui| {
@@ -38,13 +29,22 @@ fn library(app: &mut App, ui: &mut Ui) {
         .picture_mosaic
         .library
         .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|p| {
+            if crate::files::is_gathered(p) {
+                // Pictures picked where no folder can be read (#1399).
+                trf("folder.picked_n", &[("n", &n.to_string())])
+            } else {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            }
+        })
         .unwrap_or_else(|| none.clone());
     let full = app
         .picture_mosaic
         .library
         .as_ref()
+        .filter(|p| !crate::files::is_gathered(p))
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     row(ui, &tr("docker.picture_mosaic_path"), |ui| {
@@ -61,12 +61,13 @@ fn library(app: &mut App, ui: &mut Ui) {
                 egui::Button::new(tr("docker.picture_mosaic_browse"))
                     .min_size(egui::vec2(100.0, 24.0)),
             )
-            .rich_tip(tr("docker.picture_mosaic_browse_tip"))
+            .rich_tip(match crate::files::FolderUse::MosaicLibrary.tip() {
+                Some(why) => format!("{}\n{}", tr("docker.picture_mosaic_browse_tip"), tr(why)),
+                None => tr("docker.picture_mosaic_browse_tip"),
+            })
             .clicked()
         {
-            if let Some(dir) = crate::files::pick_folder() {
-                app.picture_mosaic_load_library(dir);
-            }
+            choose_library(app);
         }
     });
     if let Some(job) = &app.picture_mosaic_job {
@@ -80,6 +81,33 @@ fn library(app: &mut App, ui: &mut Ui) {
                     &[("n", &done.to_string()), ("total", &job.total.to_string())],
                 )),
         );
+    }
+}
+
+/// Browse: a folder on the desktop; where no folder can be read, the
+/// pictures themselves, several at once, put together as the library's
+/// folder (#1399).
+fn choose_library(app: &mut App) {
+    match crate::files::FolderUse::MosaicLibrary.action() {
+        crate::files::FolderAction::PickFolder(token) => {
+            if let Some(dir) = crate::files::pick_folder(token) {
+                app.picture_mosaic_load_library(dir);
+            }
+        }
+        crate::files::FolderAction::OpenFiles => {
+            crate::files::Dialog::new()
+                .add_filter(
+                    "Pictures",
+                    &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"],
+                )
+                .pick_files(app, |app, paths| {
+                    match crate::files::gather("picture-mosaic", &paths) {
+                        Ok(dir) => app.picture_mosaic_load_library(dir),
+                        Err(e) => app.status = e.to_string(),
+                    }
+                });
+        }
+        crate::files::FolderAction::SaveZip | crate::files::FolderAction::Unavailable(_) => {}
     }
 }
 

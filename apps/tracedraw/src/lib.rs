@@ -161,6 +161,7 @@ mod spell_windows;
 mod splash;
 #[cfg(not(target_arch = "wasm32"))]
 mod startup_log;
+mod step_merge;
 mod step_repeat;
 mod storage_full;
 mod straighten;
@@ -169,6 +170,8 @@ mod symbol_paste;
 mod symmetry_edit;
 mod system_chars;
 mod system_prefs;
+#[cfg(any(target_os = "macos", test))]
+mod system_quit;
 mod table;
 mod table_tool;
 mod templates;
@@ -209,6 +212,11 @@ mod winit_pen_pressure;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/opened_files.rs"]
 mod winit_opened_files;
+// The program's say on a quit of the application on macOS, of the same
+// copy (#1669).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/quit_request.rs"]
+mod winit_quit_request;
 mod workspace_file;
 
 /// The desktop program: the window, with the command line's files and
@@ -292,6 +300,13 @@ pub fn run() -> eframe::Result<()> {
         let (sink, ctx) = (inbox.clone(), wake.clone());
         winit::platform::macos::set_open_files_handler(move |files| {
             instance::deliver_opened(&sink, ctx.get(), files);
+        });
+        // Command+Q, the application menu's and the Dock's Quit, a
+        // log-out: with unsaved drawings TraceDraw takes the quit over
+        // and asks about each, as File > Exit does (#1669).
+        let ctx = wake.clone();
+        winit::platform::macos::set_quit_handler(move || {
+            system_quit::SYSTEM_QUIT.system_asks(ctx.get())
         });
         Some(wake)
     };
@@ -465,6 +480,10 @@ struct Shell {
     /// `splash::WindowSettle`).
     #[cfg(not(target_arch = "wasm32"))]
     window_settle: splash::WindowSettle,
+    /// The splash window growing into the main window: drawn plain until
+    /// it has its size (see `splash::WindowGrow`, #1673).
+    #[cfg(not(target_arch = "wasm32"))]
+    window_grow: Option<splash::WindowGrow>,
     /// Where the check of the OpenGL renderer stands (see
     /// `check_renderer`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -543,6 +562,8 @@ impl Shell {
             #[cfg(not(target_arch = "wasm32"))]
             window_settle: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
+            window_grow: None,
+            #[cfg(not(target_arch = "wasm32"))]
             renderer_check: RendererCheck::At(gpu::CHECKED_FRAME),
             #[cfg(not(target_arch = "wasm32"))]
             blind_reads: 0,
@@ -565,6 +586,8 @@ impl Shell {
             handed_over: None,
             pacer: gpu::Pacer::new(cc),
             window_settle: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            window_grow: None,
             renderer_check: RendererCheck::At(gpu::CHECKED_FRAME),
             blind_reads: 0,
             check_frames: 0,
@@ -788,7 +811,12 @@ impl eframe::App for Shell {
                 "the editor was built in {:.0} ms",
                 built.elapsed().as_secs_f64() * 1000.0
             );
-            splash::open_main_window(ui.ctx(), &app.settings);
+            // This frame shows plain, not the splash: the window system
+            // may grow the window before the next frame is drawn, and the
+            // last splash frame stayed in its corner meanwhile (#1673).
+            let fill = ui.ctx().global_style().visuals.panel_fill;
+            ui.painter().rect_filled(ui.max_rect(), 0.0, fill);
+            self.window_grow = Some(splash::open_main_window(ui.ctx(), &app.settings));
             // F8 held while TraceDraw started: ask before resetting.
             if reset {
                 app.dialog = ui::dialogs::Dialog::ConfirmResetSettings;
@@ -796,6 +824,19 @@ impl eframe::App for Shell {
             self.app = Some(app);
             ui.ctx().request_repaint();
             return;
+        }
+        // The window growing from the splash's size: drawn plain, the
+        // editor's first frame waits for the window's own size (#1673).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(grow), Some(app)) = (self.window_grow.as_mut(), self.app.as_ref()) {
+            if !grow.step(ui) {
+                // A window that starts maximized is maximized meanwhile.
+                if self.window_settle.settling() {
+                    self.window_settle.step(ui.ctx(), &app.settings);
+                }
+                return;
+            }
+            self.window_grow = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.build_deferred(ui) {

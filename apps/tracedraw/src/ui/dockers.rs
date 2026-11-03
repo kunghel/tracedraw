@@ -1045,7 +1045,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
             SectionIcon::Tool(crate::tools::Tool::Transparency),
         ),
     ]);
-    let corners = first.page_corners();
+    let corners = app.corners_as_seen(first);
     if corners.is_some() {
         sections.push((
             "corners",

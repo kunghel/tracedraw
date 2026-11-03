@@ -195,6 +195,36 @@ mod tests {
     const CI: &str = include_str!("../../../.github/workflows/build.yml");
     const CHECK: &str = include_str!("../../../scripts/web/check_pwa.mjs");
 
+    /// A drag with the button held on the canvas (a marquee, a move) is
+    /// not a text selection of the page: the page and the canvas turn
+    /// the browser's selection and the long-press callout off, while the
+    /// loading text stays selectable for copying an error (#1654).
+    #[test]
+    fn a_drag_on_the_page_selects_no_text() {
+        let rule = |selector: &str| -> String {
+            let at = PAGE
+                .find(selector)
+                .unwrap_or_else(|| panic!("no rule for {selector}"));
+            let body = &PAGE[at..];
+            let open = body.find('{').expect("rule body");
+            let close = body.find('}').expect("rule end");
+            body[open..close].to_string()
+        };
+        let page = rule("html, body, canvas#tracedraw");
+        for prop in [
+            "user-select: none",
+            "-webkit-user-select: none",
+            "-webkit-touch-callout: none",
+        ] {
+            assert!(page.contains(prop), "{prop} on the page and the canvas");
+        }
+        let loading = rule("#loading {");
+        assert!(
+            loading.contains("user-select: text"),
+            "the loading text can be copied"
+        );
+    }
+
     /// Ctrl+R is Repeat in the editor, not the browser's reload; the
     /// clipboard keys and the developer tools stay with the browser.
     #[test]
@@ -203,6 +233,35 @@ mod tests {
         assert!(browser_keeps_key("x", true) && browser_keeps_key("I", true));
         for k in ["r", "R", "s", "p", "d", "g", "i", "e", "f"] {
             assert!(!browser_keeps_key(k, false), "{k}");
+        }
+    }
+
+    /// #1409: the editor's keys a browser lets a page cancel (Ctrl+1 to
+    /// Ctrl+9 and Ctrl+PgUp/PgDn switch tabs otherwise) are kept from it,
+    /// and so are the browser version's alternatives for the keys no page
+    /// can take (`shortcuts::BROWSER_KEYS`), so they reach the editor.
+    #[test]
+    fn the_editors_tab_keys_and_their_alternatives_are_kept_from_the_browser() {
+        for k in ["1", "5", "9", "0", "PageUp", "PageDown", "F4"] {
+            assert!(
+                guard_keeps_from_browser(k, true, false, false, false, false),
+                "{k}"
+            );
+        }
+        // Ctrl+F5 (Refresh Window) would reload the page.
+        assert!(guard_keeps_from_browser(
+            "F5", true, false, false, false, false
+        ));
+        // Alt+Shift+N, Alt+Shift+W, Alt+PgUp, Alt+PgDn.
+        for (k, c) in [
+            ("N", "KeyN"),
+            ("W", "KeyW"),
+            ("PageUp", "PageUp"),
+            ("PageDown", "PageDown"),
+        ] {
+            let mut g = AltGuard::default();
+            g.key_down("Alt", "AltLeft", false, false, true, false, false);
+            assert!(g.key_down(k, c, false, false, true, false, false), "{k}");
         }
     }
 

@@ -17,7 +17,8 @@ o mesmo, mas seleciona com um laço à mão livre.
   totalmente dentro da moldura tracejada são selecionados. Mantenha
   <kbd>Alt</kbd> pressionado ao terminar o arraste para selecionar todos os
   objetos que a moldura toca; pressionado desde o início, a moldura pode
-  começar também sobre um objeto (um fundo). Mantenha <kbd>Shift</kbd> para inverter os
+  começar também sobre um objeto (um fundo, ou o objeto na frente de um
+  escondido), selecionado ou não. Mantenha <kbd>Shift</kbd> para inverter os
   objetos que a moldura pega: os selecionados saem da seleção e os outros
   entram. Mantenha <kbd>Ctrl</kbd> para manter a moldura quadrada.
 - <kbd>Ctrl</kbd>+clique seleciona um objeto dentro de um grupo, um nível mais

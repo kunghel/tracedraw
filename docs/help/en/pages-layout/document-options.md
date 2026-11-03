@@ -5,7 +5,7 @@ active drawing: page size, layout, background, bleed, rulers, grid and
 guidelines. Double-clicking a ruler or the page border also opens it. Choose a
 page from the list on the left. Changes show at once; [[dialog.ok]] keeps
 them and [[dialog.cancel]] puts everything back. **Save as default** keeps the
-grid, ruler and guideline settings for new drawings.
+grid, ruler and guideline settings and the page spacing for new drawings.
 
 ## General {#general}
 
@@ -51,6 +51,8 @@ the [[options.master_layers]], each shown on [[options.scope_all]],
 [[options.scope_odd]] or [[options.scope_even]]. The buttons add a new master
 layer for all, odd or even pages. See
 [Master layers](../objects/objects-and-layers.md#master-layers).
+[[options.page_spacing]] (30 mm at first) is the space between the pages of
+the [Multipage view](multipage-view.md#page-spacing), in the drawing's units.
 
 ## Background {#background}
 

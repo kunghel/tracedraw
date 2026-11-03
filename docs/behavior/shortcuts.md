@@ -12,6 +12,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S | New, Open, Save, Save As |
 | Ctrl+I, Ctrl+E, Ctrl+P | Import, Export, Print |
 | Ctrl+F4, Alt+F4 | Close window, Exit |
+| Command+Q (macOS) | Quit TraceDraw from the application menu: asks about unsaved drawings as Exit does |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+R | Undo, Redo, Repeat |
 | Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+Shift+V | Cut, Copy, Paste, Paste in view |
 | Ctrl+D, Ctrl+Shift+D | Duplicate, Repeat Copies panel |
@@ -52,7 +53,7 @@ original, #471). Checks:
 
 | Keys | Action |
 | --- | --- |
-| F2, Shift+F2, F3, F4, Shift+F4 | Zoom tool, zoom to selection, zoom out, zoom to fit, zoom to page |
+| F2, Shift+F2, F3, F4, Shift+F4 | Zoom tool, zoom to selection, zoom out, zoom to fit, zoom to page (also while a text is being edited, #1699) |
 | Ctrl++ (or Ctrl+=), Ctrl+- | Zoom in and out one step |
 | Alt+Shift+R | Rulers on and off |
 | Alt+Q, Alt+Shift+A, Alt+Shift+D | Snapping off, alignment guides, dynamic guides |
@@ -178,6 +179,41 @@ name.
   (`bar_items::menu_command`, #1148). The buttons the menus lack (the
   zoom levels list, Snap To, the other zoom buttons, Options, Launch)
   have no Shortcut Keys tab.
+
+## In the browser
+
+Some of these keys stay with the browser in the browser version, which
+gives no page Ctrl+N, Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+F4 or Alt+F4,
+and in some browsers or systems keeps Ctrl+PgUp, Ctrl+PgDn and Ctrl+1 to
+Ctrl+9 (tab switching) or Ctrl+Q and Ctrl+Shift+Q (quitting, on Linux).
+The page keeps from the browser every one of these it is allowed to, so
+they work where the browser lets them (`web.md`, Keyboard). Each command
+also has a key of the browser version, which the menus, context menus,
+toolbar tips and hints show there instead of the key the browser keeps
+(the desktop apps show and run their own keys only; both keys work in
+the browser):
+
+| Command | Desktop key | In the browser |
+|---|---|---|
+| File > New | Ctrl+N | Alt+Shift+N |
+| Text panel | Ctrl+T | Alt+Shift+X |
+| Edit Text | Ctrl+Shift+T | Alt+Shift+T |
+| Window > Refresh Window | Ctrl+W | Ctrl+F5 |
+| Window > Close Window | Ctrl+F4 | Alt+Shift+W |
+| Order > Forward One, Back One | Ctrl+PgUp, Ctrl+PgDn | Alt+PgUp, Alt+PgDn |
+| Convert to Curves | Ctrl+Q | Alt+Shift+C |
+| Convert Outline to Object | Ctrl+Shift+Q | Alt+Shift+Q |
+| Store selection group 0 to 9 | Ctrl+0 to Ctrl+9 | Alt+Shift+0 to Alt+Shift+9 (the digit keys whatever Shift types on them) |
+| File > Exit | Alt+F4 | none: close the tab |
+
+Each of these keys is bound to nothing else
+(`ui::menus::tests::browser_alternatives_are_free`). Options >
+Customization > Commands says which keys the browser keeps and lists
+their replacements. While typing text, the alignment keys the browser
+keeps (Ctrl+N) have their buttons on the property bar. Checks:
+`shortcuts::tests::browser_kept_keys_map_to_alternatives`,
+`ui::menus::tests::browser_kept_shortcuts_have_alternatives_in_the_menus`,
+`web_page::tests::the_editors_tab_keys_and_their_alternatives_are_kept_from_the_browser`.
 
 ## Checks
 

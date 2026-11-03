@@ -15,6 +15,9 @@
   toolbox button keeps it until another tool is chosen. Shift+F2 zooms
   to the selection; F4 zooms to fit
   all objects; Shift+F4 zooms to the page.
+- These keys work while a text is being edited too, and the editing
+  goes on: after F2's one zoom the text is edited on where it was
+  (#1699, `pick_drag_tests::zoom_keys_work_while_editing_text`).
 - `+`/`=` and `-` zoom by 1.25 about the canvas centre (except that `+`
   duplicates the selection in place with a Pick tool, and with the Shape
   tool and nodes chosen `+` and `-` add and delete nodes); the zoom combo

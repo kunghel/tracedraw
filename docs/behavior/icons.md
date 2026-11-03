@@ -11,10 +11,23 @@ on a wire.
 ## Style rules
 
 - **Grid 24, stroke 2, round caps and joins**, a 2 unit safe margin.
-  The grid is mapped onto the icon's box (22 px in the toolbox at the
-  medium button size, 20 px in the Hints panel, 15 px on the cursor
-  badge), so a stroke is 2/24 of the box: 1.8 px at 22 px, never
-  thinner than a pixel. Guides and handles are thin lines (1.4).
+  The grid is mapped onto the icon's box (16, 20, 24, 32 or 40 px in
+  the toolbox and the standard bar from the Extra Small to the Extra
+  Large button size, 24 px at Medium; 20 px in the Hints panel, 15 px
+  on the cursor badge). Strokes are drawn at 5/8 of their design width (`WEIGHT`), so
+  a stroke 2 is 1.25 px in the 22 px box, never thinner than one
+  physical pixel; guides and handles are thin lines (1.4 design units),
+  node and handle frames one physical pixel. A box within a twelfth of a
+  whole number of pixels per unit (22 to 26 px at 1x, 44 to 52 px at
+  2x) is snapped to that whole number, so every unit is on a pixel;
+  any other box of about 20 px and up keeps its own size with the grid's
+  side rounded to whole pixels, so a larger box always draws a larger
+  icon (`icon_paint::grid_scale`, `the_grid_grows_with_its_box`; it had
+  rounded every box from 21 to 35 px to the same 24 px grid, so larger
+  buttons kept the same icons). The grid is centred on a pixel
+  centre, so lines on whole pixels stay sharp; round cap and
+  join discs are only added to strokes of 3 physical pixels or more.
+  Rectangles and boxes have square 90 degree corners.
 - **Three colours, by role.** *Ink* draws the object: the shape, the
   curve, the tool itself. The *accent* (the brand blue, `2F6FD0` on
   light themes, `5CAEFF` on dark ones) draws the action: what the tool
@@ -63,7 +76,7 @@ tool is drawn from, by group:
 |---|---|
 | Pick | the arrow with the node at its tail; a lasso closing on a node with a small pointer; a tilted box with the rotation arc and the node on the pivot |
 | Shape edit | a node with its two handles under the pointer; jagged ink becoming a smooth wave; a blob pulled into a tail; a spiral winding inside a shape; four arrows converging on a shape; a brush dragging a smear; a body with its top edge sawn into a zigzag |
-| Crop | a corner cut off a shape, the piece floating away as a ghost; a circle split by the blade; a curve with the doomed segment a ghost, crossed out; a tilted eraser with rubbed-out marks |
+| Crop | two interlocking corner brackets framing the kept square, a solid blue square on the dragged corner; a knife on the diagonal with the blue cut it leaves; a curve with the doomed segment a ghost, crossed out; a block eraser on its end with a blue rubbed-out mark |
 | Zoom | a lens showing a magnified curve and node; a page shifted from its ghost with the drag arrow |
 | Curves | a pencil drawing a scribble; a line, hollow start and live end; the S curve with its handles; a nib drawing a segment; a ghost control polygon with round handles; a polyline with hollow vertices; an arc with hollow ends and a live apex |
 | Drawing | the calligraphic S swash (a blue ribbon on a thin ink path, the node at the live end); a round brush with three dabs; a sketched square recognised as a clean shape; sketchy strokes reading as one line |
@@ -71,10 +84,10 @@ tool is drawn from, by group:
 | Text | a bold T inside the dashed text frame; a table with a blue header row |
 | Dimension | the measured edge in ink and the dimension line with ticks in blue (parallel, horizontal and vertical, the angle's arc, one segment of a path); a callout box with its tail ending in a node |
 | Connector | two boxes joined by a blue link with round anchors (curved, right-angled, rounded); a box with its anchors, the live one under the pointer |
-| Effects | the shadow as blue hatching behind an opaque box; a triangle with two offset outlines fading outward; a square morphing into a blue circle; a square with bowed sides and the corner pulled; a wavy box with four live corners; the extrusion's blue depth faces; a circle with a solid blue block behind it |
-| Transparency | dither dots fading across a circle, the node-to-handle bar |
+| Effects | an opaque box with a solid blue shadow offset behind it; a triangle with two offset outlines fading outward; a square morphing into a blue circle; a square with bowed sides and the corner pulled; a wavy box with four live corners; the extrusion's blue depth faces; a circle with a solid blue block behind it |
+| Transparency | a circle filled with ink fading to nothing, the blue node-to-handle bar across it |
 | Eyedropper | the diagonal pipette with the drop drawn into its tip, over a swatch or with a property card |
-| Fill | a pail tilted over a box filling up; two rings with the lens filled; a curved mesh with four handles and the live node |
+| Fill | a tilted pail holding blue paint, a drop at its lip; two rings with the lens filled; a curved mesh with four handles and the live node |
 | Outline | a ring with a thick blue outline segment ending in a node (Outline Pen); the ring with a colour swatch (Outline Colour) |
 
 ## Checks

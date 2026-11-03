@@ -6,6 +6,7 @@
 use crate::app::App;
 use crate::effects_ui::TransparencySettings;
 use tracedraw_core::document::{Shape, ShapeKind};
+use tracedraw_core::geometry::Affine;
 use tracedraw_core::live::{Effect, MergeMode};
 use tracedraw_core::patch::{
     fill_changes, fill_mixed, stroke_changes, stroke_mixed, FillField, FillMix, StrokeField,
@@ -549,14 +550,32 @@ impl App {
         LAST_AMOUNT_STEP.with(|c| c.set(rev));
     }
 
-    /// The corners of the selected rectangles, and which of their values
-    /// differ: `[kind, top left, top right, bottom right, bottom left
-    /// (the radii in `Corners` order), scaling]`.
+    /// The transform a rectangle is seen through: its own under its
+    /// parents'.
+    pub fn seen_transform(&self, s: &Shape) -> Affine {
+        self.doc()
+            .parent_transform(s.id)
+            .map_or(s.transform, |pt| pt * s.transform)
+    }
+
+    /// A rectangle's corners as the bar shows them: measured on the page
+    /// and in the order they lie there (the top left field is the corner
+    /// seen at the top left, also on a rectangle turned by 180 degrees,
+    /// flipped or stretched across its own side, #1670). `None` for other
+    /// kinds.
+    pub fn corners_as_seen(&self, s: &Shape) -> Option<Corners> {
+        Some(s.page_corners()?.as_seen(self.seen_transform(s)))
+    }
+
+    /// The corners of the selected rectangles as the bar shows them
+    /// (`corners_as_seen`), and which of their values differ: `[kind, top
+    /// left, top right, bottom left, bottom right (the radii in `Corners`
+    /// order), scaling]`.
     pub fn selection_corner_mix(&self) -> Option<(Corners, [bool; 6])> {
         let all: Vec<Corners> = self
             .selected_rc()
             .iter()
-            .filter_map(|s| s.page_corners())
+            .filter_map(|s| self.corners_as_seen(s))
             .collect();
         let first = *all.first()?;
         let mut mix = [false; 6];

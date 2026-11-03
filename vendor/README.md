@@ -136,6 +136,20 @@ change marked `TraceDraw:` in a comment.
     `draggingLocation` converted to the flipped view's points
     (`queue_drag_position`).
   - Windows keeps reading the cursor itself (`drop_files::drop_pointer`).
+- Change: macOS asks the program before the application quits (#1669).
+  The default application menu's Quit item (Command+Q), the Dock icon's
+  Quit and a log-out or shut-down send `terminate:`; winit 0.30's
+  application delegate has no `applicationShouldTerminate:`, so AppKit
+  terminated at once, `applicationWillTerminate:` ended the event loop
+  and no window had a `CloseRequested`: TraceDraw could not ask about
+  unsaved drawings. The delegate (`platform_impl/macos/app_state.rs`)
+  now answers `applicationShouldTerminate:` by asking `src/quit_request.rs`,
+  which calls the handler the program set with
+  `platform::macos::set_quit_handler`: `true` cancels the terminate
+  (`NSTerminateCancel`, the program then closes its window itself),
+  `false` or no handler lets it go ahead (`NSTerminateNow`, as before).
+  `src/quit_request.rs` depends on nothing in the crate, and TraceDraw's
+  tests include and run it (`winit_quit_request::tests`).
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
 - Drop the copy and the `[patch.crates-io]` entry when a winit release

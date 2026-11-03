@@ -96,7 +96,20 @@ the same undo step:
   back).
 
 Selecting either object picks the blend for the bar and the Blend
-panel. Clear Blend removes the blend and leaves both objects; Break
+panel. Selected, each object shows its own box and handles: the start
+object's box is the object itself (its other live effects included),
+not the steps, as the end object's is the end; the bar's position and
+size, the handles, Repeat and the rotation centre all take that box,
+so a side handle resizes the start object from its own opposite side.
+A press on a step picks the start object, shown with the same box.
+The steps are part of no single object's box: a group holding the
+blend spans the whole blend, steps included, and a blend from an older
+file, whose end lives only in the effect, is one object whose box is
+the whole blend (#1540,
+`pick_drag_tests::a_blend_s_start_object_shows_its_own_box_and_handles`,
+`tracedraw_core::live::tests::a_blend_start_s_own_box_leaves_the_steps_out`).
+
+Clear Blend removes the blend and leaves both objects; Break
 Apart turns the steps into objects. Files from before this kept the end
 only inside the effect; such a blend draws its end with the steps.
 

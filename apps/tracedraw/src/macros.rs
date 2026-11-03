@@ -894,33 +894,62 @@ impl App {
                 return;
             }
         };
-        let first = &files[0];
-        let ext = Path::new(&first.name)
+        let files: Vec<(String, Vec<u8>)> = files.into_iter().map(|f| (f.name, f.bytes)).collect();
+        let first = files[0].0.clone();
+        let ext = Path::new(&first)
             .extension()
             .map(|e| e.to_string_lossy().to_string())
             .unwrap_or_default();
-        let Some(path) = crate::files::Dialog::new()
+        // The save dialog, a download, or the system's save picker on
+        // Android (#1402).
+        crate::files::Dialog::new()
             .add_filter(ext.to_uppercase(), &[ext.as_str()])
-            .set_file_name(first.name.clone())
-            .save_path()
-        else {
+            .set_file_name(first)
+            .save_file(self, move |app, path| {
+                app.write_exported_macros(&path, files)
+            });
+    }
+
+    /// Write the exported files: the first to `path`, the others beside
+    /// it (a form's `.frx` with the name chosen). A document the Android
+    /// picker made has nothing beside it: the picker asks for each of the
+    /// others in turn.
+    fn write_exported_macros(&mut self, path: &Path, files: Vec<(String, Vec<u8>)>) {
+        let mut files = std::collections::VecDeque::from(files);
+        let Some((_, bytes)) = files.pop_front() else {
             return;
         };
-        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let mut result = crate::files::write(&path, &first.bytes);
-        for f in files.iter().skip(1) {
-            // The form's .frx goes beside its .frm, with the name chosen.
-            let target = if f.name.to_ascii_lowercase().ends_with(".frx") {
+        let shown = path.display().to_string();
+        if let Err(e) = crate::files::write(path, &bytes) {
+            self.status = trf("macros.export_failed", &[("e", &e.to_string())]);
+            return;
+        }
+        // The form's .frx goes beside its .frm, with the name chosen.
+        let named = |name: String| {
+            if name.to_ascii_lowercase().ends_with(".frx") {
                 path.with_extension("frx")
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(name)
             } else {
-                dir.join(&f.name)
-            };
+                name
+            }
+        };
+        let rest: std::collections::VecDeque<(String, Vec<u8>)> =
+            files.into_iter().map(|(n, b)| (named(n), b)).collect();
+        if crate::files::is_document_path(path) {
+            save_each_macro_file(self, rest, shown);
+            return;
+        }
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut result = Ok(());
+        for (name, bytes) in rest {
             if result.is_ok() {
-                result = crate::files::write(&target, &f.bytes);
+                result = crate::files::write(dir.join(&name), &bytes);
             }
         }
         self.status = match result {
-            Ok(()) => trf("macros.exported", &[("f", &path.display().to_string())]),
+            Ok(()) => trf("macros.exported", &[("f", &shown)]),
             Err(e) => trf("macros.export_failed", &[("e", &e.to_string())]),
         };
     }
@@ -983,6 +1012,32 @@ impl App {
             (Ok(()), Ok(_)) => tr("macros.saved"),
         });
     }
+}
+
+/// The system's save picker for each of `rest` in turn (Android, #1402);
+/// the status line names `shown` once all are written.
+fn save_each_macro_file(
+    app: &mut App,
+    mut rest: std::collections::VecDeque<(String, Vec<u8>)>,
+    shown: String,
+) {
+    let Some((name, bytes)) = rest.pop_front() else {
+        app.status = trf("macros.exported", &[("f", &shown)]);
+        return;
+    };
+    let ext = Path::new(&name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+    crate::files::Dialog::new()
+        .add_filter(ext.to_uppercase(), &[ext.as_str()])
+        .set_file_name(name)
+        .save_file(app, move |app, path| {
+            match crate::files::write(&path, &bytes) {
+                Ok(()) => save_each_macro_file(app, rest, shown),
+                Err(e) => app.status = trf("macros.export_failed", &[("e", &e.to_string())]),
+            }
+        });
 }
 
 #[cfg(test)]

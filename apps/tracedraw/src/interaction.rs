@@ -21,14 +21,6 @@ use tracedraw_core::{
     Color, Command, Fill, ShapeId,
 };
 
-/// A press this close to a handle's centre takes it: within the handle,
-/// short of the selection box (the handles stand outside it).
-const HANDLE_PX: f32 = 6.0;
-/// The selection handles' size, interface points.
-pub(crate) const HANDLE_SIZE: f32 = 10.0;
-/// How far out of the selection box the handles' centres stand,
-/// interface points: a gap of 1.5 points between handle and box.
-pub(crate) const HANDLE_OFFSET: f32 = HANDLE_SIZE / 2.0 + 1.5;
 /// How far out of the selection box the rotate and skew arrows' centres
 /// stand (rotate mode), interface points.
 pub(crate) const ROTATE_HANDLE_OFFSET: f32 = 9.0;
@@ -273,6 +265,27 @@ pub fn release_chorded_left(ctx: &egui::Context, raw: &mut egui::RawInput) {
     });
 }
 
+/// Half the width of the outline of `s` (in page space) as it is drawn:
+/// its own width, scaled by the object's scale when the outline scales
+/// with the object, as the renderer draws it; 0 without an outline.
+fn outline_half_width(s: &tracedraw_core::Shape) -> f64 {
+    let Some(stroke) = &s.stroke else {
+        return 0.0;
+    };
+    let scale = if stroke.scale_with_object {
+        let c = s.transform.as_coeffs();
+        (c[0] * c[3] - c[1] * c[2]).abs().sqrt()
+    } else {
+        1.0
+    };
+    let half = stroke.width * scale / 2.0;
+    if half.is_finite() {
+        half.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 impl App {
     pub fn hit_test(&self, p: Point) -> Option<ShapeId> {
         self.hit_test_where(p, |_| false)
@@ -430,7 +443,15 @@ impl App {
         if let Some(own) = self.without_edited_symmetry(s) {
             return self.shape_hit(&own, p, tol);
         }
-        if !self.visual_bounds(s).inflate(tol, tol).contains(p) {
+        // A thick outline is picked anywhere it shows, out to the
+        // tolerance beyond its visible edge, not only near its centre
+        // line (#1678); a thin one within the tolerance as before.
+        let half = outline_half_width(s);
+        if !self
+            .visual_bounds(s)
+            .inflate(tol + half, tol + half)
+            .contains(p)
+        {
             return false;
         }
         if !s.effects.is_empty() {
@@ -470,7 +491,7 @@ impl App {
         if (filled || self.settings.treat_all_filled) && path.contains(p) {
             return true;
         }
-        crate::canvas::distance_to_path(&path, p) <= tol * 1.5
+        crate::canvas::distance_to_path(&path, p) <= (tol * 1.5).max(half + tol)
     }
 
     /// A part of dimension `s` (in page space) is under `p`: its label
@@ -662,6 +683,20 @@ impl App {
         (!chain.is_empty()).then(|| chain.iter().any(|id| self.selection.contains(id)))
     }
 
+    /// Whether a selected object lies under `p`, also one hidden behind
+    /// another object there (a right click on it keeps the selection and
+    /// opens the selection's menu, #1684): the objects at `p` on the
+    /// layers, or inside groups and clip frames for one chosen in there.
+    pub fn selection_under(&self, p: Point) -> bool {
+        if self.selection.is_empty() {
+            return false;
+        }
+        self.hits_at(p, false)
+            .iter()
+            .chain(self.hits_at(p, true).iter())
+            .any(|id| self.selection.contains(id))
+    }
+
     /// What a Pick press at `p` takes: a selected object under `p` (an
     /// object chosen inside a group stays chosen, so a drag moves it alone,
     /// #849), else with `ctrl` the object one group level in, else the
@@ -812,12 +847,31 @@ impl App {
         self.rotate_mode = false;
     }
 
+    /// The selection handles' size, interface points: Options > Nodes
+    /// and Handles > Handle size (Small 6, Medium 8, Large 10, the
+    /// default; #1285).
+    pub fn handle_size(&self) -> f32 {
+        self.settings.nodes.handles.px()
+    }
+
+    /// How far out of the selection box the handles' centres stand,
+    /// interface points: a gap of 1.5 points between handle and box.
+    pub fn handle_offset(&self) -> f32 {
+        self.handle_size() / 2.0 + 1.5
+    }
+
+    /// A press this close to a handle's centre takes it: within the
+    /// handle, short of the selection box (the handles stand outside it).
+    fn handle_reach(&self) -> f32 {
+        (self.handle_size() / 2.0 + 1.0).max(4.0)
+    }
+
     /// Screen-space handle positions for the selection box.
     pub fn handle_positions(&self, b: Rect) -> [(Handle, egui::Pos2); 8] {
         let off = if self.rotate_mode {
             ROTATE_HANDLE_OFFSET
         } else {
-            HANDLE_OFFSET
+            self.handle_offset()
         };
         let r = self.view.rect_to_screen(b).expand(off);
         [
@@ -1126,7 +1180,7 @@ impl App {
         let reach = if self.rotate_mode {
             ROTATE_HANDLE_PX
         } else {
-            HANDLE_PX
+            self.handle_reach()
         };
         self.handle_positions(b)
             .iter()
@@ -1391,7 +1445,7 @@ impl App {
                     self.eyedropper_click(p, attrs, mods.shift);
                 }
             }
-            Tool::InteractiveFill => self.fill_input(response, p),
+            Tool::InteractiveFill => self.fill_input(response, p, mods),
             Tool::Crop => self.crop_input(response, p),
             Tool::Contour => self.contour_input(response, p),
             Tool::Knife
@@ -1487,10 +1541,11 @@ impl App {
                         };
                         return;
                     }
-                    if let Some(id) = self.hit_test(p) {
-                        self.select(vec![id]);
+                    // The selection takes the mask; an unselected object
+                    // pressed outside it is picked and takes it (#1661).
+                    if let Some(shape) = self.transparency_drag_target(p) {
                         self.drag = Drag::FillGradient {
-                            shape: id,
+                            shape,
                             start: p,
                             current: p,
                         };
@@ -1505,9 +1560,7 @@ impl App {
                         };
                         return;
                     }
-                    if let Drag::FillGradient { current, .. } = &mut self.drag {
-                        *current = p;
-                    }
+                    self.fill_gradient_drag_to(p, mods);
                 }
                 if response.clicked() {
                     if let Some(h) = self.fountain_handle_at(p) {
@@ -1691,11 +1744,15 @@ impl App {
             // what is selected already (Ctrl then keeps the move straight);
             // an object chosen inside a group moves alone (#849).
             // Alt starts a selection by touching anywhere, also over an
-            // object that is not selected (a background under the objects
-            // to pick), as a press beside it would (#1341, #1350).
-            let hit = self
-                .press_target(p, mods.ctrl)
-                .filter(|id| !mods.alt || self.selection.contains(id));
+            // object, selected or not (the object in front of a hidden
+            // one, a background under the objects to pick), as a press
+            // beside it would; a drag moves the selection without Alt
+            // (#1341, #1350).
+            let hit = if mods.alt {
+                None
+            } else {
+                self.press_target(p, mods.ctrl)
+            };
             match hit {
                 Some(id) => {
                     if mods.shift {
@@ -2141,7 +2198,14 @@ impl App {
                 Tool::Zoom => Tool::Pick,
                 t => t,
             };
-            self.set_tool(back);
+            if self.text_edit.is_some() {
+                // F2 while editing a text (#1699): the editing goes on.
+                self.zoom_one_shot = false;
+                self.previous_tool = Tool::Zoom;
+                self.tool = back;
+            } else {
+                self.set_tool(back);
+            }
         }
     }
 
@@ -2430,7 +2494,10 @@ impl App {
             // is the one the preview showed, shaped by the handle of the
             // node before (straight when that node has none), arriving
             // straight at the new node (#314).
-            if drag || !c.dragging_handle {
+            // A B-Spline point on the last one is not placed twice: the
+            // curve would bend at its end where the preview showed none.
+            let again = bspline && c.on_last_control(p);
+            if (drag || !c.dragging_handle) && !again {
                 c.nodes.push((p, None));
             }
             c.dragging_handle = drag;
@@ -2675,7 +2742,7 @@ impl App {
         }
     }
 
-    fn fill_input(&mut self, response: &Response, p: Point) {
+    fn fill_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         // A double click on a colour node removes it; on the line, it adds
         // one there.
         if response.double_clicked_by(PointerButton::Primary) {
@@ -2722,9 +2789,7 @@ impl App {
                 };
                 return;
             }
-            if let Drag::FillGradient { current, .. } = &mut self.drag {
-                *current = p;
-            }
+            self.fill_gradient_drag_to(p, mods);
         }
         if response.clicked_by(PointerButton::Primary) {
             // A click on a node picks it (the node bar opens under it).
@@ -2758,6 +2823,44 @@ impl App {
                     fill,
                 });
             }
+        }
+    }
+
+    /// The gradient line of an Interactive Fill or Transparency drag
+    /// follows the pointer to `p`; with Ctrl (Cmd) it turns in steps of
+    /// the constrain angle about where the drag began (#1661).
+    fn fill_gradient_drag_to(&mut self, p: Point, mods: Modifiers) {
+        let step = self.settings.constrain_angle;
+        if let Drag::FillGradient { start, current, .. } = &mut self.drag {
+            *current = if mods.ctrl || mods.command {
+                constrain_from(*start, p, step)
+            } else {
+                p
+            };
+        }
+    }
+
+    /// The object a Transparency drag starting at `p` puts its mask on,
+    /// picking it when it was not selected: with a selection, the
+    /// selection (pressed on a selected object, even where another one
+    /// covers it, or on no object); an unselected object pressed outside
+    /// the selected ones is picked alone; with nothing selected, the
+    /// object under the press (#1661).
+    fn transparency_drag_target(&mut self, p: Point) -> Option<ShapeId> {
+        let on_selected = self.selection.iter().copied().find(|id| {
+            self.doc()
+                .shape_on_page(*id)
+                .is_some_and(|s| s.bounds().contains(p))
+        });
+        if let Some(id) = on_selected {
+            return Some(id);
+        }
+        match self.hit_test(p) {
+            Some(id) => {
+                self.select(vec![id]);
+                Some(id)
+            }
+            None => self.selection.first().copied(),
         }
     }
 
@@ -2959,7 +3062,13 @@ impl App {
                 current,
             } if self.tool == Tool::Transparency => {
                 if (current - start).hypot() > 0.5 {
-                    self.transparency_from_drag(shape, start, current);
+                    // The whole selection when the drag began on it (#1661).
+                    let ids = if self.selection.contains(&shape) {
+                        self.selection.clone()
+                    } else {
+                        vec![shape]
+                    };
+                    self.transparency_from_drag_on(&ids, start, current);
                 }
             }
             Drag::FillGradient {
@@ -3130,6 +3239,81 @@ impl App {
         false
     }
 
+    /// The zoom keys while a text is being edited, which type nothing
+    /// (#1699): F3 zooms out, F4 to fit all objects, Shift+F4 to the
+    /// page, Shift+F2 to the selection, and F2 picks the Zoom tool for one
+    /// zoom, after which the text is edited on where it was. Each key
+    /// taken is consumed, so the typing does not see it; one the user
+    /// gave another command or removed (Options > Customization >
+    /// Commands) is left alone.
+    pub(crate) fn text_view_keys(&mut self, ctx: &egui::Context) {
+        let keys = [
+            (Key::F2, Modifiers::SHIFT),
+            (Key::F2, Modifiers::NONE),
+            (Key::F3, Modifiers::NONE),
+            (Key::F4, Modifiers::SHIFT),
+            (Key::F4, Modifiers::NONE),
+        ];
+        for (key, mods) in keys {
+            // Exact modifiers: Shift+F3 (Change Case) is not F3.
+            let hit = ctx.input_mut(|i| {
+                let before = i.events.len();
+                i.events.retain(|e| {
+                    !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. }
+                        if *k == key && modifiers.matches_exact(mods))
+                });
+                i.events.len() != before
+            });
+            if !hit || self.builtin_key_overridden(ctx, key, mods) {
+                continue;
+            }
+            match (key, mods.shift) {
+                (Key::F2, true) => self.zoom_to_selection(),
+                (Key::F2, false) => {
+                    if self.tool != Tool::Zoom {
+                        // Not `set_tool`, which would end the editing.
+                        self.previous_tool = self.tool;
+                        self.tool = Tool::Zoom;
+                        self.zoom_one_shot = true;
+                        self.flyout_open = None;
+                    }
+                }
+                (Key::F3, _) => self.zoom_step(false),
+                (Key::F4, true) => self.zoom_to_page(),
+                _ => self.zoom_to_fit(),
+            }
+        }
+    }
+
+    /// The built-in shortcut `key` with `mods` is another command's by
+    /// the user's choice, or was removed (Options > Customization >
+    /// Commands).
+    fn builtin_key_overridden(&mut self, ctx: &egui::Context, key: Key, mods: Modifiers) -> bool {
+        let text = crate::shortcuts::format(mods, key);
+        if self
+            .settings
+            .shortcuts
+            .iter()
+            .any(|(_, v)| crate::shortcuts::same(v, &text))
+        {
+            return true;
+        }
+        if !self.settings.shortcuts.iter().any(|(_, v)| v.is_empty()) {
+            return false;
+        }
+        if self.shortcut_editor.entries.is_empty() {
+            self.shortcut_editor.entries = crate::ui::menus::commands(self, ctx);
+        }
+        self.shortcut_editor.entries.iter().any(|e| {
+            crate::shortcuts::same(&e.shortcut, &text)
+                && self
+                    .settings
+                    .shortcuts
+                    .iter()
+                    .any(|(id, v)| id == &e.key && v.is_empty())
+        })
+    }
+
     pub fn keyboard(&mut self, ctx: &egui::Context) {
         // The pen's pressure, which the raw input hook read from this
         // frame's touch events, before the tools see the pointer (#850).
@@ -3162,8 +3346,10 @@ impl App {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        // Text typing has priority.
+        // Text typing has priority; the zoom keys, which type nothing,
+        // still zoom (#1699).
         if self.text_edit.is_some() && !dialog_open {
+            self.text_view_keys(ctx);
             self.text_keyboard(ctx);
             return;
         }
@@ -3227,18 +3413,29 @@ impl App {
         // A key held sends its press again and again (`repeat`); the
         // presses a held key makes are kept apart for what must happen
         // once a press, such as picking a tool (#1502).
+        // In the browser version a key that stands in for one the browser
+        // keeps (Alt+PgUp for Ctrl+PgUp, #1409) also counts as that key.
+        let web_keys = crate::shortcuts::web_keys();
         let presses: Vec<(Key, Modifiers)> = input
             .events
             .iter()
-            .filter_map(|e| match e {
+            .flat_map(|e| match e {
                 egui::Event::Key {
                     key,
+                    physical_key,
                     pressed: true,
                     modifiers,
                     ..
-                } => Some((*key, *modifiers)),
-                _ => None,
+                } => {
+                    let kept = web_keys
+                        .then(|| crate::shortcuts::browser_key_for(*key, *physical_key, *modifiers))
+                        .flatten()
+                        .map(|(m, k)| (k, m));
+                    [Some((*key, *modifiers)), kept]
+                }
+                _ => [None, None],
             })
+            .flatten()
             .collect();
         let first_presses: Vec<(Key, Modifiers)> = input
             .events

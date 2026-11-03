@@ -15,7 +15,7 @@ use lopdf::{Dictionary, Document as PdfDoc, Object, Stream};
 use std::collections::HashMap;
 use tracedraw_core::{
     document::{ParagraphStyle, Shape, ShapeKind, TextSpan},
-    geometry::{Affine, BezPath, Point, Rect, Shape as _, Size, Vec2},
+    geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Size, Vec2},
     id::IdSource,
     style::{Fountain, FountainKind, LineCap, LineJoin, Stop},
     Color, Fill, ShapeId, Stroke, TextAlign,
@@ -37,6 +37,9 @@ pub struct ImportedPdf {
     pub pages: Vec<ImportedPage>,
     pub warnings: Vec<String>,
     pub title: Option<String>,
+    /// The spot inks the pages' Separation colours name, numbered from 1
+    /// in the order they came; `Color::Spot` of the shapes refers to them.
+    pub inks: Vec<tracedraw_core::document::Ink>,
 }
 
 /// Does the buffer hold a PDF, possibly after an AI/PostScript preamble?
@@ -128,12 +131,15 @@ pub fn parse_with_options(
             ids,
             warnings: Vec::new(),
             shapes: Vec::new(),
+            open: None,
             fonts: HashMap::new(),
             ops: 0,
             curves: options.text_as_curves,
             actual: None,
+            inks: std::mem::take(&mut out.inks),
         };
         let page = imp.import_page(*page_id, index);
+        out.inks = std::mem::take(&mut imp.inks);
         out.warnings.extend(imp.warnings);
         out.pages.push(page);
     }
@@ -330,6 +336,7 @@ pub fn to_document(imp: ImportedPdf, title: &str) -> tracedraw_core::Document {
         .unwrap_or(tracedraw_core::document::paper::A4);
     let mut doc = tracedraw_core::Document::new(imp.title.as_deref().unwrap_or(title), first);
     doc.pages.clear();
+    doc.inks = imp.inks;
     for (i, p) in imp.pages.into_iter().enumerate() {
         let pid = doc.ids_mut().page();
         let lid = doc.ids_mut().layer();
@@ -374,7 +381,7 @@ struct GState {
     dash: Vec<f64>,
     fill_alpha: f64,
     stroke_alpha: f64,
-    clip: Option<BezPath>,
+    clip: Clip,
     // Text state.
     font: Option<std::rc::Rc<FontInfo>>,
     font_size: f64,
@@ -414,24 +421,276 @@ impl Default for GState {
     }
 }
 
+/// The clipping path in force, shared by every graphics state (and text
+/// run) it applies to: objects clipped by the same one go in one clip
+/// frame.
+type Clip = Option<std::rc::Rc<ClipPath>>;
+
+/// A clipping path in page space (mm): the intersection of every `W`,
+/// `W*` and form bounding box in force (ISO 32000-1, 8.5.4), as a path
+/// that covers the clipped area under the even-odd rule, which is how
+/// curves fill in TraceDraw.
+struct ClipPath {
+    path: BezPath,
+    bounds: Rect,
+    /// The path when it is an axis-aligned rectangle: an object inside it
+    /// is not changed by the clip and needs no frame.
+    rect: Option<Rect>,
+}
+
+impl ClipPath {
+    /// A clip from a path and the rule it is read with. Subpaths with no
+    /// segment (a lone `m` before `W n`, as some producers write) clip
+    /// nothing and are left out; `None` when nothing is left. A path read
+    /// with the nonzero rule becomes its nonzero area as an even-odd path
+    /// (a rectangle aside, which is the same under both), so a doubled
+    /// outline or the middle of a star does not read as a hole.
+    fn new(path: &BezPath, even_odd: bool) -> Option<ClipPath> {
+        let mut subs: Vec<BezPath> = Vec::new();
+        for el in path.elements() {
+            if matches!(el, PathEl::MoveTo(_)) || subs.is_empty() {
+                subs.push(BezPath::new());
+            }
+            if let Some(last) = subs.last_mut() {
+                last.push(*el);
+            }
+        }
+        subs.retain(|s| {
+            s.elements()
+                .iter()
+                .any(|e| !matches!(e, PathEl::MoveTo(_) | PathEl::ClosePath))
+        });
+        if subs.is_empty() {
+            return None;
+        }
+        let mut joined = BezPath::new();
+        for s in &subs {
+            joined.extend(s.elements().iter().copied());
+        }
+        let path = if !even_odd && axis_rect(&joined).is_none() {
+            tracedraw_core::shaping::simplify(&joined)
+        } else {
+            joined
+        };
+        Some(ClipPath::from_path(path))
+    }
+
+    fn from_path(path: BezPath) -> ClipPath {
+        let bounds = path.bounding_box();
+        let rect = axis_rect(&path);
+        ClipPath { path, bounds, rect }
+    }
+
+    fn from_rect(r: Rect) -> ClipPath {
+        ClipPath::from_path(r.to_path(0.01))
+    }
+
+    /// Nothing can show through: an empty intersection.
+    fn is_empty(&self) -> bool {
+        self.path.elements().is_empty() || self.bounds.width() <= 0.0 || self.bounds.height() <= 0.0
+    }
+
+    /// A box the clip leaves as it is (the clip is a rectangle round it).
+    fn leaves(&self, b: Rect) -> bool {
+        self.rect.is_some_and(|r| rect_contains(r, b))
+    }
+
+    /// The clip in force after clipping again with `path` (the current
+    /// clip intersected with it, 8.5.4). The same clip comes back when the
+    /// new path is a rectangle round it, so the objects before and after
+    /// stay in one frame; a rectangle inside a rectangle is their
+    /// overlap; anything else is the exact intersection of the two areas.
+    fn intersect(old: &Clip, path: &BezPath, even_odd: bool) -> Clip {
+        let Some(new) = ClipPath::new(path, even_odd) else {
+            return old.clone();
+        };
+        let Some(old) = old else {
+            return Some(std::rc::Rc::new(new));
+        };
+        if new.leaves(old.bounds) {
+            return Some(old.clone());
+        }
+        let next = if old.leaves(new.bounds) {
+            new
+        } else if let (Some(a), Some(b)) = (old.rect, new.rect) {
+            ClipPath::from_rect(a.intersect(b))
+        } else {
+            use tracedraw_core::shaping::{overlay, Op};
+            ClipPath::from_path(overlay(&old.path, &new.path, Op::Intersect))
+        };
+        Some(std::rc::Rc::new(next))
+    }
+}
+
+/// The box an object paints in: its outline's box grown by how far its
+/// stroke reaches past the path (half the width, a square cap's or a mitred
+/// corner's reach), so a thick stroke near a clip edge is judged by its ink.
+fn ink_bounds(shape: &Shape) -> Rect {
+    let b = shape.bounds();
+    let Some(st) = &shape.stroke else {
+        return b;
+    };
+    if !st.width.is_finite() || st.width <= 0.0 {
+        return b;
+    }
+    let mut reach: f64 = 1.0;
+    if st.cap == LineCap::Square {
+        reach = reach.max(std::f64::consts::SQRT_2);
+    }
+    if st.join == LineJoin::Miter {
+        reach = reach.max(st.miter_ratio());
+    }
+    b.inflate(0.5 * st.width * reach, 0.5 * st.width * reach)
+}
+
+fn rect_contains(r: Rect, b: Rect) -> bool {
+    const EPS: f64 = 1e-6;
+    r.x0 <= b.x0 + EPS && r.y0 <= b.y0 + EPS && r.x1 >= b.x1 - EPS && r.y1 >= b.y1 - EPS
+}
+
+/// The rectangle a path draws when it is one axis-aligned rectangle (`re`,
+/// or four lines round one).
+fn axis_rect(path: &BezPath) -> Option<Rect> {
+    let mut pts: Vec<Point> = Vec::new();
+    for (i, el) in path.elements().iter().enumerate() {
+        match el {
+            PathEl::MoveTo(p) if i == 0 => pts.push(*p),
+            PathEl::LineTo(p) if i > 0 => pts.push(*p),
+            PathEl::ClosePath if i > 0 => {}
+            _ => return None,
+        }
+    }
+    const EPS: f64 = 1e-7;
+    let same = |a: f64, b: f64| (a - b).abs() <= EPS;
+    if pts.len() == 5 && same(pts[0].x, pts[4].x) && same(pts[0].y, pts[4].y) {
+        pts.pop();
+    }
+    if pts.len() != 4 {
+        return None;
+    }
+    let (p0, p1, p2, p3) = (pts[0], pts[1], pts[2], pts[3]);
+    let along_x = same(p0.y, p1.y) && same(p1.x, p2.x) && same(p2.y, p3.y) && same(p3.x, p0.x);
+    let along_y = same(p0.x, p1.x) && same(p1.y, p2.y) && same(p2.x, p3.x) && same(p3.y, p0.y);
+    (along_x || along_y).then(|| Rect::from_points(p0, p2))
+}
+
+/// Objects under one clip, collected until the clip changes or an object
+/// the clip leaves alone comes: they become one clip frame.
+struct OpenFrame {
+    clip: std::rc::Rc<ClipPath>,
+    shapes: Vec<Shape>,
+}
+
+/// A colour space as colours are read in it (ISO 32000-1 section 8.6).
+/// ICC-based and CIE-based spaces go by their number of components.
 #[derive(Clone, Debug, PartialEq)]
 enum ColorSpace {
     Gray,
     Rgb,
     Cmyk,
-    /// Component count only (ICCBased, Lab, Separation...).
-    N(usize),
     Pattern,
+    /// A Separation space, or a DeviceN space with one colourant: one
+    /// tint, 0 = no ink, 1 = full ink.
+    Separation(Colorant),
+    /// A DeviceN space: one tint per colourant.
+    DeviceN(std::rc::Rc<[Colorant]>),
+    /// An Indexed space: one index into a table of base colours.
+    Indexed(std::rc::Rc<IndexedSpace>),
+}
+
+/// The table of an Indexed colour space.
+#[derive(Debug, PartialEq)]
+struct IndexedSpace {
+    base: ColorSpace,
+    /// The highest index.
+    hival: usize,
+    /// `hival + 1` entries of one byte per base component.
+    lookup: Vec<u8>,
+}
+
+/// The colourant of a Separation (or one of a DeviceN) colour space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Colorant {
+    /// `All`: every separation, the registration colour.
+    All,
+    /// `None`: never marks.
+    None,
+    /// A process colourant (`Cyan`, `Magenta`, `Yellow`, `Black`): its
+    /// place in C, M, Y, K.
+    Process(usize),
+    /// A spot ink: its number among the import's inks and its process
+    /// stand-in at full tint.
+    Ink { id: u32, cmyk: [f32; 4] },
+}
+
+impl Colorant {
+    /// The colour at tint `t` (0 to 1); `None` for the `None` colourant.
+    fn color(self, t: f32) -> Option<Color> {
+        match self {
+            // Registration colour has no tint: a lighter one is the same
+            // share of every process ink.
+            Colorant::All if t >= 1.0 - 1e-4 => Some(Color::Registration),
+            Colorant::Ink { id, cmyk } => Some(Color::Spot {
+                ink: id,
+                tint: t,
+                c: cmyk[0],
+                m: cmyk[1],
+                y: cmyk[2],
+                k: cmyk[3],
+            }),
+            Colorant::None => None,
+            other => {
+                let [c, m, y, k] = other.cmyk(t);
+                Some(Color::Cmyk { c, m, y, k })
+            }
+        }
+    }
+
+    /// The process inks of tint `t`.
+    fn cmyk(self, t: f32) -> [f32; 4] {
+        match self {
+            Colorant::All => [t; 4],
+            Colorant::None => [0.0; 4],
+            Colorant::Process(i) => {
+                let mut v = [0.0; 4];
+                if let Some(x) = v.get_mut(i) {
+                    *x = t;
+                }
+                v
+            }
+            Colorant::Ink { cmyk, .. } => cmyk.map(|v| v * t),
+        }
+    }
 }
 
 impl ColorSpace {
     fn components(&self) -> usize {
         match self {
-            ColorSpace::Gray => 1,
+            ColorSpace::Gray | ColorSpace::Separation(_) | ColorSpace::Indexed(_) => 1,
             ColorSpace::Rgb => 3,
             ColorSpace::Cmyk => 4,
-            ColorSpace::N(n) => *n,
+            ColorSpace::DeviceN(c) => c.len(),
             ColorSpace::Pattern => 0,
+        }
+    }
+
+    /// The components of the colour `cs` and `CS` start with: full tint
+    /// in Separation and DeviceN spaces, black in the others (index 0 in
+    /// an Indexed space).
+    fn initial(&self) -> Vec<f64> {
+        match self {
+            ColorSpace::Separation(_) | ColorSpace::DeviceN(_) => vec![1.0; self.components()],
+            ColorSpace::Cmyk => vec![0.0, 0.0, 0.0, 1.0],
+            _ => vec![0.0; self.components()],
+        }
+    }
+
+    /// Paints nothing: the `None` colourant (ISO 32000-1 8.6.6.4).
+    fn never_marks(&self) -> bool {
+        match self {
+            ColorSpace::Separation(c) => *c == Colorant::None,
+            ColorSpace::DeviceN(cs) => cs.iter().all(|c| *c == Colorant::None),
+            _ => false,
         }
     }
 }
@@ -504,12 +763,16 @@ struct Importer<'a> {
     ids: &'a mut IdSource,
     warnings: Vec<String>,
     shapes: Vec<Shape>,
+    /// The clip frame being filled, behind the last of `shapes`.
+    open: Option<OpenFrame>,
     fonts: HashMap<(u32, u16), std::rc::Rc<FontInfo>>,
     ops: usize,
     /// Text as curves from the embedded fonts.
     curves: bool,
     /// The `ActualText` of the marked content being drawn.
     actual: Option<ActualText>,
+    /// The spot inks met so far (all pages).
+    inks: Vec<tracedraw_core::document::Ink>,
 }
 
 /// The text marked content gives its glyphs, shown in place of their own
@@ -537,7 +800,7 @@ struct TextRun {
     end_x: f64,
     fill: Option<Color>,
     alpha: f64,
-    clip: Option<BezPath>,
+    clip: Clip,
     /// A gap the producer left for a space: a space goes in before the
     /// next string unless that continues the syllable.
     space_pending: bool,
@@ -889,9 +1152,11 @@ impl<'a> Importer<'a> {
             ..GState::default()
         };
         self.shapes.clear();
+        self.open = None;
         self.run_content(&content, &resources, &mut gs, 0);
         // Annotations' appearance streams (stamps, form fields) are drawn too.
         self.import_annotations(page, base);
+        self.close_frame();
         ImportedPage {
             size: Size::new(w_pt * PT_MM, h_pt * PT_MM),
             shapes: std::mem::take(&mut self.shapes),
@@ -1149,12 +1414,11 @@ impl<'a> Importer<'a> {
                     if fill || stroke {
                         self.paint_path(&path, fill, stroke, even_odd, gs);
                     }
-                    if let Some(eo) = pending_clip.take() {
-                        let _ = eo;
-                        gs.clip = Some(match &gs.clip {
-                            Some(old) => intersect_clip(old, &path),
-                            None => path.clone(),
-                        });
+                    // The clip takes effect after the painting operator
+                    // (8.5.4), with the path's own rule: `W` nonzero,
+                    // `W*` even-odd.
+                    if let Some(even_odd) = pending_clip.take() {
+                        gs.clip = ClipPath::intersect(&gs.clip, &path, even_odd);
                     }
                     path = BezPath::new();
                 }
@@ -1190,23 +1454,18 @@ impl<'a> Importer<'a> {
                         .and_then(|o| o.as_name().ok())
                         .map(|name| self.color_space(resources, name))
                         .unwrap_or(ColorSpace::Gray);
-                    let initial = match cs {
-                        ColorSpace::Cmyk => Color::Cmyk {
-                            c: 0.0,
-                            m: 0.0,
-                            y: 0.0,
-                            k: 1.0,
-                        },
-                        ColorSpace::Pattern => Color::BLACK,
-                        _ => Color::BLACK,
+                    let initial = if cs.never_marks() {
+                        None
+                    } else {
+                        Some(color_from_components(&cs.initial(), &cs).unwrap_or(Color::BLACK))
                     };
                     if operator == "cs" {
                         gs.fill_cs = cs;
-                        gs.fill = Some(initial);
+                        gs.fill = initial;
                         gs.fill_pattern = None;
                     } else {
                         gs.stroke_cs = cs;
-                        gs.stroke = Some(initial);
+                        gs.stroke = initial;
                     }
                 }
                 "sc" | "scn" | "SC" | "SCN" => {
@@ -1230,6 +1489,13 @@ impl<'a> Importer<'a> {
                                     _ => Some(Color::Gray { v: 0.5 }),
                                 };
                             }
+                        }
+                    } else if cs.never_marks() {
+                        if is_fill {
+                            gs.fill = None;
+                            gs.fill_pattern = None;
+                        } else {
+                            gs.stroke = None;
                         }
                     } else {
                         let c = color_from_components(&vals, cs);
@@ -1467,15 +1733,95 @@ impl<'a> Importer<'a> {
                     }
                     b"CalRGB" | b"Lab" => ColorSpace::Rgb,
                     b"CalGray" => ColorSpace::Gray,
-                    b"Indexed" | b"I" => ColorSpace::N(1),
-                    b"Separation" => ColorSpace::N(1),
+                    b"Indexed" | b"I" => {
+                        // [/Indexed base hival lookup]
+                        let base = a
+                            .get(1)
+                            .map(|b| self.color_space_object(b, depth + 1))
+                            .unwrap_or(ColorSpace::Rgb);
+                        let hival = a
+                            .get(2)
+                            .and_then(|h| Self::num(self.deref(h)))
+                            .filter(|h| h.is_finite())
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 255.0) as usize;
+                        let lookup = match a.get(3).map(|l| self.deref(l)) {
+                            Some(Object::String(s, _)) => s.clone(),
+                            Some(Object::Stream(s)) => s
+                                .decompressed_content()
+                                .unwrap_or_else(|_| s.content.clone()),
+                            _ => Vec::new(),
+                        };
+                        ColorSpace::Indexed(std::rc::Rc::new(IndexedSpace {
+                            base,
+                            hival,
+                            lookup,
+                        }))
+                    }
+                    b"Separation" => {
+                        // [/Separation name alternateSpace tintTransform]
+                        let name = a
+                            .get(1)
+                            .and_then(|n| self.deref(n).as_name().ok())
+                            .unwrap_or(b"");
+                        ColorSpace::Separation(self.colorant(name, a.get(2), a.get(3), depth, true))
+                    }
                     b"DeviceN" => {
-                        let n = a
+                        // [/DeviceN names alternateSpace tintTransform attributes]
+                        let names: Vec<Vec<u8>> = a
                             .get(1)
                             .and_then(|names| self.deref(names).as_array().ok())
-                            .map(|v| v.len())
-                            .unwrap_or(1);
-                        ColorSpace::N(n)
+                            .map(|v| {
+                                v.iter()
+                                    .filter_map(|n| {
+                                        self.deref(n).as_name().ok().map(<[u8]>::to_vec)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if let [name] = names.as_slice() {
+                            return ColorSpace::Separation(self.colorant(
+                                name,
+                                a.get(2),
+                                a.get(3),
+                                depth,
+                                true,
+                            ));
+                        }
+                        // The colourants mix as their process inks: the
+                        // tint transform takes more than one input, and a
+                        // spot colourant's stand-in comes from the
+                        // Separation space the attributes give it.
+                        let described = a
+                            .get(4)
+                            .and_then(|at| self.dict_of(at))
+                            .and_then(|at| self.get(at, b"Colorants"))
+                            .and_then(|c| self.dict_of(c))
+                            .cloned();
+                        let colorants: Vec<Colorant> = names
+                            .iter()
+                            .map(|name| {
+                                if let Some(c) = Self::named_colorant(name) {
+                                    return c;
+                                }
+                                let sep = described.as_ref().and_then(|d| d.get(name).ok());
+                                let sep =
+                                    sep.map(|s| self.deref(s)).and_then(|s| s.as_array().ok());
+                                match sep {
+                                    Some(sep) => {
+                                        self.colorant(name, sep.get(2), sep.get(3), depth, false)
+                                    }
+                                    None => {
+                                        self.warn(format!(
+                                            "colourant {} has no process stand-in; shown as black",
+                                            String::from_utf8_lossy(name)
+                                        ));
+                                        Colorant::Process(3)
+                                    }
+                                }
+                            })
+                            .collect();
+                        ColorSpace::DeviceN(colorants.into())
                     }
                     b"Pattern" => ColorSpace::Pattern,
                     b"DeviceGray" => ColorSpace::Gray,
@@ -1486,12 +1832,83 @@ impl<'a> Importer<'a> {
                             "colour space family {} approximated",
                             String::from_utf8_lossy(family)
                         ));
-                        ColorSpace::N(1)
+                        ColorSpace::Gray
                     }
                 }
             }
             _ => ColorSpace::Gray,
         }
+    }
+
+    /// The colourants whose names the PDF reference reserves (ISO
+    /// 32000-1 8.6.6.4): `All`, `None` and the four process colourants.
+    fn named_colorant(name: &[u8]) -> Option<Colorant> {
+        Some(match name {
+            b"All" => Colorant::All,
+            b"None" => Colorant::None,
+            b"Cyan" => Colorant::Process(0),
+            b"Magenta" => Colorant::Process(1),
+            b"Yellow" => Colorant::Process(2),
+            b"Black" => Colorant::Process(3),
+            _ => return None,
+        })
+    }
+
+    /// The colourant `name` of a Separation space whose alternate space
+    /// and tint transform are `alternate` and `tint`. Any other name than
+    /// the reserved ones is a spot ink: with `register`, one of the
+    /// import's inks (the same name, the same ink), its process stand-in
+    /// being the alternate colour at full tint.
+    fn colorant(
+        &mut self,
+        name: &[u8],
+        alternate: Option<&Object>,
+        tint: Option<&Object>,
+        depth: usize,
+        register: bool,
+    ) -> Colorant {
+        if let Some(c) = Self::named_colorant(name) {
+            return c;
+        }
+        let name = String::from_utf8_lossy(name).into_owned();
+        if register {
+            if let Some(ink) = self.inks.iter().find(|i| i.name == name) {
+                return Colorant::Ink {
+                    id: ink.id,
+                    cmyk: ink.cmyk,
+                };
+            }
+        }
+        let alt = alternate
+            .map(|a| self.color_space_object(a, depth + 1))
+            .unwrap_or(ColorSpace::Cmyk);
+        let comps = match tint {
+            Some(f) => self.eval_function(f, 1.0, 0),
+            None => Vec::new(),
+        };
+        // A transform this reader cannot evaluate (a PostScript
+        // calculator) gives a number of components that does not fit.
+        let fits = comps.len() == alt.components();
+        let stand_in = fits
+            .then(|| color_from_components(&comps, &alt))
+            .flatten()
+            .map(|c| c.convert_to("CMYK"));
+        let cmyk = match stand_in {
+            Some(Color::Cmyk { c, m, y, k }) => [c, m, y, k],
+            _ => {
+                self.warn(format!(
+                    "spot colour {name}: no process stand-in; shown as black"
+                ));
+                [0.0, 0.0, 0.0, 1.0]
+            }
+        };
+        if !register {
+            return Colorant::Ink { id: 0, cmyk };
+        }
+        let id = self.inks.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        self.inks
+            .push(tracedraw_core::document::Ink { id, name, cmyk });
+        Colorant::Ink { id, cmyk }
     }
 
     fn apply_ext_gstate(&mut self, resources: &Dictionary, name: &[u8], gs: &mut GState) {
@@ -1543,45 +1960,70 @@ impl<'a> Importer<'a> {
         Shape::new(id, kind)
     }
 
-    fn push(&mut self, mut shape: Shape, clip: &Option<BezPath>) {
-        if let Some(clip) = clip {
-            let cb = clip.bounding_box();
-            let sb = shape.bounds();
-            if cb.width() <= 0.0 || cb.height() <= 0.0 {
-                return; // everything clipped away
-            }
-            let inside = cb.x0 <= sb.x0 + 1e-6
-                && cb.y0 <= sb.y0 + 1e-6
-                && cb.x1 >= sb.x1 - 1e-6
-                && cb.y1 >= sb.y1 - 1e-6;
-            if !inside {
-                let visible = sb.intersect(cb).area();
-                if visible <= 0.0 {
-                    return;
-                }
-                // Text is laid out with substitute fonts, so its box may
-                // poke out of a clip that the original glyphs fitted; keep
-                // it unclipped while most of it is inside.
-                if matches!(shape.kind, ShapeKind::Text { .. }) && visible >= 0.6 * sb.area() {
-                    self.shapes.push(shape);
-                    return;
-                }
-                let mut frame = self.new_shape(ShapeKind::Path {
-                    path: clip.clone(),
-                    closed: true,
+    /// An object drawn under `clip`. An object the clip cuts goes in the
+    /// clip frame of that clip, the one open behind the last object or a
+    /// new one; an object outside it is dropped; one the clip leaves as
+    /// it is (a rectangle round it) goes on the page as it is.
+    fn push(&mut self, shape: Shape, clip: &Clip) {
+        let Some(clip) = clip else {
+            self.push_free(shape);
+            return;
+        };
+        if clip.is_empty() {
+            return; // everything clipped away
+        }
+        let (cb, sb) = (clip.bounds, ink_bounds(&shape));
+        if sb.x1 < cb.x0 || sb.x0 > cb.x1 || sb.y1 < cb.y0 || sb.y0 > cb.y1 {
+            return;
+        }
+        // Text is laid out with substitute fonts, so its box may poke out
+        // of a rectangle that the original glyphs fitted; keep it unclipped
+        // while most of it is inside.
+        let text_mostly_in = clip.rect.is_some()
+            && matches!(shape.kind, ShapeKind::Text { .. })
+            && sb.intersect(cb).area() >= 0.6 * sb.area();
+        if clip.leaves(sb) || text_mostly_in {
+            self.push_free(shape);
+            return;
+        }
+        match &mut self.open {
+            Some(open) if std::rc::Rc::ptr_eq(&open.clip, clip) => open.shapes.push(shape),
+            _ => {
+                self.close_frame();
+                self.open = Some(OpenFrame {
+                    clip: clip.clone(),
+                    shapes: vec![shape],
                 });
-                frame.fill = Fill::None;
-                frame.stroke = None;
-                let mut pc = self.new_shape(ShapeKind::ClipFrame {
-                    frame: Box::new(frame),
-                    contents: vec![shape],
-                });
-                pc.fill = Fill::None;
-                pc.stroke = None;
-                shape = pc;
             }
         }
+    }
+
+    /// An object on the page as it is, after the clip frame open before it.
+    fn push_free(&mut self, shape: Shape) {
+        self.close_frame();
         self.shapes.push(shape);
+    }
+
+    /// The open clip frame, if any, becomes a clip frame on the page: the
+    /// clipping path as its frame (no fill, no outline), the objects it
+    /// clips as its contents.
+    fn close_frame(&mut self) {
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        let mut frame = self.new_shape(ShapeKind::Path {
+            path: open.clip.path.clone(),
+            closed: true,
+        });
+        frame.fill = Fill::None;
+        frame.stroke = None;
+        let mut pc = self.new_shape(ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: open.shapes,
+        });
+        pc.fill = Fill::None;
+        pc.stroke = None;
+        self.shapes.push(pc);
     }
 
     fn paint_path(
@@ -1687,11 +2129,8 @@ impl<'a> Importer<'a> {
             .get(&stream.dict, b"BBox")
             .and_then(|o| self.rect_of(o))
         {
-            let clip = gs.ctm * b.to_path(0.01);
-            gs.clip = Some(match &gs.clip {
-                Some(old) => intersect_clip(old, &clip),
-                None => clip,
-            });
+            // The bounding box clips the form's content (8.10.1).
+            gs.clip = ClipPath::intersect(&gs.clip, &(gs.ctm * b.to_path(0.01)), true);
         }
         let resources = self
             .get(&stream.dict, b"Resources")
@@ -1761,10 +2200,15 @@ impl<'a> Importer<'a> {
         let last = filters.last().map(|f| f.as_slice()).unwrap_or(b"");
         let mut rgba: Vec<u8>;
         let cs_obj = d.get(b"ColorSpace").ok().cloned();
+        // A picture keeps its pixels: the spot inks it names do not come
+        // into the drawing.
+        let inks = self.inks.len();
         let cs = cs_obj
             .as_ref()
             .map(|o| self.color_space_object(o, 0))
             .unwrap_or(ColorSpace::Gray);
+        let palette = cs_obj.as_ref().and_then(|o| self.indexed_palette(o));
+        self.inks.truncate(inks);
         let decode_arr = self
             .get(d, b"Decode")
             .map(|o| self.nums(o))
@@ -1818,6 +2262,21 @@ impl<'a> Importer<'a> {
                             px[2] = 255 - px[2];
                         }
                     }
+                    if let ColorSpace::Separation(_) = cs {
+                        // Grey samples are tints: 255 is full ink.
+                        let tints: Vec<[u8; 3]> = (0..=255u8)
+                            .map(|v| {
+                                let t = v as f64 / 255.0;
+                                let t = if inverted { 1.0 - t } else { t };
+                                color_from_components(&[t], &cs).map_or([255; 3], Color::to_rgb8)
+                            })
+                            .collect();
+                        for px in rgba.chunks_exact_mut(4) {
+                            if let Some(c) = tints.get(px[0] as usize) {
+                                px[..3].copy_from_slice(c);
+                            }
+                        }
+                    }
                     // Decoded JPEG size wins over the dictionary.
                     let (jw, jh) = (img.width(), img.height());
                     if jw != w || jh != h {
@@ -1843,10 +2302,20 @@ impl<'a> Importer<'a> {
                     self.warn("image data shorter than its size; skipped");
                     return None;
                 }
-                // Indexed palettes.
-                let palette = cs_obj.as_ref().and_then(|o| self.indexed_palette(o));
                 rgba = Vec::with_capacity((w * h * 4) as usize);
                 let max = ((1u32 << bpc) - 1) as f32;
+                // A Separation picture: the colour of each tint, 1 being
+                // full ink.
+                let tints: Vec<[u8; 3]> = match &cs {
+                    ColorSpace::Separation(_) if bpc <= 16 => (0..=max as u32)
+                        .map(|v| {
+                            let t = v as f64 / max as f64;
+                            let t = if inverted { 1.0 - t } else { t };
+                            color_from_components(&[t], &cs).map_or([255; 3], Color::to_rgb8)
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 for y in 0..h as usize {
                     let row = &data[y * row_bytes..(y + 1) * row_bytes];
                     let mut bits = BitReader::new(row);
@@ -1870,7 +2339,9 @@ impl<'a> Importer<'a> {
                             rgba.extend_from_slice(&[c[0], c[1], c[2], if on { 255 } else { 0 }]);
                             continue;
                         }
-                        let (r, g, b) = if let Some(pal) = &palette {
+                        let (r, g, b) = if let Some([r, g, b]) = tints.get(raw0 as usize) {
+                            (*r, *g, *b)
+                        } else if let Some(pal) = &palette {
                             let i = (raw0 as usize) * 3;
                             (
                                 *pal.get(i).unwrap_or(&0),
@@ -1897,6 +2368,17 @@ impl<'a> Importer<'a> {
                                         to8((1.0 - m) * (1.0 - k)),
                                         to8((1.0 - yy) * (1.0 - k)),
                                     )
+                                }
+                                ColorSpace::DeviceN(_) => {
+                                    let n = cs.components();
+                                    let tints: Vec<f64> = comps
+                                        .iter()
+                                        .take(n)
+                                        .map(|v| if inverted { 1.0 - *v } else { *v } as f64)
+                                        .collect();
+                                    let [r, g, b] = color_from_components(&tints, &cs)
+                                        .map_or([255; 3], Color::to_rgb8);
+                                    (r, g, b)
                                 }
                                 _ => {
                                     let v = if inverted { 1.0 - comps[0] } else { comps[0] };
@@ -1943,40 +2425,17 @@ impl<'a> Importer<'a> {
         Some(out)
     }
 
+    /// The RGB of each entry of an Indexed colour space's table.
     fn indexed_palette(&mut self, cs: &Object) -> Option<Vec<u8>> {
-        let Object::Array(a) = self.deref(cs) else {
+        let ColorSpace::Indexed(table) = self.color_space_object(cs, 0) else {
             return None;
         };
-        let family = a.first().and_then(|f| self.deref(f).as_name().ok())?;
-        if family != b"Indexed" && family != b"I" {
-            return None;
-        }
-        let base = self.color_space_object(a.get(1)?, 1);
-        let lookup: Vec<u8> = match self.deref(a.get(3)?) {
-            Object::String(s, _) => s.clone(),
-            Object::Stream(s) => s
-                .decompressed_content()
-                .unwrap_or_else(|_| s.content.clone()),
-            _ => return None,
-        };
-        let n = base.components().max(1);
-        let mut pal = Vec::with_capacity(lookup.len() / n * 3);
-        for e in lookup.chunks_exact(n) {
-            let (r, g, b) = match base {
-                ColorSpace::Rgb => (e[0], e[1], e[2]),
-                ColorSpace::Cmyk => {
-                    let f = |v: u8| v as f32 / 255.0;
-                    let k = f(e[3]);
-                    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    (
-                        to8((1.0 - f(e[0])) * (1.0 - k)),
-                        to8((1.0 - f(e[1])) * (1.0 - k)),
-                        to8((1.0 - f(e[2])) * (1.0 - k)),
-                    )
-                }
-                _ => (e[0], e[0], e[0]),
-            };
-            pal.extend_from_slice(&[r, g, b]);
+        let n = table.base.components().max(1);
+        let mut pal = Vec::with_capacity(table.lookup.len() / n * 3);
+        for e in table.lookup.chunks_exact(n).take(table.hival + 1) {
+            let comps: Vec<f64> = e.iter().map(|b| *b as f64 / 255.0).collect();
+            let c = color_from_components(&comps, &table.base).unwrap_or(Color::BLACK);
+            pal.extend_from_slice(&c.to_rgb8());
         }
         Some(pal)
     }
@@ -2035,6 +2494,9 @@ impl<'a> Importer<'a> {
                 .get(&tile.dict, b"YStep")
                 .and_then(Self::num)
                 .unwrap_or(bbox.height());
+            // The tile's content is collected apart from the page's, with
+            // the page's open clip frame set aside and taken up again after.
+            let saved_open = self.open.take();
             let saved = std::mem::take(&mut self.shapes);
             let m = gs.ctm * matrix;
             let scale = Self::scale_of(m);
@@ -2045,7 +2507,9 @@ impl<'a> Importer<'a> {
             let before = self.ops;
             self.draw_form(&tile, &mut inner, depth + 1);
             self.ops = before + 1;
+            self.close_frame();
             let shapes = std::mem::replace(&mut self.shapes, saved);
+            self.open = saved_open;
             if shapes.is_empty() {
                 return None;
             }
@@ -2073,7 +2537,7 @@ impl<'a> Importer<'a> {
         };
         // `sh` paints the whole clip region.
         let area = match &gs.clip {
-            Some(c) => c.clone(),
+            Some(c) => c.path.clone(),
             None => {
                 self.warn("shading without a clip painted over the page");
                 gs.ctm * Rect::new(-10_000.0, -10_000.0, 20_000.0, 20_000.0).to_path(0.01)
@@ -2089,7 +2553,7 @@ impl<'a> Importer<'a> {
         shape.fill = Fill::Fountain(f);
         shape.stroke = None;
         shape.opacity = gs.fill_alpha;
-        self.shapes.push(shape);
+        self.push_free(shape);
     }
 
     /// Axial and radial shadings as fountain fills; other types take the
@@ -3008,30 +3472,47 @@ fn color_from_components(v: &[f64], cs: &ColorSpace) -> Option<Color> {
         }
     };
     match (cs, v.len()) {
-        (ColorSpace::Gray, 1) | (ColorSpace::N(1), 1) => Some(Color::Gray { v: c(0) }),
-        (ColorSpace::Rgb, 3) | (ColorSpace::N(3), 3) => Some(Color::Rgb {
+        (ColorSpace::Gray, 1) => Some(Color::Gray { v: c(0) }),
+        (ColorSpace::Rgb, 3) => Some(Color::Rgb {
             r: c(0),
             g: c(1),
             b: c(2),
         }),
-        (ColorSpace::Cmyk, 4) | (ColorSpace::N(4), 4) => Some(Color::Cmyk {
+        (ColorSpace::Cmyk, 4) => Some(Color::Cmyk {
             c: c(0),
             m: c(1),
             y: c(2),
             k: c(3),
         }),
-        (_, 1) => Some(Color::Gray { v: 1.0 - c(0) }), // Separation tint: 1 = full ink
-        (_, 3) => Some(Color::Rgb {
-            r: c(0),
-            g: c(1),
-            b: c(2),
-        }),
-        (_, 4) => Some(Color::Cmyk {
-            c: c(0),
-            m: c(1),
-            y: c(2),
-            k: c(3),
-        }),
+        // A tint: 1 is full ink.
+        (ColorSpace::Separation(colorant), 1) => colorant.color(c(0)),
+        (ColorSpace::DeviceN(colorants), n) if n == colorants.len() => {
+            let mut ink = [0.0f32; 4];
+            for (i, colorant) in colorants.iter().enumerate() {
+                for (sum, x) in ink.iter_mut().zip(colorant.cmyk(c(i))) {
+                    *sum += x;
+                }
+            }
+            let [c, m, y, k] = ink.map(|x| x.clamp(0.0, 1.0));
+            Some(Color::Cmyk { c, m, y, k })
+        }
+        (ColorSpace::Indexed(table), 1) => {
+            let x = v.first().copied().unwrap_or(0.0);
+            let index = if x.is_finite() {
+                x.round().clamp(0.0, table.hival as f64) as usize
+            } else {
+                0
+            };
+            let n = table.base.components();
+            let entry = table.lookup.get(index * n..(index + 1) * n)?;
+            let comps: Vec<f64> = entry.iter().map(|b| *b as f64 / 255.0).collect();
+            color_from_components(&comps, &table.base)
+        }
+        // A function giving another number of components than its
+        // device space has: read by their number.
+        (ColorSpace::Rgb | ColorSpace::Cmyk, 1) => color_from_components(v, &ColorSpace::Gray),
+        (ColorSpace::Gray | ColorSpace::Cmyk, 3) => color_from_components(v, &ColorSpace::Rgb),
+        (ColorSpace::Gray | ColorSpace::Rgb, 4) => color_from_components(v, &ColorSpace::Cmyk),
         _ => None,
     }
 }
@@ -3040,29 +3521,6 @@ fn gs_fill_rgb(c: Option<Color>) -> [u8; 3] {
     let c = c.unwrap_or(Color::BLACK);
     let [r, g, b] = c.to_rgb8();
     [r, g, b]
-}
-
-/// Intersection of two clip paths, approximated by the second when it lies
-/// inside the first's bounds and by the first otherwise.
-fn intersect_clip(old: &BezPath, new: &BezPath) -> BezPath {
-    let ob = old.bounding_box();
-    let nb = new.bounding_box();
-    if nb.x0 >= ob.x0 - 1e-6
-        && nb.y0 >= ob.y0 - 1e-6
-        && nb.x1 <= ob.x1 + 1e-6
-        && nb.y1 <= ob.y1 + 1e-6
-    {
-        new.clone()
-    } else if ob.x0 >= nb.x0 - 1e-6
-        && ob.y0 >= nb.y0 - 1e-6
-        && ob.x1 <= nb.x1 + 1e-6
-        && ob.y1 <= nb.y1 + 1e-6
-    {
-        old.clone()
-    } else {
-        // Neither contains the other: the rectangle both share.
-        ob.intersect(nb).to_path(0.01)
-    }
 }
 
 /// Inline image abbreviations to their full keys.
@@ -4429,6 +4887,189 @@ mod tests {
         }
     }
 
+    /// A circle as four curves, counter-clockwise from its right end, for
+    /// the content streams of the clip tests.
+    fn circle_ops(cx: f64, cy: f64, r: f64) -> String {
+        let k = 0.552_284_75 * r;
+        format!(
+            "{} {cy} m {} {} {} {} {cx} {} c {} {} {} {} {} {cy} c {} {} {} {} {cx} {} c {} {} {} {} {} {cy} c h",
+            cx + r,
+            cx + r, cy + k, cx + k, cy + r, cy + r,
+            cx - k, cy + r, cx - r, cy + k, cx - r,
+            cx - r, cy - k, cx - k, cy - r, cy - r,
+            cx + k, cy - r, cx + r, cy - k, cx + r,
+        )
+    }
+
+    /// The clip frames of a page, each with its frame's path and the
+    /// number of objects it holds.
+    fn clip_frames(p: &ImportedPage) -> Vec<(BezPath, usize)> {
+        p.shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::ClipFrame { frame, contents } => {
+                    Some((frame.page_path(), contents.len()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether a point given in points falls in a path (mm) under the
+    /// even-odd rule, the way TraceDraw fills curves.
+    fn covers(path: &BezPath, x_pt: f64, y_pt: f64) -> bool {
+        path.winding(Point::new(x_pt * PT_MM, y_pt * PT_MM)) % 2 != 0
+    }
+
+    /// Lines clipped by a circle all go in one clip frame whose frame is
+    /// the circle, the ones inside the circle's square box but outside the
+    /// circle too (they were left unclipped, every other line had a frame
+    /// of its own, #1616); lines that miss the circle are dropped and an
+    /// object after the clip's `Q` stays outside.
+    #[test]
+    fn objects_under_one_clip_share_one_frame() {
+        let mut content = String::from("1 1 0 rg ");
+        content.push_str(&circle_ops(100.0, 50.0, 40.0));
+        content.push_str(" f q ");
+        content.push_str(&circle_ops(100.0, 50.0, 40.0));
+        content.push_str(" W n 0 G 6 w ");
+        for i in 0..6 {
+            let x = 50.0 + 20.0 * i as f64;
+            content.push_str(&format!(
+                "{x} 0 m {} 100 l S {} 0 m {x} 100 l S ",
+                x + 40.0,
+                x + 40.0
+            ));
+        }
+        // Inside the circle's box, outside the circle: its corner.
+        content.push_str("63 13 m 66 16 l S Q 0 0 1 rg 0 0 10 10 re f");
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        let frames = clip_frames(p);
+        assert_eq!(frames.len(), 1, "{:?}", imp.warnings);
+        let (frame, n) = &frames[0];
+        // Ten lines cross the circle, the last two miss it, plus the
+        // corner line.
+        assert_eq!(*n, 11);
+        assert!(covers(frame, 100.0, 50.0) && covers(frame, 139.0, 50.0));
+        assert!(!covers(frame, 63.0, 13.0) && !covers(frame, 141.0, 50.0));
+        // The disc, the frame, the square after it.
+        assert_eq!(p.shapes.len(), 3);
+        assert!(matches!(p.shapes[2].kind, ShapeKind::Path { .. }));
+    }
+
+    /// A clip whose outline is drawn twice under the nonzero rule, ending
+    /// with a lone `m` (as one producer writes it), clips to the disc: read
+    /// even-odd the doubled outline cancelled out and nothing was clipped.
+    /// A nonzero star keeps its middle (#1616).
+    #[test]
+    fn nonzero_clips_keep_their_nonzero_area() {
+        let c = circle_ops(100.0, 50.0, 40.0);
+        let content = format!("q {c} {c} 140 50 m W n 0 G 6 w 40 0 m 160 100 l S Q");
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let frames = clip_frames(&imp.pages[0]);
+        assert_eq!(frames.len(), 1, "{:?}", imp.warnings);
+        assert!(covers(&frames[0].0, 100.0, 50.0));
+        assert!(covers(&frames[0].0, 135.0, 50.0));
+        assert!(!covers(&frames[0].0, 145.0, 50.0));
+
+        // A five-pointed star drawn in one stroke: under `W` its middle
+        // is inside (winding 2), under `W*` it is a hole.
+        let pts: Vec<(f64, f64)> = (0..5)
+            .map(|i| {
+                let a = std::f64::consts::FRAC_PI_2 + i as f64 * 4.0 * std::f64::consts::PI / 5.0;
+                (100.0 + 45.0 * a.cos(), 50.0 + 45.0 * a.sin())
+            })
+            .collect();
+        let mut star = format!("{} {} m", pts[0].0, pts[0].1);
+        for (x, y) in &pts[1..] {
+            star.push_str(&format!(" {x} {y} l"));
+        }
+        star.push_str(" h");
+        for (op, middle) in [("W", true), ("W*", false)] {
+            let content = format!("q {star} {op} n 0 0 1 rg 0 0 200 100 re f Q");
+            let bytes = one_page(&content, "<< >>", &[]);
+            let imp = parse(&bytes, &mut ids).expect("parse");
+            let frames = clip_frames(&imp.pages[0]);
+            assert_eq!(frames.len(), 1, "{op} {:?}", imp.warnings);
+            assert_eq!(covers(&frames[0].0, 100.0, 50.0), middle, "{op}");
+            // A point of the star is inside either way.
+            assert!(covers(&frames[0].0, 100.0, 90.0), "{op}");
+        }
+    }
+
+    /// Clips nest: a second `W` inside a `q` clips to the overlap of both
+    /// (here two discs, their lens), `Q` brings the first one back, and a
+    /// clip that leaves nothing hides what is drawn under it.
+    #[test]
+    fn nested_clips_intersect_and_restore() {
+        let a = circle_ops(80.0, 50.0, 40.0);
+        let b = circle_ops(120.0, 50.0, 40.0);
+        let content = format!(
+            "q {a} W n q {b} W n 0 0 1 rg 0 0 200 100 re f Q 1 0 0 rg 0 0 200 100 re f Q \
+             q 0 0 20 20 re W n 180 80 20 20 re W n 0 g 0 0 200 100 re f Q"
+        );
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        let frames = clip_frames(p);
+        assert_eq!(frames.len(), 2, "{:?}", imp.warnings);
+        assert_eq!(p.shapes.len(), 2);
+        let lens = &frames[0].0;
+        assert!(covers(lens, 100.0, 50.0));
+        assert!(!covers(lens, 50.0, 50.0) && !covers(lens, 150.0, 50.0));
+        let first = &frames[1].0;
+        assert!(covers(first, 50.0, 50.0) && !covers(first, 150.0, 50.0));
+    }
+
+    /// A rectangle clip round an object changes nothing and makes no frame,
+    /// unless the object's stroke reaches past it; an object outside the
+    /// clip is dropped, one whose stroke reaches in is kept.
+    #[test]
+    fn rectangle_clips_judge_objects_by_their_ink() {
+        let content = "q 10 10 180 80 re W n 0 G \
+             1 w 20 20 m 60 20 l S \
+             10 w 20 50 m 189 50 l S \
+             1 w 195 20 m 195 80 l S \
+             10 w 192 20 m 192 80 l S Q";
+        let bytes = one_page(content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 2, "{:?}", imp.warnings);
+        assert!(matches!(p.shapes[0].kind, ShapeKind::Path { .. }));
+        match &p.shapes[1].kind {
+            ShapeKind::ClipFrame { contents, .. } => assert_eq!(contents.len(), 2),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An object filled with a tiling pattern between two objects under
+    /// the same clip keeps the three in one frame: the tile's own content
+    /// does not close it.
+    #[test]
+    fn a_pattern_fill_does_not_split_a_clip_frame() {
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10",
+            "0 0 1 rg 0 0 5 5 re f",
+        );
+        let c = circle_ops(100.0, 50.0, 40.0);
+        let content = format!(
+            "q {c} W n 1 0 0 rg 50 0 100 100 re f /Pattern cs /P scn 50 0 100 100 re f 0 g 50 0 100 100 re f Q"
+        );
+        let bytes = one_page(&content, "<< /Pattern << /P 5 0 R >> >>", &[tile]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert_eq!(clip_frames(p)[0].1, 3);
+    }
+
     /// A tiling pattern whose tile paints with the pattern itself (a
     /// damaged or hostile file) is bounded like forms inside forms: the
     /// tile was drawn with a fixed depth whatever asked for it, so the
@@ -4536,6 +5177,128 @@ mod tests {
         let doc = to_document(imp, "damaged");
         let _ = crate::svg::page_to_svg(&doc, 0);
         let _ = crate::pdf::document_to_pdf(&doc);
+    }
+
+    /// Separation, DeviceN and Indexed colours read as the PDF reference
+    /// gives them: a tint of 1 is full ink (the registration colour for
+    /// `All`, a process ink for its own name, the spot ink otherwise,
+    /// one ink per name), `None` paints nothing, an index picks its
+    /// table entry (#1703).
+    #[test]
+    fn separation_devicen_and_indexed_colors() {
+        let content = "/CS0 CS 1 SCN 10 10 m 50 10 l S \
+             /CS1 CS 1 SCN 10 20 m 50 20 l S \
+             /CS2 cs 0.4 scn 0 0 10 10 re f \
+             0 0 1 rg /CS3 CS 1 SCN 20 0 10 10 re B \
+             /CS4 cs 1 scn 40 0 10 10 re f \
+             /CS5 cs 0.5 1 scn 60 0 10 10 re f \
+             /CS6 cs 80 0 10 10 re f";
+        let resources = "<< /ColorSpace << \
+             /CS0 [/Separation /All /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 1 1 1] /N 1 >>] \
+             /CS1 [/Separation /Cyan /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0 0 0] /N 1 >>] \
+             /CS2 [/Separation /Warm#20Red /DeviceRGB << /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] \
+             /CS3 [/Separation /None /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 >>] \
+             /CS4 [/Indexed /DeviceRGB 1 <FF000000FF00>] \
+             /CS5 [/DeviceN [/Cyan /Black] /DeviceCMYK << /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1] >>] \
+             /CS6 [/DeviceN [/Warm#20Red] /DeviceRGB << /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] \
+             >> >>";
+        let bytes = one_page(content, resources, &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let s = &imp.pages[0].shapes;
+        assert_eq!(s.len(), 7, "{:?}", imp.warnings);
+        let stroke = |i: usize| s[i].stroke.as_ref().map(|st| st.color);
+        let fill = |i: usize| match s[i].fill {
+            Fill::Solid(c) => Some(c),
+            _ => None,
+        };
+        assert_eq!(stroke(0), Some(Color::Registration));
+        assert_eq!(
+            stroke(1),
+            Some(Color::Cmyk {
+                c: 1.0,
+                m: 0.0,
+                y: 0.0,
+                k: 0.0
+            })
+        );
+        assert_eq!(imp.inks.len(), 1, "{:?}", imp.inks);
+        let ink = &imp.inks[0];
+        assert_eq!(ink.name, "Warm Red");
+        let red = Color::Rgb {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        };
+        let Color::Cmyk { c, m, y, k } = red.convert_to("CMYK") else {
+            panic!("CMYK");
+        };
+        assert_eq!(ink.cmyk, [c, m, y, k]);
+        assert_eq!(fill(2), Some(ink.color(0.4)));
+        // `None` never marks: the stroke goes, the fill stays.
+        assert_eq!(stroke(3), None);
+        assert_eq!(
+            fill(3),
+            Some(Color::Rgb {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0
+            })
+        );
+        assert_eq!(
+            fill(4),
+            Some(Color::Rgb {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0
+            })
+        );
+        assert_eq!(
+            fill(5),
+            Some(Color::Cmyk {
+                c: 0.5,
+                m: 0.0,
+                y: 0.0,
+                k: 1.0
+            })
+        );
+        // A DeviceN space of one colourant is its Separation; `cs` starts
+        // at full tint.
+        assert_eq!(fill(6), Some(ink.color(1.0)));
+        // The ink comes into the document.
+        let doc = to_document(imp, "spots");
+        assert_eq!(doc.inks.len(), 1);
+        assert_eq!(doc.inks[0].name, "Warm Red");
+    }
+
+    /// A one-bit picture in a Separation space: 0 is no ink (white), 1
+    /// full ink, not the other way round (#1703); its ink stays out of the
+    /// drawing's inks, the picture keeping its pixels.
+    #[test]
+    fn separation_picture_tints_are_ink() {
+        // '@' = 0b0100_0000: the first pixel 0, the second 1.
+        let bytes = one_page(
+            "q 20 0 0 10 10 10 cm /Im1 Do Q",
+            "<< /XObject << /Im1 5 0 R >> >>",
+            &["<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace [/Separation /Gold /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.2 0.8 0.1] /N 1 >>] /BitsPerComponent 1 /Length 1 >>\nstream\n@\nendstream".to_string()],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        assert!(imp.inks.is_empty(), "{:?}", imp.inks);
+        let ShapeKind::Bitmap { png, .. } = &imp.pages[0].shapes[0].kind else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let px = pm.pixels();
+        assert_eq!((px[0].red(), px[0].green(), px[0].blue()), (255, 255, 255));
+        let gold = Color::Cmyk {
+            c: 0.0,
+            m: 0.2,
+            y: 0.8,
+            k: 0.1,
+        }
+        .to_rgb8();
+        assert_eq!([px[1].red(), px[1].green(), px[1].blue()], gold);
     }
 
     #[test]

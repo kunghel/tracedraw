@@ -570,6 +570,58 @@ impl Table {
         }
     }
 
+    /// Remove `count` rows from row `at` on, at least one row staying.
+    /// Cells wholly inside the band go; a merged cell reaching into it
+    /// keeps the rows it has outside.
+    pub fn remove_rows(&mut self, at: u32, count: u32) {
+        let end = at.saturating_add(count).min(self.rows());
+        if at >= end || end - at >= self.rows() {
+            return;
+        }
+        let count = end - at;
+        self.row_heights.drain(at as usize..end as usize);
+        self.cells
+            .retain(|c| !(c.row >= at && c.row + c.row_span <= end));
+        for c in self.cells.iter_mut() {
+            let (r0, r1) = (c.row, c.row + c.row_span);
+            let before = r1.min(at).saturating_sub(r0);
+            let after = r1.saturating_sub(r0.max(end));
+            c.row = if r0 < at {
+                r0
+            } else if r0 >= end {
+                r0 - count
+            } else {
+                at
+            };
+            c.row_span = (before + after).max(1);
+        }
+    }
+
+    /// [`Table::remove_rows`] for columns.
+    pub fn remove_cols(&mut self, at: u32, count: u32) {
+        let end = at.saturating_add(count).min(self.cols());
+        if at >= end || end - at >= self.cols() {
+            return;
+        }
+        let count = end - at;
+        self.col_widths.drain(at as usize..end as usize);
+        self.cells
+            .retain(|c| !(c.col >= at && c.col + c.col_span <= end));
+        for c in self.cells.iter_mut() {
+            let (c0, c1) = (c.col, c.col + c.col_span);
+            let before = c1.min(at).saturating_sub(c0);
+            let after = c1.saturating_sub(c0.max(end));
+            c.col = if c0 < at {
+                c0
+            } else if c0 >= end {
+                c0 - count
+            } else {
+                at
+            };
+            c.col_span = (before + after).max(1);
+        }
+    }
+
     /// Split the cells into `n` rows each. The cells must lie in one band
     /// (the same first row and row span); others in the band stay whole
     /// (they span the new rows). A merged band of `k` rows splits without
@@ -867,6 +919,46 @@ mod tests {
         let mut s = Stroke::hairline(Color::rgb8(255, 0, 0));
         s.width = 0.5;
         s
+    }
+
+    /// Rows and columns removed from the end (the property bar's counts,
+    /// #1680) and from the middle: the cells in them go, a merged cell
+    /// reaching into them keeps the rest, and the last row or column
+    /// cannot be removed.
+    #[test]
+    fn remove_rows_and_columns_keeps_the_rest_of_the_table() {
+        let mut t = grid(4, 3);
+        // A cell spanning rows 1..=2 of column 0.
+        t.cells.retain(|c| !(c.col == 0 && c.row == 2));
+        if let Some(i) = t.cell_index(1, 0) {
+            t.cells[i].row_span = 2;
+        }
+        t.remove_rows(2, 2);
+        assert_eq!(t.rows(), 2);
+        assert_eq!(t.cells.len(), 6);
+        assert!(t.cells.iter().all(|c| c.row + c.row_span <= 2));
+        let merged = t.cells[t.cell_index(1, 0).unwrap()].clone();
+        assert_eq!(merged.row_span, 1);
+        // Columns from the middle: the merged cell spanning columns 0..=2
+        // of row 0 loses the one removed and stays at column 0.
+        let mut t = grid(2, 4);
+        t.cells
+            .retain(|c| !(c.row == 0 && (1..=2).contains(&c.col)));
+        if let Some(i) = t.cell_index(0, 0) {
+            t.cells[i].col_span = 3;
+        }
+        t.remove_cols(1, 1);
+        assert_eq!(t.cols(), 3);
+        // Row 0: the merged cell and the last one; row 1: three cells.
+        assert_eq!(t.cells.len(), 5);
+        let merged = t.cells[t.cell_index(0, 0).unwrap()].clone();
+        assert_eq!((merged.col, merged.col_span), (0, 2));
+        assert!(t.cell_index(1, 2).is_some());
+        // Never below one row or column; nothing past the end.
+        let mut t = grid(2, 2);
+        t.remove_rows(0, 2);
+        t.remove_cols(5, 1);
+        assert_eq!((t.rows(), t.cols()), (2, 2));
     }
 
     fn total(p: &BezPath) -> f64 {

@@ -370,6 +370,14 @@ pueden mostrar sus propios atajos; vea
 | [[menu.layout.switch_orientation]] | [Working with pages](../pages-layout/pages.md) |
 | [[menu.layout.document_options]] | [Document options](../pages-layout/document-options.md) |
 | [[menu.layout.page_size]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_spacing]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_0]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_5]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_10]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_20]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_30]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_50]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_custom]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
 | [[menu.layout.page_layout]] | [Document options](../pages-layout/document-options.md) |
 | [[menu.layout.page_background]] | [Document options](../pages-layout/document-options.md) |
 

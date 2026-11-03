@@ -371,6 +371,14 @@ próprios atalhos; veja
 | [[menu.layout.document_options]] | [Opções do documento](../pages-layout/document-options.md) |
 | [[menu.layout.page_size]] | [Trabalhar com páginas](../pages-layout/pages.md) |
 | [[menu.layout.page_layout]] | [Opções do documento](../pages-layout/document-options.md) |
+| [[menu.layout.page_spacing]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_0]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_5]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_10]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_20]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_30]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_50]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_custom]] | [Vista de várias páginas](../pages-layout/multipage-view.md#page-spacing) |
 | [[menu.layout.page_background]] | [Opções do documento](../pages-layout/document-options.md) |
 
 ## [[menu.tools]] {#tools}

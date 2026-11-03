@@ -84,6 +84,8 @@ A ferramenta [[tool.eraser]] (<kbd>X</kbd>) apaga partes de objetos.
 
 Objetos apagados viram curvas; um objeto apagado por inteiro é excluído.
 Clique duas vezes em um objeto com a ferramenta para excluí-lo inteiro.
-Bitmaps, grupos e molduras de recorte não são apagados. Os padrões da borracha
+Uma moldura de recorte é apagada pela moldura: ela perde a faixa e o
+conteúdo dentro dela some ao longo da faixa. Bitmaps e grupos não são
+apagados. Os padrões da borracha
 ficam na página [[tool.eraser]] das opções de ferramentas; veja
 [Opções das ferramentas](../customize/tool-options.md#eraser).

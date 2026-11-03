@@ -593,6 +593,11 @@ impl App {
             if let Some(id) = self.locked_at(p) {
                 // A locked object on top: its own menu, to unlock it.
                 self.context_locked = Some(id);
+            } else if self.selection_under(p) {
+                // A right click on a selected object keeps the selection,
+                // also when another object covers it there (one picked
+                // with Alt+click or a marquee): the menu is for what is
+                // selected, not for the object in front (#1684).
             } else if let Some(id) = self.hit_test(p) {
                 if !self.selection.contains(&id) {
                     self.select(vec![id]);

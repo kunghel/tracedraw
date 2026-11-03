@@ -95,7 +95,10 @@ Panels > Data Merge); it no longer merges at once (#437). From top to bottom:
 - Data source columns: the field to insert.
 - For Image: Pictures folder (#460): the folder picture cells that are
   relative paths are looked for in first, before the data file's folder
-  (the folder button picks it, the cross forgets it); a cell naming a
+  (the folder button picks it, the cross forgets it; in the browser and
+  on Android, where no folder can be read, it picks several pictures at
+  once, which serve as the folder and show as their count, #1399,
+  `picked_pictures_serve_as_the_pictures_folder`); a cell naming a
   picture without an extension ("1024") finds it with .jpg, .jpeg, .png,
   .webp, .bmp, .gif, .tif or .tiff
   (`each_record_gets_its_photo_from_the_pictures_folder`). Then

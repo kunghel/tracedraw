@@ -117,7 +117,7 @@ fn get_started(app: &mut App, ui: &mut Ui) {
                 ui,
                 icons::Action::New,
                 tr("welcome.new_document"),
-                "Ctrl+N".into(),
+                crate::shortcuts::shown("Ctrl+N".into()),
             ) {
                 app.request_new_document();
             }

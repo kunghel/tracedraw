@@ -14,6 +14,19 @@ waren. Unter jeder Seite stehen ihre
 Nummer und ihr Name; die der aktuellen Seite in der normalen Textfarbe, die
 anderen abgeblendet.
 
+## Space between pages {#page-spacing}
+
+The pages sit 30 mm apart at first. To change it, choose
+[[menu.layout > menu.layout.page_spacing]] and pick
+[[menu.layout.page_spacing_0]], [[menu.layout.page_spacing_5]],
+[[menu.layout.page_spacing_10]], [[menu.layout.page_spacing_20]],
+[[menu.layout.page_spacing_30]] or [[menu.layout.page_spacing_50]], or
+[[menu.layout.page_spacing_custom]] to type any distance in the drawing's
+units. [[options.page_spacing]] on the Layout page of
+[Document options](document-options.md#layout) sets it too. The spacing is
+saved with the drawing, [[menu.edit.undo]] puts the previous one back, and
+**Save as default** in the document options keeps it for new drawings.
+
 ## In der Mehrseitenansicht arbeiten {#working}
 
 - Die aktuelle Seite wird wie gewohnt bearbeitet: Lineale, Hilfslinien, Gitter

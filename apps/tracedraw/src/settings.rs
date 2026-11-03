@@ -6,34 +6,94 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// How large the buttons of the bars are (the bars' menu > Customize).
+/// How large the buttons of the bars are (the bars' menu > Customize),
+/// five sizes from Extra Small to Extra Large. Ctrl+wheel over a bar
+/// steps through the same sizes. Saved as `extra_small`, `small`,
+/// `medium`, `large` and `extra_large`; settings saved with three sizes
+/// keep their meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ButtonSize {
+    #[serde(alias = "ExtraSmall")]
+    ExtraSmall,
     #[default]
+    #[serde(alias = "Small")]
     Small,
+    #[serde(alias = "Medium")]
     Medium,
+    #[serde(alias = "Large")]
     Large,
+    #[serde(alias = "ExtraLarge")]
+    ExtraLarge,
+}
+
+/// The pixel sizes (points, at interface size 100 %) of one button size:
+/// the toolbox's icon box (the side of its 24 unit design grid, see
+/// `ui::icon_paint::Pen`), the toolbox's and the standard bars' buttons,
+/// the standard bars' icon box, and the property bar's buttons and
+/// icons. All are whole, even pixel sizes so an icon sits centred on
+/// whole pixels in its button.
+///
+/// The toolbox's icon boxes are 16, 20, 24, 32 and 40, the padding
+/// around them growing more slowly than the icon. The standard and
+/// property bars' icons are drawn smaller at Large and Extra Large,
+/// about 5/6 of the toolbox's box (standard bars 28 and 34, property bar
+/// 24 and 28), so their heavier line icons keep 7 and 9 px of margin in
+/// the button instead of nearly filling it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ButtonMetrics {
+    pub icon: f32,
+    pub button: f32,
+    pub bar_icon: f32,
+    pub prop_icon: f32,
+    pub prop_button: f32,
 }
 
 impl ButtonSize {
-    pub const ALL: [ButtonSize; 3] = [ButtonSize::Small, ButtonSize::Medium, ButtonSize::Large];
+    pub const ALL: [ButtonSize; 5] = [
+        ButtonSize::ExtraSmall,
+        ButtonSize::Small,
+        ButtonSize::Medium,
+        ButtonSize::Large,
+        ButtonSize::ExtraLarge,
+    ];
 
-    /// The buttons' size as a share of the medium size (32 px).
-    pub fn scale(self) -> f32 {
-        match self {
-            ButtonSize::Small => 0.75,
-            ButtonSize::Medium => 1.0,
-            ButtonSize::Large => 1.25,
+    /// The sizes of the buttons and icons at this size.
+    pub fn metrics(self) -> ButtonMetrics {
+        let (icon, button, bar_icon, prop_icon, prop_button) = match self {
+            ButtonSize::ExtraSmall => (16.0, 22.0, 16.0, 14.0, 20.0),
+            ButtonSize::Small => (20.0, 26.0, 20.0, 18.0, 24.0),
+            ButtonSize::Medium => (24.0, 32.0, 24.0, 22.0, 28.0),
+            ButtonSize::Large => (32.0, 42.0, 28.0, 24.0, 38.0),
+            ButtonSize::ExtraLarge => (40.0, 52.0, 34.0, 28.0, 46.0),
+        };
+        ButtonMetrics {
+            icon,
+            button,
+            bar_icon,
+            prop_icon,
+            prop_button,
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
+            ButtonSize::ExtraSmall => "bars.size_extra_small",
             ButtonSize::Small => "bars.size_small",
             ButtonSize::Medium => "bars.size_medium",
             ButtonSize::Large => "bars.size_large",
+            ButtonSize::ExtraLarge => "bars.size_extra_large",
         }
+    }
+
+    /// The size `steps` sizes up (down for a negative count) from this
+    /// one, held at Extra Small and Extra Large: Ctrl+wheel over a bar
+    /// steps its buttons' size by the notches turned.
+    pub fn stepped(self, steps: i32) -> ButtonSize {
+        let at = ButtonSize::ALL.iter().position(|s| *s == self).unwrap_or(0) as i64;
+        let last = (ButtonSize::ALL.len() - 1) as i64;
+        let to = (at + i64::from(steps)).clamp(0, last);
+        ButtonSize::ALL[to as usize]
     }
 }
 
@@ -357,6 +417,20 @@ pub struct Settings {
     /// Options > Customization > Color Palette.
     #[serde(default)]
     pub palette: PalettePrefs,
+    /// The palette bars open besides the default one, in order, each
+    /// with its own place, rows and swatch size. Preferences written
+    /// before they existed have none: one palette at the bottom.
+    #[serde(default)]
+    pub palette_bars: Vec<PaletteBarPrefs>,
+    /// The palette the default palette bar shows ([`palette_id`]); empty
+    /// for the default palette.
+    #[serde(default)]
+    pub main_palette: String,
+    /// Names the user gave palettes, by [`palette_id`] (the document
+    /// palette by [`DOCUMENT_PALETTE`]); a palette missing here keeps
+    /// its own name. Built-in palettes' files are never changed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub palette_names: std::collections::BTreeMap<String, String>,
     /// Tool settings new objects take.
     #[serde(default)]
     pub tools: ToolPrefs,
@@ -793,6 +867,37 @@ impl NodeSize {
     }
 }
 
+/// How large the Pick tool's selection handles are drawn (#1285).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleSize {
+    Small,
+    Medium,
+    #[default]
+    Large,
+}
+
+impl HandleSize {
+    pub const ALL: [HandleSize; 3] = [HandleSize::Small, HandleSize::Medium, HandleSize::Large];
+
+    /// Side of a handle square, interface points.
+    pub fn px(self) -> f32 {
+        match self {
+            HandleSize::Small => 6.0,
+            HandleSize::Medium => 8.0,
+            HandleSize::Large => 10.0,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            HandleSize::Small => "options.node_small",
+            HandleSize::Medium => "options.node_medium",
+            HandleSize::Large => "options.node_large",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeShape {
@@ -809,6 +914,8 @@ impl NodeShape {
 #[serde(default)]
 pub struct NodePrefs {
     pub size: NodeSize,
+    /// The Pick tool's selection handles (#1285).
+    pub handles: HandleSize,
     pub cusp: NodeShape,
     pub smooth: NodeShape,
     pub symmetrical: NodeShape,
@@ -825,16 +932,23 @@ pub struct NodePrefs {
     /// nodes).
     pub pick_distance: f32,
     /// The Shape tool shows a corner widget inside the corners of a curve
-    /// (or of the chosen nodes), dragged to round them (#635). Off by
-    /// default, so it does not get in the way of node editing (#884);
-    /// rectangles keep their own corner rounding either way.
+    /// (or of the chosen nodes), dragged to round them (#635). On by
+    /// default; it can be turned off in Options > Nodes and Handles so it
+    /// does not get in the way of node editing (#884). Rectangles keep
+    /// their own corner rounding either way.
     pub corner_widgets: bool,
+    /// Dragging a corner widget rounds its own corner, Ctrl+click
+    /// chooses corners to round together, Shift+drag rounds every
+    /// corner. Off: a drag rounds every corner, or the chosen nodes'
+    /// corners, as before.
+    pub corner_one_at_a_time: bool,
 }
 
 impl Default for NodePrefs {
     fn default() -> Self {
         NodePrefs {
             size: NodeSize::Small,
+            handles: HandleSize::Large,
             cusp: NodeShape::Square,
             smooth: NodeShape::Circle,
             symmetrical: NodeShape::Diamond,
@@ -843,7 +957,8 @@ impl Default for NodePrefs {
             unselected_filled: true,
             show_direction: false,
             pick_distance: 6.0,
-            corner_widgets: false,
+            corner_widgets: true,
+            corner_one_at_a_time: true,
         }
     }
 }
@@ -891,7 +1006,7 @@ impl Default for ClipFramePrefs {
 
 /// The colour palettes docked under the drawing window (Options >
 /// Customization > Color Palette).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PalettePrefs {
     /// Colours applied to objects join the document palette.
@@ -906,15 +1021,133 @@ pub struct PalettePrefs {
     /// The default palette itself (Window > Toolbars, the bars' menu).
     pub show_palette: bool,
     /// Rows of swatches the default palette shows (columns docked on a
-    /// side), 1 to 3 (#610).
+    /// side), 1 to [`MAX_ROWS`] (#610); [`ROWS_FIT`] for as many as
+    /// show every colour (at most [`MAX_ROWS`]).
     pub rows: u8,
+    /// The side of a swatch (whole points), [`SWATCH_MIN`] to
+    /// [`SWATCH_MAX`]: Ctrl+wheel over a palette changes it by
+    /// [`SWATCH_STEP`] a notch. Preferences written before it existed
+    /// keep the 20 px swatches.
+    pub swatch_size: u8,
+    /// The room asked for the floating palette's swatches (points, the
+    /// title left out): its rows or columns flow from it (see
+    /// `ui::palette::floating_flow`).
+    pub float_size: [f32; 2],
 }
 
+/// The most rows (or columns) a docked palette bar shows.
+pub const MAX_ROWS: u8 = 8;
+/// [`PalettePrefs::rows`] for "Fit": the rows every colour needs.
+pub const ROWS_FIT: u8 = 0;
+/// The swatch sizes the palette menu and the Palette Manager offer, with
+/// their names (points, all even so Ctrl+wheel reaches each from the
+/// first size): Medium is the first size.
+pub const SWATCH_STEPS: [(u8, &str); 5] = [
+    (10, "palette.size_xs"),
+    (14, "palette.size_s"),
+    (20, "palette.size_m"),
+    (28, "palette.size_l"),
+    (40, "palette.size_xl"),
+];
+/// The room a floating palette asks for at first.
+pub const FLOAT_SIZE: [f32; 2] = [460.0, 25.0];
+
+/// The smallest and the largest swatch, and the step a wheel notch
+/// changes the side by (points).
+pub const SWATCH_MIN: u8 = 8;
+pub const SWATCH_MAX: u8 = 48;
+pub const SWATCH_STEP: i32 = 2;
+/// The side the swatches have at first.
+pub const SWATCH_DEFAULT: u8 = 20;
+
 impl PalettePrefs {
-    /// [`Self::rows`] brought into 1 to 3.
-    pub fn rows(&self) -> usize {
-        self.rows.clamp(1, 3) as usize
+    /// [`Self::swatch_size`] brought into its range, as points.
+    pub fn swatch_size(&self) -> f32 {
+        f32::from(self.swatch_size.clamp(SWATCH_MIN, SWATCH_MAX))
     }
+}
+
+/// The swatch side `steps` notches of Ctrl+wheel on from `size`: up
+/// larger, down smaller, [`SWATCH_STEP`] a notch, held between
+/// [`SWATCH_MIN`] and [`SWATCH_MAX`].
+/// A rows setting as rows: None for [`ROWS_FIT`], else 1 to
+/// [`MAX_ROWS`].
+pub fn rows_of(rows: u8) -> Option<usize> {
+    (rows != ROWS_FIT).then(|| rows.min(MAX_ROWS) as usize)
+}
+
+/// The named size of [`SWATCH_STEPS`] a swatch side is, if any.
+pub fn swatch_step_of(size: u8) -> Option<usize> {
+    SWATCH_STEPS.iter().position(|(s, _)| *s == size)
+}
+
+/// The palette's place in the Palette Manager's list stated so it holds
+/// across sessions: its file, else its built-in key, else its name.
+pub fn palette_id(p: &crate::palette::Palette) -> String {
+    match (&p.path, p.key) {
+        (Some(path), _) => path.display().to_string(),
+        (None, key) if !key.is_empty() => key.to_string(),
+        _ => p.name.clone(),
+    }
+}
+
+/// [`PaletteBarPrefs::palette`] of a bar showing the document palette.
+pub const DOCUMENT_PALETTE: &str = "document";
+
+/// A palette bar besides the default one: which palette it shows, where
+/// it is, and its own rows and swatch size.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaletteBarPrefs {
+    /// [`palette_id`] of its palette, or [`DOCUMENT_PALETTE`].
+    pub palette: String,
+    pub dock: crate::ui::bars::Dock,
+    /// Its window's top-left corner while floating (screen points).
+    pub pos: [f32; 2],
+    /// As [`PalettePrefs::float_size`].
+    pub float_size: [f32; 2],
+    /// As [`PalettePrefs::rows`].
+    pub rows: u8,
+    /// As [`PalettePrefs::swatch_size`].
+    pub swatch_size: u8,
+}
+
+impl Default for PaletteBarPrefs {
+    fn default() -> Self {
+        PaletteBarPrefs {
+            palette: String::new(),
+            dock: crate::ui::bars::Dock::Bottom,
+            pos: [320.0, 420.0],
+            float_size: FLOAT_SIZE,
+            rows: 1,
+            swatch_size: SWATCH_DEFAULT,
+        }
+    }
+}
+
+impl PaletteBarPrefs {
+    /// Out-of-range values of a hand-edited file brought back.
+    pub fn sanitize(&mut self) {
+        let d = PaletteBarPrefs::default();
+        if !self.pos.iter().all(|v| v.is_finite() && v.abs() <= 1.0e5) {
+            self.pos = d.pos;
+        }
+        if !self
+            .float_size
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.0 && *v <= 1.0e5)
+        {
+            self.float_size = d.float_size;
+        }
+        self.rows = self.rows.min(MAX_ROWS);
+        self.swatch_size = self.swatch_size.clamp(SWATCH_MIN, SWATCH_MAX);
+    }
+}
+
+pub fn swatch_resized(size: u8, steps: i32) -> u8 {
+    let to = i32::from(size.clamp(SWATCH_MIN, SWATCH_MAX))
+        .saturating_add(steps.saturating_mul(SWATCH_STEP));
+    to.clamp(i32::from(SWATCH_MIN), i32::from(SWATCH_MAX)) as u8
 }
 
 impl Default for PalettePrefs {
@@ -926,6 +1159,8 @@ impl Default for PalettePrefs {
             show_document: true,
             show_palette: true,
             rows: 1,
+            swatch_size: SWATCH_DEFAULT,
+            float_size: FLOAT_SIZE,
         }
     }
 }
@@ -1010,6 +1245,10 @@ pub struct DocumentDefaults {
     /// The fill and outline new objects get.
     #[serde(default)]
     pub objects: tracedraw_core::ObjectDefaults,
+    /// The space between pages in the Multipage View, mm (`None`: the
+    /// default 30 mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_spacing: Option<f64>,
 }
 
 impl DocumentDefaults {
@@ -1019,6 +1258,7 @@ impl DocumentDefaults {
             rulers: doc.metadata.rulers.clone(),
             guides: doc.metadata.guides,
             objects: doc.defaults.clone(),
+            page_spacing: doc.metadata.page_spacing,
         }
     }
 
@@ -1026,34 +1266,25 @@ impl DocumentDefaults {
         doc.metadata.grid = self.grid;
         doc.metadata.rulers = self.rulers.clone();
         doc.metadata.guides = self.guides;
+        doc.metadata.page_spacing = self.page_spacing;
         doc.defaults = defaults_for(&self.objects, doc.metadata.primary_color_mode);
     }
 }
 
-/// The stored object defaults as a drawing in `mode` takes them: a black
-/// text fill, RGB or CMYK, is the mode's black (new text is black in the
-/// drawing's own colour mode), whatever else the stored defaults hold
-/// (an earlier version's values, a paragraph style, an outline of one's
-/// own); any other colour stays as chosen.
+/// The stored object defaults as a drawing in `mode` takes them: a fill
+/// or outline that is still the untouched default black is the mode's
+/// black (new objects are black in the drawing's own colour mode),
+/// whatever else the stored defaults hold (a paragraph style, an outline
+/// width of one's own); a colour the user picked, a black included,
+/// stays exactly as saved. Settings saved before the mark existed: a
+/// black outline of graphics or black text fill, where the built-in
+/// defaults put one, counts as untouched
+/// ([`tracedraw_core::DefaultProperties::follows`]).
 fn defaults_for(
     stored: &tracedraw_core::ObjectDefaults,
     mode: tracedraw_core::document::PrimaryColorMode,
 ) -> tracedraw_core::ObjectDefaults {
-    use tracedraw_core::document::PrimaryColorMode;
-    use tracedraw_core::Fill;
-    let blacks = [
-        PrimaryColorMode::Cmyk.black(),
-        PrimaryColorMode::Rgb.black(),
-    ];
-    let mut out = stored.clone();
-    for props in [&mut out.artistic_text, &mut out.paragraph_text] {
-        if let Fill::Solid(c) = &mut props.fill {
-            if blacks.contains(c) {
-                *c = mode.black();
-            }
-        }
-    }
-    out
+    stored.in_mode(mode)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1499,6 +1730,9 @@ impl Default for Settings {
             wheel_zoom_centers: false,
             pan_right_click_out: false,
             palette: PalettePrefs::default(),
+            palette_bars: Vec::new(),
+            main_palette: String::new(),
+            palette_names: Default::default(),
             tools: ToolPrefs::default(),
             view: ViewPrefs::default(),
             panels: PanelPrefs::default(),
@@ -1942,6 +2176,127 @@ mod tests {
             doc.defaults.artistic_text.fill,
             Fill::Solid(PrimaryColorMode::Cmyk.black())
         );
+        // The CMYK black outline stored for graphics turns RGB black in
+        // an RGB drawing, a width of one's own stays (#1665).
+        let mut stored = ObjectDefaults::default();
+        if let Some(s) = stored.graphic.stroke.as_mut() {
+            s.width = 0.5;
+        }
+        let rgb = super::defaults_for(&stored, PrimaryColorMode::Rgb);
+        assert_eq!(
+            rgb.graphic.stroke.as_ref().map(|s| (s.color, s.width)),
+            Some((Color::BLACK, 0.5))
+        );
+    }
+
+    /// Saved defaults: the untouched default black follows the new
+    /// drawing's mode, a black the user picked stays exactly as saved,
+    /// and so does any other colour (#1665).
+    #[test]
+    fn saved_defaults_keep_chosen_blacks() {
+        use crate::defaults::DefaultChange;
+        use tracedraw_core::document::PrimaryColorMode;
+        use tracedraw_core::{Color, Fill};
+        let k100 = PrimaryColorMode::Cmyk.black();
+        let outline =
+            |d: &tracedraw_core::ObjectDefaults| d.graphic.stroke.as_ref().map(|s| s.color);
+        let open_in = |prefs: &super::DocumentDefaults, mode| {
+            let mut doc = tracedraw_core::Document::default();
+            doc.metadata.primary_color_mode = mode;
+            prefs.apply(&mut doc);
+            doc.defaults
+        };
+        // Untouched defaults saved from a CMYK drawing follow both modes.
+        let mut app = crate::app::App::headless();
+        app.settings.new_document.values.rgb = false;
+        app.new_document();
+        let untouched = super::DocumentDefaults::of(app.doc());
+        let rgb = open_in(&untouched, PrimaryColorMode::Rgb);
+        assert_eq!(outline(&rgb), Some(Color::BLACK));
+        assert_eq!(rgb.artistic_text.fill, Fill::Solid(Color::BLACK));
+        let cmyk = open_in(&untouched, PrimaryColorMode::Cmyk);
+        assert_eq!(outline(&cmyk), Some(k100));
+        // The user picks CMYK black for graphics' outline: it stays CMYK
+        // in an RGB drawing, the untouched text black still follows.
+        app.change_defaults(
+            &DefaultChange::OutlineColor(Some(k100)),
+            [true, false, false],
+        );
+        let chosen = super::DocumentDefaults::of(app.doc());
+        let json = serde_json::to_string(&chosen).unwrap();
+        let chosen: super::DocumentDefaults = serde_json::from_str(&json).unwrap();
+        let rgb = open_in(&chosen, PrimaryColorMode::Rgb);
+        assert_eq!(outline(&rgb), Some(k100));
+        assert_eq!(rgb.artistic_text.fill, Fill::Solid(Color::BLACK));
+        // A saved colour that is not black stays.
+        let blue = Color::rgb8(0, 0, 200);
+        app.change_defaults(
+            &DefaultChange::Fill(Fill::Solid(blue)),
+            [false, true, false],
+        );
+        let rgb = open_in(
+            &super::DocumentDefaults::of(app.doc()),
+            PrimaryColorMode::Rgb,
+        );
+        assert_eq!(rgb.artistic_text.fill, Fill::Solid(blue));
+        // Reset in the Object Styles panel makes the outline follow again.
+        app.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| {
+            *p = tracedraw_core::ObjectDefaults::for_mode(PrimaryColorMode::Cmyk).graphic
+        });
+        let rgb = open_in(
+            &super::DocumentDefaults::of(app.doc()),
+            PrimaryColorMode::Rgb,
+        );
+        assert_eq!(outline(&rgb), Some(Color::BLACK));
+    }
+
+    /// Settings saved before the mark existed: the stock CMYK black
+    /// outline and text black (the old built-in defaults) follow the
+    /// drawing's mode; a black elsewhere and other colours stay.
+    #[test]
+    fn old_settings_with_the_stock_blacks_follow() {
+        use tracedraw_core::document::PrimaryColorMode;
+        use tracedraw_core::{Color, Fill};
+        let k100 = PrimaryColorMode::Cmyk.black();
+        let mut stored = super::DocumentDefaults::default();
+        stored.objects.graphic.fill = Fill::Solid(k100);
+        stored.objects.paragraph_text.fill = Fill::Solid(Color::rgb8(0, 120, 0));
+        let mut json = serde_json::to_value(&stored).unwrap();
+        for kind in ["graphic", "artistic_text", "paragraph_text"] {
+            json["objects"][kind]
+                .as_object_mut()
+                .unwrap()
+                .remove("follow");
+        }
+        let old: super::DocumentDefaults = serde_json::from_value(json).unwrap();
+        assert!(old.objects.graphic.follow.is_none());
+        let mut doc = tracedraw_core::Document::default();
+        doc.metadata.primary_color_mode = PrimaryColorMode::Rgb;
+        old.apply(&mut doc);
+        let d = &doc.defaults;
+        assert_eq!(
+            d.graphic.stroke.as_ref().map(|s| s.color),
+            Some(Color::BLACK)
+        );
+        assert_eq!(d.artistic_text.fill, Fill::Solid(Color::BLACK));
+        assert_eq!(d.graphic.fill, Fill::Solid(k100), "a black of one's own");
+        assert_eq!(d.paragraph_text.fill, Fill::Solid(Color::rgb8(0, 120, 0)));
+    }
+
+    #[test]
+    fn the_page_spacing_is_saved_as_a_default_for_new_drawings() {
+        let mut doc = tracedraw_core::Document::default();
+        // Settings saved before the field existed keep the default.
+        let old: super::DocumentDefaults = serde_json::from_str("{}").unwrap();
+        old.apply(&mut doc);
+        assert_eq!(doc.metadata.page_spacing(), 30.0);
+        doc.metadata.page_spacing = Some(10.0);
+        let saved = super::DocumentDefaults::of(&doc);
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: super::DocumentDefaults = serde_json::from_str(&json).unwrap();
+        let mut fresh = tracedraw_core::Document::default();
+        back.apply(&mut fresh);
+        assert_eq!(fresh.metadata.page_spacing(), 10.0);
     }
 
     #[test]
@@ -2059,6 +2414,159 @@ mod tests {
     }
 
     use super::*;
+
+    /// Each button size draws a larger icon in a larger button than the
+    /// one before, and the padding around the toolbox's icon grows no
+    /// faster than the icon (#1701 follow-up: the icons stayed one
+    /// size). The property bar's does too up to Medium; at Large and
+    /// Extra Large its icons keep a wider margin on purpose
+    /// (`large_bar_icons_keep_a_margin`).
+    #[test]
+    fn each_button_size_has_a_larger_icon_and_proportional_padding() {
+        let m: Vec<ButtonMetrics> = ButtonSize::ALL.iter().map(|s| s.metrics()).collect();
+        assert_eq!(
+            m.iter().map(|m| m.icon).collect::<Vec<_>>(),
+            vec![16.0, 20.0, 24.0, 32.0, 40.0]
+        );
+        for (i, w) in m.windows(2).enumerate() {
+            assert!(w[1].icon > w[0].icon, "{w:?}");
+            assert!(w[1].button > w[0].button, "{w:?}");
+            assert!(w[1].prop_icon > w[0].prop_icon, "{w:?}");
+            assert!(w[1].prop_button > w[0].prop_button, "{w:?}");
+            // The padding around the icon grows by less than the icon.
+            let pad = |m: &ButtonMetrics| m.button - m.icon;
+            let prop_pad = |m: &ButtonMetrics| m.prop_button - m.prop_icon;
+            assert!(pad(&w[1]) >= pad(&w[0]), "{w:?}");
+            assert!(pad(&w[1]) - pad(&w[0]) < w[1].icon - w[0].icon, "{w:?}");
+            assert!(prop_pad(&w[1]) >= prop_pad(&w[0]), "{w:?}");
+            if i < 2 {
+                assert!(
+                    prop_pad(&w[1]) - prop_pad(&w[0]) < w[1].prop_icon - w[0].prop_icon,
+                    "{w:?}"
+                );
+            }
+        }
+        for m in &m {
+            // Whole, even pixel sizes: the icon sits centred on whole
+            // pixels in its button.
+            for v in [m.icon, m.button, m.bar_icon, m.prop_icon, m.prop_button] {
+                assert_eq!(v % 2.0, 0.0, "{m:?}");
+            }
+            assert!(m.icon < m.button && m.prop_icon < m.prop_button);
+            assert!(m.bar_icon < m.button);
+        }
+        // The bars' icons grow at every step too.
+        for w in m.windows(2) {
+            assert!(w[1].bar_icon > w[0].bar_icon, "{w:?}");
+        }
+        // Medium keeps the 32 px buttons it had.
+        assert_eq!(ButtonSize::Medium.metrics().button, 32.0);
+        assert_eq!(ButtonSize::Medium.metrics().prop_button, 28.0);
+    }
+
+    /// At Large and Extra Large the standard and property bars draw their
+    /// icons at about 5/6 of the toolbox's box, leaving 7 and 9 px of
+    /// margin each side; the smaller sizes and the toolbox are as before.
+    #[test]
+    fn large_bar_icons_keep_a_margin() {
+        let row = |s: ButtonSize| {
+            let m = s.metrics();
+            (m.icon, m.button, m.bar_icon, m.prop_icon, m.prop_button)
+        };
+        assert_eq!(row(ButtonSize::ExtraSmall), (16.0, 22.0, 16.0, 14.0, 20.0));
+        assert_eq!(row(ButtonSize::Small), (20.0, 26.0, 20.0, 18.0, 24.0));
+        assert_eq!(row(ButtonSize::Medium), (24.0, 32.0, 24.0, 22.0, 28.0));
+        assert_eq!(row(ButtonSize::Large), (32.0, 42.0, 28.0, 24.0, 38.0));
+        assert_eq!(row(ButtonSize::ExtraLarge), (40.0, 52.0, 34.0, 28.0, 46.0));
+        for (size, margin) in [(ButtonSize::Large, 7.0), (ButtonSize::ExtraLarge, 9.0)] {
+            let m = size.metrics();
+            assert_eq!((m.button - m.bar_icon) / 2.0, margin, "{size:?}");
+            assert_eq!((m.prop_button - m.prop_icon) / 2.0, margin, "{size:?}");
+            // About 5/6 of the toolbox's icon box.
+            let share = m.bar_icon / m.icon;
+            assert!((0.8..=0.9).contains(&share), "{size:?} {share}");
+        }
+        for size in [
+            ButtonSize::ExtraSmall,
+            ButtonSize::Small,
+            ButtonSize::Medium,
+        ] {
+            let m = size.metrics();
+            assert_eq!(m.bar_icon, m.icon, "{size:?}");
+        }
+    }
+
+    /// Settings saved with three sizes read as they did; the new sizes
+    /// round-trip.
+    #[test]
+    fn saved_button_sizes_keep_their_meaning() {
+        for (json, size) in [
+            ("\"small\"", ButtonSize::Small),
+            ("\"medium\"", ButtonSize::Medium),
+            ("\"large\"", ButtonSize::Large),
+            ("\"Medium\"", ButtonSize::Medium),
+            ("\"extra_small\"", ButtonSize::ExtraSmall),
+            ("\"extra_large\"", ButtonSize::ExtraLarge),
+        ] {
+            let read: ButtonSize = serde_json::from_str(json).expect(json);
+            assert_eq!(read, size, "{json}");
+        }
+        for size in ButtonSize::ALL {
+            let json = serde_json::to_string(&size).expect("write");
+            assert_eq!(serde_json::from_str::<ButtonSize>(&json).ok(), Some(size));
+        }
+        let s: Settings =
+            serde_json::from_str(r#"{"button_size": "medium", "toolbox_button_size": "large"}"#)
+                .expect("settings");
+        assert_eq!(s.button_size, ButtonSize::Medium);
+        assert_eq!(s.toolbox_button_size, Some(ButtonSize::Large));
+    }
+
+    /// Ctrl+wheel steps the button sizes and the swatch size within
+    /// their ranges; preferences written before the swatch size existed
+    /// keep the 20 px swatches.
+    #[test]
+    fn the_wheel_steps_the_button_and_swatch_sizes_within_their_ranges() {
+        assert_eq!(ButtonSize::Small.stepped(1), ButtonSize::Medium);
+        assert_eq!(ButtonSize::Small.stepped(2), ButtonSize::Large);
+        assert_eq!(ButtonSize::Small.stepped(3), ButtonSize::ExtraLarge);
+        assert_eq!(ButtonSize::Small.stepped(5), ButtonSize::ExtraLarge);
+        assert_eq!(ButtonSize::Large.stepped(-1), ButtonSize::Medium);
+        assert_eq!(ButtonSize::Small.stepped(-1), ButtonSize::ExtraSmall);
+        assert_eq!(ButtonSize::Small.stepped(-5), ButtonSize::ExtraSmall);
+        assert_eq!(ButtonSize::Medium.stepped(0), ButtonSize::Medium);
+        // One notch at a time walks through all five sizes and holds at
+        // the ends.
+        let mut size = ButtonSize::ExtraSmall;
+        let mut seen = vec![size];
+        for _ in 0..6 {
+            size = size.stepped(1);
+            seen.push(size);
+        }
+        assert_eq!(&seen[..5], &ButtonSize::ALL[..]);
+        assert_eq!(seen[5], ButtonSize::ExtraLarge);
+        assert_eq!(seen[6], ButtonSize::ExtraLarge);
+        for _ in 0..6 {
+            size = size.stepped(-1);
+        }
+        assert_eq!(size, ButtonSize::ExtraSmall);
+        assert_eq!(swatch_resized(20, 1), 22);
+        assert_eq!(swatch_resized(20, -1), 18);
+        assert_eq!(swatch_resized(20, 100), SWATCH_MAX);
+        assert_eq!(swatch_resized(20, -100), SWATCH_MIN);
+        assert_eq!(swatch_resized(47, 1), SWATCH_MAX);
+        assert_eq!(swatch_resized(0, 0), SWATCH_MIN);
+        assert_eq!(swatch_resized(20, i32::MAX), SWATCH_MAX);
+        let old: Settings = serde_json::from_str(r#"{"palette":{"rows":2}}"#).expect("old");
+        assert_eq!(old.palette.swatch_size, SWATCH_DEFAULT);
+        assert_eq!(old.palette.swatch_size(), 20.0);
+        assert_eq!(rows_of(old.palette.rows), Some(2));
+        let odd = PalettePrefs {
+            swatch_size: 200,
+            ..PalettePrefs::default()
+        };
+        assert_eq!(odd.swatch_size(), f32::from(SWATCH_MAX));
+    }
 
     #[test]
     fn recent_list_dedups_and_caps() {

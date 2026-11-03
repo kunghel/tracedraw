@@ -143,6 +143,20 @@ barras ou restaurar suas posições. Para mostrar ou ocultar uma barra, use
 disposição como um espaço de trabalho; veja
 [Espaços de trabalho](../customize/workspaces.md).
 
+Uma caixa de ferramentas flutuante pode ser redimensionada pelas bordas e
+pelos cantos da janela, e os botões acompanham: uma janela alta e estreita os
+mostra dois por linha, uma mais larga mostra mais por linha em menos linhas,
+uma larga e baixa os mostra em uma ou duas linhas, mantendo as divisões entre
+os grupos de ferramentas. O tamanho fica guardado. Quando o nome de uma barra
+flutuante não cabe no título, ele é encurtado com reticências; passe o
+ponteiro sobre o título para lê-lo inteiro.
+
+Segure <kbd>Ctrl</kbd> e gire a roda do mouse sobre uma barra de ferramentas
+ou sobre a caixa de ferramentas para aumentar (roda para cima) ou diminuir
+(roda para baixo) os botões; o mesmo sobre a paleta de cores aumenta ou
+diminui as amostras. Os tamanhos ficam guardados. A roda sem Ctrl continua
+rolando uma barra que não cabe.
+
 A barra de ferramentas padrão, a barra de propriedades, as barras Texto, Zoom
 e Transformar e o controle de tempo podem dividir uma linha quando encaixados
 no alto ou embaixo: arraste a alça de uma barra até a linha de outra para

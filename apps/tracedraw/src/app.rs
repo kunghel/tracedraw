@@ -615,6 +615,10 @@ pub struct PenStep {
     pub redo_to: Option<PenEnd>,
 }
 
+/// Millimetres within which a B-Spline control point is the one before
+/// it (the same pointer position, up to rounding).
+const SAME_CONTROL_POINT: f64 = 1e-9;
+
 /// Bezier / polyline tool in progress.
 #[derive(Debug, Clone, Default)]
 pub struct CurveInProgress {
@@ -725,6 +729,26 @@ impl CurveInProgress {
         path
     }
 
+    /// B-Spline: the control points of the curve a click at `preview`
+    /// would make, the pointer as a tentative next point. A pointer still
+    /// on the last point (right after a click) adds nothing: a doubled end
+    /// point would bend the curve's end, and the curve made has it once
+    /// (#1506). A click there places no second point either.
+    pub fn bspline_controls(&self, preview: Option<Point>) -> Vec<Point> {
+        let mut pts: Vec<Point> = self.nodes.iter().map(|n| n.0).collect();
+        if let Some(p) = preview.filter(|p| !self.on_last_control(*p)) {
+            pts.push(p);
+        }
+        pts
+    }
+
+    /// `p` is where the last control point already is.
+    pub fn on_last_control(&self, p: Point) -> bool {
+        self.nodes
+            .last()
+            .is_some_and(|n| (n.0 - p).hypot() <= SAME_CONTROL_POINT)
+    }
+
     fn open_path(&self, preview: Option<Point>) -> tracedraw_core::BezPath {
         let mut path = tracedraw_core::BezPath::new();
         let mut nodes: Vec<(Point, Option<Point>)> = self.nodes.clone();
@@ -732,7 +756,7 @@ impl CurveInProgress {
             nodes.push((p, None));
         }
         if self.bspline {
-            let pts: Vec<Point> = nodes.iter().map(|n| n.0).collect();
+            let pts = self.bspline_controls(preview);
             return tracedraw_core::geometry::bspline_path(&pts, false);
         }
         for (i, (p, _)) in nodes.iter().enumerate() {
@@ -1149,6 +1173,15 @@ pub struct App {
     pub extra_palettes: Vec<crate::ui::palette::ExtraRow>,
     /// What a strip no longer there scrolls (nothing reads it).
     pub palette_scroll_spare: usize,
+    /// The length each palette strip had last (by its row key), for
+    /// the rows "Fit" gives it.
+    pub palette_lens: std::collections::HashMap<u8, f32>,
+    /// A palette bar being dragged to a new place.
+    pub palette_bar_drag: Option<crate::ui::palette_bars::PaletteBarDrag>,
+    /// The palette being renamed: its id and the name typed so far.
+    pub palette_rename: Option<(String, String)>,
+    /// The Palette Manager's selection, filter and row being dragged.
+    pub palette_manager: crate::ui::palette_manager::ManagerState,
     /// The document palette swatch clicked last (Delete color acts on it).
     pub doc_palette_current: Option<usize>,
     /// Pop-up of a palette colour's shades (click and hold a swatch): the
@@ -1198,6 +1231,8 @@ pub struct App {
     /// Whether each paragraph text overflows its frame, by document
     /// revision (laying text out every frame would be slow).
     pub overflow_cache: std::cell::RefCell<(u64, std::collections::HashMap<ShapeId, bool>)>,
+    /// Paragraph texts flowed in the frames a drag gives them (#1327).
+    pub live_reflow: std::cell::RefCell<crate::text_frames::LiveReflow>,
     /// The corners the Shape tool's corner widgets stand on.
     pub corner_cache: std::cell::RefCell<crate::corner_widgets::CornerCache>,
     pub wireframe: bool,
@@ -1656,6 +1691,9 @@ pub struct App {
     /// `Engine::begin_group`): the drag's steps, and the copy Apply to
     /// Duplicate makes, are one undo step (#1342).
     pub free_transform_group: Option<Option<u64>>,
+    /// The steps a number field made in a row, joined into one undo step
+    /// (see `step_merge`).
+    pub field_run: Option<crate::step_merge::FieldRun>,
     pub roughen_amount: f64,
     /// The shaping brushes' settings (see `ui::brush_bars`), 1 to 100 where
     /// a percentage: Smooth's rate, Smear's and Smudge's pressure, Twirl's
@@ -2510,6 +2548,10 @@ impl App {
             doc_palette_scroll: 0,
             extra_palettes: Vec::new(),
             palette_scroll_spare: 0,
+            palette_lens: Default::default(),
+            palette_bar_drag: None,
+            palette_rename: None,
+            palette_manager: Default::default(),
             doc_palette_current: None,
             palette_shades: None,
             palette_expanded: None,
@@ -2525,6 +2567,7 @@ impl App {
             window_layout: Default::default(),
             window_layout_seen: None,
             overflow_cache: Default::default(),
+            live_reflow: Default::default(),
             corner_cache: Default::default(),
             wireframe: false,
             font_families: tracedraw_text::fonts().available_families(),
@@ -2757,6 +2800,7 @@ impl App {
             free_transform_duplicate: false,
             free_transform_reflected: false,
             free_transform_group: None,
+            field_run: None,
             roughen_amount: 2.0,
             brush: Default::default(),
             brush_stepped: false,
@@ -3115,6 +3159,8 @@ impl App {
         self.units = Units::from_id(&s.units);
         self.settings = s;
         self.apply_color_settings();
+        // The palette bars as they were left.
+        self.rebuild_palette();
     }
 
     /// Install the colour engine from the settings: ICC profiles loaded from
@@ -4519,7 +4565,8 @@ impl App {
     }
 
     /// The selection's bounds as drawn: live effects (an envelope, a
-    /// contour...) included.
+    /// contour...) included, a blend's steps not (they lie between its
+    /// start and end objects, see [`Self::own_visual_bounds`]).
     pub fn selection_bounds(&self) -> Option<Rect> {
         self.selected_bounds()
             .iter()
@@ -4527,8 +4574,8 @@ impl App {
             .reduce(|a, b| a.union(b))
     }
 
-    /// The visual bounds of each of [`Self::selected_rc`], in its order:
-    /// kept with the gathered selection, since the bars, the canvas, the
+    /// The boxes ([`Self::own_visual_bounds`]) of each of
+    /// [`Self::selected_rc`], in its order: kept with the gathered selection, since the bars, the canvas, the
     /// cursor and the status bar ask for them many times a frame and
     /// thousands of selected objects made each answer slow (#345).
     pub fn selected_bounds(&self) -> std::rc::Rc<Vec<Rect>> {
@@ -4546,7 +4593,7 @@ impl App {
         let b = std::rc::Rc::new(
             shapes
                 .iter()
-                .map(|s| self.visual_bounds(s))
+                .map(|s| self.own_visual_bounds(s))
                 .collect::<Vec<_>>(),
         );
         if let Ok(cache) = self.selected_cache.try_borrow() {
@@ -4647,6 +4694,19 @@ impl App {
         b
     }
 
+    /// The box `s` (in page space) is selected and transformed by: its
+    /// visual bounds, less the steps of a blend it starts, which lie
+    /// between it and the blend's end object (#1540).
+    pub fn own_visual_bounds(&self, s: &Shape) -> Rect {
+        if !s.starts_linked_blend() {
+            return self.visual_bounds(s);
+        }
+        match self.without_edited_symmetry(s) {
+            Some(own) => own.own_visual_bounds(),
+            None => s.own_visual_bounds(),
+        }
+    }
+
     pub fn run(&mut self, cmd: Command) {
         // The box a move, turn or resize starts from, for its Repeat.
         let before = match &cmd {
@@ -4656,7 +4716,7 @@ impl App {
             Command::TransformShapes { shapes, .. } => shapes
                 .iter()
                 .filter_map(|id| self.doc().find_shape(*id))
-                .map(|s| self.visual_bounds(s))
+                .map(|s| self.own_visual_bounds(s))
                 .reduce(|a, b| a.union(b)),
             _ => None,
         };
@@ -4993,6 +5053,18 @@ impl App {
         }
     }
 
+    /// The pointer as the next node of the curve being drawn would take
+    /// it (`ctrl`, the constrain key: in steps of the constrain angle);
+    /// `None` while a handle is pulled. The preview runs the curve to it.
+    pub fn curve_preview_point(&self, ctrl: bool) -> Option<Point> {
+        let c = self.curve.as_ref()?;
+        if c.dragging_handle {
+            return None;
+        }
+        self.pointer_page
+            .map(|p| self.curve_point(self.snap_point(p), ctrl))
+    }
+
     /// The curve being drawn is done: it continues the selected curve
     /// when it starts or ends on one of its end nodes, otherwise it becomes
     /// a curve of its own (see `curve_join.rs`).
@@ -5249,12 +5321,10 @@ impl App {
     pub fn sync_text_defaults_from(&mut self, id: ShapeId) {
         let kind = self.doc().shape(id).map(|(_, s)| s.kind.clone());
         if let Ok(ShapeKind::Text { spans, align, .. }) = &kind {
-            // While editing, the style at the caret (of the character before it).
-            let at = self
-                .text_edit
-                .as_ref()
-                .filter(|te| te.shape == id)
-                .map(|te| te.caret.saturating_sub(1));
+            // While editing, the style at the caret (of the character
+            // before it); with the Shape tool, of the first chosen
+            // character (#1662).
+            let at = self.shown_char(id);
             let span_at = at.and_then(|at| {
                 let mut seen = 0usize;
                 spans.iter().find(|sp| {
@@ -5834,6 +5904,20 @@ impl App {
             }
             return;
         }
+        // So do characters chosen with the Shape tool (#1662).
+        if self.chosen_chars_active() {
+            let used = match &fill {
+                Fill::Solid(c) => Some(*c),
+                _ => None,
+            };
+            if self.chosen_chars_apply_fill(fill) && remember {
+                if let Some(c) = used {
+                    self.add_ink_for(c);
+                    self.remember_color(c);
+                }
+            }
+            return;
+        }
         // With the Mesh Fill or Shape tool, a colour goes to the selected
         // mesh node.
         if let Fill::Solid(c) = &fill {
@@ -5943,6 +6027,16 @@ impl App {
         // Characters selected in the text being edited take the outline.
         if self.text_selection_active() {
             if self.text_apply_outline_color(color) {
+                if let Some(c) = color {
+                    self.add_ink_for(c);
+                    self.remember_color(c);
+                }
+            }
+            return;
+        }
+        // So do characters chosen with the Shape tool (#1662).
+        if self.chosen_chars_active() {
+            if self.chosen_chars_apply_outline_color(color) {
                 if let Some(c) = color {
                     self.add_ink_for(c);
                     self.remember_color(c);
@@ -6563,6 +6657,7 @@ impl App {
                 let mut doc2 = App::localized_document(title, first);
                 let layer_name = doc2.pages[0].layers[0].name.clone();
                 doc2.pages.clear();
+                doc2.inks = std::mem::take(&mut imported.inks);
                 let mut ids = tracedraw_core::id::IdSource::default();
                 for (i, p) in imported.pages.into_iter().enumerate() {
                     let pid = ids.page();
@@ -7940,7 +8035,16 @@ impl App {
                 let Some(first) = imported.pages.into_iter().next() else {
                     return;
                 };
-                for s in first.shapes {
+                // The file's spot inks join the drawing's: one of the same
+                // name is the same ink, the others are added.
+                let (inks, map) = merge_inks(&self.doc().inks, &imported.inks);
+                if inks != self.doc().inks {
+                    cmds.push(Command::SetInks { inks });
+                }
+                for mut s in first.shapes {
+                    if !map.is_empty() {
+                        crate::color_policy::recolor_shape(&mut s, &|c| renumber_ink(c, &map));
+                    }
                     let id = self.engine.new_shape_id();
                     let shape = reid(s, id, &mut self.engine);
                     ids.push(id);
@@ -8511,6 +8615,47 @@ fn reid(mut s: Shape, id: ShapeId, engine: &mut Engine) -> Shape {
     s
 }
 
+/// The drawing's inks `have` with the inks `come` of an imported file:
+/// an ink of a name the drawing has is that ink, the others are added
+/// with numbers of their own. Gives the inks and, for each imported ink
+/// whose number changes, its old and new number.
+fn merge_inks(
+    have: &[tracedraw_core::document::Ink],
+    come: &[tracedraw_core::document::Ink],
+) -> (Vec<tracedraw_core::document::Ink>, Vec<(u32, u32)>) {
+    let mut inks = have.to_vec();
+    let mut map = Vec::new();
+    for ink in come {
+        let id = match inks.iter().find(|i| i.name == ink.name) {
+            Some(i) => i.id,
+            None => {
+                let id = inks
+                    .iter()
+                    .map(|i| i.id)
+                    .max()
+                    .map_or(1, |m| m.saturating_add(1));
+                inks.push(tracedraw_core::document::Ink { id, ..ink.clone() });
+                id
+            }
+        };
+        if id != ink.id {
+            map.push((ink.id, id));
+        }
+    }
+    (inks, map)
+}
+
+/// A spot colour of an imported ink on the number `map` gives it.
+fn renumber_ink(c: Color, map: &[(u32, u32)]) -> Color {
+    let mut c = c;
+    if let Color::Spot { ink, .. } = &mut c {
+        if let Some((_, to)) = map.iter().find(|(from, _)| from == ink) {
+            *ink = *to;
+        }
+    }
+    c
+}
+
 /// Re-number a shape tree from an id source (documents built outside the engine).
 fn reid_with(mut s: Shape, ids: &mut tracedraw_core::id::IdSource) -> Shape {
     s.id = ids.shape();
@@ -8866,6 +9011,88 @@ pub(crate) fn repeated_transform(t: Affine, before: Rect, now: Rect) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PDF's spot inks come with it: opened, the drawing has them;
+    /// imported, an ink of a name the drawing has is that ink and the
+    /// others are added on numbers of their own (#1703).
+    #[test]
+    fn pdf_spot_inks_come_into_the_drawing() {
+        use tracedraw_core::document::Ink;
+        let mut src = tracedraw_core::Document::new("spots", Size::new(100.0, 50.0));
+        src.inks = vec![
+            Ink {
+                id: 1,
+                name: "Gold 871".into(),
+                cmyk: [0.0, 0.2, 0.8, 0.1],
+            },
+            Ink {
+                id: 2,
+                name: "Warm Red".into(),
+                cmyk: [0.0, 0.9, 0.9, 0.0],
+            },
+        ];
+        let mut ids = src.ids().clone();
+        for (i, ink) in src.inks.clone().iter().enumerate() {
+            let mut s = Shape::new(
+                ids.shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(10.0 + 30.0 * i as f64, 10.0, 30.0 + 30.0 * i as f64, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(ink.color(0.5));
+            s.stroke = None;
+            src.pages[0].layers[0].shapes.push(s);
+        }
+        src.set_ids(ids);
+        let dir = std::env::temp_dir().join(format!("tracedraw-pdfinks-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("spots.pdf");
+        std::fs::write(&path, tracedraw_io::pdf::document_to_pdf(&src)).expect("written");
+
+        let mut app = App::headless();
+        app.run(Command::SetInks {
+            inks: vec![
+                Ink {
+                    id: 1,
+                    name: "Other".into(),
+                    cmyk: [1.0, 0.0, 0.0, 0.0],
+                },
+                Ink {
+                    id: 5,
+                    name: "Warm Red".into(),
+                    cmyk: [0.0, 0.9, 0.9, 0.0],
+                },
+            ],
+        });
+        app.import_pdf(&path);
+        let names: Vec<(u32, &str)> = app
+            .doc()
+            .inks
+            .iter()
+            .map(|i| (i.id, i.name.as_str()))
+            .collect();
+        assert_eq!(names, [(1, "Other"), (5, "Warm Red"), (6, "Gold 871")]);
+        let mut spots: Vec<u32> = app
+            .selection
+            .iter()
+            .filter_map(|id| app.doc().find_shape(*id))
+            .filter_map(|s| match s.fill {
+                Fill::Solid(Color::Spot { ink, .. }) => Some(ink),
+                _ => None,
+            })
+            .collect();
+        spots.sort();
+        assert_eq!(spots, [5, 6]);
+
+        let docs = app.docs.len();
+        app.open_path(path.clone());
+        assert_eq!(app.docs.len(), docs + 1);
+        let names: Vec<&str> = app.doc().inks.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["Gold 871", "Warm Red"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Duplicate, then the copy moved or scaled while it stays selected:
     /// the next Duplicate repeats that step from the copy, as the
