@@ -2510,7 +2510,7 @@ fn pages(app: &mut App, ui: &mut Ui) {
             );
             if i > 0
                 && ui
-                    .small_button("\u{25B2}")
+                    .small_button("\u{23F6}")
                     .rich_tip(crate::ui::tips::keyed("docker.page_move_up"))
                     .clicked()
             {
@@ -2521,7 +2521,7 @@ fn pages(app: &mut App, ui: &mut Ui) {
             }
             if i + 1 < n
                 && ui
-                    .small_button("\u{25BC}")
+                    .small_button("\u{23F7}")
                     .rich_tip(crate::ui::tips::keyed("docker.page_move_down"))
                     .clicked()
             {

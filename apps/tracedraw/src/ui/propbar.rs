@@ -2442,13 +2442,13 @@ pub(crate) const DASHES: &[&[f64]] = &[
 
 pub(crate) fn dash_label(d: &[f64]) -> String {
     if d.is_empty() {
-        return "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".into();
+        return "\u{2015}\u{2015}\u{2015}\u{2015}\u{2015}".into();
     }
     // A few characters drawing the pattern.
     let mut s = String::new();
     for (i, v) in d.iter().cycle().take(d.len() * 3).enumerate() {
         let n = (*v / 2.0).round().clamp(1.0, 4.0) as usize;
-        let c = if i % 2 == 0 { '\u{2500}' } else { ' ' };
+        let c = if i % 2 == 0 { '\u{2015}' } else { ' ' };
         for _ in 0..n {
             s.push(c);
         }
@@ -2462,13 +2462,13 @@ pub(crate) fn dash_label(d: &[f64]) -> String {
 fn arrow_label(a: &tracedraw_core::Arrowhead) -> String {
     use tracedraw_core::Arrowhead as A;
     match a {
-        A::None => "\u{2500}".into(),
-        A::Arrow => "\u{2500}\u{25B6}".into(),
-        A::OpenArrow => "\u{2500}>".into(),
-        A::Circle => "\u{2500}\u{25CF}".into(),
-        A::Square => "\u{2500}\u{25A0}".into(),
-        A::Bar => "\u{2500}|".into(),
-        A::Diamond => "\u{2500}\u{25C6}".into(),
+        A::None => "\u{2015}".into(),
+        A::Arrow => "\u{2015}\u{25B6}".into(),
+        A::OpenArrow => "\u{2015}>".into(),
+        A::Circle => "\u{2015}\u{23FA}".into(),
+        A::Square => "\u{2015}\u{25A0}".into(),
+        A::Bar => "\u{2015}|".into(),
+        A::Diamond => "\u{2015}\u{2666}".into(),
         A::Custom { name, .. } => name.clone(),
     }
 }
@@ -2803,7 +2803,7 @@ pub fn char_offset_part(app: &mut App, ui: &mut Ui) {
     field(
         ui,
         "toolbar.char_angle",
-        "\u{2220}",
+        "\u{00B0}",
         &mut a,
         -360.0..=360.0,
         " \u{b0}",
@@ -3251,7 +3251,7 @@ fn wrap_style_list(app: &mut App, ui: &mut Ui) {
     let button = ui
         .add_enabled(
             !app.selection.is_empty(),
-            egui::Button::new("\u{25BE}").small(),
+            egui::Button::new("\u{23F7}").small(),
         )
         .rich_tip(tr("context.wrap_style"));
     if button.clicked() {

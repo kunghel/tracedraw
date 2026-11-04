@@ -172,7 +172,7 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
         })
         .response
         .rich_tip(crate::ui::tips::keyed("painterly.brush_tip"));
-    ui.label("⬤").rich_tip(tr("painterly.size"));
+    ui.label("\u{26AB}").rich_tip(tr("painterly.size"));
     let mut size = app.units.world_from_mm(app.painterly.size);
     if ui
         .add(
@@ -188,7 +188,7 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
     {
         app.painterly.size = app.units.world_to_mm(size).max(0.1);
     }
-    ui.label("▦").rich_tip(tr("painterly.transparency"));
+    ui.label("\u{25A3}").rich_tip(tr("painterly.transparency"));
     let mut pct = (app.painterly.brush.transparency * 100.0).round();
     if ui
         .add(

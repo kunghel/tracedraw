@@ -27,13 +27,13 @@ fn dim(ui: &mut Ui, text: String) {
 /// A head at the start of a line, pointing left.
 fn head_label(a: &Arrowhead) -> String {
     match a {
-        Arrowhead::None => "\u{2500}".into(),
-        Arrowhead::Arrow => "\u{25C0}\u{2500}".into(),
-        Arrowhead::OpenArrow => "<\u{2500}".into(),
-        Arrowhead::Circle => "\u{25CF}\u{2500}".into(),
-        Arrowhead::Square => "\u{25A0}\u{2500}".into(),
-        Arrowhead::Bar => "|\u{2500}".into(),
-        Arrowhead::Diamond => "\u{25C6}\u{2500}".into(),
+        Arrowhead::None => "\u{2015}".into(),
+        Arrowhead::Arrow => "\u{25C0}\u{2015}".into(),
+        Arrowhead::OpenArrow => "<\u{2015}".into(),
+        Arrowhead::Circle => "\u{23FA}\u{2015}".into(),
+        Arrowhead::Square => "\u{25A0}\u{2015}".into(),
+        Arrowhead::Bar => "|\u{2015}".into(),
+        Arrowhead::Diamond => "\u{2666}\u{2015}".into(),
         Arrowhead::Custom { name, .. } => name.clone(),
     }
 }
@@ -199,7 +199,7 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-        assert_eq!(head_label(&Arrowhead::Arrow), "\u{25C0}\u{2500}");
+        assert_eq!(head_label(&Arrowhead::Arrow), "\u{25C0}\u{2015}");
         assert_eq!(next_step(&app), tr("callout.text"));
     }
 }

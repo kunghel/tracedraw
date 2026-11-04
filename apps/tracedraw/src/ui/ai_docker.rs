@@ -179,7 +179,7 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
                     .desired_width(FIELD_W - 26.0),
             )
             .rich_tip(crate::ui::tips::pair("ai.model", "ai.model_tip"));
-            ui.menu_button("\u{25BE}", |ui| {
+            ui.menu_button("\u{23F7}", |ui| {
                 for m in &choices {
                     if ui.selectable_label(prefs.model == *m, m).clicked() {
                         prefs.model = m.clone();
@@ -274,7 +274,7 @@ fn image_model_field(prefs: &mut crate::ai::AiPrefs, listed: &[String], ui: &mut
         )
         .rich_tip(tr("ai.image_model_tip"));
         ui.add_enabled_ui(!choices.is_empty(), |ui| {
-            ui.menu_button("\u{25BE}", |ui| {
+            ui.menu_button("\u{23F7}", |ui| {
                 for m in &choices {
                     if ui.selectable_label(prefs.image_model == *m, m).clicked() {
                         prefs.image_model = m.clone();

@@ -111,7 +111,15 @@ object's box is the object itself (its other live effects included),
 not the steps, as the end object's is the end; the bar's position and
 size, the handles, Repeat and the rotation centre all take that box,
 so a side handle resizes the start object from its own opposite side.
-A press on a step picks the start object, shown with the same box.
+A press on a step picks the start object, shown with the same box,
+except over the end object: the steps are drawn above the end when the
+start is in front, and a text step is picked anywhere in its box, so
+they covered nearly all of an end text and a click on it picked the
+start text, which then took the colour meant for the end. A press on
+the steps where the end object lies, away from the start object
+itself, picks the end object, with the Pick tool and the Text tool
+alike (#1739,
+`pick_drag_tests::a_click_on_a_blend_s_end_text_under_its_steps_picks_the_end`).
 The steps are part of no single object's box: a group holding the
 blend spans the whole blend, steps included, and a blend from an older
 file, whose end lives only in the effect, is one object whose box is

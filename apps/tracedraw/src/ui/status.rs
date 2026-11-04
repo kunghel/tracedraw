@@ -100,8 +100,9 @@ pub fn object_info(app: &App) -> String {
             }
             let mut kind = match &s.kind {
                 ShapeKind::Path { .. } => tr("kind.curve"),
-                // A bitmap with its colour mode (#1254).
-                k @ ShapeKind::Bitmap { .. } => trf(
+                // A bitmap with its colour mode (#1254); a grayscale PNG
+                // is a grayscale picture (#1777).
+                k @ ShapeKind::Bitmap { png, .. } => trf(
                     "status.bitmap_mode",
                     &[
                         ("k", &kind_name(k)),
@@ -109,6 +110,8 @@ pub fn object_info(app: &App) -> String {
                             "mode",
                             &tr(if s.cmyk_bitmap {
                                 "convert_colors.cmyk"
+                            } else if crate::bitmap_fx::png_is_gray(png) {
+                                "convert_colors.gray"
                             } else {
                                 "convert_colors.rgb"
                             }),

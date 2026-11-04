@@ -3498,7 +3498,7 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sep(ui);
-    if item(ui, "menu.text.convert", "Ctrl+F8", is_text) {
+    if item(ui, "menu.text.convert", "", is_text) {
         app.toggle_text_kind();
     }
     let joinable = !app.joinable_text_lines().is_empty();
@@ -3559,7 +3559,7 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         app.dialog = Dialog::CustomHyphens(Default::default());
     }
     sub(ui, "menu.text.writing_tools", |ui| {
-        if item(ui, "menu.text.spell_check", "Ctrl+F12", true) {
+        if item(ui, "menu.text.spell_check", "", true) {
             app.dialog =
                 Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(0));
         }

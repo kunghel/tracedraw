@@ -1951,7 +1951,7 @@ fn sample_and_search(ui: &mut Ui, st: &mut FontManagerState, prefs: &mut FontMan
             "font_manager.sample_desc",
         ));
         let arrow = ui
-            .add_sized([22.0, 20.0], egui::Button::new("\u{25BE}"))
+            .add_sized([22.0, 20.0], egui::Button::new("\u{23F7}"))
             .rich_tip(crate::ui::tips::keyed("font_manager.sample_presets"));
         egui::Popup::menu(&arrow)
             .id(egui::Id::new("font_manager_samples"))

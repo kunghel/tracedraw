@@ -104,6 +104,40 @@ pub fn encode(img: &RgbaImage) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
+/// Encode `img` as a grayscale PNG (8-bit gray, with an alpha channel
+/// only when a pixel is not opaque): a grayscale picture, whose colour
+/// mode the status line reads from the PNG (#1777). Each pixel's level
+/// is its luminance, `0.299 R + 0.587 G + 0.114 B`.
+pub fn encode_gray(img: &RgbaImage) -> Option<Vec<u8>> {
+    let level = |p: &Rgba<u8>| {
+        (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    let mut buf = std::io::Cursor::new(Vec::new());
+    if img.pixels().all(|p| p[3] == 255) {
+        let gray = image::GrayImage::from_fn(img.width(), img.height(), |x, y| {
+            image::Luma([level(img.get_pixel(x, y))])
+        });
+        gray.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    } else {
+        let gray = image::GrayAlphaImage::from_fn(img.width(), img.height(), |x, y| {
+            let p = img.get_pixel(x, y);
+            image::LumaA([level(p), p[3]])
+        });
+        gray.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    }
+    Some(buf.into_inner())
+}
+
+/// Whether `png` is a grayscale PNG (colour type 0 or 4 in its header):
+/// a bitmap in the Grayscale colour mode (#1777).
+pub fn png_is_gray(png: &[u8]) -> bool {
+    png.get(..8) == Some(b"\x89PNG\r\n\x1a\n".as_slice())
+        && png.get(12..16) == Some(b"IHDR".as_slice())
+        && matches!(png.get(25), Some(0 | 4))
+}
+
 /// Resample to a new pixel size (Image > Resample).
 pub fn resample(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     image::imageops::resize(

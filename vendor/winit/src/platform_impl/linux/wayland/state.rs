@@ -12,6 +12,9 @@ use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 
 use sctk::compositor::{CompositorHandler, CompositorState};
+use sctk::data_device_manager::data_offer::DragOffer;
+use sctk::data_device_manager::DataDeviceManagerState;
+use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
 use sctk::output::{OutputHandler, OutputState};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::ThemedPointer;
@@ -23,6 +26,7 @@ use sctk::shm::slot::SlotPool;
 use sctk::shm::{Shm, ShmHandler};
 use sctk::subcompositor::SubcompositorState;
 
+use crate::file_drop::FileDrag;
 use crate::platform_impl::wayland::event_loop::sink::EventSink;
 use crate::platform_impl::wayland::output::MonitorHandle;
 use crate::platform_impl::wayland::seat::{
@@ -112,6 +116,20 @@ pub struct WinitState {
     /// Loop handle to re-register event sources, such as keyboard repeat.
     pub loop_handle: LoopHandle<'static, Self>,
 
+    /// TraceDraw: the data device manager, for files dragged over a window
+    /// (#1142, `data_device.rs`).
+    pub data_device_manager: Option<DataDeviceManagerState>,
+
+    /// TraceDraw: the drag of files over the windows.
+    pub file_drag: FileDrag<WindowId>,
+
+    /// TraceDraw: the offer of the files dragged over a window, kept until
+    /// a drop is read.
+    pub file_drop_offer: Option<DragOffer>,
+
+    /// TraceDraw: the action the compositor chose for that offer.
+    pub file_drop_action: DndAction,
+
     /// Whether we have dispatched events to the user thus we want to
     /// send `AboutToWait` and normally wakeup the user.
     pub dispatched_events: bool,
@@ -143,9 +161,22 @@ impl WinitState {
 
         let seat_state = SeatState::new(globals, queue_handle);
 
+        // TraceDraw: a data device for each seat, for files dragged over
+        // a window (#1142).
+        let data_device_manager = match DataDeviceManagerState::bind(globals, queue_handle) {
+            Ok(manager) => Some(manager),
+            Err(e) => {
+                tracing::warn!("Data device manager not available, no file drops: {e:?}");
+                None
+            },
+        };
+
         let mut seats = AHashMap::default();
         for seat in seat_state.seats() {
-            seats.insert(seat.id(), WinitSeatState::new());
+            let mut seat_data = WinitSeatState::new();
+            seat_data.data_device =
+                data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+            seats.insert(seat.id(), seat_data);
         }
 
         let (viewporter_state, fractional_scaling_manager) =
@@ -190,6 +221,10 @@ impl WinitState {
             monitors: Arc::new(Mutex::new(monitors)),
             events_sink: EventSink::new(),
             loop_handle,
+            data_device_manager,
+            file_drag: FileDrag::new(),
+            file_drop_offer: None,
+            file_drop_action: DndAction::empty(),
             // Make it true by default.
             dispatched_events: true,
         })

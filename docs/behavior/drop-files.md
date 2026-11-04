@@ -19,8 +19,9 @@ Where the files are let go decides for every file let go together:
 
 The place decides the same way on every platform (#1142). A system drag
 sends the window no pointer moves, so: on Windows the cursor's place is
-read from the system; on Linux (X11) the patched windowing layer turns
-each XDND position message into a cursor move over the window, and on
+read from the system; on Linux the patched windowing layer turns each
+XDND position message (X11), or each enter and motion of the Wayland
+data device, into a cursor move over the window, and on
 macOS each `draggingEntered:`, `draggingUpdated:` and
 `performDragOperation:`; in the browser the patched eframe turns each
 `dragover` and the `drop` into a pointer move (`vendor/README.md`).
@@ -28,8 +29,16 @@ Should the place still be missing, a picture is imported into the drawing
 shown, and a drawing, which could go either way (`.cdr`, `.svg`,
 `.tdraw`...), is asked about in a small window in the middle: "Import into
 the drawing", "Open in its own tab" or Cancel (Esc).
-Native Wayland windows get no file drops from winit 0.30 at all; a
-Wayland desktop runs TraceDraw through XWayland for them.
+On a native Wayland window (#1142) the patched windowing layer takes
+the drag itself, which winit 0.30 did not (no file drop reached the
+window, and the file manager showed the drag as refused; `--x11` was the
+way round it): a drag offering a list of files (`text/uri-list`) is
+accepted as a copy and its list read at once, so the hint knows the
+files while they hover; the drop then gives the files, and the window
+tells the file manager the copy is done. Over the window's frame (its
+title bar drawn by TraceDraw's windowing layer) the place counts as
+outside the drawing window, so a drawing opens. Only local `file:`
+addresses are taken.
 
 Several files dropped on the Welcome Screen open side by side, one tab
 each. Imports go in the middle of the view, not under the pointer;
@@ -67,3 +76,13 @@ dialog, and opened or imported on a later frame.
   imported, opened or left as answered; without a drawing the `.svg` opens in a new tab and the `.png`
   gets a new drawing with the picture centred on the page; two files on
   the Welcome Screen give two tabs; an unknown file only sets the status.
+- `winit_file_drop::tests` (the Wayland part of the patched windowing
+  layer, `vendor/winit/src/file_drop.rs`): file manager lists with
+  escapes, comments, other hosts and schemes; hover then drop sends the
+  place and the files; a drop before the list is read waits for it; a
+  drag that leaves cancels the hovered files; a list read empty is read
+  again at the drop. Checked by hand on a headless Wayland compositor
+  (2026-11-03): a file dragged from another program's window opened on
+  the Welcome Screen, was imported over the drawing window ("Drop to
+  import into the drawing" while it hovered), opened over the dockers
+  ("Drop to open"), and a drag taken back out left nothing behind.

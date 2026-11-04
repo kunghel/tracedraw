@@ -220,6 +220,9 @@ pub(crate) mod opened_files;
 // (vendor/README.md).
 #[cfg(macos_platform)]
 pub(crate) mod quit_request;
+// TraceDraw: files dragged over a window on Wayland (vendor/README.md).
+#[cfg(wayland_platform)]
+pub(crate) mod file_drop;
 mod platform_impl;
 mod utils;
 pub mod window;

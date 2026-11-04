@@ -160,7 +160,7 @@ fn length_field(
 /// lines joined in rounded corners (#641).
 fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
     let button = ui
-        .button(format!("{} \u{25BE}", tr("dimension.options")))
+        .button(format!("{} \u{23F7}", tr("dimension.options")))
         .rich_tip(tr("dimension.options"));
     // The menu stays open while its fields are typed in and stepped; a
     // click outside closes it.

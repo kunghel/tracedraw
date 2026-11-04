@@ -976,11 +976,11 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                         };
                         let up = ui.put(
                             a,
-                            egui::Button::new(if vertical { "▲" } else { "▶" }).small(),
+                            egui::Button::new(if vertical { "\u{23F6}" } else { "▶" }).small(),
                         );
                         let down = ui.put(
                             b,
-                            egui::Button::new(if vertical { "▼" } else { "◀" }).small(),
+                            egui::Button::new(if vertical { "\u{23F7}" } else { "◀" }).small(),
                         );
                         let step = c.small_change.max(1);
                         if up.clicked() {
@@ -1194,7 +1194,7 @@ fn combo_box(
         let edit_rect = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 18.0, rect.bottom()));
         let r = text_box(ui, form, c, edit_rect, acts);
         let button = Rect::from_min_max(Pos2::new(rect.right() - 18.0, rect.top()), rect.max);
-        let b = ui.put(button, egui::Button::new("▾").small());
+        let b = ui.put(button, egui::Button::new("\u{23F7}").small());
         let popup = egui::Id::new(("macro_combo_list", id, name));
         if b.clicked() {
             ui.ctx().data_mut(|d| {
@@ -1560,7 +1560,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
                                             && c.2.as_deref() == Some(n.as_str())
                                     });
                                     let r = ui
-                                        .add(egui::Button::selectable(on, format!("▸ {n}")))
+                                        .add(egui::Button::selectable(on, format!("\u{23F5} {n}")))
                                         .rich_tip_with(|| {
                                             format!("{n}\n{}", tr("macros.macro_desc"))
                                         });

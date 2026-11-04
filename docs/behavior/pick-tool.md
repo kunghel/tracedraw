@@ -22,7 +22,7 @@
 | Right click during a marquee or a Freehand Pick lasso | ignored: the frame goes on with the pointer while the left button is held and selects when it goes up, whichever button is released first or both in one frame; no context menu or drop menu opens (#1015, `pick_drag_tests::a_right_press_during_a_selection_box_does_not_leave_it_frozen`) |
 | Esc during a move, scale, rotation or skew | cancels it; nothing changes |
 | Arrows | nudge by the nudge distance (2.54 mm default); Shift by the super nudge distance (5.08 mm), Ctrl by the micro nudge distance (0.254 mm); all three in Document Setup > Rulers; with guidelines selected and no object, the guidelines move |
-| Tab / Shift+Tab | cycle selection in stacking order |
+| Tab / Shift+Tab | cycle selection in stacking order, press after press: with nothing of the window focused, Tab is the drawing's and never moves the focus into the bars (#1667, `pick_drag_tests::tab_goes_from_object_to_object_press_after_press`) |
 | + (also on the numeric keypad) | duplicate the selection in place (no offset), the copies selected, one undo step |
 | Double-click | Shape tool on a curve; on text, the Text tool editing that text with the caret at the end |
 | Esc | deselect |

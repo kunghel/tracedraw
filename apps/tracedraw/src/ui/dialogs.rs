@@ -3409,8 +3409,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
             }
             ui.horizontal(|ui| {
                 let portrait = h >= w;
-                if ui
-                    .add(egui::Button::new("\u{25af}").selected(portrait))
+                if page_button(ui, true, portrait)
                     .rich_tip(crate::ui::tips::pair(
                         "options.portrait",
                         "options.portrait_tip",
@@ -3421,8 +3420,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
                     std::mem::swap(&mut w, &mut h);
                     changed = true;
                 }
-                if ui
-                    .add(egui::Button::new("\u{25ad}").selected(!portrait))
+                if page_button(ui, false, !portrait)
                     .rich_tip(crate::ui::tips::pair(
                         "options.landscape",
                         "options.landscape_tip",
@@ -3836,7 +3834,7 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
         }
         let chosen = !st.preset.is_empty();
         if ui
-            .add_enabled(chosen, egui::Button::new("\u{270e}").small())
+            .add_enabled(chosen, egui::Button::new("\u{270F}").small())
             .rich_tip(crate::ui::tips::keyed("dialog.export_preset_rename"))
             .clicked()
         {
@@ -7355,6 +7353,28 @@ fn selection_print_size(app: &App) -> Option<Size> {
         *c.borrow_mut() = Some((key, size));
         size
     })
+}
+
+/// A button showing a page upright (`tall`) or on its side, drawn as a
+/// rectangle: no bundled font has the rectangle characters (#1780).
+fn page_button(ui: &mut Ui, tall: bool, selected: bool) -> egui::Response {
+    let resp = ui.add(
+        egui::Button::new("")
+            .min_size(egui::vec2(24.0, 20.0))
+            .selected(selected),
+    );
+    let size = if tall {
+        egui::vec2(8.0, 12.0)
+    } else {
+        egui::vec2(12.0, 8.0)
+    };
+    ui.painter().rect_stroke(
+        egui::Rect::from_center_size(resp.rect.center(), size),
+        1.0,
+        egui::Stroke::new(1.2, ui.style().interact(&resp).fg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    resp
 }
 
 #[cfg(test)]

@@ -63,7 +63,7 @@ comando ao lado dele, e você pode acrescentar os seus; veja
 | <kbd>Alt+Enter</kbd> | Propriedades |
 | <kbd>Ctrl+Shift+A</kbd> | Copiar propriedades de |
 | <kbd>Alt+F7</kbd>, <kbd>Alt+F8</kbd>, <kbd>Alt+F9</kbd>, <kbd>Alt+F10</kbd> | Transformações: posição, girar, escala e espelhar, tamanho |
-| <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd> | Texto, Glifos |
+| <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd>, <kbd>Ctrl+F12</kbd> | Texto, Glifos, Fontes |
 | <kbd>F11</kbd>, <kbd>Shift+F11</kbd> | preenchimento (Propriedades), Cor |
 | <kbd>F12</kbd>, <kbd>Shift+F12</kbd> | contorno (Propriedades), cor do contorno |
 | <kbd>Ctrl+F7</kbd>, <kbd>Ctrl+F8</kbd>, <kbd>Ctrl+F9</kbd>, <kbd>Ctrl+F10</kbd> | Envelope, Mistura, Contorno concêntrico, Extrusão |
@@ -81,7 +81,6 @@ painéis.
 | <kbd>Alt+F12</kbd> | alinhar à linha de base |
 | <kbd>Ctrl+B</kbd>, <kbd>Ctrl+I</kbd>, <kbd>Ctrl+U</kbd> | negrito, itálico, sublinhado (durante a edição) |
 | <kbd>Ctrl+8</kbd>, <kbd>Ctrl+2</kbd> | texto maior e menor |
-| <kbd>Ctrl+F12</kbd> | verificação ortográfica |
 | <kbd>Shift+F3</kbd> | mudar maiúsculas e minúsculas |
 | <kbd>Ctrl+L</kbd>, <kbd>Ctrl+E</kbd>, <kbd>Ctrl+R</kbd> | alinhar à esquerda, ao centro, à direita (durante a edição) |
 | <kbd>Ctrl+J</kbd>, <kbd>Ctrl+H</kbd>, <kbd>Ctrl+N</kbd> | justificado, justificado forçado, sem alinhamento (durante a edição) |

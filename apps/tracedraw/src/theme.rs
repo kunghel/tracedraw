@@ -1101,3 +1101,150 @@ mod shadow_tests {
         assert_eq!(shadow(s), s);
     }
 }
+
+#[cfg(test)]
+mod glyph_tests {
+    use super::*;
+
+    /// The symbol characters (`U+2010` to `U+2BFF`: punctuation, arrows,
+    /// shapes, dingbats; and the pictographs from `U+1F000`) in the string
+    /// and character literals of `src`, outside comments and the test
+    /// module, with their line numbers. Letters of other scripts (language
+    /// names, sample text) are left to the system fonts.
+    fn symbols_in(src: &str) -> Vec<(usize, char)> {
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let symbol =
+            |c: char| matches!(c as u32, 0x2010..=0x2027 | 0x2030..=0x2BFF | 0x1F000..=0x1FAFF);
+        let mut out = Vec::new();
+        for (n, line) in code.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let line = line.split(" // ").next().unwrap_or(line);
+            // Literal text: what lies between quotes, escapes decoded.
+            let mut chars = line.chars().peekable();
+            let mut quote: Option<char> = None;
+            while let Some(c) = chars.next() {
+                match quote {
+                    None if c == '"' => quote = Some('"'),
+                    // A character literal, not a lifetime: 'x' or '\u{..}'.
+                    None if c == '\'' => {
+                        let rest: String = chars.clone().take(12).collect();
+                        if rest.chars().nth(1) == Some('\'') || rest.starts_with("\\u{") {
+                            quote = Some('\'');
+                        }
+                    }
+                    None => {}
+                    Some(q) if c == q => quote = None,
+                    Some(_) if c == '\\' => {
+                        if chars.peek() == Some(&'u') {
+                            chars.next();
+                            let hex: String = chars
+                                .by_ref()
+                                .skip_while(|c| *c == '{')
+                                .take_while(|c| *c != '}')
+                                .collect();
+                            if let Some(c) = u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .filter(|c| symbol(*c))
+                            {
+                                out.push((n + 1, c));
+                            }
+                        } else {
+                            chars.next();
+                        }
+                    }
+                    Some(_) if symbol(c) => out.push((n + 1, c)),
+                    Some(_) => {}
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn symbols_are_found_in_literals_only() {
+        let src = "// \u{25b4} in a comment\nlet a = \"x \\u{25BE}\"; let b = '\u{25b4}';\nfn f<'a>(x: &'a str) {} // \u{2192}\n";
+        assert_eq!(symbols_in(src), [(2, '\u{25BE}'), (2, '\u{25B4}')]);
+    }
+
+    /// Every symbol the interface writes is in the bundled fonts (the UI
+    /// font and egui's own), so no system font is needed to show it: the
+    /// panels' and toolbox's scroll arrows were U+25B4 and U+25BE, which
+    /// none of them has, and Windows showed empty boxes (#1780).
+    #[test]
+    fn every_interface_symbol_is_in_the_bundled_fonts() {
+        // Not interface text: the bullet characters Bullets puts into the
+        // drawing's text (its fonts draw them), and the quote marks a
+        // printer name is escaped for.
+        let in_the_drawing: &[(&str, char)] = &[
+            ("ui/dialogs.rs", '\u{25E6}'),
+            ("ui/dialogs.rs", '\u{25AA}'),
+            ("ui/dialogs.rs", '\u{2713}'),
+            ("ui/dialogs.rs", '\u{27A4}'),
+            ("printers.rs", '\u{2018}'),
+            ("printers.rs", '\u{2019}'),
+            ("printers.rs", '\u{201A}'),
+            ("printers.rs", '\u{201B}'),
+        ];
+        // Each family's faces, read from their character maps (egui's own
+        // `has_glyph` calls every character of the face holding its
+        // replacement mark missing).
+        let defs = bundled_font_definitions();
+        let families = [
+            egui::FontFamily::Proportional,
+            egui::FontFamily::Name(BOLD.into()),
+        ];
+        let has = |family: &egui::FontFamily, c: char| {
+            defs.families.get(family).is_some_and(|names| {
+                names.iter().any(|n| {
+                    defs.font_data.get(n).is_some_and(|d| {
+                        ttf_parser::Face::parse(&d.font, d.index)
+                            .is_ok_and(|f| f.glyph_index(c).is_some())
+                    })
+                })
+            })
+        };
+        assert!(has(&families[0], 'A') && !has(&families[0], '\u{25B4}'));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.clone()];
+        let mut missing = Vec::new();
+        let mut seen = 0;
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                for e in std::fs::read_dir(&path).expect("source folder").flatten() {
+                    files.push(e.path());
+                }
+                continue;
+            }
+            let name = path
+                .strip_prefix(&root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if !name.ends_with(".rs") || name.ends_with("tests.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("source file");
+            for (line, c) in symbols_in(&src) {
+                seen += 1;
+                if in_the_drawing.contains(&(name.as_str(), c)) {
+                    continue;
+                }
+                for f in &families {
+                    if !has(f, c) {
+                        missing.push(format!("{name}:{line}: U+{:04X} {c} ({f:?})", c as u32));
+                    }
+                }
+            }
+        }
+        assert!(seen > 20, "the scan found the interface's symbols");
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "symbols no bundled font has:\n{}",
+            missing.join("\n")
+        );
+    }
+}

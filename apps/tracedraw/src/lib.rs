@@ -229,6 +229,11 @@ mod winit_opened_files;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/quit_request.rs"]
 mod winit_quit_request;
+// Files dragged over a window on Wayland, of the same copy (#1142).
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/file_drop.rs"]
+mod winit_file_drop;
 mod workspace_file;
 
 /// The desktop program: the window, with the command line's files and

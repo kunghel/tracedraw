@@ -191,7 +191,7 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
         if ci(ui, close, "menu.text.edit_text", "Ctrl+Shift+T", true) {
             app.open_edit_text_dialog();
         }
-        if ci(ui, close, "menu.text.convert", "Ctrl+F8", true) {
+        if ci(ui, close, "menu.text.convert", "", true) {
             app.toggle_text_kind();
         }
         if many

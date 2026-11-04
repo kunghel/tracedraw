@@ -1126,9 +1126,9 @@ fn edit_page(app: &mut App, ui: &mut Ui) {
 
 fn shape_label(s: NodeShape) -> String {
     match s {
-        NodeShape::Square => "\u{25A1}".into(),
+        NodeShape::Square => "\u{25FB}".into(),
         NodeShape::Circle => "\u{25CB}".into(),
-        NodeShape::Diamond => "\u{25C7}".into(),
+        NodeShape::Diamond => "\u{2666}".into(),
     }
 }
 
@@ -5008,7 +5008,8 @@ mod tests {
     }
 
     /// No two commands share a built-in shortcut in one context: every
-    /// menu command's and every tool's default keys are their own. The
+    /// menu command's, every tool's and every panel's default keys are
+    /// their own (#1779). The
     /// one documented split is E, Align Centers Horizontally with a
     /// selection and the Roughen tool without one (`shortcuts.md`, Align
     /// keys and tool keys) (#1595).
@@ -5026,6 +5027,37 @@ mod tests {
                 .entry(crate::shortcuts::format(m, k))
                 .or_default()
                 .push(c.id.clone());
+        }
+        // The panels' keys too (Window > Panels): the panel takes its key,
+        // so a menu command showing it never ran (Spell Check showed the
+        // Fonts panel's Ctrl+F12, #1779). A menu row that opens the panel
+        // itself is the panel.
+        use crate::app::DockerTab;
+        let opens_panel = |id: &str, tab: DockerTab| {
+            [
+                ("menu.object.properties", DockerTab::Properties),
+                ("menu.text.text_docker", DockerTab::Text),
+                ("menu.text.glyphs", DockerTab::Glyphs),
+                ("menu.edit.find_and_replace", DockerTab::FindReplace),
+                ("menu.edit.step_and_repeat", DockerTab::StepAndRepeat),
+                ("menu.object.tf_position", DockerTab::Transformations),
+                ("menu.object.symbol_manager", DockerTab::Symbols),
+                ("menu.effects.envelope", DockerTab::Envelope),
+                ("menu.effects.contour", DockerTab::Contour),
+                ("menu.effects.lens", DockerTab::Lens),
+            ]
+            .contains(&(id, tab))
+        };
+        for tab in DockerTab::ALL {
+            let keys = tab.shortcut();
+            if keys.is_empty() {
+                continue;
+            }
+            let (m, k) = crate::shortcuts::parse(keys)
+                .unwrap_or_else(|| panic!("{tab:?}: {keys} is no shortcut"));
+            let ids = holders.entry(crate::shortcuts::format(m, k)).or_default();
+            ids.retain(|id| !opens_panel(id, tab));
+            ids.push(format!("panel {tab:?}"));
         }
         let documented_split = |keys: &str, ids: &[String]| {
             keys == "E" && ids == ["menu.object.align_centers_h", "roughen"]

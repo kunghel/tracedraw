@@ -269,6 +269,39 @@ pub fn root(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// Tab with nothing of the window focused belongs to the drawing: it
+/// types a tab in the text being edited, goes to the next table cell,
+/// object or node. egui would also give the focus to the window's first
+/// widget (a field of the bars), which then took the keys typed after
+/// the tab (#1667). That move is called off before any widget is drawn.
+/// A dialog keeps its own Tab order (`chrome::keep_tab_in`), and a
+/// focused field passes the focus on as usual.
+fn keep_tab_on_the_drawing(app: &App, ctx: &egui::Context) {
+    if app.show_welcome
+        || !matches!(app.dialog, crate::ui::dialogs::Dialog::None)
+        || app.macros.modal()
+        || ctx.memory(|m| m.focused()).is_some()
+    {
+        return;
+    }
+    let tab = ctx.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.any() || modifiers.shift_only()
+            )
+        })
+    });
+    if tab {
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
+}
+
 fn root_frame(app: &mut App, ui: &mut Ui) {
     // The rest of a notch a number field took scrolls nothing (#783).
     crate::ui::field::hold_taken_wheel(ui.ctx());
@@ -300,6 +333,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     }
     // Clones take up what the last frame changed on their masters.
     app.sync_object_clones();
+    keep_tab_on_the_drawing(app, &ctx);
     app.keyboard(&ctx);
     // A menu command run by a shortcut of the user's.
     if let Some(cmd) = app.pending_command.take() {

@@ -6,7 +6,7 @@ Web-safe Text.
 
 ## Proofing dialog
 
-Text > Proofing > Spell Check (Ctrl+F12), Grammar and Thesaurus open
+Text > Proofing > Spell Check, Grammar and Thesaurus open
 one dialog on that tab: Spell Checker, Grammar and Thesaurus, with "?"
 (the behaviour pages) and Close at the bottom. The checkers look at every
 text object of the page (Check: Document) or the selected ones (Check:

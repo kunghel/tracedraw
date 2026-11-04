@@ -2055,12 +2055,22 @@ impl App {
         else {
             return;
         };
+        // The colour mode asked for (#1777): a grayscale picture is stored
+        // as a grayscale PNG; a CMYK one shows its pixels as the inks
+        // print them and is marked CMYK, as Image > Mode > CMYK does
+        // (#1254).
+        use crate::bitmap_modes::ConvertMode;
         let png = match o.mode {
-            crate::bitmap_modes::ConvertMode::Rgb | crate::bitmap_modes::ConvertMode::Cmyk => png,
-            _ => match crate::bitmap_fx::decode(&png)
-                .map(|img| crate::bitmap_modes::convert_pixels(&img, o))
-                .and_then(|img| crate::bitmap_fx::encode(&img))
-            {
+            ConvertMode::Rgb => png,
+            mode => match crate::bitmap_fx::decode(&png).and_then(|img| match mode {
+                ConvertMode::Cmyk => {
+                    crate::bitmap_fx::encode(&crate::bitmap_fx::through_cmyk(&img))
+                }
+                ConvertMode::Grayscale => {
+                    crate::bitmap_fx::encode_gray(&crate::bitmap_modes::convert_pixels(&img, o))
+                }
+                _ => crate::bitmap_fx::encode(&crate::bitmap_modes::convert_pixels(&img, o)),
+            }) {
                 Some(p) => p,
                 None => return,
             },
@@ -2079,6 +2089,7 @@ impl App {
         bitmap.fill = Fill::None;
         bitmap.stroke = None;
         bitmap.overprint_fill = o.overprint_black;
+        bitmap.cmyk_bitmap = o.mode == ConvertMode::Cmyk;
         let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
         let cmds = vec![
             Command::DeleteShapes { shapes: ids },
@@ -5013,6 +5024,76 @@ mod tests {
         assert_eq!(o.bytes(10, 3), 6);
         assert_eq!(ConvertOptions::default().bytes(10, 3), 90);
         assert!(!ConvertMode::Rgb.can_dither() && ConvertMode::Paletted.can_dither());
+    }
+
+    /// #1777: Grayscale gives a grayscale picture and CMYK a CMYK one whose
+    /// pixels show as the inks print them; RGB stays an RGB picture.
+    #[test]
+    fn convert_to_bitmap_gives_the_colour_mode_asked_for() {
+        use crate::bitmap_modes::{ConvertMode, ConvertOptions};
+        let convert = |mode| {
+            let mut app = App::headless();
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rectangle");
+            // A green no ink mix can print, so the CMYK pixels differ.
+            app.run(Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Solid(Color::rgb8(0, 255, 0)),
+            });
+            app.select(vec![id]);
+            app.convert_to_bitmap_with(&ConvertOptions {
+                dpi: 72.0,
+                mode,
+                transparent: false,
+                ..Default::default()
+            });
+            let s = app.selected_shapes().into_iter().next().expect("bitmap");
+            let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                panic!("not a bitmap");
+            };
+            let info = crate::ui::status::object_info(&app);
+            (png.to_vec(), s.cmyk_bitmap, info)
+        };
+        let middle = |png: &[u8]| {
+            let img = crate::bitmap_fx::decode(png).expect("png");
+            *img.get_pixel(img.width() / 2, img.height() / 2)
+        };
+        let (rgb, rgb_cmyk, rgb_info) = convert(ConvertMode::Rgb);
+        assert!(!rgb_cmyk && !crate::bitmap_fx::png_is_gray(&rgb));
+        assert!(rgb_info.contains(&tr("convert_colors.rgb")), "{rgb_info}");
+        let (gray, gray_cmyk, gray_info) = convert(ConvertMode::Grayscale);
+        assert!(crate::bitmap_fx::png_is_gray(&gray), "a grayscale PNG");
+        assert!(!gray_cmyk);
+        assert!(
+            gray_info.contains(&tr("convert_colors.gray")),
+            "{gray_info}"
+        );
+        let g = middle(&gray);
+        assert!(g[0] == g[1] && g[1] == g[2] && g[3] == 255);
+        // 0.587 x 255 for the green.
+        assert!((g[0] as i32 - 150).abs() <= 2, "{g:?}");
+        // The exporters' decoder reads it too.
+        let pm = tiny_skia::Pixmap::decode_png(&gray).expect("decodes");
+        assert_eq!(
+            pm.pixel(pm.width() / 2, pm.height() / 2).map(|p| p.red()),
+            Some(g[0])
+        );
+        let (cmyk, cmyk_flag, cmyk_info) = convert(ConvertMode::Cmyk);
+        assert!(cmyk_flag, "marked as a CMYK picture");
+        assert!(
+            cmyk_info.contains(&tr("convert_colors.cmyk")),
+            "{cmyk_info}"
+        );
+        let (c, r) = (middle(&cmyk), middle(&rgb));
+        assert_eq!(r, image::Rgba([0, 255, 0, 255]));
+        assert_ne!(c, r, "the pixels go through the inks");
+        let expected = crate::bitmap_fx::through_cmyk(&image::RgbaImage::from_pixel(1, 1, r));
+        assert_eq!(c, *expected.get_pixel(0, 0));
     }
 
     #[test]

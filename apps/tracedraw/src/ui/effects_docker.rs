@@ -89,14 +89,14 @@ pub fn effects_docker(app: &mut App, ui: &mut Ui) {
                     change = Some(Change::Remove(i));
                 }
                 if ui
-                    .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").small())
+                    .add_enabled(i + 1 < n, egui::Button::new("\u{23F7}").small())
                     .rich_tip(tr("effects.down"))
                     .clicked()
                 {
                     change = Some(Change::Down(i));
                 }
                 if ui
-                    .add_enabled(i > 0, egui::Button::new("\u{25B2}").small())
+                    .add_enabled(i > 0, egui::Button::new("\u{23F6}").small())
                     .rich_tip(tr("effects.up"))
                     .clicked()
                 {

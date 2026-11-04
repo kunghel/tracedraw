@@ -58,7 +58,7 @@ pub fn ai_generate(app: &mut App, ui: &mut Ui) {
             (Mode::Create, "\u{1F5BC}", "aigen.mode_create"),
             (Mode::Remix, "\u{1F504}", "aigen.mode_remix"),
             (Mode::Vector, "\u{2712}", "aigen.mode_vector"),
-            (Mode::Draw, "\u{270D}", "aigen.mode_draw"),
+            (Mode::Draw, "\u{270F}", "aigen.mode_draw"),
         ] {
             let on = app.ai_image.mode == mode && !app.ai_image.info;
             if ui
@@ -301,7 +301,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
     let folded = app.ai_image.folded;
     ui.vertical_centered(|ui| {
         if ui
-            .small_button(if folded { "\u{2304}" } else { "\u{2303}" })
+            .small_button(if folded { "\u{23F7}" } else { "\u{23F6}" })
             .rich_tip(tr(if folded { "aigen.unfold" } else { "aigen.fold" }))
             .clicked()
         {
@@ -416,7 +416,7 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
         ui.horizontal(|ui| {
             ui.add_space((ui.available_width() - 64.0).max(0.0) / 2.0);
             if ui
-                .small_button("\u{2B1A}")
+                .small_button("\u{2B1C}")
                 .rich_tip(tr("aigen.use_selection"))
                 .clicked()
             {
@@ -521,7 +521,7 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
             let w = (ui.available_width() - 90.0).max(80.0);
             ui.add_enabled(
                 false,
-                egui::Button::new(format!("\u{2726} {label}")).min_size(Vec2::new(w, 30.0)),
+                egui::Button::new(format!("\u{2728} {label}")).min_size(Vec2::new(w, 30.0)),
             );
             ui.spinner();
             if ui
@@ -540,7 +540,7 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
                 _ => !app.ai_image.prompt.trim().is_empty(),
             };
         let button =
-            egui::Button::new(RichText::new(format!("\u{2726} {}", tr("aigen.generate"))).strong())
+            egui::Button::new(RichText::new(format!("\u{2728} {}", tr("aigen.generate"))).strong())
                 .min_size(Vec2::new(ui.available_width(), 30.0));
         if ui.add_enabled(can, button).clicked() {
             app.ai_generate();

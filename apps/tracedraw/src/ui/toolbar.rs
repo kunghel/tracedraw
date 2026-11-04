@@ -911,7 +911,7 @@ fn ai_button(app: &mut App, ui: &mut Ui) {
     p.text(
         egui::pos2(rect.left() + 14.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        "\u{2726}",
+        "\u{2728}",
         egui::FontId::proportional(15.0),
         Tokens::ACCENT,
     );
@@ -1373,7 +1373,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                     app.eraser_width = app.units.to_mm(w).max(0.01);
                 }
                 if ui
-                    .add(egui::Button::new("\u{25cf}").selected(!app.eraser_square))
+                    .add(egui::Button::new("\u{23FA}").selected(!app.eraser_square))
                     .rich_tip(tr("toolbar.eraser_round"))
                     .clicked()
                 {
@@ -1959,7 +1959,7 @@ fn bitmap_properties(app: &mut App, ui: &mut Ui) {
     if ui
         .add_enabled(
             ready && !busy,
-            egui::Button::new(format!("\u{2726} {}", tr("toolbar.remove_background"))),
+            egui::Button::new(format!("\u{2728} {}", tr("toolbar.remove_background"))),
         )
         .rich_tip(tip.clone())
         .rich_disabled_tip(tip)
@@ -3121,7 +3121,7 @@ fn common_shapes_bar(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let thumb = shape_thumbnail(ui, app.common_shape, false, true);
             let name = ui.add(
-                egui::Button::new(format!("{} \u{25BE}", app.common_shape.name())).frame(false),
+                egui::Button::new(format!("{} \u{23F7}", app.common_shape.name())).frame(false),
             );
             thumb.union(name)
         })

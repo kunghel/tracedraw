@@ -92,7 +92,7 @@ fn paint_readout(painter: &egui::Painter, rect: Rect, hover: Option<Pos2>, curve
     );
     if let Some(p) = hover {
         let (x, _) = to_curve(rect, p);
-        let text = format!("{} \u{2192} {}", x.round(), curve.eval(x).round());
+        let text = format!("{} -> {}", x.round(), curve.eval(x).round());
         painter.text(
             rect.left_top() + Vec2::new(4.0, 2.0),
             egui::Align2::LEFT_TOP,

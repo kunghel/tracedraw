@@ -89,6 +89,15 @@ original, #471). Checks:
 Panel shortcuts toggle: pressing one when its panel is already the
 active tab hides the panel column.
 
+Each key has one command. Ctrl+F12 opens the Fonts panel and Ctrl+F8
+the Blend panel, so Text > Proofing > Spell Check and Text > Convert
+have no built-in key (their menu rows showed Ctrl+F12 and Ctrl+F8,
+which opened those panels instead, #1779); Options > Customization >
+Commands gives them one. Check:
+`ui::options::tests::no_two_default_commands_share_a_shortcut` (menu
+commands, tools and panels; a menu row that opens a panel shows that
+panel's key and counts as the panel).
+
 ## Align keys and tool keys
 
 With a selection, the plain letters L, R, T, B, E, C and P align it

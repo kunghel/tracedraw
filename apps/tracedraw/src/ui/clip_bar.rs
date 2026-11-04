@@ -111,7 +111,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                         ui.separator();
                         let resp = ui.add(
                             egui::Button::new(
-                                RichText::new(format!("{} \u{25BE}", tr("clip.fit_contents")))
+                                RichText::new(format!("{} \u{23F7}", tr("clip.fit_contents")))
                                     .color(Tokens::text()),
                             )
                             .frame(false),

@@ -57,6 +57,10 @@ pub struct WinitSeatState {
 
     /// Whether we have pending modifiers.
     modifiers_pending: bool,
+
+    /// TraceDraw: the seat's data device, for files dragged over a window
+    /// (#1142).
+    pub(crate) data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
 }
 
 impl WinitSeatState {
@@ -202,10 +206,14 @@ impl SeatHandler for WinitState {
     fn new_seat(
         &mut self,
         _connection: &Connection,
-        _queue_handle: &QueueHandle<Self>,
+        queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
     ) {
-        self.seats.insert(seat.id(), WinitSeatState::new());
+        let mut seat_state = WinitSeatState::new();
+        // TraceDraw: files dragged over a window (#1142).
+        seat_state.data_device =
+            self.data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+        self.seats.insert(seat.id(), seat_state);
     }
 
     fn remove_seat(

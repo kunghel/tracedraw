@@ -402,10 +402,54 @@ impl App {
                 }
             }
             if !skip(s.id) && self.shape_hit(s, p, tol) {
-                return Some(s.id);
+                return Some(self.blend_end_under_steps(s, p, tol, &skip).unwrap_or(s.id));
             }
         }
         None
+    }
+
+    /// A press on the steps of the blend that `s` starts, away from `s`
+    /// itself, over the blend's end object: that end object, as it is
+    /// what shows there. The steps are drawn by the start object above
+    /// the end and a text step is picked anywhere in its box, so the
+    /// steps of a text blend covered nearly all of the end text, and a
+    /// click on it picked the start text (the colour then went to the
+    /// other end, #1739). Elsewhere on the steps the start is picked.
+    /// The end object counts when it is a visible, unlocked object of
+    /// the page, as the objects a click picks.
+    fn blend_end_under_steps(
+        &self,
+        s: &tracedraw_core::Shape,
+        p: Point,
+        tol: f64,
+        skip: &impl Fn(ShapeId) -> bool,
+    ) -> Option<ShapeId> {
+        let end = s.effects.iter().find_map(|e| match e {
+            tracedraw_core::live::Effect::Blend {
+                end_id: Some(end), ..
+            } => Some(*end),
+            _ => None,
+        })?;
+        if skip(end) {
+            return None;
+        }
+        // The start object itself, without its steps, under the press:
+        // it stays the pick.
+        let mut own = s.clone();
+        own.effects
+            .retain(|e| !matches!(e, tracedraw_core::live::Effect::Blend { .. }));
+        if self.shape_hit(&own, p, tol) {
+            return None;
+        }
+        self.page_layers()
+            .into_iter()
+            .filter(|l| l.visible && !l.locked)
+            .flat_map(|l| l.shapes.iter())
+            .find(|e| e.id == end)
+            .filter(|e| {
+                !e.locked && e.visible && !self.outside_clip_edit(e.id) && self.shape_hit(e, p, tol)
+            })
+            .map(|e| e.id)
     }
 
     /// What a click at `p` picks: the topmost object there, or an object

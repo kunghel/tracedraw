@@ -93,6 +93,26 @@ pub fn column(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) -> f32 {
     strip(ui, id_salt, false, add)
 }
 
+/// The triangle of a column's scroll button, pointing up (`up`) or down,
+/// in the button's text colour: a shape, as no bundled font has the small
+/// triangles U+25B4 and U+25BE (#1780).
+fn arrow(ui: &Ui, resp: &egui::Response, up: bool) {
+    let color = ui.style().interact(resp).fg_stroke.color;
+    let c = resp.rect.center();
+    let (w, h) = (4.0, 3.0);
+    let (tip, base) = if up { (-h, h) } else { (h, -h) };
+    let points = vec![
+        Pos2::new(c.x, c.y + tip),
+        Pos2::new(c.x + w, c.y + base),
+        Pos2::new(c.x - w, c.y + base),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)) -> f32 {
     let id = ui.make_persistent_id(("bar_overflow", id_salt));
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -194,12 +214,9 @@ fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)
                 tr("bars.more_items"),
             )
         } else {
-            (
-                "\u{25b4}",
-                "\u{25be}",
-                tr("bars.earlier_items"),
-                tr("bars.more_items"),
-            )
+            // Drawn as triangles below: no bundled font has the small
+            // triangles, and Windows showed empty boxes (#1780).
+            ("", "", tr("bars.earlier_items"), tr("bars.more_items"))
         };
         let cross = if horizontal {
             used.height()
@@ -232,36 +249,34 @@ fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)
         };
         let can_back = offset > 0.5;
         let can_forward = offset < max_offset(content, room) - 0.5;
-        if ui
-            .put(
-                back_rect,
-                egui::Button::new(back).frame(false).sense(if can_back {
+        let back_resp = ui.put(
+            back_rect,
+            egui::Button::new(back).frame(false).sense(if can_back {
+                Sense::click()
+            } else {
+                Sense::hover()
+            }),
+        );
+        if !horizontal {
+            arrow(ui, &back_resp, true);
+        }
+        if back_resp.rich_tip(back_tip).clicked() && can_back {
+            offset = previous_offset(&items, room, offset);
+        }
+        let forward_resp = ui.put(
+            forward_rect,
+            egui::Button::new(forward)
+                .frame(false)
+                .sense(if can_forward {
                     Sense::click()
                 } else {
                     Sense::hover()
                 }),
-            )
-            .rich_tip(back_tip)
-            .clicked()
-            && can_back
-        {
-            offset = previous_offset(&items, room, offset);
+        );
+        if !horizontal {
+            arrow(ui, &forward_resp, false);
         }
-        if ui
-            .put(
-                forward_rect,
-                egui::Button::new(forward)
-                    .frame(false)
-                    .sense(if can_forward {
-                        Sense::click()
-                    } else {
-                        Sense::hover()
-                    }),
-            )
-            .rich_tip(forward_tip)
-            .clicked()
-            && can_forward
-        {
+        if forward_resp.rich_tip(forward_tip).clicked() && can_forward {
             offset = next_offset(&items, content, room, offset);
         }
         // The mouse wheel over the bar slides it.

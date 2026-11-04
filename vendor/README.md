@@ -156,6 +156,25 @@ change marked `TraceDraw:` in a comment.
     `draggingLocation` converted to the flipped view's points
     (`queue_drag_position`).
   - Windows keeps reading the cursor itself (`drop_files::drop_pointer`).
+- Change: files dropped on a native Wayland window (#1142). winit 0.30
+  binds no `wl_data_device`, so a Wayland window received no
+  `HoveredFile` or `DroppedFile` at all and the compositor showed the drag
+  as refused; only XWayland (`tracedraw --x11`) took drops. The copy binds
+  the data device manager and makes a data device for each seat
+  (`platform_impl/linux/wayland/state.rs`, `seat/mod.rs`), and
+  `platform_impl/linux/wayland/data_device.rs` handles the drag with the
+  toolkit's data device: an offer of `text/uri-list` over a window is
+  accepted as a copy and read at once through the event loop (never a
+  blocking read), so `HoveredFile` comes while the files hover; enter
+  and motion send a `CursorMoved` at the place, as the X11 and macOS
+  changes above do (over the window's frame, a surface of its own, a
+  place outside the window, so the drop counts as one on the frame);
+  the drop sends `DroppedFile` for each file once the list is read and
+  then finishes and destroys the offer; a drag that leaves without a
+  drop sends `HoveredFileCancelled`. What to send is decided by
+  `src/file_drop.rs` (the list's parsing, RFC 2483, and the drag's
+  states), which depends on nothing in the crate; TraceDraw's tests
+  include and run it (`winit_file_drop::tests`).
 - Change: macOS asks the program before the application quits (#1669).
   The default application menu's Quit item (Command+Q), the Dock icon's
   Quit and a log-out or shut-down send `terminate:`; winit 0.30's
@@ -177,5 +196,6 @@ change marked `TraceDraw:` in a comment.
   passes on the files macOS asks to open, and
   check that egui-winit still maps `Touch` forces the same way.
   drag positions (winit 0.31's `DragEntered`/`DragMoved`/`DragDropped`
-  carry them: move `drop_files` onto those), and check that egui-winit
+  carry them: move `drop_files` onto those) and file drops on Wayland,
+  and check that egui-winit
   still maps `Touch` forces the same way.

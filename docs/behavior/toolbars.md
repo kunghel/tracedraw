@@ -258,7 +258,9 @@ undo step, as in the number fields. With nothing selected
 The standard toolbar, the property bar, the text, zoom, transform and
 Time Tracker bars and the toolbox show what fits between a "«" button at
 their start and a "»" button at their end (up and down arrows for the
-toolbox on a side). "»" slides the bar so the first item not wholly in
+toolbox and the panel tabs on a side, drawn as small triangles: no
+bundled font has the triangle characters they were, and Windows showed
+empty boxes, #1780). "»" slides the bar so the first item not wholly in
 view comes first; "«" slides it back, cut between items, to the start;
 the mouse wheel over the bar (away from a number field) slides it too. The items stay as they are on
 the bar and work as there (the bar is drawn once). A bar that fits shows
@@ -489,6 +491,12 @@ bar move (`ui/bars.rs`).
 - `ui::overflow::tests::back_returns_between_items_and_to_the_start`
 - `ui::overflow::tests::areas_holding_items_are_not_cut_points`
 - `ui::overflow::tests::a_bar_that_fits_does_not_slide`
+- `theme::glyph_tests::every_interface_symbol_is_in_the_bundled_fonts`:
+  every symbol in the interface's string and character literals (U+2010
+  to U+2BFF and the pictographs) is in the bundled fonts (Selawik and
+  egui's own), so none needs a system font (#1780). Letters of other
+  scripts (language names) are left to the system fonts; the bullet
+  characters Bullets puts into the drawing's text are listed apart.
 - `ui::bars::tests::a_dropped_bar_docks_at_the_nearest_edge_or_floats`
 - `ui::bars::tests::bars_only_go_where_they_can`
 - `ui::bars::tests::the_drop_zone_leaves_the_status_bar_outside`

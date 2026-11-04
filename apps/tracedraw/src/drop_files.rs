@@ -5,11 +5,11 @@
 //! or document tabs, the file opens in a tab of its own like File >
 //! Open (#1142). Without a drawing each file opens like File > Open,
 //! and a picture gets a new drawing. The place is known on every
-//! platform: Windows is asked for the cursor; on Linux (X11), macOS and
-//! in the browser the windowing layer reports the pointer during the
-//! drag as a pointer move (`vendor/README.md`). Should it ever be
-//! missing, a file that could go either way is asked about. See
-//! `docs/behavior/drop-files.md`.
+//! platform: Windows is asked for the cursor; on Linux (X11 and
+//! Wayland), macOS and in the browser the windowing layer reports the
+//! pointer during the drag as a pointer move (`vendor/README.md`).
+//! Should it ever be missing, a file that could go either way is asked
+//! about. See `docs/behavior/drop-files.md`.
 
 use crate::app::{App, IMPORT_EXTENSIONS, OPEN_EXTENSIONS};
 use std::path::{Path, PathBuf};

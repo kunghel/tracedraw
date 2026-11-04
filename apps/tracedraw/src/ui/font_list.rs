@@ -415,8 +415,28 @@ pub fn font_list_live(
     font_list_with(app, ui, id_salt, current, width, true)
 }
 
-/// [`font_list_live`]; `wheel` lets the mouse wheel over the closed list
-/// pick the family before or after the current one (#665).
+/// The family after (`down`) or before `current` in `families`, the
+/// list's order, stopping at the ends; the first when `current` is not
+/// listed. None when that is `current` itself.
+fn step_family(families: &[String], current: &str, down: bool) -> Option<FontPick> {
+    let at = families.iter().position(|f| f == current);
+    let next = match (at, down) {
+        (Some(i), true) => (i + 1).min(families.len().saturating_sub(1)),
+        (Some(i), false) => i.saturating_sub(1),
+        (None, _) => 0,
+    };
+    families
+        .get(next)
+        .filter(|f| *f != current)
+        .map(|f| FontPick {
+            family: f.clone(),
+            style: None,
+        })
+}
+
+/// [`font_list_live`]; `wheel` lets the mouse wheel over the closed list,
+/// and Down and Up in its field, pick the family before or after the
+/// current one (#665, #1754).
 fn font_list_with(
     app: &mut App,
     ui: &mut Ui,
@@ -565,7 +585,7 @@ fn font_list_with(
     // The wheel over the closed list: the family after (down) or before
     // (up) the current one, as the list orders them (#665).
     let open = egui::Popup::is_id_open(&ctx, popup_id);
-    let mut wheeled = false;
+    let mut stepped = false;
     if wheel && !open && ui.rect_contains_pointer(anchor) {
         let step = ui.input(|i| {
             i.raw.events.iter().rev().find_map(|e| match e {
@@ -576,18 +596,36 @@ fn font_list_with(
         if let Some(dy) = step {
             // The bar under the list does not scroll as well.
             crate::ui::field::take_wheel(ui);
-            let at = families.iter().position(|f| f == current);
-            let next = match (at, dy < 0.0) {
-                (Some(i), true) => (i + 1).min(families.len().saturating_sub(1)),
-                (Some(i), false) => i.saturating_sub(1),
-                (None, _) => 0,
-            };
-            if let Some(f) = families.get(next).filter(|f| *f != current) {
-                pick = Some(FontPick {
-                    family: f.clone(),
-                    style: None,
-                });
-                wheeled = true;
+            if let Some(p) = step_family(&families, current, dy < 0.0) {
+                pick = Some(p);
+                stepped = true;
+            }
+        }
+    }
+    // Down and Up in the field while the list is closed (as a click in
+    // the field leaves it): the family after or before, at once, the
+    // field keeping the keyboard for the next press. The keys are taken,
+    // so they never nudge the selected text (#1754). Where the wheel does
+    // nothing (no text to change), they open the list instead.
+    if !open && field.has_focus() {
+        let (down, up) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
+            )
+        });
+        if down || up {
+            if wheel {
+                if let Some(p) = step_family(&families, current, down) {
+                    pick = Some(p);
+                    stepped = true;
+                    // Found again on the family stepped to, so that Enter
+                    // keeps it rather than the one the field showed first.
+                    st.highlight = None;
+                }
+            } else {
+                egui::Popup::open_id(&ctx, popup_id);
+                st.scroll = true;
             }
         }
     }
@@ -682,7 +720,7 @@ fn font_list_with(
         })
     };
 
-    if let Some(p) = pick.as_ref().filter(|_| !wheeled) {
+    if let Some(p) = pick.as_ref().filter(|_| !stepped) {
         crate::ui::font_list::remember(&mut app.settings.recent_fonts, &p.family);
         egui::Popup::close_id(&ctx, popup_id);
         st.typed = None;
@@ -2181,6 +2219,58 @@ mod live_tests {
         app.dialog = crate::ui::dialogs::Dialog::None;
         assert!(!wheel(&mut app, -1.0));
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
+    }
+
+    /// Down in the focused field of the closed list with no text to
+    /// change opens the list rather than ask for the font of new text
+    /// (#1754); with text selected it steps the font (see
+    /// `pick_drag_tests::arrows_in_the_font_field_step_the_selected_texts_font`).
+    #[test]
+    fn arrows_in_the_font_field_with_no_text_open_the_list() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let origin = egui::pos2(100.0, 100.0);
+        let font = app.text_font.clone();
+        let base = egui::Id::new("font_bar").with(("font_list", "propbar_font"));
+        let run = |app: &mut App, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Area::new(egui::Id::new("font_bar"))
+                        .fixed_pos(origin)
+                        .show(ui.ctx(), |ui| {
+                            text_font_list(app, ui, "propbar_font", 180.0);
+                        });
+                },
+            );
+            out.textures_delta.clear();
+        };
+        run(&mut app, Vec::new());
+        ctx.memory_mut(|m| m.request_focus(base.with("field")));
+        run(&mut app, Vec::new());
+        egui::Popup::close_id(&ctx, base.with("popup"));
+        run(&mut app, Vec::new());
+        assert!(!egui::Popup::is_id_open(&ctx, base.with("popup")));
+        run(
+            &mut app,
+            vec![egui::Event::Key {
+                key: Key::ArrowDown,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(egui::Popup::is_id_open(&ctx, base.with("popup")));
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
+        assert_eq!(app.text_font, font);
     }
 
     /// The filter opens inside the font list and leaves it open: its

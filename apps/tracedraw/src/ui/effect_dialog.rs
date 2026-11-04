@@ -1054,7 +1054,7 @@ pub fn fx_section(app: &mut App, ui: &mut Ui, id: ShapeId) {
             }
             ui.label(tr(&format!("fx.{}", e.id)));
             if ui
-                .small_button("\u{270E}")
+                .small_button("\u{270F}")
                 .rich_tip(tr("docker.edit_effect"))
                 .clicked()
             {
@@ -1068,14 +1068,14 @@ pub fn fx_section(app: &mut App, ui: &mut Ui, id: ShapeId) {
                 });
             }
             if ui
-                .add_enabled(i > 0, egui::Button::new("\u{25B2}").small())
+                .add_enabled(i > 0, egui::Button::new("\u{23F6}").small())
                 .rich_tip(tr("docker.move_up"))
                 .clicked()
             {
                 app.edit_bitmap_effects(id, "Reorder Effects", move |l| l.swap(i, i - 1));
             }
             if ui
-                .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").small())
+                .add_enabled(i + 1 < n, egui::Button::new("\u{23F7}").small())
                 .rich_tip(tr("docker.move_down"))
                 .clicked()
             {

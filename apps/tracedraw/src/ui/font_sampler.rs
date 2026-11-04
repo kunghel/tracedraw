@@ -147,7 +147,7 @@ pub fn font_sampler(app: &mut App, ui: &mut Ui) {
                             .size(11.0),
                     );
                     if app.text_font == *family {
-                        ui.label(egui::RichText::new("\u{2713}").size(11.0));
+                        ui.label(egui::RichText::new("\u{2714}").size(11.0));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui

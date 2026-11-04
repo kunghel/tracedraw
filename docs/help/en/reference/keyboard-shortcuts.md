@@ -61,7 +61,7 @@ shortcut beside it, and you can add your own; see
 | <kbd>Alt+Enter</kbd> | Properties |
 | <kbd>Ctrl+Shift+A</kbd> | Paste Style From |
 | <kbd>Alt+F7</kbd>, <kbd>Alt+F8</kbd>, <kbd>Alt+F9</kbd>, <kbd>Alt+F10</kbd> | Transformations: position, rotate, scale and mirror, size |
-| <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd> | Text, Glyphs |
+| <kbd>Ctrl+T</kbd>, <kbd>Ctrl+F11</kbd>, <kbd>Ctrl+F12</kbd> | Text, Glyphs, Fonts |
 | <kbd>F11</kbd>, <kbd>Shift+F11</kbd> | fill (Properties), Color |
 | <kbd>F12</kbd>, <kbd>Shift+F12</kbd> | outline (Properties), outline color |
 | <kbd>Ctrl+F7</kbd>, <kbd>Ctrl+F8</kbd>, <kbd>Ctrl+F9</kbd>, <kbd>Ctrl+F10</kbd> | Envelope, Blend, Contour, Extrude |
@@ -78,7 +78,6 @@ Pressing a panel's shortcut when its panel is in front hides the panels.
 | <kbd>Alt+F12</kbd> | align to baseline |
 | <kbd>Ctrl+B</kbd>, <kbd>Ctrl+I</kbd>, <kbd>Ctrl+U</kbd> | bold, italic, underline (while editing) |
 | <kbd>Ctrl+8</kbd>, <kbd>Ctrl+2</kbd> | larger and smaller text |
-| <kbd>Ctrl+F12</kbd> | spell check |
 | <kbd>Shift+F3</kbd> | change case |
 | <kbd>Ctrl+L</kbd>, <kbd>Ctrl+E</kbd>, <kbd>Ctrl+R</kbd> | align left, center, right (while editing) |
 | <kbd>Ctrl+J</kbd>, <kbd>Ctrl+H</kbd>, <kbd>Ctrl+N</kbd> | full justify, force justify, no alignment (while editing) |

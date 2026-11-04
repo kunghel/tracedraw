@@ -14,6 +14,8 @@ pub use event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 pub use output::{MonitorHandle, VideoModeHandle};
 pub use window::Window;
 
+// TraceDraw: files dragged over a window (vendor/README.md).
+mod data_device;
 mod event_loop;
 mod output;
 mod seat;

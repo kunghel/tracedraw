@@ -10815,7 +10815,7 @@ fn the_wrap_style_list_starts_with_none() {
     // styles.
     let arrows: Vec<Pos2> = texts(&mut app)
         .into_iter()
-        .filter(|(t, p)| t == "\u{25BE}" && p.y < 140.0)
+        .filter(|(t, p)| t == "\u{23F7}" && p.y < 140.0)
         .map(|(_, p)| p)
         .collect();
     let mut opened = None;
@@ -18006,4 +18006,338 @@ fn a_move_snaps_to_where_the_selection_started() {
         (b.x0 - start.x0).abs() < 1e-9 && (b.y0 - start.y0).abs() < 1e-9,
         "{b:?}"
     );
+}
+
+/// With the Pick tool and a text selected, a click in the property bar's
+/// font field and then Down and Up step the text through the fonts, each
+/// applied at once in the list's order, as the wheel does; the field
+/// keeps the keyboard and the text does not move. Once the field lets
+/// the keyboard go (Enter), the arrows nudge the text again (#1754).
+#[test]
+fn arrows_in_the_font_field_step_the_selected_texts_font() {
+    let ctx = crate::theme::ui_context();
+    let mut app = App::headless();
+    app.show_welcome = false;
+    let families = app.font_families.clone();
+    assert!(families.len() >= 4, "{families:?}");
+    let id = app
+        .new_shape(ShapeKind::Text {
+            spans: vec![tracedraw_core::TextSpan::new("Text", &families[1], 24.0)],
+            origin: Point::new(30.0, 50.0),
+            frame: None,
+            align: Default::default(),
+            para: Default::default(),
+            on_path: None,
+        })
+        .expect("text");
+    app.set_tool(Tool::Pick);
+    app.select(vec![id]);
+    app.sync_text_defaults_from(id);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let font = |app: &App| match &app.doc().find_shape(id).expect("text").kind {
+        ShapeKind::Text { spans, .. } => spans[0].font_family.clone(),
+        _ => panic!("text"),
+    };
+    let place = |app: &App| app.doc().find_shape(id).expect("text").transform;
+    let at = frame_shapes(&ctx, &mut app, Vec::new())
+        .iter()
+        .find_map(|s| match s {
+            egui::Shape::Text(t) if t.galley.text() == families[1] => {
+                Some(t.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+        .expect("the font field");
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(at)],
+        Modifiers::NONE,
+    );
+    let press = |app: &mut App, pressed| {
+        frame(
+            &ctx,
+            app,
+            vec![button(at, pressed, PointerButton::Primary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+    };
+    press(&mut app, true);
+    press(&mut app, false);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(
+        ctx.egui_wants_keyboard_input(),
+        "the field has the keyboard"
+    );
+    let start = place(&app);
+    let tap = |app: &mut App, k: egui::Key| {
+        frame(&ctx, app, vec![key(k, Modifiers::NONE)], Modifiers::NONE);
+        frame(&ctx, app, vec![key_up(k, Modifiers::NONE)], Modifiers::NONE);
+    };
+    let history = app.engine.history_labels().0.len();
+    tap(&mut app, egui::Key::ArrowDown);
+    assert_eq!(font(&app), families[2]);
+    tap(&mut app, egui::Key::ArrowDown);
+    assert_eq!(font(&app), families[3]);
+    tap(&mut app, egui::Key::ArrowUp);
+    assert_eq!(font(&app), families[2]);
+    assert_eq!(app.text_font, families[2], "the bar shows it");
+    assert!(app.engine.history_labels().0.len() > history, "applied");
+    assert_eq!(place(&app), start, "no nudge");
+    assert!(
+        ctx.egui_wants_keyboard_input(),
+        "the field keeps the keyboard"
+    );
+    // Enter leaves the field: the arrows move the text again.
+    tap(&mut app, egui::Key::Enter);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(!ctx.egui_wants_keyboard_input());
+    tap(&mut app, egui::Key::ArrowDown);
+    assert_eq!(font(&app), families[2]);
+    assert_ne!(place(&app), start, "nudged");
+}
+
+/// Tab in paragraph text being edited types a tab: the text after it
+/// starts at the next tab stop (every 12.7 mm), and the keyboard stays
+/// on the text, no field or button of the window taking the focus
+/// (#1667).
+#[test]
+fn tab_in_paragraph_text_moves_the_text_to_the_next_stop() {
+    let (ctx, mut app, _) = setup();
+    tracedraw_text::install();
+    app.select(Vec::new());
+    app.settings.autocorrect.enabled = false;
+    app.text_font = "DejaVu Sans".into();
+    app.text_size_pt = 10.0;
+    app.set_tool(Tool::Text);
+    app.start_text(
+        Point::new(30.0, 150.0),
+        Some(tracedraw_core::Size::new(100.0, 60.0)),
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let tab = |app: &mut App| {
+        frame(
+            &ctx,
+            app,
+            vec![key(egui::Key::Tab, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            app,
+            vec![key_up(egui::Key::Tab, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+    };
+    for (typed, tabbed) in [("Ab", true), ("Cd", true), ("Ef", false)] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::Text(typed.into())],
+            Modifiers::NONE,
+        );
+        if tabbed {
+            tab(&mut app);
+        }
+    }
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert_eq!(app.edit_text(), "Ab\tCd\tEf");
+    assert!(app.text_edit.is_some(), "still editing");
+    assert_eq!(
+        ctx.memory(|m| m.focused()),
+        None,
+        "no widget took the focus"
+    );
+    assert!(!ctx.egui_wants_keyboard_input());
+    // Laid out: "Cd" at the first stop, "Ef" at the second.
+    app.finish_text();
+    let id = *app.selection.first().expect("the text");
+    let s = app.doc().find_shape(id).expect("text");
+    let ShapeKind::Text {
+        spans,
+        frame: f,
+        align,
+        para,
+        ..
+    } = &s.kind
+    else {
+        panic!("text");
+    };
+    assert!(f.is_some(), "paragraph text");
+    let layout =
+        tracedraw_text::fonts().layout(&tracedraw_core::document::text_outline::TextRequest {
+            spans,
+            frame: *f,
+            align: *align,
+            para,
+            on_path: None,
+        });
+    let x = |i: usize| layout.caret(i).expect("caret").0;
+    let start = x(0);
+    assert!((x(3) - start - 12.7).abs() < 0.01, "{} {}", x(3), start);
+    assert!((x(6) - start - 25.4).abs() < 0.01, "{} {}", x(6), start);
+    assert_eq!(layout.lines.len(), 1);
+}
+
+/// Tab and Shift+Tab with the Pick tool go from object to object, one
+/// press after another, and no field of the window takes the keyboard
+/// on the way (#1667).
+#[test]
+fn tab_goes_from_object_to_object_press_after_press() {
+    let (ctx, mut app, a) = setup();
+    let b = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(80.0, 10.0, 120.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    let c = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(140.0, 10.0, 180.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(Vec::new());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let mut seen = Vec::new();
+    for mods in [
+        Modifiers::NONE,
+        Modifiers::NONE,
+        Modifiers::NONE,
+        Modifiers::SHIFT,
+    ] {
+        frame(&ctx, &mut app, vec![key(egui::Key::Tab, mods)], mods);
+        frame(&ctx, &mut app, vec![key_up(egui::Key::Tab, mods)], mods);
+        assert_eq!(ctx.memory(|m| m.focused()), None, "no field took the keys");
+        assert_eq!(app.selection.len(), 1);
+        seen.push(app.selection[0]);
+    }
+    // Three presses visit the three objects; Shift+Tab goes back one.
+    let mut three = seen[..3].to_vec();
+    three.sort();
+    let mut all = vec![a, b, c];
+    all.sort();
+    assert_eq!(three, all, "{seen:?}");
+    assert_eq!(seen[3], seen[1], "{seen:?}");
+}
+
+/// A blend of two texts whose start is in front: a click on the end
+/// text, where the start's steps lie over it, picks the end text, and a
+/// colour from the palette goes to it, not to the start text 60 mm away.
+/// A click on the steps away from both texts still picks the start, and
+/// the Text tool edits the text clicked (#1739).
+#[test]
+fn a_click_on_a_blend_s_end_text_under_its_steps_picks_the_end() {
+    use tracedraw_core::{Color, Fill};
+    tracedraw_text::install();
+    let ctx = crate::theme::ui_context();
+    let mut app = App::headless();
+    app.show_welcome = false;
+    let text = |app: &mut App, x: f64, c: Color| {
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new("HH", "DejaVu Sans", 72.0)],
+                origin: Point::new(x, 150.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Solid(c));
+        id
+    };
+    // The end first (behind), the start in front of it.
+    let end = text(&mut app, 40.0, Color::rgb8(0, 160, 80));
+    let start = text(&mut app, 100.0, Color::rgb8(250, 220, 0));
+    app.select(vec![start, end]);
+    app.blend_selection(20, 0.0, 0.0, 0.0);
+    app.refresh_blends();
+    app.set_tool(Tool::Pick);
+    app.select(Vec::new());
+    // Frames a click apart in time, so that two clicks are never a
+    // double click (which edits a text).
+    let t = std::cell::Cell::new(100.0);
+    let timed = |app: &mut App, events: Vec<Event>| {
+        t.set(t.get() + 0.02);
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                time: Some(t.get()),
+                events,
+                ..Default::default()
+            },
+            |ui| crate::ui::root(app, ui),
+        );
+        out.textures_delta.clear();
+    };
+    for _ in 0..3 {
+        timed(&mut app, Vec::new());
+    }
+    app.zoom_to_page();
+    for _ in 0..2 {
+        timed(&mut app, Vec::new());
+    }
+    let click = |app: &mut App, at: Point| {
+        let p = app.view.to_screen(at);
+        t.set(t.get() + 2.0);
+        timed(app, vec![Event::PointerMoved(p)]);
+        timed(
+            app,
+            vec![button(p, true, PointerButton::Primary, Modifiers::NONE)],
+        );
+        timed(
+            app,
+            vec![button(p, false, PointerButton::Primary, Modifiers::NONE)],
+        );
+        timed(app, Vec::new());
+    };
+    let fill = |app: &App, id: ShapeId| app.doc().find_shape(id).expect("text").fill.clone();
+    let eb = app.doc().find_shape(end).expect("end").bounds();
+    let sb = app.doc().find_shape(start).expect("start").bounds();
+    // On the end text's first H: the steps lie over it, the start text
+    // is 60 mm away.
+    let on_end = Point::new(eb.x0 + eb.width() * 0.3, eb.center().y);
+    let step = app.doc().find_shape(start).cloned().expect("start");
+    let steps = tracedraw_core::live::evaluate(&step);
+    assert!(
+        steps
+            .below
+            .iter()
+            .chain(&steps.above)
+            .any(|s| s.bounds().contains(on_end)),
+        "a step lies over the point"
+    );
+    click(&mut app, on_end);
+    assert_eq!(app.selection, vec![end], "the end text is picked");
+    let red = Color::rgb8(220, 0, 0);
+    let start_fill = fill(&app, start);
+    app.palette_fill(red);
+    app.refresh_blends();
+    assert_eq!(fill(&app, end), Fill::Solid(red), "the colour goes to it");
+    assert_eq!(fill(&app, start), start_fill, "not to the other end");
+    // The steps between the texts, away from both: the start.
+    let between = Point::new((eb.x1 + sb.x0) / 2.0, eb.center().y);
+    assert!(!eb.contains(between) && !sb.contains(between));
+    click(&mut app, between);
+    assert_eq!(app.selection, vec![start]);
+    // The start text itself: the start.
+    click(&mut app, sb.center());
+    assert_eq!(app.selection, vec![start]);
+    // The Text tool edits the text clicked.
+    app.select(Vec::new());
+    app.set_tool(Tool::Text);
+    timed(&mut app, Vec::new());
+    click(&mut app, on_end);
+    assert_eq!(app.text_edit.as_ref().map(|t| t.shape), Some(end));
 }

@@ -105,6 +105,15 @@ Text and Glyphs dockers and Options (default font):
   being edited or selected: with nothing to change it does nothing
   rather than ask for the font of new text (#665,
   `ui::font_list::live_tests::the_wheel_over_the_font_list_steps_the_font`).
+- Down and Up in the field while the list is closed (after a click in
+  the field, with the Pick tool or any other) do the same: the family
+  after or before the one in use, applied to the text at once, the field
+  keeping the keyboard for the next press, so the keys step through the
+  fonts and never nudge the selected text; Enter or a click on the
+  drawing leaves the field. With no text to change they open the list
+  instead (#1754,
+  `pick_drag_tests::arrows_in_the_font_field_step_the_selected_texts_font`,
+  `ui::font_list::live_tests::arrows_in_the_font_field_with_no_text_open_the_list`).
 - At the top of the list, the number of families shown and the Filter
   button (#867). It shows or hides the filter's choices beside the list,
   in the same popup (only one menu is open at a time, so a menu opened
@@ -250,7 +259,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Typing, paste | inserts at the caret, replacing the selection, with the style of the character before the caret |
 | Backspace / Delete | the selection, else the character before / after the caret |
 | Enter / Shift+Enter | paragraph break / line break (U+2028) |
-| Tab | a tab character |
+| Tab | a tab character: the text after it starts at the next tab stop (every 12.7 mm unless the paragraph sets its own); the keyboard stays on the text, no field of the bars takes it (#1667, `pick_drag_tests::tab_in_paragraph_text_moves_the_text_to_the_next_stop`) |
 | Left / Right, Ctrl+Left / Right | one character, one word; Shift extends the selection |
 | Up / Down | the same x on the previous / next line (the x is remembered across moves) |
 | Home / End, Ctrl+Home / End | line start / end, text start / end |
