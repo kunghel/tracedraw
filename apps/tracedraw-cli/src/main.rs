@@ -750,6 +750,10 @@ fn main() -> ExitCode {
                                 .collect(),
                             embed_fonts: std::env::var("TRACEDRAW_CDR_EMBED_FONTS")
                                 .is_ok_and(|v| v.trim() == "1"),
+                            // TRACEDRAW_CDR_PARAGRAPH_FRAMES=1 writes paragraph
+                            // text as paragraph frames, off by default (#1698).
+                            paragraph_frames: std::env::var("TRACEDRAW_CDR_PARAGRAPH_FRAMES")
+                                .is_ok_and(|v| v.trim() == "1"),
                             // Drop shadows go out as pictures beneath
                             // their objects (#1031).
                             shadows: tracedraw_io::shadow_pictures(

@@ -125,6 +125,22 @@ rules. The result covers the same area under the even-odd rule
 `shaping::nonzero_as_even_odd` turns one such outline into an even-odd one
 on its own.
 
+## Clip frames
+
+A clip frame stays a clip frame (#1745 to #1750): when the object that
+keeps its attributes (the target; the front or back object of the Minus
+operations) is a clip frame, the result is a clip frame whose frame takes
+the new shape with the frame's own fill and outline, and what it held
+stays inside, where it was on the page. Weld also gathers what every clip
+frame welded holds (lowest first), even when the target is another
+object, whose fill and outline the frame then takes. Simplify changes a
+clip frame's frame in place and keeps its contents. A clip frame that is
+cut away and removed (a back object of Front Minus Back, a source not
+left) goes with its contents, like any other object. Boundary leaves
+every object as it was and draws a plain outline. Each is one undo step
+(`ops::curves_and_target_tests::shaping_a_clip_frame_keeps_what_it_holds`,
+`welding_into_another_object_and_the_other_operations`).
+
 ## Checks
 
 - `ui::shaping_docker::tests::what_the_operations_leave_of_the_originals`

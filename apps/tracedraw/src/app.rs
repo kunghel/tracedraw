@@ -8856,6 +8856,9 @@ pub(crate) fn cdr_previews(doc: &tracedraw_core::Document) -> tracedraw_cdr::wri
         fonts: cdr_font_faces(doc),
         embed_fonts: false,
         shadows: cdr_shadow_pictures(doc),
+        // Paragraph text goes out as lines: the other program hung on
+        // TraceDraw's paragraph frames (#1698).
+        paragraph_frames: false,
     }
 }
 

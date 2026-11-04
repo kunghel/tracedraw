@@ -909,6 +909,22 @@ fn picture_contents(s: &Shape) -> Option<Vec<Shape>> {
     }
 }
 
+/// A clip frame's frame and what it holds, placed on the page, for a
+/// shaping result to keep: the frame gives the result its fill and
+/// outline and the contents stay inside it (#1745). `None` for other
+/// objects.
+fn clip_frame_parts(s: &Shape) -> Option<(Shape, Vec<Shape>)> {
+    let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+        return None;
+    };
+    let on_page = |c: &Shape| {
+        let mut c = c.clone();
+        c.transform = s.transform * c.transform;
+        c
+    };
+    Some((on_page(frame), contents.iter().map(on_page).collect()))
+}
+
 impl App {
     /// The operation as the menus and the property bar do it (see
     /// `Shaping::default_leave`).
@@ -1063,13 +1079,26 @@ impl App {
                         }
                         let p = simplify(&p);
                         let local = s.transform.inverse() * p;
-                        cmds.push(Command::SetShapeKind {
-                            shape: s.id,
-                            kind: ShapeKind::Path {
+                        let kind = match &s.kind {
+                            // A clip frame's frame takes the outline left;
+                            // what it holds stays inside (#1748).
+                            ShapeKind::ClipFrame { frame, contents } => {
+                                let mut frame = (**frame).clone();
+                                frame.kind = ShapeKind::Path {
+                                    path: frame.transform.inverse() * local,
+                                    closed: true,
+                                };
+                                ShapeKind::ClipFrame {
+                                    frame: Box::new(frame),
+                                    contents: contents.clone(),
+                                }
+                            }
+                            _ => ShapeKind::Path {
                                 path: local,
                                 closed: true,
                             },
-                        });
+                        };
+                        cmds.push(Command::SetShapeKind { shape: s.id, kind });
                     }
                     let _ = self.engine.run_batch("Simplify", &cmds);
                     return;
@@ -1134,6 +1163,29 @@ impl App {
         let id = self.engine.new_shape_id();
         let leaves = group_leaves(&attrs);
         let pictures = picture_contents(&attrs);
+        // A clip frame keeps what it holds: the result is a clip frame
+        // whose frame takes the result's shape with the frame's own fill
+        // and outline; a Weld also gathers what every clip frame welded
+        // into it holds, in their order (#1745 to #1750). Boundary keeps
+        // every object as it is, so its outline holds nothing.
+        let clip = if pictures.is_some() || open_target || op == Shaping::Boundary {
+            None
+        } else {
+            let own = clip_frame_parts(&attrs).map(|(frame, _)| frame);
+            let mut held = Vec::new();
+            for s in &ordered {
+                if s.id == attrs.id || op == Shaping::Weld {
+                    if let Some((_, c)) = clip_frame_parts(s) {
+                        held.extend(c);
+                    }
+                }
+            }
+            if own.is_some() || (!held.is_empty() && leaves.is_empty()) {
+                Some((own, held))
+            } else {
+                None
+            }
+        };
         // The further pieces of a split object, after the first.
         let mut extra: Vec<Shape> = Vec::new();
         let shape = if let Some(contents) = pictures {
@@ -1159,6 +1211,40 @@ impl App {
                 .clone()
                 .filter(|_| matches!(attrs.kind, ShapeKind::ClipFrame { .. }));
             let contents = contents
+                .into_iter()
+                .map(|c| {
+                    let nid = self.engine.new_shape_id();
+                    crate::app::reid_pub(c, nid, &mut self.engine)
+                })
+                .collect();
+            let mut shape = Shape::new(
+                id,
+                ShapeKind::ClipFrame {
+                    frame: Box::new(frame),
+                    contents,
+                },
+            );
+            shape.opacity = attrs.opacity;
+            shape
+        } else if let Some((own, held)) = clip {
+            let path = if pieces.is_empty() {
+                result
+            } else {
+                let mut all = tracedraw_core::BezPath::new();
+                for p in &pieces {
+                    all.extend(p.elements().iter().copied());
+                }
+                all
+            };
+            let mut frame = Shape::new(
+                self.engine.new_shape_id(),
+                ShapeKind::Path { path, closed: true },
+            );
+            let look = own.as_ref().unwrap_or(&attrs);
+            frame.fill = look.fill.clone();
+            frame.stroke = look.stroke.clone();
+            frame.opacity = look.opacity;
+            let contents = held
                 .into_iter()
                 .map(|c| {
                     let nid = self.engine.new_shape_id();
@@ -1942,6 +2028,173 @@ mod curves_and_target_tests {
             .expect("a result")
             .clone();
         s.fill
+    }
+
+    /// The steps of #1745 to #1751: two rectangles, the second placed
+    /// inside the first (a clip frame, red, holding a green rectangle), a
+    /// circle drawn over its corner; the circle selected, then the clip
+    /// frame (the target). Returns the app and the ids (clip, circle).
+    fn clip_frame_and_circle() -> (App, ShapeId, ShapeId) {
+        let mut app = App::headless();
+        let add = |app: &mut App, kind: ShapeKind, c: Color| {
+            let id = app.new_shape(kind).expect("shape");
+            app.run(tracedraw_core::Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Solid(c),
+            });
+            id
+        };
+        let rect = |r: Rect| ShapeKind::Rect {
+            rect: r,
+            radius: 0.0,
+            corners: None,
+        };
+        let frame = add(
+            &mut app,
+            rect(Rect::new(10.0, 10.0, 50.0, 50.0)),
+            Color::rgb8(255, 0, 0),
+        );
+        let inner = add(
+            &mut app,
+            rect(Rect::new(20.0, 20.0, 40.0, 40.0)),
+            Color::rgb8(0, 160, 0),
+        );
+        app.place_inside(vec![inner], frame);
+        let circle = add(
+            &mut app,
+            ShapeKind::Ellipse {
+                rect: Rect::new(40.0, 40.0, 70.0, 70.0),
+                arc: None,
+            },
+            Color::rgb8(0, 0, 255),
+        );
+        app.select(vec![circle, frame]);
+        (app, frame, circle)
+    }
+
+    /// The clip frames on the page with what each holds.
+    fn clip_frames(app: &App) -> Vec<(Shape, Vec<Shape>)> {
+        app.doc()
+            .all_layers()
+            .flat_map(|l| &l.shapes)
+            .filter_map(|s| match &s.kind {
+                ShapeKind::ClipFrame { frame, contents } => {
+                    Some(((**frame).clone(), contents.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The page box of what a clip frame holds.
+    fn held_box(app: &App, clip: ShapeId) -> Rect {
+        let s = app.doc().find_shape(clip).expect("the clip frame").clone();
+        let ShapeKind::ClipFrame { contents, .. } = &s.kind else {
+            panic!("not a clip frame: {:?}", s.kind);
+        };
+        use tracedraw_core::geometry::Shape as _;
+        contents
+            .iter()
+            .map(|c| (s.transform * c.page_path()).bounding_box())
+            .reduce(|a, b| a.union(b))
+            .expect("contents")
+    }
+
+    fn red() -> Fill {
+        Fill::Solid(Color::rgb8(255, 0, 0))
+    }
+
+    /// #1745 to #1750: Weld, Trim, Intersect, Simplify and Back Minus
+    /// Front with a clip frame keep it a clip frame: its frame takes the
+    /// new shape with its own red fill, and the green rectangle it holds
+    /// stays inside, where it was. Before, the result was a curve with no
+    /// fill and the contents were gone.
+    #[test]
+    fn shaping_a_clip_frame_keeps_what_it_holds() {
+        let green = Rect::new(20.0, 20.0, 40.0, 40.0);
+        let close = |a: Rect, b: Rect| {
+            (a.x0 - b.x0).abs() < 1e-6
+                && (a.y0 - b.y0).abs() < 1e-6
+                && (a.x1 - b.x1).abs() < 1e-6
+                && (a.y1 - b.y1).abs() < 1e-6
+        };
+        for (op, left) in [
+            (Shaping::Weld, 1),
+            (Shaping::Trim, 2),
+            (Shaping::Intersect, 3),
+            (Shaping::Simplify, 2),
+            (Shaping::BackMinusFront, 1),
+        ] {
+            let (mut app, clip, circle) = clip_frame_and_circle();
+            app.shaping(op);
+            let all = app.doc().all_layers().flat_map(|l| &l.shapes).count();
+            assert_eq!(all, left, "{op:?}");
+            let frames = clip_frames(&app);
+            assert!(!frames.is_empty(), "{op:?}: a clip frame");
+            for (frame, held) in &frames {
+                assert_eq!(frame.fill, red(), "{op:?}: the frame keeps its fill");
+                assert_eq!(held.len(), 1, "{op:?}: and what it holds");
+            }
+            // The result (selected; Simplify changes the clip frame in
+            // place) holds the green rectangle where it was.
+            let result = if op == Shaping::Simplify {
+                clip
+            } else {
+                app.selection[0]
+            };
+            assert!(close(held_box(&app, result), green), "{op:?}");
+            assert_ne!(result, circle);
+            // One undo brings the clip frame back as it was.
+            app.undo();
+            assert_eq!(clip_frames(&app).len(), 1, "{op:?}: undone");
+            assert!(close(held_box(&app, clip), green));
+        }
+    }
+
+    /// Weld gathers what the clip frames welded hold, even when the
+    /// target is another object (its fill makes the frame's); Front Minus
+    /// Back keeps the contents of a clip frame in front; Boundary leaves
+    /// every object, the clip frame and its contents included, as it was
+    /// and draws a plain outline.
+    #[test]
+    fn welding_into_another_object_and_the_other_operations() {
+        let (mut app, clip, circle) = clip_frame_and_circle();
+        app.select(vec![clip, circle]);
+        app.shaping(Shaping::Weld);
+        let frames = clip_frames(&app);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0.fill, Fill::Solid(Color::rgb8(0, 0, 255)));
+        assert_eq!(frames[0].1.len(), 1);
+
+        let (mut app, clip, circle) = clip_frame_and_circle();
+        // The clip frame in front of the circle.
+        let (layer, _) = app.doc().locate(clip).expect("clip");
+        app.run(tracedraw_core::Command::Reorder {
+            shape: clip,
+            layer,
+            index: 1,
+        });
+        assert_eq!(app.doc().locate(clip).map(|(_, i)| i).ok(), Some(1));
+        app.select(vec![circle, clip]);
+        app.shaping(Shaping::FrontMinusBack);
+        let frames = clip_frames(&app);
+        assert_eq!(frames.len(), 1, "the clip frame in front is kept");
+        assert_eq!(frames[0].1.len(), 1);
+
+        let (mut app, clip, _) = clip_frame_and_circle();
+        app.shaping(Shaping::Boundary);
+        let shapes: Vec<Shape> = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.clone())
+            .collect();
+        assert_eq!(shapes.len(), 3);
+        assert_eq!(
+            clip_frames(&app).len(),
+            1,
+            "the boundary is a plain outline"
+        );
+        assert!(app.doc().find_shape(clip).is_some(), "the clip frame stays");
     }
 
     /// #1005: Trim with an open line across a circle cuts the circle in

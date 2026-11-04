@@ -95,6 +95,15 @@ pub struct Previews {
     /// at [`SHADOW_DPI`] ([`crate::shadow_image`]), so a drawing written
     /// without previews keeps its shadows too.
     pub shadows: Vec<ShadowPicture>,
+    /// Write paragraph text as paragraph text, its frame and the text
+    /// flowing in it (#1226), where the files can hold it as TraceDraw
+    /// draws it. Off by default: the other program's 27.2 release hangs
+    /// or closes on opening every file TraceDraw wrote so (versions 20
+    /// and 27, #1698), while the same drawings with the text as artistic
+    /// text open; so paragraph text goes out as one artistic text per
+    /// line, as before 0.33, until a layout of the frame records is
+    /// confirmed in that program.
+    pub paragraph_frames: bool,
 }
 
 /// A PNG file and its size in pixels.
@@ -131,6 +140,7 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     w.faces = &previews.fonts;
     w.tech = fonts::face_tech(&previews.fonts);
     w.embed_fonts = previews.embed_fonts;
+    w.paragraph_frames = previews.paragraph_frames;
     let mut tree = w.document(doc);
     let font_ids = w.fonts.clone();
     if !v.zip() {
@@ -3507,6 +3517,9 @@ struct Writer<'a> {
     /// Embed the faces whose licence allows it (see
     /// [`Previews::embed_fonts`]).
     embed_fonts: bool,
+    /// Write paragraph text as paragraph text (see
+    /// [`Previews::paragraph_frames`]).
+    paragraph_frames: bool,
     split_families: HashMap<(String, bool), Option<(String, u16)>>,
     /// What [`fonts::drawn_style`] said for each face the runs name.
     drawn_styles: HashMap<(String, bool, bool), Option<(u16, bool)>>,
@@ -3652,6 +3665,7 @@ impl<'a> Writer<'a> {
             has_text: false,
             faces: &[],
             embed_fonts: false,
+            paragraph_frames: false,
             split_families: HashMap::new(),
             drawn_styles: HashMap::new(),
             drawing_effects: 0,
@@ -5517,7 +5531,8 @@ impl<'a> Writer<'a> {
     /// would hold all the text) and, before 16, of one column. Version 8
     /// is left out: its two layouts give frames of 32 and 34 bytes and no
     /// file of the layout TraceDraw writes (800) holding one was seen.
-    /// The others go out as one artistic text per line.
+    /// The others go out as one artistic text per line, and so does every
+    /// frame unless [`Previews::paragraph_frames`] asks for them (#1698).
     fn writes_frame(&self, s: &Shape) -> bool {
         let ShapeKind::Text {
             frame: Some(f),
@@ -5538,7 +5553,8 @@ impl<'a> Writer<'a> {
             .data
             .iter()
             .any(|(k, _)| k == "text.next" || k == "text.prev");
-        n != 8
+        self.paragraph_frames
+            && n != 8
             && rigid
             && !linked
             && f.width > 1e-3

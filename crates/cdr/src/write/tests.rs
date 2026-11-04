@@ -6974,11 +6974,22 @@ fn first_text_records(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// Paragraph text goes out as paragraph text (object type 6) with its
-/// frame in every version but 8, laid out as files of versions 7, 9 to
-/// 15, 19, 22 and 27 hold it, and comes back as paragraph text with the
-/// same frame in the same place (#1226; it went out as one artistic text
-/// per line, so the frame was lost in the other program and in TraceDraw).
+/// [`document_to_cdr_version`] with paragraph text written as paragraph
+/// text (see [`Previews::paragraph_frames`]).
+fn with_paragraph_frames(doc: &Document, v: u16) -> Vec<u8> {
+    let previews = Previews {
+        paragraph_frames: true,
+        ..Previews::default()
+    };
+    document_to_cdr_version_with(doc, v, &previews)
+}
+
+/// Asked for, paragraph text goes out as paragraph text (object type 6)
+/// with its frame in every version but 8, laid out as files of versions
+/// 7, 9 to 15, 19, 22 and 27 hold it, and comes back as paragraph text
+/// with the same frame in the same place (#1226; it went out as one
+/// artistic text per line, so the frame was lost in the other program
+/// and in TraceDraw).
 #[test]
 fn paragraph_text_goes_out_with_its_frame() {
     let mut ids = tracedraw_core::id::IdSource::default();
@@ -6986,7 +6997,7 @@ fn paragraph_text_goes_out_with_its_frame() {
     let corners = t.text_frame_corners().expect("a frame");
     let doc = doc_with(vec![t]);
     for v in versions() {
-        let bytes = document_to_cdr_version(&doc, v);
+        let bytes = with_paragraph_frames(&doc, v);
         let findings = crate::check::check_bytes(&bytes).expect("checks");
         assert!(findings.is_empty(), "{v}: {findings:?}");
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
@@ -7074,7 +7085,7 @@ fn paragraph_columns_round_trip_from_version_16() {
     };
     let doc = doc_with(vec![paragraph_shape(&mut ids, para)]);
     for v in versions() {
-        let bytes = document_to_cdr_version(&doc, v);
+        let bytes = with_paragraph_frames(&doc, v);
         let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
         let s = &back.pages[0].layers[0].shapes[0];
         match (&s.kind, v >= 16) {
@@ -7132,13 +7143,75 @@ fn paragraph_text_the_files_cannot_hold_goes_out_as_lines() {
     );
     let mut linked = paragraph_shape(&mut ids, ParagraphStyle::default());
     linked.data.push(("text.next".into(), "99".into()));
+    let writer = |v: u16| {
+        let mut w = Writer::new(Ver(v), &[], "t");
+        w.paragraph_frames = true;
+        w
+    };
     for s in [scaled, vertical, fitted, centred, linked] {
-        let w = Writer::new(Ver(21), &[], "t");
-        assert!(!w.writes_frame(&s), "{:?}", s.kind);
+        assert!(!writer(21).writes_frame(&s), "{:?}", s.kind);
     }
     let plain = paragraph_shape(&mut ids, ParagraphStyle::default());
-    assert!(Writer::new(Ver(21), &[], "t").writes_frame(&plain));
-    assert!(!Writer::new(Ver(8), &[], "t").writes_frame(&plain));
+    assert!(writer(21).writes_frame(&plain));
+    assert!(!writer(8).writes_frame(&plain));
+    // Not asked for, no frame goes out (#1698).
+    assert!(!Writer::new(Ver(21), &[], "t").writes_frame(&plain));
+}
+
+/// By default paragraph text goes out as one artistic text per line in
+/// every version, as before 0.33: the other program's 27.2 release hung
+/// or closed on opening the files of versions 20 and 27 that held
+/// TraceDraw's paragraph frames, and opened the same drawing with its
+/// text as artistic text (#1698). The letters and their place survive.
+#[test]
+fn paragraph_text_goes_out_as_artistic_lines_by_default() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let doc = doc_with(vec![paragraph_shape(&mut ids, ParagraphStyle::default())]);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut kinds = Vec::new();
+        let mut frame_layouts = 0;
+        tree.root.walk(&mut |c, _| {
+            let d = tree.data(&riff, c);
+            if c.is(b"loda") {
+                if let Some(t) = tracedraw_cdr_format::loda::table(d, 7) {
+                    kinds.push(t.kind);
+                }
+            }
+            // A paragraph frame's text record starts with 0 (the frame
+            // layout); artistic text's with -1 (or 1 before 16).
+            if c.is(b"txsm") && d.len() >= 4 && d[..4] == [0; 4] {
+                frame_layouts += 1;
+            }
+        });
+        assert!(!kinds.contains(&OBJ_PARAGRAPH_TEXT), "{v}: {kinds:?}");
+        assert_eq!(frame_layouts, 0, "{v}");
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let mut text = String::new();
+        fn collect(shapes: &[Shape], out: &mut String) {
+            for s in shapes {
+                match &s.kind {
+                    ShapeKind::Text { spans, frame, .. } => {
+                        assert!(frame.is_none(), "{:?}", s.kind);
+                        for sp in spans {
+                            out.push_str(&sp.text);
+                        }
+                        out.push('|');
+                    }
+                    ShapeKind::Group { children, .. } => collect(children, out),
+                    _ => {}
+                }
+            }
+        }
+        collect(&back.pages[0].layers[0].shapes, &mut text);
+        assert!(
+            text.contains("Paragraph text flows in its frame") && text.contains("and keeps it"),
+            "{v}: {text}"
+        );
+    }
 }
 
 /// Two pages with guidelines: two that both pages have (written once, on

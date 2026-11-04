@@ -6,6 +6,10 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Saving as `.cdr`: a drawing with paragraph text opens in the other program again. Since 0.33 paragraph text went out as paragraph text with its frame, and the 2026 release of the program that wrote the samples (27.2) hung or closed on opening such files (versions 20 and 27), while the same drawing opened with its text converted to curves, and TraceDraw's files with artistic text open there. Paragraph text goes out again as one artistic text per line, in its place and with its looks, as before 0.33, so the frame is not kept in the other program; TraceDraw's paragraph frame records are kept behind `TRACEDRAW_CDR_PARAGRAPH_FRAMES=1` in `tracedraw-cli` until a layout of them is confirmed to open there (#1698).
+
+
+- Shaping a clip frame (Weld, Trim, Intersect, Simplify, Front Minus Back, Back Minus Front) keeps it a clip frame: its frame takes the new shape with its own fill and outline, and what it held stays inside; before, the result was a curve with no fill and the contents were gone (#1745 to #1750).
 - Cropping a picture that has a transparency: what is left looks as it did. Dragging a picture's corner nodes with the Shape tool, or cutting it with the Crop tool, put the picture in a clip frame that kept a copy of its transparency and opacity, so they were laid on twice and the picture turned much paler; with a gradient transparency the frame's copy also started again across the cut-down picture at each node moved. The picture inside now keeps its transparency in its place on the page, and the frame keeps none. A clip frame's own gradient transparency also stays in place when the frame's nodes are moved (#1491).
 
 - Blend, Apply to sizing: each step takes the outline and the size of its accelerated place. A square blended into a circle with the steps packed toward the circle kept square steps right up to the circle, because only their size followed the acceleration; the steps by the circle are now round, as the pictures of the `.cdr` files saved with that setting show (#1576).
