@@ -40,13 +40,24 @@ Ctrl+F7).
 - In the Unconstrained mode a click on a node selects it and shows its two
   handles (the end of the segment coming in and the start of the one
   going out); dragging a handle bends that segment alone.
+- Dragging a segment of the frame (anywhere along it, within 4 screen
+  pixels, away from its nodes and handles) bends it, in every mode, as
+  the Shape tool bends a curve's segment: the point grabbed follows the
+  pointer exactly while the segment's two nodes stay; both of its
+  handles move, the nearer one more, by `k (1 - t) d` and `k t d` with
+  `k = 1 / (3 t (1 - t) ((1 - t)² + t²))`, `t` the grabbed point's place
+  along the segment (kept within 0.02 to 0.98) and `d` the drag. The
+  segments either side keep their handles. The whole drag is one undo
+  step (Edit Envelope), and over a segment the pointer is the Shape
+  tool's arrow with the segment mark. Only nodes and handles could be
+  dragged until #1339.
 - Double-click on the frame adds a node there (the curve keeps its
   shape); double-click on a node that is not a corner removes it.
 - The Shape tool edits the frame of a selected enveloped object the same
   way. Other tools do not show it; the Envelope tool does not show the
   selection handles.
 - Over a node or a handle the pointer is the Shape tool's arrow with the
-  node or handle mark.
+  node or handle mark; over a segment, with the segment mark.
 
 ## Modes
 
@@ -175,6 +186,8 @@ rectangle selects it, and the selection box reaches the top of the arch.
 - `tracedraw_core::envelope::tests::older_envelopes_are_single_arcs`
 - `tracedraw_core::envelope::tests::the_modes_shape_the_sides_a_node_moves`
 - `tracedraw_core::envelope::tests::nodes_are_added_and_removed`
+- `tracedraw_core::envelope::tests::bending_a_segment_moves_its_point_and_keeps_its_nodes`
+- `pick_drag_tests::dragging_an_envelope_segment_bends_it`
 - `tracedraw_core::envelope::tests::the_mappings_fill_the_frame_differently`
 - `tracedraw_core::live::tests::visual_bounds_follow_the_live_effects`
 - `envelope_edit::tests::dragging_a_node_is_one_step_in_the_chosen_mode`

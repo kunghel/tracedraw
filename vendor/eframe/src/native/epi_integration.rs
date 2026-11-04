@@ -64,21 +64,34 @@ pub fn viewport_builder(
         viewport_builder.inner_size
     };
 
+    // TraceDraw: the primary monitor is kept for the application, and a
+    // centred window is centred where that monitor lies on the desktop,
+    // not from the desktop's top-left corner (#1800, vendor/README.md).
     #[cfg(not(target_os = "ios"))]
-    if native_options.centered {
-        profiling::scope!("center");
-        if let Some(monitor) = event_loop
+    {
+        let primary = event_loop
             .primary_monitor()
-            .or_else(|| event_loop.available_monitors().next())
-        {
-            let monitor_size = monitor
-                .size()
-                .to_logical::<f32>(egui_zoom_factor as f64 * monitor.scale_factor());
-            let inner_size = inner_size_points.unwrap_or(egui::Vec2 { x: 800.0, y: 600.0 });
-            if 0.0 < monitor_size.width && 0.0 < monitor_size.height {
-                let x = (monitor_size.width - inner_size.x) / 2.0;
-                let y = (monitor_size.height - inner_size.y) / 2.0;
-                viewport_builder = viewport_builder.with_position([x, y]);
+            .or_else(|| event_loop.available_monitors().next());
+        if let Some(monitor) = &primary {
+            let scale = monitor.scale_factor();
+            let pos = monitor.position().to_logical::<f32>(scale);
+            let size = monitor.size().to_logical::<f32>(scale);
+            super::monitor_place::remember_primary([pos.x, pos.y, size.width, size.height]);
+        }
+        if native_options.centered {
+            profiling::scope!("center");
+            if let Some(monitor) = primary {
+                let points = egui_zoom_factor as f64 * monitor.scale_factor();
+                let monitor_pos = monitor.position().to_logical::<f32>(points);
+                let monitor_size = monitor.size().to_logical::<f32>(points);
+                let inner_size = inner_size_points.unwrap_or(egui::Vec2 { x: 800.0, y: 600.0 });
+                if 0.0 < monitor_size.width && 0.0 < monitor_size.height {
+                    let [x, y] = super::monitor_place::centred_on(
+                        [monitor_pos.x, monitor_pos.y, monitor_size.width, monitor_size.height],
+                        [inner_size.x, inner_size.y],
+                    );
+                    viewport_builder = viewport_builder.with_position([x, y]);
+                }
             }
         }
     }
@@ -282,6 +295,16 @@ impl EpiIntegration {
         } = event
         {
             self.can_drag_window = true;
+        }
+
+        // TraceDraw: a paste shortcut that the application's gate says
+        // must not read the clipboard's text is not handed to egui-winit,
+        // which would read it (see vendor/README.md, #1488).
+        if super::paste_gate::blocks(event) {
+            return EventResponse {
+                repaint: true,
+                consumed: egui_winit.egui_ctx().egui_wants_keyboard_input(),
+            };
         }
 
         egui_winit.on_window_event(window, event)

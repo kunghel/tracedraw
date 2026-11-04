@@ -443,6 +443,7 @@ dialog.export_preset_none = "(कोई नहीं)" # mt
 dialog.export_preset_add = "इन सेटिंग्स को प्रीसेट के रूप में सहेजें" # mt
 dialog.export_preset_rename = "प्रीसेट का नाम बदलें" # mt
 dialog.export_preset_delete = "प्रीसेट हटाएँ" # mt
+dialog.export_preset_delete_question = "प्रीसेट \"{name}\" हटाएँ?" # mt
 dialog.export_preset_name = "प्रीसेट का नाम" # mt
 dialog.export_estimate = "फ़ाइल का आकार: लगभग {size}"
 dialog.export_output = "{w} x {h} पिक्सेल, {dpi} dpi, {mode}"

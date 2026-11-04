@@ -81,6 +81,44 @@ change marked `TraceDraw:` in a comment.
   0.5 while pressed. The arithmetic is in `web/pen_pressure.rs`, which
   uses nothing of the crate but egui; TraceDraw's tests include and run
   it (`eframe_web_pen_pressure::tests`).
+- Change: the application can keep a paste shortcut from egui-winit's
+  clipboard text read (#1488). egui-winit reads the clipboard as text on
+  every Ctrl+V, before the application sees the key. On X11, an owner
+  that holds a picture alone (`xclip -selection clipboard -t image/png`
+  with a picture of about 1 MB) answers that text request with its
+  picture in parts (INCR); the clipboard library stops after the first
+  part, and the owner then waits for the rest of that transfer forever
+  and answers no other request, so TraceDraw's own picture read timed
+  out, the picture never pasted and the window froze for about 24 s.
+  `native/paste_gate.rs` holds `set_paste_text_gate` (exported from the
+  crate root) and `blocks`, which `EpiIntegration::on_window_event`
+  calls before handing an event to egui-winit: a real paste key press
+  (`is_paste_key`, egui-winit's `is_paste_command` with its logical or
+  physical key) is not handed over when the gate answers `false`, so
+  egui-winit neither reads the clipboard nor sends a paste event, as when
+  the clipboard holds no text; the application sees the key's release
+  and pastes by itself. `blocks` also follows the modifier keys from
+  `ModifiersChanged`. With no gate set, nothing changes. TraceDraw's
+  gate (`clipboard::paste_may_read_text`) reads the X11 clipboard's
+  types and lets the text be read only when a text type is offered.
+  TraceDraw's tests include and run the key test
+  (`clipboard::eframe_paste_gate::tests`). When moving to a newer egui,
+  check whether egui-winit still reads the text this way.
+- Change: a window started `centered` is centred where the primary
+  monitor lies on the desktop, and the primary monitor's rectangle is
+  kept for the application (#1800). `epi_integration::viewport_builder`
+  centred the window by the monitor's size from the desktop's top-left
+  corner, and egui's `ViewportInfo` gives the application a monitor's
+  size but not its position, so on a desktop whose primary monitor does
+  not hold that corner (X11, the primary at (1544, 2160) below two
+  others) the splash screen and the main window opened on the top-left
+  monitor. `native/monitor_place.rs` holds `centred_on` (the
+  arithmetic), `remember_primary` and `primary_monitor` (exported from
+  the crate root: `[x, y, width, height]` in system points); the
+  application centres its main window with them
+  (`splash::open_main_window`). TraceDraw's tests include and run it
+  (`splash::eframe_monitor_place::tests`). When moving to a newer
+  eframe, check whether it centres with the monitor's position.
 - Drop the copy and the `[patch.crates-io]` entry when the workspace moves
   to egui/eframe 0.37 or later: what holds that back is the egui 0.37
   API migration across the app. The fixed-function painter has no

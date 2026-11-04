@@ -33,6 +33,53 @@ pub const IMAGE_TYPES: [&str; 10] = [
     "image/pjpeg",
 ];
 
+/// The text types the clipboard library asks for, in its order.
+pub const TEXT_TYPES: [&str; 3] = [
+    "UTF8_STRING",
+    "text/plain;charset=utf-8",
+    "text/plain;charset=UTF-8",
+];
+
+/// The type of a list of copied files.
+pub const FILES_TYPE: &str = "text/uri-list";
+
+/// Whether `offered` (the clipboard's targets) holds `wanted`.
+fn holds(offered: &[String], wanted: &str) -> bool {
+    offered
+        .iter()
+        .any(|o| o.trim().eq_ignore_ascii_case(wanted))
+}
+
+/// What the X11 clipboard offers, read from its list of types before
+/// anything else is asked for (#1488).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Offer {
+    /// No program owns the clipboard: nothing to read.
+    Empty,
+    /// The owner gave no list of its types (no answer in time, or a
+    /// refusal): a read would wait in vain.
+    Silent,
+    /// The names of the types the owner offers.
+    Types(Vec<String>),
+}
+
+impl Offer {
+    /// Whether the clipboard's text may be asked for. Only an owner that
+    /// offers a text type is asked: a program that holds a picture alone
+    /// may answer a text request with its picture sent in parts, and the
+    /// clipboard library, which wanted text, stops after the first part;
+    /// the owner then waits for the rest of that transfer and answers no
+    /// other request, so the picture could not be pasted (#1488).
+    pub fn has_text(&self) -> bool {
+        matches!(self, Offer::Types(t) if TEXT_TYPES.iter().any(|w| holds(t, w)))
+    }
+
+    /// Whether a list of copied files may be asked for (the same reason).
+    pub fn has_files(&self) -> bool {
+        matches!(self, Offer::Types(t) if holds(t, FILES_TYPE))
+    }
+}
+
 /// How long the owner of the clipboard may take to answer a request (it
 /// may encode a large picture first).
 const ANSWER_WAIT: Duration = Duration::from_secs(3);
@@ -52,7 +99,7 @@ pub fn image_types(offered: &[String]) -> Vec<&'static str> {
     IMAGE_TYPES
         .iter()
         .copied()
-        .filter(|t| offered.iter().any(|o| o.trim().eq_ignore_ascii_case(t)))
+        .filter(|t| holds(offered, t))
         .collect()
 }
 
@@ -223,6 +270,26 @@ impl Reader {
         }
     }
 
+    /// Whether a program owns the clipboard.
+    fn owned(&self) -> bool {
+        self.conn
+            .get_selection_owner(self.clipboard)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|r| r.owner != x11rb::NONE)
+    }
+
+    /// What the clipboard offers: its types, read once.
+    fn offer(&self) -> Offer {
+        if !self.owned() {
+            return Offer::Empty;
+        }
+        match self.offered() {
+            types if types.is_empty() => Offer::Silent,
+            types => Offer::Types(types),
+        }
+    }
+
     /// The names of the types the clipboard offers; empty when it has
     /// no owner or the owner does not answer.
     fn offered(&self) -> Vec<String> {
@@ -278,6 +345,13 @@ impl Drop for Reader {
         let _ = self.conn.destroy_window(self.window);
         let _ = self.conn.flush();
     }
+}
+
+/// What the clipboard of the X server of `DISPLAY` offers; `None` when
+/// there is no X server.
+pub fn offer() -> Option<Offer> {
+    std::env::var_os("DISPLAY")?;
+    Some(Reader::open(None)?.offer())
 }
 
 /// The picture on the clipboard of the X server of `DISPLAY`; `None`
@@ -348,7 +422,12 @@ mod tests {
     struct Server {
         display: String,
         child: Option<std::process::Child>,
+        /// One test at a time owns the clipboard: two tests in parallel
+        /// would pick the same display and take each other's clipboard.
+        _turn: std::sync::MutexGuard<'static, ()>,
     }
+
+    static X_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl Drop for Server {
         fn drop(&mut self) {
@@ -360,11 +439,13 @@ mod tests {
     }
 
     fn x_server() -> Option<Server> {
+        let turn = X_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(d) = std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
             if x11rb::connect(Some(&d)).is_ok() {
                 return Some(Server {
                     display: d,
                     child: None,
+                    _turn: turn,
                 });
             }
         }
@@ -385,15 +466,20 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .ok()?;
-            let server = Server {
-                display,
-                child: Some(child),
-            };
+            let mut child = Some(child);
             for _ in 0..100 {
-                if x11rb::connect(Some(&server.display)).is_ok() {
-                    return Some(server);
+                if x11rb::connect(Some(&display)).is_ok() {
+                    return Some(Server {
+                        display,
+                        child,
+                        _turn: turn,
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(50));
+            }
+            if let Some(mut c) = child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
             }
         }
         None
@@ -407,6 +493,21 @@ mod tests {
         png: Vec<u8>,
         part: usize,
         pause: Duration,
+        ready: std::sync::mpsc::Sender<()>,
+    ) -> std::thread::JoinHandle<()> {
+        serve_as(display, png, part, pause, false, ready)
+    }
+
+    /// [`serve`], or with `any_type` an owner that behaves like `xclip -t
+    /// image/png`: it offers image/png alone but answers a request for
+    /// any type with its picture in parts, and while a transfer runs it
+    /// waits for that one's reader and answers no other request.
+    fn serve_as(
+        display: String,
+        png: Vec<u8>,
+        part: usize,
+        pause: Duration,
+        any_type: bool,
         ready: std::sync::mpsc::Sender<()>,
     ) -> std::thread::JoinHandle<()> {
         use x11rb::protocol::xproto::{
@@ -451,11 +552,17 @@ mod tests {
             let mut transfer: Option<(Window, Atom, usize)> = None;
             let until = Instant::now() + Duration::from_secs(30);
             while Instant::now() < until {
-                let Some(event) = conn.poll_for_event().expect("event") else {
+                // The X server stopped at the end of a test: done.
+                let Ok(event) = conn.poll_for_event() else {
+                    return;
+                };
+                let Some(event) = event else {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 };
                 match event {
+                    // Busy with a transfer: other readers wait.
+                    Event::SelectionRequest(_) if any_type && transfer.is_some() => {}
                     Event::SelectionRequest(e) => {
                         let mut property = e.property;
                         if e.target == targets {
@@ -467,7 +574,7 @@ mod tests {
                                 &[targets, png_type],
                             )
                             .expect("targets");
-                        } else if e.target == png_type {
+                        } else if e.target == png_type || any_type {
                             conn.change_window_attributes(
                                 e.requestor,
                                 &ChangeWindowAttributesAux::new()
@@ -525,6 +632,121 @@ mod tests {
         })
     }
 
+    /// A picture larger than one part of a transfer, and its PNG.
+    fn large_picture() -> (image::RgbaImage, Vec<u8>) {
+        let img = image::RgbaImage::from_fn(96, 64, |x, y| {
+            let v = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503)) as u8;
+            image::Rgba([v, v.wrapping_mul(3), x as u8, 255])
+        });
+        let png = png_of(&img);
+        assert!(png.len() > 8 * 1024, "the picture comes in parts");
+        (img, png)
+    }
+
+    #[test]
+    fn text_and_files_are_asked_for_only_when_offered() {
+        let types = |names: &[&str]| Offer::Types(names.iter().map(|n| n.to_string()).collect());
+        assert!(!types(&["TARGETS", "image/png"]).has_text());
+        assert!(!types(&["TARGETS", "image/png"]).has_files());
+        assert!(types(&["TARGETS", "UTF8_STRING", "image/png"]).has_text());
+        assert!(types(&["text/plain;charset=UTF-8"]).has_text());
+        // Plain `text/plain` is not one the clipboard library asks for.
+        assert!(!types(&["text/plain", "STRING"]).has_text());
+        assert!(types(&["text/uri-list", "x-special/gnome-copied-files"]).has_files());
+        assert!(!types(&["text/uri-list"]).has_text());
+        for nothing in [Offer::Empty, Offer::Silent] {
+            assert!(!nothing.has_text());
+            assert!(!nothing.has_files());
+        }
+    }
+
+    /// An owner like `xclip -selection clipboard -t image/png` with a
+    /// large picture (#1488): it offers the picture alone and is not
+    /// asked for text, so its picture arrives whole. A text request it
+    /// answers with the picture in parts, and a reader that stops after
+    /// the first part (as the clipboard library did when it wanted text)
+    /// leaves it waiting: it answers nothing more.
+    #[test]
+    fn an_owner_holding_a_picture_alone_is_not_asked_for_text() {
+        let Some(server) = x_server() else {
+            eprintln!("no X server (DISPLAY or Xvfb): skipped");
+            return;
+        };
+        let (img, png) = large_picture();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let owner = serve_as(
+            server.display.clone(),
+            png.clone(),
+            2048,
+            Duration::ZERO,
+            true,
+            tx,
+        );
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("owner ready");
+        let reader = Reader::open(Some(&server.display)).expect("reader");
+        let offer = reader.offer();
+        assert_eq!(
+            offer,
+            Offer::Types(vec!["TARGETS".to_string(), "image/png".to_string()])
+        );
+        assert!(!offer.has_text());
+        assert!(!offer.has_files());
+        assert_eq!(reader.image().expect("the picture"), img);
+        owner.join().expect("owner");
+
+        // The same owner, asked for text by a reader that gives up after
+        // the transfer's start: nothing answers any more.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _owner = serve_as(server.display.clone(), png, 2048, Duration::ZERO, true, tx);
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("owner ready");
+        let utf8 = reader
+            .conn
+            .intern_atom(false, b"UTF8_STRING")
+            .expect("atom")
+            .reply()
+            .expect("atom")
+            .atom;
+        let c = &reader.conn;
+        c.convert_selection(
+            reader.window,
+            reader.clipboard,
+            utf8,
+            reader.slot,
+            x11rb::CURRENT_TIME,
+        )
+        .expect("convert");
+        c.flush().expect("flush");
+        let window = reader.window;
+        let answered = reader.wait(Instant::now() + ANSWER_WAIT, |event| match event {
+            Event::SelectionNotify(e) if e.requestor == window => Some(e.property),
+            _ => None,
+        });
+        assert_eq!(answered, Some(reader.slot), "the text request is answered");
+        let start = c
+            .get_property(true, window, reader.slot, AtomEnum::ANY, 0, 16)
+            .expect("start")
+            .reply()
+            .expect("start");
+        assert_eq!(start.type_, reader.incr, "with the picture in parts");
+        c.flush().expect("flush");
+        // The first part comes; it is not taken, as the text read left it.
+        let slot = reader.slot;
+        let first = reader.wait(Instant::now() + PART_WAIT, |event| match event {
+            Event::PropertyNotify(e)
+                if e.window == window && e.atom == slot && e.state == Property::NEW_VALUE =>
+            {
+                Some(())
+            }
+            _ => None,
+        });
+        assert!(first.is_some(), "the first part came");
+        // Another reader (a window of its own) gets no answer at all.
+        let other = Reader::open(Some(&server.display)).expect("reader");
+        assert_eq!(other.offer(), Offer::Silent);
+    }
+
     /// A screenshot tool that takes 30 ms over each part of its picture
     /// (the clipboard library gave each part 10 ms): the picture arrives
     /// whole on the first paste (#1488).
@@ -534,12 +756,7 @@ mod tests {
             eprintln!("no X server (DISPLAY or Xvfb): skipped");
             return;
         };
-        let img = image::RgbaImage::from_fn(96, 64, |x, y| {
-            let v = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503)) as u8;
-            image::Rgba([v, v.wrapping_mul(3), x as u8, 255])
-        });
-        let png = png_of(&img);
-        assert!(png.len() > 8 * 1024, "the picture comes in parts");
+        let (img, png) = large_picture();
         let (tx, rx) = std::sync::mpsc::channel();
         let owner = serve(
             server.display.clone(),

@@ -1462,6 +1462,28 @@ mod tests {
         assert!(texts(&app).is_empty());
     }
 
+    /// A paragraph text frame left empty stays, as a frame to type or
+    /// flow into later, in the one step that made it; only an artistic
+    /// text left empty goes (#1822).
+    #[test]
+    fn an_empty_text_frame_stays() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let size = tracedraw_core::geometry::Size::new(40.0, 60.0);
+        app.start_text(Point::new(10.0, 10.0), Some(size));
+        app.finish_text();
+        app.start_text(Point::new(60.0, 10.0), Some(size));
+        app.finish_text();
+        assert_eq!(texts(&app), vec![String::new(), String::new()]);
+        assert_eq!(app.engine.history_labels().0.len(), 2);
+        app.undo();
+        assert_eq!(texts(&app), vec![String::new()]);
+        // Esc on an empty artistic text still leaves nothing.
+        app.start_text(Point::new(10.0, 100.0), None);
+        app.finish_text();
+        assert_eq!(texts(&app), vec![String::new()]);
+    }
+
     /// A text emptied by deleting its characters goes; Undo gives it
     /// back with its characters, not as an empty object (#1481).
     #[test]

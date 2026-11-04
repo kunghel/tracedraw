@@ -22,7 +22,11 @@
 //!   pseudo-random share; Local scales them by how near they are to the
 //!   centre (full at the centre, none at the farthest node); Smooth
 //!   draws a wave through the tips, a sine's shape, which never crosses
-//!   itself however high the teeth are.
+//!   itself however high the teeth are. With `shifted_tips` (the teeth
+//!   `.cdr` files hold, #1715) the outline's first point is a tip, on
+//!   the normal's side, and every tip is moved by a fifth of the way
+//!   from the middle of the outline's box to the centre instead of
+//!   leaning by `tilt_deg`: the handle's place sets the lean.
 //! - Twister turns every point about the centre by `angle` times one
 //!   less its distance over the farthest distance, so the points at the
 //!   centre turn by the whole angle and the farthest point stays where it
@@ -64,6 +68,12 @@ pub enum Distort {
         local: bool,
         #[serde(default, skip_serializing_if = "is_zero")]
         tilt_deg: f64,
+        /// The teeth as `.cdr` files hold them (#1715): the first point
+        /// of the outline is a tip, on the normal's side, and the tips
+        /// are moved by [`SHIFT_SHARE`] of the way from the middle of the
+        /// outline's box to the centre; `tilt_deg` is not used.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shifted_tips: bool,
     },
     /// Turned about the centre, `angle_deg` at the centre and none at
     /// the farthest point (counterclockwise when positive).
@@ -95,6 +105,7 @@ impl Distort {
                 smooth,
                 local,
                 tilt_deg,
+                shifted_tips,
                 ..
             } => Distort::Zipper {
                 amplitude,
@@ -104,6 +115,7 @@ impl Distort {
                 smooth,
                 local,
                 tilt_deg,
+                shifted_tips,
             },
             Distort::Twister { angle_deg, .. } => Distort::Twister {
                 angle_deg,
@@ -121,6 +133,13 @@ pub const MAX_AMPLITUDE: f64 = 1000.0;
 pub const MAX_ANGLE: f64 = 3600.0;
 pub const MAX_AMOUNT: f64 = 200.0;
 pub const MAX_TILT: f64 = 180.0;
+
+/// How far shifted tips move (see `Distort::Zipper::shifted_tips`): this
+/// share of the way from the middle of the outline's box to the centre.
+/// The `.cdr` files of #1715 and #1671 (Zipper on a line, the centre
+/// moved about between them) have every tip of the normal's side moved
+/// so, whatever the amplitude, and the other points not at all.
+pub const SHIFT_SHARE: f64 = 0.2;
 
 fn finite(p: Point) -> bool {
     p.x.is_finite() && p.y.is_finite()
@@ -163,6 +182,7 @@ pub fn distort_in(path: &BezPath, b: Rect, how: Distort) -> BezPath {
             smooth,
             local,
             tilt_deg,
+            shifted_tips,
             ..
         } => {
             let a = if amplitude.is_finite() {
@@ -185,6 +205,7 @@ pub fn distort_in(path: &BezPath, b: Rect, how: Distort) -> BezPath {
                     smooth,
                     local,
                     tilt,
+                    shift: shifted_tips.then(|| (c - b.center()) * SHIFT_SHARE),
                 },
             )
         }
@@ -401,6 +422,9 @@ struct Teeth {
     smooth: bool,
     local: bool,
     tilt: f64,
+    /// Shifted tips: the first point is a tip and every tip is moved by
+    /// this, `tilt` left aside.
+    shift: Option<Vec2>,
 }
 
 /// How far a leaning tip goes along the outline at most, in teeth
@@ -447,6 +471,7 @@ fn zipper(path: &BezPath, c: Point, teeth: Teeth) -> BezPath {
         smooth,
         local,
         tilt,
+        shift: tip_shift,
     } = teeth;
     if frequency == 0 || amplitude <= 0.0 {
         return path.clone();
@@ -523,8 +548,14 @@ fn zipper(path: &BezPath, c: Point, teeth: Teeth) -> BezPath {
                         n = between(normal(b, 1.0), n);
                     }
                 }
-                // Tips alternate along the whole subpath.
-                let sign = if pts.len() % 2 == 1 { 1.0 } else { -1.0 };
+                // Tips alternate along the whole subpath; shifted tips
+                // start with a tip.
+                let first_tip = tip_shift.is_some();
+                let sign = if (pts.len() % 2 == 1) != first_tip {
+                    1.0
+                } else {
+                    -1.0
+                };
                 let mut a = amplitude;
                 if random {
                     a *= share(seg_index, k);
@@ -547,10 +578,14 @@ fn zipper(path: &BezPath, c: Point, teeth: Teeth) -> BezPath {
                 // turned by `tilt`. The outline's direction is the normal
                 // turned back a quarter.
                 let across = Vec2::new(-n.y, n.x);
-                let moved = if sign > 0.0 {
-                    (n * side + across * shift) * a
-                } else {
-                    n * (-side * a)
+                let moved = match tip_shift {
+                    // The teeth of `.cdr` files: tips on the normal's
+                    // side moved by the shift, bases straight out on the
+                    // other (#1715).
+                    Some(v) if sign > 0.0 => n * a + v,
+                    Some(_) => n * -a,
+                    None if sign > 0.0 => (n * side + across * shift) * a,
+                    None => n * (-side * a),
                 };
                 pts.push((p + moved, Vec2::new(n.y, -n.x), 0.0));
             }
@@ -841,6 +876,7 @@ mod tests {
             smooth,
             local,
             tilt_deg: 0.0,
+            shifted_tips: false,
         }
     }
 
@@ -858,6 +894,7 @@ mod tests {
                 smooth,
                 local: false,
                 tilt_deg,
+                shifted_tips: false,
             },
         )
     }
@@ -1084,6 +1121,7 @@ mod tests {
                 smooth: true,
                 local: false,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
         );
         assert_eq!((subpath_count(&out), closes(&out)), (1, 1));
@@ -1123,6 +1161,7 @@ mod tests {
             smooth: false,
             local: false,
             tilt_deg: 0.0,
+            shifted_tips: false,
         };
         assert_eq!(distort(&sq, none), sq);
         // Random: smaller teeth, the same each time.
@@ -1159,6 +1198,7 @@ mod tests {
                 smooth: false,
                 local: false,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
         );
         let n = nodes(&out);
@@ -1187,6 +1227,7 @@ mod tests {
                 smooth: true,
                 local: false,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
         );
         let n = nodes(&out);
@@ -1225,6 +1266,7 @@ mod tests {
                 smooth: false,
                 local: false,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
         );
         let n = nodes(&out);
@@ -1462,6 +1504,7 @@ mod tests {
                 smooth: true,
                 local: true,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
             Distort::Twister {
                 angle_deg: 1e12,
@@ -1483,5 +1526,82 @@ mod tests {
             BezPath::new()
         );
         let _ = Rect::ZERO;
+    }
+    /// Shifted tips, the teeth of `.cdr` files (#1715), as the Zipper
+    /// files of #1736 draw them on a 133.39 mm line: the points alternate
+    /// from a tip on the normal's side (up for a line to the right), the
+    /// tips moved by a fifth of the way from the line's middle to the
+    /// centre whatever the amplitude, the bases straight down. With the
+    /// centre 60.33 mm left of the middle and 1.86 mm under the line, the
+    /// first tip lies 12.07 mm left of the line's start and the tips
+    /// reach 0.37 mm less high than the bases go low ("Zipper Traning
+    /// Data 17" to "21"). Older files have no such teeth.
+    #[test]
+    fn shifted_tips_start_with_a_tip_moved_toward_the_centre() {
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((133.39, 0.0));
+        let mid = Point::new(66.695, 0.0);
+        let center = mid + Vec2::new(-60.33, -1.86);
+        for a in [16.674, 6.836] {
+            let z = Distort::Zipper {
+                amplitude: a,
+                frequency: 15,
+                center: Some(center),
+                random: false,
+                smooth: false,
+                local: false,
+                tilt_deg: 30.0,
+                shifted_tips: true,
+            };
+            let out = distort(&line, z);
+            let pts: Vec<Point> = out
+                .elements()
+                .iter()
+                .filter_map(|e| match *e {
+                    PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(p),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(pts.len(), 17);
+            let shift = Vec2::new(-60.33, -1.86) * SHIFT_SHARE;
+            for (k, p) in pts.iter().enumerate() {
+                let base = Point::new(133.39 * k as f64 / 16.0, 0.0);
+                let want = if k % 2 == 0 {
+                    base + Vec2::new(0.0, a) + shift
+                } else {
+                    base + Vec2::new(0.0, -a)
+                };
+                assert!((*p - want).hypot() < 1e-6, "{k}: {p:?} {want:?}");
+            }
+            let b = out.bounding_box();
+            assert!((b.x0 + 12.066).abs() < 1e-6, "{b:?}");
+            assert!(
+                (b.y1 - (a - 0.372)).abs() < 1e-6 && (b.y0 + a).abs() < 1e-6,
+                "{b:?}"
+            );
+        }
+        let old: Distort =
+            serde_json::from_str(r#"{"mode":"zipper","amplitude":5.0,"frequency":3}"#)
+                .expect("old");
+        assert!(matches!(
+            old,
+            Distort::Zipper {
+                shifted_tips: false,
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&Distort::Zipper {
+            amplitude: 5.0,
+            frequency: 3,
+            center: None,
+            random: false,
+            smooth: false,
+            local: false,
+            tilt_deg: 0.0,
+            shifted_tips: true,
+        })
+        .expect("json");
+        assert!(json.contains(r#""shifted_tips":true"#), "{json}");
     }
 }

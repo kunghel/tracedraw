@@ -443,6 +443,7 @@ dialog.export_preset_none = "（無）" # mt
 dialog.export_preset_add = "將這些設定儲存為預設集" # mt
 dialog.export_preset_rename = "重新命名預設集" # mt
 dialog.export_preset_delete = "刪除預設集" # mt
+dialog.export_preset_delete_question = "刪除預設「{name}」?" # mt
 dialog.export_preset_name = "預設集名稱" # mt
 dialog.export_estimate = "檔案大小：約 {size}"
 dialog.export_output = "{w} x {h} 像素，{dpi} dpi，{mode}"

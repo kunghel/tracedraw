@@ -16,6 +16,14 @@ pub(crate) mod winit_integration;
 // (see vendor/README.md, #787).
 mod window_start;
 
+// TraceDraw: the application may keep a paste shortcut from egui-winit's
+// clipboard text read (see vendor/README.md, #1488).
+pub(crate) mod paste_gate;
+
+// TraceDraw: windows are centred where the primary monitor lies on the
+// desktop (see vendor/README.md, #1800).
+pub(crate) mod monitor_place;
+
 #[cfg(feature = "glow")]
 mod glow_integration;
 

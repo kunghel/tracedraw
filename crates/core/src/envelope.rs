@@ -345,6 +345,24 @@ impl Frame {
         }
     }
 
+    /// Bend segment `seg` so that its point at `t` moves by `d`, its two
+    /// nodes staying put: both handles move, the nearer one more, by
+    /// `k (1 - t) d` and `k t d` with `k = 1 / (3 t (1 - t) ((1 - t)² +
+    /// t²))`, which makes the point follow `d` exactly (the Shape tool's
+    /// segment bend); `t` is kept within 0.02 to 0.98. The neighbouring
+    /// segments keep their handles (#1339).
+    pub fn bend_segment(&mut self, seg: usize, t: f64, d: Vec2) {
+        self.fix();
+        if seg >= self.nodes.len() || !t.is_finite() || !(d.x.is_finite() && d.y.is_finite()) {
+            return;
+        }
+        let t = t.clamp(0.02, 0.98);
+        let u = 1.0 - t;
+        let k = 1.0 / (3.0 * t * u * (u * u + t * t));
+        self.move_handle(seg, 0, d * (k * u));
+        self.move_handle(seg, 1, d * (k * t));
+    }
+
     /// Split segment `seg` at `t` (0..1) with a new node where the curve
     /// was, keeping the frame's shape. Returns the new node's number.
     pub fn add_node(&mut self, seg: usize, t: f64) -> Option<usize> {
@@ -906,6 +924,42 @@ mod tests {
 
     fn close(a: Point, b: Point) -> bool {
         (a - b).hypot() < 1e-6
+    }
+
+    /// Bending a segment moves its point at `t` exactly by the drag,
+    /// keeps its nodes and the other segments, and holds `t` off the
+    /// ends (#1339).
+    #[test]
+    fn bending_a_segment_moves_its_point_and_keeps_its_nodes() {
+        let b = Rect::new(0.0, 0.0, 40.0, 20.0);
+        for t in [0.5, 0.25, 0.9] {
+            let mut f = Frame::around(b);
+            let before = f.clone();
+            let at = f.segment(0).eval(t);
+            f.bend_segment(0, t, Vec2::new(1.0, -6.0));
+            assert!(
+                close(f.segment(0).eval(t), at + Vec2::new(1.0, -6.0)),
+                "t {t}"
+            );
+            assert_eq!(f.nodes, before.nodes);
+            for i in 1..f.len() {
+                assert_eq!(f.segment(i), before.segment(i), "segment {i}");
+            }
+        }
+        // Grabbed at an end: held at 0.02, no endless handles.
+        let mut f = Frame::around(b);
+        f.bend_segment(0, 0.0, Vec2::new(0.0, -1.0));
+        assert!(f
+            .handles
+            .iter()
+            .flatten()
+            .all(|h| h.x.is_finite() && h.y.is_finite()));
+        // Out of range or not a number: nothing moves.
+        let mut f = Frame::around(b);
+        f.bend_segment(99, 0.5, Vec2::new(0.0, -1.0));
+        f.bend_segment(0, f64::NAN, Vec2::new(0.0, -1.0));
+        f.bend_segment(0, 0.5, Vec2::new(f64::INFINITY, 0.0));
+        assert_eq!(f, Frame::around(b));
     }
 
     /// A frame made from an outline follows it (#993): a rectangle drawn

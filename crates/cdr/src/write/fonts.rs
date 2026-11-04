@@ -169,11 +169,11 @@ fn file_face(f: &ttf_parser::Face) -> Option<(u16, bool)> {
 /// style bits (`fsSelection` bold and italic) when that is the font's
 /// family (name ID 1, as "Khand" is for the bold file), by its weight
 /// when it is the font's typographic family (name ID 16: "Khand" for a
-/// "Khand Medium" file, written at 500). A style the file lacks that
-/// TraceDraw draws by thickening or slanting it (bold text in a regular
-/// face, italic text in an upright one) is kept, as are variable fonts,
-/// stand-ins of other families and faces named with a weight (see
-/// [`split_family`]).
+/// "Khand Medium" file, written at 500). Italic text of an upright file
+/// is written upright, the slant TraceDraw gives it left out (see
+/// [`slanted_upright`]). Bold that TraceDraw draws by thickening a
+/// regular face is kept, as are variable fonts, stand-ins of other
+/// families and faces named with a weight (see [`split_family`]).
 pub(crate) fn drawn_style(face: &FontFace) -> Option<(u16, bool)> {
     let f = ttf_parser::Face::parse(face.data.as_deref()?, 0).ok()?;
     let (weight, italic) = file_face(&f)?;
@@ -198,8 +198,46 @@ pub(crate) fn drawn_style(face: &FontFace) -> Option<(u16, bool)> {
     } else {
         return None;
     };
-    let italic = face.italic || italic;
+    // The slant of the face the file holds, not the text's (#1733).
     (written != asked || italic != face.italic).then_some((written, italic))
+}
+
+/// The text of `face` is italic and its font file holds an upright face
+/// of the family the text names (its family, name ID 1, or typographic
+/// family, ID 16, is the text's family or, for a family named with its
+/// weight, the family without the weight), which TraceDraw slants
+/// itself. Such text is written upright, as the face embedded: written
+/// italic, the program that reads the files looked for an italic face
+/// neither the file nor the system has and reported it missing ("RAJ
+/// 100-Bold-Italic" beside the embedded "RAJ 100" Bold, drawn with that
+/// bold face, in the video of issue #1733), and it offers no italic for
+/// such a font itself (the reporter could not set one). Not for variable
+/// fonts, which slant on an axis, nor for stand-ins of other families.
+pub(crate) fn slanted_upright(face: &FontFace) -> bool {
+    if !face.italic {
+        return false;
+    }
+    let Some(f) = face
+        .data
+        .as_deref()
+        .and_then(|d| ttf_parser::Face::parse(d, 0).ok())
+    else {
+        return false;
+    };
+    if !matches!(file_face(&f), Some((_, false))) {
+        return false;
+    }
+    let is = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+    let typographic = typographic_family(&f);
+    is(&english_name(&f, 1), &face.family)
+        || is(&typographic, &face.family)
+        || crate::parse::family_weight(&face.family).is_some_and(|(head, _)| is(&typographic, head))
+}
+
+/// The italic text of `face` is written with: its own, unless TraceDraw
+/// slants an upright file for it ([`slanted_upright`]).
+pub(crate) fn written_italic(face: &FontFace) -> bool {
+    face.italic && !slanted_upright(face)
 }
 
 /// The kind of a face's outlines as files name it in the font table, the
@@ -245,7 +283,7 @@ pub(crate) fn face_tech(faces: &[FontFace]) -> FaceTech {
         };
         let tech = (outline_kind(&f), english_name(&f, 5));
         if let Some((head, _)) = split_family(&face.family, face.bold, faces) {
-            out.entry((head, face.bold, face.italic))
+            out.entry((head, face.bold, written_italic(face)))
                 .or_insert_with(|| tech.clone());
         } else if let Some((weight, italic)) = drawn_style(face) {
             // Under the style the text is written with (#1733).
@@ -545,7 +583,7 @@ fn plan(
         let face = &faces[i];
         let mut inf = info(face);
         if let Some((_, w)) = &splits[i] {
-            inf.requested = weight_flags(*w, face.italic);
+            inf.requested = weight_flags(*w, written_italic(face));
             if !inf.own {
                 inf.flags = inf.requested;
             }

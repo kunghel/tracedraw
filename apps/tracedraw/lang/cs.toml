@@ -443,6 +443,7 @@ dialog.export_preset_none = "(žádná)" # mt
 dialog.export_preset_add = "Uložit nastavení jako předvolbu" # mt
 dialog.export_preset_rename = "Přejmenovat předvolbu" # mt
 dialog.export_preset_delete = "Odstranit předvolbu" # mt
+dialog.export_preset_delete_question = "Odstranit předvolbu „{name}“?" # mt
 dialog.export_preset_name = "Název předvolby" # mt
 dialog.export_estimate = "Velikost souboru: přibližně {size}"
 dialog.export_output = "{w} x {h} pixelů, {dpi} dpi, {mode}"

@@ -98,6 +98,19 @@ clipboard the desktop keeps beside it is read when it finds nothing.
 TraceDraw keeps one connection to the system clipboard for the session
 instead of opening one for each read.
 
+On an X11 desktop the clipboard's text and its list of copied files are
+asked for only when its list of types offers them (`UTF8_STRING` or
+`text/plain;charset=utf-8` for text, `text/uri-list` for files), both
+by the paste itself and by the windowing layer, which reads the text on
+every paste shortcut (`clipboard::paste_may_read_text`, the gate in
+`vendor/eframe`, see `vendor/README.md`). A program that holds a picture
+alone, such as `xclip -selection clipboard -t image/png`, may answer a
+text request with its picture sent in parts; the text read stopped
+after the first part, and the program then waited for the rest and
+answered nobody, so a picture of about 1 MB never pasted and the window
+froze for about 24 s (#1488). An owner that gives no list of types, or
+no program owning the clipboard, is not asked for text either.
+
 ## Browser build
 
 The browser hands the clipboard only to paste events, and only as text:

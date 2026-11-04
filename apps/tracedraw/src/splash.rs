@@ -333,13 +333,43 @@ pub fn start_maximized(saved: [f32; 2], maximized: bool, monitor: Option<Vec2>) 
     wanted.x > m.x * 0.95 || wanted.y > m.y * 0.95
 }
 
-/// Where a window of `size` sits centred on a monitor of `monitor` (its
-/// top-left corner, never off the top or the left).
-pub fn centred_position(size: Vec2, monitor: Option<Vec2>) -> Option<Pos2> {
-    let m = monitor.filter(|m| m.x > 0.0 && m.y > 0.0)?;
-    let p = ((m - size) / 2.0).max(Vec2::ZERO);
-    Some(Pos2::new(p.x, p.y))
+/// Where a window of `size` sits centred on `monitor`, the monitor's
+/// rectangle on the desktop all monitors share (its top-left corner,
+/// never off the monitor's top or left). The monitor's own position
+/// counts: centred by the monitor's size from the desktop's corner, the
+/// window opened on the top-left monitor of a desktop whose primary
+/// monitor lies elsewhere (#1800).
+pub fn centred_position(size: Vec2, monitor: Option<Rect>) -> Option<Pos2> {
+    let m = monitor.filter(|m| m.width() > 0.0 && m.height() > 0.0)?;
+    let [x, y] = eframe_monitor_place::centred_on(
+        [m.min.x, m.min.y, m.width(), m.height()],
+        [size.x, size.y],
+    );
+    Some(Pos2::new(x, y))
 }
+
+/// The monitor the main window opens on, in system points: the primary
+/// monitor where it lies on the desktop, as the windowing layer gives it
+/// (`primary`, `[x, y, width, height]`; the splash screen is centred on
+/// it), else the monitor egui reports the window on (`current`, its size
+/// only), taken at the desktop's corner (Wayland, which places windows
+/// itself, tells no position).
+pub fn main_monitor(primary: Option<[f32; 4]>, current: Option<Vec2>) -> Option<Rect> {
+    let primary = primary
+        .filter(|[x, y, w, h]| x.is_finite() && y.is_finite() && *w > 0.0 && *h > 0.0)
+        .map(|[x, y, w, h]| Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)));
+    primary.or_else(|| {
+        current
+            .filter(|m| m.x > 0.0 && m.y > 0.0)
+            .map(|m| Rect::from_min_size(Pos2::ZERO, m))
+    })
+}
+
+/// The arithmetic of the patched eframe's window centring with its
+/// tests: the app centres the main window with it, and the copy in
+/// vendor/ is outside the workspace (vendor/README.md, #1800).
+#[path = "../../../vendor/eframe/src/native/monitor_place.rs"]
+mod eframe_monitor_place;
 
 /// The monitor's size in system points (pixels over the system's
 /// scaling), whatever the interface size: the unit the window's kept
@@ -374,7 +404,8 @@ pub fn main_window_builder(settings: &Settings, plain: bool) -> egui::ViewportBu
 pub fn open_main_window(ctx: &egui::Context, settings: &Settings) -> WindowGrow {
     use egui::ViewportCommand as V;
     let zoom = ctx.zoom_factor().max(0.01);
-    let monitor = monitor_in_system_points(ctx);
+    let screen = main_monitor(eframe::primary_monitor(), monitor_in_system_points(ctx));
+    let monitor = screen.map(|r| r.size());
     let size = main_window_size(settings.window_size, monitor);
     ctx.send_viewport_cmd(V::Decorations(true));
     // The splash window is made not resizable, which on X11 records its
@@ -391,7 +422,7 @@ pub fn open_main_window(ctx: &egui::Context, settings: &Settings) -> WindowGrow 
         maximize: true,
     });
     ctx.send_viewport_cmd(V::InnerSize(size / zoom));
-    if let Some(p) = centred_position(size, monitor) {
+    if let Some(p) = centred_position(size, screen) {
         ctx.send_viewport_cmd(V::OuterPosition((p.to_vec2() / zoom).to_pos2()));
     }
     ctx.send_viewport_cmd(V::Focus);
@@ -1234,12 +1265,62 @@ mod tests {
 
     #[test]
     fn the_main_window_is_centred() {
-        let p = centred_position(Vec2::new(1600.0, 900.0), Some(Vec2::new(1920.0, 1080.0)));
+        let at_origin = |w: f32, h: f32| Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h)));
+        let p = centred_position(Vec2::new(1600.0, 900.0), at_origin(1920.0, 1080.0));
         assert_eq!(p, Some(Pos2::new(160.0, 90.0)));
         // Larger than the monitor: pinned to the top left.
-        let p = centred_position(Vec2::new(2000.0, 900.0), Some(Vec2::new(1920.0, 800.0)));
+        let p = centred_position(Vec2::new(2000.0, 900.0), at_origin(1920.0, 800.0));
         assert_eq!(p, Some(Pos2::new(0.0, 0.0)));
         assert_eq!(centred_position(Vec2::new(10.0, 10.0), None), None);
+    }
+
+    /// The desktop of #1800 (X11, four monitors): the primary monitor,
+    /// 5120 x 2880 pixels at 150 %, lies at (1544, 2160), below a 3840 x
+    /// 2160 monitor at (0, 0) and one at (3840, 0), with a fourth at
+    /// (6664, 2160). The main window is centred on the primary monitor,
+    /// where it lies, not on the top-left one.
+    #[test]
+    fn the_main_window_opens_on_the_primary_monitor_where_it_lies() {
+        // The windowing layer's rectangle in system points: pixels over
+        // the monitor's 1.5.
+        let primary = [1544.0 / 1.5, 2160.0 / 1.5, 5120.0 / 1.5, 2880.0 / 1.5];
+        // egui reports the size of the monitor the splash is on.
+        let screen = main_monitor(Some(primary), Some(Vec2::new(5120.0 / 1.5, 2880.0 / 1.5)))
+            .expect("a monitor");
+        assert_eq!(screen.min, Pos2::new(1544.0 / 1.5, 1440.0));
+        let size = main_window_size([1600.0, 1000.0], Some(screen.size()));
+        let p = centred_position(size, Some(screen)).expect("a position");
+        // In pixels: the window lies on the primary monitor, centred.
+        let (x0, y0) = (p.x * 1.5, p.y * 1.5);
+        let (x1, y1) = ((p.x + size.x) * 1.5, (p.y + size.y) * 1.5);
+        assert!(x0 >= 1544.0 && y0 >= 2160.0, "{p:?}");
+        assert!(
+            x1 <= 1544.0 + 5120.0 && y1 <= 2160.0 + 2880.0,
+            "{p:?} {size:?}"
+        );
+        let centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        assert!((centre.0 - (1544.0 + 2560.0)).abs() < 0.5, "{centre:?}");
+        assert!((centre.1 - (2160.0 + 1440.0)).abs() < 0.5, "{centre:?}");
+        // Not on the top-left monitor (0, 0, 3840, 2160), as before.
+        assert!(!(x0 < 3840.0 && y0 < 2160.0), "{p:?}");
+    }
+
+    /// Without the windowing layer's monitor (Wayland places windows
+    /// itself), the monitor egui reports is taken at the desktop's
+    /// corner; without either there is no monitor.
+    #[test]
+    fn without_a_primary_monitor_the_reported_one_is_used() {
+        let m = main_monitor(None, Some(Vec2::new(1920.0, 1080.0)));
+        assert_eq!(
+            m,
+            Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0)))
+        );
+        assert_eq!(main_monitor(Some([0.0, 0.0, 0.0, 0.0]), None), None);
+        let m = main_monitor(
+            Some([-1920.0, 0.0, 1920.0, 1080.0]),
+            Some(Vec2::new(800.0, 600.0)),
+        );
+        assert_eq!(m.map(|r| r.min), Some(Pos2::new(-1920.0, 0.0)));
     }
 
     fn input() -> egui::RawInput {

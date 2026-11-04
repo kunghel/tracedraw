@@ -1029,6 +1029,9 @@ fn pages_refer_to_the_master_layers_by_their_guids() {
     let mut doc = doc_with(Vec::new());
     let mut second = doc.pages[0].clone();
     second.layers[0].name = "Second".into();
+    // The name a reader gives the page at its place: no `lgob` of its
+    // own (a page named otherwise has one, #1807).
+    second.name = "Page 2".into();
     doc.pages.push(second);
     for v in versions() {
         let bytes = document_to_cdr_version(&doc, v);
@@ -7532,9 +7535,12 @@ fn a_face_is_listed_as_the_face_its_font_file_holds() {
 /// file drew it light and upright (#1455). Bold italic underlined text
 /// of "Khand Light" and of "Khand", both drawn by the bold face, gives
 /// one font table entry ("Khand" Bold, with the underline bit as files
-/// set it for underlined text) and one embedded font; the records keep
-/// the face the text asks for (bold italic) beside it; the text reads
-/// back bold, italic and underlined.
+/// set it for underlined text) and one embedded font. The text is
+/// written upright, as the bold face is (TraceDraw slants it, #1733):
+/// the re-save of such a file by the program that reads the files names
+/// "Khand Light" bold italic without the face's `technology` and
+/// `version`, a face it did not find. TraceDraw reads its text back as
+/// it was, bold, italic and underlined.
 #[test]
 fn bold_text_in_a_light_face_is_written_as_the_family_bold() {
     const REGULAR: &[u8] =
@@ -7603,7 +7609,8 @@ fn bold_text_in_a_light_face_is_written_as_the_family_bold() {
     assert!(!p.styles.contains("Khand Light"), "{}", p.styles);
     assert!(p
         .styles
-        .contains(r#""italic":"1","weight":"4096","underline":"1""#));
+        .contains(r#""italic":"0","weight":"4096","underline":"1""#));
+    assert!(!p.styles.contains(r#""italic":"1""#), "{}", p.styles);
     assert_eq!(p.entries.len(), 1, "{:?}", p.entries);
     let (number, flags, family, _, style) = p.entries[0].clone();
     assert_eq!(
@@ -7618,29 +7625,34 @@ fn bold_text_in_a_light_face_is_written_as_the_family_bold() {
         "no lines in the face block"
     );
     assert_eq!(m[2705 + 27], 0, "the bold face is upright");
-    for want in [
-        0x2000 | fonts::UNDERLINE_FLAG,
-        0x1000 | fonts::UNDERLINE_FLAG,
-    ] {
-        assert!(
-            p.records
-                .iter()
-                .any(|r| r.0 == number && r.1 == want && r.2),
-            "{want:#x}: {:?}",
-            p.records
-        );
-    }
+    assert!(
+        p.records
+            .iter()
+            .any(|r| r.0 == number && r.1 == 0x1000 | fonts::UNDERLINE_FLAG && r.2),
+        "{:?}",
+        p.records
+    );
+    assert!(
+        !p.records.iter().any(|r| r.1 & 0x2_AAAA != 0),
+        "no italic face: {:?}",
+        p.records
+    );
     let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
-    for s in &back.pages[0].layers[0].shapes {
-        let ShapeKind::Text { spans, .. } = &s.kind else {
-            panic!("not text");
-        };
-        let sp = &spans[0];
-        assert_eq!(
-            (sp.font_family.as_str(), sp.bold, sp.italic, sp.underline),
-            ("Khand", true, true, true)
-        );
-    }
+    let families: Vec<String> = back.pages[0].layers[0]
+        .shapes
+        .iter()
+        .map(|s| {
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                panic!("not text");
+            };
+            let sp = &spans[0];
+            assert!(sp.bold && sp.italic && sp.underline, "{sp:?}");
+            sp.font_family.clone()
+        })
+        .collect();
+    assert_eq!(families.len(), 2);
+    assert!(families.iter().any(|f| f == "Khand Light"), "{families:?}");
+    assert!(families.iter().any(|f| f == "Khand"), "{families:?}");
 }
 
 /// `font` with the OS/2 `fsSelection` bits `bits`.
@@ -7765,6 +7777,200 @@ fn regular_text_drawn_by_the_bold_file_is_written_bold() {
     }
 }
 
+/// The text of `bytes` (the first object of its first layer) as read
+/// with the package's own member (`kept`) or without it, the way a file
+/// re-saved by another program opens.
+fn text_spans_read(bytes: &[u8], kept: bool) -> Vec<TextSpan> {
+    let doc = if kept {
+        crate::open_bytes(bytes, "back").expect("reads back").0
+    } else {
+        let container = crate::container::detect(bytes).expect("container");
+        let riff = crate::container::riff_stream(bytes, &container).expect("riff");
+        let externals = crate::container::external_streams(bytes, &container);
+        let root =
+            crate::riff::parse_with_externals(&riff, externals, container.version.0).expect("tree");
+        crate::parse::parse_document_kept(&root, &riff, container.version, None, &[], &[]).0
+    };
+    match &doc.pages[0].layers[0].shapes[0].kind {
+        ShapeKind::Text { spans, .. } => spans.clone(),
+        k => panic!("not text: {k:?}"),
+    }
+}
+
+/// Italic text in a family whose only file is upright (the "RAJ 100"
+/// Bold file of issue #1733, which TraceDraw slants itself) is written
+/// as the face that file holds: upright, bold. Written italic beside
+/// the embedded upright face, the program that reads the files reported
+/// "RAJ 100-Bold-Italic" missing and drew "RAJ 100-Bold" (the issue's
+/// video); it offers no italic for such a font itself. No style string,
+/// `font` record or font table entry says italic. The package's own
+/// member keeps the text, so TraceDraw opens it italic again; without
+/// the member (a re-save elsewhere) it opens as written. Saved without
+/// embedding too.
+#[test]
+fn italic_text_slanted_from_an_upright_file_is_written_upright() {
+    let bold = std::sync::Arc::new(with_fs_selection(
+        &with_weight(
+            &with_names(
+                include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf"),
+                &[
+                    (1, "RAJ 100"),
+                    (2, "Bold"),
+                    (4, "RAJ 100 Bold"),
+                    (5, "Version 1.00 June 19, 2015, initial release"),
+                    (6, "RAJ100-Bold"),
+                ],
+            ),
+            700,
+        ),
+        0x20,
+    ));
+    for (bold_text, embed) in [(true, true), (true, false), (false, true)] {
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let mut span = TextSpan::new("kak", "RAJ 100", 115.0);
+        span.bold = bold_text;
+        span.italic = true;
+        let doc = doc_with(vec![text_shape(&mut ids, vec![span], TextAlign::Left)]);
+        let previews = Previews {
+            fonts: vec![FontFace {
+                family: "RAJ 100".into(),
+                bold: bold_text,
+                italic: true,
+                data: Some(bold.clone()),
+            }],
+            embed_fonts: embed,
+            ..Default::default()
+        };
+        let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+        let p = package_fonts(&bytes);
+        let case = format!("bold {bold_text}, embed {embed}");
+        assert!(
+            p.styles.contains(r#""italic":"0","weight":"4096""#),
+            "{case}: {}",
+            p.styles
+        );
+        assert!(
+            !p.styles.contains(r#""italic":"1""#),
+            "{case}: {}",
+            p.styles
+        );
+        assert!(p.styles.contains(r#""technology":"2","#), "{case}");
+        // No record or entry of an italic face (0x80, 0x2000 or any
+        // weight's italic bit).
+        let italic_bits = 0x2_AAAA_u32;
+        assert!(
+            !p.records.iter().any(|r| r.1 & italic_bits != 0),
+            "{case}: {:?}",
+            p.records
+        );
+        assert_eq!(p.entries.len(), 1, "{case}: {:?}", p.entries);
+        let (number, flags, family, _, style) = p.entries[0].clone();
+        assert_eq!(
+            (flags, family.as_str(), style.as_str()),
+            (0x1000, "RAJ 100", "Bold"),
+            "{case}"
+        );
+        assert_eq!(p.members.len(), usize::from(embed), "{case}");
+        if embed {
+            let m = &p.members[0];
+            assert_eq!(
+                u32::from_le_bytes(m[2163..2167].try_into().expect("u32")),
+                0x1000
+            );
+            assert!(
+                p.records
+                    .iter()
+                    .any(|r| r.0 == number && r.1 == 0x1000 && r.2),
+                "{case}: {:?}",
+                p.records
+            );
+        }
+        // TraceDraw reads its own text back: italic, as drawn.
+        let back = text_spans_read(&bytes, true);
+        assert_eq!(
+            (back[0].font_family.as_str(), back[0].bold, back[0].italic),
+            ("RAJ 100", bold_text, true),
+            "{case}"
+        );
+        // Without the member: the face written.
+        let plain = text_spans_read(&bytes, false);
+        assert_eq!(
+            (
+                plain[0].font_family.as_str(),
+                plain[0].bold,
+                plain[0].italic
+            ),
+            ("RAJ 100", true, false),
+            "{case}"
+        );
+    }
+}
+
+/// Italic text in a light face named with its weight ("Khand Light",
+/// whose upright file names the typographic family "Khand") is written
+/// as "Khand" at 300, upright, like the other weights of a family
+/// without italic faces (the issue #1733 list: Light, Medium and
+/// SemiBold Italic); bold italic text of it drawn by the family's bold
+/// file as "Khand" bold, upright.
+#[test]
+fn italic_text_of_a_weight_without_an_italic_face_is_written_upright() {
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    let light = std::sync::Arc::new(with_fs_selection(
+        &with_weight(
+            &with_names(
+                REGULAR,
+                &[
+                    (1, "Khand Light"),
+                    (2, "Regular"),
+                    (16, "Khand"),
+                    (17, "Light"),
+                ],
+            ),
+            300,
+        ),
+        0x40,
+    ));
+    let bold = std::sync::Arc::new(khand_bold_file());
+    for (bold_text, data, weight) in [(false, &light, "16"), (true, &bold, "4096")] {
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let mut span = TextSpan::new("abhishek", "Khand Light", 40.0);
+        span.bold = bold_text;
+        span.italic = true;
+        let doc = doc_with(vec![text_shape(&mut ids, vec![span], TextAlign::Left)]);
+        let previews = Previews {
+            fonts: vec![FontFace {
+                family: "Khand Light".into(),
+                bold: bold_text,
+                italic: true,
+                data: Some(data.clone()),
+            }],
+            embed_fonts: true,
+            ..Default::default()
+        };
+        let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+        let p = package_fonts(&bytes);
+        assert!(
+            p.styles
+                .contains(&format!(r#""italic":"0","weight":"{weight}""#)),
+            "bold {bold_text}: {}",
+            p.styles
+        );
+        assert!(p.styles.contains(r#""font":"Khand""#), "{}", p.styles);
+        assert!(!p.styles.contains(r#""italic":"1""#), "{}", p.styles);
+        assert!(
+            !p.records.iter().any(|r| r.1 & 0x2_AAAA != 0),
+            "bold {bold_text}: {:?}",
+            p.records
+        );
+        let back = text_spans_read(&bytes, true);
+        assert_eq!(
+            (back[0].font_family.as_str(), back[0].italic),
+            ("Khand Light", true)
+        );
+    }
+}
+
 /// [`fonts::drawn_style`]: the face a file holds is written for the
 /// text it draws as it is (a bold or italic face of the family named,
 /// by its style bits; a weight of the typographic family named, by its
@@ -7805,14 +8011,24 @@ fn text_is_written_as_the_face_that_draws_it() {
         italic: i,
         data: Some(data.clone()),
     };
-    // Regular and italic text drawn by the bold face: bold.
+    // Regular and italic text drawn by the bold face: bold, upright
+    // as the face is (#1733).
     assert_eq!(
         fonts::drawn_style(&face(&bold, "Khand", false, false)),
         Some((700, false))
     );
     assert_eq!(
         fonts::drawn_style(&face(&bold, "Khand", false, true)),
-        Some((700, true))
+        Some((700, false))
+    );
+    assert_eq!(
+        fonts::drawn_style(&face(&bold, "Khand", true, true)),
+        Some((700, false))
+    );
+    // Italic text drawn by the italic face: kept.
+    assert_eq!(
+        fonts::drawn_style(&face(&italic, "Khand", false, true)),
+        None
     );
     // Upright text drawn by the italic face: italic.
     assert_eq!(
@@ -7824,8 +8040,8 @@ fn text_is_written_as_the_face_that_draws_it() {
         fonts::drawn_style(&face(&medium, "Khand", false, false)),
         Some((500, false))
     );
-    // Kept: the face asked for, bold thickened, italic slanted, a
-    // stand-in of another family, no file.
+    // Kept: the face asked for, bold thickened, a stand-in of another
+    // family, no file. Italic slanted from the upright face: upright.
     assert_eq!(fonts::drawn_style(&face(&bold, "Khand", true, false)), None);
     assert_eq!(
         fonts::drawn_style(&face(&regular, "Khand", false, false)),
@@ -7837,8 +8053,27 @@ fn text_is_written_as_the_face_that_draws_it() {
     );
     assert_eq!(
         fonts::drawn_style(&face(&regular, "Khand", false, true)),
-        None
+        Some((400, false))
     );
+    assert!(fonts::slanted_upright(&face(
+        &regular, "Khand", false, true
+    )));
+    assert!(fonts::slanted_upright(&face(&medium, "Khand", false, true)));
+    assert!(fonts::slanted_upright(&face(
+        &medium,
+        "Khand Medium",
+        false,
+        true
+    )));
+    assert!(!fonts::slanted_upright(&face(
+        &regular, "Khand", false, false
+    )));
+    assert!(!fonts::slanted_upright(&face(
+        &italic, "Khand", false, true
+    )));
+    assert!(!fonts::slanted_upright(&face(
+        &regular, "Arial", false, true
+    )));
     assert_eq!(
         fonts::drawn_style(&face(&bold, "Arial", false, false)),
         None

@@ -443,6 +443,7 @@ dialog.export_preset_none = "(нет)" # mt
 dialog.export_preset_add = "Сохранить настройки как набор" # mt
 dialog.export_preset_rename = "Переименовать набор" # mt
 dialog.export_preset_delete = "Удалить набор" # mt
+dialog.export_preset_delete_question = "Удалить набор настроек «{name}»?" # mt
 dialog.export_preset_name = "Имя набора" # mt
 dialog.export_estimate = "Размер файла: около {size}"
 dialog.export_output = "{w} x {h} пикселей, {dpi} dpi, {mode}"

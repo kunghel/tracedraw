@@ -443,6 +443,7 @@ dialog.export_preset_none = "(কিছু না)" # mt
 dialog.export_preset_add = "এই সেটিংস প্রিসেট হিসেবে সংরক্ষণ করুন" # mt
 dialog.export_preset_rename = "প্রিসেটের নাম পরিবর্তন" # mt
 dialog.export_preset_delete = "প্রিসেট মুছুন" # mt
+dialog.export_preset_delete_question = "\"{name}\" প্রিসেটটি মুছবেন?" # mt
 dialog.export_preset_name = "প্রিসেটের নাম" # mt
 dialog.export_estimate = "ফাইলের আকার: প্রায় {size}"
 dialog.export_output = "{w} x {h} পিক্সেল, {dpi} dpi, {mode}"

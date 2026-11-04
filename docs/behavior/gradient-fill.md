@@ -178,6 +178,21 @@ into it (#1491, `command::tests::a_new_outline_keeps_gradients_in_place`,
 tables and symbols place their paint their own way and are left as they
 are.
 
+A clip frame's own gradient transparency lies on its frame's box, so a
+new outline of the frame (its nodes moved with the Shape tool) keeps
+it in place the same way
+(`command::tests::a_new_frame_outline_keeps_the_clip_frames_gradient_in_place`).
+
+A picture is cropped by putting it in a clip frame (dragging its corner
+nodes with the Shape tool, or the Crop tool). The picture inside keeps
+its transparency and opacity, which stay on the picture's own box, so a
+gradient transparency stays where it lies on the page however the
+frame is cut; the frame itself drops them. Before, the frame kept a
+copy of both, so the transparency was laid on twice, and the frame's
+copy started again across the frame's box at each node moved (#1491,
+`crop_tool::tests::cropping_a_see_through_picture_keeps_its_look`,
+`shape_tool::bitmap_node_tests::moving_a_see_through_pictures_nodes_keeps_its_look`).
+
 ## Formulas
 
 Bounding box `b` of the object in page space, centre `c`.

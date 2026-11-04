@@ -77,6 +77,9 @@ pub struct ExportState {
     /// A name being typed for a new preset (false) or for renaming the
     /// chosen one (true).
     pub preset_name: Option<(String, bool)>,
+    /// The preset whose delete button was pressed: the dialog asks
+    /// whether to delete it before it does (#1816).
+    pub preset_delete: Option<String>,
     /// The unit the bitmap size is typed in: an index into
     /// [`EXPORT_SIZE_UNITS`] (#617).
     pub size_unit: usize,
@@ -109,6 +112,7 @@ impl Default for ExportState {
             webp_lossless: false,
             preset: String::new(),
             preset_name: None,
+            preset_delete: None,
             size_unit: 0,
             scale: 1.0,
         }
@@ -3777,7 +3781,7 @@ pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
 
 /// The Export dialog's presets (#547): a list of every saved one, each
 /// with its format, "+" to save the choices under a name, rename and
-/// delete for the chosen one. Choosing a preset brings its format along;
+/// delete for the chosen one, which asks first (#1816). Choosing a preset brings its format along;
 /// changing the format leaves the preset unchosen while the whole list
 /// stays (#612).
 fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
@@ -3831,6 +3835,7 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
             .clicked()
         {
             st.preset_name = Some((String::new(), false));
+            st.preset_delete = None;
         }
         let chosen = !st.preset.is_empty();
         if ui
@@ -3839,16 +3844,58 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
             .clicked()
         {
             st.preset_name = Some((st.preset.clone(), true));
+            st.preset_delete = None;
         }
         if ui
             .add_enabled(chosen, egui::Button::new("\u{2212}").small())
             .rich_tip(crate::ui::tips::keyed("dialog.export_preset_delete"))
             .clicked()
         {
-            app.settings.formats.delete_preset(&st.preset, st.format);
-            st.preset.clear();
+            st.preset_name = None;
+            st.preset_delete = Some(st.preset.clone());
         }
     });
+    // Delete asks first, in a row of its own under the list, as naming
+    // a preset does: one click lost a preset for good (#1816).
+    if st
+        .preset_delete
+        .as_ref()
+        .is_some_and(|name| *name != st.preset || st.script.is_some())
+    {
+        st.preset_delete = None;
+    }
+    if let Some(name) = st.preset_delete.clone() {
+        let mut answer: Option<bool> = None;
+        ui.horizontal(|ui| {
+            ui.label(trf(
+                "dialog.export_preset_delete_question",
+                &[("name", &name)],
+            ));
+            if ui
+                .small_button(tr("dialog.yes"))
+                .rich_tip(crate::ui::tips::keyed("dialog.yes"))
+                .clicked()
+            {
+                answer = Some(true);
+            }
+            if ui
+                .small_button(tr("dialog.no"))
+                .rich_tip(crate::ui::tips::keyed("dialog.no"))
+                .clicked()
+            {
+                answer = Some(false);
+            }
+        });
+        match answer {
+            Some(true) => {
+                app.settings.formats.delete_preset(&name, st.format);
+                st.preset.clear();
+                st.preset_delete = None;
+            }
+            Some(false) => st.preset_delete = None,
+            None => {}
+        }
+    }
     let mut done: Option<bool> = None;
     if let Some((name, _)) = st.preset_name.as_mut() {
         ui.horizontal(|ui| {

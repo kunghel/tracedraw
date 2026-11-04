@@ -247,6 +247,22 @@ touchpad add up to a browser's notch before they make a step (#1406,
 `ui::objects_docker::tests::a_browser_wheel_notch_steps_the_thumbnail_size_once`,
 `ui::palette::tests::a_browser_wheel_notch_steps_a_palette_row_once`).
 
+Plain wheel scrolling of panels (dockers, lists, dialogs, the property
+bar's overflow) goes as far for a browser notch as for a desktop notch:
+40 points. egui turns a browser line into 8 points and a pixel into one,
+so a notch scrolled 24 points in Firefox and 100 in Chromium. At the
+start of each frame the browser's smoothed scroll is scaled by
+`ui::field::web_scroll_scale` of the last wheel event:
+`40 / (3 * line speed)` for lines and `40 / 100` for a pixel event of half
+a notch or more. The scale is kept for the frames the smoothing spreads
+the notch over. A smaller pixel event comes from a touchpad, which keeps
+the distance it reports, as on the desktop, and a page stays the window's
+height. The wheel events themselves are left as they came, so the steps
+above still count browser notches. The canvas zoom divides the scaled
+scroll by the scaled notch, so it still zooms 1.15 per notch (Refs #1406,
+`ui::field::tests::a_browser_notch_is_scaled_to_the_desktop_distance`,
+`ui::field::tests::a_browser_notch_scrolls_as_far_as_a_desktop_notch`).
+
 A drag with the button held, or a finger held down, on the canvas is the
 editor's (a marquee, a move), never the browser's text selection: the
 page and the canvas turn the browser's selection and its long-press

@@ -339,8 +339,8 @@ fn the_distortion_line_moves_its_centre() {
     let (ctx, mut app, id) = setup(Tool::Distort);
     // Push and Pull about the middle, its line to the right.
     assert!(app.begin_distort(Point::new(35.0, 25.0)));
-    app.drag_distort_to(Point::new(50.0, 25.0), false);
-    app.drag_distort_to(Point::new(55.0, 25.0), false);
+    app.drag_distort_to(Point::new(50.0, 25.0), false, false);
+    app.drag_distort_to(Point::new(55.0, 25.0), false, false);
     app.distort_drag = None;
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     let line = |app: &App| {
@@ -373,4 +373,89 @@ fn the_distortion_line_moves_its_centre() {
     let (c3, e3) = line(&app);
     assert!(near(c3, c2));
     assert!((e3 - e2).hypot() > 1.0, "{e3:?}");
+}
+
+/// The angle of `v` in degrees, 0 to 360.
+fn degrees(v: Vec2) -> f64 {
+    v.y.atan2(v.x).to_degrees().rem_euclid(360.0)
+}
+
+/// How far `deg` is from the nearest multiple of `step` degrees.
+fn off_step(deg: f64, step: f64) -> f64 {
+    let r = deg.rem_euclid(step);
+    r.min(step - r)
+}
+
+/// Shift or Ctrl keeps a distortion's end handle, and the line a drag on
+/// the object sets, to steps of the constrain angle about the centre,
+/// as the Shape tool's handles: horizontal and vertical among them, as
+/// far out as the pointer reaches along that direction. Push and Pull,
+/// Zipper and Twister, in the real window; without the keys the handle
+/// goes where the pointer is (#1563, #1793).
+#[test]
+fn shift_and_ctrl_keep_a_distortion_handle_to_the_constrain_angle() {
+    use crate::distort_tool::DistortMode;
+    let handle = |app: &App| {
+        app.distortion_handles()
+            .into_iter()
+            .next()
+            .expect("handles")
+    };
+    for mode in [
+        DistortMode::PushPull,
+        DistortMode::Zipper,
+        DistortMode::Twister,
+    ] {
+        for mods in [Modifiers::SHIFT, Modifiers::CTRL, Modifiers::NONE] {
+            let (ctx, mut app, id) = setup(Tool::Distort);
+            let step = app.settings.constrain_angle;
+            app.distort.mode = mode;
+            app.distort.amplitude = 10.0;
+            // The drag on the object that makes the distortion: 4 degrees
+            // above the horizontal.
+            let c = Point::new(35.0, 20.0);
+            let a = 4f64.to_radians();
+            drag(
+                &ctx,
+                &mut app,
+                c,
+                c + Vec2::new(a.cos(), a.sin()) * 16.0,
+                mods,
+            );
+            let h = handle(&app);
+            assert_eq!(h.id, id);
+            assert_eq!(h.mode, mode);
+            let first = degrees(h.end - h.center);
+            let tag = format!("{mode:?} {mods:?}");
+            if mods.any() {
+                assert!(off_step(first, step) < 0.5, "{tag}: the line at {first}");
+            }
+            // The end handle dragged 22 degrees round from where it is,
+            // 12 mm out: with the keys on the next step (15 degrees
+            // round) at the reach along it, without them at the pointer.
+            let turn = (first + 22.0).to_radians();
+            let to = h.center + Vec2::new(turn.cos(), turn.sin()) * 12.0;
+            let before = steps(&app);
+            drag(&ctx, &mut app, h.end, to, mods);
+            assert_eq!(steps(&app), before + 1, "{tag}: one undo step");
+            let h = handle(&app);
+            let got = degrees(h.end - h.center);
+            let want = if mods.any() {
+                first + 15.0
+            } else {
+                first + 22.0
+            };
+            let diff = (got - want.rem_euclid(360.0)).abs();
+            assert!(
+                diff.min(360.0 - diff) < 0.5,
+                "{tag}: the handle at {got}, not {want}"
+            );
+            if mods.any() && mode != DistortMode::Twister {
+                // As far out as the pointer along the step: 12 cos 7.
+                let reach = 12.0 * 7f64.to_radians().cos();
+                let len = (h.end - h.center).hypot();
+                assert!((len - reach).abs() < 0.3, "{tag}: {len} not {reach}");
+            }
+        }
+    }
 }

@@ -140,6 +140,47 @@ fn clip_path(page: &BezPath, rect: Rect) -> (BezPath, bool) {
     (out, any_closed)
 }
 
+/// The copy of `s` (a picture, table or symbol) that goes inside a new
+/// clip frame in its place, with the id `id`. It keeps the object's
+/// transparency and opacity: a gradient transparency then stays on the
+/// picture's own box, where it lies on the page, however the frame is
+/// cropped later (#1491), and `.cdr` files keep it on the picture.
+pub(crate) fn framed_contents(s: &Shape, id: ShapeId) -> Shape {
+    let mut inner = s.clone();
+    inner.id = id;
+    inner.transform = Affine::IDENTITY;
+    inner
+}
+
+/// The commands that leave the object `s`, now a clip frame holding
+/// [`framed_contents`] of it, without its own transparency and opacity:
+/// the copy inside has them, and the clip frame would lay them on a
+/// second time, its gradient stretched across the frame's box (#1491).
+pub(crate) fn frame_drops_transparency(s: &Shape) -> Vec<Command> {
+    let transparency = |e: &tracedraw_core::live::Effect| {
+        matches!(e, tracedraw_core::live::Effect::Transparency { .. })
+    };
+    let mut cmds = Vec::new();
+    if s.effects.iter().any(transparency) {
+        cmds.push(Command::SetEffects {
+            shape: s.id,
+            effects: s
+                .effects
+                .iter()
+                .filter(|e| !transparency(e))
+                .cloned()
+                .collect(),
+        });
+    }
+    if s.opacity < 1.0 {
+        cmds.push(Command::SetOpacity {
+            shapes: vec![s.id],
+            opacity: 1.0,
+        });
+    }
+    cmds
+}
+
 /// Crop `s` (whose parent maps to the page by `parent`) to `rect` (page
 /// space); `new_id` gives ids for the parts it adds.
 pub fn crop_shape(
@@ -218,9 +259,7 @@ pub fn crop_shape(
                     );
                     frame.fill = Fill::None;
                     frame.stroke = None;
-                    let mut inner = s.clone();
-                    inner.id = new_id();
-                    inner.transform = Affine::IDENTITY;
+                    let inner = framed_contents(s, new_id());
                     let mut clip = s.clone();
                     clip.effects.clear();
                     clip.kind = ShapeKind::ClipFrame {
@@ -287,10 +326,19 @@ impl App {
             match crop_shape(&s, parent, rect, &mut new_id) {
                 Cropped::Keep => {}
                 Cropped::Gone => removed.push(s.id),
-                Cropped::Into(n) => cmds.push(Command::SetShapeKind {
-                    shape: s.id,
-                    kind: n.kind,
-                }),
+                Cropped::Into(n) => {
+                    // A picture newly put in a clip frame: the picture
+                    // inside keeps the transparency, the frame drops it.
+                    let framed = matches!(n.kind, ShapeKind::ClipFrame { .. })
+                        && !matches!(s.kind, ShapeKind::ClipFrame { .. });
+                    cmds.push(Command::SetShapeKind {
+                        shape: s.id,
+                        kind: n.kind,
+                    });
+                    if framed {
+                        cmds.extend(frame_drops_transparency(&s));
+                    }
+                }
             }
         }
         if !removed.is_empty() {
@@ -380,10 +428,88 @@ pub fn moved(r: Rect, v: Vec2) -> Rect {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::tools::Tool;
     use tracedraw_core::Color;
+
+    /// A red picture over (10, 10) to (50, 40), half see-through and with
+    /// a left-to-right gradient transparency (#1491).
+    pub(crate) fn see_through_picture(app: &mut App) -> ShapeId {
+        use tracedraw_core::live::Effect;
+        use tracedraw_core::style::{Fountain, FountainKind};
+        let png = tiny_skia::Pixmap::new(2, 2)
+            .and_then(|mut p| {
+                p.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+                p.encode_png().ok()
+            })
+            .unwrap_or_default();
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(10.0, 10.0, 50.0, 40.0),
+                width_px: 2,
+                height_px: 2,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("picture");
+        app.run(Command::SetOpacity {
+            shapes: vec![id],
+            opacity: 0.5,
+        });
+        app.run(Command::SetEffects {
+            shape: id,
+            effects: vec![Effect::Transparency {
+                mask: Fill::Fountain(Fountain::two(
+                    FountainKind::Linear,
+                    Color::BLACK,
+                    Color::WHITE,
+                    0.0,
+                )),
+                merge: Default::default(),
+                target: 2,
+            }],
+        });
+        id
+    }
+
+    /// How much green the page shows, at 10 pixels a millimetre, half way
+    /// down the drawn (not white) pixels of the column at `x` mm: lower
+    /// is more of the red picture.
+    pub(crate) fn green_at(app: &App, x: f64) -> u8 {
+        let page = app.doc().pages[0].id;
+        let img = tracedraw_render::render_page_image(app.doc(), page, 254.0).expect("page");
+        let column: Vec<u8> = (0..img.height())
+            .filter_map(|y| img.pixel((x * 10.0) as u32, y))
+            .map(|c| c.demultiply().green())
+            .filter(|g| *g < 250)
+            .collect();
+        column.get(column.len() / 2).copied().expect("drawn")
+    }
+
+    /// #1491: cropping a picture with a gradient transparency and a
+    /// uniform one leaves what is kept looking as it did: the copy of the
+    /// picture inside the clip frame does not add them a second time.
+    #[test]
+    fn cropping_a_see_through_picture_keeps_its_look() {
+        let mut app = App::headless();
+        let id = see_through_picture(&mut app);
+        let before = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        app.select(vec![id]);
+        app.crop_to(Rect::new(30.0, 0.0, 60.0, 60.0));
+        let s = app.doc().find_shape(id).expect("clip frame");
+        let ShapeKind::ClipFrame { contents, .. } = &s.kind else {
+            panic!("not a clip frame: {:?}", s.kind);
+        };
+        // The picture inside holds the transparency (files keep it there),
+        // the frame none.
+        assert!(s.effects.is_empty() && s.opacity == 1.0);
+        assert!(contents[0].opacity == 0.5 && contents[0].effects.len() == 1);
+        let after = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        for (b, a) in before.iter().zip(&after) {
+            assert!(b.abs_diff(*a) <= 2, "before {before:?}, after {after:?}");
+        }
+    }
 
     fn rect_shape(app: &mut App, r: Rect) -> ShapeId {
         let id = app

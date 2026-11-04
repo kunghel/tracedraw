@@ -443,6 +443,7 @@ dialog.export_preset_none = "(لا شيء)" # mt
 dialog.export_preset_add = "حفظ هذه الإعدادات كإعداد مسبق" # mt
 dialog.export_preset_rename = "إعادة تسمية الإعداد المسبق" # mt
 dialog.export_preset_delete = "حذف الإعداد المسبق" # mt
+dialog.export_preset_delete_question = "هل تريد حذف الإعداد المسبق \"{name}\"؟" # mt
 dialog.export_preset_name = "اسم الإعداد المسبق" # mt
 dialog.export_estimate = "حجم الملف: نحو {size}"
 dialog.export_output = "{w} x {h} بكسل، {dpi} نقطة/بوصة، {mode}"

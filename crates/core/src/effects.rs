@@ -69,8 +69,18 @@ pub fn polygon(pts: &[Point]) -> BezPath {
     p
 }
 
+/// The even places of `steps` steps between two objects (both left out).
+fn even_steps(steps: usize) -> Vec<f64> {
+    (1..=steps).map(|k| k as f64 / (steps + 1) as f64).collect()
+}
+
 /// Intermediate shapes between `a` and `b` (excluding both), `steps` of them.
 pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezPath> {
+    blend_at(a, b, &even_steps(steps), samples)
+}
+
+/// [`blend`] with the steps at the places `ts` (0 is `a`, 1 is `b`).
+pub fn blend_at(a: &BezPath, b: &BezPath, ts: &[f64], samples: usize) -> Vec<BezPath> {
     // Outlines of several parts (letters, shapes with holes) morph part by
     // part: the n-th part of one into the n-th part of the other, in
     // order; a part without a partner grows from, or shrinks to, a point
@@ -87,7 +97,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
     if ka.len() > 1 || kb.len() > 1 {
         let n = ka.len().max(kb.len());
         let per = (samples / 2).clamp(24, 96);
-        let mut out = vec![BezPath::new(); steps];
+        let mut out = vec![BezPath::new(); ts.len()];
         for i in 0..n {
             let (x, y) = match (ka.get(i), kb.get(i)) {
                 (Some(x), Some(y)) => (x.clone(), y.clone()),
@@ -95,7 +105,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
                 (None, Some(y)) => (point_path(y), y.clone()),
                 (None, None) => continue,
             };
-            for (k, step) in blend_one(&x, &y, steps, per).into_iter().enumerate() {
+            for (k, step) in blend_one(&x, &y, ts, per).into_iter().enumerate() {
                 if let Some(o) = out.get_mut(k) {
                     o.extend(step.elements().iter().copied());
                 }
@@ -103,7 +113,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
         }
         return out;
     }
-    blend_one(a, b, steps, samples)
+    blend_one(a, b, ts, samples)
 }
 
 /// [`blend`], but with one-part outlines paired from given nodes:
@@ -127,6 +137,18 @@ pub fn blend_from_nodes(
     samples: usize,
     nodes: Option<[Point; 4]>,
 ) -> Vec<BezPath> {
+    blend_from_nodes_at(a, b, &even_steps(steps), samples, nodes)
+}
+
+/// [`blend_from_nodes`] with the steps at the places `ts` (0 is `a`, 1
+/// is `b`), as an accelerated blend that applies to sizing morphs them.
+pub fn blend_from_nodes_at(
+    a: &BezPath,
+    b: &BezPath,
+    ts: &[f64],
+    samples: usize,
+    nodes: Option<[Point; 4]>,
+) -> Vec<BezPath> {
     let one_part = |p: &BezPath| {
         p.elements()
             .iter()
@@ -135,32 +157,31 @@ pub fn blend_from_nodes(
             == 1
     };
     let Some([a0, a1, b0, b1]) = nodes else {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     };
     if !one_part(a) || !one_part(b) {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     }
     if let Some((sa, sb)) = paired_nodes(a, b, [a0, a1, b0, b1]) {
-        return node_steps(&sa, &sb, steps);
+        return node_steps(&sa, &sb, ts);
     }
     // Two open lines (arcs blended in a .cdr file) morph end to end and
     // stay open: run as a ring and closed, each step gained a chord back
     // to its start and the steps crossed over (#980).
     if let Some((sa, sb)) = open_paired_nodes(a, b) {
-        return open_node_steps(&sa, &sb, steps);
+        return open_node_steps(&sa, &sb, ts);
     }
     let (Some(pa), Some(pb)) = (
         run_from(&resample(a, samples), a0, a1),
         run_from(&resample(b, samples), b0, b1),
     ) else {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     };
     if pa.len() != pb.len() {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     }
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             polygon(
                 &pa.iter()
                     .zip(&pb)
@@ -175,20 +196,19 @@ pub fn blend_from_nodes(
 /// each node and control point of a step lies on the straight line
 /// between its two paired points, and a step's segment is a line where
 /// both paired segments are lines.
-fn node_steps(sa: &[Seg], sb: &[Seg], steps: usize) -> Vec<BezPath> {
-    let mut out = open_node_steps(sa, sb, steps);
+fn node_steps(sa: &[Seg], sb: &[Seg], ts: &[f64]) -> Vec<BezPath> {
+    let mut out = open_node_steps(sa, sb, ts);
     out.iter_mut().for_each(|p| p.close_path());
     out
 }
 
 /// [`node_steps`] left open: the steps of two open outlines.
-fn open_node_steps(sa: &[Seg], sb: &[Seg], steps: usize) -> Vec<BezPath> {
+fn open_node_steps(sa: &[Seg], sb: &[Seg], ts: &[f64]) -> Vec<BezPath> {
     let (Some(fa), Some(fb)) = (sa.first(), sb.first()) else {
         return Vec::new();
     };
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             let mut out = BezPath::with_capacity(sa.len() + 2);
             out.move_to(fa.p0.lerp(fb.p0, t));
             for (x, y) in sa.iter().zip(sb) {
@@ -533,18 +553,18 @@ const MAX_SHAPE_NODES: usize = 512;
 /// node for node, and their steps stay open lines (#1024). Very large
 /// outlines, or an open line with a closed outline, are taken as one
 /// closed run of points each.
-fn blend_one(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezPath> {
+fn blend_one(a: &BezPath, b: &BezPath, ts: &[f64], samples: usize) -> Vec<BezPath> {
     let pa = resample(a, samples);
     let pb = resample(b, samples);
     if pa.len() != pb.len() || pa.is_empty() {
         return Vec::new();
     }
     if let Some((sa, sb)) = shape_paired_nodes(a, b, &pa, &pb) {
-        return node_steps(&sa, &sb, steps);
+        return node_steps(&sa, &sb, ts);
     }
     // Two open lines morph end to end and stay open lines.
     if let Some((sa, sb)) = open_paired_nodes(a, b) {
-        return open_node_steps(&sa, &sb, steps);
+        return open_node_steps(&sa, &sb, ts);
     }
     // Match the two outlines by shape, not by position: wind b the way a
     // is wound, then start b at the point whose direction from b's centre
@@ -579,9 +599,8 @@ fn blend_one(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
         })
         .unwrap_or(0);
     let pb: Vec<Point> = (0..pb.len()).map(|i| pb[(i + start) % pb.len()]).collect();
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             polygon(
                 &pa.iter()
                     .zip(&pb)

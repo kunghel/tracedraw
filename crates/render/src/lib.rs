@@ -465,6 +465,7 @@ fn render_page_whole(doc: &Document, page: PageId, opts: &RenderOptions) -> Opti
         flags,
         symbols: &doc.symbols,
         preview: opts.preview.as_ref(),
+        origin: (0, 0),
     };
     if let Some(bg) = &page.background {
         let mut bg_shape = Shape::new(
@@ -540,6 +541,10 @@ struct Renderer<'a> {
     /// Objects drawn displaced (the live drag preview), on a layer or
     /// inside a group or a clip frame.
     preview: Option<&'a Preview>,
+    /// Where `pixmap` lies on the target it is laid on, in pixels: a
+    /// semi-transparent object's layer covers only what it reaches, and
+    /// pattern tiles stay where they fall on the target (#1335).
+    origin: (i32, i32),
 }
 
 impl Renderer<'_> {
@@ -555,6 +560,7 @@ impl Renderer<'_> {
             flags: self.flags,
             symbols: self.symbols,
             preview: self.preview,
+            origin: self.origin,
         }
     }
 
@@ -600,13 +606,24 @@ impl Renderer<'_> {
             }
             _ => {}
         }
+        let Some(b) = Self::reach(shape, parent) else {
+            return false;
+        };
+        b.x1 < visible.x0 || b.x0 > visible.x1 || b.y1 < visible.y0 || b.y0 > visible.y1
+    }
+
+    /// Where a plain object (no group or clip frame) inside `parent` can
+    /// paint, page mm: its bounds grown by what its outline may reach.
+    /// `None` when its bounds are not finite. Effects, shadows, symbols
+    /// and the drag preview reach further; callers leave those out.
+    fn reach(shape: &Shape, parent: Affine) -> Option<Rect> {
         let b = if parent == Affine::IDENTITY {
             shape.bounds()
         } else {
             parent.transform_rect_bbox(shape.bounds())
         };
         if !b.x0.is_finite() || !b.y0.is_finite() || !b.x1.is_finite() || !b.y1.is_finite() {
-            return false;
+            return None;
         }
         let scale = {
             let c = (parent * shape.transform).as_coeffs();
@@ -627,8 +644,39 @@ impl Renderer<'_> {
                 .fold(0.0, f64::max)
         }) * scale;
         let margin = (width * OUTLINE_REACH).max(reach) + 1.0;
-        let b = b.inflate(margin, margin);
-        b.x1 < visible.x0 || b.x0 > visible.x1 || b.y1 < visible.y0 || b.y0 > visible.y1
+        Some(b.inflate(margin, margin))
+    }
+
+    /// The pixels of this renderer's target that a semi-transparent
+    /// object inside `parent` can paint, as x, y, width and height: its
+    /// scratch layer needs no more (#1335). A layer the size of the whole
+    /// target for each such object made a page of 2000 of them take
+    /// seconds to draw. The whole target for an object whose reach is
+    /// not its bounds (see [`Self::out_of_sight`]).
+    fn layer_area(&self, shape: &Shape, parent: Affine) -> (u32, u32, u32, u32) {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let whole = (0, 0, w, h);
+        if !shape.effects.is_empty()
+            || shape.shadow.is_some()
+            || matches!(
+                shape.kind,
+                ShapeKind::SymbolInstance { .. }
+                    | ShapeKind::Group { .. }
+                    | ShapeKind::ClipFrame { .. }
+            )
+            || self.preview.is_some()
+        {
+            return whole;
+        }
+        let Some(page) = Self::reach(shape, parent) else {
+            return whole;
+        };
+        let r = self.screen.transform_rect_bbox(page);
+        // One pixel more each way for the edge's anti-aliasing.
+        let clamp = |v: f64, max: u32| (v.max(0.0).min(max as f64)) as u32;
+        let (x0, y0) = (clamp(r.x0.floor() - 1.0, w), clamp(r.y0.floor() - 1.0, h));
+        let (x1, y1) = (clamp(r.x1.ceil() + 1.0, w), clamp(r.y1.ceil() + 1.0, h));
+        (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
     }
 
     fn child_transform(&self, child: &Shape, transform: Affine) -> Affine {
@@ -934,10 +982,16 @@ impl Renderer<'_> {
 
         // Semi-transparent objects render into a scratch layer first so fill
         // and outline do not double up where they overlap.
+        // The layer covers only what the object can reach (#1335).
         if opacity < 1.0 {
-            let (w, h) = (self.pixmap.width(), self.pixmap.height());
+            let (x, y, w, h) = self.layer_area(shape, parent);
+            if w == 0 || h == 0 {
+                return;
+            }
             if let Some(mut layer) = Pixmap::new(w, h) {
                 let mut sub = self.sub(&mut layer);
+                sub.screen = Affine::translate((-(x as f64), -(y as f64))) * self.screen;
+                sub.origin = (self.origin.0 + x as i32, self.origin.1 + y as i32);
                 let mut opaque = shape.clone();
                 opaque.opacity = 1.0;
                 sub.draw_shape(&opaque, parent);
@@ -945,8 +999,14 @@ impl Renderer<'_> {
                     opacity,
                     ..Default::default()
                 };
-                self.pixmap
-                    .draw_pixmap(0, 0, layer.as_ref(), &paint, Transform::identity(), None);
+                self.pixmap.draw_pixmap(
+                    x as i32,
+                    y as i32,
+                    layer.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
             }
             return;
         }
@@ -1950,6 +2010,8 @@ impl Renderer<'_> {
     fn fill_pattern(&mut self, p: &tracedraw_core::Pattern, sk: &SkPath, rule: FillRule) {
         let mut paint = Paint::default();
         paint.anti_alias = self.flags.anti_alias;
+        // Tiles start at the target's corner, wherever this pixmap lies.
+        let anchor = Transform::from_translate(-self.origin.0 as f32, -self.origin.1 as f32);
         match p {
             tracedraw_core::Pattern::TwoColor {
                 tile,
@@ -1982,7 +2044,7 @@ impl Renderer<'_> {
                     SpreadMode::Repeat,
                     tiny_skia::FilterQuality::Nearest,
                     1.0,
-                    Transform::identity(),
+                    anchor,
                 );
                 self.pixmap
                     .fill_path(sk, &paint, rule, Transform::identity(), None);
@@ -2002,7 +2064,7 @@ impl Renderer<'_> {
                     SpreadMode::Repeat,
                     tiny_skia::FilterQuality::Bilinear,
                     1.0,
-                    Transform::from_scale(scale, scale),
+                    Transform::from_scale(scale, scale).post_concat(anchor),
                 );
                 self.pixmap
                     .fill_path(sk, &paint, rule, Transform::identity(), None);
@@ -2016,7 +2078,7 @@ impl Renderer<'_> {
                     SpreadMode::Repeat,
                     tiny_skia::FilterQuality::Bilinear,
                     1.0,
-                    Transform::identity(),
+                    anchor,
                 );
                 self.pixmap
                     .fill_path(sk, &paint, rule, Transform::identity(), None);
@@ -2063,6 +2125,7 @@ impl Renderer<'_> {
             },
             symbols: self.symbols,
             preview: None,
+            origin: (0, 0),
         };
         for s in shapes {
             sub.draw_shape(s, Affine::IDENTITY);
@@ -3196,6 +3259,7 @@ pub fn render_fill_image(fill: &Fill, bounds: Rect, dpi: f64) -> Option<Pixmap> 
         flags: Flags::default(),
         symbols: &[],
         preview: None,
+        origin: (0, 0),
     };
     r.draw_fill(fill, &page_path, &sk, FillRule::Winding);
     Some(pixmap)
@@ -3236,6 +3300,7 @@ pub fn render_fill_image_in(fill: &Fill, path: &BezPath, dpi: f64) -> Option<Pix
         flags: Flags::default(),
         symbols: &[],
         preview: None,
+        origin: (0, 0),
     };
     r.fill_shaped(f, &mask, &rect, FillRule::EvenOdd);
     Some(pixmap)
@@ -3477,6 +3542,160 @@ mod tests {
         s.fill = Fill::Solid(fill);
         s.stroke = None;
         s
+    }
+
+    /// A semi-transparent object draws into a layer only as large as
+    /// what it can reach (#1335), and the page comes out as with a layer
+    /// the size of the window: plain, outlined with arrowheads, with a
+    /// gradient, a pattern, a texture, a picture, across the window's
+    /// edge, and wholly outside it.
+    #[test]
+    fn a_transparent_object_takes_a_small_layer_and_draws_the_same() {
+        use tracedraw_core::style::{Arrowhead, Pattern, PatternTile};
+        let opts = RenderOptions {
+            width: 240,
+            height: 180,
+            view: ViewTransform {
+                zoom: 3.0,
+                origin_x: 10.0,
+                origin_y: 170.0,
+            },
+            anti_alias: true,
+            ..RenderOptions::default()
+        };
+        let screen = opts.view.affine();
+        let under = rect(1, Rect::new(0.0, 0.0, 80.0, 60.0), Color::rgb8(30, 160, 60));
+        let mut photo = Pixmap::new(6, 4).expect("pixmap");
+        for (k, p) in photo.data_mut().chunks_mut(4).enumerate() {
+            p.copy_from_slice(&[(k * 40) as u8, 90, (255 - k * 9) as u8, 255]);
+        }
+        let mut cases: Vec<Shape> = Vec::new();
+        cases.push(rect(
+            2,
+            Rect::new(10.3, 12.7, 31.1, 29.9),
+            Color::rgb8(200, 20, 40),
+        ));
+        let mut line = Shape::new(
+            tracedraw_core::ShapeId(2),
+            ShapeKind::Path {
+                path: {
+                    let mut p = BezPath::new();
+                    p.move_to((12.0, 8.0));
+                    p.curve_to((30.0, 50.0), (45.0, -5.0), (60.0, 30.0));
+                    p
+                },
+                closed: false,
+            },
+        );
+        let mut stroke = Stroke::new(Color::rgb8(20, 20, 200), 1.6);
+        stroke.start_arrow = Arrowhead::Arrow;
+        stroke.end_arrow = Arrowhead::Circle;
+        line.stroke = Some(stroke);
+        line.fill = Fill::None;
+        cases.push(line);
+        let mut graded = rect(2, Rect::new(20.0, 5.0, 50.0, 40.0), Color::BLACK);
+        graded.fill = Fill::Fountain(tracedraw_core::Fountain::two(
+            tracedraw_core::FountainKind::Linear,
+            Color::rgb8(250, 200, 0),
+            Color::rgb8(0, 40, 160),
+            30.0,
+        ));
+        graded.stroke = Some(Stroke::new(Color::BLACK, 0.8));
+        cases.push(graded);
+        let mut patterned = rect(2, Rect::new(5.0, 30.0, 45.0, 55.0), Color::BLACK);
+        patterned.fill = Fill::Pattern(Pattern::TwoColor {
+            tile: PatternTile::DiagonalStripes,
+            front: Color::rgb8(0, 0, 0),
+            back: Color::rgb8(255, 255, 255),
+            size_mm: 3.0,
+        });
+        cases.push(patterned);
+        let mut clouds = rect(2, Rect::new(8.0, 3.0, 38.0, 21.0), Color::BLACK);
+        clouds.fill = Fill::Texture(tracedraw_core::style::Texture {
+            kind: tracedraw_core::style::TextureKind::Clouds,
+            color_a: Color::rgb8(0, 0, 0),
+            color_b: Color::rgb8(255, 255, 255),
+            scale: 10.0,
+            seed: 7,
+        });
+        cases.push(clouds);
+        let mut pic = Shape::new(
+            tracedraw_core::ShapeId(2),
+            ShapeKind::Bitmap {
+                rect: Rect::new(33.0, 22.0, 51.0, 34.0),
+                width_px: photo.width(),
+                height_px: photo.height(),
+                png: photo.encode_png().expect("png").into(),
+                fx: None,
+            },
+        );
+        pic.fill = Fill::None;
+        pic.stroke = None;
+        cases.push(pic);
+        // Across the window's left edge, and wholly outside it.
+        cases.push(rect(
+            2,
+            Rect::new(-20.0, 20.0, 15.0, 40.0),
+            Color::rgb8(90, 0, 90),
+        ));
+        cases.push(rect(
+            2,
+            Rect::new(200.0, 20.0, 230.0, 40.0),
+            Color::rgb8(90, 0, 90),
+        ));
+        for (k, mut top) in cases.into_iter().enumerate() {
+            let (plain_doc, page) = doc_with(vec![under.clone()]);
+            let plain = render_page(&plain_doc, page, &opts).expect("render");
+            // The reference: the object drawn opaque on a layer the size
+            // of the window, laid over the page at half strength.
+            let mut full = Pixmap::new(opts.width, opts.height).expect("layer");
+            {
+                let mut r = Renderer {
+                    pixmap: &mut full,
+                    screen,
+                    zoom: opts.view.zoom,
+                    flags: Flags::from_options(&opts),
+                    symbols: &[],
+                    preview: None,
+                    origin: (0, 0),
+                };
+                r.draw_shape(&top, Affine::IDENTITY);
+            }
+            let mut expected = plain.clone();
+            let pp = tiny_skia::PixmapPaint {
+                opacity: 0.5,
+                ..Default::default()
+            };
+            expected.draw_pixmap(0, 0, full.as_ref(), &pp, Transform::identity(), None);
+            top.opacity = 0.5;
+            let mut layer_px = Pixmap::new(opts.width, opts.height).expect("pixmap");
+            let area = Renderer {
+                pixmap: &mut layer_px,
+                screen,
+                zoom: opts.view.zoom,
+                flags: Flags::from_options(&opts),
+                symbols: &[],
+                preview: None,
+                origin: (0, 0),
+            }
+            .layer_area(&top, Affine::IDENTITY);
+            let (doc, page) = doc_with(vec![under.clone(), top]);
+            let drawn = render_page(&doc, page, &opts).expect("render");
+            assert!(drawn.data() == expected.data(), "case {k}, area {area:?}");
+            if k < 7 {
+                assert!(drawn.data() != plain.data(), "case {k} shows");
+            }
+            // An outline's reach counts 12 widths (mitres, arrowheads),
+            // so the outlined ones take more.
+            let most = match k {
+                1..=3 => opts.width * opts.height,
+                _ => opts.width * opts.height / 4,
+            };
+            assert!(area.2 * area.3 <= most, "case {k}: a small layer, {area:?}");
+            if k == 7 {
+                assert_eq!(area.2 * area.3, 0, "outside: no layer");
+            }
+        }
     }
 
     /// A stand-in text engine: character `i` of the text is a square from
@@ -5732,6 +5951,7 @@ mod culling_tests {
             flags: Flags::from_options(&opts),
             symbols: &[],
             preview: None,
+            origin: (0, 0),
         };
         let inside = rect_shape(1, Rect::new(120.0, 120.0, 130.0, 130.0));
         let far = rect_shape(2, Rect::new(0.0, 0.0, 10.0, 10.0));
@@ -5920,6 +6140,7 @@ mod band_tests {
             flags: Flags::from_options(&opts),
             symbols: &doc.symbols,
             preview: None,
+            origin: (0, 0),
         };
         let drawn = &doc.pages[0].layers[0].shapes;
         assert!(r.out_of_sight(&drawn[0], &visible), "the bottom card");
@@ -6342,6 +6563,37 @@ mod band_tests {
             let t = std::time::Instant::now();
             let _ = render_page(&doc, page, &opts);
             eprintln!("{pct} %: first {first:?}, again {:?}", t.elapsed());
+        }
+    }
+
+    /// Render times of a page of 2000 half transparent objects, as a
+    /// transparency slider dragged over them redraws it (#1335):
+    /// `cargo test --release -p tracedraw-render -- --ignored render_times_of_transparent_objects --nocapture`.
+    #[test]
+    #[ignore]
+    fn render_times_of_transparent_objects() {
+        let (mut doc, page) = heavy(2000);
+        for l in doc.pages.iter_mut().flat_map(|p| p.layers.iter_mut()) {
+            for s in &mut l.shapes {
+                s.opacity = 0.5;
+            }
+        }
+        for (w, h) in [(1600u32, 1000u32), (3200, 2000)] {
+            let zoom = h as f64 / 297.0;
+            let opts = RenderOptions {
+                width: w,
+                height: h,
+                view: ViewTransform {
+                    zoom,
+                    origin_x: 0.0,
+                    origin_y: h as f64,
+                },
+                anti_alias: true,
+                ..RenderOptions::default()
+            };
+            let t = std::time::Instant::now();
+            let _ = render_page(&doc, page, &opts);
+            eprintln!("{w} x {h}: {:?}", t.elapsed());
         }
     }
 

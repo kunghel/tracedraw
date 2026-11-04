@@ -87,7 +87,12 @@ whole from the moment the dialog opens whatever format it opens at; "+"
 to save the dialog's choices under a name (typed in a field that opens
 below, OK or Enter; the same name replaces that preset of the format), a
 pencil to rename the chosen preset (a name another preset of the format
-has is refused) and "−" to delete it.
+has is refused) and "−" to delete it. "−" asks first, in a row that
+opens below the list, as the name field does: 'Delete the preset
+"name"?' with Yes and No. Yes deletes the preset and leaves "(none)"
+chosen; No keeps it, still chosen. Choosing another preset, "+", the
+pencil or a script filter closes the question without deleting (#1816,
+`pick_drag_tests::the_export_dialog_asks_before_deleting_a_preset`).
 
 Choosing a preset of another format switches the dialog to that format.
 Changing the format leaves the chosen preset unchosen ("(none)") while

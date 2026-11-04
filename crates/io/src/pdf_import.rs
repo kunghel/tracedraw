@@ -125,10 +125,12 @@ pub fn parse_with_options(
     if pages.is_empty() {
         return Err(ImportError::Failed("PDF has no pages".into()));
     }
+    let mut tounicode_fixes = HashMap::new();
     for (index, page_id) in pages.iter().enumerate() {
         let mut imp = Importer {
             doc: &doc,
             ids,
+            tounicode_fixes: &mut tounicode_fixes,
             warnings: Vec::new(),
             shapes: Vec::new(),
             open: None,
@@ -702,6 +704,9 @@ struct FontInfo {
     /// Two-byte codes (Type0).
     two_byte: bool,
     to_unicode: Option<HashMap<u32, String>>,
+    /// The ToUnicode map was scrambled and put right: its glyphs' texts
+    /// come in drawn order, one glyph at a time.
+    drawn_order: bool,
     one_byte: Option<[Option<char>; 256]>,
     widths: HashMap<u32, f64>,
     default_width: f64,
@@ -761,6 +766,10 @@ impl FontInfo {
 struct Importer<'a> {
     doc: &'a PdfDoc,
     ids: &'a mut IdSource,
+    /// The corrected ToUnicode entries of each two-byte font whose map
+    /// is scrambled (see [`unscramble_tounicode`]), worked out once for
+    /// the whole file.
+    tounicode_fixes: &'a mut HashMap<lopdf::ObjectId, HashMap<u32, String>>,
     warnings: Vec<String>,
     shapes: Vec<Shape>,
     /// The clip frame being filled, behind the last of `shapes`.
@@ -902,6 +911,11 @@ pub(crate) fn devanagari_compose(text: &str) -> String {
     out.into_iter().collect()
 }
 
+#[cfg(test)]
+fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
+    devanagari_typed_order(text, reph_glyph, false)
+}
+
 /// Devanagari text taken from a PDF in the order its glyphs are drawn,
 /// put back in the order it is typed (#585). A PDF draws the short i sign
 /// (ि) before the consonant cluster it follows when typed, and the reph
@@ -909,7 +923,13 @@ pub(crate) fn devanagari_compose(text: &str) -> String {
 /// drawn order, so the signs went on the wrong letters. Only text that
 /// shows the drawn order is changed: an i sign at the start of a word or
 /// after another sign never happens in typed text.
-pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
+///
+/// With `drawn` the font is known to give each glyph its own characters
+/// in drawn order (a ToUnicode map put right by [`unscramble_tounicode`]):
+/// there every short i sign before a consonant is drawn before it, also
+/// after another consonant (वि is drawn ि व), so it moves wherever it is
+/// (#1806).
+fn devanagari_typed_order(text: &str, reph_glyph: bool, drawn: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let at = |i: Option<usize>| i.and_then(|i| chars.get(i)).copied();
     // A reph (र्) after a consonant or a sign at the end of a word, when
@@ -929,12 +949,13 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
             && before.is_some_and(|b| b != DEVA_VIRAMA && (deva_consonant(b) || deva_mark(b)))
             && !at(Some(j)).is_some_and(|n| deva_consonant(n) || deva_mark(n) || is_joiner(n))
     };
-    let visual = chars.iter().enumerate().any(|(i, &c)| {
-        (c == DEVA_SIGN_I
-            && at(Some(i + 1)).is_some_and(deva_consonant)
-            && !at(i.checked_sub(1)).is_some_and(|b| deva_consonant(b) || b == DEVA_NUKTA))
-            || final_reph(i)
-    });
+    let visual = drawn
+        || chars.iter().enumerate().any(|(i, &c)| {
+            (c == DEVA_SIGN_I
+                && at(Some(i + 1)).is_some_and(deva_consonant)
+                && !at(i.checked_sub(1)).is_some_and(|b| deva_consonant(b) || b == DEVA_NUKTA))
+                || final_reph(i)
+        });
     if !visual {
         return text.to_string();
     }
@@ -1004,6 +1025,351 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
         i += 1;
     }
     out.into_iter().collect()
+}
+
+/// The order in which pieces of Devanagari text, given in the order
+/// their glyphs are drawn, are typed: `order[j]` is the drawn index of
+/// the `j`th typed piece. A piece is the text of one glyph: a short i
+/// sign (ि) goes after the consonant cluster it is drawn before (half
+/// forms, then one full consonant or conjunct), a reph (र्) before the
+/// syllable it is drawn after, as in [`devanagari_typed_order`].
+fn devanagari_piece_order(pieces: &[&str]) -> Vec<usize> {
+    let first = |p: &str| p.chars().next();
+    let consonant = |p: &str| first(p).is_some_and(deva_consonant) && p != "\u{0930}\u{094D}";
+    let half = |p: &str| consonant(p) && p.ends_with(DEVA_VIRAMA);
+    let mark = |p: &str| first(p).is_some_and(deva_mark);
+    let mut out: Vec<usize> = Vec::with_capacity(pieces.len());
+    let mut i = 0;
+    while i < pieces.len() {
+        let p = pieces[i];
+        if p == "\u{093F}" && pieces.get(i + 1).is_some_and(|n| consonant(n)) {
+            let mut j = i + 1;
+            while pieces.get(j).is_some_and(|n| half(n)) {
+                j += 1;
+            }
+            if pieces.get(j).is_some_and(|n| consonant(n)) {
+                j += 1;
+            }
+            while pieces.get(j) == Some(&"\u{093C}") {
+                j += 1;
+            }
+            out.extend(i + 1..j);
+            out.push(i);
+            i = j;
+            continue;
+        }
+        if p == "\u{0930}\u{094D}" {
+            let mut start = out.len();
+            while start > 0 && mark(pieces[out[start - 1]]) {
+                start -= 1;
+            }
+            if start > 0 && consonant(pieces[out[start - 1]]) && !half(pieces[out[start - 1]]) {
+                start -= 1;
+                while start > 0 && half(pieces[out[start - 1]]) {
+                    start -= 1;
+                }
+                out.insert(start, i);
+                i += 1;
+                continue;
+            }
+        }
+        out.push(i);
+        i += 1;
+    }
+    out
+}
+
+/// The syllables of typed Devanagari text, as char ranges: consonants
+/// joined by viramas (each with its nukta) and the signs on the last, or
+/// an independent vowel and its signs; any other character alone.
+fn devanagari_syllables(chars: &[char]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let start = i;
+        if deva_consonant(chars[i]) {
+            loop {
+                i += 1;
+                if chars.get(i) == Some(&DEVA_NUKTA) {
+                    i += 1;
+                }
+                if chars.get(i) == Some(&DEVA_VIRAMA)
+                    && chars.get(i + 1).is_some_and(|c| deva_consonant(*c))
+                {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+        } else {
+            i += 1;
+        }
+        if !chars[start].is_whitespace() {
+            while chars.get(i).is_some_and(|c| deva_mark(*c) || is_joiner(*c)) {
+                i += 1;
+            }
+        }
+        out.push(start..i);
+    }
+    out
+}
+
+/// Pieces of text one glyph of a Devanagari font can stand for: a
+/// consonant cluster (consonants joined by viramas, with nuktas, maybe
+/// ending in a virama), an independent vowel, or one or two signs.
+fn devanagari_piece(p: &[char]) -> bool {
+    match p {
+        [] => false,
+        [a] => deva_mark(*a) || deva_consonant(*a) || ('\u{0904}'..='\u{0914}').contains(a),
+        [a, b] if deva_mark(*a) && deva_mark(*b) => true,
+        [first, ..] if deva_consonant(*first) => {
+            let mut i = 0;
+            loop {
+                if !p.get(i).is_some_and(|c| deva_consonant(*c)) {
+                    return false;
+                }
+                i += 1;
+                if p.get(i) == Some(&DEVA_NUKTA) {
+                    i += 1;
+                }
+                if i == p.len() {
+                    return true;
+                }
+                if p[i] != DEVA_VIRAMA {
+                    return false;
+                }
+                i += 1;
+                if i == p.len() {
+                    return true;
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Correct a ToUnicode map that gives glyphs the characters of other
+/// glyphs of the syllable they first appear in (#1806). An office word
+/// processor's PDFs of Hindi in a font with a `cmap` were seen to map
+/// the glyphs of each syllable, taken in drawn order, to its characters
+/// in typed order: every glyph after the first to one character, the
+/// first to the rest. A glyph keeps the text of the first syllable it
+/// appears in. In उर्मिला, drawn उ ि म र् ल ा, the i sign glyph was
+/// mapped to र् and the reph glyph to ि; in वार्ड, drawn व ा ड र्, the
+/// letter ड was mapped to र्; in सम्प्रभुता the half म glyph to म्प्.
+///
+/// `nominal` gives the glyphs whose letter the font's `cmap` names, which
+/// are taken as they are; `marks` the glyphs with no advance (only they
+/// can be a reph); `units` the codes each text operator shows, in
+/// drawing order. Each other glyph gets, at its first appearance, the
+/// text that gives back the map's entries for the new glyphs of its unit
+/// under that rule, tried among the pieces of the text those entries
+/// spell, the short i sign and the reph (at most three such glyphs in one
+/// unit). Gives the codes whose
+/// text changes.
+fn unscramble_tounicode(
+    map: &HashMap<u32, String>,
+    nominal: &HashMap<u32, char>,
+    marks: &std::collections::HashSet<u32>,
+    units: &[Vec<u32>],
+) -> HashMap<u32, String> {
+    let mut known: HashMap<u32, String> =
+        nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for unit in units {
+        // The first appearance of each code new in this unit.
+        let mut fresh: Vec<usize> = Vec::new();
+        for (j, code) in unit.iter().enumerate() {
+            if seen.insert(*code) {
+                fresh.push(j);
+            }
+        }
+        let mut unknown: Vec<u32> = fresh
+            .iter()
+            .map(|&j| unit[j])
+            .filter(|c| !known.contains_key(c) && map.contains_key(c))
+            .collect();
+        unknown.dedup();
+        if unknown.is_empty() || unknown.len() > 3 {
+            continue;
+        }
+        // The pieces of the text the entries of the unit's new glyphs
+        // spell (the others were given text elsewhere).
+        let spelled: Vec<char> = fresh
+            .iter()
+            .filter_map(|&j| map.get(&unit[j]))
+            .flat_map(|t| t.chars())
+            .collect();
+        let mut options: Vec<String> = Vec::new();
+        for a in 0..spelled.len() {
+            for b in a + 1..=(a + 8).min(spelled.len()) {
+                if devanagari_piece(&spelled[a..b]) {
+                    options.push(spelled[a..b].iter().collect());
+                }
+            }
+        }
+        for t in unknown.iter().filter_map(|c| map.get(c)) {
+            options.push(t.clone());
+            // A letter that has a glyph of its own: this one is likely
+            // its half form.
+            let mut c = t.chars();
+            if let (Some(l), None) = (c.next(), c.next()) {
+                if deva_consonant(l) && nominal.values().any(|n| *n == l) {
+                    options.push(format!("{l}{DEVA_VIRAMA}"));
+                }
+            }
+        }
+        // The short i sign and the reph, which the map often gives to
+        // another glyph of their syllable.
+        options.extend(["\u{093F}".to_string(), "\u{0930}\u{094D}".to_string()]);
+        options.sort_unstable();
+        options.dedup();
+        let Some(combos) = options
+            .len()
+            .checked_pow(unknown.len() as u32)
+            .filter(|n| (1..=20_000).contains(n))
+        else {
+            continue;
+        };
+        // Texts other glyphs already stand for: a glyph is seldom another
+        // glyph's letter or conjunct again (signs often have variants).
+        let taken: std::collections::HashSet<&str> = known
+            .values()
+            .map(String::as_str)
+            .filter(|t| !t.chars().next().is_some_and(deva_mark))
+            .collect();
+        // (no other glyph's text, own entry, starts with it, shortness)
+        type Score = (usize, usize, usize, usize);
+        let mut best: Option<(Score, Vec<usize>)> = None;
+        let mut tied = false;
+        for n in 0..combos {
+            let mut pick = Vec::with_capacity(unknown.len());
+            let mut k = n;
+            for _ in &unknown {
+                pick.push(k % options.len());
+                k /= options.len();
+            }
+            // Only a glyph with no advance is a reph.
+            if unknown
+                .iter()
+                .zip(&pick)
+                .any(|(u, p)| options[*p] == "\u{0930}\u{094D}" && !marks.contains(u))
+            {
+                continue;
+            }
+            let text = |code: u32| -> &str {
+                match unknown.iter().position(|u| *u == code) {
+                    Some(i) => options[pick[i]].as_str(),
+                    None => known
+                        .get(&code)
+                        .or_else(|| map.get(&code))
+                        .map_or("", String::as_str),
+                }
+            };
+            let pieces: Vec<&str> = unit.iter().map(|c| text(*c)).collect();
+            if !fits_scrambled(map, unit, &fresh, &pieces) {
+                continue;
+            }
+            // Prefer texts no other glyph stands for,
+            // then glyphs keeping their entry, then texts that start with
+            // it, then the shorter texts.
+            let plausible = pick
+                .iter()
+                .filter(|p| !taken.contains(options[**p].as_str()))
+                .count();
+            let own = unknown
+                .iter()
+                .zip(&pick)
+                .filter(|(u, p)| map.get(u) == Some(&options[**p]))
+                .count();
+            // Texts that start with the glyph's entry (its half form).
+            let related = unknown
+                .iter()
+                .zip(&pick)
+                .filter(|(u, p)| {
+                    map.get(u)
+                        .is_some_and(|t| options[**p].starts_with(t.as_str()))
+                })
+                .count();
+            let len: usize = pick.iter().map(|p| options[*p].chars().count()).sum();
+            let score = (plausible, own, related, usize::MAX - len);
+            match &best {
+                Some((b, _)) if score < *b => {}
+                Some((b, _)) if score == *b => tied = true,
+                _ => {
+                    best = Some((score, pick));
+                    tied = false;
+                }
+            }
+        }
+        // Two equally good readings: the file does not tell which.
+        if tied {
+            continue;
+        }
+        if let Some((_, pick)) = best {
+            for (code, p) in unknown.iter().zip(pick) {
+                known.insert(*code, options[p].clone());
+            }
+        }
+    }
+    known
+        .into_iter()
+        .filter(|(code, text)| map.get(code).is_some_and(|t| t != text))
+        .collect()
+}
+
+/// Whether glyphs standing for `pieces` (drawn order) would have been
+/// given the map's entries at the first appearances `fresh`, under the
+/// rule [`unscramble_tounicode`] describes.
+fn fits_scrambled(
+    map: &HashMap<u32, String>,
+    unit: &[u32],
+    fresh: &[usize],
+    pieces: &[&str],
+) -> bool {
+    let order = devanagari_piece_order(pieces);
+    // The typed text, and the char range each glyph's piece takes in it.
+    let mut chars: Vec<char> = Vec::new();
+    let mut span = vec![0..0; pieces.len()];
+    for &g in &order {
+        let start = chars.len();
+        chars.extend(pieces[g].chars());
+        span[g] = start..chars.len();
+    }
+    // Typed text has a vowel sign or a virama only after a consonant.
+    let sign = |c: char| {
+        matches!(c, '\u{093A}'..='\u{094F}' | '\u{0955}'..='\u{0957}' | '\u{0962}' | '\u{0963}')
+            && c != DEVA_NUKTA
+    };
+    if chars.iter().enumerate().any(|(i, &c)| {
+        sign(c) && !(i > 0 && (deva_consonant(chars[i - 1]) || chars[i - 1] == DEVA_NUKTA))
+    }) {
+        return false;
+    }
+    let syllables = devanagari_syllables(&chars);
+    // What each glyph of each syllable is given.
+    let mut given: Vec<Option<String>> = vec![None; pieces.len()];
+    for syl in &syllables {
+        let mut glyphs: Vec<usize> = (0..pieces.len())
+            .filter(|&g| !span[g].is_empty() && syl.contains(&span[g].start))
+            .collect();
+        glyphs.sort_unstable();
+        let (m, k) = (syl.len(), glyphs.len());
+        if k == 0 || m < k {
+            continue;
+        }
+        for (i, &g) in glyphs.iter().enumerate() {
+            let r = if i == 0 {
+                syl.start..syl.start + m - k + 1
+            } else {
+                syl.start + m - k + i..syl.start + m - k + i + 1
+            };
+            given[g] = Some(chars[r].iter().collect());
+        }
+    }
+    fresh
+        .iter()
+        .all(|&j| given[j].is_some() && given[j].as_ref() == map.get(&unit[j]))
 }
 
 impl<'a> Importer<'a> {
@@ -1937,7 +2303,7 @@ impl<'a> Importer<'a> {
             ) {
                 let key = (0u32, 0u16);
                 let _ = key;
-                gs.font = Some(std::rc::Rc::new(self.font_info(&fd)));
+                gs.font = Some(std::rc::Rc::new(self.font_info(&fd, None)));
                 gs.font_size = size;
             }
         }
@@ -2175,14 +2541,35 @@ impl<'a> Importer<'a> {
         }
     }
 
-    /// Decode an image XObject to PNG (RGBA).
+    /// Decode an image XObject to PNG (RGBA). A picture larger than
+    /// [`MAX_IMAGE_SIDE`] or [`MAX_IMAGE_PIXELS`] is shrunk by a whole
+    /// factor, each pixel the mean of a block of the picture's own
+    /// (#1804); only one past [`MAX_SOURCE_SIDE`] or
+    /// [`MAX_SOURCE_PIXELS`] is skipped.
     fn decode_image(&mut self, stream: &Stream) -> Option<(Vec<u8>, u32, u32)> {
+        let (rgba, w, h) = self.decode_pixels(stream)?;
+        Some((tracedraw_render_png(w, h, &rgba), w, h))
+    }
+
+    /// An image XObject's RGBA pixels and size, as [`Self::decode_image`]
+    /// gives them before they are put into a PNG.
+    fn decode_pixels(&mut self, stream: &Stream) -> Option<(Vec<u8>, u32, u32)> {
         let d = &stream.dict;
         let w = self.get(d, b"Width").and_then(Self::num)? as u32;
         let h = self.get(d, b"Height").and_then(Self::num)? as u32;
-        if w == 0 || h == 0 || w > 20_000 || h > 20_000 || (w as u64) * (h as u64) > 80_000_000 {
-            self.warn("image too large; skipped");
+        if w == 0
+            || h == 0
+            || w > MAX_SOURCE_SIDE
+            || h > MAX_SOURCE_SIDE
+            || (w as u64) * (h as u64) > MAX_SOURCE_PIXELS
+        {
+            self.warn(format!("image of {w} x {h} pixels too large; skipped"));
             return None;
+        }
+        let f = shrink_factor(w, h);
+        let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
+        if f > 1 {
+            self.warn(format!("image of {w} x {h} pixels shrunk to {ow} x {oh}"));
         }
         let bpc = self
             .get(d, b"BitsPerComponent")
@@ -2235,7 +2622,7 @@ impl<'a> Importer<'a> {
                 };
                 if last == b"JPXDecode" {
                     self.warn("JPEG 2000 image replaced by a grey box");
-                    rgba = vec![160; (w * h * 4) as usize];
+                    rgba = vec![160; (ow as usize) * (oh as usize) * 4];
                     for px in rgba.chunks_exact_mut(4) {
                         px[3] = 255;
                     }
@@ -2279,30 +2666,60 @@ impl<'a> Importer<'a> {
                     }
                     // Decoded JPEG size wins over the dictionary.
                     let (jw, jh) = (img.width(), img.height());
-                    if jw != w || jh != h {
-                        return Some((tracedraw_render_png(jw, jh, &rgba), jw, jh));
+                    let jf = shrink_factor(jw, jh);
+                    let (jw, jh, rgba_j) = if jf > 1 {
+                        let mut shrink = Shrink::new(jw, jh, jf);
+                        for row in rgba.chunks_exact(jw as usize * 4) {
+                            shrink.push_row(row);
+                        }
+                        (jw.div_ceil(jf), jh.div_ceil(jf), shrink.finish())
+                    } else {
+                        (jw, jh, rgba)
+                    };
+                    rgba = rgba_j;
+                    if jw != ow || jh != oh {
+                        return Some((rgba, jw, jh));
                     }
                 }
             }
             _ => {
-                let data = if filters.is_empty() {
-                    stream.content.clone()
-                } else {
-                    match stream.decompressed_content() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            self.warn(format!("image data not decoded: {e}"));
-                            return None;
-                        }
-                    }
-                };
                 let ncomp = if is_mask { 1 } else { cs.components().max(1) };
                 let row_bytes = ((w as usize) * ncomp * (bpc as usize)).div_ceil(8);
-                if data.len() < row_bytes * (h as usize) {
-                    self.warn("image data shorter than its size; skipped");
-                    return None;
-                }
-                rgba = Vec::with_capacity((w * h * 4) as usize);
+                // A picture shrunk on reading, compressed with Flate alone
+                // and without a predictor, is inflated a row at a time:
+                // the whole of it (500 MB for the picture of #1804) never
+                // sits in memory.
+                let streamed = f > 1
+                    && filters.len() == 1
+                    && last == b"FlateDecode"
+                    && self.get(d, b"DecodeParms").is_none();
+                let mut source: Box<dyn std::io::Read + '_> = if streamed {
+                    Box::new(flate2::read::ZlibDecoder::new(stream.content.as_slice()))
+                } else {
+                    let data = if filters.is_empty() {
+                        stream.content.clone()
+                    } else {
+                        if (row_bytes as u64) * (h as u64) > MAX_BUFFERED_BYTES {
+                            self.warn(format!("image of {w} x {h} pixels too large; skipped"));
+                            return None;
+                        }
+                        match stream.decompressed_content() {
+                            Ok(d) => d,
+                            Err(e) => {
+                                self.warn(format!("image data not decoded: {e}"));
+                                return None;
+                            }
+                        }
+                    };
+                    if data.len() < row_bytes * (h as usize) {
+                        self.warn("image data shorter than its size; skipped");
+                        return None;
+                    }
+                    Box::new(std::io::Cursor::new(data))
+                };
+                let mut shrink = Shrink::new(w, h, f);
+                let mut row = vec![0u8; row_bytes];
+                let mut px_row: Vec<u8> = Vec::with_capacity(w as usize * 4);
                 let max = ((1u32 << bpc) - 1) as f32;
                 // A Separation picture: the colour of each tint, 1 being
                 // full ink.
@@ -2316,9 +2733,34 @@ impl<'a> Importer<'a> {
                         .collect(),
                     _ => Vec::new(),
                 };
-                for y in 0..h as usize {
-                    let row = &data[y * row_bytes..(y + 1) * row_bytes];
-                    let mut bits = BitReader::new(row);
+                for _ in 0..h {
+                    if source.read_exact(&mut row).is_err() {
+                        self.warn("image data shorter than its size; skipped");
+                        return None;
+                    }
+                    px_row.clear();
+                    // Plain 8-bit RGB or grey samples, the most common
+                    // and the largest pictures: no conversion per sample.
+                    if bpc == 8 && !is_mask && !inverted && palette.is_none() && tints.is_empty() {
+                        match cs {
+                            ColorSpace::Rgb => {
+                                for p in row.chunks_exact(3) {
+                                    px_row.extend_from_slice(&[p[0], p[1], p[2], 255]);
+                                }
+                                shrink.push_row(&px_row);
+                                continue;
+                            }
+                            ColorSpace::Gray => {
+                                for &g in &row {
+                                    px_row.extend_from_slice(&[g, g, g, 255]);
+                                }
+                                shrink.push_row(&px_row);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut bits = BitReader::new(&row);
                     for _ in 0..w {
                         let mut comps = [0f32; 4];
                         let mut raw0 = 0u32;
@@ -2336,7 +2778,7 @@ impl<'a> Importer<'a> {
                             // 1 = masked out (transparent) unless Decode [1 0].
                             let on = (raw0 == 0) != inverted;
                             let c = gs_fill_rgb(None);
-                            rgba.extend_from_slice(&[c[0], c[1], c[2], if on { 255 } else { 0 }]);
+                            px_row.extend_from_slice(&[c[0], c[1], c[2], if on { 255 } else { 0 }]);
                             continue;
                         }
                         let (r, g, b) = if let Some([r, g, b]) = tints.get(raw0 as usize) {
@@ -2386,39 +2828,37 @@ impl<'a> Importer<'a> {
                                 }
                             }
                         };
-                        rgba.extend_from_slice(&[r, g, b, 255]);
+                        px_row.extend_from_slice(&[r, g, b, 255]);
                     }
+                    shrink.push_row(&px_row);
                 }
+                rgba = shrink.finish();
             }
         }
-        if rgba.len() != (w * h * 4) as usize {
+        if rgba.len() != (ow as usize) * (oh as usize) * 4 {
             return None;
         }
-        // Soft mask: alpha from a gray image of the same size.
+        // Soft mask: alpha from a gray image, resampled to the picture's
+        // size (a large one shrunk as the picture is).
         if let Some(Object::Stream(sm)) = self.get(d, b"SMask").cloned() {
-            if let Some(alpha) = self.decode_gray(&sm, w, h) {
+            if let Some(alpha) = self.decode_gray(&sm, ow, oh) {
                 for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
                     px[3] = a;
                 }
             }
         }
-        Some((tracedraw_render_png(w, h, &rgba), w, h))
+        Some((rgba, ow, oh))
     }
 
     /// An SMask as 8-bit alpha, resampled to `w` x `h` (nearest).
     fn decode_gray(&mut self, sm: &Stream, w: u32, h: u32) -> Option<Vec<u8>> {
-        let (png, sw, sh) = self.decode_image(sm)?;
-        let pm = tiny_skia::Pixmap::decode_png(&png).ok()?;
-        let px = pm.pixels();
+        let (px, sw, sh) = self.decode_pixels(sm)?;
         let mut out = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
             let sy = (y as u64 * sh as u64 / h as u64) as usize;
             for x in 0..w {
                 let sx = (x as u64 * sw as u64 / w as u64) as usize;
-                let p = px
-                    .get(sy * sw as usize + sx)
-                    .map(|p| p.demultiply().red())
-                    .unwrap_or(255);
+                let p = px.get((sy * sw as usize + sx) * 4).copied().unwrap_or(255);
                 out.push(p);
             }
         }
@@ -2839,14 +3279,14 @@ impl<'a> Importer<'a> {
             }
         }
         let fd = self.dict_of(entry)?.clone();
-        let info = std::rc::Rc::new(self.font_info(&fd));
+        let info = std::rc::Rc::new(self.font_info(&fd, key));
         if let Some(k) = key {
             self.fonts.insert(k, info.clone());
         }
         Some(info)
     }
 
-    fn font_info(&mut self, fd: &Dictionary) -> FontInfo {
+    fn font_info(&mut self, fd: &Dictionary, key: Option<lopdf::ObjectId>) -> FontInfo {
         let subtype = self
             .get(fd, b"Subtype")
             .and_then(|o| o.as_name().ok())
@@ -2975,6 +3415,18 @@ impl<'a> Importer<'a> {
                 }
             }
         }
+        // A scrambled ToUnicode map put right (#1806).
+        let mut drawn_order = false;
+        let mut to_unicode = to_unicode;
+        if let (Some(map), Some(key), true) = (to_unicode.as_mut(), key, two_byte) {
+            let marks = map
+                .keys()
+                .copied()
+                .filter(|c| widths.get(c).copied().unwrap_or(default_width).abs() < 150.0)
+                .collect();
+            drawn_order =
+                self.fix_scrambled_tounicode(map, key, &desc_font, descriptor.as_ref(), &marks);
+        }
         let type3_matrix = if subtype == b"Type3" {
             self.get(fd, b"FontMatrix").and_then(|o| self.matrix_of(o))
         } else {
@@ -3001,6 +3453,7 @@ impl<'a> Importer<'a> {
             italic,
             two_byte,
             to_unicode,
+            drawn_order,
             one_byte,
             widths,
             default_width,
@@ -3051,6 +3504,178 @@ impl<'a> Importer<'a> {
             None
         };
         crate::pdf_glyphs::GlyphSource::new(data, cff, two_byte, cid_to_gid, encoding)
+    }
+
+    /// Correct a two-byte font's ToUnicode map that gives Indic glyphs
+    /// the characters of other glyphs (#1806; see
+    /// [`unscramble_tounicode`]). Only a map that contradicts the
+    /// embedded font's own `cmap` on a glyph of an Indic letter or sign
+    /// is touched. Whether it was.
+    fn fix_scrambled_tounicode(
+        &mut self,
+        map: &mut HashMap<u32, String>,
+        key: lopdf::ObjectId,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        marks: &std::collections::HashSet<u32>,
+    ) -> bool {
+        if let Some(fixes) = self.tounicode_fixes.get(&key) {
+            map.extend(fixes.iter().map(|(k, v)| (*k, v.clone())));
+            return !fixes.is_empty();
+        }
+        let nominal = self.nominal_indic(desc_font, descriptor, map);
+        let scrambled = nominal
+            .iter()
+            .any(|(code, c)| map.get(code).is_some_and(|t| *t != c.to_string()));
+        let fixes = if scrambled {
+            let units = self.text_units(key, map);
+            unscramble_tounicode(map, &nominal, marks, &units)
+        } else {
+            HashMap::new()
+        };
+        map.extend(fixes.iter().map(|(k, v)| (*k, v.clone())));
+        let fixed = !fixes.is_empty();
+        self.tounicode_fixes.insert(key, fixes);
+        fixed
+    }
+
+    /// The codes of a two-byte TrueType font whose glyph the font's own
+    /// `cmap` gives to one Indic character (U+0900 to U+0DFF), with that
+    /// character, for the codes `map` lists.
+    fn nominal_indic(
+        &self,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        map: &HashMap<u32, String>,
+    ) -> HashMap<u32, char> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let Ok(face) = ttf_parser::Face::parse(&data, 0) else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        // Glyph to the characters the font maps to it.
+        let mut chars: HashMap<u16, Vec<char>> = HashMap::new();
+        if let Some(cmap) = face.tables().cmap {
+            for st in cmap.subtables {
+                if !st.is_unicode() {
+                    continue;
+                }
+                st.codepoints(|cp| {
+                    if let (Some(c), Some(g)) = (char::from_u32(cp), st.glyph_index(cp)) {
+                        let v = chars.entry(g.0).or_default();
+                        if !v.contains(&c) {
+                            v.push(c);
+                        }
+                    }
+                });
+            }
+        }
+        for &code in map.keys() {
+            let gid = match &cid_to_gid {
+                Some(m) => m.get(code as usize).copied(),
+                None => u16::try_from(code).ok(),
+            };
+            if let Some([c]) = gid.and_then(|g| chars.get(&g)).map(Vec::as_slice) {
+                if ('\u{0900}'..='\u{0DFF}').contains(c) {
+                    out.insert(code, *c);
+                }
+            }
+        }
+        out
+    }
+
+    /// The codes every text-showing operator of the file shows in font
+    /// `key`, page by page in drawing order: one list for each `Tj` or
+    /// `TJ`, split at spaces.
+    fn text_units(&self, key: lopdf::ObjectId, map: &HashMap<u32, String>) -> Vec<Vec<u32>> {
+        let mut units = Vec::new();
+        let mut ops = 0usize;
+        for page_id in self.doc.page_iter() {
+            let Ok(page) = self.doc.get_dictionary(page_id) else {
+                continue;
+            };
+            let Some(fonts) = self
+                .page_attr(page, b"Resources")
+                .and_then(|o| self.dict_of(o))
+                .and_then(|r| self.get(r, b"Font"))
+                .and_then(|o| self.dict_of(o))
+            else {
+                continue;
+            };
+            let names: Vec<Vec<u8>> = fonts
+                .iter()
+                .filter(|(_, v)| matches!(v, Object::Reference(id) if *id == key))
+                .map(|(k, _)| k.clone())
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let Ok(content) = Content::decode(&self.doc.get_page_content(page_id)) else {
+                continue;
+            };
+            let mut current = false;
+            for op in &content.operations {
+                ops += 1;
+                if ops > MAX_OPS {
+                    return units;
+                }
+                let strings: Vec<&Vec<u8>> = match op.operator.as_str() {
+                    "Tf" => {
+                        current = op
+                            .operands
+                            .first()
+                            .and_then(|o| o.as_name().ok())
+                            .is_some_and(|n| names.iter().any(|k| k == n));
+                        continue;
+                    }
+                    "Tj" | "'" | "\"" => match op.operands.last() {
+                        Some(Object::String(s, _)) => vec![s],
+                        _ => continue,
+                    },
+                    "TJ" => match op.operands.first() {
+                        Some(Object::Array(items)) => items
+                            .iter()
+                            .filter_map(|o| match o {
+                                Object::String(s, _) => Some(s),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if !current {
+                    continue;
+                }
+                let mut unit = Vec::new();
+                for s in strings {
+                    for c in s.chunks_exact(2) {
+                        let code = u32::from(u16::from_be_bytes([c[0], c[1]]));
+                        if map.get(&code).is_some_and(|t| t.trim().is_empty()) {
+                            units.push(std::mem::take(&mut unit));
+                        } else {
+                            unit.push(code);
+                        }
+                    }
+                }
+                units.push(unit);
+            }
+        }
+        units.retain(|u| !u.is_empty());
+        units
     }
 
     fn simple_encoding(
@@ -3333,9 +3958,10 @@ impl<'a> Importer<'a> {
             .chain(std::iter::once(&(r.text.len()..r.text.len())))
         {
             if let Some(between) = r.text.get(from..part.start) {
-                text.push_str(&devanagari_logical_order(
+                text.push_str(&devanagari_typed_order(
                     &devanagari_compose(between),
                     r.reph_glyph,
+                    r.font.drawn_order,
                 ));
             }
             if let Some(given) = r.text.get(part.clone()) {
@@ -4392,6 +5018,99 @@ fn glyph_name_to_char(name: &[u8]) -> Option<char> {
     table.iter().find(|(k, _)| *k == n).map(|(_, c)| *c)
 }
 
+/// Most pixels on a side of a picture as it comes into the drawing.
+const MAX_IMAGE_SIDE: u32 = 20_000;
+/// Most pixels of a picture as it comes into the drawing (320 MB of
+/// RGBA); a larger one is shrunk (#1804).
+const MAX_IMAGE_PIXELS: u64 = 80_000_000;
+/// Most pixels on a side of a picture read at all.
+const MAX_SOURCE_SIDE: u32 = 400_000;
+/// Most pixels of a picture read at all: a 1.6 gigapixel picture
+/// shrinks by 5, past it a damaged size more likely than a picture.
+const MAX_SOURCE_PIXELS: u64 = 1_600_000_000;
+/// Most bytes of picture data inflated at once when it cannot be read a
+/// row at a time (filters other than Flate alone).
+const MAX_BUFFERED_BYTES: u64 = 1 << 30;
+
+/// The smallest whole factor that brings a `w` x `h` picture within
+/// [`MAX_IMAGE_SIDE`] and [`MAX_IMAGE_PIXELS`]: 1 for a picture that is
+/// already.
+fn shrink_factor(w: u32, h: u32) -> u32 {
+    let fits = |f: u32| {
+        let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
+        ow <= MAX_IMAGE_SIDE
+            && oh <= MAX_IMAGE_SIDE
+            && (ow as u64) * (oh as u64) <= MAX_IMAGE_PIXELS
+    };
+    (1..=w.max(h).max(1))
+        .find(|&f| fits(f))
+        .unwrap_or(w.max(h).max(1))
+}
+
+/// Shrinks RGBA rows by a whole factor `f`: each pixel of the result is
+/// the mean of an `f` x `f` block (smaller at the right and bottom
+/// edges). With `f` 1 the rows pass as they are.
+struct Shrink {
+    f: usize,
+    w: usize,
+    sums: Vec<u32>,
+    rows: usize,
+    out: Vec<u8>,
+}
+
+impl Shrink {
+    fn new(w: u32, h: u32, f: u32) -> Self {
+        let f = f.max(1) as usize;
+        let (ow, oh) = ((w as usize).div_ceil(f), (h as usize).div_ceil(f));
+        Shrink {
+            f,
+            w: w as usize,
+            sums: if f > 1 { vec![0; ow * 4] } else { Vec::new() },
+            rows: 0,
+            out: Vec::with_capacity(ow * oh * 4),
+        }
+    }
+
+    /// One row of `w` RGBA pixels.
+    fn push_row(&mut self, row: &[u8]) {
+        if self.f == 1 {
+            self.out.extend_from_slice(row);
+            return;
+        }
+        for (x, px) in row.chunks_exact(4).take(self.w).enumerate() {
+            let o = x / self.f * 4;
+            for (s, c) in self.sums[o..o + 4].iter_mut().zip(px) {
+                *s += u32::from(*c);
+            }
+        }
+        self.rows += 1;
+        if self.rows == self.f {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.rows == 0 {
+            return;
+        }
+        for (ox, px) in self.sums.chunks_exact(4).enumerate() {
+            let bw = self.f.min(self.w - ox * self.f);
+            let n = (bw * self.rows) as u32;
+            for s in px {
+                self.out.push(((s + n / 2) / n) as u8);
+            }
+        }
+        self.sums.fill(0);
+        self.rows = 0;
+    }
+
+    /// The shrunk picture's RGBA pixels.
+    fn finish(mut self) -> Vec<u8> {
+        self.flush();
+        self.out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4666,6 +5385,76 @@ mod tests {
             ),
             ["क त"]
         );
+    }
+
+    /// A ToUnicode map scrambled as an office word processor's Hindi PDF
+    /// was (#1806): उर्मिला drawn उ ि म र् ल ा with the i sign glyph (2)
+    /// mapped to र् and the reph glyph (4) to ि, then वार्ड drawn व ा ड र्
+    /// with ड (7) mapped to र्. The font's cmap names 2 and 7; the reph
+    /// glyph, which has no advance, is worked out from the first word.
+    #[test]
+    fn a_scrambled_tounicode_map_is_put_right() {
+        let map: HashMap<u32, String> = [
+            (1, "\u{0909}"),
+            (2, "\u{0930}\u{094D}"),
+            (3, "\u{092E}"),
+            (4, "\u{093F}"),
+            (5, "\u{0932}"),
+            (6, "\u{093E}"),
+            (7, "\u{0930}\u{094D}"),
+            (8, "\u{0935}"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+        let nominal: HashMap<u32, char> = [
+            (1, '\u{0909}'),
+            (2, '\u{093F}'),
+            (3, '\u{092E}'),
+            (5, '\u{0932}'),
+            (6, '\u{093E}'),
+            (7, '\u{0921}'),
+            (8, '\u{0935}'),
+        ]
+        .into_iter()
+        .collect();
+        let marks = [4].into_iter().collect();
+        let fixes = unscramble_tounicode(
+            &map,
+            &nominal,
+            &marks,
+            &[vec![1, 2, 3, 4, 5, 6], vec![8, 6, 7, 4]],
+        );
+        let mut got: Vec<(u32, String)> = fixes.into_iter().collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (2, "\u{093F}".to_string()),
+                (4, "\u{0930}\u{094D}".to_string()),
+                (7, "\u{0921}".to_string())
+            ]
+        );
+        // Those glyphs in drawn order give the words as typed.
+        assert_eq!(
+            devanagari_typed_order(
+                "\u{0909}\u{093F}\u{092E}\u{0930}\u{094D}\u{0932}\u{093E}",
+                true,
+                true
+            ),
+            "उर्मिला"
+        );
+        assert_eq!(
+            devanagari_typed_order("\u{0935}\u{093E}\u{0921}\u{0930}\u{094D}", true, true),
+            "वार्ड"
+        );
+        // A short i sign after a consonant moves only when the font is
+        // known to give drawn order.
+        assert_eq!(devanagari_typed_order("पिश्चम", false, true), "पश्चिम");
+        assert_eq!(devanagari_typed_order("पिश्चम", false, false), "पिश्चम");
+        // A map that agrees with the font is left alone.
+        let ok: HashMap<u32, String> = nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
+        assert!(unscramble_tounicode(&ok, &nominal, &marks, &[vec![1, 2, 3]]).is_empty());
     }
 
     /// The Devanagari test corpus written to PDF by an office suite
@@ -5299,6 +6088,132 @@ mod tests {
         }
         .to_rgb8();
         assert_eq!([px[1].red(), px[1].green(), px[1].blue()], gold);
+    }
+
+    /// A one-page PDF whose objects may hold binary streams: each object
+    /// is its bytes between `n 0 obj` and `endobj`.
+    fn pdf_bin(objects: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A Flate image stream object of `w` x `h` pixels in `cs`.
+    fn flate_image(dict: &str, raw: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(raw).expect("deflate");
+        let data = z.finish().expect("deflate");
+        let mut o = format!(
+            "<< /Type /XObject /Subtype /Image {dict} /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
+            data.len()
+        )
+        .into_bytes();
+        o.extend_from_slice(&data);
+        o.extend_from_slice(b"\nendstream");
+        o
+    }
+
+    /// A picture past the size a drawing keeps is shrunk, not skipped:
+    /// the 11160 x 14794 pixel picture of #1804 (165 megapixels, over the
+    /// 80 megapixel limit) by 2, a 40000 pixel wide one by 2 as well,
+    /// one of 20000 x 20000 by 3.
+    #[test]
+    fn shrink_factor_brings_pictures_within_the_limits() {
+        assert_eq!(shrink_factor(11_160, 14_794), 2);
+        assert_eq!(shrink_factor(40_000, 2), 2);
+        assert_eq!(shrink_factor(20_000, 20_000), 3);
+        assert_eq!(shrink_factor(8_000, 10_000), 1);
+        assert_eq!(shrink_factor(1, 1), 1);
+        let mut s = Shrink::new(3, 3, 2);
+        for _ in 0..3 {
+            s.push_row(&[10, 20, 30, 255, 30, 40, 50, 0, 100, 100, 100, 255]);
+        }
+        // Blocks of 2 x 2, 1 x 2, 2 x 1 and 1 x 1 pixels.
+        assert_eq!(
+            s.finish(),
+            [20, 30, 40, 128, 100, 100, 100, 255, 20, 30, 40, 128, 100, 100, 100, 255]
+        );
+    }
+
+    /// An RGB picture with a soft mask, too wide for a drawing (40000
+    /// pixels, over the 20000 pixel side), comes in shrunk by 2: each
+    /// pixel the mean of a red and a blue one, its alpha the mean of the
+    /// mask's opaque and clear ones. It used to be skipped, leaving only
+    /// what was drawn around it (#1804, a 11160 x 14794 picture).
+    #[test]
+    fn oversized_picture_is_shrunk_with_its_soft_mask() {
+        let (w, h) = (40_000usize, 2usize);
+        let rgb: Vec<u8> = (0..w * h)
+            .flat_map(|i| if i % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] })
+            .collect();
+        let alpha: Vec<u8> = (0..w * h)
+            .map(|i| if i % 2 == 0 { 255 } else { 0 })
+            .collect();
+        let content = "q 200 0 0 10 0 0 cm /Im1 Do Q";
+        let bytes = pdf_bin(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>".to_vec(),
+            stream("", content).into_bytes(),
+            flate_image(
+                &format!("/Width {w} /Height {h} /ColorSpace /DeviceRGB /SMask 6 0 R"),
+                &rgb,
+            ),
+            flate_image(&format!("/Width {w} /Height {h} /ColorSpace /DeviceGray"), &alpha),
+        ]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let shapes = &imp.pages[0].shapes;
+        assert_eq!(shapes.len(), 1, "{:?}", imp.warnings);
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &shapes[0].kind
+        else {
+            panic!("{:?}", shapes[0].kind);
+        };
+        assert_eq!((*width_px, *height_px), (20_000, 1));
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        assert_eq!((pm.width(), pm.height()), (20_000, 1));
+        for p in [pm.pixels()[0], pm.pixels()[19_999]] {
+            let c = p.demultiply();
+            assert_eq!(c.alpha(), 128);
+            assert!(c.red().abs_diff(128) <= 2 && c.green() == 0, "{c:?}");
+            assert!(c.blue().abs_diff(128) <= 2, "{c:?}");
+        }
+        // It still fills the unit square the content placed it in.
+        let b = shapes[0].bounds();
+        assert!((b.width() - 200.0 * PT_MM).abs() < 1e-6, "{b:?}");
+        assert!(
+            imp.warnings
+                .iter()
+                .any(|w| w.contains("shrunk to 20000 x 1")),
+            "{:?}",
+            imp.warnings
+        );
     }
 
     #[test]

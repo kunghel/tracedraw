@@ -443,6 +443,7 @@ dialog.export_preset_none = "(aucun)" # mt
 dialog.export_preset_add = "Enregistrer ces réglages comme préréglage" # mt
 dialog.export_preset_rename = "Renommer le préréglage" # mt
 dialog.export_preset_delete = "Supprimer le préréglage" # mt
+dialog.export_preset_delete_question = "Supprimer le préréglage « {name} » ?" # mt
 dialog.export_preset_name = "Nom du préréglage" # mt
 dialog.export_estimate = "Taille du fichier : environ {size}"
 dialog.export_output = "{w} x {h} pixels, {dpi} ppp, {mode}"

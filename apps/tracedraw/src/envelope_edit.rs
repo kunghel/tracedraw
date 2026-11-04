@@ -2,8 +2,10 @@
 //! envelope and drags its nodes; the Shape tool drags them too. A node
 //! moves the way the chosen mode says (straight line, single arc, double
 //! arc or unconstrained); in the Unconstrained mode the selected node's
-//! handles show and move on their own. Double-clicking the frame adds a
-//! node, double-clicking a node that is not a corner removes it. Presets,
+//! handles show and move on their own. Dragging a segment of the frame
+//! bends it, as the Shape tool bends a curve's segment (#1339).
+//! Double-clicking the frame adds a node, double-clicking a node that is
+//! not a corner removes it. Presets,
 //! the mapping, Keep Lines, Add New, Clear and Copy act on the selection.
 
 use crate::app::App;
@@ -18,7 +20,7 @@ use tracedraw_core::{
 };
 
 /// A part of an envelope's frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Part {
     Node(usize),
     /// Handle `end` (0 at the segment's start, 1 at its end) of segment
@@ -26,6 +28,11 @@ pub enum Part {
     Handle {
         seg: usize,
         end: usize,
+    },
+    /// Segment `seg`, grabbed at its point `t` (0 to 1): a drag bends it.
+    Segment {
+        seg: usize,
+        t: f64,
     },
 }
 
@@ -352,6 +359,7 @@ impl App {
         match drag.part {
             Part::Node(i) => f.move_node(i, d, self.envelope_mode),
             Part::Handle { seg, end } => f.move_handle(seg, end, d),
+            Part::Segment { seg, t } => f.bend_segment(seg, t, d),
         }
         let effects = with_frame(&drag.original, at, &f);
         if drag.stepped && self.engine.undo_label() == Some("Edit Envelope") {
@@ -382,7 +390,13 @@ impl App {
             return true;
         }
         if response.drag_started_by(PointerButton::Primary) {
-            if let Some((id, part)) = self.envelope_part_at(p) {
+            // Handles and nodes first; then a segment of the frame, which
+            // bends (#1339).
+            let part = self.envelope_part_at(p).or_else(|| {
+                self.envelope_segment_at(p)
+                    .map(|(id, seg, t)| (id, Part::Segment { seg, t }))
+            });
+            if let Some((id, part)) = part {
                 self.begin_envelope_drag(id, part, p);
                 return true;
             }
@@ -402,7 +416,7 @@ impl App {
                     self.selected_effect_node = Some((id, i));
                     return true;
                 }
-                Some((_, Part::Handle { .. })) => return true,
+                Some((_, Part::Handle { .. } | Part::Segment { .. })) => return true,
                 None => {}
             }
         }

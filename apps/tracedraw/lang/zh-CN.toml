@@ -443,6 +443,7 @@ dialog.export_preset_none = "（无）" # mt
 dialog.export_preset_add = "将这些设置保存为预设" # mt
 dialog.export_preset_rename = "重命名预设" # mt
 dialog.export_preset_delete = "删除预设" # mt
+dialog.export_preset_delete_question = "删除预设“{name}”?" # mt
 dialog.export_preset_name = "预设名称" # mt
 dialog.export_estimate = "文件大小：约 {size}"
 dialog.export_output = "{w} x {h} 像素，{dpi} dpi，{mode}"

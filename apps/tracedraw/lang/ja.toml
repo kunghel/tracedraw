@@ -443,6 +443,7 @@ dialog.export_preset_none = "(なし)" # mt
 dialog.export_preset_add = "この設定をプリセットとして保存" # mt
 dialog.export_preset_rename = "プリセットの名前を変更" # mt
 dialog.export_preset_delete = "プリセットを削除" # mt
+dialog.export_preset_delete_question = "プリセット「{name}」を削除しますか?" # mt
 dialog.export_preset_name = "プリセット名" # mt
 dialog.export_estimate = "ファイルサイズ: 約 {size}"
 dialog.export_output = "{w} x {h} ピクセル、{dpi} dpi、{mode}"

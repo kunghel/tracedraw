@@ -280,19 +280,55 @@ fn with_clipboard<T>(f: impl FnOnce(&mut arboard::Clipboard) -> T) -> Option<T> 
     })
 }
 
+/// Whether the clipboard offers text and a list of files, where
+/// TraceDraw reads its list of types before the clipboard library reads
+/// it (an X11 desktop: no `WAYLAND_DISPLAY`); `None` elsewhere, where the
+/// library is asked for both.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn x11_offers_text_and_files() -> Option<(bool, bool)> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return crate::x11_clipboard::offer().map(|o| (o.has_text(), o.has_files()));
+    }
+    None
+}
+
+/// Whether a paste shortcut may read the clipboard's text: asked by the
+/// windowing layer before each one (`eframe::set_paste_text_gate`). On an
+/// X11 desktop only when the clipboard offers text: a program that holds
+/// a picture alone may answer a text request with the picture sent in
+/// parts, which the text read stops after the first part, and then wait
+/// for the rest and answer nobody, so the picture never pasted and the
+/// window froze for the reads that waited (#1488).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn paste_may_read_text() -> bool {
+    x11_offers_text_and_files().is_none_or(|(text, _)| text)
+}
+
 /// The clipboard's text and files, not its picture (decoding one costs
-/// far more).
+/// far more). On an X11 desktop each is asked for only when the
+/// clipboard offers it (#1488, [`paste_may_read_text`]).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_text_and_files() -> ClipboardContent {
+    let (text_offered, files_offered) = x11_offers_text_and_files().unwrap_or((true, true));
+    if !text_offered && !files_offered {
+        return ClipboardContent::default();
+    }
     with_clipboard(|cb| {
-        let text = cb.get_text().ok().filter(|t| !t.is_empty());
-        let files = cb
-            .get()
-            .file_list()
-            .unwrap_or_default()
-            .into_iter()
-            .map(without_line_end)
-            .collect();
+        let text = text_offered
+            .then(|| cb.get_text().ok())
+            .flatten()
+            .filter(|t| !t.is_empty());
+        let files = if files_offered {
+            cb.get()
+                .file_list()
+                .unwrap_or_default()
+                .into_iter()
+                .map(without_line_end)
+                .collect()
+        } else {
+            Vec::new()
+        };
         ClipboardContent {
             text,
             image: None,
@@ -1038,6 +1074,12 @@ impl App {
         self.run(Command::SetObjectData { shape: id, data });
     }
 }
+
+/// The paste key test of the windowing layer's gate (vendor/README.md,
+/// #1488).
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
+#[path = "../../../vendor/eframe/src/native/paste_gate.rs"]
+mod eframe_paste_gate;
 
 #[cfg(test)]
 mod tests {

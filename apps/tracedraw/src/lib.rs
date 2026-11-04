@@ -407,6 +407,9 @@ pub fn run() -> eframe::Result<()> {
             options,
             Box::new(move |cc| {
                 gpu::note_renderer(cc, mode);
+                // A paste shortcut reads the clipboard's text only when it
+                // offers text (#1488).
+                eframe::set_paste_text_gate(clipboard::paste_may_read_text);
                 system_chars::set_context(&cc.egui_ctx);
                 if let Some(w) = &wake {
                     let _ = w.set(cc.egui_ctx.clone());

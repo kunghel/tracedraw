@@ -1,8 +1,9 @@
 //! SVG import: parses with `usvg` (which resolves CSS, `use`, units and
 //! nested transforms into a flat tree) and converts the result into
 //! document shapes. Groups keep their structure, clip paths become
-//! clip frames, images become bitmaps, text is already outlined by usvg
-//! (with `text` feature off, text nodes are dropped).
+//! clip frames, images become bitmaps, text becomes editable text
+//! objects (read by `svg_text`, since usvg is built without its text
+//! engine and drops text elements).
 //!
 //! Coordinates: SVG is in user units at 96 dpi with Y down; the document is
 //! in millimetres with Y up, origin at the bottom-left of the page.
@@ -118,14 +119,28 @@ pub fn parse(svg: &str, ids: &mut IdSource) -> std::result::Result<Imported, Str
         ));
     }
     let opt = usvg::Options::default();
-    let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
+    // Text elements become marker paths that usvg places; should the
+    // changed source not read, the file is read as it is, without text.
+    let (prepared, mut texts) = crate::svg_text::prepare(svg);
+    let tree = match usvg::Tree::from_str(&prepared, &opt) {
+        Ok(tree) => tree,
+        Err(_) if prepared != svg => {
+            texts.clear();
+            usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     let size = tree.size();
     let height_px = size.height() as f64;
     // SVG px, Y down -> mm, Y up.
     let to_page = Affine::new([PX_TO_MM, 0.0, 0.0, -PX_TO_MM, 0.0, height_px * PX_TO_MM]);
+    let cx = Cx {
+        to_page,
+        texts: &texts,
+    };
     let mut shapes = Vec::new();
     for node in tree.root().children() {
-        if let Some(s) = convert_node(node, to_page, ids) {
+        if let Some(s) = convert_node(node, &cx, ids) {
             shapes.push(s);
         }
     }
@@ -135,24 +150,40 @@ pub fn parse(svg: &str, ids: &mut IdSource) -> std::result::Result<Imported, Str
     })
 }
 
-fn convert_node(node: &usvg::Node, to_page: Affine, ids: &mut IdSource) -> Option<Shape> {
+/// What every node is converted with.
+struct Cx<'a> {
+    /// SVG px, Y down -> mm, Y up.
+    to_page: Affine,
+    /// The text elements, by the number their marker path carries.
+    texts: &'a [crate::svg_text::SvgText],
+}
+
+fn convert_node(node: &usvg::Node, cx: &Cx, ids: &mut IdSource) -> Option<Shape> {
+    let to_page = cx.to_page;
     match node {
-        usvg::Node::Group(g) => convert_group(g, to_page, ids),
-        usvg::Node::Path(p) => convert_path(p, to_page, ids),
+        usvg::Node::Group(g) => convert_group(g, cx, ids),
+        usvg::Node::Path(p) => match crate::svg_text::marker_index(p) {
+            Some(n) => {
+                let text = cx.texts.get(n)?;
+                crate::svg_text::to_shape(text, to_page * to_affine(p.abs_transform()), ids)
+            }
+            None => convert_path(p, to_page, ids),
+        },
         usvg::Node::Image(img) => convert_image(img, to_page, ids),
-        // Text is outlined into paths by usvg when the `text` feature is on;
-        // without it the node carries no geometry.
+        // usvg is built without its text engine: text elements reach
+        // the tree as marker paths (above), never as text nodes.
         usvg::Node::Text(_) => None,
     }
 }
 
-fn convert_group(g: &usvg::Group, to_page: Affine, ids: &mut IdSource) -> Option<Shape> {
+fn convert_group(g: &usvg::Group, cx: &Cx, ids: &mut IdSource) -> Option<Shape> {
+    let to_page = cx.to_page;
     // usvg already pushed the group transform into the children's
     // absolute transforms, so children are converted with `to_page` only.
     let mut children: Vec<Shape> = g
         .children()
         .iter()
-        .filter_map(|c| convert_node(c, to_page, ids))
+        .filter_map(|c| convert_node(c, cx, ids))
         .collect();
     if children.is_empty() {
         return None;

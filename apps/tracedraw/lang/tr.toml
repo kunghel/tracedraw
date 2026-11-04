@@ -443,6 +443,7 @@ dialog.export_preset_none = "(yok)" # mt
 dialog.export_preset_add = "Bu ayarları ön ayar olarak kaydet" # mt
 dialog.export_preset_rename = "Ön ayarı yeniden adlandır" # mt
 dialog.export_preset_delete = "Ön ayarı sil" # mt
+dialog.export_preset_delete_question = "\"{name}\" ön ayarı silinsin mi?" # mt
 dialog.export_preset_name = "Ön ayar adı" # mt
 dialog.export_estimate = "Dosya boyutu: yaklaşık {size}"
 dialog.export_output = "{w} x {h} piksel, {dpi} dpi, {mode}"

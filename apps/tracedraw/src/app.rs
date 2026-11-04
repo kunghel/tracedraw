@@ -5399,7 +5399,21 @@ impl App {
 
     pub fn finish_text(&mut self) {
         self.ime_preedit.clear();
-        let empty = self.edit_text().trim().is_empty();
+        // A paragraph text frame stays when it is left empty: it is a
+        // frame to type or flow text into later, and drawing the next
+        // frame deleted it (#1822). Only an artistic text (or a text on
+        // a path) left with no characters goes.
+        let frame = self.text_edit.as_ref().is_some_and(|te| {
+            matches!(
+                self.doc().find_shape(te.shape).map(|s| &s.kind),
+                Some(ShapeKind::Text {
+                    frame: Some(_),
+                    on_path: None,
+                    ..
+                })
+            )
+        });
+        let empty = !frame && self.edit_text().trim().is_empty();
         // A text started here and given no characters goes with the step
         // that created it (and the styles given to it since), as if it had
         // never been started: no Undo brings an empty text back (#1481).

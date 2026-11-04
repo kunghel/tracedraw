@@ -81,6 +81,27 @@ mode (`mockup_tests::mockup_steps`).
 Freeze is not offered: an earlier version of this page listed it, but it
 never existed (#1203).
 
+## Speed (#1335)
+
+A semi-transparent object's scratch layer covers only the pixels the
+object can reach (its bounds grown by what its outline may reach, as
+for culling, `Renderer::layer_area`), not the whole window: a page of
+2000 half transparent objects took 2.2 s to draw at 1600 x 1000 pixels
+and takes 0.11 s (`render_times_of_transparent_objects`). Pattern tiles
+stay anchored to the window's corner, so the result is the same pixel
+for pixel (`tests::a_transparent_object_takes_a_small_layer_and_draws_the_same`).
+An object with effects or a drop shadow, a symbol and the drag preview
+keep the whole window. A change from the Transparency part or the
+Properties docker is one command for the whole selection
+(`Command::SetEffectsAndOpacity`), which finds every object in one walk
+of the drawing; a command per object searched the drawing for each. With
+2000 objects selected a frame of a transparency slider drag took 39 ms
+and takes 11 ms (`frame_times_of_a_transparency_drag`).
+
+The mouse wheel steps a slider only while it has the focus or is being
+dragged, as every slider does (`sliders.md`, #1240); over a slider
+without the focus it scrolls the docker.
+
 ## Properties docker (#1439, #1203)
 
 The Transparency section of the Properties docker

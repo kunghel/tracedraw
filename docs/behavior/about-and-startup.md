@@ -24,7 +24,8 @@ button) 480 points wide:
 ## Splash screen
 
 While TraceDraw starts, a borderless 640 x 380 point window centred on
-the screen shows the same artwork as the About banner at a larger size
+the primary monitor (where that monitor lies on the desktop, see below)
+shows the same artwork as the About banner at a larger size
 (two selected nodes on the main curve), the 96 px icon, the name at
 46 px with the tagline, and a darker strip along the bottom with the
 status line, a thin progress bar and the footer (copyright on the left,
@@ -68,6 +69,17 @@ the version on the right).
   than 95 % of the monitor) centred on the monitor, then maximized in
   the next frames when it was left maximized or when that size does
   not fit the monitor (a small screen; see Window state below).
+- The monitor is the primary one, at its own place on the desktop all
+  monitors share: its top-left corner plus half of what its size leaves
+  around the window, in system points (the windowing layer's
+  rectangle of the primary monitor, `eframe::primary_monitor`). Until
+  #1800 both windows were centred by the monitor's size from the
+  desktop's top-left corner, so a primary monitor that does not hold
+  that corner (X11, four monitors: the primary 5120 x 2880 at (1544,
+  2160) below two others) got none of them: the window opened on the
+  top-left monitor. Where the windowing layer tells no monitor
+  (Wayland, which places windows itself) the monitor egui reports is
+  taken at the desktop's corner, as before.
 - The window system applies that size a few frames later. The frame
   that asks for it and every frame until the window has its size (or,
   when it starts maximized, until it is maximized and fills the screen)
@@ -428,6 +440,9 @@ screen, and after 6 requests; each request is logged (#787,
 - `splash::tests::the_status_names_the_file_being_opened`
 - `splash::tests::the_main_window_keeps_a_sensible_size`
 - `splash::tests::the_main_window_is_centred`
+- `splash::tests::the_main_window_opens_on_the_primary_monitor_where_it_lies`
+- `splash::tests::without_a_primary_monitor_the_reported_one_is_used`
+- `splash::eframe_monitor_place::tests::a_window_is_centred_where_the_monitor_lies`
 - `splash::tests::the_main_window_is_drawn_plain_until_it_has_grown`
 - `splash::tests::a_window_that_starts_maximized_is_drawn_plain_until_it_fills_the_screen`
 - `splash::tests::a_window_that_never_grows_gets_the_editor_after_a_second`

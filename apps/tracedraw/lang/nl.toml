@@ -443,6 +443,7 @@ dialog.export_preset_none = "(geen)" # mt
 dialog.export_preset_add = "Deze instellingen als voorinstelling opslaan" # mt
 dialog.export_preset_rename = "Voorinstelling hernoemen" # mt
 dialog.export_preset_delete = "Voorinstelling verwijderen" # mt
+dialog.export_preset_delete_question = "De voorinstelling \"{name}\" verwijderen?" # mt
 dialog.export_preset_name = "Naam van voorinstelling" # mt
 dialog.export_estimate = "Bestandsgrootte: ongeveer {size}"
 dialog.export_output = "{w} x {h} pixels, {dpi} dpi, {mode}"

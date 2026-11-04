@@ -250,6 +250,7 @@ fn shape_mark(app: &App, pos: Option<Pos2>) -> ShapeMark {
         return match d.part {
             crate::envelope_edit::Part::Node(_) => ShapeMark::Node,
             crate::envelope_edit::Part::Handle { .. } => ShapeMark::Control,
+            crate::envelope_edit::Part::Segment { .. } => ShapeMark::Segment,
         };
     }
     match &app.drag {
@@ -268,7 +269,12 @@ fn shape_mark(app: &App, pos: Option<Pos2>) -> ShapeMark {
     match app.envelope_part_at(p) {
         Some((_, crate::envelope_edit::Part::Node(_))) => return ShapeMark::Node,
         Some((_, crate::envelope_edit::Part::Handle { .. })) => return ShapeMark::Control,
+        Some((_, crate::envelope_edit::Part::Segment { .. })) => return ShapeMark::Segment,
         None => {}
+    }
+    // A segment of an envelope's frame bends when dragged (#1339).
+    if app.envelope_segment_at(p).is_some() {
+        return ShapeMark::Segment;
     }
     if app.ctrl_handle_at(p).is_some() {
         ShapeMark::Control
@@ -338,10 +344,14 @@ pub fn for_tool(
         Tool::Pick | Tool::FreeformPick => ToolCursor::System(egui::CursorIcon::Default),
         Tool::Shape => shape_cursor(app, pos),
         Tool::Table => app.table_cursor(pos),
-        // Over an envelope's node or handle: the Shape tool's arrow.
+        // Over an envelope's node, handle or segment: the Shape tool's
+        // arrow.
         Tool::Envelope
             if app.envelope_drag.is_some()
-                || pos.is_some_and(|s| app.envelope_part_at(app.view.to_page(s)).is_some()) =>
+                || pos.is_some_and(|s| {
+                    let p = app.view.to_page(s);
+                    app.envelope_part_at(p).is_some() || app.envelope_segment_at(p).is_some()
+                }) =>
         {
             ToolCursor::ShapeArrow(shape_mark(app, pos))
         }

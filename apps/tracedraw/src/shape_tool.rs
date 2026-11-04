@@ -218,20 +218,19 @@ impl App {
         );
         frame.fill = tracedraw_core::Fill::None;
         frame.stroke = None;
-        let mut inner = s.clone();
-        inner.id = self.engine.new_shape_id();
-        inner.transform = tracedraw_core::geometry::Affine::IDENTITY;
+        let inner = crate::crop_tool::framed_contents(&s, self.engine.new_shape_id());
         let frame_id = frame.id;
-        let _ = self.engine.run_with_label(
-            &Command::SetShapeKind {
-                shape: id,
-                kind: ShapeKind::ClipFrame {
-                    frame: Box::new(frame),
-                    contents: vec![inner],
-                },
+        // The picture inside keeps the transparency; the frame drops it
+        // so it is not laid on twice (#1491).
+        let mut cmds = vec![Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![inner],
             },
-            "Crop Bitmap",
-        );
+        }];
+        cmds.extend(crate::crop_tool::frame_drops_transparency(&s));
+        let _ = self.engine.run_batch("Crop Bitmap", &cmds);
         Some(frame_id)
     }
 
@@ -2187,6 +2186,34 @@ mod bitmap_node_tests {
         app.node_selection = vec![(id, z)];
         app.selected_segments_to_curve();
         assert_eq!(curves(&path_of(&app)), 1);
+    }
+
+    /// #1491: a picture with a gradient transparency, cut down by moving
+    /// two of its corner nodes with the Shape tool, keeps its
+    /// transparency where it lay on the page: the ramp is cut, not
+    /// started again across what is left, and not laid on twice.
+    #[test]
+    fn moving_a_see_through_pictures_nodes_keeps_its_look() {
+        use crate::crop_tool::tests::{green_at, see_through_picture};
+        let mut app = App::headless();
+        let id = see_through_picture(&mut app);
+        let before = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        app.select(vec![id]);
+        let frame = app.crop_bitmap_to_frame(id).expect("frame");
+        // The left corners, both selected, moved 20 mm to the right.
+        app.node_selection = vec![(frame, 0), (frame, 3)];
+        let start = app.start_curves();
+        app.move_start_nodes(&start, Vec2::new(20.0, 0.0), Point::new(30.0, 10.0), false);
+        let s = app.doc().find_shape(id).expect("clip frame");
+        let ShapeKind::ClipFrame { frame: f, .. } = &s.kind else {
+            panic!("not a clip frame: {:?}", s.kind);
+        };
+        let b = tracedraw_core::geometry::Shape::bounding_box(&f.page_path());
+        assert!((b.x0 - 30.0).abs() < 1e-9, "{b:?}");
+        let after = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        for (b, a) in before.iter().zip(&after) {
+            assert!(b.abs_diff(*a) <= 2, "before {before:?}, after {after:?}");
+        }
     }
 
     #[test]

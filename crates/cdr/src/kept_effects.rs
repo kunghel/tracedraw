@@ -12,6 +12,10 @@
 //! the member alone; a file without it, or one whose drawn objects no
 //! longer match it (another program moved or changed them), opens as
 //! drawn.
+//!
+//! Italic text whose slant TraceDraw draws from an upright font file is
+//! written upright, as the face the file holds (#1733); the member keeps
+//! that text too, so it opens italic again here.
 
 use std::collections::HashMap;
 
@@ -96,7 +100,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<KeptEffect> {
                 !k.objects.is_empty()
                     && k.main < k.objects.len()
                     && k.bounds.iter().all(|v| v.is_finite())
-                    && (!k.source.effects.is_empty() || k.source.shadow.is_some())
+                    && (!k.source.effects.is_empty()
+                        || k.source.shadow.is_some()
+                        || italic_text(&k.source))
             })
             .collect(),
         Ok(m) => {
@@ -164,6 +170,12 @@ pub(crate) fn restore(
         n += 1;
     }
     n
+}
+
+/// Text with an italic run: text written upright for a slant TraceDraw
+/// draws (#1733).
+fn italic_text(s: &Shape) -> bool {
+    matches!(&s.kind, ShapeKind::Text { spans, .. } if spans.iter().any(|sp| sp.italic))
 }
 
 fn near(a: Rect, b: Rect) -> bool {

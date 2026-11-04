@@ -1379,7 +1379,33 @@ fn blend(
             te * m.end[1],
         ]
     });
-    let paths = crate::effects::blend_from_nodes(&a, &b, n, 120, nodes);
+    // Each step's place between the two objects: along the whole path
+    // the steps reach its ends; otherwise they sit between the objects.
+    let even: Vec<f64> = (0..n)
+        .map(|i| {
+            if options.full_path && path_samples.is_some() && n > 1 {
+                i as f64 / (n - 1) as f64
+            } else {
+                (i + 1) as f64 / (n + 1) as f64
+            }
+        })
+        .collect();
+    // The outline each step takes: the even morph, or with Apply to
+    // sizing the morph at the step's accelerated place, so that its shape
+    // and its size both follow the object acceleration, as the previews
+    // of the .cdr files with that setting show (#1576).
+    let looped = rotation != 0.0 && options.loop_rotation && path_samples.is_none();
+    let morph_at: Vec<f64> = even
+        .iter()
+        .map(|t| {
+            if options.accel_sizing {
+                blend_place(*t, accel_objects)
+            } else {
+                *t
+            }
+        })
+        .collect();
+    let paths = crate::effects::blend_from_nodes_at(&a, &b, &morph_at, 120, nodes);
     // The same outline at both ends, only turned, scaled or moved (a copy
     // rotated): the steps take the transformation part way, so each turns
     // by an even share and keeps its shape. Mixed point by point, as two
@@ -1398,16 +1424,10 @@ fn blend(
     let bb = b.bounding_box();
     let ca_center = ba.center();
     let cb_center = bb.center();
-    let size = |r: Rect| (r.width() + r.height()) / 2.0;
     let mut out = Vec::new();
     for (i, p) in paths.into_iter().enumerate() {
-        // Along the whole path the steps reach its ends; otherwise they
-        // sit between the two objects.
-        let t = if options.full_path && path_samples.is_some() && n > 1 {
-            i as f64 / (n - 1) as f64
-        } else {
-            (i + 1) as f64 / (n + 1) as f64
-        };
+        let t = even.get(i).copied().unwrap_or(0.5);
+        let m = morph_at.get(i).copied().unwrap_or(t);
         let to = blend_place(t, accel_objects);
         let tc = blend_place(t, accel_colors);
         let mut s = start.clone();
@@ -1415,21 +1435,11 @@ fn blend(
         s.shadow = None;
         s.transform = Affine::IDENTITY;
         let mut geo = match turned {
-            Some(pivot) => lerp_transform(start.transform, end.transform, pivot, t) * local.clone(),
+            Some(pivot) => lerp_transform(start.transform, end.transform, pivot, m) * local.clone(),
             None => p,
         };
         let center = geo.bounding_box().center();
         let mut extra = Affine::IDENTITY;
-        if options.accel_sizing {
-            // The size the acceleration asks for over the size the even
-            // blend gave.
-            let (sa, sb) = (size(ba), size(bb));
-            let even = sa + (sb - sa) * t;
-            let wanted = sa + (sb - sa) * to;
-            if even > 1e-9 {
-                extra = Affine::scale_about(wanted / even, center);
-            }
-        }
         // Each step turns about its own centre by its share of the
         // rotation; in a loop its centre also leaves the straight way
         // (see `loop_place`). Turned about the middle of the two objects
@@ -1438,16 +1448,17 @@ fn blend(
         if rotation != 0.0 {
             extra = Affine::rotate_about(rotation.to_radians() * to, center) * extra;
         }
-        if rotation != 0.0 && options.loop_rotation && path_samples.is_none() {
+        if looped {
             let at = loop_place(ca_center, cb_center, rotation, to);
             extra = Affine::translate(at - center) * extra;
-        } else if path_samples.is_none() && to != t {
+        } else if path_samples.is_none() && to != m {
             // Off a path the object acceleration moves the steps toward
             // one end: each goes where its accelerated place lies between
-            // the two objects' centres (the steps stay evenly sized unless
-            // Apply to sizing is on). It moved only sizes and turns, so
-            // the slider seemed to do nothing (#910).
-            extra = Affine::translate((cb_center - ca_center) * (to - t)) * extra;
+            // the two objects' centres (the steps stay evenly morphed and
+            // sized unless Apply to sizing is on, which morphed them there
+            // already). It moved only sizes and turns, so the slider
+            // seemed to do nothing (#910).
+            extra = Affine::translate((cb_center - ca_center) * (to - m)) * extra;
         }
         if let Some((pts, cum)) = &path_samples {
             if pts.len() >= 2 {
@@ -2837,6 +2848,60 @@ mod tests {
         assert!((blend_place(0.5, 1e-12) - 0.5).abs() < 1e-9);
     }
 
+    /// With Apply to sizing each step is the morph at its accelerated
+    /// place, outline and size both: a square blended into a bigger
+    /// circle with the steps packed toward the circle has round steps
+    /// there, as the previews of the .cdr files with that setting show.
+    /// It scaled the evenly morphed step instead, so the steps by the
+    /// circle stayed square (#1576). Without the setting the steps keep
+    /// the even morph and only move.
+    #[test]
+    fn apply_to_sizing_morphs_each_step_at_its_accelerated_place() {
+        let start = rect_shape();
+        let mut end = Shape::new(
+            crate::ShapeId(2),
+            ShapeKind::Ellipse {
+                rect: Rect::new(100.0, -10.0, 140.0, 30.0),
+                arc: None,
+            },
+        );
+        end.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        let (a, b) = (start.page_path(), end.page_path());
+        let accel = -0.6;
+        let steps = |accel_sizing: bool| {
+            let options = BlendOptions {
+                accel_sizing,
+                ..Default::default()
+            };
+            blend(&start, &end, 4, (accel, 0.0), 0.0, None, false, &options)
+        };
+        let path = |s: &Shape| match &s.kind {
+            ShapeKind::Path { path, .. } => s.transform * path.clone(),
+            other => panic!("{other:?}"),
+        };
+        let near = |p: &BezPath, q: &BezPath| {
+            p.elements().len() == q.elements().len()
+                && p.elements().iter().zip(q.elements()).all(|(x, y)| {
+                    let (xs, ys) = (x.end_point(), y.end_point());
+                    matches!((xs, ys), (Some(u), Some(v)) if (u - v).hypot() < 1e-6)
+                        || (xs.is_none() && ys.is_none())
+                })
+        };
+        for (k, (sized, plain)) in steps(true).iter().zip(&steps(false)).enumerate() {
+            let t = (k + 1) as f64 / 5.0;
+            let to = blend_place(t, accel);
+            assert!(to > t + 0.05, "{k}: packed toward the circle");
+            let at = crate::effects::blend_from_nodes_at(&a, &b, &[to], 120, None);
+            assert!(near(&path(sized), &at[0]), "{k}: the morph at {to}");
+            // Unsized: the even morph, moved to the accelerated place.
+            let even = crate::effects::blend_from_nodes_at(&a, &b, &[t], 120, None);
+            let moved = Affine::translate(
+                (b.bounding_box().center() - a.bounding_box().center()) * (to - t),
+            ) * even[0].clone();
+            assert!(near(&path(plain), &moved), "{k}: the even morph moved");
+        }
+    }
+
     #[test]
     fn visual_bounds_follow_the_live_effects() {
         let mut s = rect_shape();
@@ -3204,6 +3269,7 @@ mod tests {
                 smooth: false,
                 local: true,
                 tilt_deg: 0.0,
+                shifted_tips: false,
             },
         ] {
             s.effects = vec![Effect::Distort(how)];

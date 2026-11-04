@@ -468,6 +468,80 @@ pub fn web_wheel() -> bool {
     crate::files::WEB
 }
 
+/// Points the desktop scrolls a panel for one wheel notch: one line at
+/// egui's desktop line speed.
+pub const DESKTOP_NOTCH_POINTS: f32 = 40.0;
+
+/// How much egui's scroll of a browser wheel event is scaled so that a
+/// notch scrolls a panel as far as on the desktop (#1406). egui makes a
+/// browser line `line_speed` points (8, where the desktop has 40) and a
+/// pixel one point, so a notch of three lines (Firefox) scrolled 24
+/// points and one of 100 pixels (Chromium, Safari) 100, where the
+/// desktop scrolls 40. A smaller pixel event (under half a notch) comes
+/// from a touchpad, which scrolls by the distance it reports, as on the
+/// desktop; a page is the window's height on both.
+pub fn web_scroll_scale(unit: egui::MouseWheelUnit, delta: egui::Vec2, line_speed: f32) -> f32 {
+    match unit {
+        egui::MouseWheelUnit::Line if line_speed > 0.0 => {
+            DESKTOP_NOTCH_POINTS / (wheel_notch(unit, true) * line_speed)
+        }
+        egui::MouseWheelUnit::Point
+            if delta.x.abs().max(delta.y.abs()) >= wheel_notch(unit, true) / 2.0 =>
+        {
+            DESKTOP_NOTCH_POINTS / wheel_notch(unit, true)
+        }
+        _ => 1.0,
+    }
+}
+
+/// The memory key of the scale of the browser wheel turn whose smoothed
+/// scroll is running (see [`scale_web_scroll`]).
+fn web_scroll_scale_id() -> egui::Id {
+    egui::Id::new("web_scroll_scale")
+}
+
+/// Called at the start of every frame, before anything reads the scroll:
+/// in the browser, egui's smoothed scroll is scaled by
+/// [`web_scroll_scale`] of the last wheel event, also in the frames the
+/// smoothing spreads a notch over, so panels scroll as far a notch as on
+/// the desktop (#1406). The wheel events stay as they came: the steps of
+/// number fields, lists and the canvas zoom count them in browser units.
+pub fn scale_web_scroll(ctx: &egui::Context) {
+    if !web_wheel() {
+        return;
+    }
+    let id = web_scroll_scale_id();
+    let line_speed = ctx.options(|o| o.input_options.line_scroll_speed);
+    let latest = ctx.input(|i| {
+        i.raw.events.iter().rev().find_map(|e| match e {
+            egui::Event::MouseWheel { unit, delta, .. } => {
+                Some(web_scroll_scale(*unit, *delta, line_speed))
+            }
+            _ => None,
+        })
+    });
+    let scale = match latest {
+        Some(k) => {
+            ctx.data_mut(|d| d.insert_temp(id, k));
+            k
+        }
+        None => ctx.data(|d| d.get_temp::<f32>(id)).unwrap_or(1.0),
+    };
+    if scale != 1.0 {
+        ctx.input_mut(|i| i.smooth_scroll_delta *= scale);
+    }
+}
+
+/// The scale [`scale_web_scroll`] gave this frame's smoothed scroll: 1
+/// on the desktop.
+pub fn web_scroll_factor(ctx: &egui::Context) -> f32 {
+    if !web_wheel() {
+        return 1.0;
+    }
+    ctx.data(|d| d.get_temp::<f32>(web_scroll_scale_id()))
+        .unwrap_or(1.0)
+}
+
 /// The notches one wheel event of `delta` raw units turns, up positive,
 /// in the units the desktop (`web` false) or the browser reports: an
 /// event of a notch or more is one notch whatever its size, a smaller one
@@ -894,6 +968,80 @@ mod tests {
             steps(&[(Point, 60.0), (Point, -60.0), (Point, -40.0)], true),
             [0, 0, -1]
         );
+    }
+
+    /// The browser's scroll scale: a notch of three lines at egui's web
+    /// line speed (8) or of 100 pixels scrolls the desktop's 40 points; a
+    /// touchpad's small pixel turns and pages are left as they are.
+    #[test]
+    fn a_browser_notch_is_scaled_to_the_desktop_distance() {
+        use egui::MouseWheelUnit::{Line, Page, Point};
+        let v = |y: f32| egui::vec2(0.0, y);
+        let notch = |unit, d: f32, line: f32| {
+            let egui_points = match unit {
+                Line => d * line,
+                _ => d,
+            };
+            egui_points * web_scroll_scale(unit, v(d), line)
+        };
+        assert!((notch(Line, 3.0, 8.0) - DESKTOP_NOTCH_POINTS).abs() < 1e-4);
+        assert!((notch(Line, -3.0, 8.0) + DESKTOP_NOTCH_POINTS).abs() < 1e-4);
+        assert!((notch(Line, 3.0, 40.0) - DESKTOP_NOTCH_POINTS).abs() < 1e-4);
+        assert!((notch(Point, 100.0, 8.0) - DESKTOP_NOTCH_POINTS).abs() < 1e-4);
+        assert!((notch(Point, -200.0, 8.0) + 2.0 * DESKTOP_NOTCH_POINTS).abs() < 1e-4);
+        // Sideways notches too.
+        assert_eq!(
+            web_scroll_scale(Point, egui::vec2(100.0, 0.0), 8.0),
+            web_scroll_scale(Point, v(100.0), 8.0)
+        );
+        assert_eq!(web_scroll_scale(Point, v(12.0), 8.0), 1.0);
+        assert_eq!(web_scroll_scale(Page, v(1.0), 8.0), 1.0);
+        assert_eq!(web_scroll_scale(Line, v(3.0), 0.0), 1.0);
+    }
+
+    /// The smoothed scroll a panel moves by adds up to as much for a
+    /// browser notch (three lines or 100 pixels) as for a desktop notch,
+    /// over all the frames egui spreads it across (#1406); 100 pixels made
+    /// 2.5 times as much. A touchpad's small turn keeps its distance.
+    #[test]
+    fn a_browser_notch_scrolls_as_far_as_a_desktop_notch() {
+        let scrolled = |unit, dy: f32, web: bool| -> f32 {
+            let ctx = crate::theme::ui_context();
+            set_web_wheel(web);
+            let mut total = 0.0;
+            for frame in 0..120 {
+                let mut events = Vec::new();
+                if frame == 1 {
+                    events.push(egui::Event::MouseWheel {
+                        unit,
+                        delta: egui::vec2(0.0, dy),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                let input = egui::RawInput {
+                    events,
+                    time: Some(frame as f64 / 60.0),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    scale_web_scroll(ui.ctx());
+                    total += ui.input(|i| i.smooth_scroll_delta.y);
+                });
+                out.textures_delta.clear();
+            }
+            set_web_wheel(false);
+            total
+        };
+        use egui::MouseWheelUnit::{Line, Point};
+        let desktop = scrolled(Line, -1.0, false);
+        assert!((desktop + DESKTOP_NOTCH_POINTS).abs() < 1.0, "{desktop}");
+        for (unit, dy) in [(Line, -3.0), (Point, -100.0)] {
+            let web = scrolled(unit, dy, true);
+            assert!((web - desktop).abs() < 1.0, "{unit:?}: {web} vs {desktop}");
+        }
+        let touchpad = scrolled(Point, -12.0, true);
+        assert!((touchpad + 12.0).abs() < 0.5, "{touchpad}");
     }
 
     /// Fed browser-style notches, the wheel over a field steps it once a

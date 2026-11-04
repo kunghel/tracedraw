@@ -4,8 +4,8 @@
 //! polygons, artistic and paragraph text, groups, clip frames, bitmaps
 //! with and without see-through pixels, uniform, fountain, pattern,
 //! texture and mesh fills, outlines, transparency, blends,
-//! contours, envelopes and extrusions, pages, layers, hidden objects and
-//! page backgrounds) is written in every version the writer produces (7
+//! contours, envelopes and extrusions, pages and their names, layers,
+//! hidden objects and page backgrounds) is written in every version the writer produces (7
 //! to 27), read back, and checked to survive as the writer promises for
 //! that version (`docs/cdr-format.md`, Writing: a few things are written
 //! as what they draw, or lost, in some versions; those limits are the
@@ -117,6 +117,24 @@ fn page_layers(v: u16, page: &tracedraw_core::Page, names: &[&str]) {
 /// `lgob` from version 16; before, every page has the document's size.
 fn keeps_page_sizes(v: u16) -> bool {
     v >= 16
+}
+
+/// A page the user named keeps the name in its own `lgob` (argument
+/// 1000) from version 14; before, pages are read back as "Page N".
+fn keeps_page_names(v: u16) -> bool {
+    v >= 14
+}
+
+/// The names the pages of `doc` read back with: `named` from version 14,
+/// "Page N" before.
+fn page_names(v: u16, doc: &Document, named: &[&str]) {
+    let got: Vec<&str> = doc.pages.iter().map(|p| p.name.as_str()).collect();
+    let want: Vec<String> = if keeps_page_names(v) {
+        named.iter().map(|n| n.to_string()).collect()
+    } else {
+        (1..=named.len()).map(|i| format!("Page {i}")).collect()
+    };
+    assert_eq!(got, want, "version {v}: page names");
 }
 
 // ---- building drawings ---------------------------------------------------
@@ -1495,6 +1513,7 @@ fn pages_layers_hidden_objects_and_backgrounds() {
     ];
     doc.pages[0].layers.push(front);
     doc.pages[0].background = Some(Fill::Solid(Color::rgb8(255, 250, 200)));
+    doc.pages[0].name = "厨房拐角".into();
     let mut second = tracedraw_core::Page {
         id: ids.page(),
         name: "Second".into(),
@@ -1517,6 +1536,7 @@ fn pages_layers_hidden_objects_and_backgrounds() {
     doc.set_ids(ids);
     every_version(&doc, |r| {
         assert_eq!(r.doc.pages.len(), 2, "version {}", r.v);
+        page_names(r.v, &r.doc, &["厨房拐角", "Second"]);
         let first = &r.doc.pages[0];
         assert!(
             near(first.size.width, 200.0, 0.01) && near(first.size.height, 100.0, 0.01),
@@ -1571,6 +1591,43 @@ fn pages_layers_hidden_objects_and_backgrounds() {
             r.v
         );
     });
+}
+
+/// Page names of the user's own survive two round trips, pages of the
+/// document's size included (they have no `lgob` of their own
+/// otherwise); a page still named "Page N" at its place stays unnamed in
+/// the file, while "Page 1" on the second page is a name of its own
+/// (#1807).
+#[test]
+fn page_names_survive_two_round_trips() {
+    let mut doc = Document::new("page names", Size::new(100.0, 100.0));
+    let mut ids = doc.ids().clone();
+    for name in ["Page 1", "Kitchen corner", "Page 3", "Page 1"] {
+        let mut layer = tracedraw_core::Layer::new(ids.layer(), "Layer 1");
+        layer.shapes = vec![rect(&mut ids, Rect::new(10.0, 10.0, 50.0, 50.0), 0.0)];
+        doc.pages.push(tracedraw_core::Page {
+            id: ids.page(),
+            name: name.into(),
+            size: Size::new(100.0, 100.0),
+            layers: vec![layer],
+            guides: Vec::new(),
+            background: None,
+        });
+    }
+    doc.pages.remove(0);
+    doc.pages[0].name = "Cover".into();
+    doc.set_ids(ids);
+    let want = ["Cover", "Kitchen corner", "Page 3", "Page 1"];
+    for v in versions() {
+        let once = document_to_cdr_version(&doc, v);
+        structure::verify(&once, v);
+        let (back, _) = open_bytes(&once, "once").unwrap_or_else(|e| panic!("version {v}: {e}"));
+        assert_eq!(back.pages.len(), 4, "version {v}");
+        page_names(v, &back, &want);
+        let twice = document_to_cdr_version(&back, v);
+        let (again, _) = open_bytes(&twice, "twice").unwrap_or_else(|e| panic!("version {v}: {e}"));
+        page_names(v, &again, &want);
+    }
 }
 
 /// A file written from a drawing read back from a file is the same

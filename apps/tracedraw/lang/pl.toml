@@ -443,6 +443,7 @@ dialog.export_preset_none = "(brak)" # mt
 dialog.export_preset_add = "Zapisz te ustawienia jako ustawienie" # mt
 dialog.export_preset_rename = "Zmień nazwę ustawienia" # mt
 dialog.export_preset_delete = "Usuń ustawienie" # mt
+dialog.export_preset_delete_question = "Usunąć ustawienie wstępne „{name}”?" # mt
 dialog.export_preset_name = "Nazwa ustawienia" # mt
 dialog.export_estimate = "Rozmiar pliku: około {size}"
 dialog.export_output = "{w} x {h} pikseli, {dpi} dpi, {mode}"

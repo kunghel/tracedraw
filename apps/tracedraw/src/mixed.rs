@@ -421,7 +421,7 @@ impl App {
         if shapes.is_empty() || fields.is_empty() {
             return;
         }
-        let mut cmds = Vec::new();
+        let mut changes = Vec::with_capacity(shapes.len());
         for s in &shapes {
             let mut t = ShapeTransparency::of(s);
             for f in fields {
@@ -518,15 +518,15 @@ impl App {
                 effects.extend(effect);
                 opacity = o;
             }
-            cmds.push(Command::SetEffects {
+            changes.push(tracedraw_core::command::EffectsAndOpacity {
                 shape: s.id,
                 effects,
-            });
-            cmds.push(Command::SetOpacity {
-                shapes: vec![s.id],
                 opacity,
             });
         }
+        // One command for every object: the drawing is walked once, not
+        // twice for each object (#1335).
+        let cmds = [Command::SetEffectsAndOpacity { changes }];
         // A run of amount changes (a slider being dragged) is one step:
         // the step this made last is replaced while nothing else happened.
         // So is a run of stop or foreground/background changes (a field

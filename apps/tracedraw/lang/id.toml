@@ -443,6 +443,7 @@ dialog.export_preset_none = "(tidak ada)" # mt
 dialog.export_preset_add = "Simpan setelan ini sebagai preset" # mt
 dialog.export_preset_rename = "Ganti nama preset" # mt
 dialog.export_preset_delete = "Hapus preset" # mt
+dialog.export_preset_delete_question = "Hapus preset \"{name}\"?" # mt
 dialog.export_preset_name = "Nama preset" # mt
 dialog.export_estimate = "Ukuran berkas: sekitar {size}"
 dialog.export_output = "{w} x {h} piksel, {dpi} dpi, {mode}"

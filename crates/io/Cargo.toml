@@ -15,6 +15,10 @@ tiny-skia.workspace = true
 usvg = { version = "0.48", default-features = false }
 lopdf = { version = "0.46", default-features = false }
 roxmltree = "0.21"
+# Text in SVG import: the style sheets of the file (simplecss) and its
+# lengths, colours and font lists (svgtypes); both already come with usvg.
+simplecss = "0.2"
+svgtypes = "0.16"
 # Fonts embedded in PDF files: their tables (ttf-parser) and the subset of
 # glyphs a file uses (subsetter, MIT OR Apache-2.0).
 ttf-parser.workspace = true

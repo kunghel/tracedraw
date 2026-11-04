@@ -303,6 +303,8 @@ fn keep_tab_on_the_drawing(app: &App, ctx: &egui::Context) {
 }
 
 fn root_frame(app: &mut App, ui: &mut Ui) {
+    // A browser wheel notch scrolls as far as on the desktop (#1406).
+    crate::ui::field::scale_web_scroll(ui.ctx());
     // The rest of a notch a number field took scrolls nothing (#783).
     crate::ui::field::hold_taken_wheel(ui.ctx());
     // Dockers set their canvas previews again each frame they are shown;
@@ -893,12 +895,14 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                     // instead of one jump; its frames multiply to the same
                     // 1.15 a notch (#766), in the browser too (#1016).
                     let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
+                    // The browser's scroll is scaled at the start of the
+                    // frame (#1406); a notch's share scales with it.
                     let per_notch = smooth_wheel_notch(
                         unit,
                         line,
                         ui.ctx().content_rect().height(),
                         crate::ui::field::web_wheel(),
-                    );
+                    ) * crate::ui::field::web_scroll_factor(ui.ctx());
                     app.view.zoom_at(anchor, 1.15f32.powf(scroll.y / per_notch));
                 }
             } else if mods.ctrl && notches != 0.0 {

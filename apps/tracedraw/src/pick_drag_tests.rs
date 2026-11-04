@@ -10360,6 +10360,93 @@ fn the_edge_of_the_shape_being_drawn_shows_over_a_wide_outline() {
     }
 }
 
+/// The Export dialog's delete button asks before it deletes the chosen
+/// preset (#1816): one click on it lost the preset for good. No keeps
+/// it; Yes deletes it.
+#[test]
+fn the_export_dialog_asks_before_deleting_a_preset() {
+    use crate::ui::dialogs::{Dialog, ExportState};
+    /// The centre of the last text `label` drawn in one frame.
+    fn last_text(ctx: &egui::Context, app: &mut App, label: &str) -> Option<Pos2> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        fn walk(s: &egui::Shape, label: &str, at: &mut Option<Pos2>) {
+            match s {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    *at = Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, label, at)),
+                _ => {}
+            }
+        }
+        let mut at = None;
+        out.shapes
+            .iter()
+            .for_each(|c| walk(&c.shape, label, &mut at));
+        at
+    }
+    let (ctx, mut app, _) = setup();
+    let png = ExportState {
+        format: 2,
+        ..ExportState::default()
+    };
+    assert!(app.settings.formats.save_preset("FB-WEB", &png));
+    app.export();
+    let Dialog::Export(st) = &mut app.dialog else {
+        panic!("no Export dialog");
+    };
+    st.format = 2;
+    st.preset = "FB-WEB".into();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let question = crate::i18n::trf(
+        "dialog.export_preset_delete_question",
+        &[("name", "FB-WEB")],
+    );
+    let (yes, no) = (crate::i18n::tr("dialog.yes"), crate::i18n::tr("dialog.no"));
+    let click = |ctx: &egui::Context, app: &mut App, label: &str| {
+        let at = last_text(ctx, app, label).unwrap_or_else(|| panic!("no {label:?} shown"));
+        click_at(ctx, app, at, Modifiers::NONE);
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new(), Modifiers::NONE);
+        }
+    };
+    let kept = |app: &App| app.settings.formats.export_presets.len();
+    assert!(last_text(&ctx, &mut app, &question).is_none());
+    // The delete button only asks.
+    click(&ctx, &mut app, "\u{2212}");
+    assert_eq!(kept(&app), 1, "deleted without asking");
+    assert!(
+        last_text(&ctx, &mut app, &question).is_some(),
+        "no question"
+    );
+    // No keeps the preset, chosen.
+    click(&ctx, &mut app, &no);
+    assert_eq!(kept(&app), 1);
+    assert!(last_text(&ctx, &mut app, &question).is_none());
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("the Export dialog closed");
+    };
+    assert_eq!(st.preset, "FB-WEB");
+    // Asked again, Yes deletes it.
+    click(&ctx, &mut app, "\u{2212}");
+    click(&ctx, &mut app, &yes);
+    assert_eq!(kept(&app), 0);
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("the Export dialog closed");
+    };
+    assert!(st.preset.is_empty() && st.preset_delete.is_none());
+    assert!(last_text(&ctx, &mut app, &question).is_none());
+}
+
 /// The Export dialog lists every saved preset, with its format, from
 /// the start; changing the format leaves the chosen preset unchosen
 /// while the list stays whole, and choosing a preset of another format
@@ -13043,6 +13130,70 @@ fn a_click_on_a_drop_shadow_picks_its_object() {
         "{before:?} -> {after:?}"
     );
     assert!(close(bounds(&app, id).x0, 10.0), "the object stays");
+}
+
+/// Dragging a segment of an envelope's frame bends it, in the real window
+/// with the Envelope tool and with the Shape tool and in every mode: the
+/// point grabbed follows the pointer, the nodes stay, the object follows
+/// the frame and one undo puts it back. The pointer shows the segment
+/// mark over it. Only nodes and handles could be dragged (#1339).
+#[test]
+fn dragging_an_envelope_segment_bends_it() {
+    use tracedraw_core::envelope::Mode;
+    use tracedraw_core::geometry::ParamCurve as _;
+    for (tool, mode) in [
+        (Tool::Envelope, Mode::Unconstrained),
+        (Tool::Envelope, Mode::SingleArc),
+        (Tool::Shape, Mode::Unconstrained),
+        (Tool::Shape, Mode::StraightLine),
+    ] {
+        let (ctx, mut app, id) = setup();
+        app.add_new_envelope();
+        app.envelope_mode = mode;
+        app.set_tool(tool);
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        let (_, before) = app.envelope_of(id).expect("envelope");
+        let undo_before = app.engine.undo_label().map(str::to_string);
+        // The bottom side runs from (10, 10) to the node at (35, 10);
+        // grab it a quarter of the way along that segment.
+        let grab = Point::new(16.25, 10.0);
+        let (sid, seg, t) = app.envelope_segment_at(grab).expect("a segment");
+        assert_eq!((sid, seg), (id, 0), "{tool:?} {mode:?}");
+        let from = app.view.to_screen(grab);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(from)],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            for_tool(&app, false, false, false, Some(from)),
+            ToolCursor::ShapeArrow(ShapeMark::Segment),
+            "{tool:?} {mode:?}"
+        );
+        let target = Point::new(16.25, 4.0);
+        let to = app.view.to_screen(target);
+        drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+        let (_, bent) = app.envelope_of(id).expect("envelope");
+        let s = app.doc().find_shape(id).expect("shape").clone();
+        let p = s.transform * bent.segment(0).eval(t);
+        // Within a screen pixel of the pointer.
+        let px = 1.5 / app.view.zoom as f64;
+        assert!((p - target).hypot() < px, "{tool:?} {mode:?}: {p:?}");
+        assert_eq!(bent.nodes, before.nodes, "{tool:?} {mode:?}");
+        // The object follows: its bottom bulges below the side.
+        let page = app.doc().shape_on_page(id).expect("shape");
+        let drawn = tracedraw_core::live::evaluate(&page).main.bounds();
+        assert!(drawn.y0 < 9.0, "{tool:?} {mode:?}: {drawn:?}");
+        assert_eq!(app.engine.undo_label(), Some("Edit Envelope"));
+        app.undo();
+        let (_, back) = app.envelope_of(id).expect("envelope");
+        assert_eq!(back, before, "{tool:?} {mode:?}");
+        assert_eq!(app.engine.undo_label().map(str::to_string), undo_before);
+        // Still the same object selected, nothing else made.
+        assert_eq!(app.selection, vec![id]);
+        assert_eq!(shape_count(&app), 1);
+    }
 }
 
 /// Dragging an envelope's node (#881): the frame and the enveloped
@@ -18340,4 +18491,460 @@ fn a_click_on_a_blend_s_end_text_under_its_steps_picks_the_end() {
     timed(&mut app, Vec::new());
     click(&mut app, on_end);
     assert_eq!(app.text_edit.as_ref().map(|t| t.shape), Some(end));
+}
+
+/// Frame times while the Properties docker's transparency slider is
+/// dragged with many objects selected (#1335): run with
+/// `cargo test --release -p tracedraw -- --ignored frame_times_of_a_transparency_drag --nocapture`.
+#[test]
+#[ignore]
+fn frame_times_of_a_transparency_drag() {
+    let (ctx, mut app, _) = setup();
+    let n: usize = std::env::var("FRAME_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let mut s = 11u64;
+    let mut r = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 33) as f64) / (1u64 << 31) as f64
+    };
+    for _ in 0..n {
+        let (x, y) = (r() * 190.0, r() * 270.0);
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to((x, y));
+        for _ in 0..6 {
+            p.curve_to(
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+                (x + r() * 20.0 - 10.0, y + r() * 20.0 - 10.0),
+            );
+        }
+        p.close_path();
+        app.new_shape(ShapeKind::Path {
+            path: p,
+            closed: true,
+        });
+    }
+    app.select_all();
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        20, 90, 200,
+    )));
+    let mut set = app.transparency_default.clone();
+    set.kind = 0;
+    set.amount = 50.0;
+    app.patch_transparency(&set, &[crate::mixed::TransparencyField::Amount]);
+    app.show_dockers = true;
+    app.docker_tab = crate::app::DockerTab::Properties;
+    app.settings.properties_closed = ["summary", "fill", "outline", "corners", "effects"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    until_the_page_is_drawn(&ctx, &mut app);
+    let label = crate::i18n::tr("docker.transparency_lc");
+    let rail = crate::ui::slider::rail_rect(&ctx, &label).expect("the slider is drawn");
+    let time = |what: &str, app: &mut App, f: &mut dyn FnMut(&mut App, usize)| {
+        let mut worst = std::time::Duration::ZERO;
+        let t = std::time::Instant::now();
+        for i in 0..20 {
+            let one = std::time::Instant::now();
+            f(app, i);
+            worst = worst.max(one.elapsed());
+        }
+        eprintln!("{what}: {:?} per frame, worst {worst:?}", t.elapsed() / 20);
+    };
+    time("panel open, idle", &mut app, &mut |app, _| {
+        frame(&ctx, app, Vec::new(), Modifiers::NONE);
+    });
+    let at = |i: usize| {
+        egui::pos2(
+            rail.left() + 5.0 + (i % 20) as f32 * rail.width() / 24.0,
+            rail.center().y,
+        )
+    };
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(at(0))],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(at(0), true, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    time("transparency slider drag", &mut app, &mut |app, i| {
+        frame(
+            &ctx,
+            app,
+            vec![Event::PointerMoved(at(i + 1))],
+            Modifiers::NONE,
+        );
+    });
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            at(1),
+            false,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    let amount = crate::mixed::ShapeTransparency::of(&app.selected_shapes()[0]).amount;
+    assert!(
+        (amount - 50.0).abs() > 1.0,
+        "the drag changed the amount: {amount}"
+    );
+    // The same changes without the panel's frame: what the commands cost.
+    let mut k = 0.0;
+    time("patch alone", &mut app, &mut |app, _| {
+        k += 3.0;
+        set.amount = 10.0 + k % 80.0;
+        app.patch_transparency(&set, &[crate::mixed::TransparencyField::Amount]);
+    });
+    time("frame after a patch", &mut app, &mut |app, _| {
+        k += 3.0;
+        set.amount = 10.0 + k % 80.0;
+        app.patch_transparency(&set, &[crate::mixed::TransparencyField::Amount]);
+        frame(&ctx, app, Vec::new(), Modifiers::NONE);
+    });
+}
+
+/// Object > Convert to Curves clicked in the real menu bar converts the
+/// selected shape, as Ctrl+Q does (#1324): a rectangle and an ellipse,
+/// with the Pick tool or a drawing tool active, with clicks a frame
+/// apart or with each press and release arriving in one frame (as a
+/// slow browser can send them).
+#[test]
+fn the_menu_converts_to_curves_like_ctrl_q() {
+    let ellipse = |app: &mut App| {
+        app.new_shape(ShapeKind::Ellipse {
+            rect: Rect::new(20.0, 50.0, 60.0, 80.0),
+            arc: None,
+        })
+        .expect("ellipse")
+    };
+    for (case, (shape_kind, tool, one_frame)) in [
+        ("rect", Tool::Pick, false),
+        ("ellipse", Tool::Pick, false),
+        ("rect", Tool::Rectangle, false),
+        ("ellipse", Tool::Ellipse, true),
+        ("rect", Tool::Pick, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (ctx, mut app, rect) = setup();
+        let id = if shape_kind == "rect" {
+            rect
+        } else {
+            ellipse(&mut app)
+        };
+        app.set_tool(tool);
+        app.select(vec![id]);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        assert!(app.can_convert_to_curves(), "case {case}");
+        let click = |app: &mut App, at: Pos2| {
+            if one_frame {
+                frame(&ctx, app, vec![Event::PointerMoved(at)], Modifiers::NONE);
+                frame(
+                    &ctx,
+                    app,
+                    vec![
+                        button(at, true, PointerButton::Primary, Modifiers::NONE),
+                        button(at, false, PointerButton::Primary, Modifiers::NONE),
+                    ],
+                    Modifiers::NONE,
+                );
+                for _ in 0..20 {
+                    frame(&ctx, app, Vec::new(), Modifiers::NONE);
+                }
+            } else {
+                click_at(&ctx, app, at, Modifiers::NONE);
+            }
+        };
+        let (_, texts) = painted(&ctx, &mut app);
+        assert!(
+            !texts.iter().any(|(t, _)| t.trim() == "Convert to Curves"),
+            "case {case}: no menu open yet"
+        );
+        let object = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "Object")
+            .map(|(_, p)| *p)
+            .expect("the Object menu in the menu bar");
+        click(&mut app, object);
+        let (_, texts) = painted(&ctx, &mut app);
+        let item = texts
+            .iter()
+            .find(|(t, _)| t.trim() == "Convert to Curves")
+            .map(|(_, p)| *p)
+            .unwrap_or_else(|| panic!("case {case}: Convert to Curves in the open menu"));
+        assert!(
+            !matches!(
+                app.doc().find_shape(id).map(|s| &s.kind),
+                Some(ShapeKind::Path { .. })
+            ),
+            "case {case}: not converted before the click"
+        );
+        click(&mut app, item);
+        let s = app.doc().find_shape(id).expect("the converted object");
+        assert!(
+            matches!(s.kind, ShapeKind::Path { .. }),
+            "case {case}: {:?}",
+            s.kind
+        );
+        assert_eq!(
+            app.engine.undo_label(),
+            Some("Convert To Curves"),
+            "case {case}"
+        );
+        assert_eq!(app.selection, vec![id], "case {case}: still selected");
+    }
+}
+
+/// Where the property bar draws `value` (the text of one of its fields).
+fn bar_field(ctx: &egui::Context, app: &mut App, value: &str) -> Pos2 {
+    let (_, texts) = painted(ctx, app);
+    texts
+        .iter()
+        .find(|(t, p)| t == value && p.y < 120.0)
+        .map(|(_, p)| *p)
+        .unwrap_or_else(|| {
+            let bar: Vec<_> = texts.iter().filter(|(_, p)| p.y < 120.0).collect();
+            panic!("no field showing {value:?} in the property bar: {bar:?}")
+        })
+}
+
+/// How a value typed into a property bar field is left.
+#[derive(Clone, Copy, Debug)]
+enum Leave {
+    /// Enter, a frame after the text.
+    Enter,
+    /// The text, Enter and its release in one frame (a slow browser).
+    EnterInOneFrame,
+    /// Tab, to the next field.
+    Tab,
+    /// The window loses the focus and gets it back (the browser's canvas
+    /// taking it), then Enter: the typed value waits in the field.
+    FocusLost,
+    /// A click on empty canvas, which also takes the selection away.
+    ClickCanvas,
+}
+
+/// Click the property bar field showing `value`, type `typed` and leave
+/// it as `leave` says.
+fn type_in_bar(ctx: &egui::Context, app: &mut App, value: &str, typed: &str, leave: Leave) {
+    let at = bar_field(ctx, app, value);
+    click_at(ctx, app, at, Modifiers::NONE);
+    let text = Event::Text(typed.into());
+    match leave {
+        Leave::Enter => {
+            frame(ctx, app, vec![text], Modifiers::NONE);
+            frame(
+                ctx,
+                app,
+                vec![key(egui::Key::Enter, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+            frame(
+                ctx,
+                app,
+                vec![key_up(egui::Key::Enter, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+        }
+        Leave::EnterInOneFrame => frame(
+            ctx,
+            app,
+            vec![
+                text,
+                key(egui::Key::Enter, Modifiers::NONE),
+                key_up(egui::Key::Enter, Modifiers::NONE),
+            ],
+            Modifiers::NONE,
+        ),
+        Leave::Tab => {
+            frame(ctx, app, vec![text], Modifiers::NONE);
+            frame(
+                ctx,
+                app,
+                vec![key(egui::Key::Tab, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+            frame(
+                ctx,
+                app,
+                vec![key_up(egui::Key::Tab, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+        }
+        Leave::FocusLost => {
+            frame(ctx, app, vec![text], Modifiers::NONE);
+            frame(ctx, app, vec![Event::WindowFocused(false)], Modifiers::NONE);
+            frame(ctx, app, vec![Event::WindowFocused(true)], Modifiers::NONE);
+            frame(
+                ctx,
+                app,
+                vec![key(egui::Key::Enter, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+            frame(
+                ctx,
+                app,
+                vec![key_up(egui::Key::Enter, Modifiers::NONE)],
+                Modifiers::NONE,
+            );
+        }
+        Leave::ClickCanvas => {
+            frame(ctx, app, vec![text], Modifiers::NONE);
+            let empty = app.view.to_screen(Point::new(150.0, 250.0));
+            click_at(ctx, app, empty, Modifiers::NONE);
+        }
+    }
+    for _ in 0..5 {
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    }
+}
+
+/// A value typed into the property bar's width or height is applied by
+/// Enter (also when the text and Enter arrive in one frame, as a slow
+/// browser sends them), by Tab, and by a click on empty canvas; the
+/// window losing the focus keeps it typed for Enter. It stays applied
+/// after a click on empty canvas takes the selection away (#1329): for a
+/// rectangle, and for a pasted picture set to the page's size by typing
+/// its width and height.
+#[test]
+fn property_bar_values_commit_and_stay_after_a_click_outside() {
+    let size = |app: &App| {
+        let b = app.selection_bounds().expect("selection");
+        (b.width(), b.height())
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-3;
+    for leave in [
+        Leave::Enter,
+        Leave::EnterInOneFrame,
+        Leave::Tab,
+        Leave::FocusLost,
+        Leave::ClickCanvas,
+    ] {
+        let (ctx, mut app, id) = setup();
+        type_in_bar(&ctx, &mut app, "50.000 mm", "80", leave);
+        let b = app.doc().find_shape(id).expect("rect").bounds();
+        assert!(near(b.width(), 80.0), "{leave:?}: width {}", b.width());
+        assert!(near(b.height(), 30.0), "{leave:?}: height {}", b.height());
+        // A click on empty canvas: the selection goes, the size stays.
+        let empty = app.view.to_screen(Point::new(150.0, 250.0));
+        click_at(&ctx, &mut app, empty, Modifiers::NONE);
+        assert!(app.selection.is_empty(), "{leave:?}: deselected");
+        let b = app.doc().find_shape(id).expect("rect").bounds();
+        assert!(near(b.width(), 80.0), "{leave:?}: kept {}", b.width());
+        if matches!(leave, Leave::Enter) {
+            // One step: Undo puts the old width back.
+            app.undo();
+            let b = app.doc().find_shape(id).expect("rect").bounds();
+            assert!(near(b.width(), 50.0), "undone: {}", b.width());
+        }
+    }
+
+    // A picture set to the page's size by its width and height.
+    let (ctx, mut app, rect) = setup();
+    app.select(vec![rect]);
+    app.delete_selection();
+    let img = image::RgbaImage::from_pixel(40, 30, image::Rgba([200, 60, 20, 255]));
+    app.paste_as_bitmap(img);
+    let pic = app.selection.first().copied().expect("the pasted picture");
+    assert!(matches!(
+        app.doc().find_shape(pic).map(|s| &s.kind),
+        Some(ShapeKind::Bitmap { .. })
+    ));
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let page = app.doc().pages[0].size;
+    let (w0, h0) = size(&app);
+    let shown = |v: f64| format!("{v:.3} mm");
+    type_in_bar(
+        &ctx,
+        &mut app,
+        &shown(w0),
+        &format!("{}", page.width),
+        Leave::Enter,
+    );
+    let (w1, h1) = size(&app);
+    assert!(near(w1, page.width), "picture width {w1}");
+    type_in_bar(
+        &ctx,
+        &mut app,
+        &shown(h1),
+        &format!("{}", page.height),
+        Leave::Enter,
+    );
+    let (w2, h2) = size(&app);
+    assert!(
+        near(w2, page.width) && near(h2, page.height),
+        "{w2} x {h2}, was {w0} x {h0}"
+    );
+    let outside = app
+        .view
+        .to_screen(Point::new(page.width + 30.0, page.height / 2.0));
+    click_at(&ctx, &mut app, outside, Modifiers::NONE);
+    assert!(app.selection.is_empty(), "deselected");
+    let b = app.doc().find_shape(pic).expect("picture").bounds();
+    assert!(
+        near(b.width(), page.width) && near(b.height(), page.height),
+        "kept the page's size: {} x {}",
+        b.width(),
+        b.height()
+    );
+}
+
+/// Paragraph text frames dragged one after the other with the Text tool
+/// all stay, empty or not: each new frame (or a click that starts an
+/// artistic text) used to delete the empty frame before it (#1822).
+#[test]
+fn empty_text_frames_dragged_one_after_the_other_all_stay() {
+    let (ctx, mut app, rect) = setup();
+    app.select(vec![rect]);
+    app.delete_selection();
+    app.set_tool(Tool::Text);
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let frames = |app: &App| -> Vec<ShapeId> {
+        app.page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }))
+            .map(|s| s.id)
+            .collect()
+    };
+    for (k, (a, b)) in [
+        ((20.0, 20.0), (60.0, 120.0)),
+        ((80.0, 20.0), (140.0, 90.0)),
+        ((20.0, 150.0), (100.0, 200.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let from = app.view.to_screen(Point::new(a.0, a.1));
+        let to = app.view.to_screen(Point::new(b.0, b.1));
+        drag(&ctx, &mut app, from, to, Modifiers::NONE, vec![]);
+        for _ in 0..2 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        assert_eq!(frames(&app).len(), k + 1, "after frame {}", k + 1);
+    }
+    // A click on empty space starts an artistic text; the empty frame
+    // being edited stays.
+    let at = app.view.to_screen(Point::new(150.0, 250.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(frames(&app).len(), 3, "after a click");
 }

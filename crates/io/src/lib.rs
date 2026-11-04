@@ -17,6 +17,7 @@ pub mod plt;
 pub mod psd;
 pub mod svg;
 pub mod svg_import;
+mod svg_text;
 pub mod text_import;
 pub mod xlsx;
 

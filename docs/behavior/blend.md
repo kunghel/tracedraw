@@ -11,7 +11,7 @@ Intermediate objects between a start and an end object.
 | Spacing (along a path) | off, 5 mm | the steps follow from the path's length: `floor(length / spacing) - 1`, 1 to 999 |
 | Loop | off | with a rotation, the steps' centres leave the straight way and curve from the start to the end (a half circle at 180 degrees, a curl through the middle at 360) |
 | Blend along full path | off | along a path, the first and last steps sit on the path's ends |
-| Apply to sizing | off | the object acceleration changes the steps' sizes too |
+| Apply to sizing | off | the object acceleration changes the steps' outlines and sizes too |
 | Color blend | Direct | Direct (straight through RGB), Clockwise (hue increasing), Counterclockwise (hue decreasing), through HSB |
 
 A blend asking for more than 999 steps (from a file or a script) draws
@@ -174,6 +174,15 @@ curve and the range the `.cdr` files' blends use, #1192;
   next (#1260,
   `live::tests::a_blend_to_a_turned_copy_turns_its_steps_evenly`). Two
   different outlines are mixed point by point as above.
+- Object acceleration: each step's centre goes `t'` of the way between
+  the two centres, while its outline is the even morph at `t` (moved
+  there). With Apply to sizing the step is the morph at `t'` itself,
+  outline and size: a square blended into a circle with the steps
+  packed toward the circle has round steps by the circle and square
+  ones far from it, as the previews of the `.cdr` files with that
+  setting show. Before, the even morph was only scaled to the size at
+  `t'`, so the steps by the circle stayed square (#1576,
+  `live::tests::apply_to_sizing_morphs_each_step_at_its_accelerated_place`).
 - Colour: mixed directly (each colour's values from start to end), or
   through HSB around the hue circle (Clockwise: the hue rising from the
   start; Counterclockwise: falling), `t'` of the colour acceleration of

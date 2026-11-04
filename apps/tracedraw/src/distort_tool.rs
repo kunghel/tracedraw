@@ -83,6 +83,11 @@ pub struct DistortSettings {
     pub local: bool,
     #[serde(default)]
     pub tilt: f64,
+    /// Zipper: the teeth of a `.cdr` file (see
+    /// `Distort::Zipper::shifted_tips`), kept while its values are
+    /// changed; not a setting of its own.
+    #[serde(skip)]
+    pub shifted_tips: bool,
     /// Twister: whole turns, degrees more (0 to 359) and the direction.
     pub turns: u32,
     pub degrees: f64,
@@ -100,6 +105,7 @@ impl Default for DistortSettings {
             smooth: false,
             local: false,
             tilt: 0.0,
+            shifted_tips: false,
             turns: 0,
             degrees: 90.0,
             clockwise: true,
@@ -190,6 +196,8 @@ impl DistortSettings {
                 smooth: self.smooth,
                 local: self.local,
                 tilt_deg: self.tilt,
+                // A new distortion (no centre yet) has TraceDraw's teeth.
+                shifted_tips: self.shifted_tips && center.is_some(),
             },
             DistortMode::Twister => Distort::Twister {
                 angle_deg: self.angle(),
@@ -210,8 +218,10 @@ impl DistortSettings {
                 smooth,
                 local,
                 tilt_deg,
+                shifted_tips,
                 ..
             } => {
+                self.shifted_tips = shifted_tips;
                 self.amplitude = amplitude;
                 self.frequency = frequency;
                 self.random = random;
@@ -771,8 +781,10 @@ impl App {
                 }
                 _ => (0.0, None),
             };
-            if let Some(d) = distortion_of(&s.effects) {
-                self.distort.take(&d);
+            match distortion_of(&s.effects) {
+                Some(d) => self.distort.take(&d),
+                // A new distortion has TraceDraw's teeth (#1715).
+                None => self.distort.shifted_tips = false,
             }
             self.distort_drag = Some(DistortDrag {
                 id: h.id,
@@ -880,7 +892,7 @@ impl App {
     /// The pointer moved to `p` during a drag.
     #[cfg(test)]
     pub fn drag_distort(&mut self, p: Point) {
-        self.drag_distort_to(p, false);
+        self.drag_distort_to(p, false, false);
     }
 
     /// The selected distortion whose handle line passes within the pick
@@ -901,10 +913,21 @@ impl App {
     }
 
     /// The pointer moved to `p` during a drag; a drag of the handle line
-    /// keeps its move horizontal or vertical with `ctrl`.
-    pub fn drag_distort_to(&mut self, p: Point, ctrl: bool) {
+    /// keeps its move horizontal or vertical with `ctrl`. With `ctrl` or
+    /// `shift` the end handle, and the line a drag on the object sets,
+    /// keep to steps of the constrain angle about the centre, as the
+    /// Shape tool's handles do (#1563).
+    pub fn drag_distort_to(&mut self, p: Point, ctrl: bool, shift: bool) {
         let Some(mut dd) = self.distort_drag.clone() else {
             return;
+        };
+        // The pointer the handle follows: on a step of the constrain angle
+        // from the centre (horizontal and vertical among them), as far
+        // out as the pointer reaches along it.
+        let p = if (ctrl || shift) && matches!(dd.grab, Grab::End | Grab::Object) {
+            crate::interaction::constrain_from(dd.start, p, self.settings.constrain_angle)
+        } else {
+            p
         };
         let Some(s) = self.doc().shape_on_page(dd.id) else {
             self.distort_drag = None;
@@ -1054,10 +1077,10 @@ impl App {
             self.begin_distort(origin);
         }
         if response.dragged_by(PointerButton::Primary) && self.distort_drag.is_some() {
-            let ctrl = response
+            let (ctrl, shift) = response
                 .ctx
-                .input(|i| i.modifiers.ctrl || i.modifiers.command);
-            self.drag_distort_to(p, ctrl);
+                .input(|i| (i.modifiers.ctrl || i.modifiers.command, i.modifiers.shift));
+            self.drag_distort_to(p, ctrl, shift);
         }
         if response.drag_stopped() {
             self.distort_drag = None;
