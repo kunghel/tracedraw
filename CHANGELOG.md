@@ -6,11 +6,15 @@ full, row-by-row status.
 
 ## Unreleased
 
+## 0.39.0 (2026-11-04)
+
 - Convert to Bitmap: the Grayscale and CMYK colour modes give a bitmap in that mode. Every choice gave an RGB bitmap: Grayscale made the pixels gray but kept an RGB picture, and CMYK did not even change the pixels. Grayscale now stores a grayscale picture, and the status line says "Bitmap (Grayscale)"; CMYK marks the bitmap as a CMYK picture and shows its pixels as the inks print them, as Image > Mode > CMYK Color does (#1777).
 
 - Shortcuts: Ctrl+F12 and Ctrl+F8 each run one command. Text > Proofing > Spell Check showed Ctrl+F12 and Text > Convert showed Ctrl+F8, but those keys open the Fonts and Blend panels, as the shortcut tables say, so neither menu command had a working key. The two menu rows no longer show a key (Options > Customization > Commands can give them one), the Spelling options page no longer names Ctrl+F12, and a test checks that no two menu commands, tools or panels share a built-in key (#1779).
 
 - Windows: the scroll arrows of a toolbox or a panel column too long for the window show again. They were empty boxes because none of the fonts TraceDraw brings has the small triangle characters they were written with; Linux usually found them in a system font. The arrows are now drawn as triangles. The other interface symbols no bundled font had (the drop-down marks, the up and down buttons of the effect lists and macros, the line and arrowhead lists of the callout and outline bars, the portrait and landscape buttons, the AI panel's marks and a few more) are drawn with characters the bundled fonts have, or as shapes, and a test checks that every symbol the interface writes is in the bundled fonts (#1780).
+
+- Print Preview: the bleed limit can be set beside the Bleed box. Print Preview had only the box, and the limit (how far past the page edges objects print, 4 mm at first) could be changed only in the Print dialog. The field is the same setting as the Print dialog's Bleed limit (0 to 50 mm), greyed while Bleed is off, and the sheets follow it at once (#1653).
 
 - Blend: a click on the end object picks the end object where the steps lie over it. The steps are drawn by the start object, above the end when the start is in front, and a text step is picked anywhere in its box, so the steps of a text blend covered nearly all of the end text: a click on it picked the start text, sometimes far away, and a colour from the palette went to that other end. Only a click at the end text's edge, beyond the steps, picked it. Now a press on the steps where the end object lies, away from the start object itself, picks the end object, with the Pick tool and the Text tool; elsewhere on the steps the start object is picked as before. A text that lies inside the box of the text in front of it (a copy offset by a millimetre or two) is still picked by that front text's box, as for any two texts (#1739).
 

@@ -3118,6 +3118,7 @@ print.as_in_document = "Zoals in het document"
 print.back_side = "Achterkant (rechts naar links, niet gespiegeld)" # mt
 print.back_side_tip = "Voor de achterkant van dubbelzijdige kaarten: de kolommen lopen van rechts naar links zodat elke pagina achter haar voorkant komt; de pagina's worden niet gespiegeld" # mt
 print.bleed_limit = "Afloopgrens:"
+print.bleed_limit_desc = "Hoe ver objecten buiten de paginaranden worden afgedrukt als Afloop aan staat (0 tot 50 mm); dezelfde waarde als in het dialoogvenster Afdrukken." # mt
 print.calibration = "Kalibratiebalken"
 print.collate = "Sorteren"
 print.color = "Kleur:"

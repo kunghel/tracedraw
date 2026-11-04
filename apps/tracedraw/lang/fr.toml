@@ -3118,6 +3118,7 @@ print.as_in_document = "Comme dans le document"
 print.back_side = "Verso (de droite à gauche, sans miroir)" # mt
 print.back_side_tip = "Pour le verso des cartes recto verso : les colonnes vont de droite à gauche pour que chaque page s'imprime derrière son recto ; les pages ne sont pas inversées" # mt
 print.bleed_limit = "Limite du fond perdu :"
+print.bleed_limit_desc = "Jusqu'où les objets s'impriment au-delà des bords de la page quand le fond perdu est activé (0 à 50 mm) ; la même valeur que dans la boîte de dialogue Imprimer." # mt
 print.calibration = "Barres d'étalonnage"
 print.collate = "Assembler"
 print.color = "Couleur :"

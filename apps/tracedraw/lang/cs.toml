@@ -3118,6 +3118,7 @@ print.as_in_document = "Jako v dokumentu"
 print.back_side = "Rub (zprava doleva, nezrcadleno)" # mt
 print.back_side_tip = "Pro rub oboustranných karet: sloupce jdou zprava doleva, aby každá stránka vyšla za svým lícem; stránky se nezrcadlí" # mt
 print.bleed_limit = "Limit spadávky:"
+print.bleed_limit_desc = "Jak daleko za okraje stránky se objekty tisknou, když je zapnutá spadávka (0 až 50 mm); stejná hodnota jako v dialogu Tisk." # mt
 print.calibration = "Kalibrační pruhy"
 print.collate = "Kompletovat"
 print.color = "Barva:"

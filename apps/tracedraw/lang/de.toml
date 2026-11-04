@@ -3118,6 +3118,7 @@ print.as_in_document = "Wie im Dokument"
 print.back_side = "Rückseite (von rechts nach links, nicht gespiegelt)" # mt
 print.back_side_tip = "Für die Rückseite beidseitiger Karten: die Spalten laufen von rechts nach links, damit jede Seite hinter ihrer Vorderseite landet; die Seiten werden nicht gespiegelt" # mt
 print.bleed_limit = "Anschnittgrenze:"
+print.bleed_limit_desc = "Wie weit Objekte über die Seitenränder hinaus gedruckt werden, wenn Anschnitt an ist (0 bis 50 mm); derselbe Wert wie im Druckdialog." # mt
 print.calibration = "Kalibrierungsbalken"
 print.collate = "Sortieren"
 print.color = "Farbe:"

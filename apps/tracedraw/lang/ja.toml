@@ -3118,6 +3118,7 @@ print.as_in_document = "ドキュメントどおり"
 print.back_side = "裏面 (右から左、反転なし)" # mt
 print.back_side_tip = "両面カードの裏面用: 列を右から左に並べ、各ページが表の真裏に印刷されるようにします。ページは反転しません" # mt
 print.bleed_limit = "裁ち落とし範囲:"
+print.bleed_limit_desc = "裁ち落としがオンのとき、ページの端からどこまでオブジェクトを印刷するか (0～50 mm)。印刷ダイアログと同じ値です。" # mt
 print.calibration = "キャリブレーションバー"
 print.collate = "部単位で印刷"
 print.color = "カラー:"

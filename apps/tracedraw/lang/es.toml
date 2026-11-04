@@ -3118,6 +3118,7 @@ print.as_in_document = "Como en el documento"
 print.back_side = "Reverso (de derecha a izquierda, sin reflejar)" # mt
 print.back_side_tip = "Para el reverso de tarjetas a doble cara: las columnas van de derecha a izquierda para que cada página quede detrás de su anverso; las páginas no se reflejan" # mt
 print.bleed_limit = "Límite de sangrado:"
+print.bleed_limit_desc = "Hasta dónde se imprimen los objetos más allá de los bordes de la página con Sangrado activado (0 a 50 mm); el mismo valor que en el cuadro de diálogo Imprimir." # mt
 print.calibration = "Barras de calibración"
 print.collate = "Intercalar"
 print.color = "Color:"

@@ -3118,6 +3118,7 @@ print.as_in_document = "Come nel documento"
 print.back_side = "Retro (da destra a sinistra, non speculare)" # mt
 print.back_side_tip = "Per il retro dei biglietti fronte-retro: le colonne vanno da destra a sinistra perché ogni pagina finisca dietro il suo fronte; le pagine non sono specchiate" # mt
 print.bleed_limit = "Limite di abbondanza:"
+print.bleed_limit_desc = "Fin dove gli oggetti vengono stampati oltre i bordi della pagina con l'abbondanza attiva (da 0 a 50 mm); lo stesso valore della finestra Stampa." # mt
 print.calibration = "Barre di calibrazione"
 print.collate = "Fascicola"
 print.color = "Colore:"

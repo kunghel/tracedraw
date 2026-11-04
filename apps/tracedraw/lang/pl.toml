@@ -3118,6 +3118,7 @@ print.as_in_document = "Jak w dokumencie"
 print.back_side = "Tył (od prawej do lewej, bez odbicia)" # mt
 print.back_side_tip = "Dla tyłu kart dwustronnych: kolumny biegną od prawej do lewej, aby każda strona wypadła za swoim przodem; strony nie są odbijane" # mt
 print.bleed_limit = "Limit spadu:"
+print.bleed_limit_desc = "Jak daleko poza krawędziami strony drukowane są obiekty, gdy spad jest włączony (od 0 do 50 mm); ta sama wartość co w oknie Drukuj." # mt
 print.calibration = "Paski kalibracji"
 print.collate = "Sortuj"
 print.color = "Kolor:"

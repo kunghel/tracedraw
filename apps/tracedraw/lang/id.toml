@@ -3118,6 +3118,7 @@ print.as_in_document = "Seperti di dokumen"
 print.back_side = "Sisi belakang (kanan ke kiri, tidak dicerminkan)" # mt
 print.back_side_tip = "Untuk sisi belakang kartu dua sisi: kolom berjalan dari kanan ke kiri agar tiap halaman tercetak di belakang sisi depannya; halaman tidak dicerminkan" # mt
 print.bleed_limit = "Batas bleed:"
+print.bleed_limit_desc = "Seberapa jauh objek dicetak melewati tepi halaman saat Bleed aktif (0 hingga 50 mm); nilai yang sama dengan di dialog Cetak." # mt
 print.calibration = "Bilah kalibrasi"
 print.collate = "Susun"
 print.color = "Warna:"

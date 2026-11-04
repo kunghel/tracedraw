@@ -56,6 +56,16 @@ impl PrintPreview {
     }
 }
 
+/// The bleed limit field's tip: its name, without the label's colon, and
+/// what it does.
+fn bleed_limit_tip() -> String {
+    format!(
+        "{}\n{}",
+        tr("print.bleed_limit").trim_end_matches([':', '\u{ff1a}', ' ', '\u{a0}']),
+        tr("print.bleed_limit_desc")
+    )
+}
+
 /// What the sheets depend on: every print setting but the preflight list.
 fn settings_key(st: &PrintState) -> String {
     let mut st = st.clone();
@@ -417,7 +427,19 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
-                        ui.checkbox(&mut st.bleed, tr("dialog.print_bleed"));
+                        // The bleed limit beside its box, the value the
+                        // Print dialog's Bleed limit sets (#1653).
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut st.bleed, tr("dialog.print_bleed"));
+                            ui.add_enabled(
+                                st.bleed,
+                                crate::ui::field::NumField::new(&mut st.bleed_limit)
+                                    .range(0.0..=50.0)
+                                    .speed(0.5)
+                                    .suffix(" mm"),
+                            )
+                            .rich_tip(bleed_limit_tip());
+                        });
                         ui.checkbox(&mut st.crop_marks, tr("dialog.crop_marks"));
                         ui.end_row();
                         ui.checkbox(&mut st.registration_marks, tr("dialog.registration_marks"));
@@ -1617,6 +1639,104 @@ mod tests {
         assert!(at("print.range_pages").y > at("dialog.all_pages").y);
         assert!(at("dialog.print_bleed").y > at("dialog.fit_to_page").y);
         assert!(at("dialog.mirror").y > at("print.densitometer").y);
+    }
+
+    /// The bleed limit is set beside Bleed, before Crop marks, and is the
+    /// Print dialog's setting: a value typed there is what prints and
+    /// what the Print dialog keeps (#1653).
+    #[test]
+    fn the_bleed_limit_is_set_beside_bleed() {
+        let ctx = crate::theme::ui_context();
+        let size = egui::vec2(1400.0, 900.0);
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.print_preview(None);
+        if let Some(pv) = app.print_preview.as_mut() {
+            pv.st.looking_for_printers = false;
+            pv.st.bleed = true;
+            pv.st.bleed_limit = 4.0;
+        }
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            texts = frame_texts(&mut app, &ctx, size);
+        }
+        let find = |texts: &[(String, egui::Rect)], f: &dyn Fn(&str) -> bool| {
+            texts.iter().find(|(t, _)| f(t)).map(|(_, r)| *r)
+        };
+        let bleed_label = tr("dialog.print_bleed");
+        let bleed = find(&texts, &|t| t == bleed_label).expect("Bleed shown");
+        let crop_label = tr("dialog.crop_marks");
+        let crop = find(&texts, &|t| t == crop_label).expect("Crop marks shown");
+        let field = texts
+            .iter()
+            .filter(|(t, r)| {
+                t.ends_with(" mm")
+                    && (r.center().y - bleed.center().y).abs() < 6.0
+                    && r.left() > bleed.right()
+            })
+            .map(|(t, r)| (t.clone(), *r))
+            .next()
+            .expect("the bleed limit beside Bleed");
+        assert!(field.0.starts_with('4'), "{:?}", field.0);
+        assert!(field.1.right() < crop.left(), "{field:?} before {crop:?}");
+        // Typed in: the preview's settings, which print and which the
+        // Print dialog and Options > Printing keep, take it.
+        let at = field.1.center();
+        let send = |app: &mut App, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |ui| show(app, ui),
+            );
+            out.textures_delta.clear();
+        };
+        send(&mut app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            send(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        send(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        send(&mut app, vec![egui::Event::Text("7".into())]);
+        send(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        send(&mut app, Vec::new());
+        let st = app
+            .print_preview
+            .as_ref()
+            .map(|pv| pv.st.clone())
+            .expect("open");
+        assert_eq!(st.bleed_limit, 7.0);
+        let doc = app.doc().clone();
+        assert_eq!(crate::export::print_layout(&app, &st, &doc).bleed, 7.0);
+        app.settings.printing.remember(&st);
+        assert_eq!(app.settings.printing.state().bleed_limit, 7.0);
     }
 
     /// The pages printed are chosen in the preview: the current page, a

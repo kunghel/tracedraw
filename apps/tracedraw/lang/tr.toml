@@ -3118,6 +3118,7 @@ print.as_in_document = "Belgedeki gibi"
 print.back_side = "Arka yüz (sağdan sola, yansıtmadan)" # mt
 print.back_side_tip = "Çift taraflı kartların arkası için: sütunlar sağdan sola gider, böylece her sayfa önünün arkasına basılır; sayfalar yansıtılmaz" # mt
 print.bleed_limit = "Taşma sınırı:"
+print.bleed_limit_desc = "Taşma açıkken nesnelerin sayfa kenarlarının ne kadar ötesine basıldığı (0 ile 50 mm arası); Yazdır iletişim kutusundakiyle aynı değer." # mt
 print.calibration = "Kalibrasyon çubukları"
 print.collate = "Harmanla"
 print.color = "Renk:"

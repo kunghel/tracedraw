@@ -3118,6 +3118,7 @@ print.as_in_document = "Como no documento"
 print.back_side = "Verso (da direita para a esquerda, sem espelhar)" # mt
 print.back_side_tip = "Para o verso de cartões frente e verso: as colunas vão da direita para a esquerda para cada página sair atrás da sua frente no outro lado da folha; as páginas não são espelhadas" # mt
 print.bleed_limit = "Limite de sangria:"
+print.bleed_limit_desc = "Até onde os objetos são impressos além das bordas da página com Sangria ativada (0 a 50 mm); o mesmo valor da caixa de diálogo Imprimir." # mt
 print.calibration = "Barras de calibração"
 print.collate = "Agrupar"
 print.color = "Cor:"

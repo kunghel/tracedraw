@@ -3118,6 +3118,7 @@ print.as_in_document = "與文件相同"
 print.back_side = "背面（從右到左，不鏡射）" # mt
 print.back_side_tip = "用於雙面卡片的背面：欄從右到左排列，使每頁印在其正面的背後；頁面不鏡射" # mt
 print.bleed_limit = "出血限制："
+print.bleed_limit_desc = "開啟出血時，物件在頁面邊緣之外列印的距離（0 到 50 公釐）；與「列印」對話方塊中的值相同。" # mt
 print.calibration = "校正列"
 print.collate = "自動分頁"
 print.color = "色彩："

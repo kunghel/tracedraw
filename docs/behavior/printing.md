@@ -194,7 +194,10 @@ same function (`export::print_sheets`).
   page and the selection print as they are, and a choice that leaves no
   page is let go; the Print dialog's Print range has the same choice,
   `print_preview::tests::the_preview_prints_the_pages_chosen`); then
-  Prepress: Print separations, Bleed beside Crop marks, Registration
+  Prepress: Print separations, Bleed with its limit (the Print dialog's
+  Bleed limit, the same setting: 0 to 50 mm, greyed while Bleed is off,
+  #1653, `print_preview::tests::the_bleed_limit_is_set_beside_bleed`)
+  beside Crop marks, Registration
   marks beside Color bars, Densitometer scale beside Page information,
   Mirror beside Invert, Transform and Artwork position; then the layout
   with its sketch. Every change rebuilds the sheets at once.
@@ -335,6 +338,7 @@ With any mark on, a 12 mm margin (plus the bleed) surrounds the pages.
 - `ui::print_preview::tests::plates_split_pictures_by_ink`
 - `export::tests::separations_split_pictures_into_their_inks`
 - `ui::print_preview::tests::the_settings_key_ignores_copies_and_preflight`
+- `ui::print_preview::tests::the_bleed_limit_is_set_beside_bleed`
 
 - `imposition::tests::booklets_pair_the_pages_for_folding`
 - `imposition::tests::perfect_binding_folds_each_signature_on_its_own`
