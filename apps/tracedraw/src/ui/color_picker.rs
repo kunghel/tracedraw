@@ -140,7 +140,7 @@ pub fn choose_model(c: Color, choice: &str) -> Color {
 pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
     let shown = list_model(*c);
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(if shown == REGISTRATION {
             tr("docker.registration")
         } else {

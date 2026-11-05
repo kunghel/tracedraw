@@ -7,13 +7,18 @@ Each acts on the selected paragraph text. Their settings are also in the
 ## Tabs {#tabs}
 
 [[menu.text > menu.text.tabs]] sets where the <kbd>Tab</kbd> character jumps
-to. At first there is a tab stop every 12.7 mm (half an inch).
+to. A paragraph without stops of its own has a left stop every 12.7 mm (half
+an inch); [[options.default_tab_spacing]] in the Options changes that.
 
-1. Select the paragraph text.
+1. Select the paragraph text, or click in the paragraphs to change.
 2. Choose [[menu.text > menu.text.tabs]].
-3. Under [[dialog.tab_stops]], change the positions, or click
-   [[dialog.add_tab]] to add one.
+3. Under [[dialog.tab_stops]], click [[dialog.add_tab]] to add a stop,
+   change a stop's position, its alignment (left, centre, right or
+   decimal) and its leader, or click **x** to remove it.
 4. Click [[dialog.close]].
+
+A right stop ends the text after the tab at the stop, so prices line up
+on their right; a decimal stop lines up their decimal points.
 
 ![The Tabs dialog box](../../img/text-paragraphs-tabs.png)
 

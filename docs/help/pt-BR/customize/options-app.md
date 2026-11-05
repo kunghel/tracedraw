@@ -109,6 +109,7 @@ A página tem cinco abas.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] e os [[options.hyphenation_patterns]]
   (incluídos, ou um dicionário de hifenização do seu idioma).
+  - [[options.default_tab_spacing]]: para onde salta <kbd>Tab</kbd> num parágrafo sem paradas de tabulação próprias (12,7 mm, meia polegada).
 - [[docker.fonts]]: [[options.show_recent_fonts]] no topo das listas de fontes,
   o [[options.recent_font_count]] (5, até 20) e o
   [[options.font_sample_size]].

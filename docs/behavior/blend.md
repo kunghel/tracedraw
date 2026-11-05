@@ -126,6 +126,14 @@ file, whose end lives only in the effect, is one object whose box is
 the whole blend (#1540,
 `pick_drag_tests::a_blend_s_start_object_shows_its_own_box_and_handles`,
 `tracedraw_core::live::tests::a_blend_start_s_own_box_leaves_the_steps_out`).
+Object > Group (Ctrl+G, and the context menu's Group) groups a blend
+however it is selected: with its start or end object selected alone
+(the blend just made, or a click on a step or on either object) the
+group holds both objects and whatever else is selected; a selection
+box or Ctrl+A selects both already. The blend stays live in the group,
+and one undo takes the group back. Before, a blend selected by a click
+was one object, so Group stayed off and Ctrl+G did nothing (#1842,
+`pick_drag_tests::a_blend_groups_however_it_is_selected`).
 
 Clear Blend removes the blend and leaves both objects; Break
 Apart turns the steps into objects. Files from before this kept the end

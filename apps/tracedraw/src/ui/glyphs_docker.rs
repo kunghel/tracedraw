@@ -389,7 +389,7 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     if let Some(p) = pick {
         app.glyph_font = p.family;
     }
-    egui::ComboBox::from_id_salt("glyphs_range")
+    crate::ui::keynav::ComboBox::from_id_salt("glyphs_range")
         .width(ui.available_width() - 8.0)
         .selected_text(tr(RANGES[app.glyph_range.min(RANGES.len() - 1)].0))
         .show_ui(ui, |ui| {

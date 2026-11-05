@@ -38,16 +38,20 @@ Trace Bitmap dialog's sliders still use the toolkit's slider.
 | Left/Right arrow (focused) | One step down/up (Up/Down on an upright slider) |
 | Page Down/Up (focused) | Ten steps |
 | Home/End (focused) | The range's start/end |
-| Wheel over the track or the box (focused or dragged) | One step a notch; Ctrl a tenth (one step on an integer or stepped slider), Shift ten |
-| Wheel over a slider without the focus | Scrolls the panel around it; the value stays |
+| Wheel over the track or the box (hovered; no focus needed) | One step a notch; Ctrl a tenth (one step on an integer or stepped slider), Shift ten; the panel around does not scroll with that turn |
+| Wheel beside a slider (its label, the space around it) | Scrolls the panel around it; the value stays |
 | Number box | Typing then Enter or leaving applies (snapped to the step); the arrows step |
 
 The track takes the keyboard focus only from Tab, as the toolkit's own
 slider: a press or a drag on it does not take the focus (and gives up
 one Tab gave), so the canvas keeps its shortcuts (Ctrl+Z, Delete, the
 tool keys, the arrows' nudge) after a slider was used with the mouse.
-The wheel never changes a slider the pointer merely passes over: a
-docker or the Options dialog scrolls under the wheel as before.
+The wheel over the track or the box steps the slider on hover, as it
+does a number field: no click or focus first (#1335, a maintainer
+decision; it replaces the earlier rule that a slider stepped with the
+wheel only while focused or dragged, #1240). Anywhere else a docker or
+the Options dialog scrolls under the wheel as before. The wheel takes
+no keyboard focus.
 
 The step is the one given (`step_by`), one for an integer slider, else a
 round hundredth of the range (1 for 0 to 100, 0.05 for 0.1 to 5). Every
@@ -81,9 +85,15 @@ value typed or stepped is applied instead of snapping back.
   gives 50.
 - Given a disabled slider, when pressed or wheeled, then the value stays.
 - Given the slider, when its track is clicked, then nothing has the
-  keyboard focus, an arrow key leaves the value, and the wheel over the
-  track or the box leaves the value and the panel's scrolling; while the
-  thumb is held the wheel steps it.
+  keyboard focus and an arrow key leaves the value; while the thumb is
+  held the wheel steps it.
+- Given the slider with nothing focused, when the wheel turns over the
+  track or the box, then the value moves one step a notch (Shift ten)
+  and the panel does not scroll; over the label the value stays and the
+  wheel is left to the panel
+  (`ui::slider::tests::the_wheel_over_a_slider_steps_it_on_hover`).
+- Given the Objects docker, when the wheel turns over its thumbnail size
+  slider, then the size moves one step a notch, not two.
 - Given a focused slider, when the wheel turns with Ctrl, then a slider
   without a step moves a tenth of a step and a stepped one a whole step.
 - Given the slider with a step of one, when "12.5" is typed, then the

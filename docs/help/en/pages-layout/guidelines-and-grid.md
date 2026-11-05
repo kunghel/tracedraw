@@ -40,12 +40,14 @@ Guidelines are lines across the drawing window that objects can snap to.
   (<kbd>Shift</kbd>+click adds), and drag it to move it. Drop it outside the
   drawing window, or press <kbd>Delete</kbd>, to delete it.
 - Click the selected guideline again to show its rotation handles, and drag
-  them to turn it.
+  them to turn it. Drag the rotation centre between them to turn the
+  guideline about another point; it snaps to objects' nodes and the other
+  snap points.
 - Right-click a guideline to delete, lock or unlock it, or open its
   properties. Locked guidelines can be selected but not moved or deleted.
 - [[menu.edit > menu.edit.select_all > menu.edit.select_all_guidelines]]
-  selects every guideline of the page, and [[menu.view.guidelines]] shows or
-  hides them.
+  selects every guideline of the page, as <kbd>Ctrl+A</kbd> does while a
+  guideline is selected, and [[menu.view.guidelines]] shows or hides them.
 - With guidelines selected (and no objects), [[menu.edit.copy]] and
   [[menu.edit.paste]] make copies in the same place, and
   [[menu.edit.duplicate]] makes copies moved by the duplicate offset (set in

@@ -181,28 +181,157 @@ pub fn set_web_keys_for_test(on: bool) {
     WEB_KEYS_FOR_TEST.with(|w| w.set(on));
 }
 
+/// The Command keys macOS keeps for itself (#1409), in shortcut text
+/// (`Ctrl` is the Command key there): Quit and Log Out (Command+Q,
+/// Command+Shift+Q), Hide and Hide Others (Command+H, Command+Option+H),
+/// Minimize (Command+M), the application switcher (Command+Tab,
+/// Command+Shift+Tab), Spotlight and the Finder's search
+/// (Command+Space, Command+Option+Space), Force Quit
+/// (Command+Option+Esc), the screenshots (Command+Shift+3, 4 and 5) and
+/// hiding the Dock (Command+Option+D). The application menu or the
+/// system takes them before the window sees them.
+pub const MAC_SYSTEM_KEYS: &[&str] = &[
+    "Ctrl+Q",
+    "Ctrl+Shift+Q",
+    "Ctrl+H",
+    "Ctrl+Alt+H",
+    "Ctrl+M",
+    "Ctrl+Tab",
+    "Ctrl+Shift+Tab",
+    "Ctrl+Space",
+    "Ctrl+Alt+Space",
+    "Ctrl+Alt+Esc",
+    "Ctrl+Shift+3",
+    "Ctrl+Shift+4",
+    "Ctrl+Shift+5",
+    "Ctrl+Alt+D",
+];
+
+/// The editor's own keys among [`MAC_SYSTEM_KEYS`], with the key that
+/// runs the same command in the macOS desktop app (#1409): Convert to
+/// Curves, Convert Outline to Object, Merge Cells, the Pick tool from any
+/// tool and Force Justify while typing. Each alternative is bound to
+/// nothing else (`ui::options::tests::no_two_default_commands_share_a_shortcut`
+/// in its macOS run). Quit keeps Command+Q ([`MAC_QUIT`]).
+pub const MAC_KEYS: &[(&str, &str)] = &[
+    ("Ctrl+Q", "Alt+Shift+C"),
+    ("Ctrl+Shift+Q", "Alt+Shift+Q"),
+    ("Ctrl+M", "Ctrl+Shift+M"),
+    ("Ctrl+Space", "Ctrl+Shift+Space"),
+    ("Ctrl+H", "Ctrl+Shift+H"),
+];
+
+/// File > Exit's key in the macOS desktop app: Command+Q, the application
+/// menu's Quit, which asks about unsaved drawings as Exit does (#1669).
+pub const MAC_QUIT: &str = "Ctrl+Q";
+
+/// File > Exit's key on the other systems.
+const EXIT_KEY: &str = "Alt+F4";
+
+#[cfg(test)]
+thread_local! {
+    /// Tests switch the macOS desktop app's shortcuts on elsewhere.
+    static MAC_KEYS_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the macOS desktop app's shortcuts apply: in the desktop build
+/// for macOS, and in tests that ask for them.
+pub fn mac_keys() -> bool {
+    #[cfg(test)]
+    if MAC_KEYS_FOR_TEST.with(|w| w.get()) {
+        return true;
+    }
+    cfg!(target_os = "macos") && !crate::files::WEB
+}
+
+#[cfg(test)]
+pub fn set_mac_keys_for_test(on: bool) {
+    MAC_KEYS_FOR_TEST.with(|w| w.set(on));
+}
+
+/// Whether `shortcut` is one of the Command keys macOS keeps
+/// ([`MAC_SYSTEM_KEYS`]).
+pub fn mac_system_key(shortcut: &str) -> bool {
+    MAC_SYSTEM_KEYS.iter().any(|k| same(k, shortcut))
+}
+
+/// The macOS desktop app's key for a command whose `shortcut` macOS
+/// keeps ([`MAC_KEYS`]); `None` for any other shortcut.
+pub fn mac_alternative(shortcut: &str) -> Option<&'static str> {
+    MAC_KEYS
+        .iter()
+        .find(|(k, _)| same(k, shortcut))
+        .map(|(_, alt)| *alt)
+}
+
+/// A key press in the macOS desktop app: the editor shortcut it stands
+/// for when it is the alternative of a key macOS keeps ([`MAC_KEYS`]);
+/// `None` in other builds and for other keys.
+pub fn mac_key_for(key: Key, mods: Modifiers) -> Option<(Modifiers, Key)> {
+    if !mac_keys() {
+        return None;
+    }
+    let text = format(mods, key);
+    MAC_KEYS
+        .iter()
+        .find(|(_, alt)| same(alt, &text))
+        .and_then(|(k, _)| parse(k))
+}
+
+/// Whether a key press is one macOS keeps, in the macOS desktop app: the
+/// window does not act on it should it arrive.
+pub fn mac_kept_press(key: Key, mods: Modifiers) -> bool {
+    mac_keys() && mac_system_key(&format(mods, key))
+}
+
 /// The shortcut a menu row shows: in the browser version the alternative
-/// of a key the browser keeps, else `shortcut` itself.
+/// of a key the browser keeps, in the macOS desktop app the alternative
+/// of a key macOS keeps (and Exit's Command+Q), else `shortcut` itself.
 pub fn shown(shortcut: String) -> String {
-    if !web_keys() {
+    if web_keys() {
+        return browser_alternative(&shortcut)
+            .map(str::to_string)
+            .unwrap_or(shortcut);
+    }
+    mac_shown(shortcut)
+}
+
+/// The key a command's built-in `shortcut` stands for in the macOS
+/// desktop app: the alternative of a key macOS keeps, Exit's Command+Q
+/// ([`MAC_QUIT`]), else `shortcut` itself. Other builds keep `shortcut`.
+/// The menus and Options > Customization > Commands show it there.
+pub fn mac_shown(shortcut: String) -> String {
+    if !mac_keys() {
         return shortcut;
     }
-    browser_alternative(&shortcut)
+    if same(&shortcut, EXIT_KEY) {
+        return MAC_QUIT.to_string();
+    }
+    mac_alternative(&shortcut)
         .map(str::to_string)
         .unwrap_or(shortcut)
 }
 
-/// A tip that names its shortcut in brackets ("New (Ctrl+N)"): in the
-/// browser version the alternative of a key the browser keeps takes its
-/// place ("New (Alt+Shift+N)").
+/// A tip that names its shortcut in brackets ("New (Ctrl+N)", "(Ctrl+Q
+/// converts to curves)"): in the browser version the alternative of a
+/// key the browser keeps takes its place ("New (Alt+Shift+N)"), in the
+/// macOS desktop app the alternative of a key macOS keeps.
 pub fn shown_in(text: String) -> String {
-    if !web_keys() {
-        return text;
+    let swap = |t: String, k: &str, alt: &str| {
+        t.replace(&format!("({k})"), &format!("({alt})"))
+            .replace(&format!("({k} "), &format!("({alt} "))
+    };
+    if web_keys() {
+        return BROWSER_KEYS.iter().fold(text, |t, (k, alt)| match alt {
+            Some(alt) => swap(t, k, alt),
+            None => t,
+        });
     }
-    BROWSER_KEYS.iter().fold(text, |t, (k, alt)| match alt {
-        Some(alt) => t.replace(&format!("({k})"), &format!("({alt})")),
-        None => t,
-    })
+    if mac_keys() {
+        let text = swap(text, EXIT_KEY, MAC_QUIT);
+        return MAC_KEYS.iter().fold(text, |t, (k, alt)| swap(t, k, alt));
+    }
+    text
 }
 
 /// The browser's keys and their alternatives as the Options notice lists
@@ -277,10 +406,12 @@ pub fn is_modifier(key: Key) -> bool {
 
 /// Whether a key press can be a shortcut: not a modifier alone, and not
 /// a key that edits text, moves focus or closes dialogs without Ctrl or
-/// Alt.
+/// Alt. In the macOS desktop app the Command keys macOS keeps are no
+/// shortcut either: they would never reach the window (#1409).
 pub fn allowed(mods: Modifiers, key: Key) -> bool {
     let bare = !(mods.command || mods.ctrl || mods.alt);
     !is_modifier(key)
+        && !mac_kept_press(key, mods)
         && !(bare
             && matches!(
                 key,

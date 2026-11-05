@@ -151,6 +151,20 @@ everything above holds. Thank the contributor either way.
 
 - `main` is protected: a pull request needs one approval from someone other
   than its author and a green build. Nobody pushes to `main` directly.
+- The `merged-work` check must be green (make it a required check in the
+  branch protection of `main`). It fails when a pull request deletes 15
+  or more lines of one file that another pull request merged in the last
+  60 days, or drops a `#[test]`, without a "Replaces:" or "Removed
+  tests:" line in the description. Read every "Replaces:" and "Removed
+  tests:" item and check it is meant; a lost feature is not a valid
+  reason. To run it by hand on a pull request: `python3
+  scripts/ci/check_merged_work.py --base origin/main --head <pr head>
+  --repo tracedraw/tracedraw --body-file <description>`.
+- Before merging, read the deletions, not only the additions: look at
+  `git diff --stat` for files that shrink a lot or disappear and at every
+  deleted test. A pull request that puts a whole file back to an older
+  copy (an agent working from a stale checkout) is sent back to be
+  rebased, even when the check passes.
 - Merge so the contributor stays the author of their commits (merge or
   rebase, not a squash that takes their name off). When you have to
   change a contribution before merging, keep the contributor as the
@@ -168,6 +182,25 @@ the repository's settings and secrets belong to the organization's owners
 (see `docs/code-signing.md`). A maintainer may prepare a release (the
 changelog, the version numbers) in a pull request and ask an owner to tag
 it.
+
+Preparing a release, in that pull request:
+
+1. Give the "Unreleased" section of `CHANGELOG.md` its version and date
+   (`## 0.40.0 (2026-11-05)`) and set the version in `Cargo.toml`.
+2. What's New on the Welcome Screen: add the new version's row on top of
+   `RELEASES` in `apps/tracedraw/src/ui/welcome.rs` and drop the oldest,
+   so it keeps the last ten releases. Write its title and its paragraph
+   (`welcome.news.v0_40_title`, `welcome.news.v0_40_body`) in
+   `apps/tracedraw/lang/en.toml` from the version's changelog section:
+   one short paragraph for everyone, with only what a user notices and no
+   technical details, record names or issue numbers. Translate both into
+   the other seventeen languages (`# mt` for machine translations) and
+   delete the dropped version's keys from every language. A test fails
+   while the top row is not the version in `Cargo.toml`.
+3. Help > Highlight What's New: replace `NEW_IN_THIS_VERSION` in
+   `apps/tracedraw/src/ui/menus.rs` with the menu rows new in this
+   version, and update the highlights in
+   `docs/help/*/welcome/whats-new.md`.
 
 ## Replying
 

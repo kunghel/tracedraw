@@ -104,8 +104,11 @@ the version on the right).
   plain 1600 x 950 window (automation and the visual checks use this).
 - `--x11` (Linux) opens the window through the windowing layer's X11
   backend (XWayland on a Wayland desktop), where a graphics tablet's pen
-  moves the pointer and reports its pressure (#850, see
-  `pen-pressure.md`); the environment is left unchanged. With no
+  moves the pointer and reports its pressure (#850); a Wayland window
+  reads the pen too since #1841 (see `pen-pressure.md`), so this is
+  needed only for a compositor without the tablet protocol. The
+  environment is left unchanged; `GDK_BACKEND=x11` does not change the
+  window's backend. With no
   `DISPLAY` it prints that `--x11` needs XWayland or an X11 session and
   exits with status 2 instead of trying every renderer.
 - The browser build has no splash: the page shows its own loader.

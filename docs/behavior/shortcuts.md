@@ -12,7 +12,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S | New, Open, Save, Save As |
 | Ctrl+I, Ctrl+E, Ctrl+P | Import, Export, Print |
 | Ctrl+F4, Alt+F4 | Close window, Exit |
-| Command+Q (macOS) | Quit TraceDraw from the application menu: asks about unsaved drawings as Exit does |
+| Command+Q (macOS) | Quit TraceDraw from the application menu: asks about unsaved drawings as Exit does; File > Exit shows it there (see "On macOS" below) |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+R | Undo, Redo, Repeat |
 | Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+Shift+V | Cut, Copy, Paste, Paste in view |
 | Ctrl+D, Ctrl+Shift+D | Duplicate, Repeat Copies panel |
@@ -20,7 +20,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+Space | the Pick tool, from any tool |
 | Space | the Pick tool (not while a text or table cell is edited, where it types a space, nor during a drag, where it drops a copy); on the Pick tool, back to the tool used before it (`App::previous_tool`); Shift+Space and other combinations leave the tool alone |
 | Ctrl+0 to Ctrl+9, 0 to 9, Alt+0 to Alt+9 | store, select (twice: zoom to) and add to selection groups |
-| Ctrl+A, Delete or Backspace | Select all, Delete |
+| Ctrl+A, Delete or Backspace | Select all (with a guideline selected: every guideline of the page, #1753), Delete |
 | Ctrl+F, Ctrl+J, Ctrl+W | Find and Replace panel, Options, Refresh window |
 
 
@@ -58,7 +58,7 @@ original, #471). Checks:
 | Alt+Shift+R | Rulers on and off |
 | Alt+Q, Alt+Shift+A, Alt+Shift+D | Snapping off, alignment guides, dynamic guides |
 | Alt+Z, Ctrl+Y | Snap to objects, snap to the document grid, on and off |
-| PgUp, PgDn | Previous and next page |
+| PgUp, PgDn | Previous and next page; on the first page PgUp, on the last PgDn opens Insert Page (one page, before the first or after the last; #1752, `pick_drag_tests::page_down_on_the_last_page_offers_to_insert_one`) |
 
 ## Objects
 
@@ -128,8 +128,81 @@ Media; the Bezier, Pen, Crop and Knife tools have no key.
   `chrome::keep_tab_in`, run for every dialog window, active only in
   the three frames after a Tab;
   `pick_drag_tests::tab_in_a_dialog_focuses_its_first_input_box`).
+- The same holds for every other window and area: the floating
+  panels, the Font Manager, the palette New and Rename windows, the
+  effect picker, macro forms, the dropped-file question and the rest.
+  Tab goes to the next control of the window that has the focus,
+  Shift+Tab to the previous one; past its last control Tab goes round
+  to its first input box (its first control when it has none), and
+  Shift+Tab before its first control to its last input box. With
+  nothing focused, Tab goes to the first input box of the window on
+  top. The main window counts as one window without its menu bar: Tab
+  never lands on the menu bar, and with nothing focused and no window
+  open Tab stays with the drawing (it steps through the objects). A
+  control that keeps Tab for itself keeps the focus, and with a menu
+  or a list open Tab is left to it (#1258, `ui::tab_focus`, run around
+  each frame; `pick_drag_tests::tab_stays_in_a_floating_panel`,
+  `tab_stays_in_the_font_manager`, `tab_stays_in_the_palette_windows`,
+  `tab_stays_in_the_effect_picker`, `tab_stays_in_the_drop_question`,
+  `tab_stays_in_a_macro_form`,
+  `tab_in_the_main_window_never_reaches_the_menu_bar`).
 - Esc with a menu or a drop-down list open closes it and changes
   nothing else (the selection stays).
+
+## Menus and lists from the keyboard
+
+One navigation serves the menu bar, every menu and submenu, the
+right-click menus (drawing, palette, rulers, dockers) and every
+drop-down list (`ui/keynav.rs`, #1839). The highlighted row is drawn
+like the row under the pointer; while the keys move it, the pointer's
+row is not lit until the pointer moves.
+
+- Alt pressed and released alone lights the menu bar's first title.
+  Left and Right move along the titles (round from the last to the
+  first), Home and End go to the first and the last, Down, Up, Enter or
+  Space open the lit menu, a title's underlined letter opens its menu,
+  Esc or Alt again lets the bar go, and a click anywhere or another key
+  (a shortcut, which then runs) leaves it. Alt with a title's letter
+  opens that menu at once, as before. F10 stays the Shape tool's key.
+- A menu opened from the keyboard lights its first row. Down and Up
+  move the highlight, skipping separators and greyed rows and going
+  round from the last row to the first; Home and End go to the first
+  and last rows, Page Down and Page Up by a menu's height. Enter or
+  Space runs the row (a check row turns on or off), and the menu
+  closes. Right on a row with a submenu opens the submenu with its first
+  row lit, as do Enter and Space; Left or Esc closes it again and lights
+  its row. Right on another row opens the next menu of the bar, Left in
+  a menu of the bar the menu before. Esc closes one level: a submenu,
+  then the menu (its title stays lit, a second Esc lets the bar go).
+  The underlined letters keep picking their rows. A long menu scrolls
+  to the row lit.
+- A drop-down list (every list of the property bars, dockers and
+  dialogs, the font size, outline width and zoom level lists): open, Down and Up
+  move the highlight from the chosen row, Home and End go to the first
+  and last rows, Page Down and Page Up by the rows in view; the list
+  scrolls to the row lit at once, not animated. Letters typed jump to the first name starting
+  with them (letters typed within a second add up, `Bo` finds Bookman;
+  the same letter again goes on to the next name with it). Enter picks
+  the row and closes the list, Esc closes it as it was. The list's
+  button (a combo box's) keeps the keyboard afterwards.
+- A list's button with the keyboard (reached with Tab from a field of
+  the bar or dialog): Down, Up, Alt+Down, F4, Enter or Space open the
+  list with its chosen row lit.
+- The font list: its field takes the keyboard when the list opens, also
+  when it is opened with its arrow, its name selected so that typing
+  replaces it and filters the families. Down, Up, Page Down, Page Up,
+  Home and End (while nothing is typed) move the highlight, Enter picks,
+  Esc closes it as it was. Closed, Down and Up in its field still step
+  to the family after or before (#1754).
+- While a menu or list is open, or the bar is lit, the drawing takes no
+  key: the arrows never nudge the selection, a node or the caret of the
+  text being edited.
+- Tests: `ui::keynav::tests` (the File menu with Alt and the arrows, a
+  submenu, greyed rows skipped, the canvas's right-click menu, a list
+  with the arrows, letters, Enter and Esc, a long list scrolled to the
+  row lit, the zoom levels, Tab to the property bar's lists, no nudge
+  while a menu is open) and
+  `ui::font_list::live_tests::the_list_opened_from_its_arrow_takes_the_keys`.
 - Tools keep their own keys (see `pick-tool.md`, `shape-tool.md` and
   the tool pages); the Commands page of the options can rebind them.
 
@@ -223,6 +296,41 @@ keeps (Ctrl+N) have their buttons on the property bar. Checks:
 `shortcuts::tests::browser_kept_keys_map_to_alternatives`,
 `ui::menus::tests::browser_kept_shortcuts_have_alternatives_in_the_menus`,
 `web_page::tests::the_editors_tab_keys_and_their_alternatives_are_kept_from_the_browser`.
+
+## On macOS
+
+macOS keeps some Command keys for itself in every program, before the
+window sees them: Quit and Log Out (Command+Q, Command+Shift+Q), Hide and
+Hide Others (Command+H, Command+Option+H), Minimize (Command+M), the
+application switcher (Command+Tab, Command+Shift+Tab), Spotlight and the
+Finder's search (Command+Space, Command+Option+Space), Force Quit
+(Command+Option+Esc), the screenshots (Command+Shift+3, 4 and 5) and
+hiding the Dock (Command+Option+D) (`shortcuts::MAC_SYSTEM_KEYS`). The
+commands whose key on the other systems is one of these have another key
+in the macOS desktop app, which the menus, context menus, tips, hints and
+Options > Customization > Commands show there (#1409; they write
+Command as Ctrl and Option as Alt, so Option+Shift+C shows as
+Alt+Shift+C):
+
+| Command | Other systems | macOS desktop app |
+|---|---|---|
+| Convert to Curves | Ctrl+Q | Option+Shift+C |
+| Convert Outline to Object | Ctrl+Shift+Q | Option+Shift+Q |
+| Merge Cells (table) | Ctrl+M | Command+Shift+M |
+| The Pick tool from any tool | Ctrl+Space | Command+Shift+Space |
+| Force justify, while typing text | Ctrl+H | Command+Shift+H |
+| File > Exit | Alt+F4 | Command+Q (the application menu's Quit; Option+F4 still works) |
+
+The keys macOS keeps do nothing in the window should one arrive (a
+Command+Q never converts to curves), and Options > Customization >
+Commands does not take one as a shortcut there. The browser version on a
+Mac follows "In the browser" above. Checks:
+`ui::options::tests::no_default_shortcut_is_a_macos_system_key` (no
+built-in key of a menu command, tool, panel, the canvas or the text
+being typed is one of them in the macOS app, File > Exit's Command+Q
+aside; each alternative is bound to nothing else; no two commands share
+a key there),
+`pick_drag_tests::macos_keeps_its_command_keys_and_the_commands_take_others`.
 
 ## Checks
 

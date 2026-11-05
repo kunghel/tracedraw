@@ -131,7 +131,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 .unwrap_or_else(|| tr("tracker.no_task"));
             let mut pick = None;
             let mut add = false;
-            egui::ComboBox::from_id_salt("time_tracker_task")
+            crate::ui::keynav::ComboBox::from_id_salt("time_tracker_task")
                 .selected_text(shown)
                 .width(180.0)
                 .show_ui(ui, |ui| {

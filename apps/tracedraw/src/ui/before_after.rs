@@ -250,7 +250,7 @@ pub fn toolbar(
             ui,
             crate::ui::tips::keyed("dialog.trace_preview_label"),
             |ui| {
-                let resp = egui::ComboBox::from_id_salt(id.with("view"))
+                let resp = crate::ui::keynav::ComboBox::from_id_salt(id.with("view"))
                     .selected_text(tr(st.view.key()))
                     .width(170.0)
                     .show_ui(ui, |ui| {

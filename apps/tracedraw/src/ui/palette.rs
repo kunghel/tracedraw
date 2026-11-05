@@ -893,10 +893,14 @@ fn swatch(
         }
     }
 
-    // Click and hold: the colour's shades.
+    // A finger has no right button: held on the swatch and let go, it
+    // sets the outline; held for a second, the shades (#1611, #1707).
+    let touch_outline = touch_hold(app, ui, &resp, cell, entry, id);
+
+    // Click and hold: the colour's shades (a finger's are above).
     if let Some((_, c)) = entry {
         if resp.is_pointer_button_down_on()
-            && ui.input(|i| i.pointer.primary_down())
+            && ui.input(|i| i.pointer.primary_down() && !i.any_touches())
             && app.palette_shades.is_none()
         {
             let held = ui.input(|i| {
@@ -930,7 +934,7 @@ fn swatch(
         ui.ctx().data_mut(|d| d.remove::<bool>(shades_fired_id()));
     }
 
-    if resp.clicked() || slipped_click {
+    if (resp.clicked() || slipped_click) && !touch_outline {
         if shows_document(app, which) {
             app.doc_palette_current = color_index;
         }
@@ -967,8 +971,13 @@ fn swatch(
             .ctx()
             .data_mut(|d| d.remove_temp::<bool>(menu_id))
             .unwrap_or(false);
-        // Not a right click that makes a copy during a drag on the canvas.
-        if (resp.secondary_clicked() || slipped_right) && !hold_open && !app.transforming() {
+        // Not a right click that makes a copy during a drag on the canvas,
+        // nor egui's long press of a finger (the hold above sets it).
+        if (resp.secondary_clicked() || slipped_right)
+            && !resp.long_touched()
+            && !hold_open
+            && !app.transforming()
+        {
             app.apply_outline_color(entry.map(|(_, c)| *c));
         }
         egui::Popup::menu(&resp)
@@ -983,6 +992,78 @@ fn swatch(
             .style(crate::ui::menus::menu_popup_style)
             .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
     }
+}
+
+/// A finger on a swatch (a touch screen, where a press comes with a
+/// touch): let go after [`HOLD`] it sets the outline, as a right click
+/// does, when Options say a right click sets it; held [`RIGHT_HOLD`] it
+/// shows the shades, and the release then does nothing. A tap stays a
+/// click (the fill), a slide a drag. The press is followed by hand, as
+/// egui hands a finger held past its click time to its own long press
+/// (the right click, and the menu when a right click opens it).
+/// True on the release that set the outline: that release fills nothing.
+fn touch_hold(
+    app: &mut App,
+    ui: &Ui,
+    resp: &egui::Response,
+    cell: Rect,
+    entry: Option<&(String, Color)>,
+    id: egui::Id,
+) -> bool {
+    let key = id.with("touch_hold");
+    let (now, touched, down, start, origin, latest) = ui.input(|i| {
+        (
+            i.time,
+            i.any_touches(),
+            i.pointer.primary_down(),
+            i.pointer.press_start_time(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let mut since = ui.ctx().data(|d| d.get_temp::<f64>(key));
+    if since.is_none()
+        && touched
+        && down
+        && resp.is_pointer_button_down_on()
+        && origin.is_some_and(|o| cell.contains(o))
+    {
+        since = start;
+        if let Some(t) = since {
+            ui.ctx().data_mut(|d| d.insert_temp(key, t));
+        }
+    }
+    let Some(since) = since else {
+        return false;
+    };
+    let slid = match (origin, latest) {
+        (Some(o), Some(p)) => o.distance(p) > ui.ctx().options(|o| o.input_options.max_click_dist),
+        _ => false,
+    };
+    if slid || resp.dragged() || app.palette_drag.is_some() {
+        ui.ctx().data_mut(|d| d.remove::<f64>(key));
+        return false;
+    }
+    let held = now - since;
+    if down {
+        if held >= RIGHT_HOLD {
+            ui.ctx().data_mut(|d| d.remove::<f64>(key));
+            if let Some((_, c)) = entry {
+                if app.palette_shades.is_none() {
+                    app.palette_shades = Some((*c, cell.center_top()));
+                }
+            }
+        } else {
+            ui.ctx().request_repaint();
+        }
+        return false;
+    }
+    ui.ctx().data_mut(|d| d.remove::<f64>(key));
+    if held < HOLD || !app.settings.palette.right_click_outline || app.transforming() {
+        return false;
+    }
+    app.apply_outline_color(entry.map(|(_, c)| *c));
+    true
 }
 
 /// The colour under the pointer while it is dragged: a filled chip over
@@ -2170,5 +2251,133 @@ mod tests {
     fn rows_fit_whole_swatches() {
         assert_eq!(visible_slots(LEAD + TAIL + 1.0 + 21.0 * 10.0, STRIDE), 10);
         assert_eq!(visible_slots(10.0, STRIDE), 1);
+    }
+
+    /// What a finger on a swatch does, with the events a touch screen
+    /// sends (a touch and the pointer it moves): a tap fills, a hold of
+    /// half a second let go sets the outline, a hold of a second shows
+    /// the shades and the release then changes nothing (#1611, #1707).
+    /// The mouse keeps its own: a held left button shows the shades.
+    #[test]
+    fn a_finger_held_on_a_swatch_sets_the_outline() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>, dt: f64| {
+            clock.set(clock.get() + dt);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+        let at = egui::pos2(LEAD + 6.5 * STRIDE, 12.0);
+        let touch = |phase: egui::TouchPhase| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(7),
+            phase,
+            pos: at,
+            force: None,
+        };
+        let press = |pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger down for `secs`, then lifted; frames every 50 ms.
+        let finger = |app: &mut App, secs: f64| {
+            frame(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start),
+                    egui::Event::PointerMoved(at),
+                    press(true),
+                ],
+                0.05,
+            );
+            let mut held = 0.0;
+            while held + 0.05 < secs {
+                frame(app, Vec::new(), 0.05);
+                held += 0.05;
+            }
+            frame(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End),
+                    press(false),
+                    egui::Event::PointerGone,
+                ],
+                0.05,
+            );
+            frame(app, Vec::new(), 0.05);
+        };
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let look = |app: &App| {
+            let s = app.doc().find_shape(id).expect("rect");
+            (s.fill.clone(), s.stroke.as_ref().map(|k| k.color))
+        };
+        frame(&mut app, Vec::new(), 0.05);
+        let (fill0, outline0) = look(&app);
+        // A tap fills.
+        finger(&mut app, 0.1);
+        let (fill, outline) = look(&app);
+        assert_ne!(fill, fill0, "a tap fills");
+        assert_eq!(outline, outline0, "a tap leaves the outline");
+        let Fill::Solid(color) = fill.clone() else {
+            panic!("a solid fill: {fill:?}");
+        };
+        app.undo();
+        assert_eq!(look(&app), (fill0.clone(), outline0));
+        // Held, let go: the outline takes the colour, the fill stays.
+        finger(&mut app, 0.6);
+        assert_eq!(
+            look(&app),
+            (fill0.clone(), Some(color)),
+            "a hold sets the outline"
+        );
+        assert!(app.palette_shades.is_none());
+        app.undo();
+        assert_eq!(look(&app), (fill0.clone(), outline0));
+        // Held for a second: the shades, and the release changes nothing.
+        finger(&mut app, 1.2);
+        assert_eq!(
+            look(&app),
+            (fill0.clone(), outline0),
+            "the long hold shows the shades"
+        );
+        assert!(app.palette_shades.is_some());
+        app.palette_shades = None;
+        frame(&mut app, Vec::new(), 0.05);
+        // The mouse: the left button held shows the shades at once.
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(true)],
+            0.05,
+        );
+        for _ in 0..12 {
+            frame(&mut app, Vec::new(), 0.05);
+        }
+        assert!(
+            app.palette_shades.is_some(),
+            "a held button shows the shades"
+        );
+        frame(&mut app, vec![press(false)], 0.05);
+        assert_eq!(look(&app), (fill0, outline0));
     }
 }

@@ -39,6 +39,55 @@ fn color_op(c: Color) -> String {
     }
 }
 
+/// A PostScript string literal: `(` text `)` with `\`, `(` and `)`
+/// escaped and anything outside printable ASCII as an octal escape.
+fn ps_string(text: &str) -> String {
+    let mut out = String::from("(");
+    for b in text.bytes() {
+        match b {
+            b'\\' | b'(' | b')' => {
+                out.push('\\');
+                out.push(b as char);
+            }
+            0x20..=0x7e => out.push(b as char),
+            _ => {
+                let _ = write!(out, "\\{b:03o}");
+            }
+        }
+    }
+    out.push(')');
+    out
+}
+
+/// The operator setting `c`: a spot ink of the drawing on a Separation
+/// colour space named after the ink, its tint turned into the ink's
+/// process stand-in for devices without that plate (PostScript Language
+/// Reference, Separation colour spaces); every other colour as
+/// [`color_op`].
+fn color_op_with(c: Color, inks: &[tracedraw_core::document::Ink]) -> String {
+    if let Color::Spot { ink, tint, .. } = c {
+        if let Some(i) = inks.iter().find(|i| i.id == ink) {
+            let [cc, m, y, k] = i.cmyk;
+            return format!(
+                "[/Separation {} /DeviceCMYK {{dup {} mul exch dup {} mul exch dup {} mul exch {} mul}}] setcolorspace {} setcolor",
+                ps_name(&i.name),
+                f(cc as f64),
+                f(m as f64),
+                f(y as f64),
+                f(k as f64),
+                f(tint.clamp(0.0, 1.0) as f64)
+            );
+        }
+    }
+    color_op(c)
+}
+
+/// A PostScript name for `text`: a string turned into a name with
+/// `cvn`, so any characters stay as typed.
+fn ps_name(text: &str) -> String {
+    format!("{} cvn", ps_string(text))
+}
+
 fn rgb_array(c: Color) -> String {
     let [r, g, b] = c.to_rgb8();
     format!(
@@ -131,6 +180,7 @@ fn page_body(out: &mut String, doc: &Document, page: &tracedraw_core::Page) {
     let mut w_ = Writer {
         out,
         symbols: &doc.symbols,
+        inks: &doc.inks,
     };
     if let Some(bg) = &page.background {
         let mut s = Shape::new(
@@ -156,6 +206,8 @@ fn page_body(out: &mut String, doc: &Document, page: &tracedraw_core::Page) {
 struct Writer<'a> {
     out: &'a mut String,
     symbols: &'a [tracedraw_core::Symbol],
+    /// The drawing's spot inks, so spot colours keep their names.
+    inks: &'a [tracedraw_core::document::Ink],
 }
 
 impl Writer<'_> {
@@ -345,7 +397,7 @@ impl Writer<'_> {
         match &shape.fill {
             Fill::None => {}
             Fill::Solid(c) => {
-                let _ = writeln!(self.out, "{}", color_op(*c));
+                let _ = writeln!(self.out, "{}", color_op_with(*c, self.inks));
                 self.path_ops(&path);
                 let _ = writeln!(self.out, "{}", if even_odd { "eofill" } else { "fill" });
             }
@@ -469,7 +521,7 @@ impl Writer<'_> {
                     }
                     None => {
                         let c = other.preview_color().unwrap_or(Color::Gray { v: 0.5 });
-                        let _ = writeln!(self.out, "{}", color_op(c));
+                        let _ = writeln!(self.out, "{}", color_op_with(c, self.inks));
                         self.path_ops(&path);
                         let _ = writeln!(self.out, "{}", if even_odd { "eofill" } else { "fill" });
                     }
@@ -485,7 +537,7 @@ impl Writer<'_> {
             let _ = writeln!(
                 self.out,
                 "{} {} setlinewidth {} setlinecap {} setlinejoin",
-                color_op(s.color),
+                color_op_with(s.color, self.inks),
                 f(width),
                 match s.cap {
                     LineCap::Butt => 0,
@@ -511,7 +563,7 @@ impl Writer<'_> {
             // Arrowheads (presets and custom): the page-space path already
             // carries the shape's own transform, so only the parent applies.
             for head in tracedraw_core::arrowhead_paths(&shape.page_path(), s) {
-                let _ = writeln!(self.out, "{}", color_op(s.color));
+                let _ = writeln!(self.out, "{}", color_op_with(s.color, self.inks));
                 self.path_ops(&(parent * head));
                 let _ = writeln!(self.out, "fill");
             }
@@ -523,6 +575,48 @@ impl Writer<'_> {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect;
+
+    #[test]
+    fn spot_colours_keep_their_ink_name() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let ink = tracedraw_core::document::Ink {
+            id: 7,
+            name: "CutContour".into(),
+            cmyk: [0.0, 1.0, 0.0, 0.0],
+        };
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = Some(tracedraw_core::Stroke::hairline(ink.color(1.0)));
+        doc.inks.push(ink);
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let eps = page_to_eps(&doc, 0);
+        assert!(
+            eps.contains("[/Separation (CutContour) cvn /DeviceCMYK {dup 0 mul exch dup 1 mul exch dup 0 mul exch 0 mul}] setcolorspace 1 setcolor"),
+            "{eps}"
+        );
+        // A name with brackets and a backslash stays one string.
+        assert_eq!(ps_string("a(b)c\\d"), "(a\\(b\\)c\\\\d)");
+        assert_eq!(ps_string("é"), "(\\303\\251)");
+        // A spot colour of an ink the drawing lacks: its stand-in.
+        let lost = Color::Spot {
+            ink: 99,
+            tint: 1.0,
+            c: 0.0,
+            m: 1.0,
+            y: 0.0,
+            k: 0.0,
+        };
+        assert!(!color_op_with(lost, &doc.inks).contains("Separation"));
+    }
 
     #[test]
     fn quadratic_segments_become_the_same_cubic() {

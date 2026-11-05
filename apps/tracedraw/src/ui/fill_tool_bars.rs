@@ -226,7 +226,7 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
     let palette = app.palette.clone();
     dim(ui, tr("toolbar.fill_options"));
     let mut mode = app.area_fill_mode.min(2);
-    egui::ComboBox::from_id_salt("smart_fill_mode")
+    crate::ui::keynav::ComboBox::from_id_salt("smart_fill_mode")
         .selected_text(tr(SMART_CHOICES[mode as usize]))
         .width(110.0)
         .show_ui(ui, |ui| {
@@ -251,7 +251,7 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
     crate::ui::propbar::sep(ui);
     dim(ui, tr("toolbar.outline_options"));
     let mut omode = app.area_outline_mode.min(2);
-    egui::ComboBox::from_id_salt("smart_outline_mode")
+    crate::ui::keynav::ComboBox::from_id_salt("smart_outline_mode")
         .selected_text(tr(SMART_CHOICES[omode as usize]))
         .width(110.0)
         .show_ui(ui, |ui| {

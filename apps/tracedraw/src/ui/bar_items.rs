@@ -21,7 +21,7 @@ pub const SEP: &str = "sep";
 /// Prefix of a toolbox tool's button: "tool:" and the tool's id.
 pub const TOOL: &str = "tool:";
 
-const STANDARD: [&str; 33] = [
+const STANDARD: [&str; 35] = [
     "new",
     "open",
     "save",
@@ -32,6 +32,7 @@ const STANDARD: [&str; 33] = [
     "cut",
     "copy",
     "paste",
+    "delete",
     SEP,
     "undo",
     "redo",
@@ -51,6 +52,7 @@ const STANDARD: [&str; 33] = [
     "snap_to",
     SEP,
     "options",
+    "dockers",
     SEP,
     "launch",
     SEP,
@@ -121,6 +123,7 @@ pub fn menu_command(id: &str) -> Option<&'static str> {
         "cut" => "menu.edit.cut",
         "copy" => "menu.edit.copy",
         "paste" => "menu.edit.paste",
+        "delete" => "menu.edit.delete",
         "undo" => "menu.edit.undo",
         "redo" => "menu.edit.redo",
         "import" => "menu.file.import",

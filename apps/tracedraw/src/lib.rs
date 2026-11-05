@@ -28,6 +28,7 @@ mod app;
 mod autocorrect;
 mod barcode;
 mod bg_remove;
+mod bitmap_file;
 mod bitmap_fx;
 mod bitmap_modes;
 mod blend_link;
@@ -128,8 +129,10 @@ mod object_thumbs;
 mod ops;
 mod ops2;
 mod package;
+mod page_drop;
 mod painterly_tool;
 mod palette;
+mod palm;
 mod pen;
 mod pen_look;
 mod perspective_draw;
@@ -179,6 +182,7 @@ mod system_locale;
 mod system_prefs;
 #[cfg(any(target_os = "macos", test))]
 mod system_quit;
+mod tab_ruler;
 mod table;
 mod table_tool;
 mod templates;
@@ -199,6 +203,10 @@ mod tools;
 mod tools2;
 mod trace;
 mod trace_preview;
+mod tracecut;
+mod tracecut_cut;
+mod tracecut_nest;
+mod tracecut_send;
 mod ui;
 mod updates;
 mod variable_outline;
@@ -234,6 +242,11 @@ mod winit_quit_request;
 #[allow(dead_code)]
 #[path = "../../../vendor/winit/src/file_drop.rs"]
 mod winit_file_drop;
+// A graphics tablet's pen on Wayland, of the same copy (#1841).
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/tablet_tool.rs"]
+mod winit_tablet_tool;
 mod workspace_file;
 
 /// The desktop program: the window, with the command line's files and
@@ -272,9 +285,10 @@ pub fn run() -> eframe::Result<()> {
         return Ok(());
     }
     // `tracedraw --x11`: the window opens through X11 (XWayland on a
-    // Wayland desktop), where a graphics tablet's pen moves the pointer;
-    // Wayland compositors send pens only over a protocol the windowing
-    // layer does not speak yet (#850, see docs/behavior/pen-pressure.md).
+    // Wayland desktop), where a graphics tablet's pen moves the pointer
+    // (#850). The patched windowing layer reads a pen on Wayland too
+    // since #1841, so this is for compositors without the tablet
+    // protocol (see docs/behavior/pen-pressure.md).
     // Without an X server there is no window to open: say so and stop,
     // rather than let every renderer fail in turn.
     #[cfg(target_os = "linux")]

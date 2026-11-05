@@ -17,6 +17,8 @@ pub struct PdfTextState {
     /// Import into the drawing (File > Import) rather than open.
     pub import: bool,
     pub curves: bool,
+    /// Reduce very large pictures (#1835).
+    pub reduce_pictures: bool,
     /// Keep the choice and stop asking (Options > File Formats).
     pub dont_ask: bool,
 }
@@ -33,16 +35,55 @@ impl App {
             path: path.to_path_buf(),
             import,
             curves: self.settings.formats.pdf_text_as_curves,
+            reduce_pictures: self.settings.formats.pdf_reduce_pictures,
             dont_ask: false,
         });
         true
     }
 
-    /// The import options the preferences give.
+    /// The import options the preferences give. Pictures come in at
+    /// their own size up to the memory guard, unless Reduce very large
+    /// pictures is on; the browser and Android always reduce them, having
+    /// less memory to give (#1835).
     pub fn pdf_options(&self) -> tracedraw_io::pdf_import::ImportOptions {
+        use tracedraw_io::pdf_import::{FULL_PICTURE_PIXELS, REDUCED_PICTURE_PIXELS};
+        let reduce = self.settings.formats.pdf_reduce_pictures || always_reduce_pictures();
         tracedraw_io::pdf_import::ImportOptions {
             text_as_curves: self.settings.formats.pdf_text_as_curves,
+            max_picture_pixels: if reduce {
+                REDUCED_PICTURE_PIXELS
+            } else {
+                FULL_PICTURE_PIXELS
+            },
         }
+    }
+}
+
+/// The browser and Android reduce very large pictures whatever the
+/// choice (#1835).
+pub fn always_reduce_pictures() -> bool {
+    crate::files::WEB || crate::files::ANDROID
+}
+
+/// The Reduce very large pictures check box, ticked and greyed where
+/// pictures are always reduced.
+pub fn reduce_pictures_checkbox(ui: &mut egui::Ui, reduce: &mut bool) {
+    if always_reduce_pictures() {
+        let mut on = true;
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut on, tr("pdf_import.reduce_pictures")),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "pdf_import.reduce_pictures",
+            "pdf_import.reduce_pictures_always_tip",
+        ));
+    } else {
+        ui.checkbox(reduce, tr("pdf_import.reduce_pictures"))
+            .rich_tip(crate::ui::tips::pair(
+                "pdf_import.reduce_pictures",
+                "pdf_import.reduce_pictures_tip",
+            ));
     }
 }
 
@@ -96,9 +137,12 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PdfTextState, close: &mut b
         ui.radio_value(&mut st.curves, true, tr("pdf_import.curves"))
             .rich_tip(tr("pdf_import.curves_tip"));
         ui.add_space(4.0);
+        reduce_pictures_checkbox(ui, &mut st.reduce_pictures);
+        ui.add_space(4.0);
         ui.checkbox(&mut st.dont_ask, tr("pdf_import.dont_ask"));
         if ok_cancel(ui, close) {
             app.settings.formats.pdf_text_as_curves = st.curves;
+            app.settings.formats.pdf_reduce_pictures = st.reduce_pictures;
             if st.dont_ask {
                 app.settings.formats.pdf_ask_text = false;
             }
@@ -137,5 +181,49 @@ mod tests {
         assert!(!app.ask_pdf_text(p, true));
         app.settings.formats.pdf_text_as_curves = true;
         assert!(app.pdf_options().text_as_curves);
+    }
+
+    /// Pictures come in at their own size on the desktop unless Reduce
+    /// very large pictures is ticked, which is off by default (#1835).
+    #[test]
+    fn pictures_are_reduced_only_when_asked_on_the_desktop() {
+        use tracedraw_io::pdf_import::{FULL_PICTURE_PIXELS, REDUCED_PICTURE_PIXELS};
+        let mut app = App::headless();
+        assert!(!app.settings.formats.pdf_reduce_pictures);
+        assert!(!always_reduce_pictures());
+        assert_eq!(app.pdf_options().max_picture_pixels, FULL_PICTURE_PIXELS);
+        app.settings.formats.pdf_reduce_pictures = true;
+        assert_eq!(app.pdf_options().max_picture_pixels, REDUCED_PICTURE_PIXELS);
+    }
+
+    /// A picture that came in smaller is told after opening, in a message
+    /// of its own, whatever the warnings say (#1835).
+    #[test]
+    fn a_shrunk_picture_is_told_after_opening() {
+        use crate::ui::dialogs::Dialog;
+        let mut app = App::headless();
+        app.settings.warnings.unread_objects = false;
+        app.settings.warnings.missing_fonts = false;
+        app.pdf_shrunk = vec![tracedraw_io::pdf_import::ShrunkPicture {
+            page: 0,
+            width: 11_160,
+            height: 14_794,
+            new_width: 5_580,
+            new_height: 7_397,
+        }];
+        app.show_open_notes("test_file.pdf".into(), 0);
+        let Dialog::OpenNotes(notes) = &app.dialog else {
+            panic!("no message: {:?}", app.dialog);
+        };
+        let text = notes.text();
+        assert!(
+            text.contains("test_file.pdf") && text.contains("11160 x 14794 to 5580 x 7397"),
+            "{text}"
+        );
+        assert!(app.pdf_shrunk.is_empty(), "told once");
+        // Nothing shrunk: no message.
+        app.dialog = Dialog::None;
+        app.show_open_notes("other.pdf".into(), 0);
+        assert!(matches!(app.dialog, Dialog::None));
     }
 }

@@ -1268,7 +1268,7 @@ fn thumb_size_control(app: &mut App, ui: &mut Ui, r: Rect) {
         Pos2::new(large.left() - 6.0, r.max.y),
     );
     let mut size = clamp_size(app.settings.object_thumb_size);
-    ui.scope_builder(
+    let slider = ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(groove)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
@@ -1279,11 +1279,14 @@ fn thumb_size_control(app: &mut App, ui: &mut Ui, r: Rect) {
                     .step_by(f64::from(STEP))
                     .show_value(false),
             )
-            .rich_tip(tr("docker.thumb_size"));
+            .rich_tip(tr("docker.thumb_size"))
+            .rect
         },
     );
     app.settings.object_thumb_size = clamp_size(size);
-    if ui.rect_contains_pointer(r) {
+    // The slider steps with the wheel over itself (#1335); the rest of
+    // the control (the tiles, around the groove) steps here, once a notch.
+    if ui.rect_contains_pointer(r) && !ui.rect_contains_pointer(slider.inner) {
         if let Some(steps) = crate::ui::field::wheel_steps(ui, egui::Id::new("objects_bar_wheel")) {
             zoom_thumbs(app, steps);
         }

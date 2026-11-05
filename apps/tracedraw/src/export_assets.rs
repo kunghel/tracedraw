@@ -26,6 +26,9 @@ pub struct ExportAsset {
     pub format: usize,
     /// Resolution of raster formats (dpi).
     pub dpi: f64,
+    /// JPEG and TIFF colour mode, an index into `EXPORT_COLOR_MODES`
+    /// (#1763).
+    pub color_mode: usize,
     /// Exported by Export; unticked assets stay in the list.
     pub checked: bool,
 }
@@ -35,9 +38,10 @@ pub struct ExportAsset {
 pub struct ExportAssets {
     pub assets: Vec<ExportAsset>,
     pub folder: Option<PathBuf>,
-    /// Format and resolution new assets start with.
+    /// Format, resolution and colour mode new assets start with.
     pub format: usize,
     pub dpi: f64,
+    pub color_mode: usize,
 }
 
 impl ExportAssets {
@@ -50,6 +54,7 @@ impl ExportAssets {
                 .position(|(_, e)| *e == "png")
                 .unwrap_or(0),
             dpi: 150.0,
+            color_mode: 0,
         }
     }
 }
@@ -116,7 +121,11 @@ impl App {
                 (p.id, name)
             })
             .collect();
-        let (format, dpi) = (self.export_assets.format, self.export_assets.dpi);
+        let (format, dpi, color_mode) = (
+            self.export_assets.format,
+            self.export_assets.dpi,
+            self.export_assets.color_mode,
+        );
         for (id, name) in pages {
             if self
                 .export_assets
@@ -131,6 +140,7 @@ impl App {
                 source: AssetSource::Page(id),
                 format,
                 dpi,
+                color_mode,
                 checked: true,
             });
         }
@@ -160,6 +170,7 @@ impl App {
             },
             format: self.export_assets.format,
             dpi: self.export_assets.dpi,
+            color_mode: self.export_assets.color_mode,
             checked: true,
         });
     }
@@ -195,6 +206,7 @@ impl App {
             let mut st = ExportState {
                 format: asset.format,
                 dpi: asset.dpi.max(crate::ui::dialogs::MIN_EXPORT_DPI),
+                color_mode: asset.color_mode,
                 ..ExportState::default()
             };
             match &asset.source {
@@ -314,6 +326,7 @@ mod tests {
             source: AssetSource::Page(PageId(1)),
             format,
             dpi: 72.0,
+            color_mode: 0,
             checked,
         };
         let png = EXPORT_FORMATS
@@ -414,6 +427,26 @@ mod tests {
         let ratio = png.width() as f64 / png.height() as f64;
         assert!((ratio - 1.5).abs() < 0.05, "{ratio}");
         assert!(!dir.join("Page 2.png").exists());
+        // A CMYK JPEG asset is written in CMYK; new assets start with
+        // the colour mode of the docker's row (#1763).
+        app.export_assets.format = EXPORT_FORMATS
+            .iter()
+            .position(|(_, e)| *e == "jpg")
+            .unwrap();
+        app.export_assets.color_mode = 1;
+        app.export_assets.assets.clear();
+        app.add_selection_asset();
+        assert_eq!(app.export_assets.assets[0].color_mode, 1);
+        let (written, errors) = app.export_assets_to(&dir);
+        assert!(errors.is_empty() && written == 1, "{errors:?}");
+        let jpg = std::fs::read(dir.join("Badge 1.jpg")).unwrap();
+        assert!(jpg.windows(5).any(|w| w == b"Adobe"), "CMYK JPEG");
+        app.export_assets.assets[0].color_mode = 0;
+        app.export_assets_to(&dir);
+        let jpg = std::fs::read(dir.join("Badge 1.jpg")).unwrap();
+        assert!(!jpg.windows(5).any(|w| w == b"Adobe"), "RGB JPEG");
+        app.select(vec![id]);
+        app.add_page_assets();
         // The current page and selection are as they were.
         assert_eq!((app.page, app.selection.clone()), (page, sel));
         // A deleted object drops its asset.

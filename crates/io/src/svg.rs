@@ -8,8 +8,48 @@ use tracedraw_core::{
     Color, Document, Fill, LineCap, LineJoin,
 };
 
+thread_local! {
+    /// The spot inks of the drawing being written (id, name), so a
+    /// spot colour keeps its ink's name; set by [`page_to_svg`].
+    static INKS: std::cell::RefCell<Vec<(u32, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The name of the spot ink `c` is a tint of, in the drawing being
+/// written.
+fn spot_name(c: tracedraw_core::Color) -> Option<String> {
+    let tracedraw_core::Color::Spot { ink, .. } = c else {
+        return None;
+    };
+    INKS.with(|i| {
+        i.borrow()
+            .iter()
+            .find(|(id, _)| *id == ink)
+            .map(|(_, n)| n.clone())
+    })
+}
+
+/// SVG has no spot colours: an object painted with a spot ink is written
+/// in the ink's look and carries the ink's name in `data-spot-fill` and
+/// `data-spot-stroke`, so a cutter or RIP reading the file finds, say,
+/// its CutContour lines.
+fn spot_attrs(fill: &Fill, stroke: Option<&tracedraw_core::Stroke>) -> String {
+    let mut out = String::new();
+    if let Fill::Solid(c) = fill {
+        if let Some(n) = spot_name(*c) {
+            let _ = write!(out, " data-spot-fill=\"{}\"", escape(&n));
+        }
+    }
+    if let Some(n) = stroke.and_then(|s| spot_name(s.color)) {
+        let _ = write!(out, " data-spot-stroke=\"{}\"", escape(&n));
+    }
+    out
+}
+
 pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
     let doc = &*crate::resolve_open_fills(doc);
+    INKS.with(|i| {
+        *i.borrow_mut() = doc.inks.iter().map(|k| (k.id, k.name.clone())).collect();
+    });
     let Some(page) = doc.pages.get(page_index) else {
         return String::from("<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     };
@@ -401,12 +441,13 @@ fn write_unlinked(
     } else {
         String::new()
     };
+    let spot = spot_attrs(&shape.fill, shape.stroke.as_ref());
     if wrapped {
         let _ = writeln!(out, "{pad}<g opacity=\"{}\">", fmt(shape.opacity.max(0.0)));
     }
     let _ = writeln!(
         out,
-        "{pad}<path id=\"{}\"{name} d=\"{d}\" {fill_attr}{rule} {stroke_attr}{opacity}/>",
+        "{pad}<path id=\"{}\"{name} d=\"{d}\" {fill_attr}{rule} {stroke_attr}{spot}{opacity}/>",
         shape.id.raw()
     );
     if let Some((band, paint)) = calligraphic {
@@ -859,6 +900,37 @@ mod tests {
         assert!(svg.contains(&format!("<g id=\"{id}\">")), "{svg}");
         assert!(svg.contains("opacity=\"0.4\""), "{svg}");
         assert!(svg.contains("opacity=\"0.2\""), "{svg}");
+    }
+
+    #[test]
+    fn spot_colours_carry_their_ink_name() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let ink = tracedraw_core::document::Ink {
+            id: 3,
+            name: "CutContour".into(),
+            cmyk: [0.0, 1.0, 0.0, 0.0],
+        };
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = Some(tracedraw_core::Stroke::hairline(ink.color(1.0)));
+        doc.inks.push(ink);
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let svg = page_to_svg(&doc, 0);
+        assert!(svg.contains(" data-spot-stroke=\"CutContour\""), "{svg}");
+        assert!(!svg.contains("data-spot-fill"), "{svg}");
+        // The next drawing without the ink names nothing.
+        let mut plain = doc.clone();
+        plain.inks.clear();
+        assert!(!page_to_svg(&plain, 0).contains("data-spot"));
     }
 
     #[test]

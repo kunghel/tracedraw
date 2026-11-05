@@ -110,6 +110,7 @@ De pagina heeft vijf tabbladen.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] en de [[options.hyphenation_patterns]]
   (ingebouwd, of een afbreekwoordenboek voor uw taal).
+  - [[options.default_tab_spacing]]: waar <kbd>Tab</kbd> naartoe springt in een alinea zonder eigen tabstops (12,7 mm, een halve inch).
 - [[docker.fonts]]: [[options.show_recent_fonts]] bovenaan de
   lettertypelijsten, het [[options.recent_font_count]] (5, tot 20) en de
   [[options.font_sample_size]].

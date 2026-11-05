@@ -290,6 +290,36 @@ pub fn inks_picture(
     })
 }
 
+/// A picture as CMYK ink coverages, for a CMYK file of it (Save Bitmap
+/// As, Edit Bitmap, #1834): cyan, magenta, yellow and black of each
+/// pixel, row by row, 255 = full ink, with its size. The inks it keeps
+/// give them as they are, other pictures their pixels through the colour
+/// management, as on the separation plates. A spot ink it keeps prints
+/// as its process mix over the process inks (`spots`: each ink's id
+/// and its C, M, Y and K from 0 to 1); a see-through pixel holds as much
+/// less ink as it lets the paper show.
+pub fn picture_cmyk(s: &Shape, spots: &[(u32, [f32; 4])]) -> Option<(u32, u32, Vec<u8>)> {
+    let (png, inks) = picture(s)?;
+    let sep = separate(png, inks)?;
+    let mut out = Vec::with_capacity(sep.alpha.len() * 4);
+    for (i, a) in sep.alpha.iter().enumerate() {
+        let ink = sep.cmyk.get(i).copied().unwrap_or([0; 4]);
+        let mut v = ink.map(|x| x as f32 / 255.0);
+        for (id, plane) in &sep.spots {
+            let Some((_, mix)) = spots.iter().find(|(s, _)| s == id) else {
+                continue;
+            };
+            let cover = plane.get(i).copied().unwrap_or(0) as f32 / 255.0;
+            for (x, m) in v.iter_mut().zip(mix) {
+                *x = 1.0 - (1.0 - *x) * (1.0 - cover * m.clamp(0.0, 1.0));
+            }
+        }
+        let a = *a as f32 / 255.0;
+        out.extend(v.map(|x| byte(x * a)));
+    }
+    Some((sep.width, sep.height, out))
+}
+
 /// Put `picture`'s result in place of every picture in `s` and the
 /// objects it holds (groups, clip frames); a picture it gives nothing
 /// for stays.

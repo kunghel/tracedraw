@@ -33,7 +33,7 @@ fn length(ui: &mut Ui, app: &App, mm: f64, min_mm: f64) -> Option<f64> {
     let r = ui.add(
         crate::ui::field::NumField::new(&mut v)
             .range(units.from_mm(min_mm)..=units.from_mm(5000.0))
-            .fixed_decimals(app.settings.precision.min(10) as usize)
+            .length_decimals(app.settings.precision.min(10) as usize)
             .suffix(format!(" {}", units.short()))
             .width(64.0),
     );
@@ -178,7 +178,7 @@ fn borders(app: &mut App, ui: &mut Ui, cells: bool) {
     dim(ui, "toolbar.border");
     if cells || selected.is_some() {
         let current = app.table_ui.border_set;
-        egui::ComboBox::from_id_salt("table_border_set")
+        crate::ui::keynav::ComboBox::from_id_salt("table_border_set")
             .width(130.0)
             .selected_text(tr(current.key()))
             .show_ui(ui, |ui| {
@@ -223,7 +223,7 @@ fn borders(app: &mut App, ui: &mut Ui, cells: bool) {
             .iter()
             .position(|(_, d)| *d == b.dash.as_slice())
             .unwrap_or(0);
-        egui::ComboBox::from_id_salt("table_border_style")
+        crate::ui::keynav::ComboBox::from_id_salt("table_border_style")
             .width(90.0)
             .selected_text(tr(crate::table_tool::BORDER_DASHES[idx].0))
             .show_ui(ui, |ui| {

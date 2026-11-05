@@ -104,6 +104,31 @@ ferramenta tem as próprias teclas enquanto você a usa, explicadas na página
 dela; para a ferramenta [[tool.shape]], veja
 [Modelar curvas](../lines-shapes/shape-tool.md#editing).
 
+## Menus e listas {#menus}
+
+Pressione e solte <kbd>Alt</kbd> para ir à barra de menus: <kbd>Esquerda</kbd>
+e <kbd>Direita</kbd> passam de um menu a outro, <kbd>Baixo</kbd> ou
+<kbd>Enter</kbd> abre um deles e <kbd>Esc</kbd> sai da barra. <kbd>Alt</kbd>
+com a letra sublinhada de um menu abre esse menu de uma vez.
+
+Em um menu aberto, <kbd>Baixo</kbd> e <kbd>Cima</kbd> passam de linha em linha,
+<kbd>Home</kbd> e <kbd>End</kbd> vão à primeira e à última linha, e
+<kbd>Enter</kbd> ou <kbd>Espaço</kbd> executa a linha. <kbd>Direita</kbd> abre
+um submenu e <kbd>Esquerda</kbd> o fecha; nas outras linhas elas vão ao menu
+seguinte ou ao anterior. <kbd>Esc</kbd> fecha um nível. Os menus do botão
+direito funcionam do mesmo jeito.
+
+Em uma lista suspensa aberta, <kbd>Baixo</kbd>, <kbd>Cima</kbd>,
+<kbd>Home</kbd>, <kbd>End</kbd>, <kbd>Page Down</kbd> e <kbd>Page Up</kbd>
+movem o destaque, digitar as primeiras letras de um nome salta até ele,
+<kbd>Enter</kbd> escolhe e <kbd>Esc</kbd> fecha a lista sem mudar nada. O botão
+de uma lista alcançado com <kbd>Tab</kbd> abre com <kbd>Baixo</kbd>,
+<kbd>Alt</kbd>+<kbd>Baixo</kbd> ou <kbd>Enter</kbd>. Na lista de fontes, digitar
+filtra as fontes.
+
+Enquanto um menu ou uma lista está aberto, as setas não movem os objetos
+selecionados.
+
 ## Caixas de diálogo {#dialogs}
 
 <kbd>Enter</kbd> pressiona [[dialog.ok]] e <kbd>Esc</kbd> fecha uma caixa de

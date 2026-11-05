@@ -27,11 +27,14 @@ pub struct SnapSettings {
 }
 
 impl Default for SnapSettings {
+    /// A first start: guidelines and the page snap, objects do not, so a
+    /// move goes where the pointer puts it (#1814). Alt+Z, the Snap To
+    /// list and Options > Snapping turn objects on, and that is kept.
     fn default() -> Self {
         SnapSettings {
             grid: false,
             guides: true,
-            objects: true,
+            objects: false,
             page: true,
             pixels: false,
             baseline_grid: false,
@@ -1248,7 +1251,11 @@ mod tests {
     fn app() -> App {
         let mut app = App::headless();
         app.view.zoom = 1.0;
-        app.snap = SnapSettings::default();
+        // The tests here snap to objects, which a first start leaves off.
+        app.snap = SnapSettings {
+            objects: true,
+            ..SnapSettings::default()
+        };
         app
     }
 
@@ -1379,6 +1386,30 @@ mod tests {
         // The right edge dragged to x = 51 lands on the guideline.
         let d = app.snap_move_from(None, b, Vec2::new(11.0, 0.0), None);
         assert!((b.x1 + d.x - 50.0).abs() < 1e-9, "{d:?}");
+    }
+
+    /// At first a node near the pointer does not pull it, the page does;
+    /// with objects on, the 10 px radius catches a node 9 px away and
+    /// leaves the pointer alone 11 px away (#1814).
+    #[test]
+    fn a_first_start_snaps_to_the_page_not_to_objects_within_10_px() {
+        let mut app = app();
+        app.snap = SnapSettings::default();
+        app.settings.snap = crate::settings::SnapPrefs::default();
+        let page = app.page_rect();
+        // A rectangle well inside the page, far from its points.
+        let (x, y) = (page.x0 + 100.0, page.y0 + 100.0);
+        rect(&mut app, x, y, x + 40.0, y + 20.0);
+        let near = Point::new(x + 3.0, y + 4.0);
+        assert_eq!(app.snap_point(near), near, "objects do not snap at first");
+        let corner = Point::new(page.x0 + 3.0, page.y0 + 4.0);
+        assert_eq!(app.snap_point(corner), Point::new(page.x0, page.y0));
+        // Objects on: 9 px from the node snaps, 11 px does not.
+        app.snap.objects = true;
+        let p = Point::new(x + 9.0, y - 0.5);
+        assert_eq!(app.snap_point(p), Point::new(x, y));
+        let far = Point::new(x - 11.0, y - 11.0);
+        assert_eq!(app.snap_point(far), far);
     }
 
     #[test]

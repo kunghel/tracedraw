@@ -10,11 +10,13 @@ once, each in its own format, to one folder.
 - Add Selection adds the selected objects as one asset, cropped to their
   bounds, named after the object when it has a name ("Object" or
   "Selection" otherwise) and numbered.
-- New assets take the format and resolution under "New assets"
-  (default PNG at 150 dpi).
+- New assets take the format, resolution and, for JPEG and TIFF, colour
+  mode under "New assets" (default PNG at 150 dpi, RGB).
 - Each row: a tick (only ticked assets are exported), the name (the file
   name), the format, the resolution for raster formats (PNG, JPEG, BMP,
-  TIFF, WebP, GIF, PSD; 72 to 2400 dpi) and ✕ to remove it. The link
+  TIFF, WebP, GIF, PSD; 72 to 2400 dpi), the colour mode for JPEG and
+  TIFF (RGB, CMYK or Grayscale, as in the Export dialog; #1763) and ✕ to
+  remove it. The link
   under the name goes to the page or selects the objects.
 - An asset whose page is deleted goes; deleted objects leave their
   asset, and an asset with none left goes.
@@ -31,7 +33,7 @@ once, each in its own format, to one folder.
 - File names are the asset names with `/ \ : * ? " < > |` and control
   characters replaced by `_`; an empty name is "asset". Two assets that
   would write the same file (ignoring case) get " (2)", " (3)" and so on.
-- Each asset is exported as File > Export would with its format and
-  resolution (raster formats on a transparent background where the
+- Each asset is exported as File > Export would with its format,
+  resolution and colour mode (raster formats on a transparent background where the
   format allows it). The status bar says how many files were written, or
   the first error.

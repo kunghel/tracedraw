@@ -29,6 +29,7 @@ tracedraw-text.workspace = true
 tracedraw-render.workspace = true
 tracedraw-vba.workspace = true
 tracedraw-vba-project.workspace = true
+tracedraw-tracecut.workspace = true
 kurbo.workspace = true
 tiny-skia.workspace = true
 serde.workspace = true
@@ -44,6 +45,9 @@ i_overlay = "9"
 eframe.workspace = true
 egui.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
+# Reading CMYK TIFF files with their inks (Edit Bitmap, #1834); the same
+# version the image crate reads TIFF with.
+tiff = "0.11"
 log.workspace = true
 env_logger.workspace = true
 flate2 = "1"
@@ -92,6 +96,9 @@ eframe = { workspace = true, features = ["wgpu", "android-native-activity"] }
 android-activity = { version = "=0.6.1", features = ["native-activity"] }
 android_logger = "=0.15.1"
 jni = "=0.22.4"
+# The tool of each pointer (finger, pen) for palm rejection (#1832,
+# palm.rs): the patched winit eframe uses asks the app about each one.
+winit = { version = "0.30", default-features = false }
 
 # Where the pointer is while files are dragged over the window: the
 # system drag sends no pointer moves (#1142).

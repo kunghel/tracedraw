@@ -61,6 +61,11 @@ steps: undoing goes back to drawing it, with the tool chosen again and a line
 going on from the last node left, so you can undo node by node and draw on at
 once.
 
+<kbd>Backspace</kbd> or <kbd>Delete</kbd> while you draw with the Bezier, Pen,
+B-spline or Polyline tool removes the last node you placed, with its handles,
+one node a press. They never delete the selected objects while a curve is being
+drawn.
+
 What you are drawing shows over any color: the segments placed so far lie on
 a white line, and the handles are dashed in blue and white.
 

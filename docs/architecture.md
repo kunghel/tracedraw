@@ -18,7 +18,9 @@ crates/cdr-format
 ```
 
 `core` and `cdr-format` depend on nothing in the workspace; `cdr` depends
-on `cdr-format` and `core`.
+on `cdr-format` and `core`. `tracecut` (TraceCut's geometry for cutting
+plotters, nesting and measuring) depends on `core` and `serde` only; the
+app turns its results into commands.
 
 ## core
 

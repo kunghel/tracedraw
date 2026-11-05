@@ -6,8 +6,13 @@ listeler.
 
 ## Programdaki yenilikleri görme {#in-the-program}
 
-- Bu sürümün haberleriyle karşılama ekranının yenilikler sayfasını açmak için
-  [[menu.help > menu.help.whats_new]] komutunu seçin.
+- Karşılama ekranının yenilikler sayfasını açmak için
+  [[menu.help > menu.help.whats_new]] komutunu seçin. Sayfa son on sürümü, en yenisi
+  başta olmak üzere tarihi ve kısa bir başlığıyla listeler. Neyin
+  değiştiğine dair kısa bir özeti okumak için bir sürüme tıklayın; en yenisi
+  zaten açıktır. Bir özetin altındaki **Daha fazlasını öğrenmek ister
+  misiniz?** bağlantısı, o sürümün GitHub sayfasını tüm değişiklik
+  listesiyle açar.
 - Bu sürümde yeni olanları menülerde işaretlemek için
   [[menu.help > menu.help.highlight_whats_new]] komutunu açın: her yeni
   komutun sonunda, ona giden bir alt menünün okunun yanında ve yeni bir komut
@@ -19,6 +24,15 @@ listeler.
 
 ## Son sürümlerin öne çıkanları {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] kesim plotterları için
+  araçları açar: plotter çıktısı, kesim çizgileri, yerleştirme ve ölçme. Bkz.
+  [TraceCut](../objects/tracecut.md).
+- **Klavye, telefonlar ve kalemler.** Menüler ve listeler klavyeyle çalışır.
+  Android telefonlarda arayüz ekrana sığar ve kalem kullanılırken ekrana
+  dayanan el artık çizmez; tablet kalemi Wayland kullanan Linux'ta çalışır.
+- **Dosyalar.** .cdr dosyaları sekme durakları, ana sayfalar, degradeler ve
+  bozulmalarla açılır; PDF resimleri tam çözünürlükte gelir; JPEG ve TIFF CMYK
+  olarak dışa aktarılır.
 - **Nesne küçük resimleri.** [[docker.objects]] paneli her nesneyi adının
   yanında küçük olarak çizer; listenin üzerinde Ctrl+tekerlek veya alttaki
   kaydırıcı boyutu ayarlar. Bkz. [Nesneleri ve katmanları düzenleme](../objects/objects-and-layers.md#objects-docker).

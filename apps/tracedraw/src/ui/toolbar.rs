@@ -228,8 +228,9 @@ fn zoom_box(app: &mut App, ui: &mut Ui, id: &str, width: f32) {
                         }
                     }
                 }
-                let (arrow, resp) =
-                    ui.allocate_exact_size(Vec2::new(22.0, 24.0), egui::Sense::click());
+                let (arrow, _) =
+                    ui.allocate_exact_size(Vec2::new(22.0, 24.0), egui::Sense::hover());
+                let resp = ui.interact(arrow, egui::Id::new((id, "arrow")), egui::Sense::click());
                 ui.painter().rect_filled(
                     arrow,
                     0.0,
@@ -249,8 +250,11 @@ fn zoom_box(app: &mut App, ui: &mut Ui, id: &str, width: f32) {
                     Tokens::text_dim(),
                     egui::Stroke::NONE,
                 ));
+                let levels_id = egui::Id::new((id, "levels"));
+                // Down, Alt+Down or F4 on the arrow opens the levels (#1839).
+                crate::ui::keynav::list_button_keys(ui.ctx(), &resp, levels_id);
                 egui::Popup::menu(&resp)
-                    .id(egui::Id::new((id, "levels")))
+                    .id(levels_id)
                     .show(|ui| zoom_level_menu(app, ui));
             });
         })
@@ -278,6 +282,7 @@ pub(crate) fn item_action(id: &str) -> Option<icons::Action> {
         "cut" => A::Cut,
         "copy" => A::Copy,
         "paste" => A::Paste,
+        "delete" => A::Delete,
         "undo" => A::Undo,
         "redo" => A::Redo,
         "import" => A::Import,
@@ -289,6 +294,7 @@ pub(crate) fn item_action(id: &str) -> Option<icons::Action> {
         "guidelines" => A::ShowGuidelines,
         "snap_off" | "snap_to" => A::SnapOff,
         "options" => A::Options,
+        "dockers" => A::Dockers,
         "launch" | "ai" => A::Launch,
         _ => return None,
     })
@@ -308,6 +314,7 @@ pub(crate) fn item_name(id: &str) -> Option<String> {
         "cut" => "toolbar.cut",
         "copy" => "toolbar.copy",
         "paste" => "toolbar.paste",
+        "delete" => "toolbar.delete",
         "undo" => "toolbar.undo",
         "redo" => "toolbar.redo",
         "import" => "toolbar.import",
@@ -321,6 +328,7 @@ pub(crate) fn item_name(id: &str) -> Option<String> {
         "snap_off" => "toolbar.snap_off",
         "snap_to" => "menu.view.snap_to",
         "options" => "toolbar.options",
+        "dockers" => "toolbar.dockers",
         "launch" => "toolbar.launch",
         "ai" => "toolbar.ai_generate",
         "zoom_in" => "menu.view.zoom_in",
@@ -496,6 +504,35 @@ pub(crate) fn draw_item(app: &mut App, ui: &mut Ui, bar: &str, id: &str) {
             .clicked()
             {
                 app.paste_any();
+            }
+        }
+        // What the Delete key does, for a finger with no keyboard (#1611).
+        "delete" => {
+            let can = doc && app.can_delete();
+            if std_button(
+                ui,
+                icons::Action::Delete,
+                &tip("toolbar.delete"),
+                can,
+                false,
+            )
+            .clicked()
+            {
+                app.delete_command();
+            }
+        }
+        // The dockers, which the Touch workspace starts without (#1611).
+        "dockers" => {
+            if std_button(
+                ui,
+                icons::Action::Dockers,
+                &tip("toolbar.dockers"),
+                true,
+                app.show_dockers,
+            )
+            .clicked()
+            {
+                app.show_dockers = !app.show_dockers;
             }
         }
         // Undo and Redo, each with the list of steps behind its arrow.
@@ -884,6 +921,10 @@ fn launch_button(app: &mut App, ui: &mut Ui, bar: &str) {
                 app.dialog = crate::ui::dialogs::Dialog::FontManager(Default::default());
                 ui.close();
             }
+            if crate::ui::tracecut::shown(app) && ui.button(tr("menu.tools.tracecut")).clicked() {
+                app.open_tracecut();
+                ui.close();
+            }
             if ui.button(tr("menu.window.welcome_screen")).clicked() {
                 app.show_welcome = true;
                 ui.close();
@@ -1071,7 +1112,7 @@ pub(crate) fn dim_labelled<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) 
 fn brush_strokes_bar(app: &mut App, ui: &mut Ui) {
     use crate::media::MediaMode;
     dim_labelled_as(ui, "toolbar.brush_mode", "toolbar.brush_mode_desc", |ui| {
-        egui::ComboBox::from_id_salt("brush_mode")
+        crate::ui::keynav::ComboBox::from_id_salt("brush_mode")
             .selected_text(tr(app.media_mode.key()))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -1107,7 +1148,7 @@ fn brush_strokes_bar(app: &mut App, ui: &mut Ui) {
                     .or(shapes.first())
                     .map(|k| tr(k))
                     .unwrap_or_default();
-                egui::ComboBox::from_id_salt("brush_shape")
+                crate::ui::keynav::ComboBox::from_id_salt("brush_shape")
                     .selected_text(current)
                     .width(120.0)
                     .show_ui(ui, |ui| {
@@ -1185,7 +1226,7 @@ fn unit_value(ui: &mut Ui, app: &App, label: &str, mm: &mut f64, speed: f64) -> 
     let r = ui.add(
         crate::ui::field::NumField::new(&mut v)
             .speed(speed)
-            .fixed_decimals(app.settings.precision.min(10) as usize)
+            .length_decimals(app.settings.precision.min(10) as usize)
             .suffix(format!(" {}", app.units.short())),
     );
     // A value typed and applied, or a step of the arrows or the wheel:
@@ -2221,7 +2262,7 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
     let target_shown = !mixed.contains(&F::Target);
     let target_list =
         |ui: &mut Ui, set: &mut crate::effects_ui::TransparencySettings, field: &mut Option<F>| {
-            egui::ComboBox::from_id_salt("transparency_target")
+            crate::ui::keynav::ComboBox::from_id_salt("transparency_target")
                 .selected_text(if target_shown {
                     targets[(set.target as usize).min(2)].clone()
                 } else {
@@ -2243,7 +2284,7 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
                 .rich_tip(crate::ui::tips::keyed("toolbar.transparency_target"));
         };
     part_row(ui, stacked, |ui| {
-        egui::ComboBox::from_id_salt("transparency_kind")
+        crate::ui::keynav::ComboBox::from_id_salt("transparency_kind")
             .selected_text(
                 current
                     .and_then(|c| kinds.get(c).cloned())
@@ -2325,7 +2366,7 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
                     .find(|(k, _)| kind_shown && *k == f.kind)
                     .map(|(_, n)| tr(n))
                     .unwrap_or_default();
-                egui::ComboBox::from_id_salt("transparency_fountain_kind")
+                crate::ui::keynav::ComboBox::from_id_salt("transparency_fountain_kind")
                     .selected_text(name)
                     .width(90.0)
                     .show_ui(ui, |ui| {
@@ -2357,7 +2398,7 @@ fn transparency_controls(app: &mut App, ui: &mut Ui, stacked: bool) {
             .extend(),
         );
         let merge_shown = !mixed.contains(&F::Merge);
-        egui::ComboBox::from_id_salt("transparency_merge")
+        crate::ui::keynav::ComboBox::from_id_salt("transparency_merge")
             .selected_text(if merge_shown {
                 set.merge.name().to_string()
             } else {
@@ -2447,6 +2488,7 @@ pub(crate) fn text_size_list(app: &mut App, ui: &mut Ui) -> bool {
             if arrow.clicked() {
                 egui::Popup::toggle_id(&ctx, popup_id);
             }
+            crate::ui::keynav::list_button_keys(&ctx, &arrow, popup_id);
             let anchor = field.rect.union(arrow_rect);
             (field, anchor)
         })
@@ -2479,6 +2521,7 @@ pub(crate) fn text_size_list(app: &mut App, ui: &mut Ui) -> bool {
                             hovered = Some(s);
                         }
                     }
+                    crate::ui::keynav::scroll_into_view(ui);
                 });
         });
     if shown.is_none() {
@@ -2550,6 +2593,7 @@ pub(crate) fn text_align_list(app: &mut App, ui: &mut Ui) -> bool {
     if button.clicked() {
         egui::Popup::toggle_id(&ctx, popup_id);
     }
+    crate::ui::keynav::list_button_keys(&ctx, &button, popup_id);
     let mut picked = None;
     let current = app.text_align;
     egui::Popup::new(popup_id, ctx.clone(), button.rect, ui.layer_id())
@@ -2667,7 +2711,7 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
             tr("toolbar.rectangular")
         }
     };
-    egui::ComboBox::from_id_salt("node_selection_mode")
+    crate::ui::keynav::ComboBox::from_id_salt("node_selection_mode")
         .selected_text(mode_text(app.node_lasso))
         .width(96.0)
         .show_ui(ui, |ui| {
@@ -3250,7 +3294,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         app.set_shadow(Some(sh), false);
     }
     let mut preset = None;
-    egui::ComboBox::from_id_salt("shadow_presets")
+    crate::ui::keynav::ComboBox::from_id_salt("shadow_presets")
         .selected_text(tr("shadow.presets"))
         .width(110.0)
         .show_ui(ui, |ui| {
@@ -3279,7 +3323,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         Some(ShadowEdge::Right) => "shadow.edge_right",
     };
     let current = sh.perspective.map(|p| p.edge);
-    egui::ComboBox::from_id_salt("shadow_kind")
+    crate::ui::keynav::ComboBox::from_id_salt("shadow_kind")
         .selected_text(tr(kind_key(current)))
         .width(110.0)
         .show_ui(ui, |ui| {
@@ -3337,7 +3381,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         FeatherDirection::Outside => "shadow.feather_outside",
         FeatherDirection::Average => "shadow.feather_average",
     };
-    egui::ComboBox::from_id_salt("shadow_feather_dir")
+    crate::ui::keynav::ComboBox::from_id_salt("shadow_feather_dir")
         .selected_text(tr(dir_key(sh.feather_direction)))
         .width(80.0)
         .show_ui(ui, |ui| {
@@ -3359,7 +3403,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         FeatherEdges::InvertedSquared => "shadow.edges_inverted_squared",
         FeatherEdges::Flat => "shadow.edges_flat",
     };
-    egui::ComboBox::from_id_salt("shadow_feather_edges")
+    crate::ui::keynav::ComboBox::from_id_salt("shadow_feather_edges")
         .selected_text(tr(edge_key(sh.feather_edges)))
         .width(96.0)
         .show_ui(ui, |ui| {
@@ -3376,7 +3420,7 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
         .response
         .rich_tip(tr("shadow.feather_edges"));
     dim_labelled(ui, "transparency.merge_mode", |ui| {
-        egui::ComboBox::from_id_salt("shadow_merge")
+        crate::ui::keynav::ComboBox::from_id_salt("shadow_merge")
             .selected_text(sh.merge.name())
             .width(90.0)
             .show_ui(ui, |ui| {

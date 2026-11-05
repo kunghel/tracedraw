@@ -36,8 +36,8 @@ The product name is **TraceDraw** in prose; machine names are `tracedraw`
    `CLEANROOM.md` and the details in `docs/cdr-format.md`. Bundle only
    original or openly licensed assets and list them in `ATTRIBUTION.md`.
 4. **Layering is enforced by review.** `core` and `cdr-format` have no
-   workspace deps; `cdr` depends on `cdr-format` and `core`; `text` and
-   `render` depend on `core` only; `io` depends on `core` and `render`
+   workspace deps; `cdr` depends on `cdr-format` and `core`; `text`,
+   `render` and `tracecut` depend on `core` only; `io` depends on `core` and `render`
    (rasterised fills in exports); egui stays in `apps/`.
 5. **Tests are the gate.** Every change comes with tests. Format code
    gets round-trip and malformed-input tests.
@@ -65,6 +65,8 @@ crates/cdr    parse.rs (chunks to Document), write.rs, text.rs, cmx.rs
 crates/text   font database, shaping, outlines
 crates/render CPU rasteriser
 crates/io     svg.rs, pdf.rs, lib.rs (native format)
+crates/tracecut  TraceCut geometry: cut/ (HPGL, weeding, bridges, cut
+              order, marks), nest/, calc/ (time, cost), measure.rs
 apps/tracedraw    main.rs, app.rs, interaction.rs, canvas.rs, ops.rs,
                   tools.rs, tools2.rs, ui/ (menus, toolbar, toolbox,
                   dockers, palette, status, dialogs, icons)
@@ -115,6 +117,19 @@ behind it, and never add a feature without updating the row.
   warning-free (CI runs clippy with `-D warnings` on the library crates,
   on the pinned toolchain 1.97.0; use the same version locally so the
   lint set matches).
+- **Never undo merged work.** Branch from a freshly fetched `origin/main`
+  (`git fetch origin main` right before creating the branch or worktree)
+  and rebase on a fresh `origin/main` before pushing when the work took
+  long. Never copy whole files from an older checkout, another worktree,
+  a stash or a patch made on an older base, and never
+  `git checkout <old> -- <file>`: edit only the lines the change needs.
+  Two merged features were lost this way, together with their tests.
+- Never delete or weaken a test silently. When a change must remove a
+  test, list it under "Removed tests:" in the pull request description
+  with the reason; when it deliberately replaces another pull request's
+  work, list that pull request under "Replaces:". The `merged-work` CI
+  check (`scripts/ci/check_merged_work.py`, see `CONTRIBUTING.md`) fails
+  otherwise; run it before opening the pull request.
 - Keep `docs/roadmap.md` honest: a feature is "done" when it has tests
   and works on a real file, not when the menu item exists.
 

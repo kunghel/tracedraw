@@ -455,6 +455,25 @@ fn font_list_with(
     // The field and its arrow.
     let mut text = st.typed.clone().unwrap_or_else(|| current.to_string());
     let field_id = id.with("field");
+    // The list's keys while it is open, taken before the field sees them:
+    // its own Down, Up, Home and End would move the cursor and drop the
+    // selection of the name, so that typing added to it (#1839). Home and
+    // End go to the ends of the list unless a name is being typed.
+    let list_keys = (egui::Popup::is_id_open(&ctx, popup_id)
+        && (ctx.memory(|m| m.has_focus(field_id)) || !ctx.text_edit_focused()))
+    .then(|| {
+        let ends = st.typed.is_none();
+        ctx.input_mut(|i| {
+            [
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, Key::PageDown),
+                i.consume_key(egui::Modifiers::NONE, Key::PageUp),
+                ends && i.consume_key(egui::Modifiers::NONE, Key::Home),
+                ends && i.consume_key(egui::Modifiers::NONE, Key::End),
+            ]
+        })
+    });
     let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let field = ui.add(
@@ -518,6 +537,18 @@ fn font_list_with(
         } else {
             egui::Popup::open_id(&ctx, popup_id);
             st.scroll = true;
+            // The field takes the keyboard, its name selected as when it
+            // is clicked: the arrows, Enter, Esc and typing work in a
+            // list opened from its arrow too (#1839).
+            ctx.memory_mut(|m| m.request_focus(field_id));
+            let mut state = egui::TextEdit::load_state(&ctx, field_id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(text.chars().count()),
+                )));
+            state.store(&ctx, field_id);
         }
     }
 
@@ -630,24 +661,42 @@ fn font_list_with(
         }
     }
 
-    // Keys while the field has the focus.
-    if open && field.has_focus() {
-        let (down, up, enter, escape) = ctx.input_mut(|i| {
+    // The open list reads its own keys (the menus' and lists' keys of
+    // ui/keynav.rs leave it alone): the field takes the typing (#1839).
+    if open {
+        crate::ui::keynav::own_keys(&ctx, popup_id);
+    }
+    // Keys while the field has the focus, or while the list is open and
+    // no other field has it (a filter box of the list was clicked).
+    if open && (field.has_focus() || !ctx.text_edit_focused()) {
+        if !field.has_focus() {
+            ctx.memory_mut(|m| m.request_focus(field_id));
+        }
+        let [down, up, page_down, page_up, home, end] = list_keys.unwrap_or_default();
+        let (enter, escape) = ctx.input_mut(|i| {
             (
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
-                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
                 i.key_pressed(Key::Enter),
                 i.consume_key(egui::Modifiers::NONE, Key::Escape),
             )
         });
         let last = rows.len().saturating_sub(1);
-        if down {
-            st.highlight = Some(st.highlight.map_or(0, |h| (h + 1).min(last)));
-            st.scroll = true;
-            st.keyed = true;
-        }
-        if up {
-            st.highlight = Some(st.highlight.map_or(0, |h| h.saturating_sub(1)));
+        // A page: the rows the list shows at once.
+        let sample = app
+            .settings
+            .font_sample_px
+            .clamp(*SAMPLE_SIZES.start(), *SAMPLE_SIZES.end());
+        let page = ((LIST_H / ((sample * 1.35 + 6.0).max(22.0) + 2.0)) as usize).max(1);
+        let to = match (down, up, page_down, page_up, home, end) {
+            (true, ..) => Some(st.highlight.map_or(0, |h| (h + 1).min(last))),
+            (_, true, ..) => Some(st.highlight.map_or(0, |h| h.saturating_sub(1))),
+            (_, _, true, ..) => Some(st.highlight.map_or(0, |h| (h + page).min(last))),
+            (_, _, _, true, ..) => Some(st.highlight.map_or(0, |h| h.saturating_sub(page))),
+            (.., true, _) => Some(0),
+            (.., true) => Some(last),
+            _ => None,
+        };
+        if let Some(h) = to.filter(|_| !rows.is_empty()) {
+            st.highlight = Some(h);
             st.scroll = true;
             st.keyed = true;
         }
@@ -2085,6 +2134,120 @@ impl App {
 mod live_tests {
     use super::*;
     use tracedraw_core::geometry::Point;
+
+    /// The list opened with a click on its arrow takes the keys, as one
+    /// opened from its field does (#1839): Down and Up, End, Enter picks,
+    /// Esc closes with nothing picked, letters typed find a name.
+    #[test]
+    fn the_list_opened_from_its_arrow_takes_the_keys() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let current = app.text_font.clone();
+        let base = egui::Id::new("font_bar").with(("font_list", "keys"));
+        let popup = base.with("popup");
+        let t = std::cell::Cell::new(0.0);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Option<FontPick> {
+            let mut picked = None;
+            let mut events = Some(events);
+            for _ in 0..4 {
+                t.set(t.get() + 0.1);
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800.0, 700.0),
+                        )),
+                        events: events.take().unwrap_or_default(),
+                        time: Some(t.get()),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        crate::ui::keynav::frame(ui.ctx(), false);
+                        egui::Area::new(egui::Id::new("font_bar"))
+                            .fixed_pos(egui::pos2(100.0, 100.0))
+                            .show(ui.ctx(), |ui| {
+                                let (p, _) = font_list_live(app, ui, "keys", &current, 180.0);
+                                picked = picked.take().or(p);
+                            });
+                        crate::ui::keynav::end_frame(ui.ctx());
+                    },
+                );
+                out.textures_delta.clear();
+            }
+            picked
+        };
+        let key = |k: Key| {
+            vec![egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        };
+        let click_arrow = |app: &mut App| {
+            let arrow = ctx
+                .viewport(|v| {
+                    v.this_pass
+                        .widgets
+                        .get_layer(egui::LayerId::new(
+                            egui::Order::Middle,
+                            egui::Id::new("font_bar"),
+                        ))
+                        .find(|w| {
+                            (w.rect.width() - 18.0).abs() < 0.5
+                                && w.sense.senses_click()
+                                && !w.sense.senses_drag()
+                        })
+                        .map(|w| w.rect.center())
+                })
+                .expect("the arrow");
+            let button = |pressed| egui::Event::PointerButton {
+                pos: arrow,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![egui::Event::PointerMoved(arrow), button(true)]);
+            run(app, vec![button(false), egui::Event::PointerGone]);
+        };
+        run(&mut app, Vec::new());
+        let families = matching(&listed_families(&app, Show::All, true), None, &current);
+        assert!(families.len() >= 2, "{families:?}");
+        click_arrow(&mut app);
+        assert!(egui::Popup::is_id_open(&ctx, popup));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with("field")));
+        // Down and Esc: closed, nothing picked.
+        assert_eq!(run(&mut app, key(Key::ArrowDown)), None);
+        assert_eq!(run(&mut app, key(Key::Escape)), None);
+        assert!(!egui::Popup::is_id_open(&ctx, popup));
+        // End and Enter: the last family.
+        click_arrow(&mut app);
+        assert!(egui::Popup::is_id_open(&ctx, popup));
+        assert_eq!(run(&mut app, key(Key::End)), None);
+        let picked = run(&mut app, key(Key::Enter)).expect("picked with Enter");
+        assert_eq!(Some(&picked.family), families.last());
+        assert!(!egui::Popup::is_id_open(&ctx, popup));
+        // Down from the current family, Enter: the next one.
+        click_arrow(&mut app);
+        let picked = run(&mut app, key(Key::ArrowDown))
+            .or_else(|| run(&mut app, key(Key::Enter)))
+            .expect("picked with Enter");
+        let at = families.iter().position(|f| *f == current);
+        let next = at.map_or(0, |i| (i + 1).min(families.len() - 1));
+        assert_eq!(picked.family, families[next]);
+        // Letters typed find the family starting with them.
+        let other = families.iter().find(|f| **f != current).expect("another");
+        click_arrow(&mut app);
+        let first: String = other.chars().take(3).collect();
+        assert_eq!(run(&mut app, vec![egui::Event::Text(first.clone())]), None);
+        let picked = run(&mut app, key(Key::Enter)).expect("picked with Enter");
+        assert!(
+            picked.family.to_lowercase().contains(&first.to_lowercase()),
+            "{} for {first}",
+            picked.family
+        );
+    }
 
     /// Selecting a text shows its font and size, but the font and size of
     /// new text (Options > Text > Display) stay as set, can be changed

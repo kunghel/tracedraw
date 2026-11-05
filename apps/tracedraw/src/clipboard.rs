@@ -869,6 +869,7 @@ impl App {
     }
 
     /// The selected bitmap's PNG, its effects included.
+    #[cfg(test)]
     pub fn selected_bitmap_png(&self) -> Option<tracedraw_core::SharedBytes> {
         let id = self.selected_bitmap()?;
         match &self.doc().find_shape(id)?.kind {
@@ -877,30 +878,99 @@ impl App {
         }
     }
 
-    /// Save Bitmap As (the bitmap's context menu): its pixels, effects
-    /// included, to a PNG file.
+    /// Save Bitmap As (the bitmap's context menu): the picture as PNG,
+    /// JPEG or TIFF (#1834), the kind of the file it came from offered
+    /// first. A CMYK picture saved as JPEG or TIFF keeps its inks; see
+    /// [`crate::bitmap_file`].
     pub fn save_bitmap_as(&mut self) {
-        let Some(png) = self.selected_bitmap_png() else {
+        let Some(id) = self.selected_bitmap() else {
             return;
         };
-        let name = format!("{}.png", self.document_name());
-        crate::files::Dialog::new()
-            .add_filter("PNG", &["png"])
+        let Some(own) = self.doc().find_shape(id).map(crate::bitmap_file::own_kind) else {
+            return;
+        };
+        let name = format!("{}.{}", self.document_name(), own.ext());
+        let mut dialog = crate::files::Dialog::new();
+        let others = crate::bitmap_file::BitmapFile::ALL
+            .into_iter()
+            .filter(|k| *k != own);
+        for kind in std::iter::once(own).chain(others) {
+            dialog = dialog.add_filter(kind.filter_name(), kind.exts());
+        }
+        dialog
             .set_file_name(name)
             .save_file(self, move |app, path| {
-                app.status = match crate::files::write(&path, &png) {
+                app.status = match app.save_bitmap_to(id, &path, own) {
                     Ok(()) => crate::i18n::trf(
                         "status.exported",
                         &[("path", &path.display().to_string())],
                     ),
-                    Err(e) => crate::i18n::trf("status.export_failed", &[("e", &e.to_string())]),
+                    Err(e) => crate::i18n::trf("status.export_failed", &[("e", &e)]),
                 };
             });
     }
 
-    /// Image > Edit Bitmap: write the pixels to a PNG next to the system's
-    /// temporary files, link the object to it and open the system editor
-    /// (on Android, an editing app through "open with").
+    /// Write picture `id` to `path` as the kind its extension names, else
+    /// as `fallback`.
+    pub fn save_bitmap_to(
+        &self,
+        id: ShapeId,
+        path: &std::path::Path,
+        fallback: crate::bitmap_file::BitmapFile,
+    ) -> Result<(), String> {
+        let s = self.doc().find_shape(id).ok_or("no picture")?;
+        let kind = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(crate::bitmap_file::BitmapFile::from_name)
+            .unwrap_or(fallback);
+        let icc = crate::bitmap_file::is_cmyk(s)
+            .then(|| self.bitmap_cmyk_profile())
+            .flatten();
+        let bytes = crate::bitmap_file::write(self.doc(), s, kind, icc.as_deref())?;
+        crate::files::write(path, &bytes).map_err(|e| e.to_string())
+    }
+
+    /// The CMYK profile a CMYK picture's file carries: the one its inks
+    /// are converted with, the drawing's own while it is used, else the
+    /// one picked under Colour Management; none with the built-in
+    /// conversions.
+    fn bitmap_cmyk_profile(&self) -> Option<Vec<u8>> {
+        let c = &self.settings.color;
+        if c.builtin_engine {
+            return None;
+        }
+        if c.open_cmyk == 0 && crate::app::carried_cmyk_profile(self.doc()).is_some() {
+            return self.doc().cmyk_profile.as_ref().map(|p| p.data.to_vec());
+        }
+        self.settings_cmyk_profile().map(|p| p.data.to_vec())
+    }
+
+    /// Edit Bitmap's file of picture `id` in `dir`: a CMYK TIFF for a
+    /// CMYK picture, so the other program gets its inks (#1834), else a
+    /// PNG. The path written.
+    pub fn write_bitmap_for_editing(
+        &self,
+        id: ShapeId,
+        dir: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
+        use crate::bitmap_file::BitmapFile;
+        let s = self.doc().find_shape(id).ok_or("no picture")?;
+        let kind = if crate::bitmap_file::is_cmyk(s) {
+            BitmapFile::Tiff
+        } else {
+            BitmapFile::Png
+        };
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("bitmap-{}.{}", id.raw(), kind.ext()));
+        self.save_bitmap_to(id, &path, kind)?;
+        Ok(path)
+    }
+
+    /// Image > Edit Bitmap: write the picture to a file next to the
+    /// system's temporary files (a CMYK TIFF for a CMYK picture, else a
+    /// PNG), link the object to it and open the system editor (on
+    /// Android, an editing app through "open with").
     pub fn edit_bitmap_externally(&mut self) {
         if crate::files::WEB {
             // A browser cannot hand a file to another program.
@@ -913,19 +983,14 @@ impl App {
         let Some(s) = self.doc().find_shape(id).cloned() else {
             return;
         };
-        let ShapeKind::Bitmap { png, .. } = &s.kind else {
-            return;
-        };
         let dir = std::env::temp_dir().join("tracedraw-edit");
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.status = e.to_string();
-            return;
-        }
-        let path = dir.join(format!("bitmap-{}.png", id.raw()));
-        if let Err(e) = std::fs::write(&path, png) {
-            self.status = e.to_string();
-            return;
-        }
+        let path = match self.write_bitmap_for_editing(id, &dir) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
         let mut data = s.data.clone();
         data.retain(|(k, _)| k != "bitmap.link");
         data.push(("bitmap.link".into(), path.display().to_string()));
@@ -935,7 +1000,12 @@ impl App {
         // again when it does.
         #[cfg(target_os = "android")]
         {
-            self.status = if crate::android::outside::edit(&path, "image/png") {
+            let mime = if path.extension().is_some_and(|e| e == "tif") {
+                "image/tiff"
+            } else {
+                "image/png"
+            };
+            self.status = if crate::android::outside::edit(&path, mime) {
                 tr("status.bitmap_sent_to_app")
             } else {
                 tr("status.no_app_edits_pictures")
@@ -967,13 +1037,14 @@ impl App {
         let path = crate::package::resolve_link(&path, self.link_base().as_deref())
             .display()
             .to_string();
-        let img = match crate::files::open_image(&path) {
-            Ok(i) => i.to_rgba8(),
+        // A CMYK TIFF keeps its inks (#1834).
+        let read = crate::files::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| crate::bitmap_file::read(&b));
+        let picture = match read {
+            Ok(p) => p,
             Err(e) => {
-                self.status = trf(
-                    "status.could_not_read",
-                    &[("p", &path), ("e", &e.to_string())],
-                );
+                self.status = trf("status.could_not_read", &[("p", &path), ("e", &e)]);
                 return false;
             }
         };
@@ -983,15 +1054,11 @@ impl App {
         let ShapeKind::Bitmap { rect, .. } = s.kind else {
             return false;
         };
-        let (w, h) = img.dimensions();
-        let mut png = Vec::new();
-        if image::DynamicImage::ImageRgba8(img)
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .is_err()
-        {
+        let (w, h) = picture.rgba.dimensions();
+        let Some((png, inks)) = picture.into_png() else {
             return false;
-        }
-        self.run(Command::SetShapeKind {
+        };
+        let mut cmds = vec![Command::SetShapeKind {
             shape: id,
             kind: ShapeKind::Bitmap {
                 rect,
@@ -1000,7 +1067,25 @@ impl App {
                 png: png.into(),
                 fx: None,
             },
-        });
+        }];
+        // A CMYK file makes it a CMYK picture with those inks; other
+        // pixels leave the mode as it was and drop inks that no longer
+        // fit.
+        if inks.is_some() || s.picture_inks.is_some() {
+            cmds.push(Command::SetPictureInks {
+                shape: id,
+                cmyk: s.cmyk_bitmap || inks.is_some(),
+                inks,
+            });
+        }
+        if cmds.len() == 1 {
+            if let Some(cmd) = cmds.pop() {
+                self.run(cmd);
+            }
+        } else if let Err(e) = self.engine.run_batch("Update from Link", &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
         self.status = tr("status.bitmap_updated");
         true
     }

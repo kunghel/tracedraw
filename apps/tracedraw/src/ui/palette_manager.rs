@@ -444,7 +444,7 @@ fn size_controls(app: &mut App, ui: &mut Ui) {
                             tr(&format!("palette.rows_{n}"))
                         }
                     };
-                    egui::ComboBox::from_id_salt("palette_manager_rows")
+                    crate::ui::keynav::ComboBox::from_id_salt("palette_manager_rows")
                         .selected_text(text(now))
                         .width(84.0)
                         .show_ui(ui, |ui| {
@@ -750,7 +750,7 @@ fn bar_controls(
         let locked = app.settings.bars.locked;
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place).id_salt(id));
         child.add_enabled_ui(!locked, |ui| {
-            egui::ComboBox::from_id_salt(id.with("place"))
+            crate::ui::keynav::ComboBox::from_id_salt(id.with("place"))
                 .selected_text(egui::RichText::new(name(now)).size(11.0))
                 .width(BAR_CONTROLS_W - 4.0)
                 .show_ui(ui, |ui| {

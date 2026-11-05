@@ -69,7 +69,7 @@ fn combo<T: Copy + PartialEq>(
     tip: &str,
 ) -> bool {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(tr(key(*value)))
         .width(180.0)
         .show_ui(ui, |ui| {
@@ -165,7 +165,7 @@ fn bw_settings(ui: &mut Ui, s: &mut BwSettings) {
         BwMethod::Halftone => {
             ui.horizontal(|ui| {
                 ui.label(tr("dialog.screen_type"));
-                egui::ComboBox::from_id_salt("bw_screen")
+                crate::ui::keynav::ComboBox::from_id_salt("bw_screen")
                     .selected_text(tr(screen_key(s.screen)))
                     .show_ui(ui, |ui| {
                         for sc in [Screen::Round, Screen::Line, Screen::Square] {

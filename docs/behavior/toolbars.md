@@ -20,6 +20,12 @@ while its submenu is open; a hovered row is the same blue box as the
 titles. The canvas, palette and New Document menus are drawn the same
 way.
 
+When the bar is too short for every title (a phone, a tablet upright
+in the Touch workspace, a narrow window), the titles that do not fit go
+under a last title, », whose menu lists them in order, each opening
+its menu as a submenu (#1301, #1691). Check:
+`ui::tests::phones_fit_and_tablets_keep_their_layout`.
+
 The View menu has Zoom In, Zoom Out and Zoom
 To Fit (with their pictures) and no other zoom commands.
 
@@ -131,7 +137,10 @@ split by thin lines:
 
 1. New (a page with a green plus), Open with the recent drawings behind
    its arrow, Save, Print.
-2. Cut, Copy, Paste.
+2. Cut, Copy, Paste, Delete (a waste bin: what the Delete key does to
+   the selection: the selected characters of the text being edited, the
+   chosen nodes with the Shape tool, the selected guidelines, else the
+   selected objects; for a screen with no keyboard, #1611).
 3. Undo and Redo, each with its list of steps behind the arrow (choosing
    a step undoes or redoes up to it).
 4. Import, Export, Export as PDF.
@@ -143,7 +152,9 @@ split by thin lines:
    with a grey frame) while on.
 7. Snap Off (Alt+Q), pressed while snapping is off; Snap To with the
    snapping list.
-8. Options (the TraceDraw options).
+8. Options (the TraceDraw options); Panels (a window with a side panel),
+   pressed while the dockers show: shows or hides them (the Touch
+   workspace starts without them, #1611).
 9. Launch, an icon with the list arrow (its name in the tooltip): Font
    Manager, Welcome Screen, Color Management.
 
@@ -160,6 +171,16 @@ A 52 px band (and its line); fields stack two to a column, 19 px each
 and sharing their middle border, 8 px from the top; fields and lists are
 white with a grey border and 13 px text, small pictures before fields
 name them (hover for a tooltip), and some fields have spin arrows.
+
+Length fields (position, size, corners and the other lengths of the
+property bars, the Contour, Extrude, Table, Variable outline and
+Transform bars and the paragraph lengths) show the decimals a value
+needs, at least one and up to the drawing precision (Options > Edit, 3
+by default), with no trailing zeros: 20.0 mm, 20.5 mm, 20.125 mm (none
+with a precision of 0); a value with more decimals shows rounded
+(20.12345 mm as 20.123 mm) and is kept as it is, and a value typed is
+applied as typed (#1761,
+`ui::propbar::tests::distance_fields_show_only_the_decimals_needed`).
 
 Number fields show their value at the left and are typed into: a click
 selects the value, Enter or leaving the field applies it, Esc puts it

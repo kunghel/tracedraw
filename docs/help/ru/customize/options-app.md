@@ -110,6 +110,7 @@
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] и [[options.hyphenation_patterns]]
   (встроенные или словарь переносов для вашего языка).
+  - [[options.default_tab_spacing]]: куда переходит <kbd>Tab</kbd> в абзаце без собственных позиций табуляции (12,7 мм, полдюйма).
 - [[docker.fonts]]: [[options.show_recent_fonts]] вверху списков шрифтов,
   [[options.recent_font_count]] (5, до 20) и
   [[options.font_sample_size]].

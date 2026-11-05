@@ -852,6 +852,48 @@ fn set_extra_paint(app: &mut App, fills: Vec<Fill>, strokes: Vec<tracedraw_core:
 /// its editor and a cross; Add Fill puts a copy of the fill on top. It
 /// shows only while the object has a fill (`has_fill`): the first fill
 /// comes from the kinds above it, not from this button (#487).
+/// The object's opacity beside its fill and its outline colour (#1818):
+/// one slider, 100 % solid, for the whole object, fill and outline
+/// together (an object has one transparency, so the two cannot differ).
+/// It is the Transparency section's uniform transparency the other way
+/// round, and a change makes it uniform for the whole object. With
+/// another kind of transparency (a fountain, a pattern, a texture), or
+/// kinds that differ across the selection, it is shown off: the
+/// Transparency section changes those. `salt` keeps the two apart.
+fn object_opacity_row(app: &mut App, ui: &mut Ui, salt: &str) {
+    use crate::mixed::TransparencyField as F;
+    let (mut set, current, mixed, has_selection) = crate::ui::toolbar::transparency_state(app);
+    let plain = matches!(current, Some(0) | Some(1));
+    let mut opacity = if current == Some(1) {
+        100.0 - set.amount
+    } else {
+        100.0
+    };
+    let amount_mixed = current == Some(1) && mixed.contains(&F::Amount);
+    ui.add_space(4.0);
+    // One tip over the slider, its box and the box's arrows.
+    let tip = crate::ui::tips::keyed("docker.object_opacity");
+    let resp = ui
+        .push_id(("object_opacity", salt), |ui| {
+            crate::ui::tips::tip_over(ui, tip, |ui| {
+                ui.add_enabled(
+                    has_selection && plain,
+                    crate::ui::Slider::new(&mut opacity, 0.0..=100.0)
+                        .text(tr("docker.object_opacity"))
+                        .suffix(" %")
+                        .mixed(amount_mixed),
+                )
+            })
+        })
+        .inner;
+    if resp.changed() {
+        set.amount = (100.0 - opacity).clamp(0.0, 100.0);
+        // The whole object: fill and outline.
+        set.target = 2;
+        app.patch_transparency(&set, &[F::Amount, F::Target]);
+    }
+}
+
 fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape, has_fill: bool) {
     let mut fills = first.extra_fills.clone();
     let mut changed = false;
@@ -1132,6 +1174,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 let has = stroke.is_some() || mix.presence;
+                object_opacity_row(app, ui, "outline");
                 extra_strokes(app, ui, first, has);
             }
             "fill" if app.text_selection_active() => {
@@ -1161,6 +1204,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                         app.patch_selection_fill(&old, &fill, &touched);
                     }
                 }
+                object_opacity_row(app, ui, "fill");
                 extra_fills(app, ui, first, has);
             }
             "transparency" => {
@@ -1241,31 +1285,34 @@ fn qr_section(
     let mut next = qr.clone();
     let mut changed = false;
     let msg_id = egui::Id::new(("qr_message", id.raw()));
-    egui::ComboBox::from_id_salt(("qr_kind", id.raw()))
+    // A kind picked whose fields make no content yet is shown and edited
+    // here while the object keeps its code (#1845).
+    let draft_id = egui::Id::new(("qr_draft", id.raw()));
+    let draft: Option<crate::qr::QrDraft> = ui.data(|d| d.get_temp(draft_id));
+    let (kind, fields) = match &draft {
+        Some(d) => (d.kind, d.fields.clone()),
+        None => (qr.kind, qr.fields.clone()),
+    };
+    let mut content: Option<(QrKind, Vec<String>)> = None;
+    crate::ui::keynav::ComboBox::from_id_salt(("qr_kind", id.raw()))
         .width(ui.available_width() - 8.0)
-        .selected_text(tr(qr_kind_key(qr.kind)))
+        .selected_text(tr(qr_kind_key(kind)))
         .show_ui(ui, |ui| {
             for k in QrKind::ALL {
-                if ui
-                    .selectable_label(qr.kind == k, tr(qr_kind_key(k)))
-                    .clicked()
-                    && k != qr.kind
-                {
-                    next.fields = k.carry(qr.kind, &qr.fields);
-                    next.kind = k;
-                    changed = true;
+                if ui.selectable_label(kind == k, tr(qr_kind_key(k))).clicked() && k != kind {
+                    content = Some((k, k.carry(kind, &fields)));
                 }
             }
         });
     // The fields are edited as text and committed when they lose focus or
     // Enter is pressed, so typing does not add an undo step per letter.
-    for (i, key) in qr.kind.fields().iter().enumerate() {
+    for (i, key) in kind.fields().iter().enumerate() {
         let edit_id = egui::Id::new(("qr_field", id.raw(), i));
         let mut text: String = ui
             .data(|d| d.get_temp::<String>(edit_id))
-            .unwrap_or_else(|| qr.fields.get(i).cloned().unwrap_or_default());
+            .unwrap_or_else(|| fields.get(i).cloned().unwrap_or_default());
         ui.label(egui::RichText::new(tr(key)).size(11.0));
-        let multi = matches!(qr.kind, QrKind::Text) || key.ends_with("message");
+        let multi = matches!(kind, QrKind::Text) || key.ends_with("message");
         let resp = if multi {
             ui.add(
                 egui::TextEdit::multiline(&mut text)
@@ -1281,13 +1328,33 @@ fn qr_section(
         let commit = resp.lost_focus() || (resp.changed() && !resp.has_focus());
         if commit {
             ui.data_mut(|d| d.remove::<String>(edit_id));
-            if next.fields.len() <= i {
-                next.fields.resize(i + 1, String::new());
+            let mut f = fields.clone();
+            if f.len() <= i {
+                f.resize(i + 1, String::new());
             }
-            if next.fields[i] != text {
-                next.fields[i] = text;
-                changed = true;
+            if f[i] != text {
+                f[i] = text;
+                content = Some((kind, f));
             }
+        }
+    }
+    if let Some((k, f)) = content {
+        match app.edit_qr_content(id, k, f) {
+            Ok(Some(d)) => ui.data_mut(|data| {
+                data.insert_temp(msg_id, (false, tr("dialog.qr_empty")));
+                data.insert_temp(draft_id, d);
+            }),
+            Ok(None) => ui.data_mut(|data| {
+                data.remove::<(bool, String)>(msg_id);
+                data.remove::<crate::qr::QrDraft>(draft_id);
+            }),
+            Err(e) => ui.data_mut(|data| {
+                data.insert_temp(msg_id, (false, e));
+            }),
+        }
+        // The code just made is what the other settings below change.
+        if let Some(q) = app.doc().find_shape(id).and_then(|s| s.qr.as_deref()) {
+            next = q.clone();
         }
     }
     ui.add_space(4.0);
@@ -2115,7 +2182,7 @@ pub(crate) fn pattern_editor(ui: &mut Ui, p: &mut Pattern) -> bool {
             back,
             size_mm,
         } => {
-            egui::ComboBox::from_label(tr("docker.tile"))
+            crate::ui::keynav::ComboBox::from_label(tr("docker.tile"))
                 .selected_text(tile.name())
                 .show_ui(ui, |ui| {
                     for t in PatternTile::ALL {
@@ -2245,7 +2312,7 @@ pub(crate) fn arrow_combo(
     } else {
         "toolbar.start_arrow"
     };
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(shown)
         .show_ui(ui, |ui| {
             for k in Arrowhead::ALL {

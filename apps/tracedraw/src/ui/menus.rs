@@ -106,6 +106,8 @@ fn body_rows<R>(ui: &mut Ui, width_id: egui::Id, add: impl FnOnce(&mut Ui) -> R)
         let _keys = access::Scope::new();
         add(ui)
     };
+    // The row the keys moved to stays in view (#1839).
+    crate::ui::keynav::scroll_into_view(ui);
     let rows = ui.min_rect();
     ui.ctx().data_mut(|d| d.insert_temp(width_id, rows.width()));
     let gutter = egui::Rect::from_min_max(
@@ -184,12 +186,19 @@ fn menu_row_at(
                 .insert(egui::response::Flags::FAKE_PRIMARY_CLICKED);
         }
     }
+    // The keyboard's row (#1839) is lit like the row under the pointer;
+    // while the keys move the highlight, the pointer's row is not lit.
+    if enabled {
+        crate::ui::keynav::note_menu_row(ui.ctx(), resp.id, mark == Mark::Submenu);
+    }
+    let lit = enabled
+        && (resp.has_focus() || resp.hovered() && !crate::ui::keynav::keyboard_mode(ui.ctx()));
     let painter = ui.painter();
     let slot = painter.add(egui::Shape::Noop);
-    if enabled && resp.hovered() {
+    if lit {
         painter.set(slot, highlight(rect));
     }
-    let color = if enabled && resp.hovered() {
+    let color = if lit {
         crate::theme::on_highlight()
     } else if enabled {
         crate::theme::Tokens::text()
@@ -322,26 +331,21 @@ pub(crate) fn item_label(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool
     item_text(ui, label, shortcut, enabled, None, label)
 }
 
+/// Help > What's New: the Welcome Screen's history of the last releases.
+pub(crate) fn open_whats_new(app: &mut App) {
+    app.show_welcome = true;
+    app.welcome_tab = crate::app::WelcomeTab::News;
+}
+
 /// A menu item with a ready label and an optional icon; `id` names it for
 /// the test replay.
 /// Help > Mark New Features: the menu rows new in this version and the
 /// submenus that lead to them, by their keys. Each version replaces the
 /// list with its own.
 pub const NEW_IN_THIS_VERSION: &[&str] = &[
-    // Window > New Window.
-    "menu.window",
-    "menu.window.new_window",
-    // Window > Dockers > Effects (the effect stack).
-    "menu.window.dockers",
-    "docker.effects",
-    // Object > Clip to Frame > Opacity Mask, Invert Mask.
-    "menu.object",
-    "menu.object.clip_frame",
-    "menu.object.clip_frame_opacity_mask",
-    "menu.object.clip_frame_invert_mask",
-    // Help > Updates checks for a newer release.
-    "menu.help",
-    "menu.help.updates",
+    // Tools > TraceCut, the window of tools for cutting plotters.
+    "menu.tools",
+    "menu.tools.tracecut",
 ];
 
 thread_local! {
@@ -1018,9 +1022,11 @@ pub(crate) mod invoke {
         MODE.with(|m| match m.borrow_mut().as_mut() {
             Some(Mode::Collect { path, out }) => {
                 if key.starts_with("menu.") && !out.iter().any(|e| e.key == key) {
+                    // The macOS desktop app's own key where macOS keeps
+                    // the built-in one (#1409).
                     out.push(Entry {
                         key: key.to_string(),
-                        shortcut: shortcut.to_string(),
+                        shortcut: crate::shortcuts::mac_shown(shortcut.to_string()),
                         path: path.clone(),
                     });
                 }
@@ -1493,9 +1499,9 @@ mod tests {
                 "{key} is not in the menus"
             );
         }
-        assert!(!marked_new("menu.help.updates"));
+        assert!(!marked_new("menu.tools.tracecut"));
         set_highlight_new(true);
-        assert!(marked_new("menu.help.updates"));
+        assert!(marked_new("menu.tools.tracecut"));
         assert!(!marked_new("menu.file.export"));
         set_highlight_new(false);
         assert!(
@@ -2046,6 +2052,28 @@ mod tests {
 /// first one 11 px from the edge).
 const BAR_FONT: f32 = 13.0;
 
+/// Where the menu bar's titles were drawn, and how many menus are under
+/// its More title (`(Vec<Rect>, usize)` in the context's data).
+pub(crate) const MENU_BAR_LAYOUT: &str = "menu_bar_layout";
+
+/// Room kept at the end of a menu bar too short for every title, for the
+/// "More" title (»).
+const MORE_W: f32 = 28.0;
+
+/// A menu title's width on the bar before it was drawn once.
+fn title_width(ui: &Ui, label: &str) -> f32 {
+    let text = ui.fonts_mut(|f| {
+        f.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(BAR_FONT),
+            Tokens::text(),
+        )
+        .size()
+        .x
+    });
+    text + 2.0 * ui.spacing().button_padding.x
+}
+
 fn menu_bar_style(style: &mut egui::Style) {
     egui::containers::menu::menu_style(style);
     style.override_font_id = Some(egui::FontId::proportional(BAR_FONT));
@@ -2087,14 +2115,25 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
         .style(menu_bar_style)
         .config(egui::containers::menu::MenuConfig::new().style(menu_popup_style))
         .ui(ui, |ui| {
+            // The title the keyboard is on (Alt pressed alone, #1839).
+            let bar_focus = crate::ui::keynav::bar_focus(ui.ctx());
+            // A menu opened from the keyboard lights its title as a click
+            // does.
+            let open_title = crate::ui::keynav::open_title(ui.ctx());
             // Each title's access key, for Alt and the letter.
             let mut keys: Vec<char> = Vec::new();
             let mut menu = |ui: &mut Ui, key: &str, f: &mut dyn FnMut(&mut Ui)| -> egui::Response {
                 let label = tr(key);
                 let access = access::choose(&label, &keys);
+                let lit = bar_focus == Some(keys.len()) || open_title == Some(keys.len());
                 keys.push(access.map(|a| a.1).unwrap_or(' '));
                 let title_bottom_id = ui.id().with(key).with("title_bottom");
                 let title_bottom = ui.ctx().data(|d| d.get_temp::<f32>(title_bottom_id));
+                // Lit like a title under the pointer.
+                let inactive = ui.style().visuals.widgets.inactive;
+                if lit {
+                    ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.hovered;
+                }
                 let r = ui
                     .menu_button(
                         access::title(
@@ -2110,6 +2149,7 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                         },
                     )
                     .response;
+                ui.style_mut().visuals.widgets.inactive = inactive;
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(title_bottom_id, r.rect.bottom()));
                 if marked_new(key) {
@@ -2126,14 +2166,79 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
             // Tools, Window and Help remain.
             let has_document = app.has_document();
             let mut titles = Vec::new();
-            for (key, body) in all_menus() {
-                if !has_document && !MENUS_WITHOUT_DRAWING.contains(&key) {
+            // The titles that do not fit the bar (a phone, a tablet in
+            // the Touch workspace, a narrow window) go under the "More"
+            // title at its end (#1301, #1691).
+            let menus: Vec<(&str, fn(&mut App, &mut Ui))> = all_menus()
+                .into_iter()
+                .filter(|(key, _)| has_document || MENUS_WITHOUT_DRAWING.contains(key))
+                .collect();
+            let gap = ui.spacing().item_spacing.x;
+            let width_id = |ui: &Ui, key: &str| ui.id().with(key).with("title_width");
+            let widths: Vec<f32> = menus
+                .iter()
+                .map(|(key, _)| {
+                    let id = width_id(ui, key);
+                    ui.ctx()
+                        .data(|d| d.get_temp::<f32>(id))
+                        .unwrap_or_else(|| title_width(ui, &tr(key)))
+                })
+                .collect();
+            let all = widths.iter().map(|w| w + gap).sum::<f32>();
+            let room = if all > ui.available_width() {
+                ui.available_width() - MORE_W
+            } else {
+                f32::INFINITY
+            };
+            let mut used = 0.0;
+            let mut more: Vec<(&str, fn(&mut App, &mut Ui))> = Vec::new();
+            for ((key, body), width) in menus.into_iter().zip(widths) {
+                if !more.is_empty() || used + width > room {
+                    more.push((key, body));
                     continue;
                 }
-                titles.push(menu(ui, key, &mut |ui| body(app, ui)));
+                let r = menu(ui, key, &mut |ui| body(app, ui));
+                let id = width_id(ui, key);
+                ui.ctx().data_mut(|d| d.insert_temp(id, r.rect.width()));
+                used += r.rect.width() + gap;
+                titles.push(r);
             }
+            if !more.is_empty() {
+                let r = ui
+                    .menu_button(egui::RichText::new("\u{bb}").size(BAR_FONT), |ui| {
+                        ui.set_min_width(MENU_WIDTH);
+                        body(ui, |ui| {
+                            for (key, f) in &more {
+                                ui.menu_button(tr(key), |ui| {
+                                    ui.set_min_width(MENU_WIDTH);
+                                    body(ui, |ui| f(app, ui))
+                                });
+                            }
+                        })
+                    })
+                    .response;
+                keys.push(' ');
+                titles.push(r);
+            }
+            // Where the titles went and how many are under More, for the
+            // layout checks.
+            let shown: Vec<egui::Rect> = titles.iter().map(|r| r.rect).collect();
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(MENU_BAR_LAYOUT), (shown, more.len())));
             switch_on_hover(ui.ctx(), &titles);
             open_with_alt(ui.ctx(), &titles, &keys, &blocked);
+            // The titles for the keys of the next frame: Left and Right
+            // go from menu to menu (#1839).
+            crate::ui::keynav::note_titles(
+                ui.ctx(),
+                crate::ui::keynav::Titles {
+                    popups: titles
+                        .iter()
+                        .map(egui::Popup::default_response_id)
+                        .collect(),
+                    keys: keys.clone(),
+                },
+            );
         });
 }
 
@@ -2167,6 +2272,8 @@ fn open_with_alt(
             egui::Popup::close_id(ctx, popup_id(t));
         }
         egui::Popup::open_id(ctx, popup_id(r));
+        // Its first row lit, for the arrows and Enter (#1839).
+        crate::ui::keynav::opened_by_keys(ctx, popup_id(r));
     }
 }
 
@@ -3040,7 +3147,7 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sub(ui, "menu.object.group", |ui| {
-        if item(ui, "menu.object.group_group", "Ctrl+G", many) {
+        if item(ui, "menu.object.group_group", "Ctrl+G", app.can_group()) {
             app.group_selection();
         }
         if item(ui, "menu.object.group_ungroup", "Ctrl+U", has) {
@@ -3795,6 +3902,9 @@ fn tools_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.tools.font_manager", "", true) {
         app.dialog = Dialog::FontManager(Default::default());
     }
+    if crate::ui::tracecut::shown(app) && item(ui, "menu.tools.tracecut", "", true) {
+        app.open_tracecut();
+    }
     if item(ui, "menu.tools.border_and_grommet", "", true) {
         app.dialog = Dialog::BorderGrommet(Default::default());
     }
@@ -4091,8 +4201,7 @@ fn help_menu(app: &mut App, ui: &mut Ui) {
     }
     sep(ui);
     if item(ui, "menu.help.whats_new", "", true) {
-        app.show_welcome = true;
-        app.welcome_tab = crate::app::WelcomeTab::News;
+        open_whats_new(app);
     }
     if check(
         ui,

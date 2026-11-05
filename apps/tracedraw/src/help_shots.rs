@@ -469,6 +469,7 @@ fn shots() -> Vec<(String, Shot, bool)> {
         ("menu.tools.border_and_grommet", false),
         ("menu.tools.color_management", false),
         ("menu.tools.font_manager", false),
+        ("menu.tools.tracecut", false),
         ("menu.tools.time_tracker", false),
         ("menu.window.palette_editor", false),
         ("menu.help.about", false),

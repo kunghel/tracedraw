@@ -64,19 +64,36 @@ the active layer.
   black), SMask soft masks (resampled nearest), DCTDecode through the
   JPEG decoder. JPX images become a grey box. Inline images (`BI`) are
   read with their abbreviated keys expanded.
-- Large pictures: a picture of more than 20000 pixels on a side or more
-  than 80 megapixels comes in shrunk by the smallest whole factor that
-  brings it within both, each pixel the mean of a block of the
-  picture's own (its soft mask shrunk the same way), with the warning
-  "image of W x H pixels shrunk to w x h". It keeps its place and size
-  on the page. A Flate picture is inflated a row at a time, so the
-  whole of it never sits in memory. Only a picture of more than 400000
-  pixels on a side or 1.6 gigapixels, or one whose data needs more
-  than 1 GB inflated at once (filters other than Flate alone), is
-  skipped ("too large; skipped"). Until #1804 every picture past 20000
-  pixels or 80 megapixels was skipped, leaving only the vectors around
-  it: an 11160 x 14794 picture with a soft mask now comes in at 5580 x
-  7397.
+- Large pictures (#1835): every picture comes in at its own size, an
+  11160 x 14794 picture with a soft mask as 11160 x 14794. A Flate
+  picture without a predictor is inflated a row at a time and the soft
+  mask is read before the picture's pixels, and the PNG is written
+  straight from them, so reading takes about the decoded picture
+  (4 bytes a pixel) and its mask's 1 byte a pixel. Only past the
+  memory guard (`ImportOptions::max_picture_pixels`, by default
+  `FULL_PICTURE_PIXELS`: 375 megapixels, 1.5 GB of RGBA), or when the
+  memory for the result cannot be had (then by 2, 4, ... until it
+  can), is a picture shrunk by the smallest whole factor that brings it
+  within, each pixel the mean of a block of the picture's own (its soft
+  mask shrunk the same way), with the warning "image of W x H pixels
+  shrunk to w x h". It keeps its place and size on the page.
+- Reduce very large pictures (the Import PDF dialog and Options > File
+  Formats, `pdf_reduce_pictures`, off by default; always on in the
+  browser and on Android, where the box shows ticked and greyed): the
+  limit is `REDUCED_PICTURE_PIXELS`, 80 megapixels and 20000 pixels on a
+  side; the picture above comes in at 5580 x 7397.
+- A picture that came in smaller than the file holds it is told in a
+  message after the file opens or is imported ("N pictures of NAME
+  came in smaller than the file holds them (W x H to w x h pixels)"),
+  whatever Options > Global > Warnings says, after the missing fonts'
+  dialog when that comes first (`ImportedPdf::shrunk_pictures`). Until
+  #1835 such pictures were shrunk past 80 megapixels on every device,
+  told only in the log.
+- Only a picture of more than 400000 pixels on a side or 1.6
+  gigapixels, or one whose data needs more than 1 GB inflated at once
+  (filters other than Flate alone), is skipped ("too large; skipped").
+  Until #1804 every picture past 20000 pixels or 80 megapixels was
+  skipped, leaving only the vectors around it.
 - Shadings: axial (type 2) and radial (type 3) as gradient fills, with
   type 2, 3 (stitching) and 0 (sampled) functions sampled into stops;
   `sh` paints the current clip. Shading patterns used as fills become
@@ -192,10 +209,19 @@ their own crypt filter and signature contents are left alone.
   (`app::tests::pdf_spot_inks_come_into_the_drawing`) (#1703).
 - A raw 2 x 1 RGB image gives a 2 x 1 bitmap at the CTM's rectangle,
   also when the file starts with a PostScript preamble (`.ai`).
-- A 40000 x 2 RGB picture with a soft mask comes in at 20000 x 1, each
-  pixel the mean of its block and of the mask's
-  (`oversized_picture_is_shrunk_with_its_soft_mask`); the factor for
-  the picture of #1804 is 2 (`shrink_factor_brings_pictures_within_the_limits`).
+- A 40000 x 2 RGB picture with a soft mask comes in whole, and past a
+  small limit shrunk and listed
+  (`pictures_come_in_whole_unless_past_the_limit`); with pictures
+  reduced at 20000 x 1, each pixel the mean of its block and of the
+  mask's (`oversized_picture_is_shrunk_with_its_soft_mask`); the factor
+  for the picture of #1804 is 1, reduced 2, and without memory for the
+  result the factor doubles until it fits
+  (`shrink_factor_brings_pictures_within_the_limits`). The file of
+  #1804 comes in at 11160 x 14794 (`the_picture_of_1804_comes_in_at_its_own_size`,
+  run with `TRACEDRAW_PDF_1804` and `--ignored`; about 840 MB at most
+  in a debug build). The message after opening:
+  `a_shrunk_picture_is_told_after_opening`; the option:
+  `pictures_are_reduced_only_when_asked_on_the_desktop`.
 - Garbage and truncated input return an error, never a panic.
 
 - Devanagari text (Hindi, Marathi, Nepali, ...) read in Text mode comes

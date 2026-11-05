@@ -6,13 +6,22 @@ the file (Image > Update from Link reads it again).
 
 ## The bitmap editor
 
-Edit Bitmap writes the picture to a PNG in the temporary folder, links
+Edit Bitmap writes the picture to a file in the temporary folder, links
 the object to it and opens it in the bitmap editor set in Tools >
 Options > Global > File Locations (a program file: `gimp`, its `.exe` on
 Windows, or an application bundle on macOS, opened with `open -a`;
 Browse picks it, Clear empties it). Empty, the default, opens it with the
 system's program for PNG files (#593, `export::tests::the_bitmap_editor_gets_the_file`).
 The browser build has no outside editor.
+
+The file is a PNG, or a CMYK TIFF for a CMYK picture (a `.cdr` CMYK
+image, or one in the CMYK colour mode), holding the inks it prints from
+as Save Bitmap As writes them, so the editor works on the inks and not
+on RGB pixels (#1834). A CMYK TIFF read back (8 bits per ink, with or
+without alpha, any compression) gives the picture those inks and pixels
+that show them through the colour management, and the CMYK mode; any
+other file gives pixels only, and inks the picture kept are dropped,
+since they no longer fit (`bitmap_file::tests::edit_bitmap_hands_over_and_reads_back_the_inks`).
 
 ## Linked files follow their changes
 

@@ -155,7 +155,7 @@ fn step_standard(ui: &mut Ui, st: &mut BarcodeState) {
     ui.add_space(10.0);
     ui.label(tr("barcode.select_standard"));
     let before = st.spec.symbology;
-    egui::ComboBox::from_id_salt("barcode_sym")
+    crate::ui::keynav::ComboBox::from_id_salt("barcode_sym")
         .width(220.0)
         .selected_text(st.spec.symbology.name())
         .show_ui(ui, |ui| {
@@ -195,7 +195,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             ui.label(tr("barcode.printer"));
-            egui::ComboBox::from_id_salt("barcode_dpi")
+            crate::ui::keynav::ComboBox::from_id_salt("barcode_dpi")
                 .width(70.0)
                 .selected_text(spec.dpi.to_string())
                 .show_ui(ui, |ui| {
@@ -208,7 +208,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             ui.label(tr("barcode.dpi"));
             ui.end_row();
             ui.label(tr("barcode.units"));
-            egui::ComboBox::from_id_salt("barcode_units")
+            crate::ui::keynav::ComboBox::from_id_salt("barcode_units")
                 .width(70.0)
                 .selected_text(st.units.label())
                 .show_ui(ui, |ui| {
@@ -308,7 +308,7 @@ fn step_text(ui: &mut Ui, st: &mut BarcodeState) {
         .show(ui, |ui| {
             ui.label(tr("barcode.font"));
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("barcode_font")
+                crate::ui::keynav::ComboBox::from_id_salt("barcode_font")
                     .width(170.0)
                     .selected_text(spec.font.clone())
                     .show_ui(ui, |ui| {
@@ -342,7 +342,7 @@ fn step_text(ui: &mut Ui, st: &mut BarcodeState) {
                 .iter()
                 .find(|(w, _)| *w == (spec.bold, spec.italic))
                 .map_or("barcode.weight_normal", |(_, k)| k);
-            egui::ComboBox::from_id_salt("barcode_weight")
+            crate::ui::keynav::ComboBox::from_id_salt("barcode_weight")
                 .width(170.0)
                 .selected_text(tr(current))
                 .show_ui(ui, |ui| {
@@ -369,7 +369,7 @@ fn step_text(ui: &mut Ui, st: &mut BarcodeState) {
                 .iter()
                 .find(|(a, _)| *a == spec.alignment)
                 .map_or("barcode.align_center", |(_, k)| k);
-            egui::ComboBox::from_id_salt("barcode_align")
+            crate::ui::keynav::ComboBox::from_id_salt("barcode_align")
                 .width(170.0)
                 .selected_text(tr(current))
                 .show_ui(ui, |ui| {

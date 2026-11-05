@@ -163,6 +163,32 @@ impl App {
         true
     }
 
+    /// Backspace or Delete while a curve is drawn (Bezier, Pen, B-spline,
+    /// Polyline and the other tools that place nodes one by one): the last
+    /// node placed goes with its handles, one a press; without its last
+    /// node the curve is no longer drawn. Ctrl+Z puts the node back. While
+    /// a handle is pulled the key does nothing. False when no curve is
+    /// being drawn.
+    pub fn curve_remove_last_node(&mut self) -> bool {
+        match &self.curve {
+            None => return false,
+            Some(c) if c.dragging_handle || c.closing.is_some() => return true,
+            Some(_) => {}
+        }
+        self.curve_step();
+        if let Some(c) = self.curve.as_mut() {
+            c.nodes.pop();
+            let n = c.nodes.len();
+            c.in_handles.retain(|&i, _| i < n);
+            c.alt_from = None;
+            if n == 0 {
+                self.curve = None;
+            }
+        }
+        self.status = crate::i18n::trf("status.undo_n", &[("l", "Curve Node")]);
+        true
+    }
+
     /// Ctrl+Shift+Z after [`Self::curve_undo_step`]: the step again. False
     /// when nothing of the curve was undone.
     pub fn curve_redo_step(&mut self) -> bool {

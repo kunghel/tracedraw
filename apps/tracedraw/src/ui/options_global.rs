@@ -260,6 +260,7 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
             "pdf_import.ask",
             "pdf_import.ask_tip",
         ));
+    crate::ui::pdf_import_dialog::reduce_pictures_checkbox(ui, &mut f.pdf_reduce_pictures);
     chrome::section(ui, &tr("options.cdr_save_section"));
     f.cdr_version = f.cdr_version.clamp(
         tracedraw_cdr::write::CHECKED_SINCE,

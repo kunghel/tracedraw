@@ -193,7 +193,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
         if !list.contains(&current) {
             list.insert(0, current.clone());
         }
-        egui::ComboBox::from_id_salt("aigen_model")
+        crate::ui::keynav::ComboBox::from_id_salt("aigen_model")
             .width((ui.available_width() - 34.0).max(80.0))
             .selected_text(current.clone())
             .show_ui(ui, |ui| {
@@ -280,7 +280,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
         ui.horizontal(|ui| {
             ui.label(tr("aigen.aspect"));
             let current = app.ai_image.aspect;
-            egui::ComboBox::from_id_salt("aigen_aspect")
+            crate::ui::keynav::ComboBox::from_id_salt("aigen_aspect")
                 .width(ui.available_width() - 8.0)
                 .selected_text(tr(current.key()))
                 .show_ui(ui, |ui| {

@@ -936,6 +936,9 @@ impl<'a> Checker<'a> {
         if parsed.paragraphs.is_empty() {
             self.note(place, "text record without paragraphs");
         }
+        for f in frame_text_findings(&parsed, self.v) {
+            self.note(place, f);
+        }
         if parsed.inert_styles > 0 {
             self.note(
                 place,
@@ -982,6 +985,42 @@ impl<'a> Checker<'a> {
             }
         }
     }
+}
+
+/// Findings of a version 16+ paragraph text record (the frame flag
+/// clear), held against every paragraph text of the files of versions 16
+/// to 27: from version 19 layout 1700, which none holds (the files of
+/// the program's 2019 release hold 1500, those of its recent releases
+/// 1800),
+/// and paragraph styles with the hyphenation, bullet, drop cap, indent
+/// and tab members ([`crate::write::FRAME_TEXT_PARAGRAPH`]). TraceDraw
+/// wrote paragraph text with artistic text's layout 1700 and members,
+/// and the program that reads the files hung on opening it (#1698).
+pub(crate) fn frame_text_findings(t: &text::Txsm, v: u16) -> Vec<String> {
+    let mut out = Vec::new();
+    if t.frame_text_styles.is_empty() {
+        return out;
+    }
+    if v >= 19 && t.layout == Some(1700) {
+        out.push(
+            "paragraph text of layout 1700; the files of version 19 on hold 1500 or 1800"
+                .to_string(),
+        );
+    }
+    for (i, style) in t.frame_text_styles.iter().enumerate() {
+        let missing: Vec<&str> = crate::write::FRAME_TEXT_PARAGRAPH
+            .iter()
+            .map(|(k, _)| *k)
+            .filter(|k| !style.contains(&format!("\"{k}\":")))
+            .collect();
+        if !missing.is_empty() {
+            out.push(format!(
+                "paragraph {i} of a paragraph text lacks the paragraph style members {}",
+                missing.join(", ")
+            ));
+        }
+    }
+    out
 }
 
 /// Panics when `bytes` has findings: the writer's tests run it on every
@@ -1178,6 +1217,38 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    /// Paragraph text of version 19 on needs layout 1800 and the
+    /// paragraph style members every paragraph text of the files holds;
+    /// artistic text and earlier versions are left alone (#1698).
+    #[test]
+    fn paragraph_text_needs_the_layout_and_members_of_the_files() {
+        let full: String = crate::write::FRAME_TEXT_PARAGRAPH
+            .iter()
+            .map(|(k, v)| format!(r#""{k}":{v},"#))
+            .collect();
+        let full = format!(r#"{{"paragraph":{{{full}"justify":"2"}}}}"#);
+        let bare = r#"{"paragraph":{"justify":"2"}}"#.to_string();
+        let txsm = |layout: u16, styles: Vec<String>| text::Txsm {
+            layout: Some(layout),
+            frame_text_styles: styles,
+            ..text::Txsm::default()
+        };
+        assert!(frame_text_findings(&txsm(1800, vec![full.clone()]), 27).is_empty());
+        let old = frame_text_findings(&txsm(1700, vec![bare.clone()]), 27);
+        assert_eq!(old.len(), 2, "{old:?}");
+        assert!(old[0].contains("layout 1700"), "{old:?}");
+        assert!(
+            old[1].contains("tabs") && old[1].contains("leftMargin"),
+            "{old:?}"
+        );
+        // Layout 1700 before 19, where TraceDraw keeps it.
+        assert!(frame_text_findings(&txsm(1700, vec![full.clone()]), 18).is_empty());
+        // The 2019 release's paragraph text of layout 1500 (#1852, #1833).
+        assert!(frame_text_findings(&txsm(1500, vec![full]), 21).is_empty());
+        // Artistic text keeps its own.
+        assert!(frame_text_findings(&txsm(1700, Vec::new()), 27).is_empty());
     }
 
     #[test]

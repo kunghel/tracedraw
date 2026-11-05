@@ -119,7 +119,7 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
             .and_then(|i| crate::ai::PRESETS.get(i))
             .map(|(k, _, _)| tr(k))
             .unwrap_or_else(|| tr("aipreset.custom"));
-        egui::ComboBox::from_id_salt("ai_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("ai_preset")
             .width(FIELD_W)
             .selected_text(shown)
             .show_ui(ui, |ui| {

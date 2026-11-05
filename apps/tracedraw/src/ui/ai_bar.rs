@@ -94,7 +94,7 @@ fn model_list(app: &mut App, ui: &mut Ui) {
     let current = app.settings.ai.model();
     let choices = app.ai_model_choices();
     let mut fetch = false;
-    egui::ComboBox::from_id_salt("ai_bar_model")
+    crate::ui::keynav::ComboBox::from_id_salt("ai_bar_model")
         .selected_text(RichText::new(current.clone()).size(12.0))
         .width(MODEL_W)
         .show_ui(ui, |ui| {

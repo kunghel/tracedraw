@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard};
 use tracedraw_core::{
     document::{
         text_outline::TextRequest, DocumentFont, ParagraphStyle, PathTextOrientation,
-        PathTextVertical, TextAlign, TextOnPath, TextSpan, VerticalAlign,
+        PathTextVertical, TabKind, TabStop, TextAlign, TextOnPath, TextSpan, VerticalAlign,
+        DEFAULT_TAB_STEP,
     },
     geometry::{Affine, BezPath, Point, Rect, Shape as _, Size},
     text_flow::{free_segments, WrapRegion},
@@ -2887,10 +2888,12 @@ impl FontSystem {
     /// layout depends on.
     fn cache_key(req: &TextRequest) -> String {
         format!(
-            "{:?}|{:?}|{:?}|{}|{}",
+            "{:?}|{:?}|{:?}|{}|{}|{}",
             req.frame,
             req.align,
             req.para,
+            // The default tab spacing (Options) moves text after tabs.
+            tracedraw_core::default_tab_step().to_bits(),
             req.on_path
                 .map(|p| {
                     // The whole path, not just its size: two ellipses have
@@ -3787,6 +3790,8 @@ impl FontSystem {
         fitted_only: bool,
     ) -> TextLayout {
         let spans = req.spans;
+        // The default tab spacing (Options), read once for the layout.
+        let tab_step = tracedraw_core::default_tab_step();
         if spans.is_empty() {
             return TextLayout {
                 path: BezPath::new(),
@@ -3930,7 +3935,15 @@ impl FontSystem {
                     glyph_advance: g.advance,
                 }
             });
-            let mut br = Breaker::new(glyphs, ps.hyphenate, metrics, pi, para_start);
+            let mut br = Breaker::new(
+                glyphs,
+                ps.hyphenate,
+                &ps.tabs,
+                tab_step,
+                metrics,
+                pi,
+                para_start,
+            );
             let mut row = 0usize;
             // How far a line moves down from the one before it.
             let advance_of = |m: &Metrics, first: bool, prev: Option<usize>| -> f64 {
@@ -3969,7 +3982,7 @@ impl FontSystem {
                     } else {
                         base
                     };
-                    let line = br.next(avail);
+                    let line = br.next(avail, indent + cap_w);
                     let m = line.metrics;
                     let (c, ny) = row_at(y, col, advance_of(&m, first, prev_para), &m);
                     row_col = c;
@@ -4049,7 +4062,7 @@ impl FontSystem {
                         } else {
                             (e - s).max(1.0)
                         };
-                        let line = br.next(avail);
+                        let line = br.next(avail, *s - col_x_of(c));
                         row_lines.push(Line {
                             x0: *s,
                             avail: e - s,
@@ -4214,7 +4227,7 @@ impl FontSystem {
 
             let avail = line.avail;
             let col_start = line.col_x;
-            let content_w = line_width(glyphs, ps, x0 - col_start);
+            let content_w = line_width(glyphs, ps, x0 - col_start, tab_step);
             let hyphen_w = line.hyphen.as_ref().map(|h| h.advance).unwrap_or(0.0);
             let total_w = content_w + hyphen_w;
             let (dx, extras) = match align {
@@ -4312,9 +4325,45 @@ impl FontSystem {
                 .max(g.char_idx + 1);
                 if g.ch == '\t' {
                     let rel = pen - col_start;
-                    let next = next_tab(rel, &ps.tabs);
+                    let (next, stop) =
+                        tab_to(rel, &ps.tabs, tab_step, glyphs.get(gi + 1..).unwrap_or(&[]));
                     let before = pen;
                     pen = col_start + next;
+                    // A leader: copies of its character over the gap, on
+                    // a grid from the column's edge so the leaders of
+                    // neighbouring lines line up.
+                    if let (Some(leader), Some(span)) = (
+                        stop.leader.filter(|c| !c.is_whitespace()),
+                        spans.get(g.span).filter(|_| span_drawn(g.span)),
+                    ) {
+                        let mark = self.shape_run(
+                            span,
+                            g.span,
+                            &leader.to_string(),
+                            size_scale,
+                            0,
+                            ps,
+                            &[],
+                        );
+                        let w: f64 = mark.iter().map(|d| d.advance).sum();
+                        if w > 1e-3 {
+                            let mut lx = col_start + ((before - col_start) / w).ceil() * w;
+                            let mut guard = 0;
+                            while lx + w <= pen - w * 0.25 + 1e-9 && guard < 10_000 {
+                                let mut mx = lx;
+                                for d in &mark {
+                                    let a = Affine::translate((mx + d.x_offset, y + d.y_offset));
+                                    let a = orient(a, d, metrics[g.span].ascent);
+                                    place_glyph(collect, a, d, &mut line_glyphs);
+                                    let gp = a * d.path.as_ref().clone();
+                                    line_path.extend(gp.elements().iter().copied());
+                                    mx += d.advance;
+                                }
+                                lx += w;
+                                guard += 1;
+                            }
+                        }
+                    }
                     record(g.char_idx, next_idx, before, pen, false);
                     continue;
                 }
@@ -4584,12 +4633,18 @@ fn drop_cap_placement(
     (scale.max(1.0), last)
 }
 
-/// Width of a line's glyphs with tab expansion; returns (width, spaces).
-fn line_width(glyphs: &[Glyph], para: &ParagraphStyle, start: f64) -> f64 {
+/// Width of a line's glyphs with tab expansion, for a line starting
+/// `start` mm from its column's left edge (where tab stops count from).
+fn line_width(glyphs: &[Glyph], para: &ParagraphStyle, start: f64, step: f64) -> f64 {
+    tabbed_width(glyphs, &para.tabs, step, start)
+}
+
+/// [`line_width`] with the stops `tabs` and the default spacing `step`.
+fn tabbed_width(glyphs: &[Glyph], tabs: &[TabStop], step: f64, start: f64) -> f64 {
     let mut x = start;
-    for g in glyphs {
+    for (i, g) in glyphs.iter().enumerate() {
         if g.ch == '\t' {
-            x = next_tab(x, &para.tabs);
+            x = tab_to(x, tabs, step, glyphs.get(i + 1..).unwrap_or(&[])).0;
         } else {
             x += g.advance;
         }
@@ -4654,15 +4709,48 @@ fn justify_extras(glyphs: &[Glyph], room: f64) -> Vec<f64> {
     extras
 }
 
-fn next_tab(x: f64, tabs: &[f64]) -> f64 {
-    if tabs.is_empty() {
-        let step = 12.7;
-        return (x / step).floor() * step + step;
-    }
+/// The first tab stop after `x` (mm from the column's left edge): the
+/// nearest of `tabs` (in any order), or past them a left stop of the default grid (every
+/// `step` mm from the edge, the setting "Default tab spacing").
+fn next_stop(x: f64, tabs: &[TabStop], step: f64) -> TabStop {
     tabs.iter()
-        .cloned()
-        .find(|t| *t > x + 1e-6)
-        .unwrap_or(x + 12.7)
+        .copied()
+        .filter(|t| t.pos > x + 1e-6)
+        .min_by(|a, b| a.pos.total_cmp(&b.pos))
+        .unwrap_or_else(|| {
+            let step = if step > 1e-3 { step } else { DEFAULT_TAB_STEP };
+            let mut pos = ((x + 1e-6) / step).floor() * step + step;
+            if pos <= x + 1e-6 {
+                pos += step;
+            }
+            TabStop::left(pos)
+        })
+}
+
+/// Where the pen goes for a tab at `x` (mm from the column's left edge)
+/// followed by the glyphs `rest` (in text order), and the stop it goes
+/// to. The text up to the next tab is the tab's: a left stop starts it
+/// at the stop, a centre stop centres it there, a right stop ends it
+/// there and a decimal stop puts its first `.` or `,` there (or ends it
+/// there when it has none). The pen never goes back: text too wide for
+/// the room before the stop starts where the tab is.
+fn tab_to(x: f64, tabs: &[TabStop], step: f64, rest: &[Glyph]) -> (f64, TabStop) {
+    let stop = next_stop(x, tabs, step);
+    let seg = rest
+        .iter()
+        .position(|g| g.ch == '\t')
+        .map_or(rest, |n| rest.get(..n).unwrap_or(rest));
+    let width = |gs: &[Glyph]| gs.iter().map(|g| g.advance).sum::<f64>();
+    let back = match stop.kind {
+        TabKind::Left => 0.0,
+        TabKind::Center => width(seg) / 2.0,
+        TabKind::Right => width(seg),
+        TabKind::Decimal => match seg.iter().position(|g| g.ch == '.' || g.ch == ',') {
+            Some(d) => width(seg.get(..d).unwrap_or(seg)),
+            None => width(seg),
+        },
+    };
+    ((stop.pos - back).max(x), stop)
 }
 
 /// Characters that never start a line in Chinese and Japanese text:
@@ -4783,6 +4871,10 @@ struct Breaker<'a> {
     /// An empty paragraph still owes its one empty line.
     empty_pending: bool,
     hyphenate: bool,
+    /// The paragraph's tab stops (a line's width depends on them) and
+    /// the default spacing past them.
+    tabs: &'a [TabStop],
+    tab_step: f64,
     metrics: &'a [Metrics],
     pi: usize,
     para_start: usize,
@@ -4792,6 +4884,8 @@ impl<'a> Breaker<'a> {
     fn new(
         glyphs: &[Glyph],
         hyphenate: bool,
+        tabs: &'a [TabStop],
+        tab_step: f64,
         metrics: &'a [Metrics],
         pi: usize,
         para_start: usize,
@@ -4820,6 +4914,8 @@ impl<'a> Breaker<'a> {
             tail: None,
             first: true,
             hyphenate,
+            tabs,
+            tab_step,
             metrics,
             pi,
             para_start,
@@ -4865,25 +4961,24 @@ impl<'a> Breaker<'a> {
         }
     }
 
-    /// The next line, `avail` wide: at least one glyph while any is left.
-    fn next(&mut self, avail: f64) -> Line {
+    /// The next line, `avail` wide and starting `start` mm from its
+    /// column's left edge (where tab stops count from): at least one
+    /// glyph while any is left.
+    fn next(&mut self, avail: f64, start: f64) -> Line {
         if self.empty_pending {
             self.empty_pending = false;
             return self.line(Vec::new(), None);
         }
-        let width_of = |gs: &[Glyph]| -> f64 {
-            gs.iter()
-                .map(|g| if g.ch == '\t' { 12.7 } else { g.advance })
-                .sum()
-        };
+        let tabs = self.tabs;
+        // A space or a tab ending the line takes no room: a tab whose
+        // stop lies past the line's end sends what follows it to the
+        // next line.
         let trimmed = |gs: &[Glyph]| -> f64 {
-            let mut w = width_of(gs);
-            if let Some(l) = gs.last() {
-                if l.ch == ' ' {
-                    w -= l.advance;
-                }
-            }
-            w
+            let gs = match gs.last() {
+                Some(l) if l.ch == ' ' || l.ch == '\t' => gs.get(..gs.len() - 1).unwrap_or(gs),
+                _ => gs,
+            };
+            tabbed_width(gs, tabs, self.tab_step, start)
         };
         let mut line: Vec<Glyph> = Vec::new();
         loop {
@@ -5152,11 +5247,11 @@ mod tests {
             })
             .collect();
         let metrics = [Metrics::default()];
-        let mut br = Breaker::new(&glyphs, false, &metrics, 0, 0);
+        let mut br = Breaker::new(&glyphs, false, &[], DEFAULT_TAB_STEP, &metrics, 0, 0);
         let mut out = Vec::new();
         while !br.done() {
             out.push(
-                br.next(chars as f64 + 0.01)
+                br.next(chars as f64 + 0.01, 0.0)
                     .glyphs
                     .iter()
                     .map(|g| g.ch)
@@ -5941,6 +6036,83 @@ mod tests {
             .collect()
     }
 
+    /// Each tab kind puts the text after it against its stop: left starts
+    /// it there, centre centres it, right ends it, decimal puts its first
+    /// `.` or `,` there; the pen never goes back (#1852).
+    #[test]
+    fn tab_kinds_place_the_text_after_the_tab() {
+        let rest = cells("12,50\tx");
+        let stop = |kind| [TabStop::new(20.0, kind)];
+        let to = |kind| tab_to(3.0, &stop(kind), 12.7, &rest).0;
+        assert_eq!(to(TabKind::Left), 20.0);
+        // "12,50" is 5 wide up to the next tab.
+        assert_eq!(to(TabKind::Center), 17.5);
+        assert_eq!(to(TabKind::Right), 15.0);
+        // Two characters before the comma.
+        assert_eq!(to(TabKind::Decimal), 18.0);
+        // No separator: a decimal stop ends the text there.
+        assert_eq!(
+            tab_to(3.0, &stop(TabKind::Decimal), 12.7, &cells("125")).0,
+            17.0
+        );
+        // Too wide for the room before the stop: it starts at the tab.
+        assert_eq!(tab_to(18.0, &stop(TabKind::Right), 12.7, &rest).0, 18.0);
+        // The stop is the first one past the pen.
+        let two = [TabStop::left(10.0), TabStop::new(30.0, TabKind::Right)];
+        assert_eq!(tab_to(4.0, &two, 12.7, &rest).0, 10.0);
+        assert_eq!(tab_to(10.0, &two, 12.7, &rest).0, 25.0);
+    }
+
+    /// A paragraph with no stops has a left stop every 12.7 mm unless the
+    /// setting "Default tab spacing" says otherwise; past its last stop
+    /// the same grid goes on (#1852).
+    #[test]
+    fn default_tab_stops_follow_the_spacing() {
+        assert_eq!(DEFAULT_TAB_STEP, 12.7);
+        let at = |x: f64, tabs: &[TabStop], step: f64| next_stop(x, tabs, step).pos;
+        assert_eq!(at(0.0, &[], 12.7), 12.7);
+        assert!((at(13.0, &[], 12.7) - 25.4).abs() < 1e-9);
+        // Another spacing: every 5 mm.
+        assert_eq!(at(0.0, &[], 5.0), 5.0);
+        assert_eq!(at(4.9, &[], 5.0), 5.0);
+        assert_eq!(at(5.0, &[], 5.0), 10.0);
+        assert_eq!(at(12.3, &[], 5.0), 15.0);
+        assert_eq!(next_stop(1.0, &[], 5.0).kind, TabKind::Left);
+        let one = [TabStop::new(7.0, TabKind::Right)];
+        assert_eq!(next_stop(1.0, &one, 5.0), one[0]);
+        assert_eq!(at(7.0, &one, 5.0), 10.0);
+        // A line's width counts its tabs to their stops.
+        let p = ParagraphStyle::default();
+        assert_eq!(line_width(&cells("ab\tc"), &p, 0.0, 5.0), 6.0);
+        assert_eq!(line_width(&cells("ab\tc"), &p, 1.0, 5.0), 5.0);
+        assert!((line_width(&cells("ab\tc"), &p, 0.0, 12.7) - 13.7).abs() < 1e-9);
+    }
+
+    /// The line breaker measures tabs to their stops: a tab whose stop is
+    /// past the line's end sends the text after it to the next line, as
+    /// the other program does when a stop is dragged past the frame.
+    #[test]
+    fn a_tab_past_the_line_end_wraps_what_follows() {
+        let glyphs = cells("ab\tcd");
+        let metrics = [Metrics::default()];
+        let lines = |tabs: &[TabStop], avail: f64| {
+            let mut br = Breaker::new(&glyphs, false, tabs, 5.0, &metrics, 0, 0);
+            let mut out = Vec::new();
+            while !br.done() && out.len() < 10 {
+                let l = br.next(avail, 0.0);
+                out.push(l.glyphs.iter().map(|g| g.ch).collect::<String>());
+            }
+            out
+        };
+        let right = [TabStop::new(8.0, TabKind::Right)];
+        assert_eq!(lines(&right, 10.0), vec!["ab\tcd".to_string()]);
+        let far = [TabStop::left(12.0)];
+        assert_eq!(
+            lines(&far, 10.0),
+            vec!["ab\t".to_string(), "cd".to_string()]
+        );
+    }
+
     /// Chinese text has no spaces: justification spreads the room between
     /// its characters, never after the last one; with spaces in a line
     /// of Latin letters only the spaces widen (#952).
@@ -6296,6 +6468,61 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// Paragraph text with a right and a decimal stop: the prices end at
+    /// the right stop, the decimal commas line up on the other, and a
+    /// leader fills the gap with dots (#1852).
+    #[test]
+    fn right_and_decimal_tabs_line_up_prices() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let text = "Mango\t89,-\nRaspberry Sorbet\t890,-";
+        let s = span(text);
+        let caret_x = |l: &TextLayout, i: usize| l.caret(i).map(|c| c.0).unwrap_or(f64::NAN);
+        let ends = |kind: TabKind| {
+            let para = ParagraphStyle {
+                tabs: vec![TabStop::new(80.0, kind)],
+                ..ParagraphStyle::default()
+            };
+            let l = frame_layout(f, std::slice::from_ref(&s), &para, 100.0);
+            // Line one: "89,-" is chars 6..10; line two: "890,-" 28..33.
+            (
+                caret_x(&l, 6),
+                caret_x(&l, 8),
+                caret_x(&l, 10),
+                caret_x(&l, 28),
+                caret_x(&l, 31),
+                caret_x(&l, 33),
+            )
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 0.05;
+        let (_, _, e1, _, _, e2) = ends(TabKind::Right);
+        assert!(close(e1, 80.0) && close(e2, 80.0), "{e1} {e2}");
+        let (_, c1, _, _, c2, _) = ends(TabKind::Decimal);
+        assert!(close(c1, 80.0) && close(c2, 80.0), "{c1} {c2}");
+        let (s1, _, _, s2, _, _) = ends(TabKind::Left);
+        assert!(close(s1, 80.0) && close(s2, 80.0), "{s1} {s2}");
+        let (s1, _, e1, _, _, _) = ends(TabKind::Center);
+        assert!(close((s1 + e1) / 2.0, 80.0), "{s1} {e1}");
+        // A leader draws more than the text without one.
+        let plain = ParagraphStyle {
+            tabs: vec![TabStop::new(80.0, TabKind::Right)],
+            ..ParagraphStyle::default()
+        };
+        let mut dotted = plain.clone();
+        dotted.tabs[0].leader = Some('.');
+        let count = |p: &ParagraphStyle| {
+            let l = frame_layout(f, std::slice::from_ref(&s), p, 100.0);
+            l.path.elements().len()
+        };
+        assert!(count(&dotted) > count(&plain) + 20);
+        // No stops: the text after a tab starts on the default grid.
+        let l = frame_layout(f, &[span("a\tb")], &ParagraphStyle::default(), 100.0);
+        let step = tracedraw_core::default_tab_step();
+        assert!(close(caret_x(&l, 2), step), "{}", caret_x(&l, 2));
     }
 
     fn words(n: usize) -> TextSpan {

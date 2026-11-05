@@ -181,7 +181,7 @@ fn profile_combo(
     } else {
         shown.clone()
     };
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(360.0)
         .selected_text(label)
         .show_ui(ui, |ui| {
@@ -224,7 +224,7 @@ fn profile_combo(
 }
 
 fn combo_u8(ui: &mut Ui, id: &str, v: &mut u8, keys: &[&str]) {
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(360.0)
         .selected_text(tr(keys[(*v as usize).min(keys.len() - 1)]))
         .show_ui(ui, |ui| {
@@ -237,7 +237,7 @@ fn combo_u8(ui: &mut Ui, id: &str, v: &mut u8, keys: &[&str]) {
 }
 
 fn intent_combo(ui: &mut Ui, id: &str, v: &mut String) {
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(360.0)
         .selected_text(intent_label(v))
         .show_ui(ui, |ui| {
@@ -261,7 +261,7 @@ fn intent_label(name: &str) -> String {
 }
 
 fn mode_combo(ui: &mut Ui, id: &str, rgb: &mut bool) {
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(360.0)
         .selected_text(if *rgb { "RGB" } else { "CMYK" })
         .show_ui(ui, |ui| {
@@ -469,7 +469,7 @@ fn default_tab(ui: &mut Ui, st: &mut ColorManagementState, load: &mut Option<Spa
         } else {
             preset_label(&d.preset)
         };
-        egui::ComboBox::from_id_salt("cm_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("cm_preset")
             .width(300.0)
             .selected_text(shown)
             .show_ui(ui, |ui| {
@@ -608,7 +608,7 @@ fn default_tab(ui: &mut Ui, st: &mut ColorManagementState, load: &mut Option<Spa
         .spacing([8.0, 8.0])
         .show(ui, |ui| {
             row(ui, &tr("color_mgmt.engine"));
-            egui::ComboBox::from_id_salt("cm_engine")
+            crate::ui::keynav::ComboBox::from_id_salt("cm_engine")
                 .width(360.0)
                 .selected_text(if d.builtin_engine {
                     tr("color_mgmt.engine_builtin")

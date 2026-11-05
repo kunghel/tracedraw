@@ -351,8 +351,11 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
 
 /// Paragraph text as one artistic text a laid-out line, each placed where
 /// its frame put it (alignment and justification spacing aside), the lines
-/// that overflow the frame left out. `None` for other shapes or without a
-/// text engine. Formats that hold no frames use it to keep the look.
+/// that overflow the frame left out. A line with tabs is cut at them, each
+/// part an artistic text of its own placed where the tab stops put it,
+/// so a reader with other tab stops (or none) shows the same (#1852).
+/// `None` for other shapes or without a text engine. Formats that hold no
+/// frames use it to keep the look.
 pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
     let ShapeKind::Text {
         spans,
@@ -386,6 +389,8 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
         frame.height
     };
     let mut out = Vec::new();
+    // Each line's parts between tabs, with where each starts (#1852).
+    let mut pieces = Vec::new();
     for line in &lines {
         // Below the frame: overflow, shown in the next linked frame or not
         // at all.
@@ -400,12 +405,36 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
             sp.paragraph = None;
         }
         piece.retain(|sp| !sp.text.is_empty());
+        // The parts between tabs, with where each starts.
+        let line_chars: Vec<char> = piece.iter().flat_map(|sp| sp.text.chars()).collect();
+        let mut parts = Vec::new();
+        let mut from = 0usize;
+        for (i, c) in line_chars.iter().enumerate() {
+            if *c == '\t' {
+                parts.push((from, i));
+                from = i + 1;
+            }
+        }
+        parts.push((from, line_chars.len()));
+        for (a, b) in parts {
+            let (_, tail) = split_spans_at(&piece, a);
+            let (mut part, _) = split_spans_at(&tail, b - a);
+            part.retain(|sp| !sp.text.is_empty());
+            let x = if a == 0 {
+                line.x
+            } else {
+                line.edges.get(a).copied().unwrap_or(line.x)
+            };
+            pieces.push((part, x, line.baseline));
+        }
+    }
+    for (piece, x, baseline) in pieces {
         if piece.iter().all(|sp| sp.text.trim().is_empty()) {
             continue;
         }
         out.push(ShapeKind::Text {
             spans: piece,
-            origin: to_local * Point::new(line.x, line.baseline),
+            origin: to_local * Point::new(x, baseline),
             frame: None,
             align: TextAlign::Left,
             para: ParagraphStyle {
@@ -1351,8 +1380,9 @@ pub struct ParagraphStyle {
     pub bullet_indent: f64,
     /// Drop cap height in lines; 0 = none.
     pub drop_cap_lines: u32,
-    /// Tab stops in mm from the left edge; empty = default every 12.7 mm.
-    pub tabs: Vec<f64>,
+    /// Tab stops, in order from the frame's left edge; empty = a left
+    /// stop every [`default_tab_step`] mm (12.7 unless set otherwise).
+    pub tabs: Vec<TabStop>,
     pub hyphenate: bool,
     /// Fit text to frame: scale the font so the text fills the frame height.
     pub fit_to_frame: bool,
@@ -1379,6 +1409,140 @@ pub struct ParagraphStyle {
     /// [`crate::text_flow`]); not saved.
     #[serde(skip)]
     pub flow: crate::text_flow::FrameFlow,
+}
+
+/// The distance between the default tab stops of a paragraph with no
+/// stops of its own, mm, unless Options > Text > Paragraph Text sets
+/// another ([`set_default_tab_step`]): half an inch, as the other
+/// program and `.cdr` files without stops have it.
+pub const DEFAULT_TAB_STEP: f64 = 12.7;
+
+/// The default tab spacing in use, as `f64` bits; 0 = [`DEFAULT_TAB_STEP`].
+static TAB_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The distance between the default tab stops in use, mm (the setting
+/// "Default tab spacing", [`DEFAULT_TAB_STEP`] until it is set).
+pub fn default_tab_step() -> f64 {
+    let bits = TAB_STEP.load(std::sync::atomic::Ordering::Relaxed);
+    if bits == 0 {
+        DEFAULT_TAB_STEP
+    } else {
+        f64::from_bits(bits)
+    }
+}
+
+/// Use `mm` between the default tab stops from now on, kept within 1 to
+/// 100 mm; a value that is not a number restores [`DEFAULT_TAB_STEP`].
+/// Text laid out before keeps its layout until it is laid out again
+/// (the text engine's caches count the step in their keys).
+pub fn set_default_tab_step(mm: f64) {
+    let v = if mm.is_finite() {
+        mm.clamp(1.0, 100.0)
+    } else {
+        DEFAULT_TAB_STEP
+    };
+    TAB_STEP.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How the text after a tab sits against its stop (Text > Tabs and the
+/// tab ruler).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabKind {
+    /// The text starts at the stop.
+    #[default]
+    Left,
+    /// The text is centred on the stop.
+    Center,
+    /// The text ends at the stop.
+    Right,
+    /// The text's decimal separator (its first `.` or `,`) sits on the
+    /// stop; text without one ends at the stop.
+    Decimal,
+}
+
+impl TabKind {
+    pub const ALL: [TabKind; 4] = [
+        TabKind::Left,
+        TabKind::Center,
+        TabKind::Right,
+        TabKind::Decimal,
+    ];
+}
+
+/// One tab stop of a paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TabStop {
+    /// Distance from the frame's left edge, mm.
+    pub pos: f64,
+    pub kind: TabKind,
+    /// The character repeated over the gap the tab leaves (a dot leader
+    /// in a menu or a table of contents); `None` = blank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leader: Option<char>,
+}
+
+impl TabStop {
+    /// A left stop at `pos` mm with no leader.
+    pub fn left(pos: f64) -> Self {
+        TabStop {
+            pos,
+            kind: TabKind::Left,
+            leader: None,
+        }
+    }
+
+    pub fn new(pos: f64, kind: TabKind) -> Self {
+        TabStop {
+            pos,
+            kind,
+            leader: None,
+        }
+    }
+}
+
+/// Files from before tab kinds hold each stop as a bare number (a left
+/// stop at that many mm).
+impl<'de> Deserialize<'de> for TabStop {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Full {
+            #[serde(default)]
+            pos: f64,
+            #[serde(default)]
+            kind: TabKind,
+            #[serde(default)]
+            leader: Option<char>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Pos(f64),
+            Full(Full),
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Pos(pos) => TabStop::left(pos),
+            Either::Full(f) => TabStop {
+                pos: f.pos,
+                kind: f.kind,
+                leader: f.leader,
+            },
+        })
+    }
+}
+
+/// The stops of `tabs` in order of position, with stops closer than
+/// 0.01 mm to one before them dropped and positions that are not finite
+/// left out (what an edit hands the paragraph).
+pub fn normalized_tabs(tabs: &[TabStop]) -> Vec<TabStop> {
+    let mut out: Vec<TabStop> = tabs
+        .iter()
+        .copied()
+        .filter(|t| t.pos.is_finite() && t.pos >= 0.0)
+        .collect();
+    out.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+    out.dedup_by(|b, a| (b.pos - a.pos).abs() < 0.01);
+    out
 }
 
 /// The unit of a paragraph's line spacing (the Text docker's list next to

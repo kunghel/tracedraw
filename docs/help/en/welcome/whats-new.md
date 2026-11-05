@@ -6,7 +6,11 @@ find out what changed and lists the highlights of the latest versions.
 ## Seeing what is new in the program {#in-the-program}
 
 - Choose [[menu.help > menu.help.whats_new]] to open the What's New page of
-  the Welcome Screen, with the news of this version.
+  the Welcome Screen. It lists the last ten versions, newest first, each
+  with its date and a short title. Click a version to read a short summary
+  of what changed; the newest one is open already. **Want to know more?**
+  under a summary opens that version's page on GitHub with the full list of
+  changes.
 - Turn on [[menu.help > menu.help.highlight_whats_new]] to mark what is new
   in this version in the menus: a small dot appears at the end of each new
   command, beside the arrow of a submenu that leads to one, and over the
@@ -17,6 +21,15 @@ find out what changed and lists the highlights of the latest versions.
 
 ## Highlights of recent versions {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] opens the tools for
+  cutting plotters: plotter output, cut lines, nesting and measuring. See
+  [TraceCut](../objects/tracecut.md).
+- **Keyboard, phones and pens.** Menus and lists work from the keyboard. On
+  Android phones the interface fits the screen and a hand resting on it no
+  longer draws while a pen is used; a tablet pen works on Linux with Wayland.
+- **Files.** .cdr files open with their tab stops, master pages, gradients and
+  distortions; PDF pictures come in at full resolution; JPEG and TIFF export
+  in CMYK.
 - **Object thumbnails.** The [[docker.objects]] panel shows each object
   drawn small beside its name; Ctrl+wheel over the list or the slider at its
   bottom sets the size. See [Organizing objects and layers](../objects/objects-and-layers.md#objects-docker).

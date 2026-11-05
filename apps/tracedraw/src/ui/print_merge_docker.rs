@@ -732,7 +732,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.label(tr("merge.columns"));
         d.column = d.column.min(headers.len().saturating_sub(1));
-        egui::ComboBox::from_id_salt("merge_columns")
+        crate::ui::keynav::ComboBox::from_id_salt("merge_columns")
             .width(full - 8.0)
             .selected_text(headers.get(d.column).cloned().unwrap_or_default())
             .show_ui(ui, |ui| {
@@ -782,7 +782,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             ui.label(tr("merge.align_scale"));
             ui.horizontal(|ui| {
                 anchor_grid(ui, &mut d.anchor);
-                egui::ComboBox::from_id_salt("merge_scale")
+                crate::ui::keynav::ComboBox::from_id_salt("merge_scale")
                     .width(ui.available_width())
                     .selected_text(tr(d.scale.key()))
                     .show_ui(ui, |ui| {

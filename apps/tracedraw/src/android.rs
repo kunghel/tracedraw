@@ -85,6 +85,9 @@ fn android_main(app: AndroidApp) {
     }
     tracedraw_text::install();
     tracedraw_io::emf::install();
+    // The hand resting on the screen does not draw while a pen does
+    // (#1832): winit asks about every pointer with its tool.
+    crate::palm::install();
     // A fresh install starts in the Touch workspace (larger bars and
     // buttons, no rulers or panels, two fingers pan and a pinch zooms);
     // another one picked under Window > Workspace is kept.

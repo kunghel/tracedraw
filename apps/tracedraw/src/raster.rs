@@ -6,6 +6,15 @@
 //! A page that takes long to draw is drawn on a thread of its own: the
 //! window keeps answering, showing the last picture moved into place,
 //! until the new one is ready (#345).
+//!
+//! A zoom on the main canvas does not wait for the view to rest: the
+//! last picture, scaled, looks blurry, so the page is rendered for the
+//! new zoom on a thread at once. A zoom step that comes while that render
+//! runs does not restart it: its picture is taken when ready (closer to
+//! the zoom shown than the one before) and the next render starts at once
+//! for the latest zoom, so a burst of wheel notches shows a sharper
+//! picture every render and the last one about a render after the last
+//! step.
 
 use crate::view::View;
 use egui::{ColorImage, Context, Rect, TextureHandle, TextureId, TextureOptions};
@@ -180,6 +189,12 @@ pub struct Raster {
     /// take instead of a copy of its own (no threads in the browser).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub snapshot: Option<std::sync::Arc<Document>>,
+    /// The copy of the drawing the last render on a thread took, with
+    /// its revision: the next renders of the same drawing (every step of
+    /// a zoom) share it instead of copying the drawing again on the
+    /// window's thread (a copy of a large drawing takes a frame's time).
+    #[cfg(not(target_arch = "wasm32"))]
+    kept: Option<(u64, std::sync::Arc<Document>)>,
     /// Renders started so far, on this thread or another.
     renders: u64,
     /// Turns other than the program's, for tests.
@@ -188,6 +203,10 @@ pub struct Raster {
     /// Every render counts as slow, for tests.
     #[cfg(test)]
     always_slow: bool,
+    /// A lock a render on its thread takes before drawing, for tests that
+    /// hold a render while the view moves on.
+    #[cfg(test)]
+    hold: Option<std::sync::Arc<std::sync::Mutex<()>>>,
 }
 
 /// Screen colours as they would print, on a `N` x `N` x `N` grid of the
@@ -366,6 +385,10 @@ impl Raster {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.job = None;
+            // Freed on a thread of its own, as a render frees its copy.
+            if let Some((_, d)) = self.kept.take() {
+                std::thread::spawn(move || drop(d));
+            }
         }
     }
 
@@ -388,6 +411,13 @@ impl Raster {
             return true;
         }
         self.settle.is_some()
+    }
+
+    /// The zoom the picture shown was rendered at, for tests.
+    #[cfg(test)]
+    pub fn picture_zoom(&self) -> Option<f32> {
+        self.texture.as_ref()?;
+        self.key.as_ref().map(|k| k.zoom)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -452,12 +482,19 @@ impl Raster {
             }
         }
         // The view moved (pan, scroll, zoom) and nothing else changed:
-        // show the last render moved into place until the view rests.
+        // show the last render moved into place until the view rests. A
+        // pan shows the old picture as sharp as it was; a zoom scales it,
+        // blurry, so the main canvas renders the new zoom at once on a
+        // thread (one render at a time: one still running for an earlier
+        // step is waited for above, then the latest zoom goes next).
+        let mut zoom_now = false;
         if window.is_none() {
             if let (Some(old), Some(t), Some(page_rect)) =
                 (self.key.as_ref(), self.texture.as_ref(), self.page_rect)
             {
-                if old.same_but_view(&key, self.follows_zoom) {
+                let moved = old.same_but_view(&key, self.follows_zoom);
+                zoom_now = moved && self.zooms_at_once(old, &key);
+                if moved && !zoom_now {
                     let now = ctx.input(|i| i.time);
                     let due = match &self.settle {
                         Some((k, due)) if *k == key => *due,
@@ -471,6 +508,9 @@ impl Raster {
                 }
             }
         }
+        // The browser draws on its one thread: never set there.
+        #[cfg(target_arch = "wasm32")]
+        let _ = zoom_now;
         if self.defer {
             ctx.request_repaint();
             let t = self.texture.as_ref()?;
@@ -527,7 +567,7 @@ impl Raster {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if window.is_none()
-            && (self.last_seconds > SLOW_RENDER || self.follows_zoom)
+            && (self.last_seconds > SLOW_RENDER || self.follows_zoom || zoom_now)
             && self.texture.is_some()
         {
             // Another page's job (or a stale one) is running: the last
@@ -541,17 +581,22 @@ impl Raster {
                 }
                 return self.shown_meanwhile(view, screen);
             };
-            let doc = self
-                .snapshot
-                .take()
-                .unwrap_or_else(|| std::sync::Arc::new(doc.clone()));
+            let (doc, stale) = match self.snapshot.take() {
+                Some(shared) => (shared, None),
+                None => self.copy_of(doc, key.revision, zoom_now),
+            };
             let (tx, rx) = std::sync::mpsc::channel();
             let wake = ctx.clone();
+            #[cfg(test)]
+            let hold = self.hold.clone();
             std::thread::spawn(move || {
+                #[cfg(test)]
+                let _held = hold.as_ref().map(|m| m.lock());
                 let t = web_time::Instant::now();
                 let image = render_page(&doc, page, &opts).map(|pm| to_image(&pm, lut.as_deref()));
                 let _ = tx.send(image.map(|i| (i, t.elapsed().as_secs_f64())));
                 drop(doc);
+                drop(stale);
                 drop(turn);
                 wake.request_repaint();
             });
@@ -577,6 +622,45 @@ impl Raster {
         self.key = Some(key);
         self.page_rect = page_rect;
         self.texture.as_ref().map(|t| (t.id(), screen))
+    }
+
+    /// The drawing at `revision` for a render on a thread: the copy kept
+    /// from the last zoom render when it is of the same revision, or a new
+    /// copy, kept for the next steps of a zoom (`zoom`). Also the copy no
+    /// longer kept, for the render's thread to free (freeing a large
+    /// drawing takes time the window's thread does not have).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_of(
+        &mut self,
+        doc: &Document,
+        revision: u64,
+        zoom: bool,
+    ) -> (std::sync::Arc<Document>, Option<std::sync::Arc<Document>>) {
+        match &self.kept {
+            Some((r, d)) if *r == revision => (d.clone(), None),
+            _ => {
+                let d = std::sync::Arc::new(doc.clone());
+                let keep = zoom.then(|| (revision, d.clone()));
+                let stale = std::mem::replace(&mut self.kept, keep);
+                (d, stale.map(|(_, d)| d))
+            }
+        }
+    }
+
+    /// The copy of the drawing kept for renders on a thread, with its
+    /// revision, for other pictures of the same drawing to share.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn kept_copy(&self) -> Option<(u64, std::sync::Arc<Document>)> {
+        self.kept.clone()
+    }
+
+    /// True when the view asked for (`new`) differs from the picture's
+    /// (`old`) by its zoom and the picture is the main canvas's: rendered
+    /// at once on a thread instead of shown scaled until the view rests.
+    /// The pages beside the current one in the Multipage View keep waiting
+    /// (many come due at once, #903), and the browser has no threads.
+    fn zooms_at_once(&self, old: &Key, new: &Key) -> bool {
+        cfg!(not(target_arch = "wasm32")) && !self.follows_zoom && old.zoom != new.zoom
     }
 
     /// The last picture, where its part of the page now is on screen
@@ -899,14 +983,19 @@ mod tests {
         out.expect("texture")
     }
 
-    /// A pan or a zoom shows the last render moved or scaled into place
-    /// at once, and renders the page anew once the view has rested.
+    /// A pan shows the last render moved into place at once, and renders
+    /// the page anew once the view has rested; a zoom renders at once (on
+    /// its thread), the old picture scaled into place meanwhile.
     #[test]
     fn a_moving_view_shows_the_last_render_until_it_rests() {
+        static TURNS: Turns = Turns::new();
         let ctx = Context::default();
         let doc = Document::new("t", Size::new(100.0, 50.0));
         let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
-        let mut raster = Raster::default();
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            ..Default::default()
+        };
         let view = View::default();
         let (first, screen) = pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
         assert_eq!(screen, rect);
@@ -920,26 +1009,20 @@ mod tests {
         assert_eq!(raster.key, key, "no new render yet");
         assert!((screen.min.x - 10.0).abs() < 1e-3, "{screen:?}");
         assert!(raster.settle.is_some());
-        // Zoomed: the texture scaled about the page, still the old one.
-        let mut zoomed = moved;
-        zoomed.zoom *= 2.0;
-        let (tex, screen) = pass(&ctx, &mut raster, &doc, &zoomed, rect, 0.05);
-        assert_eq!(tex, first);
-        assert!((screen.width() - 640.0).abs() < 1e-3, "{screen:?}");
         // The view rests: rendered anew for where it is now.
         let (_, screen) = pass(
             &ctx,
             &mut raster,
             &doc,
-            &zoomed,
+            &moved,
             rect,
-            0.05 + SETTLE_SECONDS + 0.01,
+            0.01 + SETTLE_SECONDS + 0.01,
         );
         assert_ne!(raster.key, key);
         assert_eq!(screen, rect);
         assert!(raster.settle.is_none());
         // Moving on at once re-arms the wait from the latest move.
-        let mut again = zoomed;
+        let mut again = moved;
         again.pan(egui::vec2(0.0, 5.0));
         let before = raster.key.clone();
         pass(&ctx, &mut raster, &doc, &again, rect, 1.0);
@@ -961,6 +1044,38 @@ mod tests {
             1.0 + SETTLE_SECONDS + 0.01,
         );
         assert_ne!(raster.key, before);
+        // Zoomed: no wait for the view to rest. The render starts in the
+        // same frame, on its thread, the old texture scaled about the page
+        // meanwhile.
+        let shown = raster.texture.as_ref().map(|t| t.id());
+        let renders = raster.render_count();
+        let mut zoomed = again;
+        zoomed.zoom *= 2.0;
+        let (tex, screen) = pass(&ctx, &mut raster, &doc, &zoomed, rect, 2.0);
+        assert_eq!(Some(tex), shown);
+        assert!((screen.width() - 640.0).abs() < 1e-3, "{screen:?}");
+        assert_eq!(raster.render_count(), renders + 1, "rendered at once");
+        assert!(raster.settle.is_none(), "no wait for the view to rest");
+        assert!(raster.job.is_some(), "on its thread");
+        let mut done = false;
+        for i in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let (_, screen) = pass(
+                &ctx,
+                &mut raster,
+                &doc,
+                &zoomed,
+                rect,
+                2.0 + 0.001 * i as f64,
+            );
+            if raster.picture_zoom() == Some(zoomed.zoom) {
+                assert_eq!(screen, rect);
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "the zoomed picture came well before the view rested");
+        assert_eq!(raster.render_count(), renders + 1);
     }
 
     /// A slow page is drawn on a thread of its own: the frame that asks
@@ -981,10 +1096,11 @@ mod tests {
         let view = View::default();
         let (first, _) = pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
         let key = raster.key.clone();
-        // Taken for slow: the next render runs on a thread.
+        // Taken for slow: the next render runs on a thread. Panned, so the
+        // render waits for the view to rest first (a zoom would not).
         raster.last_seconds = 1.0;
         let mut zoomed = view;
-        zoomed.zoom *= 2.0;
+        zoomed.pan(egui::vec2(40.0, 0.0));
         let t = SETTLE_SECONDS + 0.01;
         pass(&ctx, &mut raster, &doc, &zoomed, rect, 0.0);
         let (mut tex, mut screen) = pass(&ctx, &mut raster, &doc, &zoomed, rect, t);
@@ -999,7 +1115,7 @@ mod tests {
         assert_eq!(tex, first);
         assert!(raster.job.is_some(), "drawn on its thread");
         assert_eq!(raster.key, key, "the old picture shows meanwhile");
-        assert!((screen.width() - 640.0).abs() < 1e-3, "{screen:?}");
+        assert!((screen.min.x - 40.0).abs() < 1e-3, "{screen:?}");
         // Ready a moment later: taken, for the view asked for.
         let mut done = false;
         for i in 0..200 {
@@ -1013,6 +1129,100 @@ mod tests {
         }
         assert!(done, "the picture from the thread was taken");
         assert!(raster.last_seconds < 1.0, "its time measured");
+    }
+
+    /// A burst of zoom steps while a render runs: the render is not
+    /// restarted for each step; once it ends its picture is taken (the
+    /// nearest to the zoom shown so far) and the next render starts in the
+    /// same frame for the latest zoom only, covering only the canvas, the
+    /// part of the page on screen.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_latest_zoom_wins_without_restarting_renders() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let hold = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            hold: Some(hold.clone()),
+            ..Default::default()
+        };
+        let mut view = View::default();
+        pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
+        let renders = raster.render_count();
+        // The first step starts a render, held on its thread.
+        let held = hold.lock().expect("lock");
+        let at = egui::pos2(160.0, 100.0);
+        view.zoom_at(at, 1.15);
+        let first_step = view.zoom;
+        pass(&ctx, &mut raster, &doc, &view, rect, 0.01);
+        assert_eq!(raster.render_count(), renders + 1);
+        let copy = raster.kept_copy().expect("the drawing copied").1;
+        // Nineteen more steps while it runs: nothing restarted, nothing
+        // started beside it.
+        for i in 0..19 {
+            view.zoom_at(at, 1.15f32.powf(0.25));
+            pass(
+                &ctx,
+                &mut raster,
+                &doc,
+                &view,
+                rect,
+                0.02 + 0.016 * i as f64,
+            );
+            assert_eq!(raster.render_count(), renders + 1, "restarted");
+            assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(first_step));
+        }
+        drop(held);
+        // Its picture taken, and the latest zoom's render started at once.
+        let mut next = None;
+        for i in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pass(&ctx, &mut raster, &doc, &view, rect, 1.0 + 0.001 * i as f64);
+            if raster.render_count() > renders + 1 {
+                next = Some(i);
+                break;
+            }
+        }
+        assert!(next.is_some(), "the latest zoom was never rendered");
+        assert_eq!(
+            raster.picture_zoom(),
+            Some(first_step),
+            "the first step's picture taken"
+        );
+        assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(view.zoom));
+        assert_eq!(raster.render_count(), renders + 2);
+        // The second render shares the first one's copy of the drawing.
+        let again = raster.kept_copy().expect("kept").1;
+        assert!(std::sync::Arc::ptr_eq(&copy, &again), "copied again");
+        for i in 0..400 {
+            if raster.picture_zoom() == Some(view.zoom) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pass(&ctx, &mut raster, &doc, &view, rect, 2.0 + 0.001 * i as f64);
+        }
+        assert_eq!(raster.picture_zoom(), Some(view.zoom));
+        assert_eq!(
+            raster.render_count(),
+            renders + 2,
+            "two renders for twenty steps"
+        );
+        // The picture is the canvas's size and shows only the part of the
+        // page on screen.
+        assert_eq!(raster.texture.as_ref().map(|t| t.size()), Some([320, 200]));
+        let shown = raster.page_rect.expect("page rect");
+        let want = view.visible_page_rect(rect);
+        for (a, b) in [
+            (shown.x0, want.x0),
+            (shown.y0, want.y0),
+            (shown.x1, want.x1),
+            (shown.y1, want.y1),
+        ] {
+            assert!((a - b).abs() < 1e-3, "{shown:?} {want:?}");
+        }
     }
 
     /// A page beside the current one in the Multipage View is rendered

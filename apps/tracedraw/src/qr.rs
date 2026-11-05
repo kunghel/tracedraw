@@ -7,7 +7,7 @@ use crate::app::App;
 use tracedraw_core::{
     document::ShapeKind,
     geometry::{BezPath, Point, Rect, Shape as _},
-    Command, Fill, QrCode, Shape, ShapeId,
+    Command, Fill, QrCode, QrKind, Shape, ShapeId,
 };
 
 /// Light pixels around the code on every side (its quiet zone), in
@@ -158,6 +158,55 @@ impl App {
             .map_err(|e| e.to_string())?;
         self.raster.borrow_mut().invalidate();
         Ok(())
+    }
+}
+
+/// A kind of content picked in Properties whose fields make no content
+/// yet (Email, with nothing to carry over from a URL): Properties shows
+/// and edits it while the object keeps its code, until the fields make
+/// content (#1845).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QrDraft {
+    pub kind: QrKind,
+    pub fields: Vec<String>,
+}
+
+impl App {
+    /// Properties' kind and fields of the QR code object `id` are now
+    /// `kind` and `fields`: when they make content the code is made again
+    /// (as [`App::set_qr_code`]) and `Ok(None)` comes back; when they make
+    /// none (a kind just picked, a field emptied) the object keeps its
+    /// code, nothing goes into the history, and the draft for Properties
+    /// to show comes back. An error (too much for a code) changes nothing.
+    pub fn edit_qr_content(
+        &mut self,
+        id: ShapeId,
+        kind: QrKind,
+        fields: Vec<String>,
+    ) -> Result<Option<QrDraft>, String> {
+        let qr = self
+            .doc()
+            .find_shape(id)
+            .and_then(|s| s.qr.as_deref().cloned())
+            .ok_or_else(|| "not a QR code object".to_string())?;
+        let next = QrCode {
+            kind,
+            fields,
+            ..qr.clone()
+        };
+        if next.payload().trim().is_empty() {
+            if next.kind == qr.kind && next.fields == qr.fields {
+                return Ok(None);
+            }
+            return Ok(Some(QrDraft {
+                kind: next.kind,
+                fields: next.fields,
+            }));
+        }
+        if next != qr {
+            self.set_qr_code(id, next)?;
+        }
+        Ok(None)
     }
 }
 
@@ -312,6 +361,82 @@ mod tests {
             let fields: Vec<&str> = kind.fields().iter().map(|_| "1").collect();
             let q = qr(kind, &fields);
             assert_eq!(validate(&q), Ok(q.payload()), "{kind:?}");
+        }
+    }
+
+    /// Every kind can be picked from a new URL code and filled in, as
+    /// Properties does it: a kind whose fields carry nothing over (Email,
+    /// Phone number, SMS, Text, Location) stays picked as a draft while
+    /// the object keeps its code, and its fields, filled in one by one,
+    /// make the code of that kind. Before, picking it made empty content,
+    /// which could not be encoded, so the kind went back to URL (#1845).
+    #[test]
+    fn every_kind_can_be_picked_and_filled_in() {
+        for kind in QrKind::ALL {
+            let mut app = App::headless();
+            let id = app.insert_qr_code().expect("placed");
+            let start = app.doc().find_shape(id).and_then(|s| s.qr.clone());
+            let url = start.as_deref().cloned().expect("qr");
+            let steps = app.engine.history_labels().0.len();
+            let carried = kind.carry(url.kind, &url.fields);
+            let mut draft = app
+                .edit_qr_content(id, kind, carried.clone())
+                .expect("picked");
+            if matches!(kind, QrKind::Url | QrKind::Contact) {
+                // The address carries over: the code is made at once.
+                assert_eq!(draft, None);
+            } else {
+                assert_eq!(
+                    draft,
+                    Some(QrDraft {
+                        kind,
+                        fields: carried.clone()
+                    }),
+                    "{kind:?}"
+                );
+                // What Properties did before: the code made at once from
+                // the empty fields, which fails, so the kind went back.
+                let at_once = QrCode {
+                    kind,
+                    fields: carried.clone(),
+                    ..url.clone()
+                };
+                assert!(app.set_qr_code(id, at_once).is_err(), "{kind:?}");
+                // The object keeps its code; nothing to undo.
+                assert_eq!(app.doc().find_shape(id).and_then(|s| s.qr.clone()), start);
+                assert_eq!(app.engine.history_labels().0.len(), steps);
+            }
+            let mut fields = carried;
+            for i in 0..fields.len() {
+                if draft.is_none() && matches!(kind, QrKind::Url | QrKind::Contact) {
+                    break;
+                }
+                fields[i] = format!("{}", i + 1);
+                draft = app
+                    .edit_qr_content(id, kind, fields.clone())
+                    .expect("edited");
+            }
+            assert_eq!(draft, None, "{kind:?}");
+            let qr = app
+                .doc()
+                .find_shape(id)
+                .and_then(|s| s.qr.as_deref().cloned())
+                .expect("qr");
+            assert_eq!(qr.kind, kind);
+            assert_eq!(validate(&qr), Ok(qr.payload()), "{kind:?}");
+            // Emptying the field again keeps the code, shown as a draft.
+            if kind == QrKind::Phone {
+                let d = app
+                    .edit_qr_content(id, kind, vec![String::new()])
+                    .expect("draft");
+                assert!(d.is_some());
+                assert_eq!(
+                    app.doc()
+                        .find_shape(id)
+                        .and_then(|s| s.qr.as_deref().cloned()),
+                    Some(qr)
+                );
+            }
         }
     }
 

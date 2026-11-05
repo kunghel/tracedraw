@@ -511,7 +511,7 @@ pub fn section(app: &mut App, ui: &mut Ui) {
     // Merge mode, full width at the top.
     dim(ui, tr("transparency.merge_mode"));
     let merge_shown = !mixed.contains(&F::Merge);
-    egui::ComboBox::from_id_salt("transparency_docker_merge")
+    crate::ui::keynav::ComboBox::from_id_salt("transparency_docker_merge")
         .selected_text(if merge_shown {
             set.merge.name().to_string()
         } else {

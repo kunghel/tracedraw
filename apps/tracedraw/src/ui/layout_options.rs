@@ -328,7 +328,7 @@ fn unit_field(
 
 fn units_combo(ui: &mut Ui, id: &str, units: &mut Units) -> bool {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(units.label())
         .width(160.0)
         .show_ui(ui, |ui| {
@@ -507,7 +507,7 @@ fn drawing_scale_fields(app: &mut App, ui: &mut Ui, meta: &mut Metadata) {
                 .map(|p| p.label.to_string())
                 .unwrap_or_else(|| tr("options.scale_custom"));
             let mut pick = None;
-            egui::ComboBox::from_id_salt("typical_scales")
+            crate::ui::keynav::ComboBox::from_id_salt("typical_scales")
                 .selected_text(shown)
                 .width(160.0)
                 .height(320.0)
@@ -671,7 +671,7 @@ pub fn grid_page(app: &mut App, ui: &mut Ui) {
                 let spacing = crate::i18n::trf("options.grid_spacing_of", &[("u", &units.label())]);
                 let frequency =
                     crate::i18n::trf("options.grid_frequency_of", &[("u", &units.label())]);
-                egui::ComboBox::from_id_salt(salt)
+                crate::ui::keynav::ComboBox::from_id_salt(salt)
                     .selected_text(if app.grid_frequency {
                         frequency.clone()
                     } else {
@@ -1154,7 +1154,7 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
     let mut moved = false;
     ui.horizontal(|ui| {
         ui.label(tr("guides.type"));
-        egui::ComboBox::from_id_salt("guide_type")
+        crate::ui::keynav::ComboBox::from_id_salt("guide_type")
             .selected_text(tr(form.kind.key()))
             .width(140.0)
             .show_ui(ui, |ui| {
@@ -1341,7 +1341,7 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
             row_label(ui, "guides.style");
             let style = first.map(|g| g.style).unwrap_or_default();
             ui.add_enabled_ui(any, |ui| {
-                egui::ComboBox::from_id_salt("guide_style")
+                crate::ui::keynav::ComboBox::from_id_salt("guide_style")
                     .selected_text(tr(style_key(style)))
                     .width(120.0)
                     .show_ui(ui, |ui| {

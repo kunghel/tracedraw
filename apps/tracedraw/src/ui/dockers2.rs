@@ -685,7 +685,7 @@ fn find_properties(app: &mut App, ui: &mut Ui, st: &mut crate::ui::dialogs::Find
                     .get(pf.object_type)
                     .map(|t| tr(&format!("find.type.{}", t.key())))
                     .unwrap_or_default();
-                egui::ComboBox::from_id_salt("find_props_type")
+                crate::ui::keynav::ComboBox::from_id_salt("find_props_type")
                     .selected_text(cur)
                     .show_ui(ui, |ui| {
                         for (i, t) in ObjectType::ALL.iter().enumerate() {
@@ -1182,7 +1182,7 @@ fn lens(app: &mut App, ui: &mut Ui) {
         }
     }
     let keys = crate::lens::LENS_KEYS;
-    egui::ComboBox::from_id_salt("lens_kind")
+    crate::ui::keynav::ComboBox::from_id_salt("lens_kind")
         .selected_text(tr(keys[app.lens.kind]))
         .show_ui(ui, |ui| {
             for (i, k) in keys.iter().enumerate() {
@@ -1267,7 +1267,7 @@ fn lens(app: &mut App, ui: &mut Ui) {
             if let Some(i) = remove {
                 l.effects.remove(i);
             }
-            egui::ComboBox::from_id_salt("lens_fx_add")
+            crate::ui::keynav::ComboBox::from_id_salt("lens_fx_add")
                 .selected_text(tr("lens.add_effect"))
                 .height(360.0)
                 .show_ui(ui, |ui| {
@@ -2727,7 +2727,7 @@ fn join_curves(app: &mut App, ui: &mut Ui) {
     let mut j = app.join_settings;
     ui.horizontal(|ui| {
         ui.label(tr("docker.join_mode"));
-        egui::ComboBox::from_id_salt("join_mode")
+        crate::ui::keynav::ComboBox::from_id_salt("join_mode")
             .selected_text(label(j.mode))
             .width(140.0)
             .show_ui(ui, |ui| {
@@ -2829,7 +2829,7 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
     let combo = |ui: &mut Ui, key: &str, id: &str, current: &str, add: &mut dyn FnMut(&mut Ui)| {
         ui.horizontal(|ui| {
             ui.label(tr(key));
-            egui::ComboBox::from_id_salt(id)
+            crate::ui::keynav::ComboBox::from_id_salt(id)
                 .selected_text(current)
                 .show_ui(ui, |ui| add(ui))
                 .response

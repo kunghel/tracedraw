@@ -17,13 +17,32 @@ One window, 760 px wide, the same on every system:
   has). Down the left,
   shortcuts to the folders that exist: Home, Desktop, Documents,
   Downloads and Pictures (on Linux the names in
-  `~/.config/user-dirs.dirs`), then the drives (Windows) or `/`. On the
+  `~/.config/user-dirs.dirs`), then the drives (Windows: every drive
+  letter from C:) or `/`. Under them, each section only when it has
+  folders and the column scrolling when they are many (#1391):
+  **Drives**, the mounted drives, memory cards and network shares
+  (Linux: the folders mounted in or found under `/media/$USER`,
+  `/run/media/$USER`, `/media` and `/mnt`, then the desktop's shares and
+  phones in `$XDG_RUNTIME_DIR/gvfs`, a share shown as "photos (nas)";
+  macOS: `/Volumes` without the start-up disk; hidden folders left
+  out); **Bookmarks**, the folders bookmarked in the desktop's file
+  manager (`~/.config/gtk-3.0/bookmarks`, else `~/.gtk-bookmarks`, with
+  their names; addresses that are no folders here, like `sftp://`, are
+  left out), then those bookmarked here: a right click on a folder of
+  the list offers Add to bookmarks, a right click on such a bookmark
+  Remove bookmark, and they are kept in the preferences; **Recent**, up
+  to six folders used lately, the last folder a dialog used first, then
+  the folders of the recent drawings. They are read when the dialog
+  opens (`files::drives_in`, `files::parse_bookmarks`,
+  `files::recent_dirs`; `files::tests::mounted_drives_memory_cards_and_shares_are_listed`,
+  `ui::save_as::tests::drives_bookmarks_and_recent_folders_are_listed`). On the
   right, 250 px high and scrolling, the folder's contents: folders, then
   the files of the chosen type, by name ignoring case (hidden ones left
   out), with Name, Date modified (local time), Type ("File folder",
   "CDR file") and Size (KB, MB from 1 MB). A click picks an entry
   (a file's name becomes the name); a double click on a folder opens it;
-  a right click offers Open (folders) and Rename. With the list picked,
+  a right click offers Open (folders), Rename and Add to bookmarks
+  (folders). With the list picked,
   letters jump to the first entry starting with them (letters a second
   apart start again; one letter typed again goes on to the next entry
   with it), F2 renames the entry picked, Enter opens the folder picked

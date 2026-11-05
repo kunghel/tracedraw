@@ -8,7 +8,7 @@ configurações também estão na seção **Moldura** do painel [[docker.text]].
 
 [[menu.text > menu.text.tabs]] define para onde salta o caractere
 <kbd>Tab</kbd>. De início, há uma parada de tabulação a cada 12,7 mm (meia
-polegada).
+polegada); [[options.default_tab_spacing]] nas Opções muda isso.
 
 1. Selecione o texto de parágrafo.
 2. Escolha [[menu.text > menu.text.tabs]].

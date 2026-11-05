@@ -386,14 +386,15 @@ fn off_step(deg: f64, step: f64) -> f64 {
     r.min(step - r)
 }
 
-/// Shift or Ctrl keeps a distortion's end handle, and the line a drag on
-/// the object sets, to steps of the constrain angle about the centre,
-/// as the Shape tool's handles: horizontal and vertical among them, as
-/// far out as the pointer reaches along that direction. Push and Pull,
-/// Zipper and Twister, in the real window; without the keys the handle
-/// goes where the pointer is (#1563, #1793).
+/// The keys steer a distortion's end handle, and the line a drag on the
+/// object sets (#1563, #1793, maintainer decision): Shift moves it only
+/// sideways, at the height it had; Ctrl keeps its length and turns it
+/// freely, all the way round; Ctrl+Shift keeps it to steps of the
+/// constrain angle about the centre, as far out as the pointer reaches
+/// along the step; without keys it goes where the pointer is. Push and
+/// Pull, Zipper and Twister, in the real window.
 #[test]
-fn shift_and_ctrl_keep_a_distortion_handle_to_the_constrain_angle() {
+fn shift_and_ctrl_steer_a_distortion_handle() {
     use crate::distort_tool::DistortMode;
     let handle = |app: &App| {
         app.distortion_handles()
@@ -401,12 +402,13 @@ fn shift_and_ctrl_keep_a_distortion_handle_to_the_constrain_angle() {
             .next()
             .expect("handles")
     };
+    let both = Modifiers::CTRL | Modifiers::SHIFT;
     for mode in [
         DistortMode::PushPull,
         DistortMode::Zipper,
         DistortMode::Twister,
     ] {
-        for mods in [Modifiers::SHIFT, Modifiers::CTRL, Modifiers::NONE] {
+        for mods in [Modifiers::SHIFT, Modifiers::CTRL, both, Modifiers::NONE] {
             let (ctx, mut app, id) = setup(Tool::Distort);
             let step = app.settings.constrain_angle;
             app.distort.mode = mode;
@@ -427,35 +429,80 @@ fn shift_and_ctrl_keep_a_distortion_handle_to_the_constrain_angle() {
             assert_eq!(h.mode, mode);
             let first = degrees(h.end - h.center);
             let tag = format!("{mode:?} {mods:?}");
-            if mods.any() {
+            if mods == both {
                 assert!(off_step(first, step) < 0.5, "{tag}: the line at {first}");
+            } else if mods == Modifiers::SHIFT {
+                assert!(
+                    off_step(first, 180.0) < 0.5,
+                    "{tag}: the line level, at {first}"
+                );
+            } else {
+                assert!((first - 4.0).abs() < 0.5, "{tag}: the line at {first}");
             }
             // The end handle dragged 22 degrees round from where it is,
-            // 12 mm out: with the keys on the next step (15 degrees
-            // round) at the reach along it, without them at the pointer.
+            // 12 mm out.
             let turn = (first + 22.0).to_radians();
             let to = h.center + Vec2::new(turn.cos(), turn.sin()) * 12.0;
             let before = steps(&app);
+            let (end0, len0) = (h.end, (h.end - h.center).hypot());
             drag(&ctx, &mut app, h.end, to, mods);
-            assert_eq!(steps(&app), before + 1, "{tag}: one undo step");
+            // Push and Pull turned at its length keeps its amount: only
+            // its line turns, which is no change to the drawing. The
+            // Twister's level line moved sideways keeps its angle.
+            let same = (mode == DistortMode::PushPull && mods == Modifiers::CTRL)
+                || (mode == DistortMode::Twister && mods == Modifiers::SHIFT);
+            let want_steps = if same { before } else { before + 1 };
+            assert_eq!(steps(&app), want_steps, "{tag}: one undo step");
             let h = handle(&app);
             let got = degrees(h.end - h.center);
-            let want = if mods.any() {
-                first + 15.0
+            let len = (h.end - h.center).hypot();
+            let want_end = if mods == both {
+                // The next step (15 degrees round) at the reach along it.
+                let w = (first + 15.0).to_radians();
+                h.center + Vec2::new(w.cos(), w.sin()) * 12.0 * 7f64.to_radians().cos()
+            } else if mods == Modifiers::SHIFT {
+                // Sideways only: the pointer's x at the handle's height.
+                Point::new(to.x, end0.y)
+            } else if mods == Modifiers::CTRL {
+                // Its length, the pointer's way.
+                h.center + (to - h.center) * (len0 / (to - h.center).hypot())
             } else {
-                first + 22.0
+                to
             };
-            let diff = (got - want.rem_euclid(360.0)).abs();
+            let want = degrees(want_end - h.center);
+            let diff = (got - want).abs();
             assert!(
                 diff.min(360.0 - diff) < 0.5,
                 "{tag}: the handle at {got}, not {want}"
             );
-            if mods.any() && mode != DistortMode::Twister {
-                // As far out as the pointer along the step: 12 cos 7.
-                let reach = 12.0 * 7f64.to_radians().cos();
-                let len = (h.end - h.center).hypot();
-                assert!((len - reach).abs() < 0.3, "{tag}: {len} not {reach}");
+            if mode != DistortMode::Twister {
+                let want_len = (want_end - h.center).hypot();
+                assert!(
+                    (len - want_len).abs() < 0.3,
+                    "{tag}: the handle {len} long, not {want_len}"
+                );
             }
         }
     }
+}
+
+/// Ctrl keeps a distortion's end handle at its length while it turns all
+/// the way round, through every quarter (#1563): no step of the constrain
+/// angle, no change of length.
+#[test]
+fn ctrl_turns_a_distortion_handle_all_the_way_round_at_its_length() {
+    use crate::distort_tool::constrain_end;
+    let c = Point::new(10.0, 10.0);
+    let end = Point::new(20.0, 10.0);
+    for deg in [7.0f64, 95.0, 181.0, 263.0, 359.0] {
+        let r = deg.to_radians();
+        let p = c + Vec2::new(r.cos(), r.sin()) * 3.0;
+        let got = constrain_end(c, end, p, true, false, 15.0);
+        assert!(((got - c).hypot() - 10.0).abs() < 1e-9, "{deg}: its length");
+        let a = degrees(got - c);
+        assert!((a - deg).abs() < 1e-6, "{deg}: turned to {a}");
+    }
+    // Shift: sideways only, at its height.
+    let got = constrain_end(c, end, Point::new(4.0, 30.0), false, true, 15.0);
+    assert_eq!(got, Point::new(4.0, 10.0));
 }

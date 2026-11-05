@@ -139,7 +139,7 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
                 copy: app.drag_copy,
             })
         }
-        Drag::Pivot => return Some(moving),
+        Drag::Pivot | Drag::GuidePivot => return Some(moving),
         Drag::Scale { handle, .. } => return Some(ToolCursor::System(resize_icon(*handle))),
         Drag::Rotate { .. } | Drag::RotateGuide { .. } => return Some(ToolCursor::Rotate),
         Drag::Skew { handle, .. } => {
@@ -176,8 +176,11 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
         });
     }
     let p = app.view.to_page(pos);
-    // A guideline's rotation handles, then the guideline itself where no
-    // object is (objects win a press there).
+    // A guideline's rotation centre (dragged, #1850) and handles, then
+    // the guideline itself where no object is (objects win a press there).
+    if app.guide_pivot_at(p) {
+        return Some(moving);
+    }
     if app.guide_rotate_handle_at(p) {
         return Some(ToolCursor::Rotate);
     }

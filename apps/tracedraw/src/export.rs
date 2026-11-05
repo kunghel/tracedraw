@@ -3,7 +3,9 @@
 
 use crate::app::App;
 use crate::i18n::{tr, trf};
-use crate::ui::dialogs::{ExportState, FindReplaceState, PrintState, PropertyFind, EXPORT_FORMATS};
+use crate::ui::dialogs::{
+    ExportColorMode, ExportState, FindReplaceState, PrintState, PropertyFind, EXPORT_FORMATS,
+};
 use std::path::Path;
 use tracedraw_core::find::{self as objfind, ColorQuery, Hit, ObjectQuery, ObjectType};
 use tracedraw_core::{
@@ -95,8 +97,12 @@ pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, St
         .collect();
     let many = doc.pages.len() > 1;
     let mut written = Vec::with_capacity(doc.pages.len());
+    // A CMYK bitmap carries the profile its inks are in (#1763).
+    let icc = (st.color_mode_for(ext) == ExportColorMode::Cmyk)
+        .then(|| export_cmyk_profile(app))
+        .flatten();
     for k in 0..doc.pages.len() {
-        let bytes = page_file(&doc, k, ext, st)?;
+        let bytes = page_file(&doc, k, ext, st, icc.as_deref())?;
         let target = if many {
             numbered_path(path, numbers.get(k).copied().unwrap_or(k + 1), ext)
         } else {
@@ -162,8 +168,15 @@ fn document_file(
     })
 }
 
-/// The file of page `k` of `doc` in a format that holds one page.
-fn page_file(doc: &Document, k: usize, ext: &str, st: &ExportState) -> Result<Vec<u8>, String> {
+/// The file of page `k` of `doc` in a format that holds one page; `icc`
+/// is the profile a CMYK bitmap carries.
+fn page_file(
+    doc: &Document,
+    k: usize,
+    ext: &str,
+    st: &ExportState,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
     Ok(match ext {
         "svg" => tracedraw_io::svg::page_to_svg(doc, k).into_bytes(),
         "eps" => tracedraw_io::eps::page_to_eps(doc, k).into_bytes(),
@@ -176,6 +189,28 @@ fn page_file(doc: &Document, k: usize, ext: &str, st: &ExportState) -> Result<Ve
         "psd" => tracedraw_io::psd::page_to_psd(doc, k, st.render_dpi()).ok_or("render failed")?,
         _ => {
             let pid = doc.pages.get(k).ok_or("no page")?.id;
+            match st.color_mode_for(ext) {
+                // The inks of the page, as its separations print them
+                // (#1763).
+                ExportColorMode::Cmyk => {
+                    let (w, h, ink) =
+                        cmyk_pixels(doc, pid, st.render_dpi()).ok_or("render failed")?;
+                    let bytes = if ext == "jpg" {
+                        tracedraw_io::cmyk_bitmap::cmyk_jpeg(w, h, &ink, st.quality, st.dpi, icc)
+                    } else {
+                        tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink, st.dpi, icc)
+                    };
+                    return bytes.ok_or_else(|| "CMYK encoding failed".to_string());
+                }
+                ExportColorMode::Gray => {
+                    let pm = tracedraw_render::render_page_image(doc, pid, st.render_dpi())
+                        .ok_or("render failed")?;
+                    let bytes =
+                        encode_gray(&on_white(&pm).ok_or("render failed")?, ext, st.quality)?;
+                    return Ok(record_dpi(bytes, ext, st.dpi));
+                }
+                ExportColorMode::Rgb => {}
+            }
             let mut pm = tracedraw_render::render_page_image(doc, pid, st.render_dpi())
                 .ok_or("render failed")?;
             if st.transparent && matches!(ext, "png" | "webp" | "gif") {
@@ -220,6 +255,129 @@ pub(crate) fn pdfx_profile(app: &App, standard: tracedraw_io::pdf::PdfStandard) 
     (!p.is_empty())
         .then(|| crate::files::read(&p).ok())
         .flatten()
+}
+
+/// The CMYK profile a CMYK bitmap export carries (#1763): the one the
+/// colour management converts its colours with, the drawing's own while
+/// it is used, else the one picked under Colour Management; none with
+/// the built-in conversions.
+pub(crate) fn export_cmyk_profile(app: &App) -> Option<Vec<u8>> {
+    let c = &app.settings.color;
+    if c.builtin_engine {
+        return None;
+    }
+    if c.open_cmyk == 0 && crate::app::carried_cmyk_profile(app.doc()).is_some() {
+        return app.doc().cmyk_profile.as_ref().map(|p| p.data.to_vec());
+    }
+    app.settings_cmyk_profile().map(|p| p.data.to_vec())
+}
+
+/// `pm` drawn over white, as a page is printed.
+fn on_white(pm: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
+    let mut white = tiny_skia::Pixmap::new(pm.width(), pm.height())?;
+    white.fill(tiny_skia::Color::WHITE);
+    white.draw_pixmap(
+        0,
+        0,
+        pm.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    Some(white)
+}
+
+/// Page `pid` of `doc` at `dpi` as ink coverages (#1763): cyan, magenta,
+/// yellow and black of each pixel, 255 = full ink, with its size in
+/// pixels. Each process ink is the page's separation plate for it
+/// ([`plate_page`]) drawn on white: CMYK colours keep their exact
+/// values, other colours go through the drawing's colour management as
+/// on the plates, pictures give the inks they keep (#1659) or their
+/// pixels converted, and spot colours print as their process mix.
+pub(crate) fn cmyk_pixels(
+    doc: &Document,
+    pid: tracedraw_core::PageId,
+    dpi: f64,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let mut page = doc.page(pid).ok()?.clone();
+    for layer in page.layers.iter_mut() {
+        for s in layer.shapes.iter_mut() {
+            map_colors(s, &spot_as_cmyk);
+        }
+    }
+    let mut one = doc.clone();
+    one.pages.retain(|p| p.id == pid);
+    let mut out: Option<(u32, u32, Vec<u8>)> = None;
+    for ink in 0..4 {
+        *one.pages.first_mut()? = plate_page(&page, Plate::Process(ink));
+        let pm = on_white(&tracedraw_render::render_page_image(&one, pid, dpi)?)?;
+        let (w, h) = (pm.width(), pm.height());
+        let (ow, oh, buf) =
+            out.get_or_insert_with(|| (w, h, vec![0u8; w as usize * h as usize * 4]));
+        if (*ow, *oh) != (w, h) {
+            return None;
+        }
+        for (px, p) in buf.chunks_exact_mut(4).zip(pm.pixels()) {
+            // The plate is grey: black is full ink.
+            px[ink] = 255 - p.red();
+        }
+    }
+    out
+}
+
+/// The grey of each pixel of an opaque `pm`, through the colour
+/// management's Grayscale conversion, each distinct colour once.
+fn gray_pixels(pm: &tiny_skia::Pixmap) -> Vec<u8> {
+    let mut known: std::collections::HashMap<[u8; 3], u8> = std::collections::HashMap::new();
+    pm.pixels()
+        .iter()
+        .map(|p| {
+            let rgb = [p.red(), p.green(), p.blue()];
+            *known.entry(rgb).or_insert_with(|| {
+                match tracedraw_core::Color::rgb8(rgb[0], rgb[1], rgb[2]).convert_to("Grayscale") {
+                    tracedraw_core::Color::Gray { v } => (v.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    _ => 0,
+                }
+            })
+        })
+        .collect()
+}
+
+/// An opaque rendered page as a one-channel JPEG (at `quality`) or TIFF.
+fn encode_gray(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u8>, String> {
+    let img = image::GrayImage::from_raw(pm.width(), pm.height(), gray_pixels(pm))
+        .ok_or("image buffer")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    if ext == "jpg" {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100))
+            .encode_image(&img)
+            .map_err(|e| e.to_string())?;
+    } else {
+        img.write_to(&mut out, image::ImageFormat::Tiff)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(out.into_inner())
+}
+
+/// The ink coverages of an opaque `pm` through the colour management's
+/// CMYK conversion, each distinct colour once: for the estimate of a
+/// CMYK file's size from the preview.
+fn ink_pixels(pm: &tiny_skia::Pixmap) -> Vec<u8> {
+    let mut known: std::collections::HashMap<[u8; 3], [u8; 4]> = std::collections::HashMap::new();
+    pm.pixels()
+        .iter()
+        .flat_map(|p| {
+            let rgb = [p.red(), p.green(), p.blue()];
+            *known.entry(rgb).or_insert_with(|| {
+                match tracedraw_core::Color::rgb8(rgb[0], rgb[1], rgb[2]).convert_to("CMYK") {
+                    tracedraw_core::Color::Cmyk { c, m, y, k } => {
+                        [c, m, y, k].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    }
+                    _ => [0; 4],
+                }
+            })
+        })
+        .collect()
 }
 
 /// `bytes`, a PNG, JPEG or BMP file, saying it was made at `dpi` dots per
@@ -342,6 +500,28 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
         );
         pm = white;
     }
+    // A CMYK file shows as it will print, a grey one in grey (#1763).
+    match st.color_mode_for(ext) {
+        ExportColorMode::Rgb => {}
+        ExportColorMode::Cmyk => {
+            let mut known: std::collections::HashMap<[u8; 3], [u8; 3]> =
+                std::collections::HashMap::new();
+            for p in pm.pixels_mut() {
+                let rgb = [p.red(), p.green(), p.blue()];
+                let [r, g, b] = *known.entry(rgb).or_insert_with(|| {
+                    tracedraw_core::color::proof_rgb(rgb.map(|v| f32::from(v) / 255.0))
+                        .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                });
+                *p = tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255)?;
+            }
+        }
+        ExportColorMode::Gray => {
+            let grey = gray_pixels(&pm);
+            for (p, v) in pm.pixels_mut().iter_mut().zip(grey) {
+                *p = tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255)?;
+            }
+        }
+    }
     Some(pm)
 }
 
@@ -362,9 +542,25 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
         "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
             let enc = if ext == "psd" { "tif" } else { ext };
-            let bytes = encode_raster_with(preview, enc, st.quality, st.webp_lossless)
-                .ok()?
-                .len() as f64;
+            let (w, h) = (preview.width(), preview.height());
+            let bytes = match st.color_mode_for(ext) {
+                ExportColorMode::Rgb => {
+                    encode_raster_with(preview, enc, st.quality, st.webp_lossless).ok()?
+                }
+                ExportColorMode::Gray => encode_gray(preview, ext, st.quality).ok()?,
+                ExportColorMode::Cmyk if ext == "jpg" => tracedraw_io::cmyk_bitmap::cmyk_jpeg(
+                    w,
+                    h,
+                    &ink_pixels(preview),
+                    st.quality,
+                    st.dpi,
+                    None,
+                )?,
+                ExportColorMode::Cmyk => {
+                    tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink_pixels(preview), st.dpi, None)?
+                }
+            }
+            .len() as f64;
             let dpi = st.render_dpi();
             let full = (bounds.width() / 25.4 * dpi) * (bounds.height() / 25.4 * dpi);
             let shown = (preview.width() as f64 * preview.height() as f64).max(1.0);
@@ -2923,6 +3119,196 @@ mod tests {
             record_dpi(vec![0xFF, 0xD8], "jpg", f64::NAN),
             vec![0xFF, 0xD8]
         );
+    }
+
+    /// The pixel at `(x, y)` of an uncompressed chunky TIFF, read with
+    /// the fields of TIFF 6.0 (image width, strip offsets, rows per
+    /// strip, samples per pixel); also the photometric interpretation.
+    fn tiff_pixel(b: &[u8], x: usize, y: usize) -> (Vec<u8>, u32) {
+        let le16 = |at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as u32;
+        let le32 = |at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        assert_eq!(&b[..4], b"II*\0");
+        let ifd = le32(4) as usize;
+        let field = |tag: u32| -> Vec<u32> {
+            for i in 0..le16(ifd) as usize {
+                let e = ifd + 2 + 12 * i;
+                if le16(e) == tag {
+                    let (kind, n) = (le16(e + 2), le32(e + 4) as usize);
+                    let size = if kind == 3 { 2 } else { 4 };
+                    let at = if size * n <= 4 {
+                        e + 8
+                    } else {
+                        le32(e + 8) as usize
+                    };
+                    return (0..n)
+                        .map(|k| {
+                            if size == 2 {
+                                le16(at + 2 * k)
+                            } else {
+                                le32(at + 4 * k)
+                            }
+                        })
+                        .collect();
+                }
+            }
+            panic!("no tag {tag}");
+        };
+        let (w, spp, rows) = (field(256)[0], field(277)[0], field(278)[0]);
+        let offsets = field(273);
+        let row = (w * spp) as usize;
+        let strip = y / rows as usize;
+        let at = offsets[strip] as usize + (y % rows as usize) * row + x * spp as usize;
+        (b[at..at + spp as usize].to_vec(), field(262)[0])
+    }
+
+    /// File > Export to JPEG or TIFF in CMYK (#1763): a rectangle filled
+    /// with pure cyan comes out as cyan ink alone, the paper as no ink,
+    /// an RGB red through the colour management as magenta and yellow;
+    /// RGB exports are as before, Grayscale writes one channel, and the
+    /// drawing's CMYK profile goes into the files.
+    #[test]
+    fn cmyk_bitmap_exports_keep_the_inks() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        for (rect, color) in [
+            (
+                Rect::new(10.0, 10.0, 100.0, 100.0),
+                Color::cmyk8(255, 0, 0, 0),
+            ),
+            (Rect::new(110.0, 10.0, 200.0, 100.0), Color::rgb8(255, 0, 0)),
+        ] {
+            app.new_shape_styled(
+                ShapeKind::Rect {
+                    rect,
+                    radius: 0.0,
+                    corners: None,
+                },
+                |s| {
+                    s.fill = Fill::Solid(color);
+                    s.stroke = None;
+                },
+            );
+        }
+        let mut doc = app.doc().clone();
+        let profile = tracedraw_core::icc::test_profiles::lut16_cmyk_profile();
+        doc.cmyk_profile = Some(tracedraw_core::DocumentProfile::new(
+            "Press",
+            profile.clone(),
+        ));
+        app.engine.replace(doc);
+        let dir = std::env::temp_dir().join(format!("tracedraw-1763-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = |format: usize, color_mode: usize| ExportState {
+            format,
+            dpi: 25.4,
+            quality: 95,
+            color_mode,
+            transparent: false,
+            ..ExportState::default()
+        };
+        // Page coordinates run up from the bottom: the rectangles lie
+        // near the bottom of the 297 mm page, one pixel per mm.
+        let (cyan_at, red_at, paper_at) = ((55, 297 - 55), (155, 297 - 55), (55, 150));
+
+        // CMYK JPEG, read by the decoder TraceDraw opens files with.
+        let jpg = dir.join("cmyk.jpg");
+        export(&mut app, &jpg, &st(3, 1)).expect("cmyk jpeg");
+        let bytes = std::fs::read(&jpg).unwrap();
+        assert!(bytes.windows(5).any(|w| w == b"Adobe"), "Adobe marker");
+        let sof = bytes
+            .windows(2)
+            .position(|w| w == [0xFF, 0xC0])
+            .expect("SOF0");
+        assert_eq!(bytes[sof + 9], 4, "four components");
+        let icc_at = bytes
+            .windows(12)
+            .position(|w| w == b"ICC_PROFILE\0")
+            .expect("profile embedded");
+        assert_eq!(&bytes[icc_at + 14..icc_at + 14 + 64], &profile[..64]);
+        assert_eq!(
+            crate::image_dpi::resolution(&bytes).map(|(x, _)| x.round()),
+            Some(25.0)
+        );
+        let img = image::load_from_memory(&bytes).expect("decodes").to_rgb8();
+        assert_eq!((img.width(), img.height()), (210, 297));
+        // The decoder shows (255 - ink) x (255 - black): only no red, full
+        // green and blue is cyan 100 with magenta, yellow and black 0.
+        let p = img.get_pixel(cyan_at.0, cyan_at.1).0;
+        assert!(p[0] < 6 && p[1] > 249 && p[2] > 249, "cyan: {p:?}");
+        let p = img.get_pixel(paper_at.0, paper_at.1).0;
+        assert!(p.iter().all(|v| *v > 249), "paper: {p:?}");
+
+        // CMYK TIFF: the inks as they are.
+        let tif = dir.join("cmyk.tif");
+        export(&mut app, &tif, &st(5, 1)).expect("cmyk tiff");
+        let bytes = std::fs::read(&tif).unwrap();
+        let (cyan, photometric) = tiff_pixel(&bytes, cyan_at.0 as usize, cyan_at.1 as usize);
+        assert_eq!(photometric, 5, "separated");
+        assert!(
+            cyan[0] > 252 && cyan[1..].iter().all(|v| *v < 3),
+            "{cyan:?}"
+        );
+        let (paper, _) = tiff_pixel(&bytes, paper_at.0 as usize, paper_at.1 as usize);
+        assert_eq!(paper, [0, 0, 0, 0]);
+        let (red, _) = tiff_pixel(&bytes, red_at.0 as usize, red_at.1 as usize);
+        let want = match Color::rgb8(255, 0, 0).convert_to("CMYK") {
+            Color::Cmyk { c, m, y, k } => [c, m, y, k].map(|v| (v * 255.0).round() as i32),
+            other => panic!("{other:?}"),
+        };
+        for (got, want) in red.iter().zip(want) {
+            assert!((*got as i32 - want).abs() <= 2, "red: {red:?} {want:?}");
+        }
+        assert!(
+            red[1] > 200 && red[2] > 200,
+            "red prints magenta and yellow"
+        );
+        assert!(bytes.windows(64).any(|w| w == &profile[..64]), "profile");
+        assert_eq!(
+            crate::image_dpi::resolution(&bytes).map(|(x, _)| x.round()),
+            Some(25.0)
+        );
+
+        // RGB, the default: JFIF with three components, as before.
+        assert_eq!(ExportState::default().color_mode, 0);
+        let rgb = dir.join("rgb.jpg");
+        export(&mut app, &rgb, &st(3, 0)).expect("rgb jpeg");
+        let bytes = std::fs::read(&rgb).unwrap();
+        assert_eq!(&bytes[6..11], b"JFIF\0");
+        assert!(!bytes.windows(5).any(|w| w == b"Adobe"));
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(img.color(), image::ColorType::Rgb8);
+        let p = img.to_rgb8().get_pixel(cyan_at.0, cyan_at.1).0;
+        let want = Color::cmyk8(255, 0, 0, 0).to_rgb8();
+        for (a, b) in p.iter().zip(want) {
+            assert!((*a as i32 - b as i32).abs() < 6, "{p:?} {want:?}");
+        }
+        let rgb_tif = dir.join("rgb.tif");
+        export(&mut app, &rgb_tif, &st(5, 0)).expect("rgb tiff");
+        let (_, photometric) = tiff_pixel(&std::fs::read(&rgb_tif).unwrap(), 0, 0);
+        assert_eq!(photometric, 2, "RGB TIFF as before");
+
+        // Grayscale: one channel, the colour's grey.
+        for (format, ext) in [(3, "jpg"), (5, "tif")] {
+            let path = dir.join(format!("gray.{ext}"));
+            export(&mut app, &path, &st(format, 2)).expect(ext);
+            let img = image::open(&path).unwrap();
+            assert_eq!(img.color(), image::ColorType::L8, "{ext}");
+            let v = img.to_luma8().get_pixel(cyan_at.0, cyan_at.1).0[0];
+            let want = Color::cmyk8(255, 0, 0, 0).convert_to("Grayscale");
+            let want = match want {
+                Color::Gray { v } => (v * 255.0).round() as i32,
+                other => panic!("{other:?}"),
+            };
+            assert!((v as i32 - want).abs() < 6, "{ext}: {v} {want}");
+        }
+        // Other formats ignore the colour mode.
+        let png = dir.join("x.png");
+        export(&mut app, &png, &st(2, 1)).expect("png");
+        assert!(matches!(
+            image::open(&png).unwrap().color(),
+            image::ColorType::Rgb8 | image::ColorType::Rgba8
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The bitmap size in the Export dialog: in pixels it sets the

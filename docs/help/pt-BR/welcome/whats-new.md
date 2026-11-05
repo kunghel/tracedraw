@@ -8,7 +8,11 @@ saber o que mudou e lista os destaques das versões mais recentes.
 ## Ver as novidades no programa {#in-the-program}
 
 - Escolha [[menu.help > menu.help.whats_new]] para abrir a página de novidades
-  da Tela de boas-vindas, com as notícias desta versão.
+  da Tela de boas-vindas. Ela lista as dez últimas versões, da mais nova
+  para a mais antiga, cada uma com a data e um título curto. Clique numa
+  versão para ler um resumo curto do que mudou; a mais nova já vem aberta.
+  **Quer saber mais?** embaixo de um resumo abre a página dessa versão no
+  GitHub, com a lista completa de mudanças.
 - Ative [[menu.help > menu.help.highlight_whats_new]] para marcar nos menus o
   que é novo nesta versão: um pequeno ponto aparece no fim de cada comando
   novo, ao lado da seta de um submenu que leva a um deles e sobre o título de
@@ -20,6 +24,16 @@ saber o que mudou e lista os destaques das versões mais recentes.
 
 ## Destaques das versões recentes {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] abre as ferramentas para
+  plotters de recorte: saída para o plotter, linhas de corte, encaixe e
+  medição. Veja [TraceCut](../objects/tracecut.md).
+- **Teclado, celulares e canetas.** Menus e listas funcionam pelo teclado. Em
+  celulares Android a interface cabe na tela e uma mão apoiada não desenha
+  mais enquanto se usa uma caneta; a caneta de uma mesa digitalizadora
+  funciona no Linux com Wayland.
+- **Arquivos.** Arquivos .cdr abrem com suas paradas de tabulação, páginas
+  mestras, degradês e distorções; imagens de PDF entram em resolução total;
+  JPEG e TIFF são exportados em CMYK.
 - **Miniaturas dos objetos.** O painel [[docker.objects]] mostra cada objeto
   desenhado em tamanho pequeno ao lado do nome; Ctrl+roda sobre a lista ou o
   controle deslizante na parte de baixo define o tamanho. Veja

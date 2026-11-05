@@ -218,6 +218,10 @@ pub(crate) struct RunStyle {
     pub char_spacing: Option<f64>,
     /// Paragraph indents in points: (left, first line, right).
     pub indent_pt: Option<(f64, f64, f64)>,
+    /// The paragraph's tab stops (the style table's tab entries before
+    /// version 16, the `tabs` member of a style string's paragraph from
+    /// 16), mm from the frame's left edge.
+    pub tabs: Option<Vec<tracedraw_core::TabStop>>,
     /// Version 16+ style strings: the space before and after a paragraph
     /// as factors of the character height (`beforeParaSpacing` 1.0 is no
     /// extra space, `afterParaSpacing` 0.0 none), and the unit they and
@@ -387,6 +391,7 @@ impl RunStyle {
             },
             char_spacing: self.char_spacing.or(base.char_spacing),
             indent_pt: self.indent_pt.or(base.indent_pt),
+            tabs: self.tabs.clone().or_else(|| base.tabs.clone()),
             para_before: self.para_before.or(base.para_before),
             para_after: self.para_after.or(base.para_after),
             spacing_method: self.spacing_method.or(base.spacing_method),
@@ -649,9 +654,12 @@ fn read_stlt_set11(
         };
         intervals.insert(id, (ch as i32 as f64 / 1_000_000.0, line));
     }
-    if skip_table(&mut r, 152).is_none() || skip_table(&mut r, 784).is_none() {
+    if skip_table(&mut r, 152).is_none() {
         return Vec::new();
     }
+    let Some(tab_entries) = read_tab_table(&mut r, v) else {
+        return Vec::new();
+    };
     // Bullets have a variable size.
     let Some(nb) = r.u32() else {
         return Vec::new();
@@ -785,11 +793,14 @@ fn read_stlt_set11(
         }
         if num > 2 {
             // tab, bullet, indent, hyphen and drop cap ids.
-            let (Some(_tab), Some(_bullet), Some(indent_ref), Some(_hyphen), Some(_drop)) =
+            let (Some(tab_ref), Some(_bullet), Some(indent_ref), Some(_hyphen), Some(_drop)) =
                 (r.u32(), r.u32(), r.u32(), r.u32(), r.u32())
             else {
                 break;
             };
+            if let Some(t) = tab_entries.get(&tab_ref) {
+                style.tabs = Some(t.clone());
+            }
             if let Some(ind) = indents.get(&indent_ref) {
                 if ind.0.is_finite() && ind.1.is_finite() && ind.2.is_finite() {
                     style.indent_pt = Some(*ind);
@@ -800,6 +811,104 @@ fn read_stlt_set11(
     }
     *exact = out.len() == num_records as usize && r.remaining() == 0;
     out
+}
+
+/// The size of a style table tab entry (versions 7 to 15).
+pub(crate) const TAB_ENTRY_SIZE: usize = 784;
+/// The stops a style table tab entry holds at most.
+pub(crate) const TAB_ENTRY_STOPS: usize = 64;
+
+/// A tab stop kind as files give it: 0 left, 1 right (the only two the
+/// samples of #1852 hold, the right stops confirmed by the previews they
+/// carry). Codes no file has shown read as left.
+pub(crate) fn tab_kind_of(code: u32) -> tracedraw_core::TabKind {
+    match code {
+        1 => tracedraw_core::TabKind::Right,
+        _ => tracedraw_core::TabKind::Left,
+    }
+}
+
+/// The code a file holds for a tab stop kind ([`tab_kind_of`]): centre
+/// and decimal stops have none known yet and go out as left stops.
+pub(crate) fn tab_code(kind: tracedraw_core::TabKind) -> u32 {
+    match kind {
+        tracedraw_core::TabKind::Right => 1,
+        _ => 0,
+    }
+}
+
+/// The tab entries of a style table (versions 7 to 15; earlier ones are
+/// skipped by their size): each is 784 bytes, an id, 4 bytes, the number
+/// of stops (u16), the leader spacing (u16), the leader character (u32),
+/// then 64 slots of 12 bytes, of which the first `count` are stops: a
+/// word that is 0 in every sample, the kind ([`tab_kind_of`]) and the
+/// position (i32, coordinate units from the frame's left edge). Files
+/// of the #1852 samples, versions 7 to 15, all hold this layout; their
+/// root style lists the program's defaults (a left stop every 12.7 mm).
+fn read_tab_table(
+    r: &mut Reader,
+    v: u16,
+) -> Option<std::collections::HashMap<u32, Vec<tracedraw_core::TabStop>>> {
+    let n = r.u32()? as usize;
+    let n = n.min(r.remaining() / TAB_ENTRY_SIZE);
+    let mut out = std::collections::HashMap::with_capacity(n);
+    for _ in 0..n {
+        let rec = r.b.get(r.pos..r.pos.checked_add(TAB_ENTRY_SIZE)?)?;
+        r.skip(TAB_ENTRY_SIZE);
+        if v < 7 {
+            continue;
+        }
+        let word = |at: usize| -> Option<u32> {
+            rec.get(at..at + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let Some(id) = word(0) else { continue };
+        let count = rec
+            .get(8..10)
+            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize)
+            .min(TAB_ENTRY_STOPS);
+        let mut stops = Vec::with_capacity(count);
+        for k in 0..count {
+            let at = 16 + k * 12;
+            let (Some(kind), Some(pos)) = (word(at + 4), word(at + 8)) else {
+                break;
+            };
+            let mm = pos as i32 as f64 * PT_PER_UNIT * 25.4 / 72.0;
+            if mm.is_finite() && (0.0..=10_000.0).contains(&mm) {
+                stops.push(tracedraw_core::TabStop::new(mm, tab_kind_of(kind)));
+            }
+        }
+        out.insert(id, stops);
+    }
+    Some(out)
+}
+
+/// The `tabs` member of a version 16+ style string's paragraph: stops
+/// separated by `|`, each three numbers: a word that is 0 in every
+/// sample, the kind ([`tab_kind_of`]) and the position in coordinate
+/// units ("0,1,1681755" is a right stop 168.18 mm from the frame's left
+/// edge). An empty string is no stops.
+pub(crate) fn parse_tabs_member(s: &str) -> Option<Vec<tracedraw_core::TabStop>> {
+    let mut out = Vec::new();
+    for stop in s.split('|').map(str::trim).filter(|t| !t.is_empty()) {
+        let nums: Vec<f64> = stop
+            .split(',')
+            .map(|n| n.trim().parse::<f64>())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let (Some(kind), Some(pos)) = (nums.get(1), nums.get(2)) else {
+            return None;
+        };
+        let mm = pos * PT_PER_UNIT * 25.4 / 72.0;
+        if !mm.is_finite() || !(0.0..=10_000.0).contains(&mm) || *kind < 0.0 {
+            return None;
+        }
+        out.push(tracedraw_core::TabStop::new(mm, tab_kind_of(*kind as u32)));
+        if out.len() >= TAB_ENTRY_STOPS * 4 {
+            break;
+        }
+    }
+    Some(out)
 }
 
 /// One styled run of text.
@@ -835,6 +944,11 @@ pub(crate) struct Txsm {
     /// The settings of the first paragraph frame (version 16+: the style
     /// string of its frame record, holding its columns).
     pub frame_style: Option<String>,
+    /// Version 16+: the record's layout version (1700, 1800 ...).
+    pub layout: Option<u16>,
+    /// Version 16+ paragraph text (the frame flag clear): each
+    /// paragraph's default style string as stored, for the checker.
+    pub frame_text_styles: Vec<String>,
 }
 
 /// How a text fitted to a path sits on it: the 40 bytes after the
@@ -935,6 +1049,8 @@ fn early_paragraphs(chars: &[u8], size_pt: Option<f64>) -> Txsm {
         paragraphs,
         inert_styles: 0,
         frame_style: None,
+        layout: None,
+        frame_text_styles: Vec::new(),
     }
 }
 
@@ -1073,6 +1189,8 @@ fn read_txsm_7_frames(
         paragraphs: Vec::new(),
         inert_styles: 0,
         frame_style: None,
+        layout: None,
+        frame_text_styles: Vec::new(),
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1378,6 +1496,25 @@ pub(crate) fn decode_style_bytes(b: &[u8], charset: u8) -> String {
     }
 }
 
+/// Whether a style string starts at `at`: its length, then (after any
+/// white space) the `{` that opens it, in UTF-16 before version 17.
+fn style_string_at(d: &[u8], at: usize, v: u16) -> bool {
+    let Some(len) = d
+        .get(at..at + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    else {
+        return false;
+    };
+    let unit = if v < 17 { 2 } else { 1 };
+    let Some(body) = len
+        .checked_mul(unit)
+        .and_then(|n| d.get(at + 4..at + 4 + n))
+    else {
+        return false;
+    };
+    body.iter().step_by(unit).find(|c| !c.is_ascii_whitespace()) == Some(&b'{')
+}
+
 fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> Option<Txsm> {
     let mut r = Reader::new(d, false);
     // Not zero: the frame layout of the records below (artistic text has
@@ -1425,6 +1562,8 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         paragraphs: Vec::new(),
         inert_styles: 0,
         frame_style,
+        layout: Some(layout),
+        frame_text_styles: Vec::new(),
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1433,12 +1572,21 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         if flag == 1 {
             r.skip(64);
         }
+        // Paragraph text of a layout before 1700 may hold the paragraph's
+        // base style before its default (public notes), or only the
+        // default, as the 84 paragraph texts of layout 1500 in a version
+        // 21 file do (#1833: the record count follows it). A second string
+        // is taken only when one starts there.
         let mut base = RunStyle::default();
-        if layout < 1700 && !frame {
-            let s = read_style_string(&mut r, d, v, charset)?;
-            base = parse_style_string(&s);
+        let mut first = read_style_string(&mut r, d, v, charset)?;
+        if layout < 1700 && !frame && style_string_at(d, r.pos, v) {
+            base = parse_style_string(&first);
+            first = read_style_string(&mut r, d, v, charset)?;
         }
-        let default = parse_style_string(&read_style_string(&mut r, d, v, charset)?).over(&base);
+        if !frame {
+            out.frame_text_styles.push(first.clone());
+        }
+        let default = parse_style_string(&first).over(&base);
         let nr = r.u32()? as usize;
         if nr > MAX_RUNS || nr > r.remaining() / 6 {
             return finish(out, warn, "style record count");
@@ -1920,6 +2068,17 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
         if matches!(v, Json::Obj(_) | Json::Arr(_)) {
             continue;
         }
+        if lk == "tabs" {
+            if let Json::Str(t) = v {
+                if let Some(tabs) = parse_tabs_member(t) {
+                    s.tabs = Some(tabs);
+                }
+            }
+            continue;
+        }
+        if lk.starts_with("tableader") {
+            continue;
+        }
         if lk == "beforeparaspacing" || lk == "afterparaspacing" {
             if let Some(n) = v.num() {
                 let f = n / 1_000_000.0;
@@ -2340,6 +2499,77 @@ mod tests {
         let mut r = Reader::new(&d, false);
         let read = read_style_string(&mut r, &d, 19, 134).expect("string");
         assert!(read.contains("方正黑体_GBK"), "{read}");
+    }
+
+    /// A style table tab entry (versions 7 to 15, #1852): id, 4 bytes,
+    /// the stop count, the leader spacing and character, then 64 slots of
+    /// (0, kind, position); built here from that layout, the values those
+    /// of the samples' right stop at 168.1755 mm and the default grid's
+    /// first left stop at 12.7 mm.
+    #[test]
+    fn style_table_tab_entries_give_kinds_and_positions() {
+        let entry = |id: u32, stops: &[(u32, i32)]| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&id.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&(stops.len() as u16).to_le_bytes());
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&u32::from(b'.').to_le_bytes());
+            for (kind, pos) in stops {
+                b.extend_from_slice(&0u32.to_le_bytes());
+                b.extend_from_slice(&kind.to_le_bytes());
+                b.extend_from_slice(&pos.to_le_bytes());
+            }
+            b.resize(TAB_ENTRY_SIZE, 0);
+            b
+        };
+        let mut d = 2u32.to_le_bytes().to_vec();
+        d.extend(entry(7, &[(0, 127_000), (0, 254_000)]));
+        d.extend(entry(9, &[(1, 1_681_755)]));
+        d.extend_from_slice(&[0xaa; 4]);
+        let mut r = Reader::new(&d, false);
+        let t = read_tab_table(&mut r, 12).expect("table");
+        assert_eq!(r.remaining(), 4, "the table ends after its entries");
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let grid = &t[&7];
+        assert_eq!(grid.len(), 2);
+        assert!(close(grid[0].pos, 12.7) && grid[0].kind == tracedraw_core::TabKind::Left);
+        assert!(close(grid[1].pos, 25.4));
+        let right = &t[&9];
+        assert!(close(right[0].pos, 168.1755), "{right:?}");
+        assert_eq!(right[0].kind, tracedraw_core::TabKind::Right);
+        // A count past the 64 slots reads the slots; a short table stops.
+        let mut d = 1u32.to_le_bytes().to_vec();
+        let mut e = entry(3, &[]);
+        e[8..10].copy_from_slice(&500u16.to_le_bytes());
+        d.extend(e);
+        let mut r = Reader::new(&d, false);
+        assert_eq!(read_tab_table(&mut r, 12).expect("table")[&3].len(), 64);
+        let mut r = Reader::new(&d[..100], false);
+        assert!(read_tab_table(&mut r, 12).expect("table").is_empty());
+    }
+
+    /// The `tabs` member of a version 16+ paragraph style string: stops
+    /// of (0, kind, position) separated by `|` (#1852).
+    #[test]
+    fn style_string_tabs_give_kinds_and_positions() {
+        let s = parse_style_string(
+            r#"{"paragraph":{"tabs":"0,1,1681755","tabLeaderSpacing":"1","tabLeaderChar":"2e000000"}}"#,
+        );
+        let t = s.tabs.expect("stops");
+        assert_eq!(t.len(), 1);
+        assert!((t[0].pos - 168.1755).abs() < 1e-9);
+        assert_eq!(t[0].kind, tracedraw_core::TabKind::Right);
+        let t = parse_tabs_member("0,0,127000|0,0,254000").expect("stops");
+        assert_eq!(t.len(), 2);
+        assert!((t[1].pos - 25.4).abs() < 1e-9);
+        assert_eq!(parse_tabs_member("").expect("none"), Vec::new());
+        assert!(parse_tabs_member("0,x,5").is_none());
+        assert!(parse_tabs_member("0,1").is_none());
+        // A code no file has shown reads as a left stop.
+        assert_eq!(tab_kind_of(7), tracedraw_core::TabKind::Left);
+        assert_eq!(tab_code(tracedraw_core::TabKind::Right), 1);
+        assert_eq!(tab_code(tracedraw_core::TabKind::Left), 0);
     }
 
     #[test]

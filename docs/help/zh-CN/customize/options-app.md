@@ -83,6 +83,7 @@
 - [[options.paragraph_text]]：[[menu.text.show_text_frames]]、
   [[menu.text.use_hyphenation]] 和 [[options.hyphenation_patterns]]
   （内置，或您所用语言的断字词典）。
+  - [[options.default_tab_spacing]]: 没有自己制表位的段落中 <kbd>Tab</kbd> 跳到的位置(12.7 毫米,半英寸)。
 - [[docker.fonts]]：在字体列表顶部 [[options.show_recent_fonts]]、
   [[options.recent_font_count]]（5，最多 20）以及
   [[options.font_sample_size]]。

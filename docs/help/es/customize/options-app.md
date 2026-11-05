@@ -113,6 +113,7 @@ La página tiene cinco pestañas.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] y los [[options.hyphenation_patterns]]
   (integrados, o un diccionario de división de su idioma).
+  - [[options.default_tab_spacing]]: adónde salta <kbd>Tab</kbd> en un párrafo sin paradas de tabulación propias (12,7 mm, media pulgada).
 - [[docker.fonts]]: [[options.show_recent_fonts]] arriba de las listas de
   fuentes, el [[options.recent_font_count]] (5, hasta 20) y el
   [[options.font_sample_size]].

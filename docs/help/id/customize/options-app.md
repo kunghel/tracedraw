@@ -110,6 +110,7 @@ Halaman ini punya lima tab.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] dan [[options.hyphenation_patterns]]
   (bawaan, atau kamus pemenggalan untuk bahasa Anda).
+  - [[options.default_tab_spacing]]: ke mana <kbd>Tab</kbd> melompat dalam paragraf tanpa stop tab sendiri (12,7 mm, setengah inci).
 - [[docker.fonts]]: [[options.show_recent_fonts]] di atas daftar font,
   [[options.recent_font_count]] (5, hingga 20) dan
   [[options.font_sample_size]].

@@ -332,8 +332,7 @@ pub(crate) fn length(ui: &mut Ui, app: &App, mm: &mut f64) -> bool {
     let r = ui.add_sized(
         [90.0, 22.0],
         NumField::new(&mut v)
-            .fixed_decimals(d.min(3))
-            .max_decimals(d)
+            .length_decimals(d)
             .suffix(format!(" {}", u.short()))
             .unit_mm(u.mm()),
     );
@@ -635,7 +634,7 @@ fn fill_row(
     ui.label(egui::RichText::new(icon).strong()).rich_tip(tip);
     let uniform = color.is_some();
     let names = [tr("docker.no_fill"), tr("docker.uniform_fill")];
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(120.0)
         .selected_text(names[usize::from(uniform)].clone())
         .show_ui(ui, |ui| {
@@ -684,7 +683,7 @@ fn style_list(app: &mut App, ui: &mut Ui) -> bool {
         .collect();
     let shown = style_name(&picks, &now);
     let mut changed = false;
-    egui::ComboBox::from_id_salt("docker_text_style")
+    crate::ui::keynav::ComboBox::from_id_salt("docker_text_style")
         .width(110.0)
         .selected_text(shown)
         .show_ui(ui, |ui| {
@@ -842,7 +841,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
             .rich_tip(tr("docker.text_outline"));
         let stroke = first.and_then(|t| t.stroke.clone());
         let pt = stroke.as_ref().map_or(0.0, |s| s.width * 72.0 / 25.4);
-        egui::ComboBox::from_id_salt("docker_text_outline")
+        crate::ui::keynav::ComboBox::from_id_salt("docker_text_outline")
             .width(120.0)
             .selected_text(if stroke.is_some() {
                 width_name((pt * 1000.0).round() / 1000.0)
@@ -1242,7 +1241,7 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 LeadingUnit::PercentPointSize => "docker.leading_point_size",
             })
         };
-        egui::ComboBox::from_id_salt("docker_leading_unit")
+        crate::ui::keynav::ComboBox::from_id_salt("docker_leading_unit")
             .width(120.0)
             .selected_text(unit_name(p.leading_unit))
             .show_ui(ui, |ui| {

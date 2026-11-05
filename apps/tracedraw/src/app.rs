@@ -598,7 +598,14 @@ pub enum Drag {
         index: usize,
         pivot: Point,
         guide: tracedraw_core::document::Guide,
+        /// The guideline as the press found it, and the angle (degrees)
+        /// of the pressed handle seen from the pivot.
+        start: tracedraw_core::document::Guide,
+        grab: f64,
     },
+    /// Dragging the rotation centre of the guideline in rotate mode
+    /// (#1850); the guideline stays where it is.
+    GuidePivot,
     /// Dragging the ruler origin out of the corner between the rulers.
     RulerOrigin {
         pos: Point,
@@ -1331,6 +1338,9 @@ pub struct App {
     pub dialog_return: Option<Box<crate::ui::dialogs::Dialog>>,
     /// The Import PDF question was answered for the file about to be read.
     pub pdf_text_chosen: bool,
+    /// The pictures of the PDF just opened that came in smaller than the
+    /// file holds them, for the message after opening (#1835).
+    pub pdf_shrunk: Vec<tracedraw_io::pdf_import::ShrunkPicture>,
     /// Where a drag for the new frame of a flow began.
     pub text_link_drag: Option<Point>,
     /// The pending link came from a frame's top tab: the frame clicked
@@ -1339,6 +1349,12 @@ pub struct App {
     /// The press that started the pending link is still held on its tab:
     /// releasing it says where the text flows (a drag from the tab).
     pub text_link_from_tab: bool,
+    /// A tab stop dragged on the tab ruler of the frame being edited
+    /// (#1852).
+    pub tab_drag: Option<crate::tab_ruler::TabDrag>,
+    /// The right click that opened the context menu was on the tab ruler:
+    /// the menu picks that stop's kind.
+    pub tab_ruler_menu: Option<crate::tab_ruler::RulerHit>,
     /// Clip frame being edited in place: (frame id, the page's other
     /// objects when editing began; see `clip_edit_contents`).
     pub clip_frame_edit: Option<(ShapeId, std::collections::HashSet<ShapeId>)>,
@@ -1568,6 +1584,8 @@ pub struct App {
     pub show_transform_toolbar: bool,
     /// Right-click context menu anchor (screen position, page position).
     pub context_menu: Option<(egui::Pos2, Point)>,
+    /// The rulers' right-click menu, where it was opened (#1831).
+    pub ruler_menu: Option<egui::Pos2>,
     /// A locked object right-clicked with a pick tool: the context menu
     /// offers to unlock it (it is not selected, so it cannot be edited).
     pub context_locked: Option<ShapeId>,
@@ -1851,6 +1869,16 @@ pub struct App {
     /// mouse wheel over them slides them (#794).
     pub page_tabs_first: usize,
     pub page_tabs_followed: Option<tracedraw_core::PageId>,
+    /// Where each page tab was last drawn, by page index: a selection
+    /// moved there goes to that page (#1346, `page_drop`).
+    pub page_tab_rects: Vec<(usize, egui::Rect)>,
+    /// The page tab a moved selection rests on, and since when (seconds).
+    pub page_tab_hover: Option<(usize, f64)>,
+    /// The undo group a move that went to another page opened, so the
+    /// whole drag is one undo step.
+    pub page_drag_group: Option<Option<u64>>,
+    /// Ctrl (Cmd) held during that move: copies go to the page.
+    pub page_drag_ctrl: bool,
     /// The Hints docker's page and history.
     pub hints: crate::ui::hints::HintsState,
 }
@@ -2633,9 +2661,12 @@ impl App {
             pending_text_link: None,
             dialog_return: None,
             pdf_text_chosen: false,
+            pdf_shrunk: Vec::new(),
             text_link_drag: None,
             text_link_incoming: false,
             text_link_from_tab: false,
+            tab_drag: None,
+            tab_ruler_menu: None,
             clip_frame_edit: None,
             clip_edit_marks: Vec::new(),
             symmetry_edit: None,
@@ -2757,6 +2788,7 @@ impl App {
             show_zoom_toolbar: false,
             show_transform_toolbar: false,
             context_menu: None,
+            ruler_menu: None,
             context_locked: None,
             scripts_output: Vec::new(),
             script_source: String::new(),
@@ -2890,6 +2922,10 @@ impl App {
             page_tabs_fraction: 0.45,
             page_tabs_first: 0,
             page_tabs_followed: None,
+            page_tab_rects: Vec::new(),
+            page_tab_hover: None,
+            page_drag_group: None,
+            page_drag_ctrl: false,
             hints: Default::default(),
         };
         app.load_settings();
@@ -3014,6 +3050,7 @@ impl App {
     /// after loading the preferences and when an options dialog closes.
     pub fn apply_runtime_settings(&mut self) {
         crate::ui::writing_tools::install_custom_hyphens(self);
+        tracedraw_core::set_default_tab_step(self.settings.default_tab_mm);
         crate::spell::configure(self.settings.spelling.config());
         let sp = &self.settings.spelling;
         let had = sp.hyphenation_patterns.clone();
@@ -3051,6 +3088,18 @@ impl App {
     /// Double-click on a ruler: Document Setup at the Rulers page.
     pub fn open_ruler_options(&mut self) {
         self.options_page = crate::ui::dialogs::OptionsPage::Rulers;
+        self.dialog = crate::ui::dialogs::Dialog::Options;
+    }
+
+    /// Open the grid settings (Options, Document, Grid).
+    pub fn open_grid_options(&mut self) {
+        self.options_page = crate::ui::dialogs::OptionsPage::Grid;
+        self.dialog = crate::ui::dialogs::Dialog::Options;
+    }
+
+    /// Open the guideline settings (Options, Document, Guidelines).
+    pub fn open_guidelines_options(&mut self) {
+        self.options_page = crate::ui::dialogs::OptionsPage::Guidelines;
         self.dialog = crate::ui::dialogs::Dialog::Options;
     }
 
@@ -5102,6 +5151,13 @@ impl App {
     /// when it starts or ends on one of its end nodes, otherwise it becomes
     /// a curve of its own (see `curve_join.rs`).
     pub fn finish_curve(&mut self) {
+        self.finish_curve_as(false);
+    }
+
+    /// [`Self::finish_curve`]; `closes`: the last node is the other end
+    /// of the curve the line goes on from, so the curve is closed and a
+    /// redo of this step ends it, as a close by hand does (#1846).
+    pub(crate) fn finish_curve_as(&mut self, closes: bool) {
         let history = std::mem::take(&mut self.curve_steps.undo);
         self.curve_steps.clear();
         let Some(c) = self.curve.take() else { return };
@@ -5128,7 +5184,8 @@ impl App {
         }
         let id = self.add_drawn_line(line.clone());
         if let Some(id) = id {
-            self.note_pen_curve_step(id, c.nodes.first().copied(), c.nodes.last().copied());
+            let redo_to = c.nodes.last().copied().filter(|_| !closes);
+            self.note_pen_curve_step(id, c.nodes.first().copied(), redo_to);
         }
         if c.bspline {
             // A B-spline of its own keeps its control points (one that
@@ -5470,6 +5527,36 @@ impl App {
         self.run(Command::DeleteShapes { shapes });
     }
 
+    /// Whether the toolbar's Delete button has something to delete: the
+    /// selected characters of the text being edited, the chosen nodes
+    /// with the Shape tool, the selected guidelines or objects.
+    pub fn can_delete(&self) -> bool {
+        if self.editing_text() {
+            return self.text_selection_active();
+        }
+        (self.tool == Tool::Shape && !self.node_selection.is_empty())
+            || !self.selected_guides.is_empty()
+            || !self.selection.is_empty()
+    }
+
+    /// The toolbar's Delete button (#1611): what the Delete key does to
+    /// the selection, for a screen with no keyboard.
+    pub fn delete_command(&mut self) {
+        if self.editing_text() {
+            if self.text_selection_active() {
+                self.text_delete_forward();
+            }
+        } else if self.tool == Tool::Shape && !self.node_selection.is_empty() {
+            self.delete_selected_nodes();
+        } else if !self.selected_guides.is_empty() && self.selection.is_empty() {
+            if !self.delete_selected_guides() {
+                self.status = crate::i18n::tr("status.guideline_locked");
+            }
+        } else {
+            self.delete_selection();
+        }
+    }
+
     pub fn select_all(&mut self) {
         let ids = self
             .page_layers()
@@ -5664,11 +5751,38 @@ impl App {
         }
     }
 
+    /// What Object > Group puts in the group: the selection, and the
+    /// start and end objects of its blends. A click selects a blend's
+    /// start or end object alone, and the blend is grouped with both
+    /// (#1842).
+    fn group_members(&self) -> Vec<ShapeId> {
+        let mut out = self.selection.clone();
+        for (start, e) in self.selected_blends() {
+            let end = match e {
+                tracedraw_core::live::Effect::Blend { end_id, .. } => end_id,
+                _ => None,
+            };
+            for id in std::iter::once(start).chain(end) {
+                if !out.contains(&id) && self.doc().shape(id).is_ok() {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// Object > Group can run: two objects or more are selected, or a
+    /// blend (its start and end objects).
+    pub fn can_group(&self) -> bool {
+        self.selection.len() > 1 || self.group_members().len() > 1
+    }
+
     pub fn group_selection(&mut self) {
-        if self.selection.len() < 2 {
+        let shapes = self.group_members();
+        if shapes.len() < 2 {
             return;
         }
-        let shapes = std::mem::take(&mut self.selection);
+        self.selection.clear();
         self.run(Command::Group { shapes });
         let group = self
             .page_layers()
@@ -6441,6 +6555,7 @@ impl App {
         }
         // Objects of a `.cdr` file left out because they could not be read.
         let mut unread = 0usize;
+        let mut shrunk = Vec::new();
         // The version of an opened `.cdr` file: saving keeps it.
         let mut cdr_version = None;
         let mut opened_version = None;
@@ -6693,6 +6808,7 @@ impl App {
                 for w in &imported.warnings {
                     log::warn!("pdf: {w}");
                 }
+                shrunk = std::mem::take(&mut imported.shrunk_pictures);
                 let pages = imported.pages.len();
                 let n: usize = imported.pages.iter().map(|p| p.shapes.len()).sum();
                 let title = imported.title.clone().unwrap_or(title);
@@ -6858,6 +6974,7 @@ impl App {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
+                self.pdf_shrunk = shrunk;
                 self.show_open_notes(name, unread);
             }
             Err(e) => {
@@ -7601,6 +7718,9 @@ impl App {
     /// which fonts are missing, as far as Options > Global > Warnings asks
     /// for it, unless another dialog is up.
     pub fn show_open_notes(&mut self, name: String, unread: usize) {
+        // Pictures shrunk on reading are told whatever the warnings say,
+        // after the missing fonts' dialog when it comes first (#1835).
+        let shrunk = crate::ui::dialogs::shrunk_sizes(&std::mem::take(&mut self.pdf_shrunk));
         if !matches!(self.dialog, crate::ui::dialogs::Dialog::None) {
             return;
         }
@@ -7618,6 +7738,9 @@ impl App {
                     &self.missing_fonts,
                 ),
             );
+            if let crate::ui::dialogs::Dialog::MissingFonts(st) = &mut self.dialog {
+                st.shrunk = shrunk;
+            }
             return;
         }
         // Without the dialog, the status line's note of the fonts (set
@@ -7638,9 +7761,10 @@ impl App {
             } else {
                 Vec::new()
             },
+            shrunk,
             dont_show: false,
         };
-        if notes.unread > 0 || !notes.fonts.is_empty() {
+        if notes.unread > 0 || !notes.fonts.is_empty() || !notes.shrunk.is_empty() {
             self.dialog = crate::ui::dialogs::Dialog::OpenNotes(notes);
         }
     }
@@ -8105,6 +8229,25 @@ impl App {
                 }
                 self.hyphenate_imported(&ids);
                 self.select(ids);
+                // The first page's pictures that came in smaller (#1835).
+                let shrunk: Vec<_> = imported
+                    .shrunk_pictures
+                    .iter()
+                    .filter(|p| p.page == 0)
+                    .copied()
+                    .collect();
+                if !shrunk.is_empty() && matches!(self.dialog, crate::ui::dialogs::Dialog::None) {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    self.dialog =
+                        crate::ui::dialogs::Dialog::OpenNotes(crate::ui::dialogs::OpenNotes {
+                            name,
+                            shrunk: crate::ui::dialogs::shrunk_sizes(&shrunk),
+                            ..Default::default()
+                        });
+                }
             }
             Err(e) => self.status = crate::i18n::trf("status.import_failed", &[("e", &e)]),
         }

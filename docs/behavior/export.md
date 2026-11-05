@@ -36,8 +36,9 @@ Office presets start with their own (see `options.md`).
 | Format | Settings |
 |---|---|
 | PNG, WebP, GIF | resolution (1 to 2400 dpi, presets 72, 96, 150, 300), transparent background; WebP also quality (the files are lossless; below 100 the colours are first rounded to fewer levels, WebP's near-lossless way: 1 low bit from 90, 2 from 75, 3 from 50, 4 below, so a lower quality makes a smaller file; #544, `export::tests::webp_quality_shrinks_the_file`) |
-| JPEG | resolution, quality (1 to 100) |
-| BMP, TIFF, PSD | resolution |
+| JPEG | resolution, quality (1 to 100), colour mode (RGB, CMYK, Grayscale; see Colour mode below) |
+| TIFF | resolution, colour mode |
+| BMP, PSD | resolution |
 | PDF | Export all text as curves (off at first: every text becomes filled outlines, so the file needs no fonts and cannot be searched; #1382, `export::tests::export_pdf_text_as_curves_holds_no_font`), standard (PDF 1.4, PDF/X-1a, PDF/X-3, PDF/X-4), bleed, output condition for PDF/X; the author, subject and keywords come from the drawing's properties (File > Export as PDF has bookmarks and protection, see `publish-to-pdf.md`) |
 | AI | Compatibility: PDF-compatible (the default) or Illustrator 8 (EPS-based); see "AI files" below (#1728) |
 | SVG, EPS, DXF, HTML, EMF, WMF, PLT | none |
@@ -54,7 +55,8 @@ Office presets start with their own (see `options.md`).
   shows when it is not 100 % and puts it back. Either way the other side
   follows the page's proportions.
 - Under the size: what comes out, "1240 x 1754 pixels, 150 dpi, sRGB"
-  ("sRGB + alpha" with a transparent background).
+  ("sRGB + alpha" with a transparent background, "CMYK" or "Grayscale"
+  in those colour modes).
 - PNG, JPEG and BMP files record the resolution of the dialog (PNG
   `pHYs`, the JFIF density, the BMP header's pixels per metre), so a
   scaled export opens at the printed size chosen; the scale multiplies
@@ -78,6 +80,52 @@ Office presets start with their own (see `options.md`).
   the page, the selection or a setting changes.
 - OK asks where to save; the file name is the drawing's with the format's
   extension.
+
+## Colour mode
+
+JPEG and TIFF have Colour mode (#1763): RGB (the default, the file as
+before), CMYK or Grayscale. Other formats are always RGB and ignore it.
+
+- CMYK writes the page's inks, made exactly as the print separations
+  make them: each process ink is the page's plate for that ink (every
+  colour as its coverage of that ink, black = full ink) rendered at the
+  export's resolution on white, so the paper is no ink and anti-aliased
+  edges, transparency and fountain fills blend as on the plates. CMYK
+  colours keep their exact values (a fill of C 100 is cyan 100 % with no
+  magenta, yellow or black); RGB, Lab and other colours go through the
+  drawing's colour management (`Color::convert_to("CMYK")`, the CMYK
+  profile when one is used, else the built-in press model, with Map gray
+  to black); pictures that keep their ink channels (a `.cdr` CMYK image,
+  #1659) give those inks and other pictures have their pixels converted
+  the same way; spot colours print as their process mix at their tint
+  and registration colour as 100 % of every ink. Spot channels a
+  picture keeps are left out (they have no plate in a CMYK file).
+- A CMYK JPEG is a baseline JPEG of four components, no subsampling,
+  with the Adobe marker (transform 0, no colour transform) and the
+  components stored inverted (255 = no ink), the convention readers of
+  CMYK JPEG files expect; Quality scales the example quantization table
+  of the JPEG standard by `2 ^ ((50 - q) / 20)` (every step 1 at 100).
+  Its resolution goes in an Exif block (X and Y resolution in dots per
+  inch).
+- A CMYK TIFF is uncompressed, PhotometricInterpretation 5 (separated)
+  with InkSet 1 (CMYK), 8 bits per ink, the inks as they are (255 = full
+  ink), in strips of about 64 KB, recording its resolution.
+- Both carry the CMYK profile the colours were converted with: the
+  drawing's own (a `.cdr` file's) while Colour Management uses it, else
+  the CMYK profile picked under Colour Management; none with the
+  built-in conversions (in a JPEG as `ICC_PROFILE` segments, in a TIFF
+  as tag 34675).
+- Grayscale writes one channel: the rendered page's colours through the
+  Grayscale conversion of the colour management (the luminance), as an
+  8-bit grey JPEG (with its JFIF resolution) or TIFF.
+- The preview shows a CMYK export as it will print (the colours through
+  CMYK and back, as View > Proof Colors) and a Grayscale one in grey; the
+  estimated size comes from the preview encoded in the colour mode.
+- The colour mode is kept with the other choices: in presets (presets
+  saved before it existed are RGB), the last export of each format and
+  the preferences (`export::tests::cmyk_bitmap_exports_keep_the_inks`,
+  `prefs::tests::export_presets_keep_the_colour_mode`,
+  `tracedraw_io::cmyk_bitmap` tests).
 
 ## Presets
 
@@ -107,7 +155,8 @@ not know shows by its name alone; its name must be free in every format
 
 Choosing a preset
 puts back its format, resolution, quality, transparent background,
-selection only, all pages, the size's unit and scale and the PDF
+selection only, all pages, the size's unit and scale, the colour mode
+of JPEG and TIFF and the PDF
 choices (standard, bleed, output condition). Presets are kept in the preferences
 (`formats.export_presets`; #547,
 `prefs::tests::export_presets_save_apply_rename_and_delete`).
@@ -150,6 +199,7 @@ dialog's choices, and Export for Web and Office keep their own (#617,
 - `export::tests::bitmap_exports_record_their_resolution_and_scale`
 - `export::tests::the_export_size_is_typed_in_pixels_or_lengths`
 - `prefs::tests::each_export_format_comes_back_as_it_was_last_exported`
+- `export::tests::cmyk_bitmap_exports_keep_the_inks`, `prefs::tests::export_presets_keep_the_colour_mode`
 
 ## Format list and file properties
 

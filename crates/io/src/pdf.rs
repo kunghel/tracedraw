@@ -3930,6 +3930,7 @@ mod text_tests {
             "",
             crate::pdf_import::ImportOptions {
                 text_as_curves: true,
+                ..Default::default()
             },
         )
         .expect("reads");

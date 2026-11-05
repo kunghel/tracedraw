@@ -33,6 +33,7 @@ use crate::platform_impl::wayland::seat::{
     PointerConstraintsState, RelativePointerState, TextInputState, WinitPointerData,
     WinitPointerDataExt, WinitSeatState,
 };
+use crate::platform_impl::wayland::tablet::TabletState;
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
 use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
@@ -130,6 +131,10 @@ pub struct WinitState {
     /// TraceDraw: the action the compositor chose for that offer.
     pub file_drop_action: DndAction,
 
+    /// TraceDraw: the tablet manager, for a graphics tablet's pen
+    /// (#1841, `tablet.rs`).
+    pub tablet: Option<TabletState>,
+
     /// Whether we have dispatched events to the user thus we want to
     /// send `AboutToWait` and normally wakeup the user.
     pub dispatched_events: bool,
@@ -171,11 +176,16 @@ impl WinitState {
             },
         };
 
+        // TraceDraw: a tablet seat for each seat, for a graphics tablet's
+        // pen (#1841).
+        let tablet = TabletState::bind(globals, queue_handle);
+
         let mut seats = AHashMap::default();
         for seat in seat_state.seats() {
             let mut seat_data = WinitSeatState::new();
             seat_data.data_device =
                 data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+            seat_data.tablet_seat = tablet.as_ref().map(|t| t.tablet_seat(&seat, queue_handle));
             seats.insert(seat.id(), seat_data);
         }
 
@@ -225,6 +235,7 @@ impl WinitState {
             file_drag: FileDrag::new(),
             file_drop_offer: None,
             file_drop_action: DndAction::empty(),
+            tablet,
             // Make it true by default.
             dispatched_events: true,
         })

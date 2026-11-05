@@ -68,7 +68,7 @@ fn choice<T: Copy + PartialEq>(
         .find(|(v, _)| *v == current)
         .map(|(_, k)| tr(k))
         .unwrap_or_default();
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(width)
         .selected_text(label)
         .show_ui(ui, |ui| {

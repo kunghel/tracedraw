@@ -506,8 +506,30 @@ its default settings to a 64-pixel landscape, and its name below.
 
 ## Save Bitmap As
 
-The bitmap's context menu writes its pixels, the effects in its stack
-included, to a PNG file (a download in the browser).
+The bitmap's context menu writes the picture to a PNG, JPEG or TIFF
+file (a download in the browser, of the kind offered first). The kind
+is the file name's extension (`.png`; `.jpg` or `.jpeg`; `.tif` or
+`.tiff`); the dialog offers first, and gives the name, the kind of the
+file the picture is linked to or was imported from (its name), else
+TIFF for a CMYK picture, else PNG (#1834).
+
+- PNG: the pixels as the drawing keeps them, the effects in its stack
+  included (RGB, or grey for a Grayscale picture).
+- A CMYK picture (a `.cdr` CMYK image, or one in the CMYK colour mode)
+  as JPEG or TIFF is written in CMYK: the ink channels it keeps
+  (`Shape::picture_inks`, #1659) as they are, else its pixels through
+  the colour management, as its separation plates print them; a spot
+  ink it keeps goes in as its process mix. The TIFF is a separated
+  image, the JPEG a four-component file, both with the picture's
+  resolution and the CMYK profile in use (the writers of the CMYK
+  export, #1763). Neither holds transparency: a see-through pixel holds
+  that much less ink.
+- Any other picture as JPEG is RGB (grey for a Grayscale picture) at
+  quality 92 over white paper, with its resolution; as TIFF it is RGB,
+  with its alpha when a pixel is see-through.
+
+`bitmap_file::tests::save_bitmap_as_keeps_the_inks_of_a_cmyk_picture`,
+`bitmap_file::tests::save_bitmap_as_writes_an_rgb_picture_as_jpeg_or_tiff`.
 
 ## Color Mask docker
 

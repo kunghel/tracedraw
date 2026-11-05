@@ -146,6 +146,15 @@ impl<'a, N: Numeric> NumField<'a, N> {
         self
     }
 
+    /// A length: the decimals the value needs, at least one and at most
+    /// `precision` (Options > Edit, Drawing precision), trailing zeros
+    /// dropped: 80.0 mm, 140.5 mm, 140.625 mm (#1761).
+    pub fn length_decimals(mut self, precision: usize) -> Self {
+        self.min_decimals = precision.min(1);
+        self.max_decimals = Some(precision);
+        self
+    }
+
     /// A distance field whose unit is `mm` millimetres: values typed with
     /// another unit's name are converted.
     pub fn unit_mm(mut self, mm: f64) -> Self {
@@ -187,8 +196,9 @@ pub fn format_number(v: f64, integral: bool, min: usize, max: Option<usize>) -> 
             s.pop();
         }
     }
-    if s == "-0" {
-        s = "0".into();
+    // No minus before a zero that rounding made (-0, -0.0).
+    if s.starts_with('-') && s.bytes().all(|b| matches!(b, b'-' | b'0' | b'.')) {
+        s.remove(0);
     }
     s
 }
@@ -1499,6 +1509,8 @@ mod tests {
         assert_eq!(format_number(12.0, false, 3, Some(3)), "12.000");
         assert_eq!(format_number(0.123456, false, 1, Some(4)), "0.1235");
         assert_eq!(format_number(-0.0001, false, 0, Some(2)), "0");
+        assert_eq!(format_number(-0.0001, false, 1, Some(3)), "0.0");
+        assert_eq!(format_number(-10.0, false, 1, Some(3)), "-10.0");
         assert_eq!(format_number(7.6, true, 0, None), "8");
     }
 

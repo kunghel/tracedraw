@@ -39,6 +39,9 @@ pub struct MissingFontsState {
     pub dont_show: bool,
     /// The installed families typed into the list's filter.
     pub filter: String,
+    /// Pictures read smaller than the file holds them, said after this
+    /// dialog (#1835).
+    pub shrunk: Vec<String>,
 }
 
 impl MissingFontsState {
@@ -63,6 +66,7 @@ impl MissingFontsState {
             keep: false,
             dont_show: false,
             filter: String::new(),
+            shrunk: Vec::new(),
         }
     }
 
@@ -153,7 +157,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
                             } else {
                                 row.chosen.clone()
                             };
-                            egui::ComboBox::from_id_salt(("missing_font", i))
+                            crate::ui::keynav::ComboBox::from_id_salt(("missing_font", i))
                                 .selected_text(shown)
                                 .width(260.0)
                                 .height(300.0)
@@ -192,13 +196,15 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
     if help {
         app.open_dialog_help();
     }
-    if *close && st.unread > 0 {
-        // The note about the objects that could not be read follows.
+    if *close && (st.unread > 0 || !st.shrunk.is_empty()) {
+        // The note about the objects that could not be read and the
+        // pictures read smaller follows.
         // A closing dialog's next one is kept (see `dialogs::show`).
         app.dialog = crate::ui::dialogs::Dialog::OpenNotes(crate::ui::dialogs::OpenNotes {
             name: st.name.clone(),
             unread: st.unread,
             fonts: Vec::new(),
+            shrunk: st.shrunk.clone(),
             dont_show: false,
         });
     }

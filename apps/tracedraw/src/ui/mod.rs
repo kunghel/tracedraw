@@ -62,6 +62,7 @@ pub mod hint_pics;
 pub mod hints;
 pub mod icon_paint;
 pub mod icons;
+pub mod keynav;
 pub mod lab_dialog;
 pub mod layout_options;
 pub mod line_style;
@@ -81,6 +82,7 @@ pub mod palette_bars;
 pub mod palette_manager;
 pub mod pdf_import_dialog;
 pub mod pdf_password;
+pub mod phone;
 pub mod picture_mosaic_docker;
 pub mod preflight_dialog;
 pub mod preview;
@@ -96,6 +98,7 @@ pub mod slider;
 pub mod status;
 pub mod straighten_dialog;
 pub mod symmetry_bar;
+pub mod tab_focus;
 pub mod table_bar;
 pub mod tabs;
 pub mod template_dialog;
@@ -103,6 +106,9 @@ pub mod text_docker;
 pub mod text_path_bar;
 pub mod time_tracker;
 pub mod trace_dialog;
+pub mod tracecut;
+pub mod tracecut_cut;
+pub mod tracecut_nest;
 // The audit reads widget names, which egui keeps only in debug builds.
 #[cfg(all(test, debug_assertions))]
 mod tip_audit;
@@ -254,7 +260,11 @@ fn set_window_title(ctx: &egui::Context, title: String) {
 
 pub fn root(app: &mut App, ui: &mut Ui) {
     let steps = app.step_merge_start();
+    // Tab and Shift+Tab stay in the window that has the focus (#1258).
+    tab_focus::begin(ui.ctx());
     root_frame(app, ui);
+    keynav::end_frame(ui.ctx());
+    tab_focus::end(ui.ctx());
     // The steps a number field made one after another are one undo step.
     let time = ui.ctx().input(|i| i.time);
     app.step_merge_end(steps, time);
@@ -318,6 +328,10 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // at its drawing scale.
     crate::app::set_pixel_dpi(app.document_dpi());
     crate::app::set_drawing_scale(app.doc().metadata.rulers.world_per_page());
+    // A phone's screen gets the phone layout (#1301).
+    phone::update(&ctx);
+    // Options > Tools > Curves: palm rejection on Android (#1832).
+    crate::palm::set_enabled(app.settings.curves.pen_ignores_hand);
     apply_ui_scale(&ctx, crate::settings::effective_ui_size(&app.settings));
     crate::theme::set_button_sizes(app.settings.button_size, app.settings.toolbox_button_size);
     apply_theme(&ctx, &crate::settings::effective_theme(&app.settings));
@@ -336,6 +350,9 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // Clones take up what the last frame changed on their masters.
     app.sync_object_clones();
     keep_tab_on_the_drawing(app, &ctx);
+    // The menu bar and an open menu or list take their keys first, so
+    // that the arrows never nudge the drawing then (#1839).
+    keynav::frame(&ctx, app.shortcut_editor.capture.is_some());
     app.keyboard(&ctx);
     // A menu command run by a shortcut of the user's.
     if let Some(cmd) = app.pending_command.take() {
@@ -432,7 +449,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         return;
     }
 
-    Panel::top("menu_bar")
+    let menu_bar = Panel::top("menu_bar")
         .frame(
             Frame::new()
                 .fill(Tokens::menu_bar())
@@ -441,7 +458,10 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         .exact_size(24.0)
         .resizable(false)
         .show_separator_line(false)
-        .show(ui, |ui| menus::menu_bar(app, ui));
+        .show(ui, |ui| menus::menu_bar(app, ui))
+        .response
+        .rect;
+    tab_focus::set_menu_bar(&ctx, menu_bar);
     // The bars, where the layout puts them (see bars.rs). Outer panels
     // come first: the status bar (at the very bottom, or right under the
     // menu bar), then the toolbars, then the palettes and the toolbox.
@@ -731,9 +751,18 @@ fn docker_column(
         .rect;
     let (_, _, shown) = app.docker_column(place);
     if shown {
-        let r = panel(id.1)
-            .default_size(340.0)
-            .resizable(true)
+        // On a phone the docker is a sheet over the whole room beside its
+        // tab strip: a column beside the drawing left neither room
+        // enough (#1301).
+        let sheet = phone::phone();
+        let panel = if sheet {
+            panel(id.1)
+                .exact_size(ui.available_width().max(dockers::STRIP_W))
+                .resizable(false)
+        } else {
+            panel(id.1).default_size(340.0).resizable(true)
+        };
+        let r = panel
             .frame(Frame::new().fill(crate::theme::Tokens::field()))
             .show(ui, |ui| dockers::dockers(app, ui, place))
             .response
@@ -1394,6 +1423,301 @@ mod tests {
             app.undo();
         }
         frame(&ctx, &mut app);
+    }
+
+    /// The Touch workspace with a finger only (#1611): the Standard
+    /// toolbar's Delete deletes the selection, its Panels button shows
+    /// the dockers the workspace starts without, and a finger held on an
+    /// object opens the object's menu (egui's long press, the right
+    /// click of a touch screen), whose Delete works too.
+    #[test]
+    fn a_finger_deletes_opens_the_panels_and_the_object_menu() {
+        use crate::ui::bar_items::{items, ItemBar};
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        app.show_welcome = false;
+        app.set_workspace(crate::app::Workspace::Touch);
+        let clock = std::cell::Cell::new(0.0);
+        let timed = |app: &mut App, events: Vec<egui::Event>, dt: f64| {
+            clock.set(clock.get() + dt);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| root(app, ui));
+            out.textures_delta.clear();
+        };
+        // A finger down at `at` for `secs`, then lifted.
+        let finger = |app: &mut App, at: egui::Pos2, secs: f64| {
+            let touch = |phase| egui::Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(3),
+                phase,
+                pos: at,
+                force: None,
+            };
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start),
+                    egui::Event::PointerMoved(at),
+                    button(at, true, egui::PointerButton::Primary),
+                ],
+                0.05,
+            );
+            let mut held = 0.0;
+            while held + 0.05 < secs {
+                timed(app, Vec::new(), 0.05);
+                held += 0.05;
+            }
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End),
+                    button(at, false, egui::PointerButton::Primary),
+                    egui::Event::PointerGone,
+                ],
+                0.05,
+            );
+            timed(app, Vec::new(), 0.05);
+        };
+        for _ in 0..5 {
+            timed(&mut app, Vec::new(), 0.05);
+        }
+        app.zoom_to_page();
+        timed(&mut app, Vec::new(), 0.05);
+        let button_at = |app: &App, id: &str| {
+            let i = items(app, ItemBar::Standard)
+                .iter()
+                .position(|b| b == id)
+                .expect("on the bar");
+            let slot = app
+                .shown_bar_slots
+                .iter()
+                .find(|s| s.bar == ItemBar::Standard)
+                .expect("the Standard toolbar is drawn");
+            let r = slot.items[i];
+            assert!(
+                r.right() <= 1600.0 && r.bottom() <= 1000.0,
+                "{id} is on the screen: {r:?}"
+            );
+            r.center()
+        };
+        // Delete.
+        let before = shape_count(&app);
+        assert!(!app.selection.is_empty());
+        let at = button_at(&app, "delete");
+        finger(&mut app, at, 0.1);
+        assert!(app.selection.is_empty());
+        assert!(shape_count(&app) < before, "the toolbar's Delete deleted");
+        app.undo();
+        assert_eq!(shape_count(&app), before);
+        // The panels.
+        assert!(!app.show_dockers);
+        let at = button_at(&app, "dockers");
+        finger(&mut app, at, 0.1);
+        assert!(app.show_dockers, "the Panels button shows the dockers");
+        finger(&mut app, at, 0.1);
+        assert!(!app.show_dockers);
+        // A finger held on an object: its menu, with it selected.
+        app.select(Vec::new());
+        timed(&mut app, Vec::new(), 0.05);
+        let on_rect = app.view.to_screen(Point::new(35.0, 25.0));
+        let before = shape_count(&app);
+        finger(&mut app, on_rect, 1.2);
+        assert!(app.context_menu.is_some(), "a long press opens the menu");
+        assert_eq!(app.selection.len(), 1, "of the object under the finger");
+        assert_eq!(shape_count(&app), before, "the hold moved or drew nothing");
+        // The bare page: the page's menu.
+        app.context_menu = None;
+        timed(&mut app, Vec::new(), 0.05);
+        let empty = app.view.to_screen(Point::new(150.0, 250.0));
+        app.select(Vec::new());
+        finger(&mut app, empty, 1.2);
+        assert!(app.context_menu.is_some(), "a long press on the page");
+        assert_eq!(shape_count(&app), before);
+    }
+
+    /// One frame on a screen of `dp` system points (a phone or a tablet,
+    /// at one pixel a point), the monitor being that screen.
+    fn screen_frame(ctx: &egui::Context, app: &mut App, dp: egui::Vec2) {
+        let zoom = ctx.zoom_factor();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, dp / zoom)),
+            ..Default::default()
+        };
+        let vp = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        vp.native_pixels_per_point = Some(1.0);
+        vp.monitor_size = Some(dp / zoom);
+        let mut out = ctx.run_ui(input, |ui| root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    /// What the last frame cut off at the screen's edge: a control that
+    /// shows in part and reaches past an edge of the screen with its
+    /// visible part running up to that edge (a control a bar or a scroll
+    /// area clips inside the screen is reachable: the bar's « and » or
+    /// the scroll bring it into view; one out of sight altogether is one
+    /// a bar slides away), the main window's layout reaching past the
+    /// screen (panels taller or wider than it), and a window or pop-up
+    /// reaching past it.
+    fn cut_off(ctx: &egui::Context) -> Vec<String> {
+        let screen = ctx.content_rect().expand(0.5);
+        let mut out = Vec::new();
+        let windows: Vec<egui::LayerId> = ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| matches!(l.order, egui::Order::Middle | egui::Order::Foreground))
+                .collect()
+        });
+        for layer in windows {
+            if let Some(r) = ctx.memory(|m| m.area_rect(layer.id)) {
+                if r.is_positive() && !screen.contains_rect(r) {
+                    out.push(format!("window {:?} {r:?}", layer.id.short_debug_format()));
+                }
+            }
+        }
+        ctx.viewport(|v| {
+            if let Some(r) = v.prev_pass.root_ui_min_rect {
+                if !screen.contains_rect(r) {
+                    out.push(format!("the main window's layout {r:?}"));
+                }
+            }
+            for (layer, widgets) in v.prev_pass.widgets.layers() {
+                for w in widgets {
+                    // Controls; the areas that hold them (a bar's whole
+                    // length, a panel) only sense the pointer over them.
+                    if !(w.sense.senses_click() || w.sense.senses_drag()) {
+                        continue;
+                    }
+                    let seen = w.interact_rect.intersect(screen);
+                    if seen.width() < 1.0 || seen.height() < 1.0 {
+                        continue;
+                    }
+                    let edge = screen.shrink(1.0);
+                    let cut = (w.rect.left() < screen.left() && seen.left() <= edge.left())
+                        || (w.rect.right() > screen.right() && seen.right() >= edge.right())
+                        || (w.rect.top() < screen.top() && seen.top() <= edge.top())
+                        || (w.rect.bottom() > screen.bottom() && seen.bottom() >= edge.bottom());
+                    if cut {
+                        out.push(format!(
+                            "{:?} {:?} {:?}",
+                            layer.order,
+                            w.id.short_debug_format(),
+                            w.rect
+                        ));
+                    }
+                }
+            }
+        });
+        out
+    }
+
+    /// The phone layout (#1301, #1497, #1691): at 360 x 640 and 412 x 915
+    /// dp, upright and turned, in the Touch workspace a fresh Android
+    /// install starts in, nothing is cut off at the screen's edge on the
+    /// Welcome Screen, with a drawing and its selection, with the dockers
+    /// open (a sheet) or the New Document dialog; every menu can be
+    /// reached (the titles that do not fit are under »). An 800 x 1280
+    /// tablet keeps the layout it had: the Touch size, the dockers as a
+    /// column beside the drawing, the whole menu bar when turned (upright,
+    /// at the Touch size, the last titles go under » too), and nothing is
+    /// cut off there either.
+    #[test]
+    fn phones_fit_and_tablets_keep_their_layout() {
+        let menu_bar = |ctx: &egui::Context| {
+            ctx.data(|d| {
+                d.get_temp::<(Vec<egui::Rect>, usize)>(egui::Id::new(menus::MENU_BAR_LAYOUT))
+            })
+            .expect("the menu bar was drawn")
+        };
+        for (w, h, phone) in [
+            (360.0, 640.0, true),
+            (640.0, 360.0, true),
+            (412.0, 915.0, true),
+            (915.0, 412.0, true),
+            (800.0, 1280.0, false),
+            (1280.0, 800.0, false),
+        ] {
+            let dp = egui::vec2(w, h);
+            let ctx = crate::theme::ui_context();
+            ctx.options_mut(|o| o.tessellation_options.round_text_to_pixels = true);
+            let mut app = mixed_app();
+            app.set_workspace(crate::app::Workspace::Touch);
+            let settle = |ctx: &egui::Context, app: &mut App| {
+                for _ in 0..6 {
+                    screen_frame(ctx, app, dp);
+                }
+            };
+            // The Welcome Screen, with recent documents.
+            app.settings.recent_files = (1..=3)
+                .map(|i| std::path::PathBuf::from(format!("/no/such/folder/drawing {i}.cdr")))
+                .collect();
+            app.show_welcome = true;
+            settle(&ctx, &mut app);
+            assert_eq!(phone::phone(), phone, "{w} x {h}");
+            let size = crate::settings::effective_ui_size(&app.settings);
+            if phone {
+                assert!((size - 1.0).abs() < 1e-6, "no Touch enlargement on a phone");
+            } else {
+                assert!(
+                    (size - crate::settings::TOUCH_SCALE).abs() < 1e-6,
+                    "{w} x {h}"
+                );
+            }
+            let bad = cut_off(&ctx);
+            assert!(bad.is_empty(), "{w} x {h}, Welcome Screen: {bad:#?}");
+            // A drawing, its objects selected.
+            app.show_welcome = false;
+            app.select_all();
+            settle(&ctx, &mut app);
+            let bad = cut_off(&ctx);
+            assert!(bad.is_empty(), "{w} x {h}, drawing: {bad:#?}");
+            // Every menu: its title on the screen, or under » (the last
+            // title) on a phone.
+            let (titles, more) = menu_bar(&ctx);
+            let screen = ctx.content_rect().expand(0.5);
+            assert!(
+                titles.iter().all(|r| screen.contains_rect(*r)),
+                "{w} x {h}: {titles:?}"
+            );
+            let shown = titles.len() - usize::from(more > 0);
+            assert_eq!(shown + more, menus::all_menus().len(), "{w} x {h}");
+            if !phone && w > h {
+                assert_eq!(more, 0, "{w} x {h}: a tablet's menu bar keeps every title");
+            }
+            // The dockers.
+            app.show_dockers = true;
+            app.docker_tab = DockerTab::Properties;
+            settle(&ctx, &mut app);
+            let bad = cut_off(&ctx);
+            assert!(bad.is_empty(), "{w} x {h}, dockers: {bad:#?}");
+            // A sheet over the room on a phone, a column on a tablet.
+            let columns = ctx
+                .data(|d| {
+                    d.get_temp::<Vec<(crate::app::DockerPlace, egui::Rect)>>(egui::Id::new(
+                        dockers::DOCKER_COLUMNS,
+                    ))
+                })
+                .expect("the docker columns were laid out");
+            let width = columns.iter().map(|(_, r)| r.width()).fold(0.0, f32::max);
+            let screen_w = ctx.content_rect().width();
+            assert_eq!(width > 0.7 * screen_w, phone, "{w} x {h}: dockers {width}");
+            app.show_dockers = false;
+            // The New Document dialog.
+            app.request_new_document();
+            settle(&ctx, &mut app);
+            let bad = cut_off(&ctx);
+            assert!(bad.is_empty(), "{w} x {h}, New Document: {bad:#?}");
+            app.dialog = crate::ui::dialogs::Dialog::None;
+            phone::set_phone(false);
+        }
     }
 
     fn key(ctx: &egui::Context, app: &mut App, key: egui::Key, modifiers: egui::Modifiers) {

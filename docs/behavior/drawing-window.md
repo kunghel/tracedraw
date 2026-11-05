@@ -146,13 +146,30 @@ window shows.
   bounds (effects, drop shadows, symbols, the objects of a drag preview)
   are always drawn. Zoomed into a page of ten thousand rectangles the
   render takes less than half the time it did.
-- While the view moves (a pan, a scroll, a zoom) the last render is
-  shown moved or scaled into place at once, and the page is rendered
-  anew once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`);
-  the part the last render did not cover stays blank until then. So a
-  page of thousands of objects pans at the screen's rate whatever its
-  size; a zoom looks coarse for that moment. The Pixels view never
-  shows a moved render.
+- While the view pans or scrolls the last render is shown moved into
+  place at once (as sharp as it was), and the page is rendered anew
+  once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`); the
+  part the last render did not cover stays blank until then. So a page
+  of thousands of objects pans at the screen's rate whatever its size.
+  The Pixels view never shows a moved render.
+- A zoom (the wheel, a pinch, the Zoom tool, the zoom keys) does not
+  wait for the view to rest: the last render, scaled into place, would
+  look blurry, so the main canvas renders the new zoom at once on a
+  thread of its own (`raster::Raster::zooms_at_once`), the scaled
+  picture showing meanwhile. A zoom step that comes while that render
+  runs does not restart it (nothing is thrown away): when it ends its
+  picture is shown, nearer the zoom on screen than the one before, and
+  the next render starts in the same frame for the latest zoom. A burst
+  of wheel notches so shows a sharper picture after every render, and
+  the sharp one about one render after the last step instead of 0.12 s
+  plus a render. Like every render it covers only the canvas, the part
+  of the page on screen, drawn in bands on all cores at once (so the
+  whole visible part comes about as fast as a tile under the pointer
+  would). The pages beside the current one in the Multipage View still
+  wait for the view to rest (many of them come due at once), and the
+  browser build, which draws on one thread, keeps the wait too.
+  `frame_times_of_a_zoom_burst` (in `pick_drag_tests.rs`) measures the
+  wait from the last step to the sharp picture.
 - The page is rendered in horizontal bands, one per processor core
   (up to 16), each on its own thread, when the canvas has a quarter of
   a million pixels or more; a band reaches past its edges by twice the
@@ -191,6 +208,7 @@ window shows.
 - `raster::tests::a_moving_view_shows_the_last_render_until_it_rests`
 - `raster::tests::a_canvas_that_moves_renders_again`
 - `raster::tests::a_slow_page_is_drawn_on_its_own_thread`
+- `raster::tests::the_latest_zoom_wins_without_restarting_renders`
 - `raster::tests::one_render_job_runs_at_a_time_and_the_current_page_goes_first`
 - `raster::tests::the_current_page_gets_the_next_turn`
 - `tracedraw_core::engine::tests::the_history_keeps_to_its_memory_limit`

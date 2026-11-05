@@ -1128,7 +1128,7 @@ pub fn combo<R>(
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.spacing_mut().interact_size.y = rect.height();
         ui.spacing_mut().button_padding = Vec2::new(4.0, 0.0);
-        out = egui::ComboBox::from_id_salt(id)
+        out = crate::ui::keynav::ComboBox::from_id_salt(id)
             .width(rect.width())
             .height(400.0)
             .selected_text(selected)

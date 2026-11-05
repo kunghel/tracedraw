@@ -15,18 +15,18 @@ raw input hook reads the force of the touch events of each frame
 (`pen.rs`, `filter_raw_input`) before egui and the tools see them; a
 touch that ends, or one with no force, clears it. The published winit does this on Windows
 only; TraceDraw's patched copy (`vendor/winit`, see `vendor/README.md`)
-adds X11 and macOS, and the patched eframe copy (`vendor/eframe`) the
+adds X11, Wayland and macOS, and the patched eframe copy (`vendor/eframe`) the
 browser. What each platform gives:
 
 | Platform | Pointer from the pen | Pressure |
 |---|---|---|
 | Windows (8 and later) | yes (`WM_POINTER` pen events) | yes, 0..1 from the pen's 0..1024 |
 | Linux, X11 (also XWayland) | yes (XInput 2 motion) | yes: the pen's valuator labelled `Abs Pressure`, as a share of its range (patched copy) |
-| Linux, Wayland | no: the windowing layer does not speak the tablet protocol (`zwp_tablet_v2`), and GNOME's compositor does not turn pen input into pointer input for clients that do not (its issue 2226 is open); KDE's did until Plasma 6.3 and now needs `KWIN_WAYLAND_EMULATE_TABLET=1` | no |
+| Linux, Wayland | yes: the tablet protocol (`zwp_tablet_manager_v2`, patched copy, #1841) | yes: the protocol's `pressure`, 0..65535, as a share of that range (patched copy) |
 | macOS | yes | yes: the `pressure` of mouse events of the tablet point subtype (patched copy) |
 | Browser | yes (pointer events) | yes: the `pressure` of a pen's pointer events (`pointerType` `pen`), already 0..1 (patched copy, #1410); a touch's force as before |
 
-On X11 and macOS the patched copy sends the pressure as a touch of phase
+On X11, Wayland and macOS the patched copy sends the pressure as a touch of phase
 Move only, never Start or End (those would press the button a second
 time through egui-winit), with no force once the reading is at the
 axis's minimum, so a lifted pen leaves no stale pressure. The hook then
@@ -36,19 +36,55 @@ session on any touch (lists scroll by dragging, windows move from
 anywhere, text in labels cannot be selected by dragging). A real touch
 screen's touches start, move and end, and reach egui as before.
 
-So on a Wayland desktop (Ubuntu's default) the stylus does nothing until
-the window runs through X11: `tracedraw --x11` asks the windowing layer
-for its X11 backend, so the window opens on XWayland, where the pen moves
-the pointer, clicks and reports its pressure (XWayland lists the pen as
-an XInput 2 device with the same `Abs Pressure` valuator). The
-environment is left as it is, so programs TraceDraw starts (a browser
-for a link) still run on Wayland. Without `DISPLAY` (no XWayland, no X
-server) `--x11` stops at once with a message saying it needs XWayland or
-an X11 session, and exits with status 2. `env -u WAYLAND_DISPLAY
-tracedraw` opens the window on XWayland too.
+## On Wayland
 
-A pen on Wayland itself needs the tablet protocol in winit, and no
-native library of TraceDraw's own. An X11 touchpad driver that exposes
+A Wayland compositor sends a pen's input only over the tablet protocol
+(`zwp_tablet_manager_v2` and the tablet seat, tablet and tool of each
+seat, the public tablet-v2 protocol of wayland-protocols); GNOME's sends
+a window that does not bind it nothing at all, so before #1841 the pen
+neither moved the pointer nor drew on a Wayland desktop (Ubuntu's
+default). The patched winit copy now binds the protocol when the
+compositor offers it (`platform_impl/linux/wayland/tablet.rs`) and turns
+each tool's events into what the other platforms send
+(`vendor/winit/src/tablet_tool.rs`):
+
+- The pen coming near the tablet over the window enters it, and moving
+  away leaves it, as the mouse pointer does; its motion moves the
+  pointer. The compositor is asked for the default arrow as the pen's
+  cursor over the window (`wp_cursor_shape_manager_v1`, when offered).
+- The tip touching the tablet presses the primary button, lifting it
+  releases it. The barrel buttons press the middle (`BTN_STYLUS`) and
+  the secondary (`BTN_STYLUS2`) button, a third one (`BTN_STYLUS3`)
+  the back button. The eraser end is a tool of its own and draws like
+  the tip.
+- While the tip touches, its pressure (0 to 65535) goes out as a moving
+  touch with the reading as a share of that range, at every frame that
+  moves the pen or changes the reading; a reading of 0, lifting the
+  tip, or the pen leaving gives no force. Leaving the window also
+  releases any button the pen still held.
+- The protocol groups a tool's events into frames; a frame's place,
+  pressure, presses and releases are sent together when it ends.
+- The pen's tilt, distance, rotation, slider and wheel, and the
+  tablet's own buttons, rings and strips (the pad) are not read: the
+  windowing layer's events have no place for them and no tool uses them.
+- Over the window's frame (drawn by the windowing layer on GNOME) the
+  pen does nothing; move or resize the window with the mouse.
+- A compositor without the tablet protocol (rare: GNOME, KDE and the
+  wlroots compositors offer it) leaves the pen as before.
+
+`tracedraw --x11` still opens the window through X11 instead: it asks
+the windowing layer for its X11 backend, so the window opens on
+XWayland, where the pen moves the pointer, clicks and reports its
+pressure (XWayland lists the pen as an XInput 2 device, `xwayland-tablet
+stylus`, with the same `Abs Pressure` valuator). The environment is left
+as it is, so programs TraceDraw starts (a browser for a link) still run
+on Wayland. Without `DISPLAY` (no XWayland, no X server) `--x11` stops at
+once with a message saying it needs XWayland or an X11 session, and
+exits with status 2. `env -u WAYLAND_DISPLAY tracedraw` opens the window
+on XWayland too. `GDK_BACKEND=x11` does not: it is read by GTK programs
+only, and the window opens on Wayland whenever `WAYLAND_DISPLAY` is set.
+
+An X11 touchpad driver that exposes
 an `Abs Pressure` valuator for a finger (the old synaptics driver) would
 drive the width too; the option below turns it off.
 
@@ -142,6 +178,21 @@ at every `pointermove` over the canvas (anywhere during a drag) and at
   as it lifts, then the Freehand line is still wide then thin, no width
   node is below a hairline, and egui reports no touch screen (test
   `a_pen_that_only_sends_moving_touches_sets_the_width`).
+- Given a pen on a Wayland window, the tablet protocol's events of a
+  stroke pressed at 0.9 then 0.2 of the range (proximity, down, motion
+  and pressure, up, proximity out, in frames) turned into egui events
+  as the patched winit copy and egui-winit do, then the Freehand line
+  is wide then thin and egui reports no touch screen; a pen whose
+  pressure stays at 0 gives an outline without width nodes (test
+  `a_pen_on_wayland_sets_the_width`).
+- The Wayland translation of a tool's events: nothing before a frame
+  ends; a stroke enters, moves, sends its pressure, presses and
+  releases in that order; a lift sends no stale pressure; a tap in one
+  frame presses and releases; barrel buttons press the middle,
+  secondary and back buttons once each; leaving proximity, or moving to
+  another surface, releases what is held and leaves; events out of
+  proximity send nothing (tests in `vendor/winit/src/tablet_tool.rs`,
+  run as `winit_tablet_tool::tests`).
 - Given a pen in the browser, its pointer events pressed at 0.9 then
   0.2 and lifted, turned into egui events as the web layer does, then
   the Freehand line is wide then thin and egui reports no touch screen;

@@ -11,12 +11,13 @@ members = [
     "crates/render",
     "crates/vba",
     "crates/vba-project",
+    "crates/tracecut",
     "apps/tracedraw",
     "apps/tracedraw-cli",
 ]
 
 [workspace.package]
-version = "0.39.0"
+version = "0.40.0"
 edition = "2021"
 authors = ["TraceDraw members and contributors"]
 license = "MIT OR Apache-2.0"
@@ -33,6 +34,7 @@ tracedraw-text = { path = "crates/text" }
 tracedraw-render = { path = "crates/render" }
 tracedraw-vba = { path = "crates/vba" }
 tracedraw-vba-project = { path = "crates/vba-project" }
+tracedraw-tracecut = { path = "crates/tracecut" }
 
 kurbo = { version = "0.13", features = ["serde"] }
 tiny-skia = "0.12"

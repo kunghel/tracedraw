@@ -193,7 +193,7 @@ pub fn picture_mosaic(app: &mut App, ui: &mut Ui) {
     });
     section(ui, Some(&tr("docker.form_output")));
     let combo = |ui: &mut Ui, id: &str, text: String, add: &mut dyn FnMut(&mut Ui)| {
-        egui::ComboBox::from_id_salt(id)
+        crate::ui::keynav::ComboBox::from_id_salt(id)
             .selected_text(text)
             .width(ui.available_width().clamp(120.0, 180.0))
             .show_ui(ui, |ui| add(ui))

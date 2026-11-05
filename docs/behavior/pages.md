@@ -110,3 +110,30 @@ them, else the one before, becomes the current page. A range of every page
 deletes nothing and the dialog says a drawing keeps at least one page. The
 page tab menu's Delete Page deletes that page at once
 (`app::tests::delete_page_takes_a_range_of_pages`).
+
+## Moving objects to another page by its tab
+
+With the Pick tool, the selection dragged onto another page's tab goes
+to that page (#1346, `page_drop`):
+
+- While the selection is moved over a page tab, that tab lights up.
+  Resting there for 0.6 seconds sends the selection to that page, which
+  becomes the current page, and the move goes on there: while the
+  pointer stays on the tabs the objects stay at their place on the
+  page, and back on the drawing they follow the pointer from there, to
+  be let go anywhere.
+- Let go on a page tab (another page's at once, or the tab of the page
+  the rest opened), the selection lands at its place on that page; the
+  way the pointer went to the tab is not applied.
+- With Ctrl (Cmd on macOS) held, or after a right click during the
+  move, copies go to the page and the originals stay where they were.
+- The objects go to the page's topmost visible, unlocked layer (its
+  topmost unlocked one when none is visible); a page with only locked
+  layers takes nothing and the status bar says so. They stay selected
+  on the page they went to.
+- The whole drag is one undo step, the move after the page changed
+  included.
+
+Checks: `pick_drag_tests::a_selection_dropped_on_a_page_tab_moves_to_that_page`,
+`pick_drag_tests::ctrl_on_a_page_tab_sends_a_copy`,
+`pick_drag_tests::resting_on_a_page_tab_opens_the_page_and_the_move_goes_on`.

@@ -6,7 +6,11 @@ cara mengetahui apa yang berubah dan mencantumkan sorotan versi-versi terbaru.
 ## Melihat yang baru di program {#in-the-program}
 
 - Pilih [[menu.help > menu.help.whats_new]] untuk membuka halaman Yang Baru di
-  Layar Sambutan, berisi berita versi ini.
+  Layar Sambutan. Halaman itu memuat sepuluh versi terakhir, dari yang
+  terbaru, masing-masing dengan tanggal dan judul singkat. Klik sebuah versi
+  untuk membaca ringkasan singkat tentang apa yang berubah; versi terbaru
+  sudah terbuka. **Ingin tahu lebih banyak?** di bawah ringkasan membuka
+  halaman versi itu di GitHub, dengan daftar lengkap perubahan.
 - Aktifkan [[menu.help > menu.help.highlight_whats_new]] untuk menandai yang
   baru di versi ini pada menu: titik kecil muncul di ujung setiap perintah
   baru, di samping panah submenu yang menuju ke sana, dan di atas judul menu
@@ -18,6 +22,16 @@ cara mengetahui apa yang berubah dan mencantumkan sorotan versi-versi terbaru.
 
 ## Sorotan versi terbaru {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] membuka alat untuk
+  plotter pemotong: keluaran plotter, garis potong, penyusunan, dan
+  pengukuran. Lihat [TraceCut](../objects/tracecut.md).
+- **Keyboard, ponsel, dan pena.** Menu dan daftar dapat digunakan dengan
+  keyboard. Di ponsel Android antarmuka muat di layar dan tangan yang bertumpu
+  tidak lagi menggambar saat pena dipakai; pena tablet berfungsi di Linux
+  dengan Wayland.
+- **File.** File .cdr terbuka dengan tab stop, halaman master, gradien, dan
+  distorsinya; gambar PDF masuk dengan resolusi penuh; JPEG dan TIFF diekspor
+  dalam CMYK.
 - **Gambar mini objek.** Panel [[docker.objects]] menampilkan setiap objek
   digambar kecil di samping namanya; Ctrl+roda di atas daftar atau penggeser
   di bawah mengatur ukurannya. Lihat [Mengatur objek dan lapisan](../objects/objects-and-layers.md#objects-docker).

@@ -13,7 +13,7 @@
 
 use tracedraw_core::{
     document::{axis_scale, EllipseArc, Shape, ShapeKind},
-    geometry::{self, Point, Rect, Vec2},
+    geometry::{self, Affine, Point, Rect, Vec2},
 };
 
 /// A node of a rectangle, ellipse or polygon.
@@ -48,32 +48,7 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
             let Some((rect, c)) = s.kind.rect_corners() else {
                 return out;
             };
-            for (corner, (p, v, h)) in c.ends(rect, axis_scale(t)).into_iter().enumerate() {
-                if (v - p).hypot() < 1e-12 && (h - p).hypot() < 1e-12 {
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: true,
-                        },
-                        t * p,
-                    ));
-                } else {
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: true,
-                        },
-                        t * v,
-                    ));
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: false,
-                        },
-                        t * h,
-                    ));
-                }
-            }
+            out = rect_nodes(rect, &c, t);
         }
         ShapeKind::Ellipse { rect, arc } => {
             let at = |deg: f64| t * on_ellipse(*rect, deg);
@@ -120,6 +95,55 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
             }
         }
         _ => {}
+    }
+    out
+}
+
+/// The corner nodes of a rectangle in page space: one on a square
+/// corner, two (the ends of its cut) on a cut one. A node that falls on
+/// another is left out (#1851): a corner rounded as far as its
+/// neighbours leave it room ends on their nodes, and two nodes stacked
+/// there could not be told apart. The end of the cut stays and the
+/// square corner's node goes, so the rounding can still be dragged back;
+/// of two ends that meet, the first stays.
+fn rect_nodes(rect: Rect, c: &tracedraw_core::Corners, t: Affine) -> Vec<(KindNode, Point)> {
+    // Closer than this (local units) is the same place.
+    const SAME: f64 = 1e-9;
+    let ends = c.ends(rect, axis_scale(t));
+    let cut: Vec<bool> = ends
+        .iter()
+        .map(|(p, v, h)| (*v - *p).hypot() >= 1e-12 || (*h - *p).hypot() >= 1e-12)
+        .collect();
+    let mut local: Vec<(KindNode, Point)> = Vec::new();
+    for (corner, (_, v, h)) in ends.into_iter().enumerate() {
+        if cut[corner] {
+            for (vertical, q) in [(true, v), (false, h)] {
+                if !local.iter().any(|(_, o)| (*o - q).hypot() < SAME) {
+                    local.push((KindNode::Corner { corner, vertical }, q));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (corner, (p, _, _)) in ends.into_iter().enumerate() {
+        let node = if cut[corner] {
+            local
+                .iter()
+                .filter(|(n, _)| matches!(n, KindNode::Corner { corner: c, .. } if *c == corner))
+                .copied()
+                .collect()
+        } else if local.iter().any(|(_, o)| (*o - p).hypot() < SAME) {
+            Vec::new()
+        } else {
+            vec![(
+                KindNode::Corner {
+                    corner,
+                    vertical: true,
+                },
+                p,
+            )]
+        };
+        out.extend(node.into_iter().map(|(n, q)| (n, t * q)));
     }
     out
 }
@@ -635,6 +659,104 @@ mod tests {
             },
             Point::new(5.0, 20.0)
         )));
+    }
+
+    /// A corner rounded as far as its neighbours leave it room ends on
+    /// their nodes: those are left out rather than stacked under the ends
+    /// (#1851). A square with its top right corner at the most shows 3
+    /// nodes, not 5; the ends of the arc stay, so the rounding can be
+    /// dragged back. Two rounded corners meeting in the middle of a side
+    /// share one node there.
+    #[test]
+    fn a_corner_rounded_to_the_most_leaves_no_stacked_nodes() {
+        let distinct = |n: &[(KindNode, Point)]| {
+            for (i, (_, a)) in n.iter().enumerate() {
+                for (_, b) in &n[i + 1..] {
+                    assert!((*a - *b).hypot() > 1e-6, "stacked at {a:?}: {n:?}");
+                }
+            }
+        };
+        let square = |c: Corners| {
+            Shape::new(
+                ShapeId(1),
+                ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 20.0, 20.0), c),
+            )
+        };
+        // Through the property bar: the corner set to the room it has.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        let room = c.room(
+            Corners::TOP_RIGHT,
+            Rect::new(0.0, 0.0, 20.0, 20.0),
+            (1.0, 1.0),
+        );
+        assert!((room - 20.0).abs() < 1e-9);
+        c.radii[Corners::TOP_RIGHT] = room;
+        let s = square(c);
+        let n = nodes(&s);
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        let at = |p: Point| node_at(&s, p, 0.5).expect("a node");
+        // The ends of the arc on the bottom right and top left corners.
+        assert_eq!(
+            at(Point::new(20.0, 0.0)),
+            KindNode::Corner {
+                corner: Corners::TOP_RIGHT,
+                vertical: true
+            }
+        );
+        assert_eq!(
+            at(Point::new(0.0, 20.0)),
+            KindNode::Corner {
+                corner: Corners::TOP_RIGHT,
+                vertical: false
+            }
+        );
+        assert_eq!(
+            at(Point::new(0.0, 0.0)),
+            KindNode::Corner {
+                corner: Corners::BOTTOM_LEFT,
+                vertical: true
+            }
+        );
+        // The curve it converts to has those 3 nodes too.
+        let path = s.local_path();
+        assert_eq!(tracedraw_core::nodes::nodes(&path).len(), 3, "{path:?}");
+        // By dragging, with Ctrl, past the far corner: the same.
+        let mut turn = 0.0;
+        let node = KindNode::Corner {
+            corner: Corners::TOP_RIGHT,
+            vertical: true,
+        };
+        let plain = square(Corners::uniform(0.0, CornerKind::Round));
+        let mut dragged = plain.clone();
+        dragged.kind = drag(
+            &plain,
+            node,
+            Point::new(20.0, -30.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .expect("rounds");
+        assert!((page_radius(&dragged, Corners::TOP_RIGHT) - 20.0).abs() < 1e-9);
+        let n = nodes(&dragged);
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        // A wider rectangle: one side taken whole, 4 nodes.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 20.0;
+        let n = nodes(&rect(c));
+        assert_eq!(n.len(), 4, "{n:?}");
+        distinct(&n);
+        // Two corners meeting in the middle of the top: 3 nodes.
+        c.radii[Corners::TOP_LEFT] = 20.0;
+        let n = nodes(&rect(c));
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        // Short of the most, every corner keeps its nodes.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 19.0;
+        assert_eq!(nodes(&square(c)).len(), 5);
     }
 
     #[test]

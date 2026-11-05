@@ -18,7 +18,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Columns | 1, gutter 5 mm |
 | Bullets | off; indent 5 mm, bullet "*" from the paragraph font |
 | Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column |
-| Tabs | every 12.7 mm (0.5 in) |
+| Tabs | none of the paragraph's own: a left stop every 12.7 mm (half an inch) from the frame's left edge, Options > Text > Paragraph Text > Default tab spacing (see Tab stops below) |
 | Text on path | distance 0, offset 0, orientation "rotate letters" |
 
 ## Property bar
@@ -259,7 +259,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Typing, paste | inserts at the caret, replacing the selection, with the style of the character before the caret |
 | Backspace / Delete | the selection, else the character before / after the caret |
 | Enter / Shift+Enter | paragraph break / line break (U+2028) |
-| Tab | a tab character: the text after it starts at the next tab stop (every 12.7 mm unless the paragraph sets its own); the keyboard stays on the text, no field of the bars takes it (#1667, `pick_drag_tests::tab_in_paragraph_text_moves_the_text_to_the_next_stop`) |
+| Tab | a tab character: the text after it goes to the next tab stop (every 12.7 mm, the Default tab spacing, unless the paragraph sets its own, see Tab stops); the keyboard stays on the text, no field of the bars takes it (#1667, `pick_drag_tests::tab_in_paragraph_text_moves_the_text_to_the_next_stop`) |
 | Left / Right, Ctrl+Left / Right | one character, one word; Shift extends the selection |
 | Up / Down | the same x on the previous / next line (the x is remembered across moves) |
 | Home / End, Ctrl+Home / End | line start / end, text start / end |
@@ -556,6 +556,94 @@ on its own line, which is why the lines are joined first.
   line spacing, space before and after (version 16+ style strings) or
   indents differ from one another keep their own; text whose paragraphs
   agree keeps one object-level format as before.
+
+### Tab stops
+
+- Each paragraph has its own tab stops (`ParagraphStyle::tabs`, a
+  `TabStop` each: position in mm from the frame's left edge, kind and
+  leader). A paragraph with none has a left stop every 12.7 mm (half an
+  inch, `DEFAULT_TAB_STEP`, as in the other program and in `.cdr` files
+  without stops), and past its last stop the same grid goes on.
+- Options > Text > Paragraph Text > **Default tab spacing** (1 to 100 mm,
+  default 12.7 mm, saved with the other settings as `default_tab_mm`)
+  sets that spacing for every paragraph without stops of its own; the
+  tab ruler's lighter grid and the Tabs dialog's note follow it
+  (`tracedraw_text::tests::default_tab_stops_follow_the_spacing`,
+  `paragraphs::tests::the_default_tab_spacing_follows_the_setting`,
+  `ui::options::tests::the_default_tab_spacing_is_a_saved_setting`).
+- A tab goes to the first stop past where it stands. The text after it,
+  up to the next tab or the line's end, sits against the stop by the
+  stop's kind: **left** starts it at the stop, **centre** centres it on
+  the stop, **right** ends it at the stop, **decimal** puts its first
+  `.` or `,` on the stop (text with neither ends at the stop). Text too
+  wide for the room before the stop starts where the tab stands: the
+  pen never goes back (#1852,
+  `tracedraw_text::tests::tab_kinds_place_the_text_after_the_tab`,
+  `tracedraw_text::tests::right_and_decimal_tabs_line_up_prices`).
+- A stop's leader (none, dots, dashes or a line) repeats its character,
+  in the font of the tab, over the gap the tab leaves; the copies sit on
+  a grid from the frame's edge, so the leaders of neighbouring lines line
+  up, and stop a quarter of a copy before the text.
+- Lines break with the tabs measured to their stops. A tab at a line's
+  end takes no room, so a stop past the frame's right edge sends the
+  text after the tab to the next line, as in the other program
+  (`tracedraw_text::tests::a_tab_past_the_line_end_wraps_what_follows`).
+- Text > Tabs lists the stops of the paragraphs at the caret (or of the
+  selected text's first paragraph): each row has the position, the kind
+  (Left, Center, Right, Decimal tab), the leader and a button that
+  removes the stop. **Add tab** adds a left stop 10 mm past the last one
+  (the first at 10 mm). With no stops the dialog says that the default
+  grid is in use, with its spacing. Each change is one undo step. It works on a paragraph frame
+  just drawn, before any text is typed: the stop used to be stored on
+  the empty text where nothing read it back, so Add tab seemed to do
+  nothing (#1852,
+  `ui::dialogs::tests::add_tab_works_on_a_new_empty_paragraph_frame`).
+- The tab ruler (#1852, `apps/tracedraw/src/tab_ruler.rs`): while a
+  paragraph frame is edited with the Text tool, a strip 14 points tall
+  runs along the frame's top edge, 4 points beyond the selection
+  handles, with a tick every millimetre (every 5 mm when they would be
+  closer than 3 points), longer ones every 5 and 10 mm. It shows the
+  stops of the paragraphs at the caret as markers of their kind: a
+  corner opening right (left stop), opening left (right stop), an
+  upturned T (centre stop) and a T with a dot (decimal stop). A
+  paragraph with no stops shows the default grid (Default tab spacing,
+  12.7 mm unless set) in a lighter colour.
+  - A click on the strip away from a marker adds a left stop there.
+  - A drag of a marker (within 6 points) moves it, by 0.1 mm, with a
+    line down the frame where it would go; a drag starting away from a
+    marker adds a stop and moves it. Released more than 18 points away
+    from the strip, the stop is removed (its marker fades while it is
+    that far).
+  - A right click on the strip opens a menu of the four kinds (Left,
+    Center, Right, Decimal tab), the stop's own kind checked: a pick
+    changes the stop under the pointer, or with none there adds a stop
+    of that kind; Remove tab is under them on a stop.
+  - A change made on the default grid gives the paragraph the whole
+    grid as its own stops, the change made to it. Each change is one
+    undo step and reaches the paragraphs the text selection touches
+    (the one holding the caret), as the Tabs dialog does. Stops come
+    out sorted. No ruler for artistic text, text on a path, vertical
+    text or other tools
+    (`pick_drag_tests::the_tab_ruler_adds_moves_removes_and_turns_stops`,
+    `pick_drag_tests::the_tab_ruler_shows_the_default_grid_and_a_drag_keeps_it`,
+    `pick_drag_tests::the_tab_ruler_is_for_paragraph_text_being_edited`).
+  - The text is laid out again when the stop is let go, not while it
+    is dragged, so the drag costs no more than any other.
+- `.cdr` (#1852, see `docs/cdr-format.md`): opening reads each
+  paragraph's stops, from the style table's tab entries (versions 7 to
+  15) or the `tabs` member of the paragraph style string (16 on); the
+  menu of the issue, saved in every version 7 to 21, opens with its
+  right stop at 168.18 mm and the prices ending there as in its preview.
+  Only the codes of left (0) and right (1) stops are known: others read
+  as left stops. Saving writes paragraph text as one artistic text a
+  line, and now cuts a line at its tabs, each part placed where the
+  stops put it, so the other program shows the columns where TraceDraw
+  does whatever its own stops (`tests/paragraph_tabs.rs`). Paragraph
+  frames (`TRACEDRAW_CDR_PARAGRAPH_FRAMES=1`, versions 16 on) carry the
+  stops in their style strings, centre and decimal stops as left ones.
+- `.tdraw` files write each stop as `{"pos", "kind", "leader"}`; files
+  from before tab kinds hold a bare number per stop, read as a left
+  stop (`paragraphs::tests::tab_stops_save_their_kind_and_read_old_numbers`).
 
 ## Text docker
 

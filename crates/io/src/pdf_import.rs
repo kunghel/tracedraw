@@ -40,6 +40,23 @@ pub struct ImportedPdf {
     /// The spot inks the pages' Separation colours name, numbered from 1
     /// in the order they came; `Color::Spot` of the shapes refers to them.
     pub inks: Vec<tracedraw_core::document::Ink>,
+    /// The pictures that came in smaller than the file holds them, past
+    /// [`ImportOptions::max_picture_pixels`] or when there was no memory
+    /// for them (#1835), for the caller to say so.
+    pub shrunk_pictures: Vec<ShrunkPicture>,
+}
+
+/// A picture read at a smaller size than the file holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShrunkPicture {
+    /// The page it is on, from 0.
+    pub page: usize,
+    /// Its size in the file, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Its size in the drawing.
+    pub new_width: u32,
+    pub new_height: u32,
 }
 
 /// Does the buffer hold a PDF, possibly after an AI/PostScript preamble?
@@ -78,16 +95,42 @@ impl From<String> for ImportError {
     }
 }
 
-/// Parse a PDF (or an AI file with embedded PDF) into pages of shapes.
 /// How a PDF is read in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportOptions {
     /// Text drawn as curves from the fonts the file embeds, so it looks as
     /// it does in the file (text whose font is not embedded stays text,
     /// for the caller to turn into curves with the fonts it has, #386).
     pub text_as_curves: bool,
+    /// The most pixels of a picture as it comes into the drawing: a larger
+    /// one is shrunk by the smallest whole factor that brings it within,
+    /// and listed in [`ImportedPdf::shrunk_pictures`]. By default
+    /// [`FULL_PICTURE_PIXELS`], a memory guard: pictures come in at their
+    /// own size (#1835). [`REDUCED_PICTURE_PIXELS`] for devices with
+    /// less memory, or when the user asks for smaller pictures.
+    pub max_picture_pixels: u64,
 }
 
+impl Default for ImportOptions {
+    fn default() -> Self {
+        ImportOptions {
+            text_as_curves: false,
+            max_picture_pixels: FULL_PICTURE_PIXELS,
+        }
+    }
+}
+
+/// Most pixels of a picture read at its own size: 1.5 GB of RGBA, a guard
+/// against running out of memory rather than a limit a picture is meant
+/// to meet (the 165 megapixel picture of #1804 comes in whole).
+pub const FULL_PICTURE_PIXELS: u64 = 375_000_000;
+
+/// Most pixels of a picture when pictures are reduced (the browser, Android,
+/// or the "Reduce very large pictures" choice): 320 MB of RGBA, no side
+/// longer than 20000 pixels.
+pub const REDUCED_PICTURE_PIXELS: u64 = 80_000_000;
+
+/// Parse a PDF (or an AI file with embedded PDF) into pages of shapes.
 pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<ImportedPdf, String> {
     parse_with_password(bytes, ids, "").map_err(|e| e.to_string())
 }
@@ -139,9 +182,17 @@ pub fn parse_with_options(
             curves: options.text_as_curves,
             actual: None,
             inks: std::mem::take(&mut out.inks),
+            max_pixels: options.max_picture_pixels.max(1),
+            shrunk: Vec::new(),
+            in_mask: false,
         };
         let page = imp.import_page(*page_id, index);
         out.inks = std::mem::take(&mut imp.inks);
+        out.shrunk_pictures.extend(
+            imp.shrunk
+                .into_iter()
+                .map(|p| ShrunkPicture { page: index, ..p }),
+        );
         out.warnings.extend(imp.warnings);
         out.pages.push(page);
     }
@@ -782,6 +833,13 @@ struct Importer<'a> {
     actual: Option<ActualText>,
     /// The spot inks met so far (all pages).
     inks: Vec<tracedraw_core::document::Ink>,
+    /// [`ImportOptions::max_picture_pixels`].
+    max_pixels: u64,
+    /// The pictures shrunk on this page.
+    shrunk: Vec<ShrunkPicture>,
+    /// A picture's soft mask is being read (its shrinking is the
+    /// picture's own).
+    in_mask: bool,
 }
 
 /// The text marked content gives its glyphs, shown in place of their own
@@ -2541,11 +2599,12 @@ impl<'a> Importer<'a> {
         }
     }
 
-    /// Decode an image XObject to PNG (RGBA). A picture larger than
-    /// [`MAX_IMAGE_SIDE`] or [`MAX_IMAGE_PIXELS`] is shrunk by a whole
-    /// factor, each pixel the mean of a block of the picture's own
-    /// (#1804); only one past [`MAX_SOURCE_SIDE`] or
-    /// [`MAX_SOURCE_PIXELS`] is skipped.
+    /// Decode an image XObject to PNG (RGBA). A picture comes in at its
+    /// own size (#1835); one past the importer's limit
+    /// ([`ImportOptions::max_picture_pixels`]), or one there is no memory
+    /// for, is shrunk by a whole factor, each pixel the mean of a block of
+    /// the picture's own (#1804), and listed as shrunk; only one past
+    /// [`MAX_SOURCE_SIDE`] or [`MAX_SOURCE_PIXELS`] is skipped.
     fn decode_image(&mut self, stream: &Stream) -> Option<(Vec<u8>, u32, u32)> {
         let (rgba, w, h) = self.decode_pixels(stream)?;
         Some((tracedraw_render_png(w, h, &rgba), w, h))
@@ -2566,11 +2625,30 @@ impl<'a> Importer<'a> {
             self.warn(format!("image of {w} x {h} pixels too large; skipped"));
             return None;
         }
-        let f = shrink_factor(w, h);
+        // The memory for the result is taken now: when there is none, the
+        // picture is shrunk further until there is.
+        let (mut shrink, f) =
+            shrink_within(w, h, shrink_factor(w, h, self.max_pixels), usize::MAX)?;
         let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
         if f > 1 {
             self.warn(format!("image of {w} x {h} pixels shrunk to {ow} x {oh}"));
+            if !self.in_mask {
+                self.shrunk.push(ShrunkPicture {
+                    page: 0,
+                    width: w,
+                    height: h,
+                    new_width: ow,
+                    new_height: oh,
+                });
+            }
         }
+        // The soft mask is read first, at the picture's size: its own
+        // pixels are gone before the picture's are filled in, so a large
+        // picture never has both in memory at once (#1835).
+        let alpha = match self.get(d, b"SMask").cloned() {
+            Some(Object::Stream(sm)) => self.decode_gray(&sm, ow, oh),
+            _ => None,
+        };
         let bpc = self
             .get(d, b"BitsPerComponent")
             .and_then(Self::num)
@@ -2603,6 +2681,8 @@ impl<'a> Importer<'a> {
         let inverted = decode_arr.first().map(|v| *v == 1.0).unwrap_or(false);
         match last {
             b"DCTDecode" | b"DCT" | b"JPXDecode" => {
+                // The decoder takes its own memory.
+                drop(shrink);
                 // Strip the other filters first (Flate over JPEG is rare but legal).
                 let data = if filters.len() > 1 {
                     let mut tmp = stream.clone();
@@ -2666,16 +2746,22 @@ impl<'a> Importer<'a> {
                     }
                     // Decoded JPEG size wins over the dictionary.
                     let (jw, jh) = (img.width(), img.height());
-                    let jf = shrink_factor(jw, jh);
-                    let (jw, jh, rgba_j) = if jf > 1 {
-                        let mut shrink = Shrink::new(jw, jh, jf);
-                        for row in rgba.chunks_exact(jw as usize * 4) {
-                            shrink.push_row(row);
-                        }
-                        (jw.div_ceil(jf), jh.div_ceil(jf), shrink.finish())
+                    let jf = if jw == w && jh == h {
+                        f
                     } else {
-                        (jw, jh, rgba)
+                        shrink_factor(jw, jh, self.max_pixels)
                     };
+                    let (jw, jh, rgba_j) =
+                        match (jf > 1).then(|| Shrink::new_within(jw, jh, jf, usize::MAX)) {
+                            Some(Some(mut shrink)) => {
+                                for row in rgba.chunks_exact(jw as usize * 4) {
+                                    shrink.push_row(row);
+                                }
+                                (jw.div_ceil(jf), jh.div_ceil(jf), shrink.finish())
+                            }
+                            Some(None) => return None,
+                            None => (jw, jh, rgba),
+                        };
                     rgba = rgba_j;
                     if jw != ow || jh != oh {
                         return Some((rgba, jw, jh));
@@ -2685,12 +2771,11 @@ impl<'a> Importer<'a> {
             _ => {
                 let ncomp = if is_mask { 1 } else { cs.components().max(1) };
                 let row_bytes = ((w as usize) * ncomp * (bpc as usize)).div_ceil(8);
-                // A picture shrunk on reading, compressed with Flate alone
-                // and without a predictor, is inflated a row at a time:
-                // the whole of it (500 MB for the picture of #1804) never
-                // sits in memory.
-                let streamed = f > 1
-                    && filters.len() == 1
+                // A picture compressed with Flate alone and without a
+                // predictor is inflated a row at a time, whether shrunk or
+                // not: its samples (500 MB for the picture of #1804) never
+                // sit in memory beside its pixels.
+                let streamed = filters.len() == 1
                     && last == b"FlateDecode"
                     && self.get(d, b"DecodeParms").is_none();
                 let mut source: Box<dyn std::io::Read + '_> = if streamed {
@@ -2717,7 +2802,6 @@ impl<'a> Importer<'a> {
                     }
                     Box::new(std::io::Cursor::new(data))
                 };
-                let mut shrink = Shrink::new(w, h, f);
                 let mut row = vec![0u8; row_bytes];
                 let mut px_row: Vec<u8> = Vec::with_capacity(w as usize * 4);
                 let max = ((1u32 << bpc) - 1) as f32;
@@ -2840,11 +2924,9 @@ impl<'a> Importer<'a> {
         }
         // Soft mask: alpha from a gray image, resampled to the picture's
         // size (a large one shrunk as the picture is).
-        if let Some(Object::Stream(sm)) = self.get(d, b"SMask").cloned() {
-            if let Some(alpha) = self.decode_gray(&sm, ow, oh) {
-                for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
-                    px[3] = a;
-                }
+        if let Some(alpha) = alpha {
+            for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
+                px[3] = a;
             }
         }
         Some((rgba, ow, oh))
@@ -2852,7 +2934,10 @@ impl<'a> Importer<'a> {
 
     /// An SMask as 8-bit alpha, resampled to `w` x `h` (nearest).
     fn decode_gray(&mut self, sm: &Stream, w: u32, h: u32) -> Option<Vec<u8>> {
-        let (px, sw, sh) = self.decode_pixels(sm)?;
+        let was = std::mem::replace(&mut self.in_mask, true);
+        let decoded = self.decode_pixels(sm);
+        self.in_mask = was;
+        let (px, sw, sh) = decoded?;
         let mut out = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
             let sy = (y as u64 * sh as u64 / h as u64) as usize;
@@ -4186,8 +4271,22 @@ fn expand_inline_keys(d: &mut Dictionary) {
     }
 }
 
+/// A picture's RGBA pixels as a PNG, written straight from them: no
+/// premultiplied copy and no copy back, so a picture of 660 MB (#1835)
+/// takes its PNG beside it and nothing more.
 fn tracedraw_render_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-    crate::svg::encode_png(w, h, rgba)
+    use image::ImageEncoder;
+    let mut out = Vec::new();
+    let encoded = image::codecs::png::PngEncoder::new(&mut out).write_image(
+        rgba,
+        w,
+        h,
+        image::ExtendedColorType::Rgba8,
+    );
+    match encoded {
+        Ok(()) => out,
+        Err(_) => crate::svg::encode_png(w, h, rgba),
+    }
 }
 
 /// MSB-first bit reader for packed image samples.
@@ -5018,11 +5117,9 @@ fn glyph_name_to_char(name: &[u8]) -> Option<char> {
     table.iter().find(|(k, _)| *k == n).map(|(_, c)| *c)
 }
 
-/// Most pixels on a side of a picture as it comes into the drawing.
+/// Most pixels on a side of a picture as it comes into the drawing when
+/// pictures are reduced ([`REDUCED_PICTURE_PIXELS`] or less).
 const MAX_IMAGE_SIDE: u32 = 20_000;
-/// Most pixels of a picture as it comes into the drawing (320 MB of
-/// RGBA); a larger one is shrunk (#1804).
-const MAX_IMAGE_PIXELS: u64 = 80_000_000;
 /// Most pixels on a side of a picture read at all.
 const MAX_SOURCE_SIDE: u32 = 400_000;
 /// Most pixels of a picture read at all: a 1.6 gigapixel picture
@@ -5033,18 +5130,38 @@ const MAX_SOURCE_PIXELS: u64 = 1_600_000_000;
 const MAX_BUFFERED_BYTES: u64 = 1 << 30;
 
 /// The smallest whole factor that brings a `w` x `h` picture within
-/// [`MAX_IMAGE_SIDE`] and [`MAX_IMAGE_PIXELS`]: 1 for a picture that is
-/// already.
-fn shrink_factor(w: u32, h: u32) -> u32 {
+/// `max_pixels` and, when that is [`REDUCED_PICTURE_PIXELS`] or less,
+/// [`MAX_IMAGE_SIDE`]: 1 for a picture that is already.
+fn shrink_factor(w: u32, h: u32, max_pixels: u64) -> u32 {
+    let side = if max_pixels <= REDUCED_PICTURE_PIXELS {
+        MAX_IMAGE_SIDE
+    } else {
+        u32::MAX
+    };
     let fits = |f: u32| {
         let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
-        ow <= MAX_IMAGE_SIDE
-            && oh <= MAX_IMAGE_SIDE
-            && (ow as u64) * (oh as u64) <= MAX_IMAGE_PIXELS
+        ow <= side && oh <= side && (ow as u64) * (oh as u64) <= max_pixels
     };
     (1..=w.max(h).max(1))
         .find(|&f| fits(f))
         .unwrap_or(w.max(h).max(1))
+}
+
+/// A [`Shrink`] of a `w` x `h` picture by `f`, or by twice, four times
+/// ... `f` when there is no memory for the result (only `available`
+/// bytes, or less), with the factor it took. None when not even one
+/// pixel fits.
+fn shrink_within(w: u32, h: u32, f: u32, available: usize) -> Option<(Shrink, u32)> {
+    let mut f = f.max(1);
+    loop {
+        if let Some(s) = Shrink::new_within(w, h, f, available) {
+            return Some((s, f));
+        }
+        if w.div_ceil(f) <= 1 && h.div_ceil(f) <= 1 {
+            return None;
+        }
+        f = f.saturating_mul(2);
+    }
 }
 
 /// Shrinks RGBA rows by a whole factor `f`: each pixel of the result is
@@ -5059,16 +5176,25 @@ struct Shrink {
 }
 
 impl Shrink {
-    fn new(w: u32, h: u32, f: u32) -> Self {
+    /// A shrink of a `w` x `h` picture by `f`, its result's memory taken
+    /// at once; None when there is no memory for it (`available` bytes at
+    /// most, else what the allocator gives).
+    fn new_within(w: u32, h: u32, f: u32, available: usize) -> Option<Self> {
         let f = f.max(1) as usize;
         let (ow, oh) = ((w as usize).div_ceil(f), (h as usize).div_ceil(f));
-        Shrink {
+        let bytes = ow.checked_mul(oh)?.checked_mul(4)?;
+        if bytes > available {
+            return None;
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(bytes).ok()?;
+        Some(Shrink {
             f,
             w: w as usize,
             sums: if f > 1 { vec![0; ow * 4] } else { Vec::new() },
             rows: 0,
-            out: Vec::with_capacity(ow * oh * 4),
-        }
+            out,
+        })
     }
 
     /// One row of `w` RGBA pixels.
@@ -6134,18 +6260,31 @@ mod tests {
         o
     }
 
-    /// A picture past the size a drawing keeps is shrunk, not skipped:
-    /// the 11160 x 14794 pixel picture of #1804 (165 megapixels, over the
-    /// 80 megapixel limit) by 2, a 40000 pixel wide one by 2 as well,
-    /// one of 20000 x 20000 by 3.
+    /// Pictures come in at their own size (#1835): the 11160 x 14794
+    /// pixel picture of #1804 (165 megapixels) and a 40000 pixel wide one
+    /// whole; only past the 1.5 GB memory guard is one shrunk. With
+    /// pictures reduced (the browser, Android, or the user's choice) a
+    /// picture past 80 megapixels or 20000 pixels a side is shrunk, not
+    /// skipped: #1804's by 2, the wide one by 2 as well, one of 20000 x
+    /// 20000 by 3.
     #[test]
     fn shrink_factor_brings_pictures_within_the_limits() {
-        assert_eq!(shrink_factor(11_160, 14_794), 2);
-        assert_eq!(shrink_factor(40_000, 2), 2);
-        assert_eq!(shrink_factor(20_000, 20_000), 3);
-        assert_eq!(shrink_factor(8_000, 10_000), 1);
-        assert_eq!(shrink_factor(1, 1), 1);
-        let mut s = Shrink::new(3, 3, 2);
+        let full = FULL_PICTURE_PIXELS;
+        assert_eq!(shrink_factor(11_160, 14_794, full), 1);
+        assert_eq!(shrink_factor(40_000, 2, full), 1);
+        assert_eq!(shrink_factor(20_000, 20_000, full), 2);
+        let reduced = REDUCED_PICTURE_PIXELS;
+        assert_eq!(shrink_factor(11_160, 14_794, reduced), 2);
+        assert_eq!(shrink_factor(40_000, 2, reduced), 2);
+        assert_eq!(shrink_factor(20_000, 20_000, reduced), 3);
+        assert_eq!(shrink_factor(8_000, 10_000, reduced), 1);
+        assert_eq!(shrink_factor(1, 1, reduced), 1);
+        // No memory for the whole picture: shrunk by 2, then 4, until
+        // its result fits (only 100 bytes here: 5 x 5 pixels).
+        let (_, f) = shrink_within(20, 20, 1, 100).expect("fits by 4");
+        assert_eq!(f, 4);
+        assert!(shrink_within(20, 20, 1, 3).is_none());
+        let (mut s, _) = shrink_within(3, 3, 2, usize::MAX).expect("memory");
         for _ in 0..3 {
             s.push_row(&[10, 20, 30, 255, 30, 40, 50, 0, 100, 100, 100, 255]);
         }
@@ -6156,13 +6295,8 @@ mod tests {
         );
     }
 
-    /// An RGB picture with a soft mask, too wide for a drawing (40000
-    /// pixels, over the 20000 pixel side), comes in shrunk by 2: each
-    /// pixel the mean of a red and a blue one, its alpha the mean of the
-    /// mask's opaque and clear ones. It used to be skipped, leaving only
-    /// what was drawn around it (#1804, a 11160 x 14794 picture).
-    #[test]
-    fn oversized_picture_is_shrunk_with_its_soft_mask() {
+    /// An RGB picture with a soft mask 40000 pixels wide.
+    fn wide_picture_pdf() -> Vec<u8> {
         let (w, h) = (40_000usize, 2usize);
         let rgb: Vec<u8> = (0..w * h)
             .flat_map(|i| if i % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] })
@@ -6171,7 +6305,7 @@ mod tests {
             .map(|i| if i % 2 == 0 { 255 } else { 0 })
             .collect();
         let content = "q 200 0 0 10 0 0 cm /Im1 Do Q";
-        let bytes = pdf_bin(&[
+        pdf_bin(&[
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>".to_vec(),
@@ -6181,9 +6315,35 @@ mod tests {
                 &rgb,
             ),
             flate_image(&format!("/Width {w} /Height {h} /ColorSpace /DeviceGray"), &alpha),
-        ]);
+        ])
+    }
+
+    /// With pictures reduced (the browser, Android, or the user's choice),
+    /// an RGB picture with a soft mask too wide for that (40000 pixels,
+    /// over the 20000 pixel side) comes in shrunk by 2: each pixel the
+    /// mean of a red and a blue one, its alpha the mean of the mask's
+    /// opaque and clear ones, and it is listed as shrunk (once, not again
+    /// for its mask). It used to be skipped, leaving only what was drawn
+    /// around it (#1804, a 11160 x 14794 picture).
+    #[test]
+    fn oversized_picture_is_shrunk_with_its_soft_mask() {
+        let bytes = wide_picture_pdf();
         let mut ids = IdSource::default();
-        let imp = parse(&bytes, &mut ids).expect("parse");
+        let options = ImportOptions {
+            max_picture_pixels: REDUCED_PICTURE_PIXELS,
+            ..ImportOptions::default()
+        };
+        let imp = parse_with_options(&bytes, &mut ids, "", options).expect("parse");
+        assert_eq!(
+            imp.shrunk_pictures,
+            [ShrunkPicture {
+                page: 0,
+                width: 40_000,
+                height: 2,
+                new_width: 20_000,
+                new_height: 1
+            }]
+        );
         let shapes = &imp.pages[0].shapes;
         assert_eq!(shapes.len(), 1, "{:?}", imp.warnings);
         let ShapeKind::Bitmap {
@@ -6214,6 +6374,91 @@ mod tests {
             "{:?}",
             imp.warnings
         );
+    }
+
+    /// By default the same picture comes in at its own size, its mask
+    /// with it, and nothing is listed as shrunk (#1835). Past a limit (a
+    /// small one standing in for the memory guard) it is shrunk by the
+    /// smallest whole factor that brings it within, and listed.
+    #[test]
+    fn pictures_come_in_whole_unless_past_the_limit() {
+        let bytes = wide_picture_pdf();
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        assert!(imp.shrunk_pictures.is_empty(), "{:?}", imp.shrunk_pictures);
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &imp.pages[0].shapes[0].kind
+        else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        assert_eq!((*width_px, *height_px), (40_000, 2));
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let (red, blue) = (pm.pixels()[0].demultiply(), pm.pixels()[1]);
+        assert_eq!((red.red(), red.blue(), red.alpha()), (255, 0, 255));
+        assert_eq!(blue.alpha(), 0, "the mask's clear pixel");
+        assert!(!imp.warnings.iter().any(|w| w.contains("shrunk")));
+        let options = ImportOptions {
+            max_picture_pixels: 9_000,
+            ..ImportOptions::default()
+        };
+        let imp = parse_with_options(&bytes, &mut ids, "", options).expect("parse");
+        assert_eq!(
+            imp.shrunk_pictures,
+            [ShrunkPicture {
+                page: 0,
+                width: 40_000,
+                height: 2,
+                new_width: 8_000,
+                new_height: 1
+            }]
+        );
+    }
+
+    /// The file of #1804 and #1835 (not committed; its path in
+    /// `TRACEDRAW_PDF_1804`, run with `--ignored`): its 11160 x 14794
+    /// picture comes in at that size, with its soft mask, and nothing is
+    /// listed as shrunk. With pictures reduced it comes in at half that.
+    #[test]
+    #[ignore]
+    fn the_picture_of_1804_comes_in_at_its_own_size() {
+        let Ok(path) = std::env::var("TRACEDRAW_PDF_1804") else {
+            return;
+        };
+        let bytes = std::fs::read(path).expect("the file");
+        let sizes = |options: ImportOptions| {
+            let imp =
+                parse_with_options(&bytes, &mut IdSource::default(), "", options).expect("parse");
+            let mut sizes = Vec::new();
+            fn walk(s: &[Shape], out: &mut Vec<(u32, u32)>) {
+                for s in s {
+                    match &s.kind {
+                        ShapeKind::Bitmap {
+                            width_px,
+                            height_px,
+                            ..
+                        } => out.push((*width_px, *height_px)),
+                        ShapeKind::Group { children } => walk(children, out),
+                        ShapeKind::ClipFrame { contents, .. } => walk(contents, out),
+                        _ => {}
+                    }
+                }
+            }
+            walk(&imp.pages[0].shapes, &mut sizes);
+            (sizes, imp.shrunk_pictures)
+        };
+        let (full, shrunk) = sizes(ImportOptions::default());
+        assert_eq!(full, [(11_160, 14_794)]);
+        assert!(shrunk.is_empty(), "{shrunk:?}");
+        let (reduced, shrunk) = sizes(ImportOptions {
+            max_picture_pixels: REDUCED_PICTURE_PIXELS,
+            ..ImportOptions::default()
+        });
+        assert_eq!(reduced, [(5_580, 7_397)]);
+        assert_eq!(shrunk.len(), 1);
     }
 
     #[test]

@@ -24,7 +24,7 @@ fn dim(ui: &mut Ui, text: String) {
 /// A level list, off to highest.
 pub(crate) fn level(ui: &mut Ui, id: &str, tip: &str, v: &mut u8) {
     let mut cur = (*v).min(5);
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(tr(LEVEL_KEYS[cur as usize]))
         .width(90.0)
         .show_ui(ui, |ui| {

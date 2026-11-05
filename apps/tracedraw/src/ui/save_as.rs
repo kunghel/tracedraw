@@ -24,6 +24,8 @@ const ERROR: egui::Color32 = egui::Color32::from_rgb(0xC4, 0x2B, 0x1C);
 const WIDTH: f32 = 760.0;
 const LIST_H: f32 = 250.0;
 const PLACES_W: f32 = 150.0;
+/// The folders used lately shown down the left (#1391).
+const RECENT_DIRS: usize = 6;
 /// Letters typed in the list this many seconds apart start a new search.
 const TYPE_AHEAD_PAUSE: f64 = 1.0;
 
@@ -88,6 +90,15 @@ pub struct SaveAsState {
     pub typed_at: f64,
     /// The list scrolls to the picked entry (the keys moved it).
     pub scroll_to: bool,
+    /// The shortcuts down the left: the folders, roots and mounted
+    /// drives, read once when the dialog opens (#1391).
+    pub places: Vec<(Place, PathBuf)>,
+    /// The folders bookmarked in the desktop's file manager, with names.
+    pub desktop_bookmarks: Vec<(String, PathBuf)>,
+    /// The folders bookmarked here (kept in the settings).
+    pub bookmarks: Vec<PathBuf>,
+    /// The folders used lately, newest first.
+    pub recent: Vec<PathBuf>,
 }
 
 impl SaveAsState {
@@ -184,7 +195,20 @@ impl SaveAsState {
             typed: String::new(),
             typed_at: 0.0,
             scroll_to: false,
+            places: Vec::new(),
+            desktop_bookmarks: Vec::new(),
+            bookmarks: app.settings.folder_bookmarks.clone(),
+            recent: Vec::new(),
         };
+        if !files::WEB && !files::ANDROID {
+            st.places = files::places();
+            st.desktop_bookmarks = files::desktop_bookmarks();
+            st.recent = files::recent_dirs(
+                app.settings.last_dir.as_deref(),
+                &app.settings.recent_files,
+                RECENT_DIRS,
+            );
+        }
         st.name = format!("{stem}.{}", st.extension());
         st.open_dir(dir);
         st
@@ -597,6 +621,7 @@ fn place_name(place: Place, path: &Path) -> String {
         Place::Downloads => tr("dialog.place_downloads"),
         Place::Pictures => tr("dialog.place_pictures"),
         Place::Root => path.display().to_string(),
+        Place::Drive => files::drive_name(path),
     }
 }
 
@@ -652,6 +677,10 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
                 });
             });
             ui.add_space(6.0);
+        }
+        // Bookmarks made or removed here are kept at once (#1391).
+        if st.bookmarks != app.settings.folder_bookmarks {
+            app.settings.folder_bookmarks = st.bookmarks.clone();
         }
         fields(ui, st);
         if let Some(note) = &st.note {
@@ -756,21 +785,90 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
     });
 }
 
-/// The shortcuts down the left.
+/// The shortcuts down the left, scrolling when they are many: the
+/// folders and roots, then Drives (mounted drives, memory cards, network
+/// shares), Bookmarks (the desktop's, then those made here with a right
+/// click on a folder, which a right click removes) and Recent (#1391).
 fn places(ui: &mut Ui, st: &mut SaveAsState) {
+    let mut open: Option<PathBuf> = None;
+    let mut unbookmark: Option<PathBuf> = None;
     ui.vertical(|ui| {
         ui.set_width(PLACES_W);
-        for (place, path) in files::places() {
-            let name = place_name(place, &path);
-            if ui
-                .selectable_label(st.dir == path, name)
-                .rich_tip(path.display().to_string())
-                .clicked()
-            {
-                st.open_dir(path);
-            }
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("save_as_places")
+            .max_height(LIST_H)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let row = |ui: &mut Ui, name: String, path: &Path| {
+                    let r = ui
+                        .add(egui::Button::selectable(st.dir == path, name).truncate())
+                        .rich_tip(path.display().to_string());
+                    r
+                };
+                let heading = |ui: &mut Ui, key: &str| {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr(key)).small().weak());
+                };
+                for (place, path) in st.places.iter().filter(|(p, _)| *p != Place::Drive) {
+                    if row(ui, place_name(*place, path), path).clicked() {
+                        open = Some(path.clone());
+                    }
+                }
+                let drives: Vec<&PathBuf> = st
+                    .places
+                    .iter()
+                    .filter(|(p, _)| *p == Place::Drive)
+                    .map(|(_, d)| d)
+                    .collect();
+                if !drives.is_empty() {
+                    heading(ui, "dialog.places_drives");
+                    for path in drives {
+                        if row(ui, files::drive_name(path), path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                }
+                let own = st.bookmarks.iter().filter(|p| files::is_dir(p));
+                if !st.desktop_bookmarks.is_empty() || own.clone().next().is_some() {
+                    heading(ui, "dialog.places_bookmarks");
+                    for (name, path) in &st.desktop_bookmarks {
+                        if row(ui, name.clone(), path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                    for path in own {
+                        let r = row(ui, files::drive_name(path), path);
+                        if r.clicked() {
+                            open = Some(path.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button(tr("dialog.remove_bookmark")).clicked() {
+                                unbookmark = Some(path.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+                if !st.recent.is_empty() {
+                    heading(ui, "dialog.places_recent");
+                    for path in &st.recent {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.display().to_string());
+                        if row(ui, name, path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                }
+            });
     });
+    if let Some(path) = unbookmark {
+        st.bookmarks.retain(|p| *p != path);
+    }
+    if let Some(path) = open {
+        st.open_dir(path);
+    }
 }
 
 /// The folder's contents: a click picks an entry (a file's name becomes
@@ -783,6 +881,7 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     let mut pick: Option<PathBuf> = None;
     let mut rename: Option<PathBuf> = None;
     let mut rename_done: Option<bool> = None;
+    let mut bookmark: Option<PathBuf> = None;
     list_keys(ui, st, &mut open, &mut rename);
     ui.vertical(|ui| {
         egui::ScrollArea::vertical()
@@ -858,6 +957,13 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
                                         rename = Some(e.path.clone());
                                         ui.close();
                                     }
+                                    if e.is_dir
+                                        && !st.bookmarks.contains(&e.path)
+                                        && ui.button(tr("dialog.add_bookmark")).clicked()
+                                    {
+                                        bookmark = Some(e.path.clone());
+                                        ui.close();
+                                    }
                                 });
                             }
                             ui.label(
@@ -901,6 +1007,9 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     if let Some(path) = rename {
         st.list_keys = true;
         st.start_rename(path);
+    }
+    if let Some(dir) = bookmark {
+        st.bookmarks.push(dir);
     }
     if let Some(dir) = open {
         st.list_keys = true;
@@ -1631,6 +1740,67 @@ mod tests {
         assert_eq!(version_label(14), plain(14));
         assert_eq!(version_label(13), plain(13));
         assert_eq!(version_label(7), plain(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Down the left, under the folders: Drives, Bookmarks (the
+    /// desktop's and those made here) and Recent, each with its folders;
+    /// a folder bookmarked here is kept in the settings (#1391).
+    #[test]
+    fn drives_bookmarks_and_recent_folders_are_listed() {
+        let dir = temp_dir("save-as-places");
+        let (stick, work, last) = (dir.join("STICK"), dir.join("work"), dir.join("last"));
+        for d in [&stick, &work, &last] {
+            std::fs::create_dir_all(d).expect("folder");
+        }
+        let mut app = drawing();
+        app.settings.last_dir = Some(last.clone());
+        app.save_as_dialog();
+        let st = state(&mut app);
+        assert_eq!(st.recent.first(), Some(&last), "the last folder is recent");
+        // This computer's own places would push the rest out of sight.
+        st.places = vec![(Place::Drive, stick.clone())];
+        st.desktop_bookmarks = vec![("Work".into(), work.clone())];
+        // An empty folder shown, so the names come from the left only.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).expect("folder");
+        st.open_dir(empty);
+        let ctx = crate::theme::ui_context();
+        let texts = |ctx: &Context, app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(app, ui.ctx()));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        texts(&ctx, &mut app);
+        let shown = texts(&ctx, &mut app);
+        for want in [
+            tr("dialog.places_drives"),
+            "STICK".to_string(),
+            tr("dialog.places_bookmarks"),
+            "Work".to_string(),
+            tr("dialog.places_recent"),
+            "last".to_string(),
+        ] {
+            assert!(shown.contains(&want), "{want} in {shown:?}");
+        }
+        // A folder bookmarked here shows and is kept.
+        state(&mut app).bookmarks.push(stick.clone());
+        texts(&ctx, &mut app);
+        assert_eq!(app.settings.folder_bookmarks, vec![stick.clone()]);
+        let st = state(&mut app);
+        st.bookmarks.clear();
+        texts(&ctx, &mut app);
+        assert!(app.settings.folder_bookmarks.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

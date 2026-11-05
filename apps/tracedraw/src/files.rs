@@ -406,6 +406,30 @@ pub fn write_creating(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::i
     std::fs::write(path, bytes)
 }
 
+/// Write `bytes` to a device such as a serial port (`/dev/ttyUSB0`,
+/// `COM3`) without creating or truncating anything: the device must
+/// exist. A bare Windows port name (`COM10`) is opened through the
+/// device namespace (`\\.\COM10`), which every port number needs past
+/// 9. Not in a browser or on Android, which have no such devices.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn write_device(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let path = path.trim();
+    let upper = path.to_ascii_uppercase();
+    let device = if cfg!(windows)
+        && upper.starts_with("COM")
+        && upper.len() > 3
+        && upper[3..].bytes().all(|b| b.is_ascii_digit())
+    {
+        format!("\\\\.\\{path}")
+    } else {
+        path.to_string()
+    };
+    let mut f = std::fs::OpenOptions::new().write(true).open(device)?;
+    f.write_all(bytes)?;
+    f.flush()
+}
+
 /// Delete a file (in a browser, only in the auto-backup folder and the
 /// folders kept in memory).
 pub fn remove(path: impl AsRef<Path>) -> std::io::Result<()> {
@@ -801,6 +825,9 @@ pub enum Place {
     Pictures,
     /// A drive or the file system's root.
     Root,
+    /// A mounted drive, memory card, network share or other volume
+    /// (#1391): named after its folder.
+    Drive,
 }
 
 /// The user's home folder.
@@ -816,7 +843,8 @@ pub fn home_dir() -> Option<PathBuf> {
 /// The shortcuts that exist on this computer: home, desktop, documents,
 /// downloads and pictures (the names the system gives them, read from
 /// the user's folder settings on Linux), then the drives (Windows) or
-/// the root. Empty in a browser.
+/// the root, then the mounted drives, memory cards and network shares
+/// ([`mounted_drives`]). Empty in a browser.
 pub fn places() -> Vec<(Place, PathBuf)> {
     let mut out = Vec::new();
     let Some(home) = home_dir() else {
@@ -848,6 +876,267 @@ pub fn places() -> Vec<(Place, PathBuf)> {
         }
     } else {
         out.push((Place::Root, PathBuf::from("/")));
+    }
+    for drive in mounted_drives() {
+        if !out.iter().any(|(_, p)| *p == drive) {
+            out.push((Place::Drive, drive));
+        }
+    }
+    out
+}
+
+/// Where this computer puts mounted drives (#1391).
+#[derive(Debug, Clone, Default)]
+pub struct MountRoots {
+    /// The system's table of mounts (`/proc/self/mounts` on Linux).
+    pub mounts: Option<String>,
+    /// Folders whose subfolders are mounted drives: `/media/$USER`,
+    /// `/run/media/$USER`, `/media` and `/mnt` on Linux, `/Volumes` on
+    /// macOS.
+    pub parents: Vec<PathBuf>,
+    /// The folder of the desktop's network shares and phones
+    /// (`$XDG_RUNTIME_DIR/gvfs`).
+    pub gvfs: Option<PathBuf>,
+}
+
+impl MountRoots {
+    /// This computer's.
+    pub fn system() -> Self {
+        let mut roots = MountRoots::default();
+        if WEB || ANDROID || cfg!(windows) {
+            return roots;
+        }
+        if cfg!(target_os = "macos") {
+            roots.parents.push(PathBuf::from("/Volumes"));
+            return roots;
+        }
+        roots.mounts = std::fs::read_to_string("/proc/self/mounts").ok();
+        let user = std::env::var("USER")
+            .ok()
+            .filter(|u| !u.is_empty())
+            .or_else(|| {
+                home_dir().and_then(|h| h.file_name().map(|n| n.to_string_lossy().to_string()))
+            });
+        if let Some(user) = user {
+            roots.parents.push(Path::new("/media").join(&user));
+            roots.parents.push(Path::new("/run/media").join(&user));
+        }
+        roots.parents.push(PathBuf::from("/media"));
+        roots.parents.push(PathBuf::from("/mnt"));
+        roots.gvfs = std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|d| !d.is_empty())
+            .map(|d| PathBuf::from(d).join("gvfs"));
+        roots
+    }
+}
+
+/// The mounted drives, memory cards and network shares of this computer,
+/// for the Save Drawing dialog (#1391). Empty on Windows (its drive
+/// letters are listed as roots), on Android and in a browser.
+pub fn mounted_drives() -> Vec<PathBuf> {
+    drives_in(&MountRoots::system())
+}
+
+/// The drives `roots` holds: the folders mounted under one of its
+/// parents (from the mount table, and the parents' subfolders, so a
+/// drive shows when the table cannot be read), then the network shares
+/// under `gvfs`. Each once, in that order, sorted by name within each;
+/// the parents themselves, the boot volume (a link to `/` in
+/// `/Volumes`), hidden folders and folders that are not there are left
+/// out.
+pub fn drives_in(roots: &MountRoots) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mounted = roots
+        .mounts
+        .as_deref()
+        .map(parse_mount_points)
+        .unwrap_or_default();
+    // Folders that are only parents of drives (/media holding $USER).
+    let is_parent = |p: &Path| roots.parents.iter().any(|q| q == p);
+    for parent in &roots.parents {
+        let mut here: Vec<PathBuf> = mounted
+            .iter()
+            .filter(|m| m.parent() == Some(parent.as_path()))
+            .cloned()
+            .collect();
+        for e in list_entries(parent) {
+            if e.is_dir {
+                here.push(e.path);
+            }
+        }
+        here.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        for p in here {
+            let hidden = p
+                .file_name()
+                .is_none_or(|n| n.to_string_lossy().starts_with('.'));
+            let boot = std::fs::read_link(&p).is_ok_and(|t| t == Path::new("/"));
+            if hidden || boot || is_parent(&p) || !p.is_dir() || found.contains(&p) {
+                continue;
+            }
+            found.push(p);
+        }
+    }
+    if let Some(gvfs) = &roots.gvfs {
+        for e in list_entries(gvfs) {
+            if e.is_dir && !found.contains(&e.path) {
+                found.push(e.path);
+            }
+        }
+    }
+    found
+}
+
+/// The mount points of a mount table (`/proc/self/mounts`: device,
+/// mount point, type, ... per line; a space in a path is written `\040`).
+pub fn parse_mount_points(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(|p| PathBuf::from(unescape_mount(p)))
+        .collect()
+}
+
+/// `\040` (space), `\011` (tab), `\012` (new line) and `\134`
+/// (backslash) of a mount table.
+fn unescape_mount(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1..i + 4]
+                .iter()
+                .all(|b| (b'0'..=b'7').contains(b))
+        {
+            let n = bytes[i + 1..i + 4]
+                .iter()
+                .fold(0u32, |n, b| n * 8 + u32::from(b - b'0'));
+            out.push(n as u8);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A drive's name in the Save Drawing dialog: its folder's name; for a
+/// network share of the desktop (`smb-share:server=nas,share=photos`)
+/// "photos (nas)", or the server alone.
+pub fn drive_name(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    let Some((_, fields)) = name.split_once(':') else {
+        return name;
+    };
+    let field = |key: &str| {
+        fields
+            .split(',')
+            .find_map(|f| f.strip_prefix(key)?.strip_prefix('='))
+            .map(str::to_string)
+    };
+    match (field("share"), field("server").or_else(|| field("host"))) {
+        (Some(share), Some(server)) => format!("{share} ({server})"),
+        (None, Some(server)) => server,
+        _ => name,
+    }
+}
+
+/// The folders bookmarked in the desktop's file manager
+/// (`~/.config/gtk-3.0/bookmarks`, else `~/.gtk-bookmarks`), with their
+/// names, that exist. Empty on Windows, macOS, Android and in a browser.
+pub fn desktop_bookmarks() -> Vec<(String, PathBuf)> {
+    if WEB || ANDROID || cfg!(windows) || cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    [
+        config.join("gtk-3.0/bookmarks"),
+        home.join(".gtk-bookmarks"),
+    ]
+    .iter()
+    .find_map(|f| std::fs::read_to_string(f).ok())
+    .map(|text| parse_bookmarks(&text))
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|(_, p)| p.is_dir())
+    .collect()
+}
+
+/// The `file://` lines of a bookmarks file (`file:///home/me/My%20Work
+/// Work`: the address, then an optional name), with the name given or
+/// the folder's own; other addresses (`sftp://`, `smb://`) are left out,
+/// as they are no folders here.
+pub fn parse_bookmarks(text: &str) -> Vec<(String, PathBuf)> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (uri, label) = match line.split_once(' ') {
+                Some((u, l)) => (u, l.trim()),
+                None => (line, ""),
+            };
+            let path = PathBuf::from(percent_decode(uri.strip_prefix("file://")?));
+            if !path.is_absolute() {
+                return None;
+            }
+            let name = if label.is_empty() {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string())
+            } else {
+                label.to_string()
+            };
+            Some((name, path))
+        })
+        .collect()
+}
+
+/// `%20` and the other `%XX` escapes of an address, as bytes (UTF-8).
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The folders used lately, newest first, for the Save Drawing dialog
+/// (#1391): the last folder a dialog used, then the folders of the
+/// recent drawings; each once, at most `max`, only those that exist.
+pub fn recent_dirs(last_dir: Option<&Path>, recent_files: &[PathBuf], max: usize) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let dirs = last_dir.map(Path::to_path_buf).into_iter().chain(
+        recent_files
+            .iter()
+            .filter_map(|f| f.parent().map(Path::to_path_buf)),
+    );
+    for d in dirs {
+        if out.len() >= max {
+            break;
+        }
+        if !d.as_os_str().is_empty() && !out.contains(&d) && is_dir(&d) {
+            out.push(d);
+        }
     }
     out
 }
@@ -1693,5 +1982,106 @@ mod tests {
         assert_eq!(read(&p).unwrap(), vec![1, 2, 3]);
         assert!(read(dir.join("missing")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Save Drawing dialog lists the mounted drives (#1391): those
+    /// under /media/$USER, /run/media/$USER and /mnt (from the mount table,
+    /// a space written `\040`, and from the folders there), then the
+    /// desktop's network shares, each once, without hidden folders or the
+    /// parents themselves.
+    #[test]
+    fn mounted_drives_memory_cards_and_shares_are_listed() {
+        let root = std::env::temp_dir().join(format!("tracedraw-drives-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let media = root.join("media");
+        let user_media = media.join("ana");
+        let run_media = root.join("run/media/ana");
+        let mnt = root.join("mnt");
+        let gvfs = root.join("gvfs");
+        for d in [
+            user_media.join("USB STICK"),
+            user_media.join(".hidden"),
+            run_media.join("CARD"),
+            mnt.join("backup"),
+            gvfs.join("smb-share:server=nas,share=photos"),
+        ] {
+            std::fs::create_dir_all(&d).expect("folder");
+        }
+        let table = format!(
+            "/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 {}/USB\\040STICK vfat rw 0 0\nproc /proc proc rw 0 0\n",
+            user_media.display()
+        );
+        assert_eq!(
+            parse_mount_points(&table)[1],
+            user_media.join("USB STICK"),
+            "a space in a mount point"
+        );
+        let roots = MountRoots {
+            mounts: Some(table),
+            parents: vec![
+                user_media.clone(),
+                run_media.clone(),
+                media.clone(),
+                mnt.clone(),
+            ],
+            gvfs: Some(gvfs.clone()),
+        };
+        assert_eq!(
+            drives_in(&roots),
+            vec![
+                user_media.join("USB STICK"),
+                run_media.join("CARD"),
+                mnt.join("backup"),
+                gvfs.join("smb-share:server=nas,share=photos"),
+            ]
+        );
+        assert_eq!(drive_name(&user_media.join("USB STICK")), "USB STICK");
+        assert_eq!(
+            drive_name(&gvfs.join("smb-share:server=nas,share=photos")),
+            "photos (nas)"
+        );
+        assert_eq!(drive_name(&gvfs.join("mtp:host=Phone_123")), "Phone_123");
+        // Nothing mounted, nothing there: no drives.
+        assert!(drives_in(&MountRoots::default()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The desktop's bookmarks: `file://` addresses with `%20` escapes
+    /// and an optional name; other addresses are no folders here (#1391).
+    #[test]
+    fn desktop_bookmarks_are_read() {
+        assert_eq!(
+            parse_bookmarks(
+                "file:///home/ana/My%20Work Work\nfile:///srv/print\nsftp://host/x Remote\n\n"
+            ),
+            vec![
+                ("Work".to_string(), PathBuf::from("/home/ana/My Work")),
+                ("print".to_string(), PathBuf::from("/srv/print")),
+            ]
+        );
+    }
+
+    /// Recent folders: the last folder used, then the folders of the
+    /// recent drawings, each once, only those that exist, at most `max`.
+    #[test]
+    fn recent_folders_come_from_the_last_folder_and_recent_drawings() {
+        let root = std::env::temp_dir().join(format!("tracedraw-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (a, b, c) = (root.join("a"), root.join("b"), root.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).expect("folder");
+        }
+        let recent = vec![
+            b.join("one.tdraw"),
+            a.join("two.cdr"),
+            root.join("gone/three.tdraw"),
+            c.join("four.tdraw"),
+        ];
+        assert_eq!(
+            recent_dirs(Some(&a), &recent, 6),
+            vec![a.clone(), b.clone(), c.clone()]
+        );
+        assert_eq!(recent_dirs(None, &recent, 2), vec![b, a]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

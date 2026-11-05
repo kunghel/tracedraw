@@ -100,6 +100,30 @@ The [Toolbox](toolbox.md) page lists every tool. Each tool has its own keys
 while you use it, explained on its page; for the [[tool.shape]] tool, see
 [Shaping curves](../lines-shapes/shape-tool.md#editing).
 
+## Menus and lists {#menus}
+
+Press and release <kbd>Alt</kbd> to go to the menu bar: <kbd>Left</kbd> and
+<kbd>Right</kbd> move along the menus, <kbd>Down</kbd> or <kbd>Enter</kbd> opens
+one, and <kbd>Esc</kbd> leaves the bar. <kbd>Alt</kbd> with a menu's underlined
+letter opens that menu at once.
+
+In an open menu, <kbd>Down</kbd> and <kbd>Up</kbd> move from row to row,
+<kbd>Home</kbd> and <kbd>End</kbd> go to the first and last rows, and
+<kbd>Enter</kbd> or <kbd>Space</kbd> runs the row. <kbd>Right</kbd> opens a
+submenu and <kbd>Left</kbd> closes it; on other rows they go to the next or the
+previous menu. <kbd>Esc</kbd> closes one level. The right-click menus work the
+same way.
+
+In an open drop-down list, <kbd>Down</kbd>, <kbd>Up</kbd>, <kbd>Home</kbd>,
+<kbd>End</kbd>, <kbd>Page Down</kbd> and <kbd>Page Up</kbd> move the highlight,
+typing the first letters of a name jumps to it, <kbd>Enter</kbd> picks and
+<kbd>Esc</kbd> closes the list without a change. A list's button reached with
+<kbd>Tab</kbd> opens with <kbd>Down</kbd>, <kbd>Alt</kbd>+<kbd>Down</kbd> or
+<kbd>Enter</kbd>. In the font list, typing filters the fonts.
+
+While a menu or a list is open, the arrow keys do not move the selected
+objects.
+
 ## Dialog boxes {#dialogs}
 
 <kbd>Enter</kbd> presses [[dialog.ok]] and <kbd>Esc</kbd> closes a dialog box

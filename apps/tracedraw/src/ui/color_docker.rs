@@ -887,7 +887,7 @@ fn top_row(app: &mut App, ui: &mut Ui) {
         let gear = 28.0;
         let model = MODELS.get(app.color_model).copied().unwrap_or("CMYK");
         let width = (ui.available_width() - gear - 10.0).clamp(80.0, 240.0);
-        egui::ComboBox::from_id_salt("col_model")
+        crate::ui::keynav::ComboBox::from_id_salt("col_model")
             .selected_text(model)
             .width(width)
             .show_ui(ui, |ui| {
@@ -1320,7 +1320,7 @@ fn palette_view(app: &mut App, ui: &mut Ui) -> Option<Color> {
         return None;
     }
     let mut chosen = app.color_docker.palette.min(app.palettes.len() - 1);
-    egui::ComboBox::from_id_salt("col_palette")
+    crate::ui::keynav::ComboBox::from_id_salt("col_palette")
         .selected_text(tr(app.palettes[chosen].name_key()))
         .width(ui.available_width().min(240.0))
         .show_ui(ui, |ui| {

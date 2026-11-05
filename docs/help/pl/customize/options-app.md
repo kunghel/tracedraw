@@ -109,6 +109,7 @@ Strona ma pięć kart.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] i [[options.hyphenation_patterns]]
   (wbudowane lub słownik dzielenia wyrazów dla Twojego języka).
+  - [[options.default_tab_spacing]]: dokąd skacze <kbd>Tab</kbd> w akapicie bez własnych znaczników tabulacji (12,7 mm, pół cala).
 - [[docker.fonts]]: [[options.show_recent_fonts]] na górze list czcionek,
   [[options.recent_font_count]] (5, do 20) i
   [[options.font_sample_size]].

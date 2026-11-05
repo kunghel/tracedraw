@@ -118,6 +118,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     crate::comments::draw_comments(app, painter);
     crate::perspective_draw::draw_grid(app, painter, rect);
     draw_frame_links(app, painter);
+    crate::tab_ruler::draw(app, painter);
     if app.pending_text_link.is_some() {
         let pointer = painter.ctx().pointer_hover_pos();
         draw_pending_text_link(app, painter, pointer);
@@ -476,6 +477,20 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             .collect();
         (ids, t)
     });
+    // A render on its thread shares the copy of the drawing the pages
+    // beside take in the Multipage View, and they share its copy: the
+    // drawing is copied once a change, not once a render (a zoom renders
+    // at once, every few frames).
+    #[cfg(not(target_arch = "wasm32"))]
+    let shares = app.multipage && revision == app.engine.revision();
+    #[cfg(not(target_arch = "wasm32"))]
+    if shares {
+        if let Some((r, d)) = app.page_snapshot.borrow().as_ref() {
+            if *r == revision {
+                app.raster.borrow_mut().snapshot = Some(d.clone());
+            }
+        }
+    }
     let main = app.raster.borrow_mut().texture(
         painter.ctx(),
         doc,
@@ -492,6 +507,19 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         (app.view_mode == crate::app::ViewMode::Pixels).then(|| app.document_dpi()),
     );
     let main_rendered = app.raster.borrow().render_count() != renders_before;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut raster = app.raster.borrow_mut();
+        raster.snapshot = None;
+        if shares {
+            if let Some((r, d)) = raster.kept_copy().filter(|(r, _)| *r == revision) {
+                let mut snap = app.page_snapshot.borrow_mut();
+                if snap.as_ref().is_none_or(|(s, _)| *s != r) {
+                    *snap = Some((r, d));
+                }
+            }
+        }
+    }
     if app.multipage {
         crate::multipage::draw_other_pages(app, painter, rect, started, main_rendered);
     }
@@ -2375,24 +2403,24 @@ fn draw_nodes(app: &App, painter: &Painter) {
             painter.circle_filled(c, 1.2, Tokens::HANDLE);
         }
     }
+    // The node marquees look like the Pick tool's: blue dashes on a
+    // white line, so they show on blue artwork too (#1849).
     if let Drag::NodeLasso { points } = &app.drag {
         let pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
-        dashed_polyline(
-            painter,
-            &pts,
-            EStroke::new(1.0, Tokens::SELECTION),
-            4.0,
-            3.0,
-        );
+        if pts.len() > 1 {
+            dashed_selection_line(painter, &pts);
+        }
     }
     if let Drag::NodeMarquee { start, current } = &app.drag {
         let r = view.rect_to_screen(Rect::from_points(*start, *current));
-        painter.rect_stroke(
-            r,
-            0.0,
-            EStroke::new(1.0, Tokens::SELECTION),
-            epaint::StrokeKind::Outside,
-        );
+        let pts = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        dashed_selection_line(painter, &pts);
     }
     crate::corner_widgets::draw(app, painter, main);
 }

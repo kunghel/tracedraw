@@ -69,7 +69,7 @@ fn dim(ui: &mut Ui, text: String) {
 fn mapping_list(app: &mut App, ui: &mut Ui, width: f32) {
     let (shown, _) = app.envelope_settings_shown();
     let mut chosen = None;
-    egui::ComboBox::from_id_salt("envelope_mapping")
+    crate::ui::keynav::ComboBox::from_id_salt("envelope_mapping")
         .selected_text(tr(mapping_key(shown)))
         .width(width)
         .show_ui(ui, |ui| {
@@ -93,7 +93,7 @@ fn mapping_list(app: &mut App, ui: &mut Ui, width: f32) {
 fn preset_list(app: &mut App, ui: &mut Ui, enabled: bool) {
     let mut chosen = None;
     ui.add_enabled_ui(enabled, |ui| {
-        egui::ComboBox::from_id_salt("envelope_presets")
+        crate::ui::keynav::ComboBox::from_id_salt("envelope_presets")
             .selected_text(tr("docker.presets"))
             .width(110.0)
             .show_ui(ui, |ui| {

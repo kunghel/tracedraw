@@ -3210,7 +3210,7 @@ fn weight_member(sp: &TextSpan) -> u32 {
 /// scripts, with the members the paragraph's default style holds besides
 /// them (angle, outline, shifts), as every such run of the files of the
 /// program that reads them is complete (#1379).
-fn run_style_json(sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
+fn run_style_json(v: Ver, sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
     // A fill other than a colour is left to the paragraph's.
     let fill = match fill.and_then(fill_colour) {
         Some(c) => format!("{},", fill_json(&colour_spec(c))),
@@ -3219,10 +3219,10 @@ fn run_style_json(sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) ->
     format!(
         r#"{{"character":{{{}"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
         fill,
-        character_outline_json(),
-        font_json(Some(sp), 178, tech),
-        font_json(Some(sp), 0, tech),
-        font_json(Some(sp), 128, tech)
+        character_outline_json(v),
+        font_json(v, Some(sp), 178, tech),
+        font_json(v, Some(sp), 0, tech),
+        font_json(v, Some(sp), 128, tech)
     )
 }
 
@@ -3230,11 +3230,19 @@ fn run_style_json(sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) ->
 const BLACK_SPEC: &str = "CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000000000";
 
 /// The `outline` member of a character style: none (width 0), with the
-/// members files give it.
-fn character_outline_json() -> String {
+/// members files give it; from version 19 `variableAttributes` too, as
+/// every text of the files of versions 19 and 22 to 27 the program's
+/// recent releases save holds it (#1698; its 2019 release leaves it out
+/// up to 21).
+fn character_outline_json(v: Ver) -> String {
     let screen = "0,0,45000000,60,0";
+    let variable = if v.0 >= 19 {
+        r#""variableAttributes":"0|0","#
+    } else {
+        ""
+    };
     format!(
-        r#"{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"0","miterLimit":"5","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"0","matrix":"1,0,0,0,1,0","color":"{BLACK_SPEC}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"0","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"0","width":"0"}}"#
+        r#"{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"0","miterLimit":"5","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"0","matrix":"1,0,0,0,1,0","color":"{BLACK_SPEC}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"0","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"0",{variable}"width":"0"}}"#
     )
 }
 
@@ -3247,16 +3255,16 @@ fn character_outline_json() -> String {
 /// the font and drew the whole text in one colour; the runs of a file
 /// that program saved name their fonts as the paragraph style does
 /// (#1297).
-fn character_json(sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
+fn character_json(v: Ver, sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
     let fill = match fill.and_then(fill_colour) {
         Some(c) => format!("{},", fill_json(&colour_spec(c))),
         None => String::new(),
     };
     format!(
         r#""character":{{{fill}"latin":{},"RTL":{},"farEast":{}}}"#,
-        font_json(Some(sp), 0, tech),
-        font_json(Some(sp), 178, tech),
-        font_json(Some(sp), 128, tech)
+        font_json(v, Some(sp), 0, tech),
+        font_json(v, Some(sp), 178, tech),
+        font_json(v, Some(sp), 128, tech)
     )
 }
 
@@ -3274,8 +3282,11 @@ fn fill_json(colour: &str) -> String {
 /// files hold when nothing sets them; 24 pt Arial without a span. The
 /// `technology` and `version` are those of the font drawing the run
 /// (`tech`), as files give them for every face they find (#1484); 4 and
-/// an empty version for a face without its font file.
-fn font_json(sp: Option<&TextSpan>, charset: u32, tech: &fonts::FaceTech) -> String {
+/// an empty version for a face without its font file. From version 22
+/// an empty `font_axes` too, as every font of the files of versions 22
+/// to 27 holds it when no variable font axis is set (#1698; the files
+/// of versions 19 to 21 have none).
+fn font_json(v: Ver, sp: Option<&TextSpan>, charset: u32, tech: &fonts::FaceTech) -> String {
     let (technology, version) = sp
         .and_then(|sp| tech.get(&(sp.font_family.clone(), sp.bold, sp.italic)))
         .map_or((4, String::new()), |(k, v)| {
@@ -3292,8 +3303,9 @@ fn font_json(sp: Option<&TextSpan>, charset: u32, tech: &fonts::FaceTech) -> Str
         ),
         None => ("Arial".to_string(), 254000 * 24 / 72, 64, 0, 0, 0),
     };
+    let axes = if v.0 >= 22 { r#","font_axes":"""# } else { "" };
     format!(
-        r#"{{"overline":"0","effect":"0","version":"{version}","italic":"{italic}","weight":"{weight}","underline":"{underline}","charset":"{charset}","technology":"{technology}","size":"{size}","font":"{family}","script":"0","strikeout":"{strike}"}}"#
+        r#"{{"overline":"0","effect":"0","version":"{version}","italic":"{italic}","weight":"{weight}","underline":"{underline}","charset":"{charset}","technology":"{technology}","size":"{size}","font":"{family}","script":"0","strikeout":"{strike}"{axes}}}"#
     )
 }
 
@@ -3314,17 +3326,88 @@ fn line_spacing_factor(f: &tracedraw_core::ParagraphFormat, size_pt: f64) -> f64
     }
 }
 
+/// The members of a paragraph text's paragraph style (versions 16+)
+/// beyond those artistic text has: hyphenation, bullets, drop caps,
+/// indents and tabs. Every paragraph of every paragraph text of the
+/// files of versions 19, 22 and 27 holds them (18 paragraphs, 2026-11-04,
+/// #1698); TraceDraw gave its paragraph text the members of artistic
+/// text only, and the program that reads the files hung on opening any
+/// of them. The values are those of the version 27 file when nothing is
+/// set (no hyphenation, bullet or drop cap, no indent), each a JSON value.
+pub(crate) const FRAME_TEXT_PARAGRAPH: &[(&str, &str)] = &[
+    ("autoHyphenate", r#""0""#),
+    ("breakAllCapWords", r#""0""#),
+    ("breakCapitalizedWords", r#""0""#),
+    ("bulletAngle", r#""0""#),
+    ("bulletChar", r#""22200000""#),
+    ("bulletFill", r#"{"type":"0"}"#),
+    ("bulletFirstCharIndent", r#""37500""#),
+    (
+        "bulletFont",
+        r#"{"charset":"0","effect":"0","font":"Arial","overline":"0","script":"0","size":"42333","strikeout":"0","technology":"0","underline":"0","version":"","weight":"12480"}"#,
+    ),
+    ("bulletHShift", r#""0""#),
+    ("bulletHanging", r#""1""#),
+    ("bulletOn", r#""0""#),
+    ("bulletOutline", r#"{"width":"0"}"#),
+    ("bulletVShift", r#""0""#),
+    ("dropCapOn", r#""0""#),
+    ("firstLineIndent", r#""0""#),
+    ("hangingIndent", r#""0""#),
+    ("hyphenateHotZone", r#""127000""#),
+    ("hyphenateMinCharsAfter", r#""2""#),
+    ("hyphenateMinCharsBefore", r#""3""#),
+    ("hyphenateMinWordLength", r#""6""#),
+    ("leftMargin", r#""0""#),
+    ("linesToDrop", r#""3""#),
+    ("restOfLinesIndent", r#""0""#),
+    ("spacingFromText", r#""0""#),
+    ("tabLeaderChar", r#""2e000000""#),
+    ("tabLeaderSpacing", r#""1""#),
+    (
+        "tabs",
+        r#""0,0,75000|0,0,150000|0,0,225000|0,0,300000|0,0,375000|0,0,450000|0,0,525000|0,0,600000|0,0,675000|0,0,750000|0,0,825000|0,0,900000""#,
+    ),
+];
+
 /// A text paragraph's whole default style, as files of versions 16 and
 /// later write it: the first run's font, size, weight and colour, the
 /// alignment, and every other member with the values files hold when it
-/// is not set.
+/// is not set; paragraph text (`frame_text`) with the members of
+/// [`FRAME_TEXT_PARAGRAPH`] too, its `tabs` member holding `tabs` when
+/// the paragraph has stops of its own.
+#[allow(clippy::too_many_arguments)]
 fn full_text_style(
+    v: Ver,
     sp: Option<&TextSpan>,
     fill: Option<&Fill>,
     align: TextAlign,
     leading: f64,
+    tabs: &[tracedraw_core::TabStop],
     tech: &fonts::FaceTech,
+    frame_text: bool,
 ) -> String {
+    // Paragraph text holds one `tabs` member, among the members of
+    // [`FRAME_TEXT_PARAGRAPH`]: the paragraph's own stops when it has
+    // them, else the files' default; artistic text holds its stops only
+    // when it has some.
+    let own_tabs = tab_list(tabs);
+    let frame_members: String = if frame_text {
+        FRAME_TEXT_PARAGRAPH
+            .iter()
+            .map(|(k, v)| match (*k, &own_tabs) {
+                ("tabs", Some(list)) => format!(r#""tabs":"{list}","#),
+                _ => format!(r#""{k}":{v},"#),
+            })
+            .collect()
+    } else {
+        String::new()
+    };
+    let tabs = if frame_text {
+        String::new()
+    } else {
+        tabs_members(tabs)
+    };
     let colour = fill
         .and_then(fill_colour)
         .map(colour_spec)
@@ -3334,16 +3417,48 @@ fn full_text_style(
             r#"{{"character":{{{fill},"#,
             r#""angle":"0","outline":{outline},"#,
             r#""RTL":{rtl},"latin":{latin},"h_shift":"0","v_shift":"0","farEast":{far}}},"frame":{{}},"#,
-            r#""paragraph":{{"interCharSpacing":"0","thickOverlineAbsolute":"0","thickAbsolute":"0","dblStrikeout2Thickness":"45455","dblStrikeout2Distance":"287878","dblOverline1Absolute":"0","maxInterCharSpacing":"2000000","dblUnderline1Distance":"-90909","dblOverline2Absolute":"0","dblStrikeout1Distance":"378788","dblStrikeout1Absolute":"0","thickThickness":"90909","dblUnderline2Distance":"-181819","dblUnderline2Thickness":"45455","interLineSpacing":"{leading}","dblOverline1Thickness":"45455","afterParaSpacing":"0","thickOverlineThickness":"90909","spacingMethod":"0","dblStrikeout2Absolute":"0","thickStrikeoutAbsolute":"0","thinThickness":"45455","interLangSpacing":"0","interWordSpacing":"1000000","maxInterWordSpacing":"3000000","thinAbsolute":"0","dblUnderline1Absolute":"0","dblUnderline2Absolute":"0","dblUnderline1Thickness":"45455","thinOverlineAbsolute":"0","thinOverlineThickness":"45455","thinDistance":"-90909","beforeParaSpacing":"1000000","dblOverline2Distance":"890910","thinOverlineDistance":"845455","dblOverline2Thickness":"45455","thinStrikeoutAbsolute":"0","dblOverline1Distance":"800000","thinStrikeoutDistance":"333333","minInterWordSpacing":"600000","thinStrikeoutThickness":"45455","thickDistance":"-90909","thickOverlineDistance":"868182","thickStrikeoutDistance":"356060","thickStrikeoutThickness":"90909","dblStrikeout1Thickness":"45455","justify":"{justify}"}}}}"#
+            r#""paragraph":{{{frame_members}"interCharSpacing":"0","thickOverlineAbsolute":"0","thickAbsolute":"0","dblStrikeout2Thickness":"45455","dblStrikeout2Distance":"287878","dblOverline1Absolute":"0","maxInterCharSpacing":"2000000","dblUnderline1Distance":"-90909","dblOverline2Absolute":"0","dblStrikeout1Distance":"378788","dblStrikeout1Absolute":"0","thickThickness":"90909","dblUnderline2Distance":"-181819","dblUnderline2Thickness":"45455","interLineSpacing":"{leading}","dblOverline1Thickness":"45455","afterParaSpacing":"0","thickOverlineThickness":"90909","spacingMethod":"0","dblStrikeout2Absolute":"0","thickStrikeoutAbsolute":"0","thinThickness":"45455","interLangSpacing":"0","interWordSpacing":"1000000","maxInterWordSpacing":"3000000","thinAbsolute":"0","dblUnderline1Absolute":"0","dblUnderline2Absolute":"0","dblUnderline1Thickness":"45455","thinOverlineAbsolute":"0","thinOverlineThickness":"45455","thinDistance":"-90909","beforeParaSpacing":"1000000","dblOverline2Distance":"890910","thinOverlineDistance":"845455","dblOverline2Thickness":"45455","thinStrikeoutAbsolute":"0","dblOverline1Distance":"800000","thinStrikeoutDistance":"333333","minInterWordSpacing":"600000","thinStrikeoutThickness":"45455","thickDistance":"-90909","thickOverlineDistance":"868182","thickStrikeoutDistance":"356060","thickStrikeoutThickness":"90909","dblStrikeout1Thickness":"45455",{tabs}"justify":"{justify}"}}}}"#
         ),
+        tabs = tabs,
         fill = fill_json(&colour),
-        outline = character_outline_json(),
-        rtl = font_json(sp, 178, tech),
-        latin = font_json(sp, 0, tech),
-        far = font_json(sp, 128, tech),
+        outline = character_outline_json(v),
+        rtl = font_json(v, sp, 178, tech),
+        latin = font_json(v, sp, 0, tech),
+        far = font_json(v, sp, 128, tech),
         justify = justify_code(align),
         leading = (leading * 1_000_000.0).round() as i64,
+        frame_members = frame_members,
     )
+}
+
+/// A paragraph's tab stops as members of a version 16+ style string's
+/// paragraph, as the samples of #1852 hold them: `tabs` (each stop 0,
+/// its kind code and its position in coordinate units, `|` between), the
+/// leader spacing 1 and the leader character "." (`2e000000`, its code
+/// as four little-endian bytes); nothing for a paragraph without stops
+/// of its own.
+fn tabs_members(tabs: &[tracedraw_core::TabStop]) -> String {
+    match tab_list(tabs) {
+        Some(list) => {
+            format!(r#""tabs":"{list}","tabLeaderSpacing":"1","tabLeaderChar":"2e000000","#)
+        }
+        None => String::new(),
+    }
+}
+
+/// The value of a `tabs` member for a paragraph's own stops (each stop
+/// 0, its kind code and its position in coordinate units, `|` between),
+/// or `None` for a paragraph without stops of its own.
+fn tab_list(tabs: &[tracedraw_core::TabStop]) -> Option<String> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = tracedraw_core::normalized_tabs(tabs)
+        .iter()
+        .take(crate::text::TAB_ENTRY_STOPS)
+        .map(|t| format!("0,{},{}", crate::text::tab_code(t.kind), units(t.pos)))
+        .collect();
+    Some(list.join("|"))
 }
 
 /// The alignment of each paragraph of a text (its own, or `align`).
@@ -5432,6 +5547,7 @@ impl<'a> Writer<'a> {
                         spans
                             .first()
                             .map(|sp| character_json(
+                                v,
                                 sp,
                                 Some(sp.fill.as_ref().unwrap_or(&s.fill)),
                                 &self.tech
@@ -5462,6 +5578,7 @@ impl<'a> Writer<'a> {
                         .first()
                         .map(|sp| {
                             character_json(
+                                v,
                                 sp,
                                 Some(sp.fill.as_ref().unwrap_or(&s.fill)),
                                 &self.tech,
@@ -5595,12 +5712,13 @@ impl<'a> Writer<'a> {
     /// record of its own (up to [`MAX_RUN_STYLES`]), in the order the
     /// looks first appear. `fill` is the object's, for runs without one.
     fn run_looks(
+        v: Ver,
         runs: &[TextSpan],
         first: Option<&TextSpan>,
         fill: &Fill,
         tech: &fonts::FaceTech,
     ) -> RunLooks {
-        let json = |sp: &TextSpan| run_style_json(sp, sp.fill.as_ref().or(Some(fill)), tech);
+        let json = |sp: &TextSpan| run_style_json(v, sp, sp.fill.as_ref().or(Some(fill)), tech);
         let base = first.map(json);
         // Record 0 counts the paragraph's end.
         let mut records: Vec<(usize, Option<String>)> = vec![(1, None)];
@@ -5857,13 +5975,14 @@ impl<'a> Writer<'a> {
         t.done()
     }
 
-    /// `txsm` of version 16 and later, as files of versions 17 to 21 store
-    /// artistic text: the frame flag set, layout 1700 (also in version
-    /// 16), one frame with the text's matrix, then a paragraph per line
-    /// with the default style string (the first run's style and the
-    /// alignment) and one record per run whose style string the letters
-    /// select; text in UTF-16 (16) or one byte per letter (17 on:
-    /// Windows-1252, or UTF-8 for letters it lacks).
+    /// `txsm` of version 16 and later, as files store text: the frame
+    /// flag set (artistic text) or 0 (paragraph text), layout 1700 in
+    /// versions 16 to 18 and 1800 from 19 (#1698), one frame with the
+    /// text's matrix, then a paragraph per line with the default style
+    /// string (the first run's style and the alignment) and one record
+    /// per run whose style string the letters select; text in UTF-16
+    /// (16) or one byte per letter (17 on: Windows-1252, or UTF-8 for
+    /// letters it lacks).
     fn txsm16(
         &mut self,
         spans: &[TextSpan],
@@ -5875,22 +5994,38 @@ impl<'a> Writer<'a> {
     ) -> Vec<u8> {
         let v = self.v;
         let mut t = Buf::default();
+        // Text from version 19 has the header of every text of the files
+        // of versions 19, 22 to 27 that the program's recent releases save
+        // (artistic and paragraph text alike): 1 where the files of its
+        // 2019 release (versions 16 to 21) and TraceDraw until 0.39 have
+        // -1, 14 from version 22, layout 1800, then 4 zero bytes after the
+        // paragraphs from 22. Paragraph text starts with 0, artistic text
+        // with 1 (-1 before 19). TraceDraw wrote paragraph text with
+        // artistic text's 1700 header, which no paragraph text of any
+        // file has, and the program that reads the files hung on opening
+        // it; its user reports one-line text hanging too (#1698).
+        let recent = v.0 >= 19;
+        let none = if recent { 1 } else { u32::MAX };
         // Paragraph text starts with 0: its frames hold their size and
         // its paragraphs no flag byte.
-        t.u32(if frame.is_some() { 0 } else { u32::MAX })
-            .u32(u32::MAX)
+        t.u32(if frame.is_some() { 0 } else { none })
+            .u32(none)
             .u32(0)
-            .u32(u32::MAX)
+            .u32(none)
             .u32(8)
-            // 12 in version 16, 13 from 17; the layout is 1700 in both,
-            // as files saved for those versions have them (a version 16
-            // file with 13 and 1600 was refused as holding an invalid
-            // object).
-            .u32(if v.0 >= 17 { 13 } else { 12 })
+            // 12 in version 16, 13 from 17, 14 from 22; the layout is 1700
+            // in 16 to 18, as files saved for those versions have them (a
+            // version 16 file with 13 and 1600 was refused as holding an
+            // invalid object).
+            .u32(match v.0 {
+                22.. => 14,
+                17.. => 13,
+                _ => 12,
+            })
             .u32(0)
             .u32(3)
             .u32(0)
-            .u16(1700)
+            .u16(if recent { 1800 } else { 1700 })
             .zeros(3);
         // One frame, numbered as the text object (its `spnd`), the text's
         // matrix, not on a path, 8 unknown. A frame number other than the
@@ -5943,7 +6078,17 @@ impl<'a> Writer<'a> {
             // The colour is the first run's own when it has one: a
             // paragraph of one run keeps its colour only here (#1057).
             let first_fill = first.and_then(|sp| sp.fill.as_ref()).unwrap_or(fill);
-            let default = full_text_style(first, Some(first_fill), align, leading, &self.tech);
+            let tabs = format.map_or(&[][..], |f| f.tabs.as_slice());
+            let default = full_text_style(
+                v,
+                first,
+                Some(first_fill),
+                align,
+                leading,
+                tabs,
+                &self.tech,
+                frame.is_some(),
+            );
             t.u32(style_for(align)).zeros(1);
             if frame.is_none() {
                 t.u8(0);
@@ -5959,7 +6104,7 @@ impl<'a> Writer<'a> {
             // its letter count, which of the style's members apply,
             // flags, a locale, then its style. Records of no letters make
             // the program that opens the file hang.
-            let looks = Self::run_looks(runs, first, fill, &self.tech);
+            let looks = Self::run_looks(v, runs, first, fill, &self.tech);
             t.u32(looks.records.len() as u32);
             for (n, json) in &looks.records {
                 let (members, flags) = if json.is_some() {
@@ -6015,6 +6160,9 @@ impl<'a> Writer<'a> {
                 }
             }
             t.u32(bytes.len() as u32).bytes(&bytes).u8(0);
+        }
+        if v.0 >= 22 {
+            t.u32(0);
         }
         t.done()
     }

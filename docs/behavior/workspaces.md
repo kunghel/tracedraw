@@ -17,8 +17,36 @@ fingers pan and a pinch zooms about its centre, with any tool; the
 gesture drops what the first finger had begun, so it neither drags an
 object nor draws a marquee. Picking another workspace brings the
 interface back to the size chosen.
-Checks: `ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
+
+With a finger only (#1611, #1707): the standard toolbar's Delete deletes
+the selection and its Panels button shows the dockers (Properties and
+the rest); a finger held still on the drawing for 0.8 s is the right
+click (egui's long press), so it opens the menu of the object under it
+(picking it) or of the page, with Delete, Copy, Order, Group and the
+rest; on a palette swatch a tap fills, a hold of 0.5 s let go sets the
+outline and a hold of 1 s shows the shades (`color-palettes.md`).
+Checks: `ui::tests::a_finger_deletes_opens_the_panels_and_the_object_menu`,
+`ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
 `pick_drag_tests::two_fingers_pan_without_dragging_anything`.
+
+On a phone (a screen whose smaller side is under 600 density-independent
+pixels, Android's line between phone and tablet layouts, in either
+orientation) the interface is not enlarged: a 360 dp phone would be
+257 points wide, too narrow for any bar (#1301, #1691). The phone
+layout: the bars, the property bar, the toolbox and the palette slide
+with their « and » buttons (or the wheel and a drag); the menu titles
+that do not fit go under » at the end of the menu bar; an open panel is
+a sheet over the whole room beside its tab strip instead of a column
+beside the drawing; the Welcome Screen's tabs wrap and Get Started puts
+the recent drawings under its buttons, the page scrolling; a dialog
+larger than the screen is drawn at the screen's size and its body
+scrolls both ways. A tablet (600 dp and more) keeps its layout.
+Checks: `ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
+`pick_drag_tests::two_fingers_pan_without_dragging_anything`,
+`ui::phone::tests::phones_are_told_by_their_smaller_side`,
+`ui::tests::phones_fit_and_tablets_keep_their_layout` (360 x 640 and
+412 x 915 dp phones and an 800 x 1280 tablet, upright and turned:
+nothing ends outside the screen).
 
 ## Kept across restarts
 

@@ -102,7 +102,7 @@ fn style_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
         app.set_dimension_style(|s| s.line_width = width_mm);
     }
     let mut arrows = style.arrows;
-    egui::ComboBox::from_id_salt("dimension_arrows")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_arrows")
         .selected_text(tr(arrows.key()))
         .width(90.0)
         .show_ui(ui, |ui| {
@@ -221,7 +221,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         .unwrap_or_else(|| app.dimension_style.clone());
     dim(ui, tr("dimension.precision"));
     let mut precision = style.precision.min(6);
-    egui::ComboBox::from_id_salt("dimension_precision")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_precision")
         .selected_text(precision_sample(precision))
         .width(80.0)
         .show_ui(ui, |ui| {
@@ -242,7 +242,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         .find(|(id, _)| *id == units)
         .map(|(_, l)| l.clone())
         .unwrap_or_default();
-    egui::ComboBox::from_id_salt("dimension_units")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_units")
         .selected_text(shown_units)
         .width(120.0)
         .show_ui(ui, |ui| {
@@ -275,7 +275,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     crate::ui::propbar::sep(ui);
     dim(ui, tr("dimension.text_position"));
     let mut pos = style.text_position;
-    egui::ComboBox::from_id_salt("dimension_text_position")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_text_position")
         .selected_text(tr(pos.key()))
         .width(90.0)
         .show_ui(ui, |ui| {

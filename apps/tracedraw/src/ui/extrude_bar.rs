@@ -32,7 +32,7 @@ fn length(ui: &mut Ui, app: &App, mm: &mut f64, tip: &str) -> bool {
     let r = ui
         .add(
             NumField::new(&mut v)
-                .fixed_decimals(app.settings.precision.min(10) as usize)
+                .length_decimals(app.settings.precision.min(10) as usize)
                 .unit_mm(app.units.world_to_mm(1.0))
                 .suffix(format!(" {}", app.units.short()))
                 .width(76.0),
@@ -53,7 +53,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
     let mut s = app.extrude;
     let mut changed = false;
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("extrude_kind")
+        crate::ui::keynav::ComboBox::from_id_salt("extrude_kind")
             .selected_text(tr(kind_key(s.kind)))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -94,7 +94,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
             );
             changed |= length(ui, app, &mut s.vanishing.x, &tx);
             changed |= length(ui, app, &mut s.vanishing.y, &ty);
-            egui::ComboBox::from_id_salt("extrude_locked")
+            crate::ui::keynav::ComboBox::from_id_salt("extrude_locked")
                 .selected_text(tr(if s.on_object {
                     "extrude.locked_object"
                 } else {
@@ -123,7 +123,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
     });
     ui.horizontal(|ui| {
         dim(ui, tr("extrude.color"));
-        egui::ComboBox::from_id_salt("extrude_color")
+        crate::ui::keynav::ComboBox::from_id_salt("extrude_color")
             .selected_text(tr(s.color.key()))
             .width(96.0)
             .show_ui(ui, |ui| {
@@ -557,7 +557,7 @@ pub fn extrude_docker(app: &mut App, ui: &mut Ui) {
         0 => {
             ui.label(tr("extrude.type"));
             type_picture(ui, s.kind);
-            egui::ComboBox::from_id_salt("extrude_docker_kind")
+            crate::ui::keynav::ComboBox::from_id_salt("extrude_docker_kind")
                 .selected_text(tr(kind_key(s.kind)))
                 .width(ui.available_width() - 8.0)
                 .show_ui(ui, |ui| {
@@ -575,7 +575,7 @@ pub fn extrude_docker(app: &mut App, ui: &mut Ui) {
             let vp = !s.kind.parallel();
             ui.label(tr("docker.vanishing_point"));
             ui.add_enabled_ui(vp, |ui| {
-                egui::ComboBox::from_id_salt("extrude_docker_locked")
+                crate::ui::keynav::ComboBox::from_id_salt("extrude_docker_locked")
                     .selected_text(tr(if s.on_object {
                         "extrude.locked_object"
                     } else {

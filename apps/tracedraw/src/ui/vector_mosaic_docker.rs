@@ -125,7 +125,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
         });
         section(ui, Some(&tr("docker.vector_mosaic_tracking")));
         row(ui, &tr("docker.vector_mosaic_method"), |ui| {
-            egui::ComboBox::from_id_salt("vector_mosaic_method")
+            crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_method")
                 .selected_text(tr(s.method.key()))
                 .width(ui.available_width().clamp(120.0, 190.0))
                 .show_ui(ui, |ui| {
@@ -149,7 +149,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
     let mut select = false;
     row(ui, &tr("docker.vector_mosaic_shape"), |ui| {
         let s = &mut app.vector_mosaic;
-        egui::ComboBox::from_id_salt("vector_mosaic_shape")
+        crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_shape")
             .selected_text(tr(s.shape.key()))
             .width(110.0)
             .show_ui(ui, |ui| {

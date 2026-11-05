@@ -82,6 +82,38 @@ people who answer for them.
 - A new tool or effect gets a page in `docs/behavior/` and a row in
   `docs/features.md`.
 
+## Pull requests
+
+- Start from a freshly fetched `main` and rebase on it again before
+  pushing when the work took long. Change only the lines your change
+  needs; never write a whole file back from an older copy.
+- A pull request never undoes merged work by accident. The `merged-work`
+  check (`scripts/ci/check_merged_work.py`) blames every line the pull
+  request deletes or replaces on its base. It fails when the pull request
+  deletes 15 or more lines of one file that another pull request merged
+  in the last 60 days; lines that only move (the same text added back
+  elsewhere in the diff) do not count. When replacing that work is the
+  point, say so in the description:
+
+  ```
+  Replaces: #1783, 2e009af98 (why)
+  ```
+
+  with the pull request, its issue or the commit, one per item, on the
+  line or as a list below it.
+- Tests are never deleted silently. The same check fails when a `#[test]`
+  function disappears (a test that only moves to another module is
+  fine), unless the description lists it with the reason:
+
+  ```
+  Removed tests:
+  - tracedraw_io::cmyk_bitmap::tests::a_cmyk_jpeg_reads_back_with_its_inks (why)
+  ```
+- Run it before pushing:
+  `python3 scripts/ci/check_merged_work.py --base origin/main --head HEAD
+  --body-file description.md` (add `--repo tracedraw/tracedraw` to group
+  lines by pull request through `gh`).
+
 ## Review and credit
 
 - Every pull request from outside the project is read in full for

@@ -8,15 +8,105 @@ use crate::ui::icons;
 use crate::ui::tips::RichTip;
 use egui::Ui;
 
-const NEWS: &[(&str, &str)] = &[
-    ("welcome.news_1_title", "welcome.news_1_body"),
-    ("welcome.news_2_title", "welcome.news_2_body"),
-    ("welcome.news_3_title", "welcome.news_3_body"),
+/// One release in the What's New history: its version, its release date
+/// and the language keys of its short title and its paragraph.
+pub(crate) struct Release {
+    pub version: &'static str,
+    pub date: &'static str,
+    pub title: &'static str,
+    pub body: &'static str,
+}
+
+/// How many releases the What's New page lists.
+pub(crate) const HISTORY_LEN: usize = 10;
+
+/// The What's New history, newest first: the last [`HISTORY_LEN`]
+/// releases. At each release add the new version on top (its title and
+/// paragraph in every `lang/*.toml`, written from its `CHANGELOG.md`
+/// section) and drop the last row; a test checks that the top row is the
+/// version being built.
+pub(crate) const RELEASES: &[Release] = &[
+    Release {
+        version: "0.40.0",
+        date: "2026-11-05",
+        title: "welcome.news.v0_40_title",
+        body: "welcome.news.v0_40_body",
+    },
+    Release {
+        version: "0.39.0",
+        date: "2026-11-04",
+        title: "welcome.news.v0_39_title",
+        body: "welcome.news.v0_39_body",
+    },
+    Release {
+        version: "0.38.0",
+        date: "2026-11-03",
+        title: "welcome.news.v0_38_title",
+        body: "welcome.news.v0_38_body",
+    },
+    Release {
+        version: "0.37.0",
+        date: "2026-11-02",
+        title: "welcome.news.v0_37_title",
+        body: "welcome.news.v0_37_body",
+    },
+    Release {
+        version: "0.36.0",
+        date: "2026-11-02",
+        title: "welcome.news.v0_36_title",
+        body: "welcome.news.v0_36_body",
+    },
+    Release {
+        version: "0.35.0",
+        date: "2026-11-01",
+        title: "welcome.news.v0_35_title",
+        body: "welcome.news.v0_35_body",
+    },
+    Release {
+        version: "0.34.0",
+        date: "2026-11-01",
+        title: "welcome.news.v0_34_title",
+        body: "welcome.news.v0_34_body",
+    },
+    Release {
+        version: "0.33.0",
+        date: "2026-10-31",
+        title: "welcome.news.v0_33_title",
+        body: "welcome.news.v0_33_body",
+    },
+    Release {
+        version: "0.32.0",
+        date: "2026-10-31",
+        title: "welcome.news.v0_32_title",
+        body: "welcome.news.v0_32_body",
+    },
+    Release {
+        version: "0.31.0",
+        date: "2026-10-31",
+        title: "welcome.news.v0_31_title",
+        body: "welcome.news.v0_31_body",
+    },
 ];
+
+/// The GitHub release page of `version`, with its full list of changes.
+pub(crate) fn release_page(version: &str) -> String {
+    format!("https://github.com/tracedraw/tracedraw/releases/tag/v{version}")
+}
+
+/// The heading of a release's row: version, date and title.
+fn news_heading(r: &Release) -> String {
+    format!("{}  \u{b7}  {}  \u{b7}  {}", r.version, r.date, tr(r.title))
+}
+
+/// The id of a release's row in the What's New history.
+pub(crate) fn news_row_id(version: &str) -> egui::Id {
+    egui::Id::new(("welcome_news", version))
+}
 
 pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
+    // The tabs go on to a second line on a narrow screen (#1691).
+    ui.horizontal_wrapped(|ui| {
         ui.add_space(24.0);
         ui.heading(egui::RichText::new("TraceDraw").size(26.0));
         ui.add_space(30.0);
@@ -57,7 +147,11 @@ pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
             match app.welcome_tab {
                 WelcomeTab::GetStarted => {}
                 WelcomeTab::Workspace => workspace(app, ui),
-                WelcomeTab::News => news(ui),
+                WelcomeTab::News => {
+                    if let Some(url) = news(ui) {
+                        app.open_url(&url);
+                    }
+                }
                 WelcomeTab::Learn => learn(ui),
                 WelcomeTab::Templates => templates(app, ui),
             }
@@ -109,97 +203,135 @@ fn big_button(ui: &mut Ui, icon: icons::Action, title: String, subtitle: String)
 }
 
 fn get_started(app: &mut App, ui: &mut Ui) {
+    // On a phone the recent documents go under the buttons and the page
+    // scrolls: side by side they need some 700 points (#1301, #1691).
+    if crate::ui::phone::phone() {
+        egui::ScrollArea::vertical()
+            .id_salt("welcome_get_started")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(ui.available_width() - 12.0);
+                        start_buttons(app, ui);
+                        // A browser keeps no recent documents.
+                        if !crate::files::WEB {
+                            ui.add_space(20.0);
+                            recent_documents(app, ui, true);
+                        }
+                    });
+                });
+            });
+        return;
+    }
     ui.horizontal_top(|ui| {
         ui.add_space(24.0);
         ui.vertical(|ui| {
             ui.set_width(260.0);
-            if big_button(
-                ui,
-                icons::Action::New,
-                tr("welcome.new_document"),
-                crate::shortcuts::shown("Ctrl+N".into()),
-            ) {
-                app.request_new_document();
-            }
-            ui.add_space(8.0);
-            if big_button(
-                ui,
-                icons::Action::Welcome,
-                tr("welcome.new_from_template"),
-                String::new(),
-            ) {
-                app.open_template_dialog();
-            }
-            ui.add_space(8.0);
-            if big_button(
-                ui,
-                icons::Action::Open,
-                tr("welcome.open_document"),
-                "Ctrl+O".into(),
-            ) {
-                app.open_dialog();
-                if app.file.is_some() || app.doc().all_layers().any(|l| !l.shapes.is_empty()) {
-                    app.show_welcome = false;
-                }
-            }
-            ui.add_space(20.0);
-            ui.label(
-                egui::RichText::new(tr("welcome.shortcuts_hint"))
-                    .color(Tokens::text_dim())
-                    .size(11.0),
-            );
+            start_buttons(app, ui);
         });
         // A browser keeps no recent documents.
         if crate::files::WEB {
             return;
         }
         ui.add_space(40.0);
-        ui.vertical(|ui| {
-            ui.strong(tr("welcome.recent_documents"));
-            let recent = app.settings.recent_files.clone();
-            if recent.is_empty() {
-                ui.label(egui::RichText::new(tr("welcome.no_recent")).color(Tokens::text_dim()));
-            }
-            ui.add_space(4.0);
-            // The list has a scroll area of its own, as tall as the window
-            // leaves under the heading, less the Clear button and a margin
-            // (#1383); the heading, the button and the left column stay put.
-            let clear = if recent.is_empty() {
-                0.0
-            } else {
-                ui.spacing().interact_size.y + ui.spacing().item_spacing.y
-            };
-            let height = (ui.available_height() - clear - 12.0).max(RECENT_ROW.y);
-            let mut actions = Vec::new();
-            egui::ScrollArea::vertical()
-                .id_salt("welcome_recent_list")
-                .max_height(height)
-                .auto_shrink([true, true])
-                .show(ui, |ui| {
-                    for p in &recent {
-                        actions.push((recent_row(app, ui, p), p));
-                    }
-                });
-            for (action, p) in actions {
-                match action {
-                    RecentAction::None => {}
-                    RecentAction::Open => {
-                        app.open_path(p.clone());
-                        app.show_welcome = false;
-                    }
-                    RecentAction::Remove => app.remove_recent(p),
-                }
-            }
-            if !app.settings.recent_files.is_empty()
-                && ui.small_button(tr("menu.file.clear_recent")).clicked()
-            {
-                app.settings.recent_files.clear();
-                app.settings.save();
-                crate::thumbnails::clear();
-                app.recent_thumbs.clear();
-            }
-        });
+        ui.vertical(|ui| recent_documents(app, ui, false));
     });
+}
+
+/// New Document, New From Template, Open and the shortcuts hint.
+fn start_buttons(app: &mut App, ui: &mut Ui) {
+    if big_button(
+        ui,
+        icons::Action::New,
+        tr("welcome.new_document"),
+        crate::shortcuts::shown("Ctrl+N".into()),
+    ) {
+        app.request_new_document();
+    }
+    ui.add_space(8.0);
+    if big_button(
+        ui,
+        icons::Action::Welcome,
+        tr("welcome.new_from_template"),
+        String::new(),
+    ) {
+        app.open_template_dialog();
+    }
+    ui.add_space(8.0);
+    if big_button(
+        ui,
+        icons::Action::Open,
+        tr("welcome.open_document"),
+        "Ctrl+O".into(),
+    ) {
+        app.open_dialog();
+        if app.file.is_some() || app.doc().all_layers().any(|l| !l.shapes.is_empty()) {
+            app.show_welcome = false;
+        }
+    }
+    ui.add_space(20.0);
+    ui.label(
+        egui::RichText::new(tr("welcome.shortcuts_hint"))
+            .color(Tokens::text_dim())
+            .size(11.0),
+    );
+}
+
+/// The recent documents heading, list and Clear button; the list scrolls
+/// on its own except on a `phone`, whose whole page scrolls.
+fn recent_documents(app: &mut App, ui: &mut Ui, phone: bool) {
+    ui.strong(tr("welcome.recent_documents"));
+    let recent = app.settings.recent_files.clone();
+    if recent.is_empty() {
+        ui.label(egui::RichText::new(tr("welcome.no_recent")).color(Tokens::text_dim()));
+    }
+    ui.add_space(4.0);
+    // The list has a scroll area of its own, as tall as the window
+    // leaves under the heading, less the Clear button and a margin
+    // (#1383); the heading, the button and the left column stay put. On
+    // a phone the whole page scrolls instead.
+    let clear = if recent.is_empty() {
+        0.0
+    } else {
+        ui.spacing().interact_size.y + ui.spacing().item_spacing.y
+    };
+    let mut actions = Vec::new();
+    if phone {
+        for p in &recent {
+            actions.push((recent_row(app, ui, p), p));
+        }
+    } else {
+        let height = (ui.available_height() - clear - 12.0).max(RECENT_ROW.y);
+        egui::ScrollArea::vertical()
+            .id_salt("welcome_recent_list")
+            .max_height(height)
+            .auto_shrink([true, true])
+            .show(ui, |ui| {
+                for p in &recent {
+                    actions.push((recent_row(app, ui, p), p));
+                }
+            });
+    }
+    for (action, p) in actions {
+        match action {
+            RecentAction::None => {}
+            RecentAction::Open => {
+                app.open_path(p.clone());
+                app.show_welcome = false;
+            }
+            RecentAction::Remove => app.remove_recent(p),
+        }
+    }
+    if !app.settings.recent_files.is_empty()
+        && ui.small_button(tr("menu.file.clear_recent")).clicked()
+    {
+        app.settings.recent_files.clear();
+        app.settings.save();
+        crate::thumbnails::clear();
+        app.recent_thumbs.clear();
+    }
 }
 
 /// What a click on a recent document's row asks for.
@@ -241,7 +373,9 @@ fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> RecentActio
     } else {
         None
     };
-    let (rect, _) = ui.allocate_exact_size(ROW, egui::Sense::hover());
+    // No wider than the room (a phone's page).
+    let row = egui::vec2(ROW.x.min(ui.available_width().max(THUMB.x + 40.0)), ROW.y);
+    let (rect, _) = ui.allocate_exact_size(row, egui::Sense::hover());
     let resp = ui.interact(rect, recent_row_id(path), egui::Sense::click());
     let on_row = ui.rect_contains_pointer(rect);
     let painter = ui.painter();
@@ -419,22 +553,37 @@ fn workspace(app: &mut App, ui: &mut Ui) {
     });
 }
 
-fn news(ui: &mut Ui) {
+/// The What's New history: a row per release, newest first and open, the
+/// others closed; a row opens to its paragraph and a link to its release
+/// page. Gives the address of a link clicked.
+fn news(ui: &mut Ui) -> Option<String> {
+    let mut open = None;
     ui.horizontal_top(|ui| {
         ui.add_space(24.0);
         ui.vertical(|ui| {
             ui.set_max_width(640.0);
-            ui.strong(trf(
-                "welcome.version_n",
-                &[("v", env!("CARGO_PKG_VERSION"))],
-            ));
-            for (t, b) in NEWS {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(tr(t)).strong().size(14.0));
-                ui.label(tr(b));
+            for (i, r) in RELEASES.iter().take(HISTORY_LEN).enumerate() {
+                ui.add_space(4.0);
+                let heading = egui::RichText::new(news_heading(r)).strong().size(14.0);
+                egui::CollapsingHeader::new(heading)
+                    .id_salt(news_row_id(r.version))
+                    .default_open(i == 0)
+                    .show(ui, |ui| {
+                        ui.label(tr(r.body));
+                        ui.add_space(2.0);
+                        let url = release_page(r.version);
+                        if ui
+                            .link(tr("welcome.news.more"))
+                            .on_hover_text(&url)
+                            .clicked()
+                        {
+                            open = Some(url);
+                        }
+                    });
             }
         });
     });
+    open
 }
 
 fn learn(ui: &mut Ui) {
@@ -649,5 +798,216 @@ mod tests {
         // The list starts under its heading and never above it: its clip
         // keeps the rows off the heading.
         assert!(first.top() > new_at - 20.0);
+    }
+
+    /// The version numbers of `v` (`0.39.0`, `0.39.0-rc.1`) as numbers.
+    fn numbers(v: &str) -> Vec<u32> {
+        let core = v.split(['-', '+']).next().unwrap_or(v);
+        core.split('.')
+            .map(|n| n.parse().expect("a number"))
+            .collect()
+    }
+
+    /// A release PR cannot forget What's New: its newest row is the
+    /// version being built (major.minor.patch).
+    #[test]
+    fn the_newest_release_is_this_version() {
+        let newest = RELEASES.first().expect("a release");
+        assert_eq!(
+            numbers(newest.version),
+            numbers(env!("CARGO_PKG_VERSION")),
+            "add the What's New paragraph of {} on top of RELEASES (ui/welcome.rs) \
+             and drop the oldest; see MAINTAINING.md",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    /// At most ten releases, newest first, each with its own keys, all of
+    /// them in the English file (`every_language_covers_english_keys`
+    /// checks the other languages).
+    #[test]
+    fn the_history_holds_ten_releases_with_their_texts() {
+        assert!(!RELEASES.is_empty());
+        assert!(
+            RELEASES.len() <= HISTORY_LEN,
+            "{} releases; drop the oldest",
+            RELEASES.len()
+        );
+        for pair in RELEASES.windows(2) {
+            assert!(
+                numbers(pair[0].version) > numbers(pair[1].version),
+                "{} before {}",
+                pair[0].version,
+                pair[1].version
+            );
+            assert!(pair[0].date >= pair[1].date, "{}", pair[0].version);
+        }
+        let en = crate::i18n::parse(include_str!("../../lang/en.toml"));
+        for r in RELEASES {
+            let n = numbers(r.version);
+            assert_eq!(n.len(), 3, "{}", r.version);
+            assert_eq!(r.date.len(), 10, "{}", r.date);
+            let stem = format!("welcome.news.v{}_{}", n[0], n[1]);
+            assert!(r.title.starts_with(&stem), "{} for {}", r.title, r.version);
+            assert!(r.body.starts_with(&stem), "{} for {}", r.body, r.version);
+            for key in [r.title, r.body] {
+                let text = en
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} not in en.toml"));
+                assert!(!text.is_empty(), "{key}");
+                assert!(!text.contains('\u{2014}'), "{key} has an em dash");
+            }
+        }
+        assert!(en.contains_key("welcome.news.more"));
+    }
+
+    /// Each row's link opens its own version's release page.
+    #[test]
+    fn each_release_links_to_its_own_page() {
+        let mut seen = std::collections::HashSet::new();
+        for r in RELEASES {
+            let url = release_page(r.version);
+            assert_eq!(
+                url,
+                format!(
+                    "https://github.com/tracedraw/tracedraw/releases/tag/v{}",
+                    r.version
+                )
+            );
+            assert!(seen.insert(url), "{}", r.version);
+        }
+        assert_eq!(
+            release_page("0.39.0"),
+            "https://github.com/tracedraw/tracedraw/releases/tag/v0.39.0"
+        );
+    }
+
+    /// One frame of the What's New page alone in a window 1200 x 2000:
+    /// the link clicked, if any, and every text drawn with its rectangle.
+    fn news_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> (Option<String>, Vec<(String, egui::Rect)>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 2000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut url = None;
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| url = news(ui));
+        });
+        out.textures_delta.clear();
+        let texts = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some((
+                    t.galley.text().to_string(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect();
+        (url, texts)
+    }
+
+    /// Moves to `at`, presses and lets go there; the link clicked, if any.
+    fn news_click(ctx: &egui::Context, at: egui::Pos2) -> Option<String> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut url = news_frame(ctx, vec![egui::Event::PointerMoved(at)]).0;
+        url = url.or(news_frame(ctx, vec![button(true)]).0);
+        url = url.or(news_frame(ctx, vec![button(false)]).0);
+        // Let the row's opening animation end.
+        for _ in 0..30 {
+            url = url.or(news_frame(ctx, Vec::new()).0);
+        }
+        url
+    }
+
+    fn find(texts: &[(String, egui::Rect)], text: &str) -> Option<egui::Rect> {
+        texts.iter().find(|(t, _)| t == text).map(|(_, r)| *r)
+    }
+
+    /// Help > What's New shows the history: every release's row, the
+    /// newest open with its paragraph and the others closed.
+    #[test]
+    fn help_whats_new_opens_the_history() {
+        let mut app = App::headless();
+        app.show_welcome = true;
+        app.welcome_tab = WelcomeTab::GetStarted;
+        let ctx = crate::theme::ui_context();
+        crate::ui::menus::open_whats_new(&mut app);
+        assert_eq!(app.welcome_tab, WelcomeTab::News);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 2000.0),
+            )),
+            ..Default::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(input(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| welcome_screen(&mut app, ui));
+            });
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+        }
+        for r in RELEASES {
+            assert!(texts.contains(&news_heading(r)), "{}", r.version);
+        }
+        assert!(texts.contains(&tr(RELEASES[0].body)));
+        for r in &RELEASES[1..] {
+            assert!(!texts.contains(&tr(r.body)), "{} is open", r.version);
+        }
+    }
+
+    /// A click on a closed row opens it to its paragraph and its link,
+    /// which opens that release's page; the newest row stays open.
+    #[test]
+    fn a_click_opens_a_closed_release() {
+        if crate::files::WEB {
+            return;
+        }
+        let ctx = crate::theme::ui_context();
+        news_frame(&ctx, Vec::new());
+        let (_, texts) = news_frame(&ctx, Vec::new());
+        let r = &RELEASES[2];
+        assert!(find(&texts, &tr(r.body)).is_none(), "{} is open", r.version);
+        assert!(find(&texts, &tr(RELEASES[0].body)).is_some());
+        let heading = find(&texts, &news_heading(r)).expect("the row's heading");
+        assert_eq!(news_click(&ctx, heading.center()), None);
+        let (_, texts) = news_frame(&ctx, Vec::new());
+        let body = find(&texts, &tr(r.body)).expect("the row opened");
+        assert!(body.top() > heading.bottom());
+        assert!(find(&texts, &tr(RELEASES[0].body)).is_some());
+        assert!(find(&texts, &tr(RELEASES[1].body)).is_none());
+        // Its link is the one under its paragraph, and opens its page.
+        let link = texts
+            .iter()
+            .filter(|(t, rect)| *t == tr("welcome.news.more") && rect.top() > body.bottom())
+            .map(|(_, rect)| *rect)
+            .min_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the row's link");
+        assert_eq!(
+            news_click(&ctx, link.center()),
+            Some(release_page(r.version))
+        );
     }
 }

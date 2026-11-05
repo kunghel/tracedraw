@@ -124,7 +124,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                 .find(|(m, _)| *m == st.mine)
                 .map(|(_, n)| n.clone())
                 .unwrap_or_default();
-            egui::ComboBox::from_id_salt("tpl_source")
+            crate::ui::keynav::ComboBox::from_id_salt("tpl_source")
                 .width(190.0)
                 .selected_text(current)
                 .show_ui(ui, |ui| {
@@ -136,7 +136,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                 .category
                 .map(|c| tr(c.key()))
                 .unwrap_or_else(|| tr("tpl.all_categories"));
-            egui::ComboBox::from_id_salt("tpl_category")
+            crate::ui::keynav::ComboBox::from_id_salt("tpl_category")
                 .width(190.0)
                 .selected_text(current)
                 .show_ui(ui, |ui| {

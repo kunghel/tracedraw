@@ -27,6 +27,10 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9P50L12VHF33"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" width="200"></a>
+</p>
+
+<p align="center">
   <sub>* The <a href="https://apps.microsoft.com/detail/9P50L12VHF33">Microsoft Store</a> version is signed and updates itself, but each version must pass the Store's certification first (hours to days), so it is often one or more releases behind the <a href="https://github.com/tracedraw/tracedraw/releases/latest">latest download</a>.</sub>
 </p>
 
@@ -439,10 +443,6 @@ Store's certification first, which takes from a few hours to a few days,
 so the Store version is usually one or more releases behind the
 [latest release](https://github.com/tracedraw/tracedraw/releases/latest) here.
 For the newest fixes, take the installer below.
-
-<p>
-  <a href="https://apps.microsoft.com/detail/9P50L12VHF33"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" width="200"></a>
-</p>
 
 | Platform | Files |
 |---|---|

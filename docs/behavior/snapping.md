@@ -2,7 +2,7 @@
 
 | Setting | Default |
 |---|---|
-| Snap to objects | on (Alt+Z), radius 10 px (screen) |
+| Snap to objects | off (Alt+Z, the Snap To list, Options > Snapping turn it on; the choice is kept); radius 10 px (screen) for all snapping |
 | Snap to guides | on |
 | Snap to grid | off (Ctrl+Y); document grid 10 mm both ways through the ruler origin (Document Setup > Grid) |
 | Snap to baseline grid | off; baselines from the page top (see `rulers-grid-guidelines.md`) |

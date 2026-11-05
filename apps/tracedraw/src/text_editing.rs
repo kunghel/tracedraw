@@ -483,6 +483,14 @@ impl App {
                     ..
                 } => {
                     self.alt_composed = None;
+                    // In the macOS desktop app Command+Shift+H stands for
+                    // Force Justify's Command+H, which hides the
+                    // application there (#1409).
+                    let mac = crate::shortcuts::mac_key_for(*key, *modifiers);
+                    let (key, modifiers) = mac
+                        .as_ref()
+                        .map(|(m, k)| (k, m))
+                        .unwrap_or((key, modifiers));
                     let shift = modifiers.shift;
                     // AltGr types characters (Polish ą ę ł ś ż, German
                     // @ € { }): its keys are neither Ctrl shortcuts (they

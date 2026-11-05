@@ -862,7 +862,7 @@ pub fn variable_outline_bar(app: &mut App, ui: &mut egui::Ui) {
             node.is_some(),
             NumField::new(&mut v)
                 .range(0.0..=app.units.world_from_mm(500.0))
-                .fixed_decimals(app.settings.precision.min(10) as usize)
+                .length_decimals(app.settings.precision.min(10) as usize)
                 .unit_mm(app.units.world_to_mm(1.0))
                 .suffix(format!(" {}", app.units.short()))
                 .width(76.0),

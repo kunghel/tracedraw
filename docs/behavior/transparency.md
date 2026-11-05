@@ -102,6 +102,22 @@ The mouse wheel steps a slider only while it has the focus or is being
 dragged, as every slider does (`sliders.md`, #1240); over a slider
 without the focus it scrolls the docker.
 
+## Object opacity beside the colours (#1818)
+
+The Properties docker's Fill and Outline sections each have an Object
+opacity slider under the colour (0 to 100 %, 100 % solid). An object
+has one transparency, applying to its fill, its outline or both, so the
+fill and the outline cannot have opacities of their own at the same
+time: the slider is the whole object's opacity, fill and outline
+together, and both sections show the same value. It is the uniform
+transparency the other way round (opacity 25 % is a uniform
+transparency of 75 %): a change makes the transparency uniform for the
+whole object (Fill and outline) on every selected object, one undo step
+for a drag. With another kind of transparency (fountain, pattern,
+texture), or kinds that differ across the selection, the slider is off
+and the Transparency section changes it
+(`pick_drag_tests::the_fill_and_outline_sections_set_the_objects_opacity`).
+
 ## Properties docker (#1439, #1203)
 
 The Transparency section of the Properties docker

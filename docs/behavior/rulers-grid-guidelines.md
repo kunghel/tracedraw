@@ -25,6 +25,13 @@
 - Dragging out of a ruler adds a guideline (horizontal from the top ruler,
   vertical from the left one) where it is released inside the window.
 - Double-clicking a ruler or the corner opens Document Setup at Rulers.
+- Right-clicking a ruler or the corner opens the rulers' menu where it
+  was clicked (#1831): Ruler Setup..., Grid Setup... and Guidelines
+  Setup... open Document Setup at Rulers, Grid and Guidelines, and Rulers
+  (checked, Alt+Shift+R) hides the rulers, as View > Rulers does. A click
+  outside closes it
+  (`ui::rulers::tests::a_right_click_on_a_ruler_opens_its_menu`,
+  `ui::rulers::tests::the_ruler_menu_opens_the_setup_pages_and_hides_the_rulers`).
 
 ### Origin
 
@@ -155,7 +162,14 @@ stand for a distance in the world (`drawing_scale.rs`):
 - A click on the only selected guideline shows its rotation handles: a
   pivot where it was clicked and two curved arrows 70 px along it.
   Dragging an arrow turns the guideline about the pivot in whole degrees;
-  0 and 180 make it horizontal, 90 and 270 vertical.
+  0 and 180 make it horizontal, 90 and 270 vertical. The pivot (the
+  pointer shows the move arrows over it) can be dragged anywhere: it
+  snaps as a drawing tool's point does (to objects' nodes and other
+  snap points when snapping to objects is on, the page, the grid and
+  guidelines, the guideline itself included), the guideline staying
+  where it is; a guideline turned about a pivot off it keeps its
+  distance from the pivot. A click on the pivot keeps the handles
+  (#1850, `guides::tests::a_guides_rotation_centre_drags_and_snaps_to_a_node`).
 - Locked guidelines can be selected but not moved, rotated, nudged,
   deleted or edited: a click or double click on a locked guideline never
   shows its rotation handles, and locking one that shows them hides them;
@@ -187,7 +201,10 @@ stand for a distance in the world (`drawing_scale.rs`):
   moves it at once (`propbar::guide_bar`, `App::set_selected_guide_line`).
   With several selected it says how many. A locked guideline shows
   "locked" and does not move.
-- Edit > Select All > Guidelines selects every guideline of the page.
+- Edit > Select All > Guidelines selects every guideline of the page;
+  so does Ctrl+A while a guideline is selected (it selects the objects
+  otherwise, #1753,
+  `pick_drag_tests::ctrl_a_with_a_guideline_selected_selects_all_guidelines`).
 
 ### Guidelines panel
 

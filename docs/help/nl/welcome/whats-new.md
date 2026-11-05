@@ -7,7 +7,11 @@ versies.
 ## Nieuwe dingen in het programma zien {#in-the-program}
 
 - Kies [[menu.help > menu.help.whats_new]] om de nieuwspagina van het
-  welkomstscherm te openen, met het nieuws van deze versie.
+  welkomstscherm te openen. Die toont de laatste tien versies, de nieuwste
+  bovenaan, elk met datum en een korte titel. Klik op een versie voor een
+  korte samenvatting van wat er veranderd is; de nieuwste staat al open.
+  **Meer weten?** onder een samenvatting opent de pagina van die versie op
+  GitHub, met de volledige lijst van wijzigingen.
 - Zet [[menu.help > menu.help.highlight_whats_new]] aan om in de menu's te
   markeren wat nieuw is in deze versie: er verschijnt een kleine stip aan het
   eind van elke nieuwe opdracht, naast de pijl van een submenu dat ernaar
@@ -20,6 +24,16 @@ versies.
 
 ## Hoogtepunten van recente versies {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] opent de gereedschappen
+  voor snijplotters: plotteruitvoer, snijlijnen, nesten en meten. Zie
+  [TraceCut](../objects/tracecut.md).
+- **Toetsenbord, telefoons en pennen.** Menu's en lijsten werken met het
+  toetsenbord. Op Android-telefoons past de interface op het scherm en tekent
+  een rustende hand niet meer terwijl een pen wordt gebruikt; een tabletpen
+  werkt op Linux met Wayland.
+- **Bestanden.** .cdr-bestanden openen met hun tabstops, hoofdpagina's,
+  kleurverlopen en vervormingen; afbeeldingen uit PDF's komen op volledige
+  resolutie binnen; JPEG en TIFF worden in CMYK geëxporteerd.
 - **Miniaturen van objecten.** Het paneel [[docker.objects]] toont elk
   object klein getekend naast de naam; Ctrl+wiel boven de lijst of de
   schuifregelaar onderaan stelt de grootte in. Zie

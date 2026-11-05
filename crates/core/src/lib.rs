@@ -44,13 +44,14 @@ pub use bytes::SharedBytes;
 pub use color::Color;
 pub use command::Command;
 pub use document::{
-    merge_equal_spans, spans_apply, spans_char_count, spans_delete, spans_insert, spans_text,
-    split_spans_at, Baseline, BitmapEffect, BitmapFxStack, ColorStyle, CornerKind, Corners,
-    DefaultKind, DefaultProperties, Document, DocumentFont, DocumentProfile, EllipseArc,
-    FollowBlack, FontVariation, Layer, LeadingUnit, MasterScope, Metadata, ObjectDefaults,
-    ObjectStyle, Page, ParagraphStyle, PathTextOrientation, PathTextVertical, QrCode, QrKind,
-    Shadow, Shape, ShapeKind, StyleParts, Symbol, Table, TableCell, TextAlign, TextOnPath,
-    TextSpan, TimeTracker, TrackedTask, VerticalAlign,
+    default_tab_step, merge_equal_spans, normalized_tabs, set_default_tab_step, spans_apply,
+    spans_char_count, spans_delete, spans_insert, spans_text, split_spans_at, Baseline,
+    BitmapEffect, BitmapFxStack, ColorStyle, CornerKind, Corners, DefaultKind, DefaultProperties,
+    Document, DocumentFont, DocumentProfile, EllipseArc, FollowBlack, FontVariation, Layer,
+    LeadingUnit, MasterScope, Metadata, ObjectDefaults, ObjectStyle, Page, ParagraphStyle,
+    PathTextOrientation, PathTextVertical, QrCode, QrKind, Shadow, Shape, ShapeKind, StyleParts,
+    Symbol, TabKind, TabStop, Table, TableCell, TextAlign, TextOnPath, TextSpan, TimeTracker,
+    TrackedTask, VerticalAlign, DEFAULT_TAB_STEP,
 };
 pub use engine::Engine;
 pub use geometry::{Affine, BezPath, Point, Rect, Size, Vec2};
@@ -90,6 +91,8 @@ pub enum Error {
     SelectionGroup(u8),
     #[error("object {0:?} is not a clip frame")]
     NotClipFrame(ShapeId),
+    #[error("object {0:?} is not a bitmap")]
+    NotBitmap(ShapeId),
     #[error("a B-spline needs two finite control points or more")]
     BadSpline,
     #[error("serialization error: {0}")]

@@ -111,6 +111,7 @@ La pagina ha cinque schede.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] e gli [[options.hyphenation_patterns]]
   (integrati, o un dizionario di sillabazione per la tua lingua).
+  - [[options.default_tab_spacing]]: dove salta <kbd>Tab</kbd> in un paragrafo senza arresti di tabulazione propri (12,7 mm, mezzo pollice).
 - [[docker.fonts]]: [[options.show_recent_fonts]] in cima agli elenchi dei
   font, il [[options.recent_font_count]] (5, fino a 20) e la
   [[options.font_sample_size]].

@@ -86,6 +86,9 @@ pub struct ExportState {
     /// Bitmaps: the artwork's printed size against the page's, the same
     /// across and down (1 = as drawn, #617).
     pub scale: f64,
+    /// JPEG and TIFF: the colours written, an index into
+    /// [`EXPORT_COLOR_MODES`] (0 RGB, 1 CMYK, 2 Grayscale; #1763).
+    pub color_mode: usize,
 }
 
 impl Default for ExportState {
@@ -115,6 +118,53 @@ impl Default for ExportState {
             preset_delete: None,
             size_unit: 0,
             scale: 1.0,
+            color_mode: 0,
+        }
+    }
+}
+
+/// The colour modes of a JPEG or TIFF export (#1763): RGB as drawn on
+/// screen, CMYK inks for print, or one channel of grey.
+pub const EXPORT_COLOR_MODES: [ExportColorMode; 3] = [
+    ExportColorMode::Rgb,
+    ExportColorMode::Cmyk,
+    ExportColorMode::Gray,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportColorMode {
+    Rgb,
+    Cmyk,
+    Gray,
+}
+
+impl ExportColorMode {
+    /// The name shown in the Export dialog.
+    pub fn label(self) -> String {
+        match self {
+            ExportColorMode::Rgb => "RGB".into(),
+            ExportColorMode::Cmyk => "CMYK".into(),
+            ExportColorMode::Gray => tr("palette.model_gray"),
+        }
+    }
+
+    /// The bitmap formats (by extension) that take a colour mode.
+    pub fn applies_to(ext: &str) -> bool {
+        matches!(ext, "jpg" | "tif")
+    }
+}
+
+impl ExportState {
+    /// The colour mode the export writes: the one chosen for JPEG and
+    /// TIFF, RGB for every other format.
+    pub fn color_mode_for(&self, ext: &str) -> ExportColorMode {
+        if ExportColorMode::applies_to(ext) {
+            EXPORT_COLOR_MODES
+                .get(self.color_mode)
+                .copied()
+                .unwrap_or(ExportColorMode::Rgb)
+        } else {
+            ExportColorMode::Rgb
         }
     }
 }
@@ -873,7 +923,29 @@ pub struct OpenNotes {
     /// Fonts the drawing uses that are not installed (empty: none, or the
     /// warning is off).
     pub fonts: Vec<String>,
+    /// Pictures read smaller than the file holds them, each "from to" in
+    /// pixels (#1835); told whatever the warnings say.
+    pub shrunk: Vec<String>,
     pub dont_show: bool,
+}
+
+/// The sizes of pictures shrunk on reading, as the message gives them:
+/// "11160 x 14794 to 5580 x 7397".
+pub fn shrunk_sizes(pictures: &[tracedraw_io::pdf_import::ShrunkPicture]) -> Vec<String> {
+    pictures
+        .iter()
+        .map(|p| {
+            trf(
+                "notes.shrunk_size",
+                &[
+                    ("w", &p.width.to_string()),
+                    ("h", &p.height.to_string()),
+                    ("nw", &p.new_width.to_string()),
+                    ("nh", &p.new_height.to_string()),
+                ],
+            )
+        })
+        .collect()
 }
 
 impl OpenNotes {
@@ -892,6 +964,20 @@ impl OpenNotes {
                 &[
                     ("name", &self.name),
                     ("fonts", &crate::ops2::with_stand_ins(&self.fonts)),
+                ],
+            ));
+        }
+        if !self.shrunk.is_empty() {
+            let mut sizes: Vec<String> = self.shrunk.iter().take(5).cloned().collect();
+            if self.shrunk.len() > 5 {
+                sizes.push("...".into());
+            }
+            parts.push(trf(
+                "notes.shrunk_pictures",
+                &[
+                    ("n", &self.shrunk.len().to_string()),
+                    ("name", &self.name),
+                    ("sizes", &sizes.join("; ")),
                 ],
             ));
         }
@@ -1066,6 +1152,8 @@ pub enum Dialog {
     /// Tools > Convert Colors (#972).
     ConvertColors(crate::ui::convert_colors::ConvertColorsState),
     FontManager(FontManagerState),
+    /// Launch > TraceCut, Tools > TraceCut.
+    TraceCut(Box<crate::tracecut::TraceCutState>),
     PaletteEditor(PaletteEditorState),
     NewDocument(crate::new_document::NewDocState),
     About,
@@ -1179,7 +1267,7 @@ fn convert_fields(app: &App, ui: &mut Ui, o: &mut crate::bitmap_modes::ConvertOp
             ui.label(tr("dialog.resolution"));
             ui.horizontal(|ui| {
                 let tip = crate::ui::tips::pair("dialog.resolution", "dialog.convert_dpi_desc");
-                egui::ComboBox::from_id_salt("convert_dpi")
+                crate::ui::keynav::ComboBox::from_id_salt("convert_dpi")
                     .selected_text(format!("{:.0}", o.dpi))
                     .width(70.0)
                     .show_ui(ui, |ui| {
@@ -1198,7 +1286,7 @@ fn convert_fields(app: &App, ui: &mut Ui, o: &mut crate::bitmap_modes::ConvertOp
             });
             ui.end_row();
             ui.label(tr("dialog.color_mode"));
-            egui::ComboBox::from_id_salt("convert_mode")
+            crate::ui::keynav::ComboBox::from_id_salt("convert_mode")
                 .selected_text(tr(o.mode.key()))
                 .width(190.0)
                 .show_ui(ui, |ui| {
@@ -1505,6 +1593,8 @@ fn unit_value(ui: &mut Ui, label: &str, tip: &str, mm: &mut f64, units: Units) -
 }
 
 pub fn show(app: &mut App, ctx: &Context) {
+    // A plotter job sent on a thread of its own tells how it went.
+    crate::tracecut_send::poll(app);
     crate::ui::chrome::set_center_dialogs(ctx, app.settings.center_dialogs);
     // An options dialog replaced by another dialog keeps its changes.
     if !matches!(app.dialog, Dialog::Options) {
@@ -1783,7 +1873,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                         ui,
                         crate::ui::tips::pair("dialog.page_size", "toolbar.page_size_desc"),
                         |ui| {
-                            egui::ComboBox::from_id_salt("page_size_dialog_preset")
+                            crate::ui::keynav::ComboBox::from_id_salt("page_size_dialog_preset")
                                 .selected_text(current.clone())
                                 .width(200.0)
                                 .height(400.0)
@@ -2181,14 +2271,24 @@ pub fn show(app: &mut App, ctx: &Context) {
                 vec![&ok]
             };
             let text = notes.text();
-            let picked = crate::ui::chrome::message_box_check(
-                ctx,
-                crate::ui::chrome::MessageIcon::Info,
-                &text,
-                &buttons,
-                &tr("notes.dont_show"),
-                &mut notes.dont_show,
-            );
+            // Shrunk pictures alone: no warning to turn off.
+            let picked = if notes.unread == 0 && notes.fonts.is_empty() {
+                crate::ui::chrome::message_box(
+                    ctx,
+                    crate::ui::chrome::MessageIcon::Info,
+                    &text,
+                    &buttons,
+                )
+            } else {
+                crate::ui::chrome::message_box_check(
+                    ctx,
+                    crate::ui::chrome::MessageIcon::Info,
+                    &text,
+                    &buttons,
+                    &tr("notes.dont_show"),
+                    &mut notes.dont_show,
+                )
+            };
             if let Some(i) = picked {
                 if notes.dont_show {
                     if notes.unread > 0 {
@@ -2591,7 +2691,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                     ));
                 ui.horizontal(|ui| {
                     ui.label(tr("resample.method"));
-                    egui::ComboBox::from_id_salt("resample_method")
+                    crate::ui::keynav::ComboBox::from_id_salt("resample_method")
                         .selected_text(tr(st.method.key()))
                         .width(200.0)
                         .show_ui(ui, |ui| {
@@ -2722,6 +2822,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             crate::ui::color_management::dialog(app, ctx, st, &mut close)
         }
         Dialog::FontManager(st) => font_manager_dialog(app, ctx, st, &mut close),
+        Dialog::TraceCut(st) => crate::ui::tracecut::dialog(app, ctx, st, &mut close),
         Dialog::PaletteEditor(st) => palette_editor_dialog(app, ctx, st, &mut close),
         Dialog::NewDocument(st) => {
             crate::new_document::new_document_dialog(app, ctx, st, &mut close)
@@ -2763,7 +2864,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             tr("dialog.style_alpha_upper"),
                             tr("dialog.style_alpha_lower"),
                         ];
-                        egui::ComboBox::from_id_salt("pn_style")
+                        crate::ui::keynav::ComboBox::from_id_salt("pn_style")
                             .selected_text(styles[(pn.style as usize).min(4)].clone())
                             .show_ui(ui, |ui| {
                                 for (i, s) in styles.iter().enumerate() {
@@ -2783,7 +2884,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             tr("dialog.pos_top_center"),
                             tr("dialog.pos_top_outer"),
                         ];
-                        egui::ComboBox::from_id_salt("pn_pos")
+                        crate::ui::keynav::ComboBox::from_id_salt("pn_pos")
                             .selected_text(positions[(pn.position as usize).min(3)].clone())
                             .show_ui(ui, |ui| {
                                 for (i, s) in positions.iter().enumerate() {
@@ -3254,7 +3355,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
                 .size(11.0),
         );
         ui.add_space(4.0);
-        egui::ComboBox::from_id_salt("label_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("label_preset")
             .selected_text(LABEL_PRESETS[app.options_label_index.min(3)].0)
             .width(260.0)
             .show_ui(ui, |ui| {
@@ -3310,7 +3411,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(tr("options.size"));
             });
-            egui::ComboBox::from_id_salt("page_size_preset")
+            crate::ui::keynav::ComboBox::from_id_salt("page_size_preset")
                 .selected_text(current.clone())
                 .width(230.0)
                 .height(400.0)
@@ -3375,7 +3476,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
                 w = app.units.to_mm(wv);
                 changed = true;
             }
-            egui::ComboBox::from_id_salt("page_units")
+            crate::ui::keynav::ComboBox::from_id_salt("page_units")
                 .selected_text(app.units.label())
                 .width(120.0)
                 .show_ui(ui, |ui| {
@@ -3564,7 +3665,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
         ui.label(tr("options.rendering_resolution"));
         let mut md = app.doc().metadata.clone();
         let mut dpi = md.resolution_dpi;
-        egui::ComboBox::from_id_salt("render_dpi")
+        crate::ui::keynav::ComboBox::from_id_salt("render_dpi")
             .selected_text(format!("{}", dpi.round() as i64))
             .width(70.0)
             .show_ui(ui, |ui| {
@@ -3650,6 +3751,7 @@ fn export_preview_key(app: &App, st: &ExportState) -> u64 {
     st.dpi.to_bits().hash(&mut h);
     st.scale_or_one().to_bits().hash(&mut h);
     st.webp_lossless.hash(&mut h);
+    st.color_mode.hash(&mut h);
     if st.selection_only {
         for id in &app.selection {
             id.raw().hash(&mut h);
@@ -3805,7 +3907,7 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
             .find(|p| p.name == st.preset && preset_fits(p, st))
             .map(label)
             .unwrap_or_else(|| tr("dialog.export_preset_none"));
-        egui::ComboBox::from_id_salt("export_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("export_preset")
             .selected_text(shown)
             .width(170.0)
             .show_ui(ui, |ui| {
@@ -4010,7 +4112,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         Some(n) => n.clone(),
                         None => export_format_label(st.format),
                     };
-                    egui::ComboBox::from_id_salt("exp_fmt")
+                    crate::ui::keynav::ComboBox::from_id_salt("exp_fmt")
                         .selected_text(shown)
                         .width(300.0)
                         .height(520.0)
@@ -4091,6 +4193,25 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         )
                         .rich_tip(crate::ui::tips::keyed("dialog.quality"));
                     }
+                    let (_, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
+                    if ExportColorMode::applies_to(ext) {
+                        // RGB, CMYK inks for print or grey (#1763).
+                        ui.horizontal(|ui| {
+                            ui.label(tr("dialog.color_mode"));
+                            crate::ui::keynav::ComboBox::from_id_salt("exp_color_mode")
+                                .selected_text(st.color_mode_for(ext).label())
+                                .show_ui(ui, |ui| {
+                                    for (i, m) in EXPORT_COLOR_MODES.iter().enumerate() {
+                                        ui.selectable_value(&mut st.color_mode, i, m.label());
+                                    }
+                                })
+                                .response
+                                .rich_tip(crate::ui::tips::pair(
+                                    "dialog.color_mode",
+                                    "dialog.export_color_mode_desc",
+                                ));
+                        });
+                    }
                     let b = if st.selection_only {
                         app.selection_bounds().unwrap_or(app.page_rect())
                     } else {
@@ -4136,7 +4257,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         } else if hc {
                             set_export_size(st, b.height(), h);
                         }
-                        egui::ComboBox::from_id_salt("exp_size_unit")
+                        crate::ui::keynav::ComboBox::from_id_salt("exp_size_unit")
                             .selected_text(EXPORT_SIZE_UNITS[unit].0)
                             .width(50.0)
                             .show_ui(ui, |ui| {
@@ -4159,8 +4280,12 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     // What comes out: pixels, the resolution the file
                     // records and its colours.
                     let (pw, ph) = export_pixels(b.width(), b.height(), st.render_dpi());
-                    let (_, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
                     let alpha = st.transparent && crate::export::keeps_alpha(ext);
+                    let mode = match st.color_mode_for(ext) {
+                        ExportColorMode::Rgb if alpha => "sRGB + alpha".to_string(),
+                        ExportColorMode::Rgb => "sRGB".to_string(),
+                        other => other.label(),
+                    };
                     ui.label(
                         egui::RichText::new(trf(
                             "dialog.export_output",
@@ -4168,7 +4293,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                                 ("w", &pw.to_string()),
                                 ("h", &ph.to_string()),
                                 ("dpi", &format!("{:.0}", st.dpi)),
-                                ("mode", if alpha { "sRGB + alpha" } else { "sRGB" }),
+                                ("mode", &mode),
                             ],
                         ))
                         .color(Tokens::text_dim()),
@@ -4182,7 +4307,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         ));
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.pdf_standard"));
-                        egui::ComboBox::from_id_salt("pdf_standard")
+                        crate::ui::keynav::ComboBox::from_id_salt("pdf_standard")
                             .selected_text(PDF_STANDARDS[st.pdf_standard.min(3)])
                             .show_ui(ui, |ui| {
                                 for (i, n) in PDF_STANDARDS.iter().enumerate() {
@@ -4220,7 +4345,7 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                     ui.horizontal(|ui| {
                         ui.label(tr("dialog.pdf_standard"));
                         let v = st.ai_version.min(AI_VERSIONS.len() - 1);
-                        egui::ComboBox::from_id_salt("ai_version")
+                        crate::ui::keynav::ComboBox::from_id_salt("ai_version")
                             .selected_text(tr(AI_VERSIONS[v]))
                             .show_ui(ui, |ui| {
                                 for (i, k) in AI_VERSIONS.iter().enumerate() {
@@ -4428,7 +4553,7 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                         "print.layout_booklet",
                         "print.layout_repeat",
                     ];
-                    egui::ComboBox::from_id_salt("print_layout_kind")
+                    crate::ui::keynav::ComboBox::from_id_salt("print_layout_kind")
                         .selected_text(tr(kinds[st.layout_kind.min(3)]))
                         .width(170.0)
                         .show_ui(ui, |ui| {
@@ -4449,7 +4574,7 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                     ui.label(tr("print.sheet"));
                     ui.horizontal(|ui| {
                         let name = sheet_name;
-                        egui::ComboBox::from_id_salt("print_sheet")
+                        crate::ui::keynav::ComboBox::from_id_salt("print_sheet")
                             .selected_text(name(st.sheet))
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -4947,7 +5072,7 @@ pub fn destination_row(ui: &mut Ui, st: &mut PrintState, width: f32) -> Option<S
         _ => tr(dests[st.destination.min(2)]),
     };
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("print_destination")
+        crate::ui::keynav::ComboBox::from_id_salt("print_destination")
             .selected_text(selected)
             .width(width)
             .show_ui(ui, |ui| {
@@ -5020,7 +5145,7 @@ pub fn parity_combo(ui: &mut Ui, st: &mut PrintState, id: &str) {
         })
         .fold(0.0_f32, f32::max);
     ui.add_enabled_ui(matches!(st.range, 0 | 2), |ui| {
-        egui::ComboBox::from_id_salt(id)
+        crate::ui::keynav::ComboBox::from_id_salt(id)
             .selected_text(names[st.parity.min(2)].clone())
             .width(widest + 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_width)
             .show_ui(ui, |ui| {
@@ -5053,7 +5178,7 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) -> Option<Stri
                     "print.orient_portrait",
                     "print.orient_landscape",
                 ];
-                egui::ComboBox::from_id_salt("print_orientation")
+                crate::ui::keynav::ComboBox::from_id_salt("print_orientation")
                     .selected_text(tr(ors[st.orientation.min(2)]))
                     .width(300.0)
                     .show_ui(ui, |ui| {
@@ -5292,7 +5417,7 @@ fn print_tab_postscript(ui: &mut Ui, st: &mut PrintState) {
     }
     ui.add_enabled_ui(st.destination == 2, |ui| {
         print_group(ui, &tr("print.compatibility"), |ui| {
-            egui::ComboBox::from_id_salt("print_ps_level")
+            crate::ui::keynav::ComboBox::from_id_salt("print_ps_level")
                 .selected_text(trf("print.ps_level", &[("n", &st.ps_level.to_string())]))
                 .show_ui(ui, |ui| {
                     for l in [2u8, 3] {
@@ -5378,7 +5503,7 @@ fn merge_number_format(
     let mut pick = cur;
     ui.horizontal(|ui| {
         ui.label(tr("merge.format"));
-        egui::ComboBox::from_id_salt(("merge_format", salt))
+        crate::ui::keynav::ComboBox::from_id_salt(("merge_format", salt))
             .selected_text(tr(NumberFormat::KEYS[cur]))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -5627,7 +5752,7 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                         FieldKind::Qr => 3,
                                     };
                                     let mut pick = cur;
-                                    egui::ComboBox::from_id_salt(("merge_kind", i))
+                                    crate::ui::keynav::ComboBox::from_id_salt(("merge_kind", i))
                                         .selected_text(names[cur].clone())
                                         .width(110.0)
                                         .show_ui(ui, |ui| {
@@ -6034,6 +6159,34 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
     });
 }
 
+/// The name of a tab kind, as the Tabs dialog and the tab ruler show it.
+pub(crate) fn tab_kind_name(k: tracedraw_core::TabKind) -> String {
+    tr(tab_kind_key(k))
+}
+
+/// The i18n key of a tab kind's name.
+pub(crate) fn tab_kind_key(k: tracedraw_core::TabKind) -> &'static str {
+    use tracedraw_core::TabKind;
+    match k {
+        TabKind::Left => "text.tab_left",
+        TabKind::Center => "text.tab_center",
+        TabKind::Right => "text.tab_right",
+        TabKind::Decimal => "text.tab_decimal",
+    }
+}
+
+/// `v` with at most three decimals and no trailing zeros.
+fn trim_number(v: f64) -> String {
+    let s = format!("{v:.3}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Where Add tab puts a new stop: 10 mm past the last one (the first at
+/// 10 mm).
+pub(crate) fn next_tab_position(tabs: &[tracedraw_core::TabStop]) -> f64 {
+    tabs.iter().map(|t| t.pos).fold(0.0, f64::max) + 10.0
+}
+
 fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bool) {
     let title = match which {
         Dialog::TextTabs => tr("menu.text.tabs"),
@@ -6054,12 +6207,55 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
     window(ctx, title).show(ctx, |ui| {
         match which {
             Dialog::TextTabs => {
+                use tracedraw_core::{TabKind, TabStop};
                 ui.label(tr("dialog.tab_stops"));
+                if p.tabs.is_empty() {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::trf(
+                            "dialog.tab_default_grid",
+                            &[(
+                                "step",
+                                &format!(
+                                    "{} {}",
+                                    trim_number(u.from_mm(tracedraw_core::default_tab_step())),
+                                    u.short()
+                                ),
+                            )],
+                        ))
+                        .color(Tokens::text_dim()),
+                    );
+                }
                 let mut remove = None;
                 for (i, t) in p.tabs.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         let tip = crate::ui::tips::pair("dialog.tab_stop", "dialog.tab_stop_desc");
-                        changed |= unit_value(ui, &format!("{}", i + 1), &tip, t, u);
+                        changed |= unit_value(ui, &format!("{}", i + 1), &tip, &mut t.pos, u);
+                        egui::ComboBox::from_id_salt(("tab_kind", i))
+                            .selected_text(tab_kind_name(t.kind))
+                            .show_ui(ui, |ui| {
+                                for k in TabKind::ALL {
+                                    changed |= ui
+                                        .selectable_value(&mut t.kind, k, tab_kind_name(k))
+                                        .changed();
+                                }
+                            })
+                            .response
+                            .rich_tip(crate::ui::tips::keyed("dialog.tab_kind"));
+                        let leader_name = |l: Option<char>| match l {
+                            None => tr("dialog.tab_leader_none"),
+                            Some(c) => format!("{c}{c}{c}"),
+                        };
+                        egui::ComboBox::from_id_salt(("tab_leader", i))
+                            .selected_text(leader_name(t.leader))
+                            .show_ui(ui, |ui| {
+                                for l in [None, Some('.'), Some('-'), Some('_')] {
+                                    changed |= ui
+                                        .selectable_value(&mut t.leader, l, leader_name(l))
+                                        .changed();
+                                }
+                            })
+                            .response
+                            .rich_tip(crate::ui::tips::keyed("dialog.tab_leader"));
                         if ui
                             .small_button("x")
                             .rich_tip(crate::ui::tips::keyed("dialog.remove_tab"))
@@ -6078,8 +6274,7 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                     .rich_tip(crate::ui::tips::keyed("dialog.add_tab"))
                     .clicked()
                 {
-                    let last = p.tabs.last().copied().unwrap_or(0.0);
-                    p.tabs.push(last + 12.7);
+                    p.tabs.push(TabStop::left(next_tab_position(&p.tabs)));
                     changed = true;
                 }
             }
@@ -6176,7 +6371,7 @@ fn encode_dialog(app: &mut App, ctx: &Context, st: &mut EncodeState, close: &mut
         let combo = |ui: &mut Ui, id: &str, id_key: &str, v: &mut Encoding| {
             ui.horizontal(|ui| {
                 ui.label(tr(id_key));
-                egui::ComboBox::from_id_salt(id)
+                crate::ui::keynav::ComboBox::from_id_salt(id)
                     .selected_text(v.name())
                     .show_ui(ui, |ui| {
                         for e in Encoding::ALL {
@@ -6289,7 +6484,7 @@ fn border_grommet_dialog(
                     ui.add_enabled_ui(st.add_border, |ui| {
                         egui::Grid::new("bg_border").num_columns(2).show(ui, |ui| {
                             ui.label(tr("border_grommet.type"));
-                            egui::ComboBox::from_id_salt("bg_kind")
+                            crate::ui::keynav::ComboBox::from_id_salt("bg_kind")
                                 .selected_text(tr(st.border.key()))
                                 .show_ui(ui, |ui| {
                                     for k in BorderKind::ALL {
@@ -6627,7 +6822,7 @@ fn palette_editor_dialog(
         ui.horizontal(|ui| {
             ui.label(tr("dialog.palette"));
             let names: Vec<String> = app.palettes.iter().map(|p| p.display_name()).collect();
-            egui::ComboBox::from_id_salt("pal_sel")
+            crate::ui::keynav::ComboBox::from_id_salt("pal_sel")
                 .selected_text(names.get(st.palette).cloned().unwrap_or_default())
                 .show_ui(ui, |ui| {
                     for (i, n) in names.iter().enumerate() {
@@ -7007,6 +7202,7 @@ pub(crate) mod tests {
             Dialog::BorderGrommet(crate::border_grommet::BorderGrommetState::default()),
             Dialog::ColorManagement(Default::default()),
             Dialog::FontManager(FontManagerState::default()),
+            Dialog::TraceCut(Box::default()),
             Dialog::PaletteEditor(PaletteEditorState::default()),
             Dialog::NewDocument(crate::new_document::NewDocState::from_settings(
                 &Default::default(),
@@ -7076,6 +7272,62 @@ pub(crate) mod tests {
             walk(&c.shape, &mut texts);
         }
         texts
+    }
+
+    /// Text > Tabs on a paragraph frame just drawn (no text yet, being
+    /// edited with the Text tool): Add tab puts a stop on that frame, the
+    /// dialog lists it, and a second click adds the next one (#1852).
+    #[test]
+    fn add_tab_works_on_a_new_empty_paragraph_frame() {
+        use egui::{Event, Modifiers, PointerButton};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.start_text(
+            tracedraw_core::Point::new(20.0, 20.0),
+            Some(tracedraw_core::Size::new(100.0, 60.0)),
+        );
+        let id = app.text_edit.as_ref().expect("editing").shape;
+        app.dialog = Dialog::TextTabs;
+        let tabs = |app: &App| {
+            let s = app.doc().find_shape(id).expect("frame").clone();
+            app.paragraph_style_of(&s).expect("text").1.tabs
+        };
+        let click = |ctx: &Context, app: &mut App, t: &str| {
+            let mut texts = Vec::new();
+            for _ in 0..2 {
+                texts = frame_texts(ctx, app, Vec::new());
+            }
+            let p = texts
+                .iter()
+                .find(|(s, _)| s == t)
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("{t} not drawn: {texts:?}"));
+            let press = |pressed| Event::PointerButton {
+                pos: p,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            frame_texts(ctx, app, vec![Event::PointerMoved(p)]);
+            frame_texts(ctx, app, vec![press(true)]);
+            frame_texts(ctx, app, vec![press(false)]);
+        };
+        assert!(tabs(&app).is_empty());
+        click(&ctx, &mut app, &tr("dialog.add_tab"));
+        assert_eq!(tabs(&app).len(), 1, "{:?}", tabs(&app));
+        click(&ctx, &mut app, &tr("dialog.add_tab"));
+        assert_eq!(tabs(&app).len(), 2, "{:?}", tabs(&app));
+        assert!(tabs(&app)[1].pos > tabs(&app)[0].pos);
+        // The rows show each stop with its kind; text typed afterwards
+        // keeps the stops.
+        let texts = frame_texts(&ctx, &mut app, Vec::new());
+        let left = tr("text.tab_left");
+        assert_eq!(texts.iter().filter(|(t, _)| *t == left).count(), 2);
+        // One undo step per click.
+        app.undo();
+        assert_eq!(tabs(&app).len(), 1, "{:?}", tabs(&app));
+        app.insert_text("Mango\t89,-");
+        assert_eq!(tabs(&app).len(), 1, "{:?}", tabs(&app));
     }
 
     /// A drag from one cell of the Print Merge grid to another selects the

@@ -162,9 +162,32 @@ change marked `TraceDraw:` in a comment.
     input hook reads the force and then takes out every `Moved` touch
     whose id never had a `Started` one (`pen::filter_raw_input`); a real
     touch screen's touches start, move and end, and pass as they came.
-    Wayland is unchanged: winit does not bind the tablet protocol
-    (`zwp_tablet_v2`), so a pen reaches the window there only through
-    XWayland (`tracedraw --x11`, which picks winit's X11 backend).
+    Wayland: see the next change.
+- Change: a graphics tablet's pen on a native Wayland window (#1841).
+  winit 0.30 binds no tablet protocol, and a Wayland compositor sends a
+  pen's input over nothing else (GNOME's sends a window that does not
+  bind it nothing), so the pen did not move the pointer or draw; only
+  XWayland (`tracedraw --x11`) took it. The copy binds the public
+  tablet-v2 protocol (`zwp_tablet_manager_v2`, version 1, from
+  `wayland-protocols`, already a dependency) and makes a tablet seat for
+  each seat (`platform_impl/linux/wayland/state.rs`, `seat/mod.rs`);
+  `platform_impl/linux/wayland/tablet.rs` takes the tablet seat's
+  tablets, tools and pads, and hands each tool's events to
+  `src/tablet_tool.rs`, which decides what the window is told: proximity
+  in and out as `CursorEntered` and `CursorLeft`, motion as
+  `CursorMoved`, the tip's down and up as presses and releases of the
+  left button, the barrel buttons (`BTN_STYLUS`, `BTN_STYLUS2`,
+  `BTN_STYLUS3`) as the middle, right and back buttons, and the
+  pressure (0 to 65535) as the same moving `Touch` with a
+  `Force::Normalized` that the X11 and macOS changes send, no force once
+  the tip lifts; a frame's events go out when the frame ends, and
+  leaving proximity releases whatever is still held. A tool that comes
+  into proximity is given the default cursor shape
+  (`wp_cursor_shape_manager_v1`, when offered). Tilt, distance,
+  rotation, slider and wheel, and the pad's buttons, rings and strips,
+  are not read; over the window's frame the pen does nothing.
+  `src/tablet_tool.rs` depends on nothing in the crate, and TraceDraw's
+  tests include and run it (`winit_tablet_tool::tests`).
 - Change: macOS hands the files opened from Finder (double click, Open
   With, a file dropped on the Dock icon) to the program (#646). macOS sends
   them as an "open documents" event, never on the command line, and winit
@@ -227,10 +250,26 @@ change marked `TraceDraw:` in a comment.
   `false` or no handler lets it go ahead (`NSTerminateNow`, as before).
   `src/quit_request.rs` depends on nothing in the crate, and TraceDraw's
   tests include and run it (`winit_quit_request::tests`).
+- Change: Android reports each pointer with its tool to the program,
+  for palm rejection (#1832). winit 0.30 turns every pointer of a
+  `MotionEvent` into a `Touch` with no word of its tool (finger, stylus,
+  eraser, mouse, palm) and drops the hover events of a pen near the
+  screen, so a hand resting on a tablet drew like a finger. The Android
+  backend (`platform_impl/android/mod.rs`) now asks
+  `src/pointer_filter.rs` about each pointer of a motion event, with its
+  device, id, tool (`pointer_tool`) and action, and about each pointer of
+  a hover event; the filter the program set with
+  `platform::android::set_pointer_filter` answers whether to deliver the
+  touch and which touches of the event to end first with `Cancelled`.
+  With no filter set every touch is delivered, as before. The file
+  depends on nothing in the crate, and TraceDraw's tests include and run
+  it (`palm::winit_pointer_filter::tests`); TraceDraw's filter is
+  `apps/tracedraw/src/palm.rs`.
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
 - Drop the copy and the `[patch.crates-io]` entry when a winit release
   carries pen pressure on X11 and macOS (rust-windowing/winit#99) and
+  pen input on Wayland, and
   passes on the files macOS asks to open, and
   check that egui-winit still maps `Touch` forces the same way.
   drag positions (winit 0.31's `DragEntered`/`DragMoved`/`DragDropped`

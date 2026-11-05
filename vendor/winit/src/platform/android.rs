@@ -186,3 +186,10 @@ pub mod activity {
     #[doc(hidden)]
     pub struct AndroidApp;
 }
+
+/// TraceDraw: the program's filter of the pointers of motion events, with
+/// their tools, for palm rejection (#1832, `pointer_filter.rs`).
+#[cfg(android_platform)]
+pub use crate::pointer_filter::{
+    set_filter as set_pointer_filter, PointerAction, PointerReport, PointerTool, Verdict,
+};

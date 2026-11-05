@@ -108,6 +108,7 @@ The page has five tabs.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] and the [[options.hyphenation_patterns]]
   (built-in, or a hyphenation dictionary for your language).
+  - [[options.default_tab_spacing]]: where <kbd>Tab</kbd> goes in a paragraph without tab stops of its own (12.7 mm, half an inch).
 - [[docker.fonts]]: [[options.show_recent_fonts]] at the top of the font lists,
   the [[options.recent_font_count]] (5, up to 20) and the
   [[options.font_sample_size]].

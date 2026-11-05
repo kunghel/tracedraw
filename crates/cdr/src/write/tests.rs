@@ -4235,7 +4235,7 @@ fn faces_named_with_their_weight_round_trip() {
             semi_italic,
         ])
         .expect("renamed");
-    let json = character_json(&file[0], None, &Default::default());
+    let json = character_json(Ver(27), &file[0], None, &Default::default());
     assert!(
         json.contains(r#""font":"Titillium Web""#) && json.contains(r#""weight":"1024""#),
         "{json}"
@@ -4324,13 +4324,23 @@ fn variable_font_weight_axis_round_trips() {
     assert_eq!(weight_code(&at(None, false, false)), 64);
     assert_eq!(weight_code(&at(None, true, true)), 0x2000);
     assert_eq!(style_flags(&at(Some(500.0), false, false)), 256);
-    let json = character_json(&at(Some(600.0), false, true), None, &Default::default());
+    let json = character_json(
+        Ver(27),
+        &at(Some(600.0), false, true),
+        None,
+        &Default::default(),
+    );
     assert!(
         json.contains(r#""weight":"1024""#) && json.contains(r#""italic":"1""#),
         "{json}"
     );
     // Set on bold text, the axis is what draws it.
-    let json = character_json(&at(Some(400.0), true, false), None, &Default::default());
+    let json = character_json(
+        Ver(27),
+        &at(Some(400.0), true, false),
+        None,
+        &Default::default(),
+    );
     assert!(json.contains(r#""weight":"64""#), "{json}");
 
     let spans = [
@@ -5177,20 +5187,22 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
         .filter(|n| n.name_id == 5)
         .find_map(|n| n.to_string())
         .expect("version");
-    let font = |charset: u32| {
+    // From version 22 each font holds an empty `font_axes` (#1698).
+    let font = |v: u16, charset: u32| {
+        let axes = if v >= 22 { r#","font_axes":"""# } else { "" };
         format!(
-            r#"{{"overline":"0","effect":"0","version":"{version}","italic":"0","weight":"64","underline":"0","charset":"{charset}","technology":"2","size":"84667","font":"Selawik","script":"0","strikeout":"0"}}"#
+            r#"{{"overline":"0","effect":"0","version":"{version}","italic":"0","weight":"64","underline":"0","charset":"{charset}","technology":"2","size":"84667","font":"Selawik","script":"0","strikeout":"0"{axes}}}"#
         )
     };
     // The red run has the paragraph's look (its record is the plain
     // one); the blue one a record of its own.
-    let run = |colour: &str| {
+    let run = |v: u16, colour: &str| {
         format!(
             r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}},"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
-            character_outline_json(),
-            font(178),
-            font(0),
-            font(128)
+            character_outline_json(Ver(v)),
+            font(v, 178),
+            font(v, 0),
+            font(v, 128)
         )
     };
     let blue_spec = colour_spec(Color::rgb8(0, 0, 255));
@@ -5208,7 +5220,7 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
         // without the zero bytes both read as the ASCII they hold.
         let ascii: Vec<u8> = recs[0].iter().copied().filter(|b| *b != 0).collect();
         let text = String::from_utf8_lossy(&ascii);
-        let want = run(&blue_spec);
+        let want = run(v, &blue_spec);
         assert!(text.contains(&want), "{v}: no run style {want}\n{text}");
         // Not the short form of before.
         assert!(!text.contains(r#""latin":{"font":"#), "{v}");
@@ -5280,7 +5292,9 @@ fn written_paragraphs(d: &[u8], v: u16) -> Vec<WrittenParagraph> {
     };
     assert_ne!(u32_at(&mut p), 0, "frame flag");
     p += 32;
-    assert_eq!(u16_at(&mut p), 1700);
+    // Layout 1800 from version 19, as the files of that program's recent
+    // releases hold their text (#1698).
+    assert_eq!(u16_at(&mut p), if v >= 19 { 1800 } else { 1700 });
     p += 3;
     let frames = u32_at(&mut p);
     for _ in 0..frames {
@@ -5318,6 +5332,9 @@ fn written_paragraphs(d: &[u8], v: u16) -> Vec<WrittenParagraph> {
             records,
             letters,
         });
+    }
+    if v >= 22 {
+        assert_eq!(u32_at(&mut p), 0, "the 4 bytes after the paragraphs");
     }
     assert_eq!(p, d.len(), "the whole record read");
     out
@@ -7071,6 +7088,181 @@ fn paragraph_text_goes_out_with_its_frame() {
             assert_eq!((u(at), u(at + 4)), (0, 1), "{v}");
             assert_eq!((u(w), u(w + 4), u(w + 8)), (700000, 0, -300000), "{v}");
         }
+    }
+}
+
+/// Asked for (see [`Previews::paragraph_frames`]), paragraph text has
+/// the text record every paragraph text of the files of versions 19, 22
+/// and 27 has: 1 at bytes 4 and 12, 14 at byte 20 from 22 (13 before),
+/// layout 1800, 4 zero bytes after the paragraphs from 22, and
+/// paragraph styles with the hyphenation, bullet, drop cap, indent and
+/// tab members. Any .cdr TraceDraw saved with paragraph frames made the
+/// program that reads them hang (#1698): it had artistic text's layout
+/// 1700 header and members.
+#[test]
+fn paragraph_text_has_the_text_record_of_the_files() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let para = paragraph_shape(&mut ids, ParagraphStyle::default());
+    let u32_at = |d: &[u8], at: usize| u32::from_le_bytes(d[at..at + 4].try_into().expect("4"));
+    let u16_at = |d: &[u8], at: usize| u16::from_le_bytes(d[at..at + 2].try_into().expect("2"));
+    let mut sizes = std::collections::BTreeMap::new();
+    let mut axes_22 = 0;
+    for v in 16..=NEWEST_VERSION {
+        let bytes = with_paragraph_frames(&doc_with(vec![para.clone()]), v);
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let (_, txsm) = first_text_records(&bytes);
+        let header = (
+            u32_at(&txsm, 0),
+            u32_at(&txsm, 4),
+            u32_at(&txsm, 12),
+            u32_at(&txsm, 20),
+            u16_at(&txsm, 36),
+        );
+        let want = match v {
+            22.. => (0, 1, 1, 14, 1800),
+            19.. => (0, 1, 1, 13, 1800),
+            17.. => (0, u32::MAX, u32::MAX, 13, 1700),
+            _ => (0, u32::MAX, u32::MAX, 12, 1700),
+        };
+        assert_eq!(header, want, "{v}");
+        sizes.insert(v, txsm.len());
+        if v == 22 {
+            axes_22 = txsm
+                .windows(13)
+                .filter(|w| w == br#""font_axes":""#)
+                .count();
+        }
+        let parsed =
+            crate::text::read_txsm(&txsm, v, 0, &mut |w| panic!("{v}: {w}")).expect("reads");
+        assert_eq!(parsed.frame_text_styles.len(), 3, "{v}");
+        for s in &parsed.frame_text_styles {
+            for (k, _) in FRAME_TEXT_PARAGRAPH {
+                assert!(s.contains(&format!("\"{k}\":")), "{v}: {k} in {s}");
+            }
+        }
+    }
+    // The tail: the same record grows by 4 bytes from 21 to 22 beside the
+    // empty `font_axes` its fonts take from 22, by nothing from 20 to 21.
+    let axes = axes_22 * r#","font_axes":"""#.len();
+    assert!(axes_22 >= 9, "three paragraphs of three fonts: {axes_22}");
+    assert_eq!(sizes[&21], sizes[&20], "{sizes:?}");
+    assert_eq!(sizes[&22], sizes[&21] + 4 + axes, "{sizes:?}");
+    assert_eq!(sizes[&27], sizes[&22], "{sizes:?}");
+}
+
+/// A paragraph style of paragraph text holds one `tabs` member, as every
+/// paragraph style of the files does (#1852, #1226): the paragraph's own
+/// stops in place of the default ones of [`FRAME_TEXT_PARAGRAPH`], with
+/// the other members of #1698 kept (#1852).
+#[test]
+fn paragraph_text_holds_one_tabs_member_with_its_own_stops() {
+    use tracedraw_core::{TabKind, TabStop};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let para = paragraph_shape(
+        &mut ids,
+        ParagraphStyle {
+            tabs: vec![TabStop::new(60.0, TabKind::Right), TabStop::left(70.0)],
+            ..ParagraphStyle::default()
+        },
+    );
+    let plain = paragraph_shape(&mut ids, ParagraphStyle::default());
+    let default_tabs = FRAME_TEXT_PARAGRAPH
+        .iter()
+        .find(|(k, _)| *k == "tabs")
+        .map(|(_, v)| format!(r#""tabs":{v}"#))
+        .expect("tabs member");
+    for v in 16..=NEWEST_VERSION {
+        for (shape, want) in [
+            (&para, r#""tabs":"0,1,600000|0,0,700000""#.to_string()),
+            (&plain, default_tabs.clone()),
+        ] {
+            let bytes = with_paragraph_frames(&doc_with(vec![shape.clone()]), v);
+            let findings = crate::check::check_bytes(&bytes).expect("checks");
+            assert!(findings.is_empty(), "{v}: {findings:?}");
+            let (_, txsm) = first_text_records(&bytes);
+            let parsed =
+                crate::text::read_txsm(&txsm, v, 0, &mut |w| panic!("{v}: {w}")).expect("reads");
+            assert!(!parsed.frame_text_styles.is_empty(), "{v}");
+            for s in &parsed.frame_text_styles {
+                assert_eq!(s.matches(r#""tabs":"#).count(), 1, "{v}: {s}");
+                assert_eq!(s.matches(r#""tabLeaderChar":"#).count(), 1, "{v}: {s}");
+                assert_eq!(s.matches(r#""tabLeaderSpacing":"#).count(), 1, "{v}: {s}");
+                assert!(s.contains(&want), "{v}: {want} in {s}");
+            }
+        }
+    }
+}
+
+/// Artistic text has the text record every artistic text of the files
+/// that program's recent releases save holds (versions 19, 22, 24, 26
+/// and 27: #624, #67, #1683, #1131, #1733, #1484, #1455, #1226, #1297,
+/// 2026-11-04): 1 at bytes 0, 4 and 12, 14 at byte 20 from 22 (13
+/// before), layout 1800, 4 zero bytes after the paragraphs from 22,
+/// `variableAttributes` in the character outline from 19 and an empty
+/// `font_axes` in each font from 22. TraceDraw wrote the header of that
+/// program's 2019 release (-1, 13, layout 1700), and its user reports
+/// one-line text hanging that program too (#1698). Versions 16 to 18
+/// keep the header of their files.
+#[test]
+fn artistic_text_has_the_text_record_of_the_files() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut red = TextSpan::new(" red", "Arial", 12.0);
+    red.fill = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
+    let artistic = text_shape(
+        &mut ids,
+        vec![TextSpan::new("One line", "Arial", 12.0), red],
+        TextAlign::Center,
+    );
+    let u32_at = |d: &[u8], at: usize| u32::from_le_bytes(d[at..at + 4].try_into().expect("4"));
+    for v in 16..=NEWEST_VERSION {
+        let bytes = document_to_cdr_version(&doc_with(vec![artistic.clone()]), v);
+        let findings = crate::check::check_bytes(&bytes).expect("checks");
+        assert!(findings.is_empty(), "{v}: {findings:?}");
+        let recs = txsm_records(&bytes);
+        assert_eq!(recs.len(), 1, "{v}");
+        let txsm = &recs[0];
+        let header: Vec<u32> = (0..9).map(|k| u32_at(txsm, 4 * k)).collect();
+        let m = u32::MAX;
+        let want = match v {
+            22.. => [1, 1, 0, 1, 8, 14, 0, 3, 0],
+            19.. => [1, 1, 0, 1, 8, 13, 0, 3, 0],
+            17.. => [m, m, 0, m, 8, 13, 0, 3, 0],
+            _ => [m, m, 0, m, 8, 12, 0, 3, 0],
+        };
+        assert_eq!(header, want, "{v}");
+        // Layout and tail checked by the walk through the whole record.
+        let paragraphs = written_paragraphs(txsm, v);
+        assert_eq!(paragraphs.len(), 1, "{v}");
+        let p = &paragraphs[0];
+        assert_eq!(p.records.len(), 2, "{v}: the plain look and the red one");
+        for style in std::iter::once(&p.default).chain(p.records[1..].iter().map(|r| &r.style)) {
+            assert_eq!(
+                style.matches(r#""variableAttributes":"0|0""#).count(),
+                usize::from(v >= 19),
+                "{v}: {style}"
+            );
+            assert_eq!(
+                style.matches(r#""font_axes":"""#).count(),
+                if v >= 22 { 3 } else { 0 },
+                "{v}: {style}"
+            );
+        }
+        let parsed =
+            crate::text::read_txsm(txsm, v, 0, &mut |w| panic!("{v}: {w}")).expect("reads");
+        assert!(parsed.frame_text_styles.is_empty(), "{v}");
+        assert_eq!(
+            parsed.layout,
+            Some(if v >= 19 { 1800 } else { 1700 }),
+            "{v}"
+        );
+        assert!(!txsm.windows(15).any(|w| w == br#""autoHyphenate""#), "{v}");
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("{v}: not text");
+        };
+        let text: String = spans.iter().map(|sp| sp.text.as_str()).collect();
+        assert_eq!(text, "One line red", "{v}");
     }
 }
 

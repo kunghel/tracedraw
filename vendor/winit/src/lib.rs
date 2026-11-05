@@ -220,9 +220,16 @@ pub(crate) mod opened_files;
 // (vendor/README.md).
 #[cfg(macos_platform)]
 pub(crate) mod quit_request;
+// TraceDraw: the program's say on each pointer of Android's motion events,
+// with its tool, for palm rejection (vendor/README.md).
+#[cfg(android_platform)]
+pub(crate) mod pointer_filter;
 // TraceDraw: files dragged over a window on Wayland (vendor/README.md).
 #[cfg(wayland_platform)]
 pub(crate) mod file_drop;
+// TraceDraw: a graphics tablet's pen on Wayland (vendor/README.md).
+#[cfg(wayland_platform)]
+pub(crate) mod tablet_tool;
 mod platform_impl;
 mod utils;
 pub mod window;

@@ -1065,7 +1065,7 @@ impl App {
         true
     }
 
-    fn start_move(&mut self, p: Point) {
+    pub(crate) fn start_move(&mut self, p: Point) {
         // A text fitted to a path slides along it instead.
         if self.fitted_text().is_some() {
             self.drag = Drag::AlongPath {
@@ -1185,11 +1185,12 @@ impl App {
         }
     }
 
-    /// A selection box or freehand selection of the Pick tools is being
-    /// dragged.
+    /// A selection box or freehand selection of the Pick tools, or one of
+    /// the Shape tool's over nodes, is being dragged.
     pub fn selecting(&self) -> bool {
-        matches!(self.drag, Drag::Marquee { .. } | Drag::Lasso { .. })
-            && matches!(self.tool, Tool::Pick | Tool::FreeformPick)
+        (matches!(self.drag, Drag::Marquee { .. } | Drag::Lasso { .. })
+            && matches!(self.tool, Tool::Pick | Tool::FreeformPick))
+            || matches!(self.drag, Drag::NodeMarquee { .. } | Drag::NodeLasso { .. })
     }
 
     /// A selection box (or freehand selection) runs from the press until
@@ -1199,7 +1200,10 @@ impl App {
     /// end of the drag, so the box stayed on the canvas, frozen, until the
     /// next one replaced it (#1015). While the left button is held the box
     /// follows the latest pointer position even when egui reports no
-    /// hover after the right press.
+    /// hover after the right press. The Shape tool's selection box and
+    /// freehand selection over nodes go the same way: the right press
+    /// opened the node menu during the drag and left the box on the
+    /// canvas (#1848).
     fn selection_drag_input(
         &mut self,
         response: &Response,
@@ -1212,7 +1216,16 @@ impl App {
             let p = self.view.to_page(s);
             self.pointer_page = Some(p);
             if held {
-                self.pick_drag_to(p, mods);
+                let step = 0.2 / self.view.zoom as f64;
+                match &mut self.drag {
+                    Drag::NodeMarquee { current, .. } => *current = p,
+                    Drag::NodeLasso { points } => {
+                        if points.last().is_none_or(|q| (*q - p).hypot() > step) {
+                            points.push(p);
+                        }
+                    }
+                    _ => self.pick_drag_to(p, mods),
+                }
             }
         }
         if !held {
@@ -1345,6 +1358,10 @@ impl App {
             return;
         }
 
+        // The tab ruler over the paragraph frame being edited (#1852).
+        if self.tool == Tool::Text && self.tab_ruler_input(response, screen) {
+            return;
+        }
         // With the Zoom tool a right click zooms out by default; with the
         // Pan tool when Options > Tools > Zoom/Pan says so.
         if response.secondary_clicked()
@@ -2019,7 +2036,10 @@ impl App {
             self.symmetry_drag_to(p, mods.ctrl || mods.command);
             return;
         }
-        if matches!(self.drag, Drag::MoveGuide { .. } | Drag::RotateGuide { .. }) {
+        if matches!(
+            self.drag,
+            Drag::MoveGuide { .. } | Drag::RotateGuide { .. } | Drag::GuidePivot
+        ) {
             self.drag_guide_to(p);
             return;
         }
@@ -2511,7 +2531,7 @@ impl App {
                 if let Some(c) = &mut self.curve {
                     c.nodes.push((end, None));
                 }
-                self.finish_curve();
+                self.finish_curve_as(true);
                 return;
             }
             if start_close {
@@ -3041,11 +3061,19 @@ impl App {
                     );
                 }
             }
+            // Dropped on a page tab: the selection goes to that page, at
+            // its place there (#1346).
+            Drag::Move { .. } if self.page_tab_under_pointer().is_some() => {
+                if let Some(i) = self.page_tab_under_pointer() {
+                    self.drop_on_page_tab(i);
+                }
+            }
             // Dropped on the document palette: the selection's colours
             // join it and the objects stay where they were.
             Drag::Move { .. } if self.over_document_palette() => {
                 self.drag_copy = false;
                 self.palette_from_selection();
+                self.end_page_drag_group();
             }
             Drag::Move { total, .. } => {
                 if total.hypot() > 1e-6 {
@@ -3064,6 +3092,8 @@ impl App {
                         self.select(vec![frame]);
                     }
                 }
+                // A move that went to another page on the way: one step.
+                self.end_page_drag_group();
             }
             Drag::AlongPath { start, current } => self.finish_along_path(start, current),
             Drag::Pivot => {}
@@ -3181,7 +3211,7 @@ impl App {
             | Drag::TextChars { .. }
             | Drag::TextSpacing { .. } => {}
             Drag::NewGuide { .. } => self.finish_guide_drag(),
-            d @ (Drag::MoveGuide { .. } | Drag::RotateGuide { .. }) => {
+            d @ (Drag::MoveGuide { .. } | Drag::RotateGuide { .. } | Drag::GuidePivot) => {
                 // Released outside the window (no pointer): dropped off.
                 let at = self
                     .pointer_page
@@ -3417,6 +3447,13 @@ impl App {
             self.stop_macro();
             return;
         }
+        // An open menu or list, or the menu bar with the keyboard, takes
+        // the keys: its rows' access keys, arrows, Enter, Esc. The arrows
+        // move its highlight, never the selection, a node or the caret
+        // of the text being edited (#1839).
+        if crate::ui::keynav::takes_keys(ctx) {
+            return;
+        }
         let dialog_open = !matches!(self.dialog, crate::ui::dialogs::Dialog::None);
         // Table cell typing has priority while a cell is active (not
         // behind a dialog, which owns the keyboard).
@@ -3438,10 +3475,6 @@ impl App {
         if self.text_edit.is_some() && !dialog_open {
             self.text_view_keys(ctx);
             self.text_keyboard(ctx);
-            return;
-        }
-        // An open menu takes the keys: its rows' access keys, arrows, Esc.
-        if egui::Popup::is_any_open(ctx) {
             return;
         }
         // A modal dialog owns the keyboard: Esc closes it, the rest is
@@ -3502,6 +3535,10 @@ impl App {
         // once a press, such as picking a tool (#1502).
         // In the browser version a key that stands in for one the browser
         // keeps (Alt+PgUp for Ctrl+PgUp, #1409) also counts as that key.
+        // In the macOS desktop app so does the key that stands in for a
+        // Command key macOS keeps (Alt+Shift+C for Convert to Curves'
+        // Command+Q, the system's Quit), and such a Command key does
+        // nothing here should it arrive.
         let web_keys = crate::shortcuts::web_keys();
         let presses: Vec<(Key, Modifiers)> = input
             .events
@@ -3514,9 +3551,13 @@ impl App {
                     modifiers,
                     ..
                 } => {
+                    if crate::shortcuts::mac_kept_press(*key, *modifiers) {
+                        return [None, None];
+                    }
                     let kept = web_keys
                         .then(|| crate::shortcuts::browser_key_for(*key, *physical_key, *modifiers))
                         .flatten()
+                        .or_else(|| crate::shortcuts::mac_key_for(*key, *modifiers))
                         .map(|(m, k)| (k, m));
                     [Some((*key, *modifiers)), kept]
                 }
@@ -3741,7 +3782,11 @@ impl App {
             self.convert_to_curves();
         }
         if pressed(Key::A, cmd) {
-            if self.tool == Tool::Shape && !self.selection.is_empty() {
+            // With a guideline selected: every guideline of the page, as
+            // Edit > Select All > Guidelines (#1753).
+            if !self.selected_guides.is_empty() && self.selection.is_empty() {
+                self.select_all_guides();
+            } else if self.tool == Tool::Shape && !self.selection.is_empty() {
                 self.select_all_nodes();
             } else {
                 self.select_all();
@@ -3943,7 +3988,11 @@ impl App {
             self.zoom_step(false);
         }
         if pressed(Key::Delete, Modifiers::NONE) || pressed(Key::Backspace, Modifiers::NONE) {
-            if matches!(self.tool, Tool::MeshFill | Tool::Shape)
+            if self.curve.is_some() {
+                // While a curve is drawn the keys take its last node back,
+                // never the selection (#1527).
+                self.curve_remove_last_node();
+            } else if matches!(self.tool, Tool::MeshFill | Tool::Shape)
                 && self.selected_mesh_node().is_some()
             {
                 self.delete_mesh_lines();
@@ -4050,14 +4099,29 @@ impl App {
                 self.set_tool(Tool::Pick);
             }
         }
+        // Page Down and Page Up go to the next and the previous page; past
+        // the last or the first page they offer a new one there: the
+        // Insert Page dialog, after or before it (#1752).
         if pressed(Key::PageDown, Modifiers::NONE) {
             let i = self.page_index();
-            self.goto_page(i + 1);
+            if i + 1 < self.doc().pages.len() {
+                self.goto_page(i + 1);
+            } else {
+                self.dialog = crate::ui::dialogs::Dialog::InsertPage {
+                    count: 1,
+                    after: true,
+                };
+            }
         }
         if pressed(Key::PageUp, Modifiers::NONE) {
             let i = self.page_index();
             if i > 0 {
                 self.goto_page(i - 1);
+            } else {
+                self.dialog = crate::ui::dialogs::Dialog::InsertPage {
+                    count: 1,
+                    after: false,
+                };
             }
         }
         // The Shape tool with nodes chosen: C turns cusp nodes smooth and

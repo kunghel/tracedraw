@@ -360,7 +360,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                     .show(ui, |ui| {
                         let w = inner.width() - 90.0;
                         ui.label(tr("options.language"));
-                        egui::ComboBox::from_id_salt("docprops_lang")
+                        crate::ui::keynav::ComboBox::from_id_salt("docprops_lang")
                             .width(w - 8.0)
                             .selected_text(if st.language.is_empty() {
                                 tr("docprops.rating_none")
@@ -407,7 +407,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                         .rich_tip(crate::ui::tips::pair("dialog.notes", "docprops.notes_desc"));
                         ui.end_row();
                         ui.label(tr("dialog.rating"));
-                        egui::ComboBox::from_id_salt("docprops_rating")
+                        crate::ui::keynav::ComboBox::from_id_salt("docprops_rating")
                             .width(w - 8.0)
                             .selected_text(rating_label(st.rating))
                             .show_ui(ui, |ui| {

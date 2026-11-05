@@ -41,7 +41,7 @@ was changed on every tab (#633).
 |---|---|
 | General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Undo levels, Regular (150) |
 | Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below) |
-| Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places in the property bar and the status bar) |
+| Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places: at most that many in the property bars' length fields, at least one, trailing zeros dropped; that many in the status bar) |
 | Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G) |
 | clip frame | Auto-center new content: when it lies completely outside the frame (default), always, never; Show lines in empty clip frame frames (on, on screen) |
 | Snapping | Snap to objects, page, guidelines, grid, baseline grid, pixels; snapping radius (10 px); show snap location marks and the screen tip (on); the modes, each with its mark (all on), Select All, Deselect All |
@@ -89,8 +89,9 @@ the Pan tool, zoom out or context menu (at first,
 `settings.pan_right_click_out`)), Freehand/Bézier (Freehand
 smoothing, 0 to 100, 50 by default; Join and close within, 1 to 50
 screen pixels, 5 by default; Graphics tablet: pen pressure sets the
-width of Freehand and Brush Strokes drags, on; see `curve-tools.md` and
-`pen-pressure.md`), Shape Recognition (recognition and smoothing levels,
+width of Freehand and Brush Strokes drags, on; on Android, Ignore the
+hand while drawing with a pen, on (palm rejection, `android.md`); see
+`curve-tools.md` and `pen-pressure.md`), Shape Recognition (recognition and smoothing levels,
 off to highest, as on the tool's property bar), Rectangle (Rectangle
 corners: style, the four sizes, Edit corners together; Scale corners:
 Relative corner scaling, off by default so that new rectangles keep

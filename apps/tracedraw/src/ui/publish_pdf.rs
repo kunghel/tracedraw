@@ -966,7 +966,7 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
             .map(|(_, n, _)| n.clone())
             .unwrap_or_default();
         let mut pick = None;
-        egui::ComboBox::from_id_salt("publish_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("publish_preset")
             .selected_text(shown)
             .width(220.0)
             .show_ui(ui, |ui| {
@@ -1031,7 +1031,7 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
         }
     }
     row(ui, &tr("publish.compatibility"), |ui| {
-        egui::ComboBox::from_id_salt("publish_standard")
+        crate::ui::keynav::ComboBox::from_id_salt("publish_standard")
             .selected_text(PDF_STANDARDS[st.prefs.standard.min(PDF_STANDARDS.len() - 1)])
             .width(220.0)
             .show_ui(ui, |ui| {
@@ -1125,7 +1125,7 @@ fn bitmaps(ui: &mut Ui, b: &mut BitmapPrefs) {
         }
         ui.horizontal(|ui| {
             ui.label(tr("publish.compression"));
-            egui::ComboBox::from_id_salt("publish_compression")
+            crate::ui::keynav::ComboBox::from_id_salt("publish_compression")
                 .selected_text(if b.jpeg {
                     tr("publish.compression_jpeg")
                 } else {
@@ -1292,7 +1292,7 @@ fn security(ui: &mut Ui, st: &mut PublishState) {
             ui.horizontal(|ui| {
                 ui.add_space(22.0);
                 ui.label(tr("publish.printing"));
-                egui::ComboBox::from_id_salt("publish_printing")
+                crate::ui::keynav::ComboBox::from_id_salt("publish_printing")
                     .selected_text(tr(p.printing.key()))
                     .width(150.0)
                     .show_ui(ui, |ui| {

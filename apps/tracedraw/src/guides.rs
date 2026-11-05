@@ -383,12 +383,19 @@ impl App {
     /// rotation handle of the guideline in rotate mode starts rotating.
     /// Returns true when the press was taken.
     pub fn press_guide(&mut self, p: Point, extend: bool) -> bool {
+        if self.guide_pivot_at(p) {
+            self.drag = Drag::GuidePivot;
+            return true;
+        }
         if let Some((index, pivot)) = self.rotate_handle_at(p) {
             if let Some(g) = self.page_guides().get(index).copied() {
+                let v = p - pivot;
                 self.drag = Drag::RotateGuide {
                     index,
                     pivot,
                     guide: g,
+                    start: g,
+                    grab: v.y.atan2(v.x).to_degrees(),
                 };
                 return true;
             }
@@ -428,6 +435,11 @@ impl App {
     /// selects it; a click on the only selected guideline toggles its
     /// rotation handles, unless it is locked (#1385).
     pub fn click_guide(&mut self, p: Point, extend: bool) -> bool {
+        // A click on the rotation centre keeps the handles where they
+        // are, also with the centre moved off the guideline (#1850).
+        if !extend && self.guide_pivot_at(p) {
+            return true;
+        }
         let Some(index) = self.guide_at(p) else {
             return false;
         };
@@ -615,17 +627,34 @@ impl App {
             Drag::RotateGuide {
                 index,
                 pivot,
-                guide,
+                start,
+                grab,
+                ..
             } => {
                 let v: Vec2 = p - pivot;
                 if v.hypot() > 1e-9 {
+                    // The pointer's angle in whole degrees is the line's;
+                    // the line turns about the pivot by as much, so one
+                    // off the pivot keeps its distance from it (#1850).
                     let a = v.y.atan2(v.x).to_degrees().round();
+                    let turn = (a - grab).to_radians();
+                    let (o, d) = start.line.point_and_direction();
+                    let foot = o + d * (pivot - o).dot(d);
+                    let at = Affine::rotate_about(turn, pivot) * foot;
+                    let angle = start.line.angle() + (a - grab);
                     self.drag = Drag::RotateGuide {
                         index,
                         pivot,
-                        guide: guide.with_line(guide.line.rotated_to(a, pivot)),
+                        guide: start.with_line(start.line.rotated_to(angle, at)),
+                        start,
+                        grab,
                     };
                 }
+            }
+            Drag::GuidePivot => {
+                // Snaps as a drawing tool's point does: to objects and
+                // their nodes, the page, the grid and guidelines.
+                self.guide_pivot = self.snap_point(p);
             }
             _ => {}
         }
@@ -708,6 +737,8 @@ impl App {
             Drag::RotateGuide { index, guide, .. } => {
                 self.replace_guide(index, guide, "Rotate Guideline");
             }
+            // The rotation centre is where the drag left it.
+            Drag::GuidePivot => {}
             other => self.drag = other,
         }
     }
@@ -749,6 +780,14 @@ impl App {
         let reach = ROTATE_HANDLE_PX / self.view.zoom.max(1e-6) as f64;
         let pivot = self.guide_pivot;
         Some((index, pivot, [pivot + d * reach, pivot - d * reach]))
+    }
+
+    /// `p` (page) is on the rotation centre of the guideline in rotate
+    /// mode, which a press drags (#1850).
+    pub fn guide_pivot_at(&self, p: Point) -> bool {
+        let tol = HANDLE_PICK_PX / self.view.zoom.max(1e-6) as f64;
+        self.guide_rotate_handles()
+            .is_some_and(|(_, pivot, _)| (pivot - p).hypot() <= tol)
     }
 
     /// `p` (page) is on a rotation handle of the guideline in rotate mode.
@@ -994,6 +1033,52 @@ mod tests {
                 y: 50.0,
                 angle: 45.0
             }
+        );
+    }
+
+    /// The rotation centre of a guideline in rotate mode can be dragged,
+    /// snapping to an object's node; the guideline then turns about it,
+    /// keeping its distance from it (#1850).
+    #[test]
+    fn a_guides_rotation_centre_drags_and_snaps_to_a_node() {
+        let mut app = app();
+        app.snap.objects = true;
+        app.settings.snap.threshold_px = 3.0;
+        app.view.zoom = 1.0;
+        app.new_shape(tracedraw_core::ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(100.0, 100.0, 140.0, 120.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("a rectangle");
+        app.select(Vec::new());
+        app.add_guide(Guide::horizontal(50.0));
+        let p = Point::new(30.0, 50.0);
+        assert!(app.click_guide(p, false));
+        assert!(app.click_guide(p, false));
+        assert_eq!(app.guide_rotate, Some(0));
+        // The centre dragged near the rectangle's corner lands on it.
+        assert!(app.press_guide(p, false));
+        app.drag_guide_to(Point::new(101.5, 98.5));
+        app.finish_guide_move(egui::pos2(100.0, 100.0));
+        assert_eq!(app.guide_pivot, Point::new(100.0, 100.0));
+        // The guideline stays where it was, in rotate mode, no undo step.
+        assert_eq!(app.page_guides()[0].line, GuideLine::Horizontal { y: 50.0 });
+        assert_eq!(app.guide_rotate, Some(0));
+        let (_, pivot, handles) = app.guide_rotate_handles().expect("handles");
+        assert_eq!(pivot, Point::new(100.0, 100.0));
+        // A click on the centre, off the guideline now, keeps the handles.
+        assert!(app.click_guide(pivot, false));
+        assert_eq!(app.guide_rotate, Some(0));
+        assert_eq!(app.selected_guides, vec![0]);
+        // Turned a quarter: the line keeps its 50 mm from the centre.
+        assert!(app.press_guide(handles[0], false));
+        app.drag_guide_to(pivot + Vec2::new(0.0, 30.0));
+        app.finish_guide_move(egui::pos2(100.0, 100.0));
+        let line = app.page_guides()[0].line;
+        assert!(
+            matches!(line, GuideLine::Vertical { x } if (x - 150.0).abs() < 1e-9),
+            "{line:?}"
         );
     }
 

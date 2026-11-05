@@ -20,6 +20,8 @@ mod event_loop;
 mod output;
 mod seat;
 mod state;
+// TraceDraw: a graphics tablet's pen (vendor/README.md).
+mod tablet;
 mod types;
 mod window;
 

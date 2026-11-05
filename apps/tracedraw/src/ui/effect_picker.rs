@@ -116,7 +116,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                     Filter::Recent => tr("effect_picker.recent"),
                     Filter::Group(i) => groups.get(i).map(|(k, _)| tr(k)).unwrap_or_default(),
                 };
-                egui::ComboBox::from_id_salt("effect_picker_group")
+                crate::ui::keynav::ComboBox::from_id_salt("effect_picker_group")
                     .selected_text(label)
                     .width(150.0)
                     .height(400.0)

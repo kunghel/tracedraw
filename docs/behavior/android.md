@@ -22,7 +22,8 @@ the owner does to publish it and what to test on a tablet first.
 | Feature | Desktop | Android, phase 2 |
 |---|---|---|
 | The editor: drawing tools, shapes, text, effects, menus, dockers, undo | yes | yes, the same code |
-| Workspace | the one chosen | a fresh install starts in the Touch workspace (`workspaces.md`: bars and buttons 1.4 times larger, no rulers, panels or status bar, two fingers pan, a pinch zooms); Window > Workspace picks another and it is kept |
+| Workspace | the one chosen | a fresh install starts in the Touch workspace (`workspaces.md`: bars and buttons 1.4 times larger, no rulers, panels or status bar, two fingers pan, a pinch zooms); Window > Workspace picks another and it is kept. A phone (smallest width under 600 dp) gets the phone layout in any workspace (`workspaces.md`, Touch): no enlargement, menu titles that do not fit under », panels as full sheets, sliding bars, toolbox and palette (#1301, #1497, #1691) |
+| Right click and keys, by finger | mouse and keyboard | Delete and Panels on the standard toolbar (with Cut, Copy, Paste, Undo, Redo); a finger held 0.8 s on the drawing opens the object's or the page's menu; on a palette swatch a hold of 0.5 s sets the outline, 1 s shows the shades (#1611, #1707) |
 | Open, Import, palettes, scripts, ICC profiles, every "pick a file" | system file dialog | the system's document picker (Storage Access Framework, `ACTION_OPEN_DOCUMENT`, any type): the picked document opens by the extension of its display name; the closure runs on a later frame, as in the browser |
 | Save on an opened drawing | writes the file | writes the document back through its content URI (the picker grants read and write, kept across restarts) |
 | Save As, Export, Export as PDF, Save Bitmap As, exports of dockers that use `save_file` | the Save Drawing dialog with folders, or the system save dialog | the Save Drawing dialog shows name, type and version only, then the system's picker (`ACTION_CREATE_DOCUMENT`) asks where, with that name and the type's MIME; the file is written when it answers. Export as PDF has no Browse button: OK opens the picker |
@@ -45,6 +46,42 @@ the owner does to publish it and what to test on a tablet first.
 | Help | the user Help in the browser | the same pages open in the browser |
 | Errors | a message box and the log file | the system log only: `adb logcat -s tracedraw` |
 | Configuration changes (rotation, window size, keyboard, dark mode, language, font size) | the window follows them | the same: the activity declares them (`android:configChanges`), so the system does not relaunch it. A relaunch the manifest cannot prevent (a new screen density, a change of the system's resource overlays: wallpaper colours, icon shapes, display cutout) ends the process once the drawings are backed up, and the system starts the app again in a new process, which offers them (see "Relaunches" below) |
+
+## Palm rejection
+
+A hand resting on a tablet while a pen draws touches the screen too, and
+before #1832 it drew, picked and panned like a finger. Android tells
+each pointer's tool (`MotionEvent.getToolType`: finger, stylus, eraser,
+mouse, or a palm the system recognised), and reports a pen hovering
+over the screen; winit drops both. The patched copy of winit
+(`vendor/winit/src/pointer_filter.rs`, `vendor/README.md`) asks the
+app's filter (`palm.rs`, set from `android_main`) about every pointer
+of each motion event, with its tool and action, and about each hover,
+before it hands the touch on; it delivers the touch only when the
+filter says so, and first ends with `Cancelled` the touches the filter
+names. With Options > Tools > Freehand/Bezier, "Ignore the hand while
+drawing with a pen" on (the default; the box shows on Android only):
+
+- a pen (stylus or its eraser end) always gets through;
+- a finger that comes down while a pen touches the screen or hovers
+  over it is ignored until it lifts;
+- a pen that comes down while fingers of the same screen are down
+  (the hand landed first) ends those touches, which are then ignored
+  until they lift;
+- with no pen near, fingers work as before, two of them pan and a pinch
+  zooms;
+- a touch the system calls a palm never gets through.
+
+Off, every touch gets through. The activity's Java code sees none of
+these events: a `NativeActivity` hands its input queue to the native
+code, so the tool type comes from the NDK's motion events
+(`AMotionEvent_getToolType`, through `android-activity`), and
+`TraceDrawActivity.java` has no touch handler of its own to pass it on
+(its `TextInputView` only takes the keyboard's input). Checks:
+`palm::tests` (fake motion events: the hand while the pen is down, while
+it hovers, a hand that landed first, fingers alone, the option off) and
+`winit_pointer_filter::tests`; not checked on a device (the emulator
+check has no pen).
 
 Pen pressure is #850 (another change): `android-activity` exposes
 `MotionEvent` pressure per pointer, so when winit passes it on the
@@ -353,8 +390,7 @@ Now:
 ## Later phases
 
 1. Opening a `.cdr` or `.tdraw` from a file manager (`ACTION_VIEW`).
-2. Pen pressure and tilt (#850), palm rejection, a long press as the
-   right click.
+2. Pen pressure and tilt (#850).
 3. The Help inside the app.
 4. A 32-bit ARM library for older devices; the store listing's
    screenshots from a device.

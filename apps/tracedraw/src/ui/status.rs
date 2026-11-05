@@ -95,7 +95,7 @@ pub fn object_info(app: &App) -> String {
                     _ => None,
                 };
                 if let Some(key) = hint {
-                    return tr(key);
+                    return crate::shortcuts::shown_in(tr(key));
                 }
             }
             let mut kind = match &s.kind {

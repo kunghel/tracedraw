@@ -1174,7 +1174,7 @@ fn combo_box(
     let mut pick = None;
     let r = if c.style == 2 {
         // A drop-down list: the rows only.
-        let cb = egui::ComboBox::from_id_salt(("macro_combo", id, name))
+        let cb = crate::ui::keynav::ComboBox::from_id_salt(("macro_combo", id, name))
             .width(rect.width() - 8.0)
             .selected_text(rich(c, &c.text))
             .show_ui(ui, |ui| {

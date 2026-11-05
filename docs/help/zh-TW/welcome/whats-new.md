@@ -5,8 +5,10 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
 
 ## 在程式中查看新內容 {#in-the-program}
 
-- 選擇 [[menu.help > menu.help.whats_new]] 開啟歡迎畫面的新功能頁面，其中有本
-  版本的新聞。
+- 選擇 [[menu.help > menu.help.whats_new]] 開啟歡迎畫面的新功能頁面。頁面由新到舊列出
+  最近十個版本，每個版本都有日期和簡短標題。按一下某個版本即可閱讀變更的
+  簡短說明；最新版本已經展開。說明下方的 **想了解更多？** 會開啟該版本在
+  GitHub 上的頁面，其中有完整的變更清單。
 - 開啟 [[menu.help > menu.help.highlight_whats_new]]，在功能表中標出本版本的新
   內容：每個新命令的結尾、通往新命令的子功能表箭頭旁，以及包含新命令的功能表
   標題上方都會出現一個小圓點。關閉該命令後標記消失，下次啟動 TraceDraw 時該
@@ -16,6 +18,9 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
 
 ## 最近版本的重點 {#highlights}
 
+- **TraceCut。** [[menu.tools > menu.tools.tracecut]] 開啟適用於切割繪圖機的工具：繪圖機輸出、切割線、排料和測量。請參閱 [TraceCut](../objects/tracecut.md)。
+- **鍵盤、手機和觸控筆。** 選單和清單可以用鍵盤操作。在 Android 手機上介面完整顯示在螢幕上，使用觸控筆時放在螢幕上的手不再誤畫；繪圖板的筆可在使用 Wayland 的 Linux 上運作。
+- **檔案。** .cdr 檔案開啟時保留定位點、主版頁面、漸層和變形；PDF 中的圖片以完整解析度匯入；JPEG 和 TIFF 可匯出為 CMYK。
 - **物件縮圖。** [[docker.objects]] 面板在每個物件的名稱旁顯示其縮小的
   圖形；在清單上按 Ctrl 捲動滾輪或拖曳底部的滑桿可調整大小。請參閱
   [組織物件與圖層](../objects/objects-and-layers.md#objects-docker)。

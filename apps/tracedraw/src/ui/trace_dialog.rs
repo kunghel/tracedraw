@@ -180,7 +180,7 @@ fn combo<T: PartialEq + Copy>(
     name: impl Fn(T) -> String,
 ) -> bool {
     let mut changed = false;
-    let resp = egui::ComboBox::from_id_salt(id)
+    let resp = crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(name(*value))
         .width(width)
         .show_ui(ui, |ui| {

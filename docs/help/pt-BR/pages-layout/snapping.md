@@ -13,7 +13,8 @@ fica fácil unir linhas e alinhar objetos sem dar zoom.
   [[menu.view.snap_document_grid]] (<kbd>Ctrl+Y</kbd>),
   [[menu.view.snap_baseline_grid]], [[menu.view.snap_guidelines]],
   [[menu.view.snap_objects]] (<kbd>Alt+Z</kbd>) e [[menu.view.snap_page]]. De
-  início, objetos, linhas-guia e a página estão ativados. A grade de linha de
+  início, linhas-guia e a página estão ativados e objetos, desativados; ativado,
+  o encaixe em objetos continua ativado. A grade de linha de
   base também funciona sozinha: só com ela ativada, nós e objetos se encaixam
   nas linhas dela.
 - [[menu.view.snap_off]] (<kbd>Alt+Q</kbd>) desativa todo o encaixe e o

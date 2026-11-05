@@ -175,7 +175,7 @@ pub fn param_stacked(
                 .min(options.len().saturating_sub(1));
             let draw = |ui: &mut Ui| {
                 ui.label(tr(&key));
-                egui::ComboBox::from_id_salt(("fx_choice", spec.name))
+                crate::ui::keynav::ComboBox::from_id_salt(("fx_choice", spec.name))
                     .selected_text(tr(&format!("fxo.{}", options[cur])))
                     .width(170.0)
                     .show_ui(ui, |ui| {
@@ -307,7 +307,7 @@ fn tone_curve_part(
     let mut style = curve_style(params, ch);
     ui.horizontal(|ui| {
         ui.label(tr("fxp.channel"));
-        egui::ComboBox::from_id_salt("tone_curve_channel")
+        crate::ui::keynav::ComboBox::from_id_salt("tone_curve_channel")
             .selected_text(tr(CURVE_CHANNELS[idx].1))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -322,7 +322,7 @@ fn tone_curve_part(
             ));
         ui.add_space(10.0);
         ui.label(tr("dialog.curve_style"));
-        egui::ComboBox::from_id_salt("tone_curve_style")
+        crate::ui::keynav::ComboBox::from_id_salt("tone_curve_style")
             .selected_text(tr(&format!("dialog.curve_style_{}", CURVE_STYLES[style])))
             .width(110.0)
             .show_ui(ui, |ui| {

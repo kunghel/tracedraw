@@ -303,6 +303,14 @@ pub enum Command {
         shape: ShapeId,
         data: Vec<(String, String)>,
     },
+    /// A bitmap's colour mode and the ink channels it prints from
+    /// ([`Shape::cmyk_bitmap`], [`Shape::picture_inks`]): a picture read
+    /// back from a CMYK file (#1834). Other kinds of object are refused.
+    SetPictureInks {
+        shape: ShapeId,
+        cmyk: bool,
+        inks: Option<Box<crate::picture_inks::PictureInks>>,
+    },
     /// Set the text in font family `from` in family `to` throughout the
     /// drawing: every span of every text and table cell, on every layer,
     /// in groups, clip frames and symbols (a missing font replaced for
@@ -505,6 +513,7 @@ impl Command {
             Command::SetWrapText { .. } => "Wrap Paragraph Text",
             Command::SetWrapStyle { .. } => "Wrap Style",
             Command::SetObjectData { .. } => "Object Data",
+            Command::SetPictureInks { .. } => "Edit Object",
             Command::ConvertColors { .. } => "Convert Colors",
             Command::ReplaceFontFamily { .. } => "Replace Font",
             Command::OrderRelative { in_front: true, .. } => "In Front Of",
@@ -1072,6 +1081,14 @@ impl Command {
             }
             Command::SetObjectData { shape, data } => {
                 any_mut(doc, *shape)?.data = data.clone();
+            }
+            Command::SetPictureInks { shape, cmyk, inks } => {
+                let s = any_mut(doc, *shape)?;
+                if !matches!(s.kind, ShapeKind::Bitmap { .. }) {
+                    return Err(Error::NotBitmap(*shape));
+                }
+                s.cmyk_bitmap = *cmyk;
+                s.picture_inks = inks.clone();
             }
             Command::ConvertColors { shapes, to, spots } => {
                 for id in shapes {
@@ -1982,6 +1999,67 @@ mod tests {
             })
             .unwrap();
         assert!(engine.document().comments.is_empty());
+    }
+
+    /// A picture read back from a CMYK file takes its colour mode and
+    /// its ink channels (#1834); undo puts them back; other objects are
+    /// refused.
+    #[test]
+    fn a_picture_takes_its_ink_channels() {
+        use crate::picture_inks::PictureInks;
+        let mut doc = Document::default();
+        let page = doc.pages[0].id;
+        let layer = doc.page(page).expect("page").layers[0].id;
+        let pic = doc.ids_mut().shape();
+        let path = doc.ids_mut().shape();
+        let mut eng = crate::Engine::new(doc);
+        let bitmap = Shape::new(
+            pic,
+            ShapeKind::Bitmap {
+                rect: crate::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: 1,
+                height_px: 1,
+                png: crate::SharedBytes::from(b"pixels".to_vec()),
+                fx: None,
+            },
+        );
+        eng.run(&Command::AddShape {
+            layer,
+            shape: bitmap,
+        })
+        .expect("added");
+        let curve = Shape::new(
+            path,
+            ShapeKind::Path {
+                path: BezPath::new(),
+                closed: false,
+            },
+        );
+        eng.run(&Command::AddShape {
+            layer,
+            shape: curve,
+        })
+        .expect("added");
+        let inks = PictureInks::cmyk(b"pixels", crate::SharedBytes::from(b"planes".to_vec()));
+        eng.run(&Command::SetPictureInks {
+            shape: pic,
+            cmyk: true,
+            inks: Some(Box::new(inks.clone())),
+        })
+        .expect("inks");
+        let s = eng.document().find_shape(pic).expect("picture");
+        assert!(s.cmyk_bitmap);
+        assert_eq!(s.picture_inks.as_deref(), Some(&inks));
+        eng.undo().expect("undo");
+        let s = eng.document().find_shape(pic).expect("picture");
+        assert!(!s.cmyk_bitmap && s.picture_inks.is_none());
+        assert!(eng
+            .run(&Command::SetPictureInks {
+                shape: path,
+                cmyk: true,
+                inks: None,
+            })
+            .is_err());
     }
 
     #[test]
@@ -3535,7 +3613,7 @@ mod tests {
         assert!(p.stroke.is_none());
         // Paragraph layout defaults reach paragraph text, not artistic text.
         doc.defaults.paragraph.columns = 3;
-        doc.defaults.paragraph.tabs = vec![10.0];
+        doc.defaults.paragraph.tabs = vec![crate::document::TabStop::left(10.0)];
         let mut p = Shape::new(crate::id::ShapeId(98), text(Some(Size::new(10.0, 10.0))));
         doc.defaults.apply_to(&mut p);
         let mut a = Shape::new(crate::id::ShapeId(97), text(None));
@@ -3544,7 +3622,7 @@ mod tests {
             ShapeKind::Text { para, .. } => (para.columns, para.tabs.clone()),
             _ => (0, Vec::new()),
         };
-        assert_eq!(cols(&p), (3, vec![10.0]));
+        assert_eq!(cols(&p), (3, vec![crate::document::TabStop::left(10.0)]));
         assert_eq!(cols(&a), (1, Vec::new()));
         // Older files have none: the defaults of a new drawing.
         let mut json: serde_json::Value = serde_json::from_str(&doc.to_json().unwrap()).unwrap();

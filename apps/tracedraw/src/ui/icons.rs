@@ -669,6 +669,10 @@ pub enum Action {
     Cut,
     Copy,
     Paste,
+    /// Delete the selection: a waste bin.
+    Delete,
+    /// Show or hide the dockers: a window with a panel at the right.
+    Dockers,
     Undo,
     Redo,
     Import,
@@ -1094,6 +1098,48 @@ pub fn draw_action(painter: &Painter, r: Rect, a: Action, color: Color32) {
                 ],
                 s,
             ));
+        }
+        Action::Delete => {
+            // A waste bin: the lid with its handle, the tapered body and
+            // three slats.
+            painter.line_segment([p(r, 2.0, 4.0), p(r, 14.0, 4.0)], s);
+            painter.add(epaint::PathShape::line(
+                vec![
+                    p(r, 6.0, 4.0),
+                    p(r, 6.5, 2.0),
+                    p(r, 9.5, 2.0),
+                    p(r, 10.0, 4.0),
+                ],
+                thin,
+            ));
+            painter.add(epaint::PathShape::closed_line(
+                vec![
+                    p(r, 3.5, 4.0),
+                    p(r, 12.5, 4.0),
+                    p(r, 11.5, 14.5),
+                    p(r, 4.5, 14.5),
+                ],
+                s,
+            ));
+            for (x0, x1) in [(6.0, 6.4), (8.0, 8.0), (10.0, 9.6)] {
+                painter.line_segment([p(r, x0, 6.5), p(r, x1, 12.5)], thin);
+            }
+        }
+        Action::Dockers => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(r, 1.5, 2.0), p(r, 14.5, 14.5)),
+                0.0,
+                s,
+                epaint::StrokeKind::Middle,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(p(r, 9.5, 2.0), p(r, 14.5, 14.5)),
+                0.0,
+                color,
+            );
+            for y in [5.0, 8.0, 11.0] {
+                painter.line_segment([p(r, 3.5, y), p(r, 7.5, y)], thin);
+            }
         }
         Action::Launch => {
             painter.rect_stroke(

@@ -172,6 +172,8 @@ pub struct Settings {
     #[serde(default)]
     pub bitmap_editor: String,
     pub last_dir: Option<PathBuf>,
+    /// Folders bookmarked in the Save Drawing dialog (#1391).
+    pub folder_bookmarks: Vec<PathBuf>,
     pub color: ColorPrefs,
     /// Show the Outline flyout in the toolbox (hidden by default).
     pub show_outline_flyout: bool,
@@ -322,6 +324,10 @@ pub struct Settings {
     /// collections.
     #[serde(default)]
     pub font_manager: crate::ui::font_manager::FontManagerPrefs,
+    /// TraceCut: shown or not (Options > General) and the tool picked
+    /// last.
+    #[serde(default)]
+    pub tracecut: crate::tracecut::TraceCutPrefs,
     #[serde(default)]
     pub hide_bbox_curve_tools: bool,
     /// Options > Display: the Pick tool selects and drags the nodes of a
@@ -362,6 +368,10 @@ pub struct Settings {
     /// many points.
     #[serde(default = "default_text_increment")]
     pub text_increment_pt: f64,
+    /// Options > Text > Paragraph Text: the distance between the default
+    /// tab stops of a paragraph with no stops of its own, mm (#1852).
+    #[serde(default = "default_tab_spacing")]
+    pub default_tab_mm: f64,
     /// Options > Tools > Pick: unfilled objects can be picked inside (on
     /// by default).
     #[serde(default = "default_true")]
@@ -753,7 +763,9 @@ pub fn effective_ui_size_with(s: &Settings, sys: crate::system_prefs::SystemPref
         1.0
     };
     let base = (crate::ui::interface_size(s.ui_size) * text).min(4.0);
-    if s.workspace == "touch" {
+    // Not on a phone: 1.4 times a 360 dp screen leaves too little room
+    // for any bar (#1301, #1691).
+    if s.workspace == "touch" && !crate::ui::phone::phone() {
         (base * TOUCH_SCALE).min(4.0)
     } else {
         base
@@ -774,6 +786,10 @@ fn default_precision() -> u32 {
 
 fn default_text_increment() -> f64 {
     1.0
+}
+
+fn default_tab_spacing() -> f64 {
+    tracedraw_core::DEFAULT_TAB_STEP
 }
 
 /// The view a drawing opens in (Options > Display, #1134).
@@ -1706,6 +1722,7 @@ impl Default for Settings {
             shortcuts: Vec::new(),
             bitmap_editor: String::new(),
             last_dir: None,
+            folder_bookmarks: Vec::new(),
             color: ColorPrefs::default(),
             show_outline_flyout: false,
             wheel_zooms: true,
@@ -1721,6 +1738,7 @@ impl Default for Settings {
             undo_levels: default_undo_levels(),
             show_tooltips: true,
             font_manager: Default::default(),
+            tracecut: Default::default(),
             hide_bbox_curve_tools: false,
             node_tracking: false,
             preview_page_border: true,
@@ -1733,6 +1751,7 @@ impl Default for Settings {
             clip_frame: ClipFramePrefs::default(),
             backup: BackupPrefs::default(),
             text_increment_pt: default_text_increment(),
+            default_tab_mm: default_tab_spacing(),
             treat_all_filled: true,
             focus_visibility: default_focus_visibility(),
             focus_double_click: true,
@@ -1871,12 +1890,13 @@ const WEB_KEY: &str = "tracedraw.settings";
 
 impl Settings {
     /// The preferences as TraceDraw comes, keeping what is history rather
-    /// than choice: the recent drawings, the last folder and the window's
-    /// size.
+    /// than choice: the recent drawings, the last folder, the bookmarked
+    /// folders and the window's size.
     pub fn reset_keeping_history(&self) -> Settings {
         Settings {
             recent_files: self.recent_files.clone(),
             last_dir: self.last_dir.clone(),
+            folder_bookmarks: self.folder_bookmarks.clone(),
             window_maximized: self.window_maximized,
             window_size: self.window_size,
             ..Settings::default()
@@ -2714,6 +2734,26 @@ mod tests {
     }
 
     /// Preferences as an older version saved them, migrated as at start.
+    /// A first start snaps to guidelines and the page but not to objects,
+    /// within 10 screen pixels (#1814); a choice saved before is kept,
+    /// either way, and the app takes it.
+    #[test]
+    fn new_installs_do_not_snap_to_objects_and_saved_choices_stay() {
+        let s = Settings::default();
+        assert!(!s.snap.objects, "snapping to objects starts off");
+        assert!(s.snap.guides && s.snap.page && !s.snap.off);
+        assert_eq!(s.snap.threshold_px, 10.0);
+        let on = migrated(r#"{"upgrades": 5, "snap": {"objects": true, "page": true}}"#);
+        assert!(on.snap.objects);
+        let old = migrated(r#"{"snap": {"objects": true, "page": false}}"#);
+        assert!(old.snap.objects && !old.snap.page);
+        let mut app = crate::app::App::headless();
+        app.apply_settings(Settings::default());
+        assert!(!app.snap.objects && app.snap.page && app.snap.guides);
+        app.apply_settings(on);
+        assert!(app.snap.objects);
+    }
+
     fn migrated(json: &str) -> Settings {
         let s: Settings = serde_json::from_str(json).expect("old preferences");
         s.upgrade()

@@ -7,7 +7,12 @@ der letzten Versionen.
 ## Neues im Programm sehen {#in-the-program}
 
 - Wählen Sie [[menu.help > menu.help.whats_new]], um die Seite mit den
-  Neuigkeiten des Begrüßungsbildschirms für diese Version zu öffnen.
+  Neuigkeiten des Begrüßungsbildschirms zu öffnen. Sie zeigt die letzten
+  zehn Versionen, die neueste zuerst, jede mit Datum und kurzem Titel. Ein
+  Klick auf eine Version zeigt eine kurze Zusammenfassung der Änderungen;
+  die neueste ist schon geöffnet. **Mehr erfahren?** unter einer
+  Zusammenfassung öffnet die Seite dieser Version auf GitHub mit der
+  vollständigen Liste der Änderungen.
 - Schalten Sie [[menu.help > menu.help.highlight_whats_new]] ein, um in den
   Menüs zu markieren, was in dieser Version neu ist: Ein kleiner Punkt
   erscheint am Ende jedes neuen Befehls, neben dem Pfeil eines Untermenüs, das
@@ -20,6 +25,16 @@ der letzten Versionen.
 
 ## Highlights der letzten Versionen {#highlights}
 
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] öffnet die Werkzeuge für
+  Schneideplotter: Plotterausgabe, Schnittlinien, Verschachtelung und Messen.
+  Siehe [TraceCut](../objects/tracecut.md).
+- **Tastatur, Telefone und Stifte.** Menüs und Listen lassen sich mit der
+  Tastatur bedienen. Auf Android-Telefonen passt die Oberfläche auf den
+  Bildschirm, und eine aufliegende Hand zeichnet nicht mehr, während ein Stift
+  benutzt wird; ein Tablettstift funktioniert unter Linux mit Wayland.
+- **Dateien.** .cdr-Dateien öffnen sich mit Tabstopps, Masterseiten, Verläufen
+  und Verzerrungen; Bilder aus PDF-Dateien kommen in voller Auflösung; JPEG
+  und TIFF werden in CMYK exportiert.
 - **Objektminiaturen.** Das Andockfenster [[docker.objects]] zeigt jedes
   Objekt verkleinert neben seinem Namen; Strg+Mausrad über der Liste oder der
   Schieberegler unten stellt die Größe ein. Siehe

@@ -23,7 +23,12 @@ With a QR code object selected, Properties shows a QR Code section first
   - Location: `geo:latitude,longitude`.
   Changing the kind keeps the fields both kinds share (the phone number
   from Phone number to SMS); the others start empty. A field is applied
-  when it loses the focus.
+  when it loses the focus. A kind whose fields make no content yet (Email
+  picked on a URL code: nothing carries over) stays picked, its fields
+  ready to fill in, with "Enter the text to encode." in red; the object
+  keeps its code, and nothing goes into the history, until the fields
+  make content, which makes the code of the new kind (#1845). Emptying
+  the fields works the same way.
 - Pixel fill and Background fill (any fill), Pixel outline (none at
   first), Pixel size (2.5 mm at first, 0.1 to 50 mm).
 - Validate: draws the code with its fills' brightness and reads it back
@@ -54,6 +59,9 @@ New objects encode `https://github.com/tracedraw/tracedraw`, black on white.
   content changes nothing.
 - Each kind writes the form above, and a code of every kind reads back;
   fields shared by name carry over.
+- Every kind can be picked from a new URL code and filled in field by
+  field; until its fields make content the object keeps its code with
+  no undo step (`every_kind_can_be_picked_and_filled_in`, #1845).
 - Validate reports grey on white and white on black as unreadable.
 - The settings survive `.tdraw`; a version 27 `.cdr` reads back the
   group of two shapes.

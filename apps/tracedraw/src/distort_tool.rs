@@ -272,6 +272,10 @@ pub struct DistortDrag {
     pub center: Point,
     /// Where the press was (page space).
     pub press: Point,
+    /// Where the end handle was at the press (page space; the press
+    /// point for a drag that makes a new distortion): Shift keeps the
+    /// end at its height, Ctrl at its distance from the centre (#1563).
+    pub end: Point,
     /// Half the object's larger side (page mm): Push and Pull's 100.
     pub reach: f64,
     pub grab: Grab,
@@ -284,6 +288,38 @@ pub struct DistortDrag {
     /// changed the drawing yet (one undo step for the whole drag).
     pub base: Option<Vec<Effect>>,
     pub begun: bool,
+}
+
+/// Where the end handle of a distortion goes for the pointer at `p`
+/// (page space), its line from `center`, the end at `end` when the drag
+/// began (#1563, #1793): with `shift` alone it moves only sideways, at
+/// the height it had; with `ctrl` alone it keeps its length and turns
+/// freely toward the pointer, all the way round (a line still of no
+/// length follows the pointer); with both it keeps to steps of the
+/// constrain angle `step` (degrees) about the centre, as far out as the
+/// pointer reaches along the step; with neither it is at the pointer.
+pub fn constrain_end(
+    center: Point,
+    end: Point,
+    p: Point,
+    ctrl: bool,
+    shift: bool,
+    step: f64,
+) -> Point {
+    match (ctrl, shift) {
+        (true, true) => crate::interaction::constrain_from(center, p, step),
+        (false, true) => Point::new(p.x, end.y),
+        (true, false) => {
+            let len = (end - center).hypot();
+            let to = p - center;
+            if len < 1e-9 || to.hypot() < 1e-9 {
+                p
+            } else {
+                center + to * (len / to.hypot())
+            }
+        }
+        (false, false) => p,
+    }
 }
 
 /// Where a drag left an object's handle line (#1442, #1263): the line is
@@ -791,6 +827,7 @@ impl App {
                 start: h.center,
                 center: h.center,
                 press: at,
+                end: h.end,
                 reach,
                 grab,
                 turned,
@@ -826,6 +863,7 @@ impl App {
             start: at,
             center: s.transform.inverse() * at,
             press: at,
+            end: at,
             reach,
             grab: Grab::Object,
             turned: 0.0,
@@ -913,19 +951,24 @@ impl App {
     }
 
     /// The pointer moved to `p` during a drag; a drag of the handle line
-    /// keeps its move horizontal or vertical with `ctrl`. With `ctrl` or
-    /// `shift` the end handle, and the line a drag on the object sets,
-    /// keep to steps of the constrain angle about the centre, as the
-    /// Shape tool's handles do (#1563).
+    /// keeps its move horizontal or vertical with `ctrl`. The end handle,
+    /// and the line a drag on the object sets, follow the keys (#1563,
+    /// #1793): `shift` moves it only sideways (it keeps its height),
+    /// `ctrl` keeps its length and turns it freely all the way round,
+    /// both keep it to steps of the constrain angle about the centre.
     pub fn drag_distort_to(&mut self, p: Point, ctrl: bool, shift: bool) {
         let Some(mut dd) = self.distort_drag.clone() else {
             return;
         };
-        // The pointer the handle follows: on a step of the constrain angle
-        // from the centre (horizontal and vertical among them), as far
-        // out as the pointer reaches along it.
-        let p = if (ctrl || shift) && matches!(dd.grab, Grab::End | Grab::Object) {
-            crate::interaction::constrain_from(dd.start, p, self.settings.constrain_angle)
+        let p = if matches!(dd.grab, Grab::End | Grab::Object) {
+            constrain_end(
+                dd.start,
+                dd.end,
+                p,
+                ctrl,
+                shift,
+                self.settings.constrain_angle,
+            )
         } else {
             p
         };

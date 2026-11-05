@@ -280,7 +280,7 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
         } else {
             crate::ui::propbar::outline_width_number(st.stroke.width, u)
         };
-        egui::ComboBox::from_id_salt("outline_pen_width")
+        crate::ui::keynav::ComboBox::from_id_salt("outline_pen_width")
             .selected_text(shown)
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -327,7 +327,7 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
             .into_iter()
             .chain(lib.dashes.iter().cloned())
             .collect();
-        let resp = egui::ComboBox::from_id_salt("outline_pen_style")
+        let resp = crate::ui::keynav::ComboBox::from_id_salt("outline_pen_style")
             .selected_text("")
             .width(170.0)
             .show_ui(ui, |ui| {

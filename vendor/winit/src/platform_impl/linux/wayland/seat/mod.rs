@@ -61,6 +61,12 @@ pub struct WinitSeatState {
     /// TraceDraw: the seat's data device, for files dragged over a window
     /// (#1142).
     pub(crate) data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
+
+    /// TraceDraw: the seat's tablet seat, for a graphics tablet's pen
+    /// (#1841).
+    pub(crate) tablet_seat: Option<
+        sctk::reexports::protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2,
+    >,
 }
 
 impl WinitSeatState {
@@ -213,6 +219,8 @@ impl SeatHandler for WinitState {
         // TraceDraw: files dragged over a window (#1142).
         seat_state.data_device =
             self.data_device_manager.as_ref().map(|m| m.get_data_device(queue_handle, &seat));
+        // TraceDraw: a graphics tablet's pen (#1841).
+        seat_state.tablet_seat = self.tablet.as_ref().map(|t| t.tablet_seat(&seat, queue_handle));
         self.seats.insert(seat.id(), seat_state);
     }
 
@@ -222,7 +230,10 @@ impl SeatHandler for WinitState {
         _queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
     ) {
-        let _ = self.seats.remove(&seat.id());
+        // TraceDraw: the seat's tablet seat goes with it (#1841).
+        if let Some(tablet_seat) = self.seats.remove(&seat.id()).and_then(|s| s.tablet_seat) {
+            tablet_seat.destroy();
+        }
         self.on_keyboard_destroy(&seat.id());
     }
 }

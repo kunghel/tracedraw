@@ -438,6 +438,7 @@ fn nav_button(ui: &mut Ui, g: Glyph, tip: &str) -> bool {
 /// wheel over them slides them one tab a notch (#794).
 fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
     const SLANT: f32 = 5.0;
+    app.page_tab_rects.clear();
     let names: Vec<String> = app.doc().pages.iter().map(|p| p.name.clone()).collect();
     let current = app.page_index();
     let n = names.len();
@@ -508,6 +509,9 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         let resp = ui
             .interact(r, egui::Id::new(("page_tab", i)), Sense::click())
             .rich_tip(format!("{name}\n{}", tr("view.page_tab_desc")));
+        // A selection moved onto the tab goes to its page (#1346).
+        app.page_tab_rects.push((i, r.intersect(area)));
+        let drop_target = app.page_tab_hover.is_some_and(|(j, _)| j == i);
         let selected = i == current;
         let slant = SLANT;
         let shape = vec![
@@ -518,7 +522,7 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         ];
         let fill = if selected {
             crate::theme::Tokens::field()
-        } else if resp.hovered() {
+        } else if resp.hovered() || drop_target {
             Tokens::tool_hover()
         } else {
             Tokens::panel_dark()
@@ -557,6 +561,13 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             apply_page_tab_action(app, a);
         }
         x += w - slant;
+    }
+    // A moved selection resting on another page's tab goes there.
+    let (time, ctrl) = ui.input(|i| (i.time, i.modifiers.command || i.modifiers.ctrl));
+    app.track_page_tab_drag(time, ctrl);
+    if app.page_tab_hover.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(0.1));
     }
     if let Some(i) = clicked {
         app.goto_page(i);

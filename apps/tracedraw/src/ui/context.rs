@@ -59,7 +59,9 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
             let on_guide = app.selection.is_empty()
                 && matches!(app.tool, Tool::Pick | Tool::FreeformPick)
                 && app.guide_at(p).is_some();
-            if let Some(locked) = app.context_locked {
+            if let Some(hit) = app.tab_ruler_menu {
+                tab_ruler_menu(app, ui, hit, &mut close);
+            } else if let Some(locked) = app.context_locked {
                 locked_menu(app, ui, locked, &mut close);
             } else if app.editing_text() {
                 text_edit_menu(app, ui, &mut close);
@@ -78,9 +80,32 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
         egui::Popup::close_id(&ctx, id);
         app.context_menu = None;
         app.context_locked = None;
+        app.tab_ruler_menu = None;
         ctx.data_mut(|d| d.remove::<egui::Pos2>(pos_id));
     }
     let _ = response;
+}
+
+/// Right-click on the tab ruler (#1852): the four kinds of stop, the one
+/// under the pointer checked (a pick changes it, or with no stop there
+/// adds one of that kind), and Remove tab on a stop.
+fn tab_ruler_menu(app: &mut App, ui: &mut Ui, hit: crate::tab_ruler::RulerHit, close: &mut bool) {
+    let current = hit
+        .stop
+        .and_then(|i| app.tab_ruler().and_then(|r| r.stops.get(i).map(|s| s.kind)));
+    for kind in tracedraw_core::TabKind::ALL {
+        let key = crate::ui::dialogs::tab_kind_key(kind);
+        if radio(ui, key, "", current == Some(kind)) {
+            *close = true;
+            app.tab_ruler_pick(hit, Some(kind));
+        }
+    }
+    if hit.stop.is_some() {
+        sep(ui);
+        if ci(ui, close, "dialog.remove_tab", "", true) {
+            app.tab_ruler_pick(hit, None);
+        }
+    }
 }
 
 /// Right-click on a guideline: delete, lock or unlock, and the Guidelines
@@ -379,7 +404,7 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
             app.reverse_order();
         }
     });
-    if many && ci(ui, close, "menu.object.group_group", "Ctrl+G", true) {
+    if app.can_group() && ci(ui, close, "menu.object.group_group", "Ctrl+G", true) {
         app.group_selection();
     }
     if is_group {

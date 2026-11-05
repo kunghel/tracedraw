@@ -382,6 +382,8 @@ impl OptionsSnapshot {
         }
         crate::i18n::set_language(&self.language);
         app.settings = self.settings;
+        // The default tab spacing acts at once while the dialog is open.
+        tracedraw_core::set_default_tab_step(app.settings.default_tab_mm);
         // The workspace first: choosing one sets the bars, which the
         // snapshot then puts back as they were.
         if app.workspace != self.workspace {
@@ -731,7 +733,7 @@ pub(crate) fn combo<T: Copy + PartialEq>(
     width: f32,
 ) -> bool {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(label(*value))
         .width(width)
         .show_ui(ui, |ui| {
@@ -784,6 +786,8 @@ fn general_page(app: &mut App, ui: &mut Ui) {
             ui.checkbox(&mut app.settings.show_splash, tr("options.show_splash"))
                 .rich_tip(crate::ui::tips::keyed("options.show_splash"));
         }
+        ui.checkbox(&mut app.settings.tracecut.show, tr("options.show_tracecut"))
+            .rich_tip(crate::ui::tips::keyed("options.show_tracecut"));
         #[cfg(not(target_arch = "wasm32"))]
         hardware_acceleration(app, ui);
     });
@@ -827,7 +831,7 @@ fn hardware_acceleration(app: &mut App, ui: &mut Ui) {
             chosen.clone()
         };
         ui.add_enabled_ui(on, |ui| {
-            egui::ComboBox::from_id_salt("gpu_adapter")
+            crate::ui::keynav::ComboBox::from_id_salt("gpu_adapter")
                 .width(260.0)
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
@@ -1927,7 +1931,7 @@ fn text_display_tab(app: &mut App, ui: &mut Ui) {
         let u = app.text_units();
         let tip = crate::ui::tips::pair("options.text_units", "options.text_units_tip");
         crate::ui::tips::tip_over(ui, tip, |ui| {
-            egui::ComboBox::from_id_salt("options_text_units")
+            crate::ui::keynav::ComboBox::from_id_salt("options_text_units")
                 .selected_text(u.label())
                 .width(160.0)
                 .show_ui(ui, |ui| {
@@ -1997,6 +2001,31 @@ fn paragraph_text_tab(app: &mut App, ui: &mut Ui) {
             "menu.text.use_hyphenation",
             "menu.text.use_hyphenation_tip",
         ));
+    // Where a tab goes in a paragraph with no stops of its own (#1852).
+    grid("default_tab_spacing").show(ui, |ui| {
+        row_label(ui, &tr("options.default_tab_spacing"));
+        let u = app.units;
+        let mut shown = u.from_mm(app.settings.default_tab_mm);
+        if ui
+            .add(
+                crate::ui::field::NumField::new(&mut shown)
+                    .range(u.from_mm(1.0)..=u.from_mm(100.0))
+                    .max_decimals(3)
+                    .unit_mm(u.mm())
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "options.default_tab_spacing",
+                "options.default_tab_spacing_tip",
+            ))
+            .changed()
+        {
+            app.settings.default_tab_mm = u.to_mm(shown).clamp(1.0, 100.0);
+            tracedraw_core::set_default_tab_step(app.settings.default_tab_mm);
+            app.raster.borrow_mut().invalidate();
+        }
+        ui.end_row();
+    });
     // The pattern files, read when the tab shows a new folder.
     type Found = (
         Option<std::path::PathBuf>,
@@ -2026,7 +2055,7 @@ fn paragraph_text_tab(app: &mut App, ui: &mut Ui) {
     };
     grid("hyphenation_patterns").show(ui, |ui| {
         row_label(ui, &tr("options.hyphenation_patterns"));
-        egui::ComboBox::from_id_salt("hyphenation_patterns_combo")
+        crate::ui::keynav::ComboBox::from_id_salt("hyphenation_patterns_combo")
             .width(220.0)
             .selected_text(shown(&sp.hyphenation_patterns))
             .show_ui(ui, |ui| {
@@ -2103,7 +2132,7 @@ fn dictionary_download_row(app: &mut App, ui: &mut Ui) {
         let shown = dl::entry(&code)
             .map(|e| e.name.to_string())
             .unwrap_or_else(|| code.clone());
-        egui::ComboBox::from_id_salt("dictionary_download")
+        crate::ui::keynav::ComboBox::from_id_salt("dictionary_download")
             .selected_text(shown)
             .width(200.0)
             .show_ui(ui, |ui| {
@@ -2393,7 +2422,7 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
 /// A quotation mark list (one of [`crate::autocorrect::QUOTE_CHOICES`]).
 fn quote_combo(ui: &mut Ui, id: &str, tip: String, value: &mut char) -> bool {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    crate::ui::keynav::ComboBox::from_id_salt(id)
         .width(48.0)
         .selected_text(value.to_string())
         .show_ui(ui, |ui| {
@@ -2441,7 +2470,7 @@ fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
             .map(|(_, name)| name.to_string())
             .unwrap_or_else(|| tr("autocorrect.interface_language"));
         let before = p.quote_language.clone();
-        egui::ComboBox::from_id_salt("autocorrect_quote_language")
+        crate::ui::keynav::ComboBox::from_id_salt("autocorrect_quote_language")
             .width(220.0)
             .selected_text(shown)
             .show_ui(ui, |ui| {
@@ -2771,7 +2800,7 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
         let current = crate::theme::Theme::from_id(&app.settings.theme);
         let tip = crate::ui::tips::pair("options.theme", "options.theme_tip");
         crate::ui::tips::tip_over(ui, tip, |ui| {
-            egui::ComboBox::from_id_salt("ui_theme")
+            crate::ui::keynav::ComboBox::from_id_salt("ui_theme")
                 .selected_text(tr(current.key()))
                 .width(170.0)
                 .show_ui(ui, |ui| {
@@ -3195,7 +3224,7 @@ fn commands_page(app: &mut App, ui: &mut Ui) {
     };
     ui.horizontal(|ui| {
         let current = app.shortcut_editor.category.clone();
-        egui::ComboBox::from_id_salt("command_category")
+        crate::ui::keynav::ComboBox::from_id_salt("command_category")
             .selected_text(category_name(current.as_deref()))
             .width(LIST_W - 8.0)
             .show_ui(ui, |ui| {
@@ -4086,7 +4115,7 @@ fn dimension_page(app: &mut App, ui: &mut Ui) {
     grid("dimension").show(ui, |ui| {
         row_label(ui, &tr("dimension.precision"));
         let mut precision = style.precision.min(6);
-        egui::ComboBox::from_id_salt("options_dimension_precision")
+        crate::ui::keynav::ComboBox::from_id_salt("options_dimension_precision")
             .selected_text(crate::ui::dimension_bar::precision_sample(precision))
             .width(120.0)
             .show_ui(ui, |ui| {
@@ -4109,7 +4138,7 @@ fn dimension_page(app: &mut App, ui: &mut Ui) {
             .find(|(id, _)| *id == style.units)
             .map(|(_, l)| l.clone())
             .unwrap_or_default();
-        egui::ComboBox::from_id_salt("options_dimension_units")
+        crate::ui::keynav::ComboBox::from_id_salt("options_dimension_units")
             .selected_text(shown)
             .width(120.0)
             .show_ui(ui, |ui| {
@@ -4300,6 +4329,16 @@ fn curves_page(app: &mut App, ui: &mut Ui) {
                 "options.pen_pressure_tip",
             ));
         ui.end_row();
+        // Palm rejection: Android tells a pen from a finger (#1832).
+        if crate::files::ANDROID {
+            ui.label("");
+            ui.checkbox(&mut c.pen_ignores_hand, tr("options.pen_ignores_hand"))
+                .rich_tip(crate::ui::tips::pair(
+                    "options.pen_ignores_hand",
+                    "options.pen_ignores_hand_tip",
+                ));
+            ui.end_row();
+        }
         row_label(ui, &tr("options.constrain_key"));
         crate::ui::tips::tip_over(
             ui,
@@ -4373,7 +4412,7 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
         } else {
             name.to_string()
         };
-        egui::ComboBox::from_id_salt("opt_lang")
+        crate::ui::keynav::ComboBox::from_id_salt("opt_lang")
             .selected_text(shown)
             .width(200.0)
             .show_ui(ui, |ui| {
@@ -5016,8 +5055,18 @@ mod tests {
     #[test]
     fn no_two_default_commands_share_a_shortcut() {
         let app = app_with_commands();
+        let shared = shared_default_shortcuts(&app);
+        assert!(
+            shared.is_empty(),
+            "shared shortcuts:\n{}",
+            shared.join("\n")
+        );
+    }
+
+    /// The built-in keys two commands share, past the documented split.
+    fn shared_default_shortcuts(app: &App) -> Vec<String> {
         let mut holders: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for c in command_items(&app, None, "") {
+        for c in command_items(app, None, "") {
             if c.built_in.is_empty() {
                 continue;
             }
@@ -5062,16 +5111,145 @@ mod tests {
         let documented_split = |keys: &str, ids: &[String]| {
             keys == "E" && ids == ["menu.object.align_centers_h", "roughen"]
         };
-        let shared: Vec<String> = holders
+        holders
             .iter()
             .filter(|(keys, ids)| ids.len() > 1 && !documented_split(keys, ids))
             .map(|(keys, ids)| format!("{keys}: {}", ids.join(", ")))
+            .collect()
+    }
+
+    /// The built-in keys of every menu command, tool and panel, and the
+    /// Ctrl keys the canvas (`pressed(Key::X, cmd)` in `interaction.rs`)
+    /// and the text being typed (`Key::X if ctrl` in `text_editing.rs`)
+    /// check themselves, each as the build shows it
+    /// (`shortcuts::mac_shown`): (holder, keys).
+    fn default_keys_shown(app: &App) -> Vec<(String, String)> {
+        use crate::shortcuts::mac_shown;
+        let mut out: Vec<(String, String)> = command_items(app, None, "")
+            .into_iter()
+            .filter(|c| !c.built_in.is_empty())
+            .map(|c| (c.id, c.built_in))
             .collect();
-        assert!(
-            shared.is_empty(),
-            "shared shortcuts:\n{}",
-            shared.join("\n")
+        for tab in crate::app::DockerTab::ALL {
+            if !tab.shortcut().is_empty() {
+                out.push((format!("panel {tab:?}"), mac_shown(tab.shortcut().into())));
+            }
+        }
+        let ident = |k: &str| {
+            let k: String = k
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            k.strip_prefix("Num").map(str::to_string).unwrap_or(k)
+        };
+        for part in include_str!("../interaction.rs")
+            .split("pressed(Key::")
+            .skip(1)
+        {
+            let Some((k, rest)) = part.split_once(',') else {
+                continue;
+            };
+            let Some((m, _)) = rest.split_once(')') else {
+                continue;
+            };
+            if !(m.contains("cmd") || m.contains("COMMAND")) {
+                continue;
+            }
+            let mut text = "Ctrl+".to_string();
+            if m.contains("ALT") {
+                text.push_str("Alt+");
+            }
+            if m.contains("SHIFT") {
+                text.push_str("Shift+");
+            }
+            text.push_str(&ident(k.trim()));
+            out.push(("canvas".into(), mac_shown(text)));
+        }
+        for part in include_str!("../text_editing.rs").split("Key::").skip(1) {
+            let Some((head, _)) = part.split_once("=>") else {
+                continue;
+            };
+            let Some((k, cond)) = head.split_once(" if ") else {
+                continue;
+            };
+            if !cond.trim_start().starts_with("ctrl") || k.contains(char::is_whitespace) {
+                continue;
+            }
+            let text = if cond.contains("!shift") || !cond.contains("shift") {
+                format!("Ctrl+{}", ident(k))
+            } else {
+                format!("Ctrl+Shift+{}", ident(k))
+            };
+            out.push(("typing".into(), mac_shown(text)));
+        }
+        out
+    }
+
+    /// #1409: in the macOS desktop app no built-in key is a Command key
+    /// macOS keeps for itself (Quit, Log Out, Hide, Minimize, the
+    /// application switcher, Spotlight, Force Quit, the screenshots): the
+    /// commands that have one built in (Convert to Curves' Command+Q)
+    /// take the key of `shortcuts::MAC_KEYS` there, and the menus and
+    /// the Commands page show it. File > Exit alone shows Command+Q, the
+    /// system's own Quit. Each alternative is bound to nothing else, and
+    /// still no two commands share a key there.
+    #[test]
+    fn no_default_shortcut_is_a_macos_system_key() {
+        use crate::shortcuts::{mac_system_key, same, MAC_KEYS, MAC_QUIT};
+        crate::shortcuts::set_mac_keys_for_test(false);
+        let other = default_keys_shown(&app_with_commands());
+        assert!(other
+            .iter()
+            .any(|(id, k)| id == "menu.object.convert_to_curves" && k == "Ctrl+Q"));
+        crate::shortcuts::set_mac_keys_for_test(true);
+        let app = app_with_commands();
+        let mac = default_keys_shown(&app);
+        let taken: Vec<String> = mac
+            .iter()
+            .filter(|(id, k)| mac_system_key(k) && !(id == "menu.file.exit" && k == MAC_QUIT))
+            .map(|(id, k)| format!("{k}: {id}"))
+            .collect();
+        assert!(taken.is_empty(), "keys macOS keeps:\n{}", taken.join("\n"));
+        for (id, k) in [
+            ("menu.object.convert_to_curves", "Alt+Shift+C"),
+            ("menu.object.convert_outline_to_object", "Alt+Shift+Q"),
+            ("menu.table.merge_cells", "Ctrl+Shift+M"),
+            ("menu.file.exit", "Ctrl+Q"),
+            ("canvas", "Ctrl+Shift+Space"),
+            ("typing", "Ctrl+Shift+H"),
+        ] {
+            assert!(mac.iter().any(|(i, s)| i == id && s == k), "{id}: {k}");
+        }
+        // The menus and context menus show the same keys there.
+        crate::ui::menus::invoke::set_bindings(&[]);
+        assert_eq!(
+            crate::ui::menus::invoke::shown_shortcut("menu.object.convert_to_curves", "Ctrl+Q"),
+            "Alt+Shift+C"
         );
+        assert_eq!(
+            crate::ui::menus::invoke::shown_shortcut("menu.file.exit", "Alt+F4"),
+            "Ctrl+Q"
+        );
+        // An alternative is no key of the other systems' either.
+        for (k, alt) in MAC_KEYS {
+            assert!(!mac_system_key(alt), "{alt}");
+            assert!(
+                !other.iter().any(|(_, o)| same(o, alt)),
+                "{alt} (for {k}) is used"
+            );
+        }
+        // No two commands share a key in the macOS app.
+        assert_eq!(shared_default_shortcuts(&app), Vec::<String>::new());
+        // A Command key macOS keeps cannot be given as a shortcut there.
+        assert!(!crate::shortcuts::allowed(
+            egui::Modifiers::COMMAND,
+            egui::Key::H
+        ));
+        crate::shortcuts::set_mac_keys_for_test(false);
+        assert!(crate::shortcuts::allowed(
+            egui::Modifiers::COMMAND,
+            egui::Key::H
+        ));
     }
 
     /// A shortcut given to a command is taken from the command or tool
@@ -5358,6 +5536,61 @@ mod tests {
             "drawing changed a setting"
         );
         assert_eq!(app.settings.recent_font_count, 5);
+    }
+
+    /// Options > Text > Paragraph Text shows Default tab spacing, 12.7 mm
+    /// unless set; it is saved with the other settings (older settings
+    /// files without it give 12.7 mm) and given to the text engine when
+    /// the settings are applied (#1852).
+    #[test]
+    fn the_default_tab_spacing_is_a_saved_setting() {
+        let app = App::headless();
+        assert_eq!(app.settings.default_tab_mm, 12.7);
+        let mut s = app.settings.clone();
+        s.default_tab_mm = 8.0;
+        let json = serde_json::to_string(&s).expect("saved");
+        let back: crate::settings::Settings = serde_json::from_str(&json).expect("read");
+        assert_eq!(back.default_tab_mm, 8.0);
+        let mut v: serde_json::Value = serde_json::from_str(&json).expect("json");
+        v.as_object_mut().expect("object").remove("default_tab_mm");
+        let old: crate::settings::Settings = serde_json::from_value(v).expect("old file");
+        assert_eq!(old.default_tab_mm, 12.7);
+        // Its row on the Paragraph Text tab.
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.options_page = OptionsPage::Text;
+        app.options_text_tab = 1;
+        let label = tr("options.default_tab_spacing");
+        let mut seen = false;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let mut close = false;
+                options_dialog(&mut app, ui.ctx(), &mut close);
+            });
+            out.textures_delta.clear();
+            seen = out.shapes.iter().any(|c| {
+                fn has(s: &egui::Shape, t: &str) -> bool {
+                    match s {
+                        egui::Shape::Text(x) => x.galley.text() == t,
+                        egui::Shape::Vec(v) => v.iter().any(|s| has(s, t)),
+                        _ => false,
+                    }
+                }
+                has(&c.shape, &label)
+            });
+        }
+        assert!(seen, "the setting's row is drawn");
+        // Applied with the settings (at its default, so that tests laying
+        // out text at the same time see the spacing they expect).
+        app.apply_runtime_settings();
+        assert_eq!(tracedraw_core::default_tab_step(), 12.7);
     }
 
     /// Text > Proofing > Autocorrect opens the Autocorrect tab.
