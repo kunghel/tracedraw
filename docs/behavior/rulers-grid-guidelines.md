@@ -126,9 +126,24 @@ stand for a distance in the world (`drawing_scale.rs`):
   page has go once on the master page's guides layer, as the other
   program's files keep theirs, and each page's others on its own guides
   layer (before version 14 on its entry for the master's guides layer);
-  opening the file puts the master page's guidelines on every page. The
-  colour, style and lock of a guideline are not written there (they
-  come back in the default colour, dashed and unlocked).
+  opening the file makes the master page's guidelines the drawing's
+  master guidelines (below). The colour, style and lock of a guideline
+  are not written there (they come back in the default colour, dashed
+  and unlocked).
+- Master guidelines (#1928): the drawing has guidelines of its own that
+  every page shows, beside each page's own. The Objects docker lists
+  them as "Guides (all pages)" under the Master Page and each page's own
+  as "Guides" under the page. A click on either row chooses the
+  guidelines edited (the row is highlighted): new guidelines, from the
+  rulers, the Guidelines panel or presets, go there; only those are
+  picked, moved, locked and deleted, the others are drawn as they are
+  and still snapped to. The padlock of a row locks or unlocks all of its
+  guidelines, its eye shows or hides all guidelines. Each change is one
+  undo step (`Command::SetMasterGuides`). In `.tdraw` files they are
+  `master_guides`; in `.cdr` files they go on the master page's guides
+  layer with the guidelines every page has (on each page's own layer
+  when the pages differ in size).
+  Test: `guides::tests::master_guidelines_are_set_once_for_every_page`.
 - Pick tool: a click selects a guideline (Shift adds or removes); a press
   and drag moves it, snapping to the grid, the page and objects; dropping
   it outside the drawing window deletes it. The move is one undo step.

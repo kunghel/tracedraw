@@ -5,11 +5,15 @@ use std::{ffi::c_void, ptr};
 use crate::utils::Lazy;
 use windows_sys::core::PCSTR;
 use windows_sys::Win32::Foundation::{BOOL, HWND, NTSTATUS, S_OK};
+use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTA};
 use windows_sys::Win32::UI::Controls::SetWindowTheme;
-use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoA, SPI_GETHIGHCONTRAST};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    IsWindowVisible, SetWindowPos, SystemParametersInfoA, SPI_GETHIGHCONTRAST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+};
 
 use crate::window::Theme;
 
@@ -72,12 +76,59 @@ pub fn try_theme(hwnd: HWND, preferred_theme: Option<Theme>) -> Theme {
 
         let status = unsafe { SetWindowTheme(hwnd, theme_name, ptr::null()) };
 
-        if status == S_OK && set_dark_mode_for_window(hwnd, is_dark_mode) {
+        // TraceDraw: the title bar follows through the documented DWM
+        // attribute as well, which Windows 11 and later Windows 10 builds
+        // read for the caption; the composition attribute below alone
+        // left it light (#1920).
+        let caption = set_immersive_dark_mode(hwnd, is_dark_mode);
+        let composition = status == S_OK && set_dark_mode_for_window(hwnd, is_dark_mode);
+        if caption || composition {
             return theme;
         }
     }
 
     Theme::Light
+}
+
+/// TraceDraw: `DWMWA_USE_IMMERSIVE_DARK_MODE` (20 from Windows 10 build
+/// 18985, 19 before it) on `hwnd`, then the frame redrawn so the title bar
+/// changes at once rather than at the next activation. Whether Windows
+/// took it.
+fn set_immersive_dark_mode(hwnd: HWND, is_dark_mode: bool) -> bool {
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_18985: u32 = 19;
+    let attribute = match *WIN10_BUILD_VERSION {
+        Some(v) if v < 18985 => DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_18985,
+        _ => DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+    let value = BOOL::from(is_dark_mode);
+    let status = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            &value as *const BOOL as *const c_void,
+            std::mem::size_of::<BOOL>() as u32,
+        )
+    };
+    if status != S_OK {
+        return false;
+    }
+    // Only a window on show is redrawn (not one still being made).
+    if unsafe { IsWindowVisible(hwnd) } == 0 {
+        return true;
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    true
 }
 
 fn set_dark_mode_for_window(hwnd: HWND, is_dark_mode: bool) -> bool {

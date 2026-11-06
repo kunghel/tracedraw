@@ -98,6 +98,7 @@ eigen sneltoetsen tonen; zie [Aanpassingsopties](../customize/customization.md#c
 | [[menu.view.pixel_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.baseline_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.rulers]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
+| [[menu.view.scrollbars]] | [The workspace](../get-started/workspace.md#drawing-window) |
 | [[menu.view.guidelines]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.alignment_guides]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.dynamic_guides]] | [Snapping](../pages-layout/snapping.md) |

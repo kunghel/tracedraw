@@ -34,6 +34,13 @@ rulers:
   also closes.
 - The New tab after the last one (a grey plus on a 26 px square) runs
   File > New.
+- More tabs than the strip is wide: the strip slides as an overflowing
+  bar does (`toolbars.md`), with a « button at its start and a » button
+  at its end (each slides it by whole tabs) and the mouse wheel over it.
+  The active tab is slid into view whenever another drawing becomes
+  active (a new or opened drawing, the Window menu), so the
+  tab of the drawing shown is always on the strip (#1908). Check:
+  `ui::tabs::tests::tabs_past_the_window_edge_can_be_reached`.
 
 Each drawing keeps its own pages, objects, undo history, selection, view
 (zoom and scroll), file, page number settings and drawing units.

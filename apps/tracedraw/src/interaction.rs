@@ -297,7 +297,7 @@ impl App {
         if self.focus_shape_on_page().is_some() {
             return None;
         }
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         self.page_layers()
             .into_iter()
             .rev()
@@ -316,7 +316,7 @@ impl App {
         if self.focus_shape_on_page().is_some() {
             return self.hit_test(p);
         }
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         self.page_layers()
             .into_iter()
             .rev()
@@ -333,7 +333,7 @@ impl App {
     pub fn leaf_to_read(&self, p: Point) -> Option<tracedraw_core::Shape> {
         let id = self.hit_test_to_read(p)?;
         let (_, s) = self.doc().shape(id).ok()?;
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         Some(self.leaf_at(s, p, tol).unwrap_or_else(|| s.clone()))
     }
 
@@ -364,9 +364,15 @@ impl App {
         }
     }
 
+    /// How far from an object's outline a click still picks it, page
+    /// units: Options > Nodes and Handles, Object click distance (#1679).
+    pub fn object_pick_tol(&self) -> f64 {
+        self.settings.nodes.object_pick_px() / self.view.zoom.max(1e-6) as f64
+    }
+
     /// The topmost object at `p` that `skip` does not rule out.
     pub fn hit_test_where(&self, p: Point, skip: impl Fn(ShapeId) -> bool) -> Option<ShapeId> {
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         // Focus mode: only the parts of the object in focus (or itself).
         if let Some(f) = self.focus_shape_on_page() {
             return match &f.kind {
@@ -702,7 +708,7 @@ impl App {
         let Some(top) = self.pick_at(p) else {
             return Vec::new();
         };
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         let mut chain = vec![top];
         let Ok((_, s)) = self.doc().shape(top) else {
             return chain;
@@ -761,7 +767,7 @@ impl App {
     /// `deep` the innermost objects inside groups (Alt+click digs through
     /// these, Ctrl+Alt+click through the deep ones).
     pub fn hits_at(&self, p: Point, deep: bool) -> Vec<ShapeId> {
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.object_pick_tol();
         let mut out = Vec::new();
         fn leaves(
             app: &App,
@@ -1255,9 +1261,12 @@ impl App {
         // transform goes on with the latest pointer position.
         // A Pen or Bezier handle pulled out of the drawing window goes on
         // following the pointer, and its release ends it there (#1014).
+        // A shape being drawn after a middle-button pan: egui counts no
+        // drag of the held left button any more and hovers nothing (#1923).
         let hover = response.hover_pos().or_else(|| {
             let held = response.ctx.input(|i| i.pointer.primary_down());
-            if (self.transforming() && held) || self.curve_drag_running(response) {
+            let boxing = matches!(self.drag, Drag::Box { .. });
+            if ((self.transforming() || boxing) && held) || self.curve_drag_running(response) {
                 self.pointer_screen
             } else {
                 None
@@ -1295,7 +1304,8 @@ impl App {
         }
         let Some(p) = pointer else {
             let up = !response.ctx.input(|i| i.pointer.primary_down());
-            let released = self.transforming() && up;
+            let boxing = matches!(self.drag, Drag::Box { .. });
+            let released = (self.transforming() || boxing) && up;
             if response.drag_stopped() || released {
                 self.end_drag();
             }
@@ -1317,9 +1327,23 @@ impl App {
             }
         }
 
-        // Middle button always pans.
+        // Middle button always pans. A shape being drawn with the left
+        // button held follows the pointer over the moving page (#1923).
         if response.dragged_by(PointerButton::Middle) {
             self.view.pan(response.drag_delta());
+            if matches!(self.drag, Drag::Box { .. })
+                && response.ctx.input(|i| i.pointer.primary_down())
+            {
+                if let Some(s) = response.hover_pos() {
+                    let now = self.snap_point(self.view.to_page(s));
+                    self.box_follow(now, mods);
+                }
+            }
+            return;
+        }
+        // File > Import's file waiting for a click, a drag or Space to
+        // place it (#1936).
+        if self.import_placement_input(response, p) {
             return;
         }
         // A right click during a move, scale, rotation or skew: the change
@@ -2197,6 +2221,29 @@ impl App {
     }
 
     fn text_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
+        // A frame's flow tabs link frames with the Text tool as with the
+        // Pick tool: a click on one, then a click where the text flows,
+        // or a drag from it there (#1914).
+        if response.clicked_by(PointerButton::Primary)
+            || response.drag_started_by(PointerButton::Primary)
+        {
+            let screen = self.view.to_screen(p);
+            let from_tab = response.drag_started_by(PointerButton::Primary);
+            let tab = self
+                .flow_tab_at(screen)
+                .map(|id| (id, false))
+                .or_else(|| self.flow_in_tab_at(screen).map(|id| (id, true)));
+            if let Some((id, incoming)) = tab {
+                self.finish_text();
+                if incoming {
+                    self.start_text_link_in(id);
+                } else {
+                    self.start_text_link(id);
+                }
+                self.text_link_from_tab = from_tab;
+                return;
+            }
+        }
         // Inside the text being edited, the pointer places the caret and
         // drags a selection; elsewhere it starts a new text or edits
         // another one.
@@ -2322,7 +2369,10 @@ impl App {
 
     fn box_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         let p = self.snap_point(p);
-        if response.drag_started_by(PointerButton::Primary) {
+        let mut boxing = matches!(self.drag, Drag::Box { .. });
+        // A middle press while the left button is held starts a new egui
+        // drag too; that is a pan, not a new shape (#1923).
+        if response.drag_started_by(PointerButton::Primary) && !boxing {
             // A new shape begins: what was selected lets go at once.
             self.select(Vec::new());
             self.drag = Drag::Box {
@@ -2330,8 +2380,16 @@ impl App {
                 current: p,
                 from_center: mods.shift,
             };
+            boxing = true;
         }
-        if response.dragged_by(PointerButton::Primary) {
+        if !boxing {
+            return;
+        }
+        // The shape follows the pointer while the left button is down and
+        // is made when it goes up, read from the button itself: after a
+        // middle-button pan egui no longer counts the left button's drag,
+        // and would never report its end (#1923).
+        if response.ctx.input(|i| i.pointer.primary_down()) {
             // The pointer now: on the frame the drag starts `p` is where
             // the button went down, the pointer already a few pixels away,
             // and the corner sat behind it (#655).
@@ -2339,26 +2397,34 @@ impl App {
                 .hover_pos()
                 .map(|s| self.snap_point(self.view.to_page(s)))
                 .unwrap_or(p);
-            if let Drag::Box {
-                start,
-                current,
-                from_center,
-            } = &mut self.drag
-            {
-                let mut q = now;
-                if mods.ctrl {
-                    // Constrain to a square/circle.
-                    let d = q - *start;
-                    let m = d.x.abs().max(d.y.abs());
-                    q = *start + Vec2::new(m * d.x.signum(), m * d.y.signum());
-                }
-                // Shift draws from the centre (checked while dragging).
-                *from_center = mods.shift;
-                *current = q;
-            }
+            self.box_follow(now, mods);
+        } else if !response.drag_stopped_by(PointerButton::Primary) {
+            // (A drag egui still counts ends below, as every tool's does.)
+            self.end_drag();
         }
         // A page frame comes from double-clicking the tool's toolbox
         // button, not from a double click on the drawing.
+    }
+
+    /// The far corner of the shape being drawn moves to `now`.
+    fn box_follow(&mut self, now: Point, mods: Modifiers) {
+        if let Drag::Box {
+            start,
+            current,
+            from_center,
+        } = &mut self.drag
+        {
+            let mut q = now;
+            if mods.ctrl {
+                // Constrain to a square/circle.
+                let d = q - *start;
+                let m = d.x.abs().max(d.y.abs());
+                q = *start + Vec2::new(m * d.x.signum(), m * d.y.signum());
+            }
+            // Shift draws from the centre (checked while dragging).
+            *from_center = mods.shift;
+            *current = q;
+        }
     }
 
     /// 3-point rectangle, ellipse and curve: drag the base segment, then
@@ -3504,6 +3570,11 @@ impl App {
                     s.restore(self);
                 }
             }
+            return;
+        }
+        // An import waiting for its place: Space or Enter centres it on
+        // the page, Esc calls it off (#1936).
+        if self.import_placement_keys(ctx) {
             return;
         }
         // Esc during a move, scale, rotation or skew cancels it: nothing

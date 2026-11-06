@@ -77,6 +77,9 @@ struct State {
     close: Option<Id>,
     /// The names of the active list's rows, read last frame.
     labels: Option<(Id, Vec<(Id, String, bool)>)>,
+    /// A menu and its row whose submenu opens next frame as Right would
+    /// open it (Alt and the letter of a menu under the menu bar's »).
+    open_sub: Option<(Id, Id)>,
 }
 
 /// The menu bar's titles of the last frame: each menu's pop-up id and
@@ -246,6 +249,16 @@ pub fn opened_by_keys(ctx: &Context, popup: Id) {
     ctx.request_repaint();
 }
 
+/// The submenu of the row `row` of the open menu `menu` opens next
+/// frame, its first row lit, as the Right key opens it.
+pub fn open_submenu_by_keys(ctx: &Context, menu: Id, row: Id) {
+    let mut st = load(ctx);
+    st.open_sub = Some((menu, row));
+    st.bar = None;
+    store(ctx, st);
+    ctx.request_repaint();
+}
+
 /// The list `popup` was opened from the keyboard: its chosen row takes
 /// the highlight once it is shown.
 pub fn list_opened_by_keys(ctx: &Context, popup: Id) {
@@ -375,10 +388,15 @@ fn rows_among(widgets: &[egui::WidgetRect], popup: Id) -> Vec<(Id, Rect)> {
                 && w.rect.area() > o.rect.area()
         })
     };
+    // The pop-up's own area is never a row, even where its rows lie
+    // outside it (a submenu that opens to the left of a narrow window is
+    // first laid out to the right, #1839).
+    let area = popup.with("move");
     let mut rows: Vec<(Id, Rect)> = widgets
         .iter()
         .filter(|w| {
             w.id != popup
+                && w.id != area
                 && w.enabled
                 && w.sense.senses_click()
                 && !w.sense.senses_drag()
@@ -519,6 +537,9 @@ pub fn frame(ctx: &Context, alt_blocked: bool) {
         .unwrap_or_default();
     if titles.popups.is_empty() {
         st.bar = None;
+    }
+    if let Some((menu, row)) = st.open_sub.take() {
+        open_submenu(ctx, &mut st, menu, row);
     }
     let chain = open_chain(ctx);
     if alt_alone(ctx, &mut st) && !alt_blocked {
@@ -1357,6 +1378,69 @@ mod tests {
             crate::ui::dialogs::Dialog::NewDocument(_)
         ));
         assert!(!egui::Popup::is_any_open(&ctx));
+    }
+
+    /// On a window too narrow for the whole menu bar, Alt and the access
+    /// key of a menu under » open » with that menu open in it, its first
+    /// row lit, as on a wide bar.
+    #[test]
+    fn alt_and_a_letter_open_a_menu_under_more() {
+        let ctx = crate::theme::ui_context();
+        let mut app = app_with_shapes();
+        let narrow = |ctx: &Context, app: &mut App, events: Vec<Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(560.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        for _ in 0..4 {
+            narrow(&ctx, &mut app, Vec::new());
+        }
+        let (_, more) = ctx
+            .data(|d| d.get_temp::<(Vec<Rect>, usize)>(Id::new(crate::ui::menus::MENU_BAR_LAYOUT)))
+            .expect("the menu bar was drawn");
+        assert!(more >= 2, "the narrow bar puts menus under »");
+        let more_keys = ctx
+            .data(|d| d.get_temp::<Vec<char>>(Id::new(crate::ui::menus::MENU_MORE_KEYS)))
+            .unwrap_or_default();
+        assert_eq!(more_keys.len(), more);
+        // Help is the last menu, under ».
+        let help = *more_keys.last().expect("a key for Help");
+        assert_ne!(help, ' ');
+        assert!(!titles(&ctx).keys.contains(&help), "its own letter");
+        let hk = crate::ui::menus::access::key_of(help).expect("access key");
+        narrow(
+            &ctx,
+            &mut app,
+            vec![
+                Event::ModifiersChanged(Modifiers::ALT),
+                press(hk, Modifiers::ALT),
+            ],
+        );
+        for _ in 0..4 {
+            narrow(
+                &ctx,
+                &mut app,
+                vec![Event::ModifiersChanged(Modifiers::NONE)],
+            );
+        }
+        let more_popup = *titles(&ctx).popups.last().expect("the » title");
+        assert!(egui::Popup::is_id_open(&ctx, more_popup), "» opens");
+        assert_eq!(open_chain(&ctx).len(), 2, "with Help open in it");
+        let first = lit(&ctx);
+        assert!(!first.is_empty(), "Help's first row is lit");
+        assert!(
+            !crate::ui::menus::all_menus()
+                .iter()
+                .any(|(k, _)| tr(k) == first),
+            "a row of Help, not a menu under »: {first}"
+        );
     }
 
     /// Right opens a submenu with its first row lit, Left closes it,

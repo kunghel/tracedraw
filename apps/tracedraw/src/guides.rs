@@ -90,12 +90,41 @@ impl GuidePreset {
 }
 
 impl App {
-    /// The guidelines of the active page.
+    /// The guidelines being edited: the active page's own, or the master
+    /// page's (every page shows them, #1928) while those are chosen.
     pub fn page_guides(&self) -> Vec<Guide> {
+        if self.edit_master_guides {
+            return self.doc().master_guides.clone();
+        }
         self.doc()
             .page(self.page)
             .map(|p| p.guides.clone())
             .unwrap_or_default()
+    }
+
+    /// The guidelines not being edited that the active page shows: the
+    /// master page's while the page's own are edited, and the other way
+    /// round. They are drawn and snapped to, not picked.
+    pub fn other_guides_on_page(&self) -> Vec<Guide> {
+        if self.edit_master_guides {
+            self.doc()
+                .page(self.page)
+                .map(|p| p.guides.clone())
+                .unwrap_or_default()
+        } else {
+            self.doc().master_guides.clone()
+        }
+    }
+
+    /// Choose which guidelines are edited: the master page's (every page
+    /// shows them) or the active page's own (#1928). The selection of
+    /// guidelines is dropped.
+    pub fn choose_master_guides(&mut self, master: bool) {
+        if self.edit_master_guides != master {
+            self.selected_guides.clear();
+            self.guide_rotate = None;
+        }
+        self.edit_master_guides = master;
     }
 
     /// The topmost guideline under `p` (page coordinates), when guidelines
@@ -105,8 +134,9 @@ impl App {
             return None;
         }
         let tol = PICK_PX / self.view.zoom.max(1e-6) as f64;
-        let page = self.doc().page(self.page).ok()?;
-        page.guides.iter().rposition(|g| g.distance(p).abs() <= tol)
+        self.page_guides()
+            .iter()
+            .rposition(|g| g.distance(p).abs() <= tol)
     }
 
     /// The colour a guideline is drawn with: its own, or the document's
@@ -116,18 +146,29 @@ impl App {
     }
 
     pub fn add_guide(&mut self, guide: Guide) {
+        if self.edit_master_guides {
+            let mut guides = self.doc().master_guides.clone();
+            guides.push(guide);
+            let _ = self
+                .engine
+                .run_with_label(&Command::SetMasterGuides { guides }, "Add Guideline");
+            return;
+        }
         let page = self.page;
         self.run(Command::AddGuide { page, guide });
     }
 
-    /// Replace the page's guidelines in one undoable step.
+    /// Replace the page's guidelines (or the master page's, while those
+    /// are edited) in one undoable step.
     pub fn set_guides(&mut self, guides: Vec<Guide>, label: &'static str) {
         let page = self.page;
         let n = guides.len();
-        if let Err(e) = self
-            .engine
-            .run_with_label(&Command::SetGuides { page, guides }, label)
-        {
+        let cmd = if self.edit_master_guides {
+            Command::SetMasterGuides { guides }
+        } else {
+            Command::SetGuides { page, guides }
+        };
+        if let Err(e) = self.engine.run_with_label(&cmd, label) {
             self.status = format!("{label}: {e}");
         }
         self.selected_guides.retain(|i| *i < n);
@@ -138,6 +179,16 @@ impl App {
 
     /// Change one guideline (position, angle, colour, style or lock).
     pub fn replace_guide(&mut self, index: usize, guide: Guide, label: &'static str) {
+        if self.edit_master_guides {
+            let mut guides = self.doc().master_guides.clone();
+            if let Some(g) = guides.get_mut(index) {
+                *g = guide;
+                let _ = self
+                    .engine
+                    .run_with_label(&Command::SetMasterGuides { guides }, label);
+            }
+            return;
+        }
         let page = self.page;
         if let Err(e) = self
             .engine
@@ -209,8 +260,18 @@ impl App {
     }
 
     pub fn delete_guide(&mut self, index: usize) {
-        let page = self.page;
-        self.run(Command::DeleteGuide { page, index });
+        if self.edit_master_guides {
+            let mut guides = self.doc().master_guides.clone();
+            if index < guides.len() {
+                guides.remove(index);
+                let _ = self
+                    .engine
+                    .run_with_label(&Command::SetMasterGuides { guides }, "Delete Guideline");
+            }
+        } else {
+            let page = self.page;
+            self.run(Command::DeleteGuide { page, index });
+        }
         self.selected_guides.clear();
         self.guide_rotate = None;
     }
@@ -907,6 +968,58 @@ mod tests {
         app.view.zoom = 1.0;
         app.canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         app
+    }
+
+    /// #1928: with the master page's guidelines chosen (the Objects
+    /// docker's "Guides (all pages)" row), a new guideline goes there
+    /// once and every page shows it and snaps to it; it is picked,
+    /// moved and deleted there, the page's own guidelines are left
+    /// alone, and each step undoes.
+    #[test]
+    fn master_guidelines_are_set_once_for_every_page() {
+        let mut app = app();
+        app.add_page();
+        let pages: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(pages.len(), 2);
+        app.goto_page(0);
+        app.add_guide(Guide::horizontal(50.0));
+        app.choose_master_guides(true);
+        app.add_guide(Guide::vertical(30.0));
+        assert_eq!(app.doc().master_guides.len(), 1);
+        assert_eq!(app.doc().page(pages[0]).unwrap().guides.len(), 1);
+        assert!(app.doc().page(pages[1]).unwrap().guides.is_empty());
+        // The second page shows it and snaps to it.
+        app.goto_page(1);
+        let shown = app.doc().guides_on_page(pages[1]).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(app.guide_at(Point::new(30.0, 10.0)), Some(0));
+        app.snap.guides = true;
+        app.snap.grid = false;
+        app.snap.objects = false;
+        let p = app.snap_point(Point::new(30.4, 10.0));
+        assert!((p.x - 30.0).abs() < 1e-9, "{p:?}");
+        // Moved there, every page has it moved.
+        app.replace_guide(0, Guide::vertical(40.0), "Move Guideline");
+        assert_eq!(
+            app.doc().master_guides[0].line,
+            GuideLine::Vertical { x: 40.0 }
+        );
+        // The page's own guidelines are not picked while the master's
+        // are edited, and the other way round.
+        app.goto_page(0);
+        assert_eq!(app.guide_at(Point::new(10.0, 50.0)), None);
+        app.choose_master_guides(false);
+        assert_eq!(app.guide_at(Point::new(10.0, 50.0)), Some(0));
+        assert_eq!(app.guide_at(Point::new(40.0, 10.0)), None);
+        app.choose_master_guides(true);
+        app.delete_guide(0);
+        assert!(app.doc().master_guides.is_empty());
+        app.undo();
+        assert_eq!(app.doc().master_guides.len(), 1);
+        app.undo();
+        app.undo();
+        assert!(app.doc().master_guides.is_empty());
+        assert_eq!(app.doc().page(pages[0]).unwrap().guides.len(), 1);
     }
 
     /// A value typed for the one selected guideline moves it at once (the

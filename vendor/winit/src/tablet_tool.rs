@@ -29,8 +29,20 @@
 //! compositor sends the tip's `up` before, but a button left pressed
 //! would stick in the program), then leaves.
 //!
-//! The pen's tilt, distance, rotation, slider and wheel are not read:
-//! winit 0.30's events have no place for them and no tool uses them.
+//! The pen's tilt is read (`ToolEvent::Tilt`) and goes out with the
+//! pressure as the pen's altitude (`altitude_of`), in
+//! `Force::Calibrated { force, max_possible_force: 1, altitude_angle }`:
+//! egui-winit takes `force / max_possible_force`, so the pressure is the
+//! same share as before (#1841). Its distance, rotation, slider and wheel
+//! are not read: winit 0.30's events have no place for them and no tool
+//! uses them.
+//!
+//! The pen over a window shows the window's cursor (#1841): the Wayland
+//! backend sets it on the tool as on the pointers, a named cursor through
+//! the cursor shape protocol (`cursor_shape_value`), a custom image on a
+//! surface of the tool's own, none while the window hides its cursor
+//! (TraceDraw draws its tool cursors itself). Before, the compositor
+//! always showed its arrow for the pen.
 //!
 //! This file depends on nothing in the crate, and TraceDraw's tests
 //! include and run it (`winit_tablet_tool::tests`).
@@ -83,6 +95,8 @@ pub enum ToolEvent<S> {
     Motion(f64, f64),
     /// 0 to `PRESSURE_MAX`.
     Pressure(u32),
+    /// The pen's tilt from the perpendicular, degrees, along x and y.
+    Tilt(f64, f64),
     /// A barrel button's event code and whether it is now pressed.
     Button {
         code: u32,
@@ -127,6 +141,8 @@ pub struct ToolState<S> {
     tip_down: bool,
     held: Vec<PenButton>,
     pending: Pending,
+    /// The last tilt read, degrees; `None` for a tool that reports none.
+    tilt: Option<(f64, f64)>,
 }
 
 impl<S> Default for ToolState<S> {
@@ -138,8 +154,69 @@ impl<S> Default for ToolState<S> {
             tip_down: false,
             held: Vec::new(),
             pending: Pending::default(),
+            tilt: None,
         }
     }
+}
+
+/// The pen's altitude above the tablet, radians (pi/2 upright), from its
+/// tilt along x and y in degrees from the perpendicular.
+pub fn altitude_of(tilt_x: f64, tilt_y: f64) -> f64 {
+    let (tx, ty) = (tilt_x.to_radians().tan(), tilt_y.to_radians().tan());
+    let lean = (tx * tx + ty * ty).sqrt();
+    if lean.is_finite() {
+        (1.0 / lean).atan()
+    } else {
+        0.0
+    }
+}
+
+/// The value of the cursor shape protocol's `shape` enum for a cursor
+/// of CSS name `name` (`CursorIcon::name`, "col-resize"); the default
+/// arrow (1) for a name it has not. The values are the protocol's
+/// (`wp_cursor_shape_device_v1`, version 1).
+pub fn cursor_shape_value(name: &str) -> u32 {
+    const NAMES: [&str; 34] = [
+        "default",
+        "context_menu",
+        "help",
+        "pointer",
+        "progress",
+        "wait",
+        "cell",
+        "crosshair",
+        "text",
+        "vertical_text",
+        "alias",
+        "copy",
+        "move",
+        "no_drop",
+        "not_allowed",
+        "grab",
+        "grabbing",
+        "e_resize",
+        "n_resize",
+        "ne_resize",
+        "nw_resize",
+        "s_resize",
+        "se_resize",
+        "sw_resize",
+        "w_resize",
+        "ew_resize",
+        "ns_resize",
+        "nesw_resize",
+        "nwse_resize",
+        "col_resize",
+        "row_resize",
+        "all_scroll",
+        "zoom_in",
+        "zoom_out",
+    ];
+    let name = name.replace('-', "_");
+    NAMES
+        .iter()
+        .position(|n| *n == name)
+        .map_or(1, |i| i as u32 + 1)
 }
 
 /// A pressure reading as a share of the protocol's range; `None` at 0.
@@ -152,6 +229,11 @@ impl<S: Clone + PartialEq> ToolState<S> {
     #[cfg(test)]
     pub fn surface(&self) -> Option<&S> {
         self.surface.as_ref()
+    }
+
+    /// The pen's altitude (radians) while its tilt is known.
+    pub fn altitude(&self) -> Option<f64> {
+        self.tilt.map(|(x, y)| altitude_of(x, y))
     }
 
     /// Take one event of the tool; what the window is to be told is
@@ -175,6 +257,9 @@ impl<S: Clone + PartialEq> ToolState<S> {
             ToolEvent::Up => self.pending.up = true,
             ToolEvent::Motion(x, y) => self.pending.motion = Some((x, y)),
             ToolEvent::Pressure(p) => self.pending.pressure = Some(p.min(PRESSURE_MAX)),
+            ToolEvent::Tilt(x, y) => {
+                self.tilt = (x.is_finite() && y.is_finite()).then_some((x, y));
+            }
             ToolEvent::Button { code, pressed } => self
                 .pending
                 .buttons
@@ -256,6 +341,7 @@ impl<S: Clone + PartialEq> ToolState<S> {
             out.push(PenOut::Pressure(surface.clone(), self.position, None));
         }
         self.pressure = 0;
+        self.tilt = None;
         out.push(PenOut::Left(surface));
     }
 }
@@ -263,6 +349,50 @@ impl<S: Clone + PartialEq> ToolState<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pen's cursor shapes by name: the protocol's values, the CSS
+    /// names with hyphens as `CursorIcon::name` gives them, the arrow for
+    /// a name the protocol lacks.
+    #[test]
+    fn cursor_names_become_the_protocols_shapes() {
+        assert_eq!(cursor_shape_value("default"), 1);
+        assert_eq!(cursor_shape_value("context-menu"), 2);
+        assert_eq!(cursor_shape_value("crosshair"), 8);
+        assert_eq!(cursor_shape_value("text"), 9);
+        assert_eq!(cursor_shape_value("move"), 13);
+        assert_eq!(cursor_shape_value("grabbing"), 17);
+        assert_eq!(cursor_shape_value("nwse-resize"), 29);
+        assert_eq!(cursor_shape_value("zoom-out"), 34);
+        assert_eq!(cursor_shape_value("no-such-cursor"), 1);
+    }
+
+    /// The tilt becomes an altitude (upright pi/2, lying flat 0), is
+    /// kept while the pen is near and forgotten when it leaves; the
+    /// pressure the window is told does not change with it.
+    #[test]
+    fn the_tilt_is_read_as_an_altitude() {
+        use std::f64::consts::FRAC_PI_2;
+        assert!((altitude_of(0.0, 0.0) - FRAC_PI_2).abs() < 1e-9);
+        assert!((altitude_of(30.0, 0.0) - 60f64.to_radians()).abs() < 1e-9);
+        assert!((altitude_of(0.0, -45.0) - 45f64.to_radians()).abs() < 1e-9);
+        assert!(altitude_of(90.0, 0.0).abs() < 1e-6);
+        let mut tool = ToolState::<u8>::default();
+        let mut out = Vec::new();
+        tool.handle(ToolEvent::ProximityIn(1), &mut out);
+        assert_eq!(tool.altitude(), None);
+        tool.handle(ToolEvent::Tilt(30.0, 0.0), &mut out);
+        tool.handle(ToolEvent::Down, &mut out);
+        tool.handle(ToolEvent::Pressure(PRESSURE_MAX / 2), &mut out);
+        tool.handle(ToolEvent::Frame, &mut out);
+        assert!((tool.altitude().unwrap() - 60f64.to_radians()).abs() < 1e-9);
+        let share = out.iter().find_map(|o| match o {
+            PenOut::Pressure(_, _, Some(p)) => Some(*p),
+            _ => None,
+        });
+        assert!((share.unwrap() - 0.5).abs() < 1e-3, "{out:?}");
+        tool.handle(ToolEvent::ProximityOut, &mut out);
+        assert_eq!(tool.altitude(), None);
+    }
 
     fn run(state: &mut ToolState<u32>, events: Vec<ToolEvent<u32>>) -> Vec<PenOut<u32>> {
         let mut out = Vec::new();

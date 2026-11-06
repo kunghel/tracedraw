@@ -2,8 +2,10 @@
 //! edited with the Text tool, showing the tab stops of the paragraphs at
 //! the caret (#1852). A click on it adds a left stop, a drag moves a stop,
 //! a drag away from the strip removes it, and a right click picks a
-//! stop's kind. Each change is one undo step. See docs/behavior/text.md,
-//! Tab ruler.
+//! stop's kind. Each change is one undo step. While a stop is dragged
+//! the text flows to it as it moves (at most [`LIVE_EVERY`] apart, so a
+//! long text keeps the drag smooth), and the whole drag is one undo step.
+//! See docs/behavior/text.md, Tab ruler.
 
 use crate::app::App;
 use crate::theme::Tokens;
@@ -22,6 +24,9 @@ pub const HEIGHT: f32 = 14.0;
 const GRAB: f32 = 6.0;
 /// How far from the strip a stop must be dragged to be removed.
 const OFF: f32 = 18.0;
+/// The shortest time between two reflows of the text while a stop is
+/// dragged, seconds (#1852, #1912).
+pub const LIVE_EVERY: f64 = 1.0 / 30.0;
 
 /// The ruler of the frame being edited, as it stands on screen.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +67,24 @@ pub struct TabDrag {
     pub stops: Vec<TabStop>,
     pub index: usize,
     pub off: bool,
+    /// The undo step before the drag: the drag's live steps join into one
+    /// after it.
+    pub before: Option<u64>,
+    /// The stops the text was last laid out with during the drag, and
+    /// when (input time, seconds); `None` until the first reflow.
+    pub shown: Option<(Vec<TabStop>, f64)>,
+}
+
+impl TabDrag {
+    /// The stops the paragraph takes if the drag ends now: the dragged
+    /// one left out when it is off the strip.
+    pub fn result(&self) -> Vec<TabStop> {
+        let mut stops = self.stops.clone();
+        if self.off && self.index < stops.len() {
+            stops.remove(self.index);
+        }
+        stops
+    }
 }
 
 /// The default grid of a frame `width` mm wide: a left stop every
@@ -230,14 +253,34 @@ impl App {
                 s.pos = ((pos.clamp(0.0, r.width_mm)) * 10.0).round() / 10.0;
             }
             d.off = r.is_off(now);
-            if held && !response.drag_stopped() {
+            let time = response.ctx.input(|i| i.time);
+            let ended = !(held && !response.drag_stopped());
+            let stops = d.result();
+            let changed = d.shown.as_ref().is_none_or(|(s, _)| *s != stops);
+            let due = d
+                .shown
+                .as_ref()
+                .is_none_or(|(_, at)| time - at >= LIVE_EVERY);
+            if changed && (due || ended) {
+                // The text flows to the stops as they are now; the drag's
+                // steps join into one undo step.
+                self.set_tab_stops(d.shape, stops.clone());
+                let label = self.engine.undo_label().unwrap_or("Tab Stops");
+                self.engine.join_group(d.before, label);
+                d.shown = Some((stops, time));
+            } else if changed {
+                // Laid out again once the pause is over, even if the
+                // pointer stops here.
+                let wait = d
+                    .shown
+                    .as_ref()
+                    .map_or(0.0, |(_, at)| LIVE_EVERY - (time - at));
+                response
+                    .ctx
+                    .request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.0)));
+            }
+            if !ended {
                 self.tab_drag = Some(d);
-            } else {
-                let mut stops = d.stops;
-                if d.off && d.index < stops.len() {
-                    stops.remove(d.index);
-                }
-                self.set_tab_stops(d.shape, stops);
             }
             response.ctx.request_repaint();
             return true;
@@ -271,6 +314,8 @@ impl App {
                 stops,
                 index,
                 off: false,
+                before: self.engine.last_step_id(),
+                shown: None,
             });
             return true;
         }

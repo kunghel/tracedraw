@@ -225,6 +225,13 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
         {
             app.join_text_lines();
         }
+        // Linked text content (#1568), offered when it can be used.
+        if app.can_link_text_content() && ci(ui, close, "menu.text.link_content", "", true) {
+            app.link_text_content();
+        }
+        if app.selection_has_content_link() && ci(ui, close, "menu.text.unlink_content", "", true) {
+            app.unlink_text_content();
+        }
         sep(ui);
     }
     if is_bitmap {
@@ -553,6 +560,19 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
 
 fn node_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     use tracedraw_core::nodes::NodeType;
+    // A B-spline's chosen control points: fixed (the curve passes
+    // through them) or floating (#1758).
+    if let Some(all_fixed) = app.chosen_spline_points() {
+        if check(ui, "context.spline_fixed", "C", all_fixed) {
+            app.set_selected_spline_fixed(true);
+            *close = true;
+        }
+        if check(ui, "context.spline_floating", "S", !all_fixed) {
+            app.set_selected_spline_fixed(false);
+            *close = true;
+        }
+        sep(ui);
+    }
     let has_nodes = !app.node_selection.is_empty();
     if ci(ui, close, "context.node_add", "", has_nodes) {
         app.add_node_midpoints();
@@ -624,6 +644,10 @@ fn page_menu(app: &mut App, ui: &mut Ui, p: tracedraw_core::Point, close: &mut b
     }
     if ci(ui, close, "menu.edit.select_all_objects", "Ctrl+A", true) {
         app.select_all();
+    }
+    // A file into the drawing, placed with the import cursor (#1931).
+    if ci(ui, close, "menu.file.import", "Ctrl+I", true) {
+        app.import();
     }
     sep(ui);
     if ci(ui, close, "menu.layout.insert_page", "", true) {

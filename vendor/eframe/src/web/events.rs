@@ -561,8 +561,17 @@ fn install_pointerdown(runner_ref: &WebRunner, target: &EventTarget) -> Result<(
         |event: web_sys::PointerEvent, runner: &mut AppRunner| {
             let modifiers = modifiers_from_mouse_event(&event);
             runner.input.set_modifiers(modifiers);
-            // TraceDraw: the pen's pressure before its press (#1410).
+            // TraceDraw: the pen's pressure before its press (#1410), and
+            // the pointer where it presses: Safari sends an Apple Pencil
+            // no mouse moves (#1655).
             push_pen_pressure(runner, &event);
+            let is_pen = event.pointer_type() == super::pen_pressure::PEN;
+            if let Some(moved) = super::pen_pressure::pen_moved(
+                &event.pointer_type(),
+                pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx()),
+            ) {
+                runner.input.raw.events.push(moved);
+            }
             let mut should_stop_propagation = true;
             if let Some(button) = button_from_mouse_event(&event) {
                 let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
@@ -589,6 +598,12 @@ fn install_pointerdown(runner_ref: &WebRunner, target: &EventTarget) -> Result<(
                 event.stop_propagation();
             }
             // Note: prevent_default breaks VSCode tab focusing, hence why we don't call it here.
+            // TraceDraw: but a pen on the canvas is the editor's (#1655):
+            // no text selection, handwriting or mouse events of the
+            // browser's own.
+            if is_pen {
+                event.prevent_default();
+            }
         },
     )
 }
@@ -677,7 +692,8 @@ fn is_interested_in_pointer_event(runner: &AppRunner, pos: egui::Pos2) -> bool {
 /// TraceDraw: the pressure of a pen's pointer event as a moving touch
 /// with a force, which TraceDraw's raw input hook reads and takes out
 /// (see `pen_pressure.rs`, #1410). Nothing for a mouse or a touch. The
-/// pen's position and buttons still come from the mouse events as before.
+/// pen's position comes from its own pointer events too (#1655), its
+/// buttons from `pointerdown` and `pointerup`.
 ///
 /// One reading per event: the app samples a drag once per frame, so the
 /// readings `getCoalescedEvents` would add between frames would be read
@@ -698,8 +714,10 @@ fn push_pen_pressure(runner: &mut AppRunner, event: &web_sys::PointerEvent) {
     }
 }
 
-/// TraceDraw: a pen's pressure as it moves (over the canvas, or anywhere
-/// during a drag) and when the browser cancels it (#1410).
+/// TraceDraw: a pen's pressure and position as it moves (over the
+/// canvas, or anywhere during a drag) and when the browser cancels it
+/// (#1410, #1655: Safari sends an Apple Pencil no mouse events, so its
+/// pointer events are all there is).
 fn install_pen_pressure(runner_ref: &WebRunner, target: &EventTarget) -> Result<(), JsValue> {
     runner_ref.add_event_listener(
         target,
@@ -712,6 +730,10 @@ fn install_pen_pressure(runner_ref: &WebRunner, target: &EventTarget) -> Result<
                 )
             {
                 push_pen_pressure(runner, &event);
+                let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
+                if let Some(moved) = super::pen_pressure::pen_moved(&event.pointer_type(), pos) {
+                    runner.input.raw.events.push(moved);
+                }
                 runner.needs_repaint.repaint();
             }
         },
@@ -722,10 +744,12 @@ fn install_pen_pressure(runner_ref: &WebRunner, target: &EventTarget) -> Result<
         |event: web_sys::PointerEvent, runner| {
             if event.pointer_type() == super::pen_pressure::PEN {
                 let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
-                runner.input.raw.events.push(super::pen_pressure::pen_touch(
+                // The tip let go too, so that no drag stays pressed (#1655).
+                let modifiers = runner.input.modifiers;
+                runner.input.raw.events.extend(super::pen_pressure::pen_cancelled(
                     event.pointer_id(),
                     pos,
-                    None,
+                    modifiers,
                 ));
                 runner.needs_repaint.repaint();
             }
@@ -818,6 +842,12 @@ fn install_touchstart(runner_ref: &WebRunner, target: &EventTarget) -> Result<()
 
 fn install_touchmove(runner_ref: &WebRunner, target: &EventTarget) -> Result<(), JsValue> {
     runner_ref.add_event_listener(target, "touchmove", |event: web_sys::TouchEvent, runner| {
+        // TraceDraw: an Apple Pencil moves through its pen pointer events
+        // (#1655); its touches only must not scroll the page.
+        if super::input::only_stylus(&event) {
+            event.prevent_default();
+            return;
+        }
         if let Some((pos, touch)) = primary_touch_pos(runner, &event)
             && is_interested_in_pointer_event(
                 runner,

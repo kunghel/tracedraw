@@ -628,6 +628,276 @@ pub fn printer_resolution_windows(printer: &str) -> Option<f64> {
     found
 }
 
+/// The edges of the paper a printer cannot print on (its hard margins),
+/// mm, the paper upright (portrait) as the printer feeds it (#1924).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HardMargins {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl HardMargins {
+    /// What is shown when the system does not say: a typical 5 mm.
+    pub const FALLBACK: HardMargins = HardMargins {
+        left: 5.0,
+        right: 5.0,
+        top: 5.0,
+        bottom: 5.0,
+    };
+
+    /// Each margin a sensible size: none negative, none past half the
+    /// paper (a value that is not believable gives `None`).
+    fn checked(self, paper_w: f64, paper_h: f64) -> Option<HardMargins> {
+        let m = [self.left, self.right, self.top, self.bottom];
+        let ok = m.iter().all(|v| v.is_finite() && *v >= -0.01)
+            && self.left + self.right < paper_w
+            && self.top + self.bottom < paper_h;
+        ok.then(|| HardMargins {
+            left: self.left.max(0.0),
+            right: self.right.max(0.0),
+            top: self.top.max(0.0),
+            bottom: self.bottom.max(0.0),
+        })
+    }
+
+    /// The margins of a sheet `width` x `height`: as they are on an
+    /// upright sheet; on a sheet lying on its side (wider than tall) the
+    /// paper is fed upright and the sheet's top lies along the paper's
+    /// left edge (turned a quarter counterclockwise), so the sheet's
+    /// left is the paper's bottom.
+    pub fn for_sheet(self, width: f64, height: f64) -> HardMargins {
+        if width > height {
+            HardMargins {
+                left: self.bottom,
+                right: self.top,
+                top: self.left,
+                bottom: self.right,
+            }
+        } else {
+            self
+        }
+    }
+}
+
+/// The hard margins in a CUPS PPD file for the paper `size` (a PageSize
+/// name such as "A4"), else its default size: the `*ImageableArea`
+/// (lower left and upper right corners, points) inside the
+/// `*PaperDimension` (points), PPD 4.3. `None` when the file does not
+/// give both.
+pub fn parse_ppd_margins(ppd: &str, size: Option<&str>) -> Option<HardMargins> {
+    let default = ppd.lines().find_map(|l| {
+        let l = l.trim();
+        l.strip_prefix("*DefaultImageableArea:")
+            .or_else(|| l.strip_prefix("*DefaultPageSize:"))
+            .map(|v| v.trim().to_string())
+    });
+    let size = size.map(str::to_string).or(default)?;
+    let numbers = |key: &str| -> Option<Vec<f64>> {
+        ppd.lines().find_map(|l| {
+            let rest = l.trim().strip_prefix(key)?;
+            let (name, value) = rest.split_once(':')?;
+            let name = name.split('/').next()?.trim();
+            if name != size {
+                return None;
+            }
+            let v: Vec<f64> = value
+                .trim()
+                .trim_matches('"')
+                .split_whitespace()
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            Some(v)
+        })
+    };
+    let area = numbers("*ImageableArea ")?;
+    let paper = numbers("*PaperDimension ")?;
+    let ([llx, lly, urx, ury], [w, h]) = (area.get(..4)?, paper.get(..2)?) else {
+        return None;
+    };
+    let mm = 25.4 / 72.0;
+    HardMargins {
+        left: llx * mm,
+        bottom: lly * mm,
+        right: (w - urx) * mm,
+        top: (h - ury) * mm,
+    }
+    .checked(w * mm, h * mm)
+}
+
+/// The paper size `lpoptions -p NAME` says the printer is set to (its
+/// `media` or `PageSize` option), as a PPD names it.
+pub fn parse_lpoptions_size(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|o| {
+        let (k, v) = o.split_once('=')?;
+        if !matches!(k, "media" | "PageSize") {
+            return None;
+        }
+        // A list of media ("A4,Tray1") starts with the size.
+        let v = v.trim_matches('\'').split(',').next()?;
+        let v = match v.to_ascii_lowercase().as_str() {
+            "a4" | "iso_a4_210x297mm" => "A4".to_string(),
+            "a3" | "iso_a3_297x420mm" => "A3".to_string(),
+            "a5" | "iso_a5_148x210mm" => "A5".to_string(),
+            "letter" | "na_letter_8.5x11in" => "Letter".to_string(),
+            "legal" | "na_legal_8.5x14in" => "Legal".to_string(),
+            _ => v.to_string(),
+        };
+        Some(v)
+    })
+}
+
+/// The hard margins of the CUPS printer `printer`, from its PPD file and
+/// the paper size it is set to; `None` when CUPS has no PPD for it (a
+/// driverless queue) or the file does not say.
+#[cfg(not(any(target_arch = "wasm32", target_os = "windows", target_os = "android")))]
+pub fn printer_margins(printer: &str) -> Option<HardMargins> {
+    if printer.is_empty() || printer.contains(['/', '\\']) || printer.starts_with('.') {
+        return None;
+    }
+    let ppd = std::fs::read(format!("/etc/cups/ppd/{printer}.ppd")).ok()?;
+    let size = std::process::Command::new("lpoptions")
+        .args(["-p", printer])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()
+        .and_then(|o| parse_lpoptions_size(&String::from_utf8_lossy(&o.stdout)));
+    let found = parse_ppd_margins(&String::from_utf8_lossy(&ppd), size.as_deref());
+    log::info!("printer {printer}: hard margins {found:?}");
+    found
+}
+
+/// The PowerShell lines that say the paper and printable area of the
+/// printer `printer`'s default page, upright, in hundredths of an inch:
+/// "W H X Y AW AH" (paper width and height, then the printable area's
+/// left, top, width and height).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_margins_script(printer: &str) -> String {
+    format!(
+        r#"Add-Type -AssemblyName System.Drawing
+$s = New-Object System.Drawing.Printing.PrinterSettings
+$s.PrinterName = {printer}
+if (-not $s.IsValid) {{ exit 2 }}
+$p = $s.DefaultPageSettings
+$p.Landscape = $false
+$z = $p.PaperSize; $a = $p.PrintableArea
+$c = [Globalization.CultureInfo]::InvariantCulture
+[Console]::Out.WriteLine([string]::Format($c, '{{0}} {{1}} {{2}} {{3}} {{4}} {{5}}', $z.Width, $z.Height, $a.X, $a.Y, $a.Width, $a.Height))
+"#,
+        printer = ps_quote(printer)
+    )
+}
+
+/// The hard margins from [`windows_margins_script`]'s output.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn parse_windows_margins(output: &str) -> Option<HardMargins> {
+    let v: Vec<f64> = output
+        .lines()
+        .next()?
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    let [w, h, x, y, aw, ah] = v.get(..6)? else {
+        return None;
+    };
+    if *w <= 0.0 || *h <= 0.0 || *aw <= 0.0 || *ah <= 0.0 {
+        return None;
+    }
+    let mm = 0.254;
+    HardMargins {
+        left: x * mm,
+        top: y * mm,
+        right: (w - x - aw) * mm,
+        bottom: (h - y - ah) * mm,
+    }
+    .checked(w * mm, h * mm)
+}
+
+/// The hard margins of the Windows printer `printer` (its default
+/// paper's printable area, which the driver reports as GDI's device
+/// offsets do), `None` when it cannot be told.
+#[cfg(target_os = "windows")]
+pub fn printer_margins(printer: &str) -> Option<HardMargins> {
+    let out = powershell()
+        .arg("-Command")
+        .arg(windows_margins_script(printer))
+        .output()
+        .ok()?;
+    let found = out
+        .status
+        .success()
+        .then(|| parse_windows_margins(&String::from_utf8_lossy(&out.stdout)))
+        .flatten();
+    log::info!("printer {printer}: hard margins {found:?}");
+    found
+}
+
+/// No printer's margins in a browser or on Android (its print service
+/// lays the page out).
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub fn printer_margins(_printer: &str) -> Option<HardMargins> {
+    None
+}
+
+type KnownMargins = std::collections::HashMap<Option<String>, Option<HardMargins>>;
+
+/// The hard margins of printers, read once each off the interface's
+/// thread (a printer's driver can take a second to answer) and kept.
+#[derive(Debug, Default)]
+pub struct MarginsCache {
+    /// By printer name (`None`: the system's default printer): the
+    /// margins it reported, `None` inside when it reported none; missing
+    /// while not read yet.
+    known: std::sync::Arc<std::sync::Mutex<KnownMargins>>,
+    asked: std::sync::Mutex<std::collections::HashSet<Option<String>>>,
+}
+
+impl MarginsCache {
+    /// The hard margins of `printer` (`None`: the system's default),
+    /// once read; until then, or when the system does not say, `None`.
+    /// The first call starts the reading.
+    pub fn get(&self, printer: Option<&str>) -> Option<HardMargins> {
+        let key = printer.map(str::to_string);
+        if let Ok(known) = self.known.lock() {
+            if let Some(m) = known.get(&key) {
+                return *m;
+            }
+        }
+        let first = self
+            .asked
+            .lock()
+            .map(|mut a| a.insert(key.clone()))
+            .unwrap_or(false);
+        if first && !crate::files::WEB {
+            let known = self.known.clone();
+            let _ = std::thread::Builder::new()
+                .name("printer-margins".into())
+                .spawn(move || {
+                    let name = key
+                        .clone()
+                        .or_else(|| starting_printer(None, &system_printers()));
+                    let m = name.as_deref().and_then(printer_margins);
+                    if let Ok(mut k) = known.lock() {
+                        k.insert(key, m);
+                    }
+                });
+        }
+        None
+    }
+
+    /// Set what `printer` reports (tests).
+    #[cfg(test)]
+    pub fn set(&self, printer: Option<&str>, margins: Option<HardMargins>) {
+        if let Ok(mut k) = self.known.lock() {
+            k.insert(printer.map(str::to_string), margins);
+        }
+        if let Ok(mut a) = self.asked.lock() {
+            a.insert(printer.map(str::to_string));
+        }
+    }
+}
+
 /// How long the print script may run before it is taken as hung.
 #[cfg(target_os = "windows")]
 const PRINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -994,5 +1264,66 @@ mod tests {
             lp_args("A", pdf, 2, true, " ")[4..6],
             ["-o", "collate=true"]
         );
+    }
+
+    /// #1924: a PPD's imageable area for the paper the printer is set
+    /// to (else its default) gives the hard margins, points to mm.
+    #[test]
+    fn the_hard_margins_come_from_the_ppd() {
+        let ppd = r#"*PPD-Adobe: "4.3"
+*DefaultPageSize: Letter
+*DefaultImageableArea: Letter
+*ImageableArea Letter/US Letter: "18 36 594 756"
+*ImageableArea A4/A4: "12.24 12.24 582.76 829.65"
+*PaperDimension Letter/US Letter: "612 792"
+*PaperDimension A4/A4: "595.28 841.89"
+"#;
+        let mm = 25.4 / 72.0;
+        let letter = parse_ppd_margins(ppd, None).expect("default size");
+        assert!((letter.left - 18.0 * mm).abs() < 1e-9);
+        assert!((letter.bottom - 36.0 * mm).abs() < 1e-9);
+        assert!((letter.right - 18.0 * mm).abs() < 1e-9);
+        assert!((letter.top - 36.0 * mm).abs() < 1e-9);
+        let a4 = parse_ppd_margins(ppd, Some("A4")).expect("A4");
+        assert!(
+            (a4.left - 12.24 * mm).abs() < 1e-9 && (a4.top - (841.89 - 829.65) * mm).abs() < 1e-9
+        );
+        assert_eq!(parse_ppd_margins(ppd, Some("A3")), None);
+        assert_eq!(parse_ppd_margins("*PPD-Adobe: \"4.3\"", None), None);
+        assert_eq!(
+            parse_lpoptions_size(
+                "copies=1 device-uri=usb://x media=iso_a4_210x297mm sides=one-sided"
+            ),
+            Some("A4".into())
+        );
+        assert_eq!(
+            parse_lpoptions_size("PageSize=Letter"),
+            Some("Letter".into())
+        );
+        assert_eq!(parse_lpoptions_size("copies=1"), None);
+    }
+
+    /// #1924: the Windows printable area (hundredths of an inch) gives
+    /// the hard margins on each side; nonsense gives none. A sheet on its
+    /// side takes them turned a quarter.
+    #[test]
+    fn the_windows_printable_area_gives_the_hard_margins() {
+        // A4 with 4.2 mm left and top, 5 mm right, 6.2 mm bottom.
+        let out = "827 1169 16.5 16.5 790.8 1128.1\n";
+        let m = parse_windows_margins(out).expect("margins");
+        assert!((m.left - 16.5 * 0.254).abs() < 1e-9);
+        assert!((m.top - 16.5 * 0.254).abs() < 1e-9);
+        assert!((m.right - (827.0 - 16.5 - 790.8) * 0.254).abs() < 1e-9);
+        assert!((m.bottom - (1169.0 - 16.5 - 1128.1) * 0.254).abs() < 1e-9);
+        assert_eq!(parse_windows_margins(""), None);
+        assert_eq!(parse_windows_margins("827 1169 500 0 800 1100"), None);
+        let s = windows_margins_script("Office's Laser");
+        assert!(s.contains("PrintableArea") && s.contains("'Office''s Laser'"));
+        let side = m.for_sheet(297.0, 210.0);
+        assert_eq!(
+            (side.left, side.right, side.top, side.bottom),
+            (m.bottom, m.top, m.left, m.right)
+        );
+        assert_eq!(m.for_sheet(210.0, 297.0), m);
     }
 }

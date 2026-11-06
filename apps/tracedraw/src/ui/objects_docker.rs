@@ -24,9 +24,7 @@ use crate::theme::Tokens;
 use crate::ui::dockers::kind_name;
 use crate::ui::tips::RichTip;
 use egui::{Color32, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2};
-use tracedraw_core::{
-    Command, Layer, LayerId, MasterScope, Page, PageId, Shape, ShapeId, ShapeKind,
-};
+use tracedraw_core::{Command, Layer, LayerId, MasterScope, PageId, Shape, ShapeId, ShapeKind};
 
 /// Height of a row.
 const ROW_H: f32 = 22.0;
@@ -82,8 +80,13 @@ struct Actions {
     row_page: Option<PageId>,
     targets: Vec<(Option<String>, LayerId, String)>,
     toggle_guides: bool,
+    /// A Guides row was clicked: the master page's guidelines (true) or
+    /// the page's own (false) are the ones edited from now (#1928).
+    guides_master: Option<bool>,
     toggle_grid: bool,
-    lock_guides: Option<bool>,
+    /// Lock or unlock all the guidelines of a Guides row: the master
+    /// page's (true) or the page's own, and locked or not.
+    lock_guides: Option<(bool, bool)>,
     /// Not an action: the object whose row is scrolled into view.
     scroll_to: Option<ShapeId>,
     /// Not an action: the thumbnail cache, taken from the app while the
@@ -584,6 +587,8 @@ pub fn objects(app: &mut App, ui: &mut Ui) {
                     };
                     layer_rows(app, ui, layer, place, active, &mut act);
                 }
+                // The page's own guidelines (#1928).
+                guides_row(app, ui, &page.guides, Some(page.id), &mut act);
             }
         }
         act.row_page = None;
@@ -609,9 +614,7 @@ pub fn objects(app: &mut App, ui: &mut Ui) {
                 };
                 layer_rows(app, ui, layer, place, active, &mut act);
             }
-            if let Ok(page) = doc.page(app.page) {
-                guides_row(app, ui, page, &mut act);
-            }
+            guides_row(app, ui, &doc.master_guides, None, &mut act);
             grid_row(app, ui, &mut act);
         }
     }
@@ -914,13 +917,42 @@ fn scope_key(scope: MasterScope) -> &'static str {
     }
 }
 
-/// The Guides row of the Master Page: the eye shows or hides the
-/// guidelines, the padlock locks or unlocks all of the page's; guidelines
-/// never print.
-fn guides_row(app: &App, ui: &mut Ui, page: &Page, act: &mut Actions) {
-    let (rect, resp) = row(ui, Look::Layer { active: false });
-    resp.rich_tip_with(|| crate::ui::tips::pair("docker.guides", "docker.guides_row_desc"));
-    let base = egui::Id::new("objects_guides");
+/// A Guides row: under the Master Page the guidelines every page shows
+/// ("Guides (all pages)"), under a page (`page`) that page's own
+/// (#1928). A click on the row makes them the guidelines edited (new
+/// ones go there too); the eye shows or hides all guidelines, the
+/// padlock locks or unlocks all of the row's; guidelines never print.
+fn guides_row(
+    app: &App,
+    ui: &mut Ui,
+    guides: &[tracedraw_core::document::Guide],
+    page: Option<PageId>,
+    act: &mut Actions,
+) {
+    let master = page.is_none();
+    let chosen = app.edit_master_guides == master && page.is_none_or(|p| p == app.page);
+    let (rect, resp) = row(ui, Look::Layer { active: chosen });
+    let desc = if master {
+        "docker.guides_master_row_desc"
+    } else {
+        "docker.guides_row_desc"
+    };
+    let label = if master {
+        tr("docker.guides_all_pages")
+    } else {
+        tr("docker.guides")
+    };
+    let resp = resp.rich_tip_with(|| format!("{label}\n{}", tr(desc)));
+    if resp.clicked() {
+        act.guides_master = Some(master);
+        if let Some(p) = page.filter(|p| *p != app.page) {
+            act.goto = Some(p);
+        }
+    }
+    let base = match page {
+        Some(p) => egui::Id::new(("objects_guides", p.raw())),
+        None => egui::Id::new("objects_guides"),
+    };
     let mut x = rect.left() + 3.0 + INDENT + 16.0;
     let (er, e) = hot(ui, rect, x, 18.0, base.with("eye"));
     paint_eye(ui, er, app.show_guides);
@@ -930,12 +962,15 @@ fn guides_row(app: &App, ui: &mut Ui, page: &Page, act: &mut Actions) {
     x += 20.0;
     paint_printer(ui, square(rect, x, 18.0), false);
     x += 20.0;
-    let any = !page.guides.is_empty();
-    let locked = any && page.guides.iter().all(|g| g.locked);
+    let any = !guides.is_empty();
+    let locked = any && guides.iter().all(|g| g.locked);
     let (lr, l) = hot(ui, rect, x, 18.0, base.with("lock"));
     paint_lock(ui, lr, locked);
     if l.rich_tip(tr("docker.lock_guides")).clicked() && any {
-        act.lock_guides = Some(!locked);
+        act.lock_guides = Some((master, !locked));
+        if let Some(p) = page.filter(|p| *p != app.page) {
+            act.goto = Some(p);
+        }
     }
     x += 22.0;
     paint_guides_icon(ui.painter(), square(rect, x, 16.0));
@@ -943,7 +978,7 @@ fn guides_row(app: &App, ui: &mut Ui, page: &Page, act: &mut Actions) {
     ui.painter().text(
         Pos2::new(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        tr("docker.guides"),
+        label,
         egui::FontId::proportional(13.0),
         Tokens::text(),
     );
@@ -1684,7 +1719,11 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     if act.toggle_grid {
         app.show_grid = !app.show_grid;
     }
-    if let Some(locked) = act.lock_guides {
+    if let Some(master) = act.guides_master {
+        app.choose_master_guides(master);
+    }
+    if let Some((master, locked)) = act.lock_guides {
+        app.choose_master_guides(master);
         let all: Vec<usize> = (0..app.page_guides().len()).collect();
         app.set_guides_locked(&all, locked);
     }

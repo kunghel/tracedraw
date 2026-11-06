@@ -15,7 +15,11 @@ use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::reexports::csd_frame::{
     DecorationsFrame, FrameAction, FrameClick, ResizeEdge, WindowState as XdgWindowState,
 };
+use sctk::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
+    Shape, WpCursorShapeDeviceV1,
+};
 use sctk::reexports::protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
+use sctk::reexports::protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::ZwpTabletToolV2;
 use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
 use sctk::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
@@ -68,6 +72,10 @@ pub struct WindowState {
 
     /// The pointers observed on the window.
     pub pointers: Vec<Weak<ThemedPointer<WinitPointerData>>>,
+
+    /// TraceDraw: the graphics tablet pens over the window, which show
+    /// its cursor as the pointers do (#1841).
+    pub tablet_cursors: Vec<TabletCursor>,
 
     selected_cursor: SelectedCursor,
 
@@ -206,6 +214,7 @@ impl WindowState {
             resize_increments: None,
             pointer_constraints,
             pointers: Default::default(),
+            tablet_cursors: Default::default(),
             queue_handle: queue_handle.clone(),
             resizable: true,
             scale_factor: 1.,
@@ -737,7 +746,9 @@ impl WindowState {
             if pointer.set_cursor(&self.connection, cursor_icon).is_err() {
                 warn!("Failed to set cursor to {:?}", cursor_icon);
             }
-        })
+        });
+        // TraceDraw: a pen over the window shows it too (#1841).
+        self.apply_on_tablets();
     }
 
     /// Set the custom cursor icon.
@@ -761,6 +772,8 @@ impl WindowState {
         }
 
         self.selected_cursor = SelectedCursor::Custom(cursor);
+        // TraceDraw: a pen over the window shows it too (#1841).
+        self.apply_on_tablets();
     }
 
     /// Set the resize increments of the window.
@@ -975,6 +988,65 @@ impl WindowState {
 
                 pointer.pointer().set_cursor(latest_enter_serial, None, 0, 0);
             }
+        }
+        // TraceDraw: a pen over the window shows it too (#1841).
+        self.apply_on_tablets();
+    }
+
+    /// TraceDraw: a graphics tablet's pen came over the window (#1841):
+    /// it shows the window's cursor (the tool's, or none where TraceDraw
+    /// draws its own) instead of the compositor's arrow.
+    pub fn tablet_tool_entered(&mut self, cursor: TabletCursor) {
+        self.tablet_cursors.retain(|c| c.tool != cursor.tool);
+        self.apply_on_tablet(&cursor);
+        self.tablet_cursors.push(cursor);
+    }
+
+    /// TraceDraw: the pen `tool` left the window, or went away (#1841).
+    pub fn tablet_tool_left(&mut self, tool: &ZwpTabletToolV2) {
+        self.tablet_cursors.retain(|c| &c.tool != tool);
+    }
+
+    /// TraceDraw: show the window's cursor on every pen over it.
+    fn apply_on_tablets(&self) {
+        for cursor in &self.tablet_cursors {
+            self.apply_on_tablet(cursor);
+        }
+    }
+
+    /// TraceDraw: show the window's cursor on the pen of `cursor`: none
+    /// while the cursor is hidden, a named one through the cursor shape
+    /// protocol, a custom image on the pen's own cursor surface.
+    fn apply_on_tablet(&self, cursor: &TabletCursor) {
+        if !self.cursor_visible {
+            cursor.tool.set_cursor(cursor.serial, None, 0, 0);
+            return;
+        }
+        match &self.selected_cursor {
+            SelectedCursor::Named(icon) => {
+                if let Some(device) = &cursor.shape {
+                    let value = crate::tablet_tool::cursor_shape_value(icon.name());
+                    device.set_shape(cursor.serial, Shape::try_from(value).unwrap_or(Shape::Default));
+                }
+            },
+            SelectedCursor::Custom(image) => {
+                let scale = self.scale_factor().round().max(1.0) as i32;
+                let surface = &cursor.surface;
+                surface.set_buffer_scale(scale);
+                surface.attach(Some(image.buffer.wl_buffer()), 0, 0);
+                if surface.version() >= 4 {
+                    surface.damage_buffer(0, 0, image.w, image.h);
+                } else {
+                    surface.damage(0, 0, image.w / scale, image.h / scale);
+                }
+                surface.commit();
+                cursor.tool.set_cursor(
+                    cursor.serial,
+                    Some(surface),
+                    image.hotspot_x / scale,
+                    image.hotspot_y / scale,
+                );
+            },
         }
     }
 
@@ -1217,4 +1289,16 @@ fn into_sctk_adwaita_config(theme: Option<Theme>) -> sctk_adwaita::FrameConfig {
         Some(Theme::Dark) => sctk_adwaita::FrameConfig::dark(),
         None => sctk_adwaita::FrameConfig::auto(),
     }
+}
+
+/// TraceDraw: a graphics tablet's pen in proximity of a window (#1841):
+/// the tool, the serial of its `proximity_in` (which its cursor requests
+/// name), its cursor shape device when the compositor has the protocol,
+/// and a surface of its own for custom cursor images.
+#[derive(Debug, Clone)]
+pub struct TabletCursor {
+    pub tool: ZwpTabletToolV2,
+    pub serial: u32,
+    pub shape: Option<WpCursorShapeDeviceV1>,
+    pub surface: WlSurface,
 }

@@ -30,10 +30,23 @@ enum Action {
 pub fn document_tabs(app: &mut App, ui: &mut Ui) {
     let mut action = None;
     let strip = ui.max_rect();
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new("document_tabs_strip"), strip));
     // Nothing below the line: the strip ends where it does.
     ui.spacing_mut().item_spacing.y = 0.0;
-    ui.horizontal(|ui| {
+    // The active tab, when it changed since the last frame: the strip
+    // slides to show it (a drawing opened or chosen from the Window
+    // menu).
+    let shown_id = egui::Id::new("document_tabs_active");
+    let active_now = (!app.show_welcome).then_some(app.active_doc);
+    let changed = ui.ctx().data(|d| d.get_temp::<Option<usize>>(shown_id)) != Some(active_now);
+    ui.ctx().data_mut(|d| d.insert_temp(shown_id, active_now));
+    // More tabs than the window is wide: the strip slides with its « and
+    // » buttons and the mouse wheel (#1908).
+    crate::ui::overflow::row_showing(ui, "document_tabs", |ui| {
         ui.spacing_mut().item_spacing.x = 1.0;
+        let mut keep = None;
         let welcome = app.show_welcome;
         // Shown again, the Welcome Screen has its whole tab back.
         if welcome && app.settings.welcome_tab_closed {
@@ -47,7 +60,11 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
         for i in 0..app.docs.len() {
             let title = app.document_tab_title(i);
             let active = !app.show_welcome && i == app.active_doc;
-            match doc_tab(ui, i, &title, active) {
+            let (click, rect) = doc_tab(ui, i, &title, active);
+            if active && changed {
+                keep = Some(rect);
+            }
+            match click {
                 TabClick::Select => action = Some(Action::Switch(i)),
                 TabClick::Close => action = Some(Action::Close(i)),
                 TabClick::None => {}
@@ -56,6 +73,7 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
         if new_tab(ui) {
             action = Some(Action::New);
         }
+        keep
     });
     let line_y = strip.top() + TAB_HEIGHT;
     ui.painter().rect_filled(
@@ -228,14 +246,20 @@ enum TabClick {
     Close,
 }
 
-fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> TabClick {
+/// The id of the tab of the drawing `i`.
+pub(crate) fn doc_tab_id(i: usize) -> egui::Id {
+    egui::Id::new(("doc_tab", i))
+}
+
+fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> (TabClick, Rect) {
     let galley = ui.painter().layout_no_wrap(
         title.to_string(),
         egui::FontId::proportional(FONT),
         crate::theme::Tokens::text(),
     );
     let width = (PAD + galley.size().x + 6.0 + CLOSE + 8.0).max(116.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::hover());
+    let resp = ui.interact(rect, doc_tab_id(i), Sense::click());
     let close_rect = Rect::from_center_size(
         Pos2::new(rect.right() - 8.0 - CLOSE / 2.0, rect.center().y),
         Vec2::splat(CLOSE),
@@ -258,11 +282,123 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> TabClick {
         close_mark(painter, close_rect, close_resp.hovered());
     }
     let resp = resp.rich_tip(format!("{title}\n{}", tr("tabs.drawing_desc")));
-    if close_resp.clicked() || resp.middle_clicked() {
+    let click = if close_resp.clicked() || resp.middle_clicked() {
         TabClick::Close
     } else if resp.clicked() {
         TabClick::Select
     } else {
         TabClick::None
+    };
+    (click, rect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, PointerButton};
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(700.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn click(ctx: &egui::Context, app: &mut App, at: Pos2) {
+        frame(ctx, app, vec![Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            frame(
+                ctx,
+                app,
+                vec![Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        frame(ctx, app, Vec::new());
+    }
+
+    fn tab(ctx: &egui::Context, i: usize) -> Rect {
+        ctx.read_response(doc_tab_id(i))
+            .map(|r| r.rect)
+            .expect("the tab is drawn")
+    }
+
+    /// Twelve drawings in a 700 point window: the tabs past the window's
+    /// edge are reached with the strip's » button and the mouse wheel and
+    /// can be chosen; choosing a drawing elsewhere (the Window menu)
+    /// slides its tab into view (#1908).
+    #[test]
+    fn tabs_past_the_window_edge_can_be_reached() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        while app.docs.len() < 12 {
+            app.new_document();
+        }
+        app.switch_document(0);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        // The room between the strip's « and » buttons.
+        let strip = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new("document_tabs_strip")))
+            .expect("the strip is drawn");
+        let b = crate::ui::overflow::BUTTON;
+        let window = Rect::from_min_max(
+            Pos2::new(strip.left() + b - 0.5, strip.top()),
+            Pos2::new(strip.right() - b + 0.5, strip.top() + TAB_HEIGHT),
+        );
+        let last = app.docs.len() - 1;
+        assert!(tab(&ctx, last).left() > window.right(), "past the edge");
+        // » until the last tab is wholly in the window.
+        let first = tab(&ctx, 0);
+        let forward = Pos2::new(strip.right() - b / 2.0, first.center().y);
+        for _ in 0..20 {
+            if window.contains_rect(tab(&ctx, last)) {
+                break;
+            }
+            click(&ctx, &mut app, forward);
+        }
+        let r = tab(&ctx, last);
+        assert!(window.contains_rect(r), "{r:?} reached with »");
+        click(&ctx, &mut app, r.center());
+        assert_eq!(app.active_doc, last, "and chosen");
+        // The wheel over the strip slides it back to the first tab.
+        for _ in 0..40 {
+            frame(
+                &ctx,
+                &mut app,
+                vec![
+                    Event::PointerMoved(Pos2::new(window.center().x, first.center().y)),
+                    Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, 200.0),
+                        modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                    },
+                ],
+            );
+        }
+        let r = ctx
+            .read_response(egui::Id::new(WELCOME_TAB))
+            .map(|r| r.rect)
+            .expect("the Welcome Screen tab");
+        assert!(window.contains_rect(r), "{r:?} back with the wheel");
+        assert!(tab(&ctx, 0).left() < window.right());
+        assert!(!window.contains_rect(tab(&ctx, last)));
+        // Another drawing chosen without the strip: its tab shows.
+        app.switch_document(last - 1);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let r = tab(&ctx, last - 1);
+        assert!(window.contains_rect(r), "{r:?} the active tab shows");
     }
 }

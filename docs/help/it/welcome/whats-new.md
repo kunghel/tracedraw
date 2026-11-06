@@ -23,6 +23,18 @@ come scoprire cosa è cambiato ed elenca i punti salienti delle ultime versioni.
 
 ## Punti salienti delle ultime versioni {#highlights}
 
+- **Touch e telefoni.** I pulsanti Maiusc, Ctrl e Alt della barra standard
+  restano premuti per un dito; su Android l'interfaccia evita il foro della
+  fotocamera e gli angoli arrotondati; l'Apple Pencil funziona in Safari su
+  iPad.
+- **File.** I file .cdr conservano la regola di riempimento delle curve
+  sovrapposte e si aprono con le loro tabulazioni, il testo su più colonne, le
+  guide condivise da tutte le pagine e gli oggetti della pagina master.
+- **Immagini, stampa e area di lavoro.** Ritaglia i pixel dell'immagine nello
+  strumento Ritaglio e [[menu.bitmaps > menu.bitmaps.crop_to_frame]]
+  ritagliano i pixel di un'immagine; stampa in scala di grigi e in ordine
+  inverso; [[menu.view > menu.view.scrollbars]] nasconde le barre di
+  scorrimento.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] apre gli strumenti per i
   plotter da taglio: uscita al plotter, linee di taglio, disposizione e
   misura. Vedi [TraceCut](../objects/tracecut.md).

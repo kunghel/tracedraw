@@ -9,6 +9,7 @@ use crate::crop_tool::{handles, moved};
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::propbar::{distance, label_text, origin_point, row, sep, stacked};
+use crate::ui::tips::RichTip;
 use egui::{Color32, Painter, Stroke, Ui};
 use tracedraw_core::geometry::{Point, Rect};
 
@@ -42,6 +43,14 @@ fn sized(r: Rect, origin: (u8, u8), w: f64, h: f64) -> Rect {
 
 /// The bar.
 pub fn crop_bar(app: &mut App, ui: &mut Ui) {
+    // Pictures lose their pixels outside the area, or go in a clip frame
+    // of it (#1913).
+    ui.checkbox(
+        &mut app.settings.crop_picture_pixels,
+        tr("crop.picture_pixels"),
+    )
+    .rich_tip(tr("crop.picture_pixels_tip"));
+    sep(ui);
     let Some(r) = app.crop_area else {
         dim(ui, tr("crop.draw_hint"));
         return;

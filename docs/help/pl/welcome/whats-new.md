@@ -22,6 +22,16 @@ sprawdzić, co się zmieniło, i wymienia najważniejsze nowości ostatnich wers
 
 ## Najważniejsze nowości ostatnich wersji {#highlights}
 
+- **Dotyk i telefony.** Przyciski Shift, Ctrl i Alt na pasku standardowym
+  pozostają wciśnięte dla palca; na Androidzie interfejs omija wycięcie
+  aparatu i zaokrąglone rogi; Apple Pencil działa w Safari na iPadzie.
+- **Pliki.** Pliki .cdr zachowują regułę wypełnienia nakładających się
+  krzywych i otwierają się z tabulatorami, tekstem w wielu kolumnach,
+  prowadnicami wspólnymi dla wszystkich stron i obiektami strony wzorcowej.
+- **Obrazy, drukowanie i obszar roboczy.** Przycinanie pikseli obrazu w
+  narzędziu Kadrowanie i [[menu.bitmaps > menu.bitmaps.crop_to_frame]]
+  przycinają piksele obrazu; druk w skali szarości i w odwrotnej kolejności;
+  [[menu.view > menu.view.scrollbars]] ukrywa paski przewijania.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] otwiera narzędzia dla
   ploterów tnących: wyjście na ploter, linie cięcia, rozmieszczanie i pomiary.
   Zobacz [TraceCut](../objects/tracecut.md).

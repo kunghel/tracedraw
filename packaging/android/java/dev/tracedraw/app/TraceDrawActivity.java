@@ -33,7 +33,10 @@ import android.print.PrintManager;
 import android.os.Parcelable;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
@@ -108,6 +111,16 @@ public class TraceDrawActivity extends NativeActivity {
         super.onCreate(savedInstanceState);
         textInput = new TextInputView(this);
         addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
+        // The screen's safe area, read again at every layout (a rotation,
+        // a resize) for the editor (#1917).
+        final View decor = getWindow().getDecorView();
+        decor.getViewTreeObserver().addOnGlobalLayoutListener(
+            new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override
+                public void onGlobalLayout() {
+                    readScreenInsets(decor);
+                }
+            });
         // The intent that started the app; not again when the system
         // recreates the activity (its documents are open already) or when
         // the app is brought back from the recent apps, which hands the
@@ -350,6 +363,86 @@ public class TraceDrawActivity extends NativeActivity {
         });
     }
 
+    /** The requests waiting for a folder from the folder picker (#1926). */
+    private final java.util.HashSet<Integer> treeRequests = new java.util.HashSet<Integer>();
+
+    /**
+     * Show the system's folder picker (ACTION_OPEN_DOCUMENT_TREE). The
+     * documents in the folder chosen (not its subfolders) come through
+     * nativeDocumentResult as picked documents (#1926).
+     */
+    public void openDocumentTree(final int request) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    treeRequests.add(request);
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    startActivityForResult(intent, request);
+                } catch (Exception e) {
+                    Log.w(TAG, "the folder picker could not open", e);
+                    treeRequests.remove(request);
+                    nativeDocumentResult(request, null, null, null);
+                }
+            }
+        });
+    }
+
+    /**
+     * Hand the documents in the folder `tree` (a tree URI the folder
+     * picker gave) to the editor under `requestCode`; subfolders are left
+     * out. The right to read the folder is kept across restarts.
+     */
+    private void sendTree(int requestCode, Uri tree) {
+        try {
+            getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception e) {
+            Log.i(TAG, "no persistable permission for " + tree);
+        }
+        StringBuilder u = new StringBuilder();
+        StringBuilder n = new StringBuilder();
+        StringBuilder m = new StringBuilder();
+        Cursor cursor = null;
+        try {
+            Uri children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+                tree, android.provider.DocumentsContract.getTreeDocumentId(tree));
+            cursor = getContentResolver().query(children, new String[] {
+                android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+            }, null, null, null);
+            while (cursor != null && cursor.moveToNext()) {
+                String id = cursor.getString(0);
+                String name = cursor.getString(1);
+                String mime = cursor.getString(2);
+                if (id == null
+                    || android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    continue;
+                }
+                Uri doc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, id);
+                if (u.length() > 0) {
+                    u.append('\n');
+                    n.append('\n');
+                    m.append('\n');
+                }
+                u.append(doc.toString());
+                n.append(name == null ? "document" : name.replace('\n', ' '));
+                m.append(mime == null ? "" : mime.replace('\n', ' '));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "the folder could not be listed", e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        if (u.length() == 0) {
+            nativeDocumentResult(requestCode, null, null, null);
+        } else {
+            nativeDocumentResult(requestCode, u.toString(), n.toString(), m.toString());
+        }
+    }
+
     /**
      * Show the system's picker for a place to save a new document named
      * `name` of type `mime`. The result comes through nativeDocumentResult.
@@ -375,8 +468,18 @@ public class TraceDrawActivity extends NativeActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        boolean tree = treeRequests.remove(requestCode);
         if (resultCode != RESULT_OK || data == null) {
             nativeDocumentResult(requestCode, null, null, null);
+            return;
+        }
+        // A folder from the folder picker: its documents (#1926).
+        if (tree) {
+            if (data.getData() == null) {
+                nativeDocumentResult(requestCode, null, null, null);
+            } else {
+                sendTree(requestCode, data.getData());
+            }
             return;
         }
         ArrayList<Uri> uris = new ArrayList<Uri>();
@@ -811,6 +914,69 @@ public class TraceDrawActivity extends NativeActivity {
             }
         }, Boolean.FALSE);
         return done != null && done.booleanValue();
+    }
+
+    // ----- the screen's safe area (#1917) -------------------------------------
+
+    /**
+     * The room the system bars and the camera cutout take on each side of
+     * the window and the radii of the screen's rounded corners, in pixels,
+     * as "top bottom left right top-left top-right bottom-right
+     * bottom-left"; empty before the first layout. Written on the UI
+     * thread at each layout, read by the editor's thread.
+     */
+    private volatile String screenInsets = "";
+
+    private void readScreenInsets(View decor) {
+        WindowInsets insets = decor.getRootWindowInsets();
+        if (insets == null) {
+            return;
+        }
+        int top, bottom, left, right;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            // Bars that are hidden (the status bar of a full screen
+            // window) take no room.
+            android.graphics.Insets safe = insets.getInsets(
+                WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            top = safe.top;
+            bottom = safe.bottom;
+            left = safe.left;
+            right = safe.right;
+        } else {
+            top = insets.getSystemWindowInsetTop();
+            bottom = insets.getSystemWindowInsetBottom();
+            left = insets.getSystemWindowInsetLeft();
+            right = insets.getSystemWindowInsetRight();
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                android.view.DisplayCutout cutout = insets.getDisplayCutout();
+                if (cutout != null) {
+                    top = Math.max(top, cutout.getSafeInsetTop());
+                    bottom = Math.max(bottom, cutout.getSafeInsetBottom());
+                    left = Math.max(left, cutout.getSafeInsetLeft());
+                    right = Math.max(right, cutout.getSafeInsetRight());
+                }
+            }
+        }
+        int[] radii = new int[4];
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            int[] positions = {
+                android.view.RoundedCorner.POSITION_TOP_LEFT,
+                android.view.RoundedCorner.POSITION_TOP_RIGHT,
+                android.view.RoundedCorner.POSITION_BOTTOM_RIGHT,
+                android.view.RoundedCorner.POSITION_BOTTOM_LEFT,
+            };
+            for (int i = 0; i < 4; i++) {
+                android.view.RoundedCorner corner = insets.getRoundedCorner(positions[i]);
+                radii[i] = corner == null ? 0 : corner.getRadius();
+            }
+        }
+        screenInsets = top + " " + bottom + " " + left + " " + right + " "
+            + radii[0] + " " + radii[1] + " " + radii[2] + " " + radii[3];
+    }
+
+    /** The screen's safe area as last read (see screenInsets). */
+    public String getScreenInsets() {
+        return screenInsets;
     }
 
     // ----- accessibility settings (#1412) -------------------------------------

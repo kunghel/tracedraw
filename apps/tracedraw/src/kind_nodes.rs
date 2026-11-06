@@ -612,6 +612,33 @@ pub fn spline_without_many(s: &Shape, indices: &[usize]) -> Option<Vec<Point>> {
     (out.len() >= 2).then_some(out)
 }
 
+/// The fixed flags for the B-spline `s` given the control points
+/// `points`, made from its own by adding or removing points (#1758):
+/// each point kept keeps its flag, a new one floats. `None` (keep the
+/// flags) when the number of points stays.
+pub fn spline_fixed_for(s: &Shape, points: &[Point]) -> Option<Vec<bool>> {
+    let old = s.spline.as_ref()?;
+    if old.len() == points.len() {
+        return None;
+    }
+    let flag = |j: usize| s.spline_fixed.get(j).copied().unwrap_or(false);
+    let mut out = Vec::with_capacity(points.len());
+    let mut j = 0;
+    for p in points {
+        // Points removed from the old list are skipped; a point not in
+        // it is new.
+        let next = (j..old.len()).find(|&k| old[k] == *p);
+        match next {
+            Some(k) if old.len() > points.len() || k == j => {
+                out.push(flag(k));
+                j = k + 1;
+            }
+            _ => out.push(false),
+        }
+    }
+    Some(out)
+}
+
 /// The control points of the B-spline `s` without the point `index`;
 /// `None` when two would not remain.
 pub fn spline_without(s: &Shape, index: usize) -> Option<Vec<Point>> {

@@ -143,13 +143,16 @@ fn slider(ui: &mut Ui, name: &'static str, key: &str, v: &mut f64) {
     crate::ui::tips::tip_over(ui, crate::ui::tips::keyed(key), |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(100.0);
-            let resp = ui.add(crate::ui::Rail(
+            let mut resp = ui.add(crate::ui::Rail(
                 egui::Slider::new(v, 0.0..=100.0)
                     .show_value(true)
                     .step_by(1.0)
                     .max_decimals(0)
                     .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.4 }),
             ));
+            // The wheel on hover steps it by one, as the other sliders
+            // (#1335).
+            crate::ui::slider::wheel_on_hover(ui, &mut resp, v, 0.0..=100.0, 1.0);
             let rail = Rect::from_min_size(
                 resp.rect.left_top(),
                 Vec2::new(ui.spacing().slider_width, resp.rect.height()),

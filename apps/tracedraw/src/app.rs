@@ -932,6 +932,7 @@ pub struct TextShown {
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
 }
 
 pub struct App {
@@ -1064,6 +1065,9 @@ pub struct App {
     pub show_grid: bool,
     pub show_status_bar: bool,
     pub show_dockers: bool,
+    /// Shift, Ctrl and Alt held from the Standard toolbar, for a finger
+    /// (#1499, touch_modifiers.rs).
+    pub touch_mods: crate::touch_modifiers::TouchModifiers,
     pub docker_tab: DockerTab,
     pub flyout_open: Option<usize>,
     /// The tool each toolbox group shows: the one last used from its flyout.
@@ -1082,6 +1086,11 @@ pub struct App {
     /// them since (moved, scaled, turned), as the reference program's
     /// smart duplicate does (#559). Deselecting them ends it (#1494).
     pub last_duplicate: Vec<(ShapeId, ShapeId)>,
+    /// [`last_duplicate`](Self::last_duplicate) as it was when its copies
+    /// were deselected, with the drawing's revision and the selection
+    /// then: Undo with nothing changed since selects the copies again and
+    /// brings the repeat back, for a deselect made by accident (#1494).
+    pub forgotten_duplicate: Option<(Vec<(ShapeId, ShapeId)>, u64, Vec<ShapeId>)>,
     /// The last Duplicate of guidelines, which the next one repeats in
     /// the same way while the copies are the selection (#1494).
     pub last_guide_duplicate: Option<crate::guides::GuideDuplicate>,
@@ -1173,6 +1182,8 @@ pub struct App {
     pub text_bold: bool,
     pub text_italic: bool,
     pub text_underline: bool,
+    /// The text bar's Strikethrough (#1022).
+    pub text_strikethrough: bool,
     /// What the text fields above showed when they were last read from a
     /// text object: with several text objects selected, only the fields
     /// changed since then go to all of them (#1304).
@@ -1377,6 +1388,10 @@ pub struct App {
     pub show_guides: bool,
     /// Selected guidelines of the active page (indices).
     pub selected_guides: Vec<usize>,
+    /// The guidelines being edited are the master page's, which every
+    /// page shows (#1928), not the active page's own: chosen in the
+    /// Objects docker. New guidelines go there too.
+    pub edit_master_guides: bool,
     /// The guideline showing rotation handles (second click on it).
     pub guide_rotate: Option<usize>,
     /// Rotation centre of that guideline, where it was clicked.
@@ -1428,10 +1443,17 @@ pub struct App {
     pub view_mode: ViewMode,
     pub proof_colors: bool,
     pub show_page_border: bool,
+    /// View > Page > Page Shadow: the shadow under the page, apart from
+    /// its border, so a white page on a white desktop can keep its edge
+    /// without the shadow, or the other way round (#1906).
+    pub show_page_shadow: bool,
     pub simulate_overprints: bool,
     pub rasterize_complex_effects: bool,
     pub show_bleed: bool,
     pub show_printable_area: bool,
+    /// The printers' hard margins, read off the interface's thread: the
+    /// printable area on the canvas and in Print Preview (#1924).
+    pub printer_margins: crate::printers::MarginsCache,
     /// View > Mask Outside Page: an opaque colour is drawn over what
     /// lies outside the page, with the page border over the objects, so
     /// the page shows as it will print while every object stays editable
@@ -1503,6 +1525,10 @@ pub struct App {
     /// Print Merge's Place Inside Frame waiting for a click on the shape
     /// that holds the picture (#577).
     pub pending_merge_frame: bool,
+    /// File > Import's file waiting for its place on the drawing (#1936).
+    pub import_placing: Option<crate::import_place::ImportPlacing>,
+    /// A placement waiting for an import that asked a question first.
+    pub import_place_waiting: Option<crate::import_place::WaitingPlacement>,
     /// Weld, Trim or Intersect waiting for a click on the target, with
     /// what it leaves of the source and the target (#562).
     pub pending_shaping: Option<(crate::ops::Shaping, bool, bool)>,
@@ -1564,8 +1590,9 @@ pub struct App {
     pub pending_order: Option<bool>,
     /// What Edit > Repeat can repeat, newest last, each with the id of
     /// the undo step it made: Repeat takes the newest whose step is still
-    /// in effect (an undone action is never repeated, #366).
-    pub repeatables: Vec<(u64, Repeatable)>,
+    /// in effect (an undone action is never repeated, #366), with the
+    /// actions done right before it to the same selection (#1566).
+    pub repeatables: Vec<(u64, RepeatEntry)>,
     pub show_non_printing: bool,
     pub text_hyphenation: bool,
     /// Macro recording in progress: the commands run since Record started.
@@ -2233,14 +2260,33 @@ pub enum Repeatable {
     /// A command, run again on the selection of the time.
     Command(Box<Command>),
     /// Copies of the selection transformed by the affine (a drag ended
-    /// with a right click), made again from the selection of the time.
-    Copy(Affine),
+    /// with a right click), made again from the selection of the time,
+    /// about the same place of its box as `Transform` (a mirror copy made
+    /// with a side handle mirrors the next copy over the same side of the
+    /// copy it is repeated on, #1909).
+    Copy { transform: Affine, before: Rect },
     /// A move, turn, resize or slant of objects whose box was `before`:
     /// repeated about the same place of the box of the selection of the
     /// time (its centre, a side, a corner), so a turn or a resize does not
     /// also move what it is repeated on (#1289).
     Transform { transform: Affine, before: Rect },
+    /// Several of these, one after another, as one step: a Repeat of a
+    /// group (#1566).
+    Group(Vec<Repeatable>),
 }
+
+/// A repeatable action with the selection before and after it, which
+/// tells the actions done one after another to the same objects (a group
+/// Repeat replays together) from those done to other objects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepeatEntry {
+    pub action: Repeatable,
+    pub before: Vec<ShapeId>,
+    pub after: Vec<ShapeId>,
+}
+
+/// Most actions one Repeat replays.
+const REPEAT_GROUP_MAX: usize = 16;
 
 /// Where a docker lies: the default column (the right side of the
 /// window; the left in a right-to-left language), the column at the
@@ -2526,6 +2572,7 @@ impl App {
             show_grid: false,
             show_status_bar: true,
             show_dockers: true,
+            touch_mods: Default::default(),
             docker_tab: DockerTab::Hints,
             flyout_open: None,
             toolbox_last: crate::tools::GROUPS.iter().map(|g| g.tools[0]).collect(),
@@ -2536,6 +2583,7 @@ impl App {
             // scaled or turned; the next one repeats that (#1494).
             duplicate_offset: Vec2::ZERO,
             last_duplicate: Vec::new(),
+            forgotten_duplicate: None,
             last_guide_duplicate: None,
             polygon_points: 5,
             star_sharpness: 0.5,
@@ -2590,6 +2638,7 @@ impl App {
             text_bold: false,
             text_italic: false,
             text_underline: false,
+            text_strikethrough: false,
             text_shown: None,
             text_align: tracedraw_core::TextAlign::Left,
             eyedropper_color: None,
@@ -2675,6 +2724,7 @@ impl App {
             symmetry_doc: Default::default(),
             show_guides: true,
             selected_guides: Vec::new(),
+            edit_master_guides: false,
             guide_rotate: None,
             guide_pivot: Point::ZERO,
             guide_form: Default::default(),
@@ -2702,10 +2752,12 @@ impl App {
             view_mode: ViewMode::Enhanced,
             proof_colors: false,
             show_page_border: true,
+            show_page_shadow: true,
             simulate_overprints: false,
             rasterize_complex_effects: true,
             show_bleed: false,
             show_printable_area: false,
+            printer_margins: Default::default(),
             mask_outside_page: false,
             show_pixel_grid: true,
             show_baseline_grid: false,
@@ -2740,6 +2792,8 @@ impl App {
             copy_properties_choice: Default::default(),
             pending_shaping: None,
             pending_merge_frame: false,
+            import_placing: None,
+            import_place_waiting: None,
             autofit_preview: None,
             last_export: None,
             last_bg_remove: None,
@@ -3385,6 +3439,7 @@ impl App {
         self.toolbox_last = crate::tools::GROUPS.iter().map(|g| g.tools[0]).collect();
         self.apply_settings(fresh);
         self.show_page_border = true;
+        self.show_page_shadow = true;
         self.shortcut_editor = Default::default();
         self.recent_thumbs.clear();
         self.apply_runtime_settings();
@@ -3566,6 +3621,7 @@ impl App {
             grid: self.show_grid,
             guides: self.show_guides,
             page_border: self.show_page_border,
+            page_shadow: self.show_page_shadow,
             bleed: self.show_bleed,
             printable_area: self.show_printable_area,
             mask_outside_page: self.mask_outside_page,
@@ -3584,6 +3640,7 @@ impl App {
         self.show_grid = v.grid;
         self.show_guides = v.guides;
         self.show_page_border = v.page_border;
+        self.show_page_shadow = v.page_shadow;
         self.show_bleed = v.bleed;
         self.show_printable_area = v.printable_area;
         self.mask_outside_page = v.mask_outside_page;
@@ -4334,16 +4391,60 @@ impl App {
             .iter()
             .rev()
             .find(|(id, _)| self.engine.step_in_effect(*id))
-            .map(|(_, r)| r)
+            .map(|(_, r)| &r.action)
+    }
+
+    /// What Edit > Repeat replays, oldest first: the newest action whose
+    /// undo step is in effect, with the actions of the steps right under
+    /// it that were done to the same selection, with no other step and
+    /// no change of selection in between (a move and a fill change of
+    /// the same objects, #1566).
+    pub fn repeat_group(&self) -> Vec<Repeatable> {
+        let find = |id: u64| self.repeatables.iter().rev().find(|(i, _)| *i == id);
+        let Some((mut id, mut entry)) = self
+            .repeatables
+            .iter()
+            .rev()
+            .find(|(id, _)| self.engine.step_in_effect(*id))
+            .map(|(id, e)| (*id, e))
+        else {
+            return Vec::new();
+        };
+        let mut group = vec![entry.action.clone()];
+        // A Repeat of a group holds the actions before it already.
+        while group.len() < REPEAT_GROUP_MAX && !matches!(entry.action, Repeatable::Group(_)) {
+            let Some((below, prev)) = self.engine.step_below(id).and_then(find) else {
+                break;
+            };
+            if !same_objects(&prev.after, &entry.before) {
+                break;
+            }
+            group.push(prev.action.clone());
+            (id, entry) = (*below, prev);
+        }
+        group.reverse();
+        group
     }
 
     /// Remember `r` as the action of the undo step just recorded.
     pub(crate) fn note_repeatable(&mut self, r: Repeatable) {
+        let sel = self.selection.clone();
+        self.note_repeatable_from(r, sel);
+    }
+
+    /// [`note_repeatable`](Self::note_repeatable) of an action done to
+    /// `before`, which left the selection as it is now.
+    pub(crate) fn note_repeatable_from(&mut self, r: Repeatable, before: Vec<ShapeId>) {
         let Some(id) = self.engine.last_step_id() else {
             return;
         };
+        let entry = RepeatEntry {
+            action: r,
+            before,
+            after: self.selection.clone(),
+        };
         self.repeatables.retain(|(i, _)| *i != id);
-        self.repeatables.push((id, r));
+        self.repeatables.push((id, entry));
         // Only the newest few matter; the ones undone and replaced by
         // other steps never come back.
         if self.repeatables.len() > 64 {
@@ -4360,25 +4461,67 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
+        let Some(before) = self.selection_bounds() else {
+            return;
+        };
+        let originals = self.selection.clone();
         // One step: the copies and their move (#471).
         let mark = self.engine.begin_group();
         self.duplicate_in_place();
         self.transform_selection(t);
         self.engine.end_group(mark, "Duplicate");
-        self.note_repeatable(Repeatable::Copy(t));
+        self.note_repeatable_from(
+            Repeatable::Copy {
+                transform: t,
+                before,
+            },
+            originals,
+        );
     }
 
     /// Edit > Repeat: the last action still in effect again, on the
     /// current selection (a copy with a right click during a drag makes
-    /// another copy, moved as far again, #363).
+    /// another copy, moved as far again, #363), together with the actions
+    /// done right before it to the same objects, as one undo step
+    /// (#1566).
     pub fn repeat_last(&mut self) {
-        let cmd = match self.last_repeatable().cloned() {
-            Some(Repeatable::Command(cmd)) => *cmd,
-            Some(Repeatable::Copy(t)) => {
-                self.copy_selection_by(t);
+        let mut group = Vec::new();
+        for action in self.repeat_group() {
+            match action {
+                Repeatable::Group(actions) => group.extend(actions),
+                a => group.push(a),
+            }
+        }
+        match group.len() {
+            0 => {}
+            1 => self.repeat_action(group[0].clone()),
+            _ => {
+                let before = self.selection.clone();
+                let mark = self.engine.begin_group();
+                for action in &group {
+                    self.repeat_action(action.clone());
+                }
+                self.engine.end_group(mark, "Repeat");
+                // The joined step repeats as the whole group again.
+                if self.engine.last_step_id() != mark {
+                    self.note_repeatable_from(Repeatable::Group(group), before);
+                }
+            }
+        }
+    }
+
+    /// One repeatable action again, on the current selection.
+    fn repeat_action(&mut self, action: Repeatable) {
+        let cmd = match action {
+            Repeatable::Command(cmd) => *cmd,
+            Repeatable::Copy { transform, before } => {
+                let Some(now) = self.selection_bounds() else {
+                    return;
+                };
+                self.copy_selection_by(repeated_transform(transform, before, now));
                 return;
             }
-            Some(Repeatable::Transform { transform, before }) => {
+            Repeatable::Transform { transform, before } => {
                 let Some(now) = self.selection_bounds() else {
                     return;
                 };
@@ -4389,7 +4532,12 @@ impl App {
                 });
                 return;
             }
-            None => return,
+            Repeatable::Group(actions) => {
+                for a in actions {
+                    self.repeat_action(a);
+                }
+                return;
+            }
         };
         let shapes = self.selection.clone();
         let cmd = match cmd {
@@ -4868,6 +5016,10 @@ impl App {
             self.finish_text();
             self.table_edit = None;
             self.three_point_base = None;
+            // A shape being drawn never outlives its tool (#1923).
+            if matches!(self.drag, Drag::Box { .. }) {
+                self.drag = Drag::None;
+            }
             self.crop_area = None;
             self.crop_drag = None;
             self.dimension_points.clear();
@@ -5342,7 +5494,11 @@ impl App {
             Some(ShapeKind::Path { path, .. }) if path == line
         );
         if fresh {
-            let _ = self.engine.amend(&Command::SetSpline { shape: id, points });
+            let _ = self.engine.amend(&Command::SetSpline {
+                shape: id,
+                points,
+                fixed: None,
+            });
         }
     }
 
@@ -5432,6 +5588,7 @@ impl App {
                 self.text_bold = sp.bold;
                 self.text_italic = sp.italic;
                 self.text_underline = sp.underline;
+                self.text_strikethrough = sp.strikethrough;
                 self.text_shown = Some(TextShown {
                     shape: id,
                     font: Some(self.text_font.clone()),
@@ -5439,6 +5596,7 @@ impl App {
                     bold: Some(sp.bold),
                     italic: Some(sp.italic),
                     underline: Some(sp.underline),
+                    strikethrough: Some(sp.strikethrough),
                 });
             }
             // The alignment of the paragraph at the caret.
@@ -5675,8 +5833,10 @@ impl App {
                 .last_duplicate
                 .iter()
                 .all(|(_, c)| self.selection.contains(c));
-        if !copies_selected {
-            self.last_duplicate.clear();
+        if !copies_selected && !self.last_duplicate.is_empty() {
+            let pairs = std::mem::take(&mut self.last_duplicate);
+            self.forgotten_duplicate =
+                Some((pairs, self.engine.revision(), self.selection.clone()));
         }
         let guides_selected = self.last_guide_duplicate.as_ref().is_some_and(|d| {
             self.selection.is_empty()
@@ -5689,6 +5849,32 @@ impl App {
         if !guides_selected {
             self.last_guide_duplicate = None;
         }
+    }
+
+    /// Undo right after the copies of the last Duplicate were deselected,
+    /// with nothing changed since: they are selected again and the next
+    /// Duplicate repeats what was done to them, as before the deselect;
+    /// no step of the drawing is undone (#1494).
+    fn undo_duplicate_deselect(&mut self) -> bool {
+        let Some((pairs, revision, then)) = self.forgotten_duplicate.take() else {
+            return false;
+        };
+        let copies: Vec<ShapeId> = pairs.iter().map(|(_, c)| *c).collect();
+        let doc = self.engine.document();
+        let all_there = pairs
+            .iter()
+            .all(|(o, c)| doc.find_shape(*o).is_some() && doc.find_shape(*c).is_some());
+        if revision != self.engine.revision()
+            || self.selection != then
+            || !all_there
+            || copies.is_empty()
+        {
+            return false;
+        }
+        self.select(copies);
+        self.last_duplicate = pairs;
+        self.status = crate::i18n::tr("status.duplicate_reselected");
+        true
     }
 
     pub fn duplicate(&mut self) {
@@ -5746,6 +5932,7 @@ impl App {
         }
         self.select(ids.clone());
         self.last_duplicate = pairs;
+        self.forgotten_duplicate = None;
         if self.symmetry_edit.is_some() {
             self.join_symmetry(&ids);
         }
@@ -6381,6 +6568,9 @@ impl App {
         }
         self.curve_steps.clear();
         self.finish_text();
+        if self.undo_duplicate_deselect() {
+            return;
+        }
         let step = self.engine.last_step_id();
         let undone = match self.engine.undo() {
             Ok(l) => {
@@ -7943,7 +8133,7 @@ impl App {
                 crate::i18n::tr("file.images"),
                 &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"],
             )
-            .pick_file(self, |app, path| app.import_path(&path));
+            .pick_file(self, |app, path| app.import_picked(&path));
     }
 
     /// Import a file into the active layer, by extension.
@@ -7998,7 +8188,7 @@ impl App {
         }
     }
 
-    fn import_path_as_in_file(&mut self, path: &std::path::Path) {
+    pub(crate) fn import_path_as_in_file(&mut self, path: &std::path::Path) {
         let path = path.to_path_buf();
         // An installed script filter goes before the built-in readers.
         let raw_ext = path
@@ -8765,6 +8955,23 @@ impl App {
         }
     }
 
+    /// View > Printable Area's margins on a page `width` x `height` mm:
+    /// the hard margins of the printer printed to last (Options >
+    /// Printing keeps it), else of the system's default printer, as the
+    /// system reports them; 5 mm a side while they are read or when it
+    /// does not say (#1924). Whether they are the printer's own.
+    pub fn printable_margins(
+        &self,
+        width: f64,
+        height: f64,
+    ) -> (crate::printers::HardMargins, bool) {
+        let printer = self.settings.printing.printer.as_deref();
+        match self.printer_margins.get(printer) {
+            Some(m) => (m.for_sheet(width, height), true),
+            None => (crate::printers::HardMargins::FALLBACK, false),
+        }
+    }
+
     pub fn page_index(&self) -> usize {
         self.doc()
             .pages
@@ -9138,6 +9345,11 @@ fn three_point_arc(a: Point, b: Point, c: Point) -> Option<tracedraw_core::BezPa
     Some(path)
 }
 
+/// `a` and `b` name the same objects, in any order (and some).
+fn same_objects(a: &[ShapeId], b: &[ShapeId]) -> bool {
+    !a.is_empty() && a.len() == b.len() && a.iter().all(|id| b.contains(id))
+}
+
 /// `t`, done to objects whose box was `before`, redone about the same
 /// place of the box `now`: a turn about the old box's centre turns about
 /// the new box's centre, a resize from a side or a corner resizes from the
@@ -9395,6 +9607,58 @@ mod tests {
         app.duplicate();
         let g = app.selection[0];
         assert!(near(t(&app, g), t(&app, f)));
+    }
+
+    /// A deselect by accident: Undo right after it selects the copies of
+    /// the last Duplicate again and the next Duplicate repeats the step
+    /// again; no change of the drawing is undone. With a change made
+    /// since, Undo undoes that as usual (#1494).
+    #[test]
+    fn undo_after_a_deselect_brings_the_duplicate_repeat_back() {
+        let mut app = App::headless();
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a]);
+        let t = |app: &App, id: ShapeId| app.doc().find_shape(id).expect("shape").transform;
+        let near = |x: Affine, y: Affine| {
+            x.as_coeffs()
+                .iter()
+                .zip(y.as_coeffs())
+                .all(|(p, q)| (p - q).abs() < 1e-9)
+        };
+        app.duplicate();
+        let step = Affine::translate((12.0, 0.0));
+        app.transform_selection(step);
+        app.forget_duplicate_unless_selected();
+        app.duplicate();
+        let c = app.selection[0];
+        assert!(near(t(&app, c), step * step));
+        // Deselected by accident, then Undo: the copy again, nothing undone.
+        let steps = app.engine.history_labels().0.len();
+        app.select(Vec::new());
+        app.forget_duplicate_unless_selected();
+        app.undo();
+        app.forget_duplicate_unless_selected();
+        assert_eq!(app.selection, vec![c]);
+        assert_eq!(app.engine.history_labels().0.len(), steps, "no step undone");
+        app.duplicate();
+        let d = app.selection[0];
+        assert!(near(t(&app, d), step * step * step), "{:?}", t(&app, d));
+        // Deselected and then something changed: Undo undoes that change.
+        app.select(Vec::new());
+        app.forget_duplicate_unless_selected();
+        app.select(vec![a]);
+        app.forget_duplicate_unless_selected();
+        app.transform_selection(Affine::translate((0.0, 5.0)));
+        let moved = t(&app, a);
+        app.select(Vec::new());
+        app.undo();
+        assert!(!near(t(&app, a), moved), "the move is undone");
     }
 
     #[test]
@@ -10528,7 +10792,8 @@ mod tests {
     }
 
     /// Guidelines saved to `.cdr` come back (#1161): those of every page
-    /// from the master page's guides layer, the others from their page.
+    /// from the master page's guides layer (as the drawing's master
+    /// guidelines, #1928), the others from their page.
     #[test]
     fn guidelines_come_back_from_cdr_files() {
         use tracedraw_core::document::{Guide, GuideLine};
@@ -10543,7 +10808,15 @@ mod tests {
         assert!(path.is_file(), "{}", app.status);
         let mut back = App::headless();
         back.open_path(path);
-        let lines: Vec<GuideLine> = back.page_guides().iter().map(|g| g.line).collect();
+        // Those every page has come back as the master page's (#1928):
+        // the page shows them.
+        let lines: Vec<GuideLine> = back
+            .doc()
+            .guides_on_page(back.page)
+            .unwrap_or_default()
+            .iter()
+            .map(|g| g.line)
+            .collect();
         // The file keeps positions in its own units: within a micrometre.
         assert!(
             matches!(

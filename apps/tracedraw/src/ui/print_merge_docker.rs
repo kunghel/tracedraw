@@ -906,13 +906,15 @@ fn choose_pictures(app: &mut App) {
                 }
             }
         }
+        // Android: the system's folder picker, the folder's pictures
+        // (#1926); the browser: the pictures, several at once.
         crate::files::FolderAction::OpenFiles => {
             crate::files::Dialog::new()
                 .add_filter(
                     "Pictures",
                     &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"],
                 )
-                .pick_files(app, |app, paths| {
+                .pick_folder_files(app, |app, paths| {
                     match crate::files::gather("merge-pictures", &paths) {
                         Ok(dir) => {
                             if let Some(st) = app.merge_state.as_mut() {

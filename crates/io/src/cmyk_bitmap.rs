@@ -443,12 +443,39 @@ pub fn cmyk_tiff(
     dpi: f64,
     icc: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
+    tiff_of(width, height, ink, 4, dpi, icc)
+}
+
+/// As [`cmyk_tiff`] with a fifth byte per pixel, its opacity (0 = clear,
+/// 255 = opaque), written as an unassociated alpha channel
+/// (ExtraSamples 2) so the file keeps the picture's transparency: the
+/// inks are each pixel's full inks, not reduced by its opacity.
+pub fn cmyka_tiff(
+    width: u32,
+    height: u32,
+    ink_alpha: &[u8],
+    dpi: f64,
+    icc: Option<&[u8]>,
+) -> Option<Vec<u8>> {
+    tiff_of(width, height, ink_alpha, 5, dpi, icc)
+}
+
+/// A CMYK TIFF of `samples` bytes per pixel: 4 (inks) or 5 (inks and
+/// alpha).
+fn tiff_of(
+    width: u32,
+    height: u32,
+    ink: &[u8],
+    samples: usize,
+    dpi: f64,
+    icc: Option<&[u8]>,
+) -> Option<Vec<u8>> {
     let (w, h) = (width as usize, height as usize);
-    if width == 0 || height == 0 || ink.len() != w.checked_mul(h)?.checked_mul(4)? {
+    if width == 0 || height == 0 || ink.len() != w.checked_mul(h)?.checked_mul(samples)? {
         return None;
     }
     // Strips of about 64 KB, a whole number of rows each.
-    let row = w * 4;
+    let row = w * samples;
     let rows_per_strip = (65_536 / row).clamp(1, h);
     let strips: Vec<&[u8]> = ink.chunks(rows_per_strip * row).collect();
     let (num, den) = dpi_rational(dpi).unwrap_or((72_000, 1000));
@@ -456,11 +483,11 @@ pub fn cmyk_tiff(
         let mut f = vec![
             long(256, &[width]),
             long(257, &[height]),
-            short(258, &[8, 8, 8, 8]),
+            short(258, &vec![8; samples]),
             short(259, &[1]),
             short(262, &[5]),
             long(273, offsets),
-            short(277, &[4]),
+            short(277, &[samples as u16]),
             long(278, &[rows_per_strip as u32]),
             long(
                 279,
@@ -472,6 +499,9 @@ pub fn cmyk_tiff(
             short(296, &[2]),
             short(332, &[1]),
         ];
+        if samples == 5 {
+            f.push(short(338, &[2]));
+        }
         if let Some(icc) = icc.filter(|i| !i.is_empty()) {
             f.push(Field {
                 tag: 34675,
@@ -645,5 +675,27 @@ mod tests {
             "a short profile inline"
         );
         assert!(cmyk_tiff(2, 2, &[0; 3], 72.0, None).is_none());
+    }
+
+    /// #1925: a CMYK TIFF with transparency has five samples a pixel,
+    /// the fifth an unassociated alpha (ExtraSamples 2).
+    #[test]
+    fn a_cmyka_tiff_keeps_the_alpha_beside_the_inks() {
+        let (w, h) = (3, 2);
+        let px: Vec<u8> = (0..w * h)
+            .flat_map(|i| [200, 10, i as u8, 0, if i % 2 == 0 { 255 } else { 0 }])
+            .collect();
+        let tif = cmyka_tiff(w, h, &px, 72.0, None).expect("tiff");
+        assert_eq!(tiff_field(&tif, 262), Some(vec![5]));
+        assert_eq!(tiff_field(&tif, 277), Some(vec![5]));
+        assert_eq!(tiff_field(&tif, 258), Some(vec![8, 8, 8, 8, 8]));
+        assert_eq!(tiff_field(&tif, 338), Some(vec![2]), "unassociated alpha");
+        let o = tiff_field(&tif, 273).expect("strips")[0] as usize;
+        assert_eq!(&tif[o..o + px.len()], &px[..]);
+        assert_eq!(
+            tiff_field(&cmyk_tiff(1, 1, &[0; 4], 72.0, None).expect("tiff"), 338),
+            None
+        );
+        assert!(cmyka_tiff(2, 2, &[0; 16], 72.0, None).is_none());
     }
 }

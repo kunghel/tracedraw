@@ -152,6 +152,13 @@ Whatever the frame last asked for decides, so a system pointer asked for
 after a drawn one in the same frame (a text box's I-beam) is never
 replaced by the blank image (#1124,
 `cursors::tests::a_drawn_pointer_hides_the_system_one_with_a_blank_image_on_windows`).
+A tool shortcut with Alt (Alt+R set by the user) changes the pointer at
+once on Windows too: Alt with a letter starts no keyboard menu mode in
+the window, and the system ending the pointer's leave tracking while
+the pointer stands still over the window is not taken as the pointer
+leaving it, so the pointer is never left as the arrow or invisible
+until the mouse moves (#1922, `winit_alt_shortcuts::tests`, see
+`vendor/README.md`).
 The cross hair's lines cross on the middle of the pixel under the hot
 spot; the icons, nibs and drawn pointers are painted beside it, above
 the drawing. A tool's icon sits 4 points below and right of the cross

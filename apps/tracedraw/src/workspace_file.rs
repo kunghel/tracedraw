@@ -107,6 +107,8 @@ pub struct AppearancePart {
     /// The desktop colour was picked (white is then white, #530).
     pub desktop_custom: bool,
     pub page_border: bool,
+    /// The page's shadow (#1906).
+    pub page_shadow: bool,
 }
 
 impl Default for AppearancePart {
@@ -116,6 +118,7 @@ impl Default for AppearancePart {
             desktop_rgb: [255, 255, 255],
             desktop_custom: false,
             page_border: true,
+            page_shadow: true,
         }
     }
 }
@@ -324,6 +327,7 @@ impl App {
                 desktop_rgb: s.desktop_rgb,
                 desktop_custom: s.desktop_custom,
                 page_border: self.show_page_border,
+                page_shadow: self.show_page_shadow,
             }),
         }
     }
@@ -375,6 +379,7 @@ impl App {
             self.settings.desktop_rgb = a.desktop_rgb;
             self.settings.desktop_custom = a.desktop_custom;
             self.show_page_border = a.page_border;
+            self.show_page_shadow = a.page_shadow;
             applied.push(PART_APPEARANCE);
         }
         applied

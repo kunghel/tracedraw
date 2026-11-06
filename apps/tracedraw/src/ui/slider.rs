@@ -52,6 +52,60 @@ const BOX_GAP: f32 = 6.0;
 /// Fewest points between two ticks that are drawn.
 const MIN_TICK_PX: f64 = 5.0;
 
+/// The wheel turned over `rect` (hovered, no focus needed), as over a
+/// number field (#1335): the change it asks for, `step` a notch (Ctrl
+/// `fine`, Shift ten steps); the panel around does not scroll then.
+/// `wheel_id` keeps the part of a notch a touchpad gave.
+fn hover_wheel(ui: &Ui, rect: Rect, wheel_id: egui::Id, step: f64, fine: f64) -> Option<f64> {
+    if !ui.rect_contains_pointer(rect) {
+        ui.data_mut(|d| d.remove::<f32>(wheel_id));
+        return None;
+    }
+    let notches = field::wheel_steps(ui, wheel_id).filter(|n| *n != 0)?;
+    let mods = ui.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                egui::Event::MouseWheel { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or(i.modifiers)
+    });
+    let step = if mods.command {
+        fine
+    } else if mods.shift {
+        step * 10.0
+    } else {
+        step
+    };
+    Some(f64::from(notches) * step)
+}
+
+/// The wheel over a plain `egui::Slider` (its response `resp`, value and
+/// range) steps it on hover as over this module's [`Slider`]: `step` a
+/// notch, Ctrl a tenth, Shift ten (#1335). Marks `resp` changed.
+pub(crate) fn wheel_on_hover<N: Numeric>(
+    ui: &Ui,
+    resp: &mut Response,
+    value: &mut N,
+    range: RangeInclusive<N>,
+    step: f64,
+) {
+    let Some(delta) = hover_wheel(ui, resp.rect, resp.id.with("wheel"), step, step / 10.0) else {
+        return;
+    };
+    let (min, max) = (range.start().to_f64(), range.end().to_f64());
+    let old = value.to_f64();
+    let v = (old + delta).clamp(min.min(max), max.max(min));
+    if v != old && v.is_finite() {
+        *value = N::from_f64(v);
+        resp.mark_changed();
+        ui.ctx().request_repaint();
+    }
+}
+
 /// A slider; built like `egui::Slider`, drawn as the bars and dockers
 /// want it (see the module notes).
 pub struct Slider<'a, N: Numeric> {
@@ -573,33 +627,14 @@ impl<N: Numeric> Slider<'_, N> {
             // (#1335), a step a notch (Ctrl a tenth, Shift ten); the
             // panel around does not scroll with it then. Beside the
             // slider the wheel is left to the panel.
-            let wheel_id = resp.id.with("wheel");
-            if ui.rect_contains_pointer(rect) {
-                if let Some(notches) = field::wheel_steps(ui, wheel_id) {
-                    if notches != 0 {
-                        let mods = ui.input(|i| {
-                            i.raw
-                                .events
-                                .iter()
-                                .rev()
-                                .find_map(|e| match e {
-                                    egui::Event::MouseWheel { modifiers, .. } => Some(*modifiers),
-                                    _ => None,
-                                })
-                                .unwrap_or(i.modifiers)
-                        });
-                        let step = if mods.command {
-                            self.fine_step()
-                        } else if mods.shift {
-                            self.key_step() * 10.0
-                        } else {
-                            self.key_step()
-                        };
-                        v = self.snapped(v + f64::from(notches) * step);
-                    }
-                }
-            } else {
-                ui.data_mut(|d| d.remove::<f32>(wheel_id));
+            if let Some(delta) = hover_wheel(
+                ui,
+                rect,
+                resp.id.with("wheel"),
+                self.key_step(),
+                self.fine_step(),
+            ) {
+                v = self.snapped(v + delta);
             }
         }
         if v != old && v.is_finite() {

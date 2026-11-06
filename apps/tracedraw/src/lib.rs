@@ -44,6 +44,7 @@ mod color_policy;
 mod comments;
 mod common_shapes;
 mod connectors;
+mod content_link;
 mod contour_tool;
 mod coords;
 mod copy_effect;
@@ -97,6 +98,7 @@ mod help_shots;
 mod hunspell;
 mod i18n;
 mod image_dpi;
+mod import_place;
 mod imposition;
 #[cfg(test)]
 mod input_method_tests;
@@ -201,6 +203,7 @@ mod thumbnails;
 mod time_tracker;
 mod tools;
 mod tools2;
+mod touch_modifiers;
 mod trace;
 mod trace_preview;
 mod tracecut;
@@ -242,6 +245,11 @@ mod winit_quit_request;
 #[allow(dead_code)]
 #[path = "../../../vendor/winit/src/file_drop.rs"]
 mod winit_file_drop;
+// The pointer kept on a shortcut with Alt on Windows, of the same copy
+// (#1922).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/alt_shortcuts.rs"]
+mod winit_alt_shortcuts;
 // A graphics tablet's pen on Wayland, of the same copy (#1841).
 #[cfg(all(test, unix, not(target_arch = "wasm32")))]
 #[allow(dead_code)]
@@ -823,6 +831,14 @@ impl eframe::App for Shell {
         soft_keyboard::take_into(raw_input);
         pen::filter_raw_input(ctx, raw_input);
         interaction::release_chorded_left(ctx, raw_input);
+        // The screen's safe area on Android (#1917).
+        if let Some(app) = self.app.as_ref() {
+            ui::screen_margins::apply(ctx, &app.settings, raw_input);
+        }
+        // Shift, Ctrl and Alt held from the toolbar by a finger (#1499).
+        if let Some(app) = self.app.as_ref() {
+            app.touch_mods.apply(ctx, raw_input);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -953,6 +969,8 @@ impl eframe::App for Shell {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         ui::root(app, ui);
+        // The frame around the safe area (#1917).
+        ui::screen_margins::paint(ui.ctx(), &app.settings);
         // The emulator check's typing test (Android, soft_keyboard.rs).
         #[cfg(target_os = "android")]
         soft_keyboard::check::frame(app);

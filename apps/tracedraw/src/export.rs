@@ -617,9 +617,48 @@ fn webp_lossy(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
     Some(enc.encode(f32::from(quality.clamp(1, 100))).to_vec())
 }
 
+/// The browser's lossy WebP (#592): libwebp is C and not built for
+/// wasm32, so a pure-Rust VP8 encoder writes the file, at `quality` as
+/// libwebp takes it, alpha kept. `None` (lossless with rounding, as
+/// before) for a size WebP cannot hold or when the encoder fails.
 #[cfg(target_arch = "wasm32")]
-fn webp_lossy(_img: &image::RgbaImage, _quality: u8) -> Option<Vec<u8>> {
-    None
+fn webp_lossy(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
+    webp_lossy_pure(img, quality)
+}
+
+/// See the browser's `webp_lossy`; the tests run it natively.
+#[cfg(any(target_arch = "wasm32", test))]
+fn webp_lossy_pure(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
+    use vaam_webp::{ColorType, EncoderParams, WebPEncoder};
+    let (w, h) = img.dimensions();
+    // WebP's largest side.
+    if w == 0 || h == 0 || w > 16383 || h > 16383 {
+        return None;
+    }
+    let opaque = img.pixels().all(|p| p.0[3] == 255);
+    let mut out = Vec::new();
+    let mut enc = WebPEncoder::new(&mut out);
+    let mut params = EncoderParams::default();
+    params.use_lossy = true;
+    params.lossy_quality = quality.clamp(1, 100);
+    enc.set_params(params);
+    let done = if opaque {
+        // No alpha chunk for a picture with no transparency.
+        let rgb: Vec<u8> = img
+            .pixels()
+            .flat_map(|p| [p.0[0], p.0[1], p.0[2]])
+            .collect();
+        enc.encode(&rgb, w, h, ColorType::Rgb8)
+    } else {
+        enc.encode(img.as_raw(), w, h, ColorType::Rgba8)
+    };
+    match done {
+        Ok(()) => Some(out),
+        Err(e) => {
+            log::warn!("lossy WebP: {e}; writing it lossless");
+            None
+        }
+    }
 }
 
 /// Encode a rendered page in the bitmap format `ext`; WebP lossless
@@ -1291,10 +1330,105 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
         }
         doc.set_ids(ids);
     }
+    // Grayscale composite output (#1657): every colour and picture of
+    // the sheets, marks included, as its grey.
+    if st.grayscale && !st.separations {
+        grayscale_doc(&mut doc);
+    }
+    // Reverse order (#1394, #1571): the last sheet first, so a stack
+    // printed face up, or the backs of printed sheets, come out in order.
+    if st.reverse_order {
+        doc.pages.reverse();
+    }
     if st.as_bitmap {
         sheets_as_bitmaps(&mut doc, st.bitmap_dpi.clamp(36.0, 1200.0));
     }
     doc
+}
+
+/// The grey a colour prints as in grayscale output: its luminance
+/// (`0.299 R + 0.587 G + 0.114 B`, as Bitmaps > Mode > Grayscale);
+/// the registration colour stays, it prints on every plate.
+fn gray_of(c: tracedraw_core::Color) -> tracedraw_core::Color {
+    use tracedraw_core::Color;
+    match c {
+        Color::Gray { .. } | Color::Registration => c,
+        _ => {
+            let [r, g, b] = c.to_rgb8();
+            let v = (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0;
+            Color::Gray {
+                v: v.clamp(0.0, 1.0),
+            }
+        }
+    }
+}
+
+/// Grayscale output (#1657): every colour the sheets hold (fills,
+/// outlines, text, gradients, meshes, patterns, effects, shadows and
+/// lenses) turned to its grey, and every picture to its grey pixels (a
+/// CMYK picture's own inks are left out, so it prints from the grey
+/// pixels). The colours are found wherever the document keeps one, by
+/// walking the objects' serialized form, so no kind of object is missed.
+pub fn grayscale_doc(doc: &mut Document) {
+    fn walk(v: &mut serde_json::Value) {
+        use serde_json::Value;
+        match v {
+            Value::Array(a) => a.iter_mut().for_each(walk),
+            Value::Object(m) => {
+                if m.get("model").is_some_and(Value::is_string) {
+                    if let Ok(c) =
+                        serde_json::from_value::<tracedraw_core::Color>(Value::Object(m.clone()))
+                    {
+                        // A colour can share its object with the tag of
+                        // what holds it (a solid fill is `{"fill":
+                        // "solid", "model": ...}`): only its own keys go.
+                        if let (Ok(Value::Object(was)), Ok(Value::Object(gray))) =
+                            (serde_json::to_value(c), serde_json::to_value(gray_of(c)))
+                        {
+                            for k in was.keys() {
+                                m.remove(k);
+                            }
+                            m.extend(gray);
+                        }
+                        return;
+                    }
+                }
+                m.remove("picture_inks");
+                m.remove("cmyk_bitmap");
+                if let Some(Value::String(b64)) = m.get_mut("png") {
+                    use base64::Engine;
+                    let engine = base64::engine::general_purpose::STANDARD;
+                    let gray = engine
+                        .decode(b64.as_bytes())
+                        .ok()
+                        .and_then(|png| crate::bitmap_fx::decode(&png))
+                        .and_then(|img| crate::bitmap_fx::encode_gray(&img));
+                    if let Some(gray) = gray {
+                        *b64 = engine.encode(gray);
+                        // The picture's effects stay as printed, not
+                        // worked out again from the colour original.
+                        m.remove("fx");
+                    }
+                }
+                m.values_mut().for_each(walk);
+            }
+            _ => {}
+        }
+    }
+    fn gray<T: serde::Serialize + serde::de::DeserializeOwned>(x: &mut T) {
+        let Ok(mut v) = serde_json::to_value(&*x) else {
+            return;
+        };
+        walk(&mut v);
+        match serde_json::from_value(v) {
+            Ok(back) => *x = back,
+            Err(e) => log::warn!("grayscale print: {e}"),
+        }
+    }
+    for page in doc.pages.iter_mut() {
+        gray(page);
+    }
+    gray(&mut doc.master);
 }
 
 /// A spot ink's colour as its CMYK mix at the tint.
@@ -3625,6 +3759,166 @@ mod tests {
         assert!(ps.starts_with("%!PS-Adobe-3.0\n%%LanguageLevel: 3\n"));
     }
 
+    /// Grayscale output (#1657): every colour on the sheets, an effect's
+    /// too, prints as its grey and a picture as grey pixels; the drawing
+    /// keeps its colours. Reverse order (#1394, #1571): the last sheet
+    /// comes first.
+    #[test]
+    fn grayscale_and_reverse_order_change_the_printed_sheets() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        let size = app.doc().pages[0].size;
+        let red = Color::rgb8(220, 20, 20);
+        app.new_shape_styled(
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+            |s| {
+                s.name = Some("first-page".into());
+                s.fill = Fill::Solid(red);
+                s.effects.push(tracedraw_core::live::Effect::BlockShadow {
+                    offset: tracedraw_core::geometry::Vec2::new(2.0, -2.0),
+                    color: Color::cmyk_pct(100.0, 0.0, 0.0, 0.0),
+                    gap: 0.0,
+                });
+            },
+        )
+        .expect("rect");
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([220, 20, 20, 255]));
+        app.new_shape(ShapeKind::Bitmap {
+            rect: tracedraw_core::geometry::Rect::new(70.0, 10.0, 100.0, 30.0),
+            width_px: 3,
+            height_px: 2,
+            png: crate::bitmap_fx::encode(&img).expect("png").into(),
+            fx: None,
+        })
+        .expect("bitmap");
+        app.run(tracedraw_core::Command::AddPage {
+            name: None,
+            size,
+            layer: None,
+        });
+        app.page = app.doc().pages[1].id;
+        app.new_shape_styled(
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+            |s| {
+                s.name = Some("second-page".into());
+                s.fill = Fill::Solid(Color::rgb8(20, 200, 20));
+            },
+        )
+        .expect("rect");
+
+        let json = |doc: &Document| serde_json::to_string(&doc.pages).expect("json");
+        let models = |doc: &Document| {
+            let text = json(doc);
+            let mut found: Vec<String> = text
+                .match_indices("\"model\":\"")
+                .map(|(i, m)| {
+                    text[i + m.len()..]
+                        .split('"')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+            found.sort();
+            found.dedup();
+            found
+        };
+        let pictures = |doc: &Document| {
+            use base64::Engine;
+            let text = json(doc);
+            text.match_indices("\"png\":\"")
+                .filter_map(|(i, m)| {
+                    let b64 = text[i + m.len()..].split('"').next()?;
+                    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let plain = print_sheets(&app, &PrintState::default());
+        assert!(models(&plain)
+            .iter()
+            .any(|m| m != "gray" && m != "registration"));
+        let names: Vec<bool> = plain
+            .pages
+            .iter()
+            .map(|p| {
+                serde_json::to_string(p)
+                    .expect("json")
+                    .contains("first-page")
+            })
+            .collect();
+        assert_eq!(names, [true, false], "in the drawing's order");
+
+        let st = PrintState {
+            grayscale: true,
+            crop_marks: true,
+            color_bars: true,
+            ..PrintState::default()
+        };
+        let gray = print_sheets(&app, &st);
+        for m in models(&gray) {
+            assert!(m == "gray" || m == "registration", "{m} left in grayscale");
+        }
+        let pics = pictures(&gray);
+        assert_eq!(pics.len(), 1);
+        assert!(crate::bitmap_fx::png_is_gray(&pics[0]), "a grey picture");
+        let px = image::load_from_memory(&pics[0]).expect("png").to_luma8();
+        let want = (0.299f32 * 220.0 + 0.587 * 20.0 + 0.114 * 20.0).round() as i32;
+        assert!((i32::from(px.get_pixel(1, 1).0[0]) - want).abs() <= 1);
+        // The red fill as its luminance.
+        assert!(json(&gray).contains("first-page"));
+        assert!(
+            models(&app.doc().clone()).iter().any(|m| m == "rgb"),
+            "the drawing keeps its colours"
+        );
+        // Separations print from the colours, whatever the box says.
+        let sep = print_sheets(
+            &app,
+            &PrintState {
+                grayscale: true,
+                separations: true,
+                ..PrintState::default()
+            },
+        );
+        assert!(models(&sep).iter().any(|m| m == "rgb"));
+
+        let st = PrintState {
+            reverse_order: true,
+            ..PrintState::default()
+        };
+        let rev = print_sheets(&app, &st);
+        let names: Vec<bool> = rev
+            .pages
+            .iter()
+            .map(|p| {
+                serde_json::to_string(p)
+                    .expect("json")
+                    .contains("first-page")
+            })
+            .collect();
+        assert_eq!(names, [false, true], "the last page first");
+        let both = print_sheets(
+            &app,
+            &PrintState {
+                reverse_order: true,
+                grayscale: true,
+                ..PrintState::default()
+            },
+        );
+        assert_eq!(both.pages.len(), 2);
+        assert!(serde_json::to_string(&both.pages[1])
+            .expect("json")
+            .contains("first-page"));
+    }
+
     #[test]
     fn the_print_dialog_settings_make_the_layout() {
         let app = App::headless();
@@ -3719,6 +4013,66 @@ mod tests {
 
     /// WebP takes the quality: lower values make smaller files (colours
     /// rounded, near-lossless), 100 keeps the image exact (#544).
+    /// The browser's lossy WebP (#592): the pure-Rust encoder writes a
+    /// lossy (VP8) file that follows Quality, far smaller than the
+    /// lossless file the browser wrote before with Lossless off, which
+    /// decodes to the picture with its transparency; an empty picture
+    /// falls back to lossless.
+    #[test]
+    fn the_browsers_lossy_webp_follows_the_quality() {
+        // A photograph-like picture: smooth shades with grain.
+        let (w, h) = (256u32, 128u32);
+        let mut img = image::RgbaImage::new(w, h);
+        let mut seed = 12345u32;
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let grain = ((seed >> 16) % 24) as i32 - 12;
+            let c = |v: i32| (v + grain).clamp(0, 255) as u8;
+            *p = image::Rgba([c(x as i32), c(2 * y as i32), c(((x + y) / 2) as i32), 255]);
+        }
+        let low = webp_lossy_pure(&img, 10).expect("lossy");
+        let high = webp_lossy_pure(&img, 90).expect("lossy");
+        assert!(low.len() < high.len(), "{} vs {}", low.len(), high.len());
+        // A lossy bitstream ("VP8 "), not a lossless one ("VP8L").
+        assert_eq!(&low[0..4], b"RIFF");
+        assert_eq!(&low[8..12], b"WEBP");
+        assert!(low.windows(4).any(|c| c == b"VP8 "));
+        assert!(!low.windows(4).any(|c| c == b"VP8L"));
+        let back = image::load_from_memory(&high).expect("decodes").to_rgba8();
+        assert_eq!(back.dimensions(), (w, h));
+        let (a, b) = (back.get_pixel(100, 60).0, img.get_pixel(100, 60).0);
+        for k in 0..3 {
+            assert!((a[k] as i32 - b[k] as i32).abs() < 40, "{a:?} vs {b:?}");
+        }
+        // What the browser wrote before with Lossless off: near-lossless.
+        let mut rounded = img.clone();
+        near_lossless(&mut rounded, 10);
+        let mut before = std::io::Cursor::new(Vec::new());
+        rounded
+            .write_to(&mut before, image::ImageFormat::WebP)
+            .expect("lossless");
+        let before = before.into_inner();
+        assert!(
+            low.len() * 3 < before.len(),
+            "{} vs {}",
+            low.len(),
+            before.len()
+        );
+        // Transparency is kept.
+        let mut clear = img.clone();
+        for (x, _, p) in clear.enumerate_pixels_mut() {
+            if x < 64 {
+                p.0[3] = 0;
+            }
+        }
+        let t = webp_lossy_pure(&clear, 75).expect("lossy with alpha");
+        let back = image::load_from_memory(&t).expect("decodes").to_rgba8();
+        assert_eq!(back.get_pixel(10, 10).0[3], 0);
+        assert_eq!(back.get_pixel(200, 10).0[3], 255);
+        // Nothing to encode: no lossy file.
+        assert!(webp_lossy_pure(&image::RgbaImage::new(0, 0), 50).is_none());
+    }
+
     #[test]
     fn webp_quality_shrinks_the_file() {
         let mut pm = tiny_skia::Pixmap::new(256, 128).expect("pixmap");

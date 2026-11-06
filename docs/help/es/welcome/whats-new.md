@@ -23,6 +23,19 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
 
 ## Lo más destacado de las últimas versiones {#highlights}
 
+- **Táctil y teléfonos.** Los botones Mayús, Ctrl y Alt de la barra estándar
+  quedan pulsados para un dedo; en Android la interfaz se aparta de la muesca
+  de la cámara y de las esquinas redondeadas; el Apple Pencil funciona en
+  Safari en el iPad.
+- **Archivos.** Los archivos .cdr conservan la regla de relleno de las curvas
+  superpuestas y se abren con sus tabulaciones, su texto en varias columnas,
+  las guías compartidas por todas las páginas y los objetos de la página
+  maestra.
+- **Imágenes, impresión y espacio de trabajo.** Recortar los píxeles de la
+  imagen en la herramienta Recortar y
+  [[menu.bitmaps > menu.bitmaps.crop_to_frame]] recortan los píxeles de una
+  imagen; impresión en escala de grises y en orden inverso;
+  [[menu.view > menu.view.scrollbars]] oculta las barras de desplazamiento.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] abre las herramientas
   para plóteres de corte: salida al plóter, líneas de corte, encaje y
   medición. Vea [TraceCut](../objects/tracecut.md).

@@ -188,7 +188,8 @@ impl App {
             let Some(page) = doc.pages.iter().find(|p| p.id == id) else {
                 continue;
             };
-            for g in &page.guides {
+            // The page's own guidelines and the master page's (#1928).
+            for g in doc.master_guides.iter().chain(page.guides.iter()) {
                 let mut g = *g;
                 g.line = shifted(g.line, r.x0, r.y0);
                 out.push((g, r));
@@ -264,7 +265,7 @@ pub fn draw_other_pages(
         let paper = app.view.rect_to_screen(*r);
         let paper = ERect::from_min_max(paper.min.round(), paper.max.round());
         if *id != app.page && paper.expand(30.0).intersects(rect) {
-            if app.show_page_border {
+            if app.show_page_shadow {
                 painter.rect_filled(
                     paper
                         .expand(1.0)

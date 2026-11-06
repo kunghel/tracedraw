@@ -164,6 +164,15 @@ fn fill_rule(kind: &ShapeKind, text_outline: bool) -> FillRule {
     }
 }
 
+/// How `shape` is filled: as [`fill_rule`] says for its kind, or with the
+/// nonzero rule when the object asks for it (#1919, #1211).
+fn shape_fill_rule(shape: &Shape, text_outline: bool) -> FillRule {
+    match shape.fill_rule {
+        tracedraw_core::shaping::FillRule::NonZero => FillRule::Winding,
+        tracedraw_core::shaping::FillRule::EvenOdd => fill_rule(&shape.kind, text_outline),
+    }
+}
+
 /// The subpaths of `path` that are closed: ended with a close command, or
 /// ending where they start. Open curves are not filled unless the
 /// document asks for it.
@@ -889,7 +898,8 @@ impl Renderer<'_> {
             if let Some(sk_frame) = to_sk_path(&frame_path) {
                 let (w, h) = (self.pixmap.width(), self.pixmap.height());
                 if let Some(mut mask) = tiny_skia::Mask::new(w, h) {
-                    mask.fill_path(&sk_frame, FillRule::EvenOdd, true, Transform::identity());
+                    let rule = shape_fill_rule(frame, false);
+                    mask.fill_path(&sk_frame, rule, true, Transform::identity());
                     // The contents are drawn over a copy of what lies
                     // beneath, so their merge modes (Multiply on a photo,
                     // say) work on it as outside a frame; inside the frame
@@ -1131,7 +1141,7 @@ impl Renderer<'_> {
         }
 
         if !self.flags.wireframe {
-            let rule = fill_rule(&shape.kind, self.flags.text_outline);
+            let rule = shape_fill_rule(shape, self.flags.text_outline);
             let blend = self.blend_for(shape.overprint_fill);
             if let Fill::Mesh(m) = &shape.fill {
                 // Mesh nodes are local: bring them to page space first.
@@ -1344,7 +1354,8 @@ impl Renderer<'_> {
         let Some(mut mask) = tiny_skia::Mask::new(w, h) else {
             return;
         };
-        mask.fill_path(&sk, FillRule::EvenOdd, true, Transform::identity());
+        let rule = shape_fill_rule(shape, false);
+        mask.fill_path(&sk, rule, true, Transform::identity());
         let source = self.pixmap.clone();
         let b = path.bounding_box();
         let center = b.center();
@@ -1504,7 +1515,8 @@ impl Renderer<'_> {
                 // A shaped mask follows the object, over its whole bounds.
                 Fill::Fountain(f) if f.kind == tracedraw_core::FountainKind::Shaped => {
                     if let Some(shape_sk) = to_sk_path(&(self.screen * page_path.clone())) {
-                        sub.fill_shaped(f, &shape_sk, &sk, FillRule::EvenOdd);
+                        let rule = shape_fill_rule(shape, false);
+                        sub.fill_shaped(f, &shape_sk, &sk, rule);
                     }
                 }
                 _ => sub.draw_fill(mask_fill, &rect_path, &sk, FillRule::Winding),
@@ -3394,6 +3406,42 @@ mod tests {
             doc.layer_mut(layer).unwrap().shapes.push(s);
         }
         (doc, page)
+    }
+
+    /// Two squares overlapping in one curve, both drawn the same way
+    /// round, as the overlapping parts of traced lettering (#1919): with
+    /// the curve's fill rule nonzero the overlap stays filled; even-odd
+    /// (the default) leaves it a hole.
+    #[test]
+    fn a_curve_fills_its_overlaps_by_its_own_fill_rule() {
+        use tracedraw_core::shaping::FillRule as Rule;
+        let mut path = BezPath::new();
+        for (x0, x1) in [(10.0, 60.0), (40.0, 90.0)] {
+            path.move_to((x0, 10.0));
+            path.line_to((x1, 10.0));
+            path.line_to((x1, 90.0));
+            path.line_to((x0, 90.0));
+            path.close_path();
+        }
+        let curve = |rule: Rule| {
+            let mut s = Shape::new(
+                ShapeId(1),
+                ShapeKind::Path {
+                    path: path.clone(),
+                    closed: true,
+                },
+            );
+            s.fill = Fill::Solid(Color::BLACK);
+            s.stroke = None;
+            s.fill_rule = rule;
+            s
+        };
+        for (rule, overlap) in [(Rule::NonZero, (0, 0, 0)), (Rule::EvenOdd, (255, 255, 255))] {
+            let (doc, page) = doc_with(vec![curve(rule)]);
+            let pm = render_page_image(&doc, page, 25.4).expect("page");
+            assert_eq!(px(&pm, 50, 50), overlap, "{rule:?}");
+            assert_eq!(px(&pm, 20, 50), (0, 0, 0), "{rule:?}");
+        }
     }
 
     /// A page whose size is not a number (read from a damaged file, or

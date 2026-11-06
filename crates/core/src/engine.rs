@@ -191,6 +191,7 @@ impl Engine {
             self.doc = before;
             return Err(e);
         }
+        self.doc.sync_linked_text(&before);
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
         let id = self.next_step;
@@ -222,6 +223,7 @@ impl Engine {
                 return Err(e);
             }
         }
+        self.doc.sync_linked_text(&before);
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
         let id = self.next_step;
@@ -254,6 +256,7 @@ impl Engine {
         // The step keeps the drawing from before it; the change joins it.
         let mut doc = self.doc.clone();
         cmd.apply(&mut doc)?;
+        doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
         doc.refresh_text_flow();
         self.doc = doc;
@@ -300,6 +303,7 @@ impl Engine {
         for c in cmds {
             c.apply(&mut doc)?;
         }
+        doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
         self.doc = doc;
         self.clear_redo();
@@ -504,6 +508,16 @@ impl Engine {
     /// not dropped as too old).
     pub fn step_in_effect(&self, id: u64) -> bool {
         self.undo.iter().any(|e| e.id == id)
+    }
+
+    /// The id of the step just under step `id` on the undo stack (the
+    /// one made right before it and still in effect); `None` when `id`
+    /// is the oldest or not in effect.
+    pub fn step_below(&self, id: u64) -> Option<u64> {
+        let i = self.undo.iter().position(|e| e.id == id)?;
+        i.checked_sub(1)
+            .and_then(|j| self.undo.get(j))
+            .map(|e| e.id)
     }
 
     /// Labels of the undo stack (oldest first) and the redo stack.
@@ -725,6 +739,9 @@ mod tests {
         let (shape, a) = add(&mut eng);
         let (_, b) = add(&mut eng);
         assert_ne!(a, b);
+        // The steps in the order they were made.
+        assert_eq!(eng.step_below(b), Some(a));
+        assert_eq!(eng.step_below(a), None);
         assert!(eng.step_in_effect(a) && eng.step_in_effect(b));
         eng.amend(&Command::SetOpacity {
             shapes: vec![shape],

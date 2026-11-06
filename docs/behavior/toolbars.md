@@ -23,8 +23,11 @@ way.
 When the bar is too short for every title (a phone, a tablet upright
 in the Touch workspace, a narrow window), the titles that do not fit go
 under a last title, », whose menu lists them in order, each opening
-its menu as a submenu (#1301, #1691). Check:
-`ui::tests::phones_fit_and_tablets_keep_their_layout`.
+its menu as a submenu (#1301, #1691). Those menus keep the access keys
+they have on a wide bar (underlined in the » menu): Alt and the letter
+opens » with that menu open in it and its first row lit. Check:
+`ui::tests::phones_fit_and_tablets_keep_their_layout`,
+`ui::keynav::tests::alt_and_a_letter_open_a_menu_under_more`.
 
 The View menu has Zoom In, Zoom Out and Zoom
 To Fit (with their pictures) and no other zoom commands.
@@ -140,7 +143,12 @@ split by thin lines:
 2. Cut, Copy, Paste, Delete (a waste bin: what the Delete key does to
    the selection: the selected characters of the text being edited, the
    chosen nodes with the Shape tool, the selected guidelines, else the
-   selected objects; for a screen with no keyboard, #1611).
+   selected objects; for a screen with no keyboard, #1611). Then, only
+   with a touch screen (Android, or once a finger has touched the
+   window), Shift, Ctrl and Alt, buttons that read the key's name: a tap
+   holds the key down until the next tap on it, the button drawn pressed
+   meanwhile, and every tool reads the held keys as the keyboard's
+   (`touch_modifiers.rs`, #1499).
 3. Undo and Redo, each with its list of steps behind the arrow (choosing
    a step undoes or redoes up to it).
 4. Import, Export, Export as PDF.
@@ -362,7 +370,11 @@ bar move (`ui/bars.rs`).
   narrow window) is cut with an ellipsis and shows whole as a tooltip
   of the title; a window is never narrower than 68 px, room for the
   close button and a few letters (`ui::bars::title_room`,
-  `ui::bars::tests::floating_titles_fit_their_windows`). Dragging the
+  `ui::bars::tests::floating_titles_fit_their_windows`). The title runs
+  the window's whole width, the close button at its right end, also
+  when the bar's controls make the window wider (the property bar of
+  another tool, #1921;
+  `ui::bars::tests::a_floating_bars_close_button_follows_its_width`). Dragging the
   title moves it (near an edge it docks), a double click puts the bar
   back at its first place, and the close button hides it (Window >
   Toolbars shows it again). The floating toolbox is a grid two buttons

@@ -25,6 +25,19 @@ dernières versions.
 
 ## Points forts des dernières versions {#highlights}
 
+- **Tactile et téléphones.** Des boutons Maj, Ctrl et Alt dans la barre
+  standard restent enfoncés pour le doigt ; sous Android, l'interface évite
+  l'encoche de la caméra et les coins arrondis ; l'Apple Pencil fonctionne
+  dans Safari sur iPad.
+- **Fichiers.** Les fichiers .cdr gardent la règle de remplissage des courbes
+  qui se chevauchent et s'ouvrent avec leurs taquets de tabulation, leur texte
+  sur plusieurs colonnes, les repères communs à toutes les pages et les objets
+  de la page maître.
+- **Images, impression et espace de travail.** Recadrer les pixels de l'image
+  dans l'outil Recadrage et [[menu.bitmaps > menu.bitmaps.crop_to_frame]]
+  coupent les pixels d'une image ; impression en niveaux de gris et dans
+  l'ordre inverse ; [[menu.view > menu.view.scrollbars]] masque les barres de
+  défilement.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] ouvre les outils pour
   traceurs de découpe : sortie traceur, lignes de coupe, imbrication et
   mesure. Voir [TraceCut](../objects/tracecut.md).

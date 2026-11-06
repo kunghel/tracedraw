@@ -18,6 +18,9 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
 
 ## 最近版本的重點 {#highlights}
 
+- **觸控和手機。** 標準工具列上的 Shift、Ctrl 和 Alt 按鈕為手指保持按下；在 Android 上介面會避開相機挖孔和圓角；Apple Pencil 可在 iPad 的 Safari 中使用。
+- **檔案。** .cdr 檔案保留重疊曲線的填色規則，開啟時保留定位點、多欄文字、所有頁面共用的參考線和主頁面物件。
+- **圖片、列印和工作區。** 裁切工具的裁切圖片像素和 [[menu.bitmaps > menu.bitmaps.crop_to_frame]] 可以裁掉圖片的像素；可以灰階列印和反向順序列印；[[menu.view > menu.view.scrollbars]] 可以隱藏捲軸。
 - **TraceCut。** [[menu.tools > menu.tools.tracecut]] 開啟適用於切割繪圖機的工具：繪圖機輸出、切割線、排料和測量。請參閱 [TraceCut](../objects/tracecut.md)。
 - **鍵盤、手機和觸控筆。** 選單和清單可以用鍵盤操作。在 Android 手機上介面完整顯示在螢幕上，使用觸控筆時放在螢幕上的手不再誤畫；繪圖板的筆可在使用 Wayland 的 Linux 上運作。
 - **檔案。** .cdr 檔案開啟時保留定位點、主版頁面、漸層和變形；PDF 中的圖片以完整解析度匯入；JPEG 和 TIFF 可匯出為 CMYK。

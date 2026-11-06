@@ -24,6 +24,16 @@ saber o que mudou e lista os destaques das versões mais recentes.
 
 ## Destaques das versões recentes {#highlights}
 
+- **Toque e celulares.** Os botões Shift, Ctrl e Alt da barra padrão ficam
+  pressionados para um dedo; no Android a interface fica longe do entalhe da
+  câmera e dos cantos arredondados; o Apple Pencil funciona no Safari do iPad.
+- **Arquivos.** Arquivos .cdr mantêm a regra de preenchimento das curvas
+  sobrepostas e abrem com suas tabulações, texto em várias colunas, guias
+  compartilhadas por todas as páginas e os objetos da página mestra.
+- **Imagens, impressão e área de trabalho.** Recortar os pixels da imagem na
+  ferramenta Recortar e [[menu.bitmaps > menu.bitmaps.crop_to_frame]] recortam
+  os pixels de uma imagem; impressão em tons de cinza e em ordem inversa;
+  [[menu.view > menu.view.scrollbars]] oculta as barras de rolagem.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] abre as ferramentas para
   plotters de recorte: saída para o plotter, linhas de corte, encaixe e
   medição. Veja [TraceCut](../objects/tracecut.md).

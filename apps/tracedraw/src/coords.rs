@@ -160,8 +160,22 @@ pub struct CoordsState {
     pub curve: Vec<Point>,
     pub current: Option<usize>,
     pub closed: bool,
+    /// The control points of the segment that ends at each point of
+    /// `curve` (the first point's: the closing segment's), `None` for a
+    /// straight one: a curve read from the drawing keeps its bends.
+    /// Shorter than `curve` when the last points are straight.
+    pub curve_ctrl: Vec<Option<(Point, Point)>>,
+    /// The element index of each point of `curve` in the path it was read
+    /// from, so a node chosen on the drawing chooses its point (#1889).
+    /// Empty once points are added or deleted.
+    pub curve_el: Vec<usize>,
     /// The selected object the fields were read from.
     pub loaded: Option<ShapeId>,
+    /// Its outline and placement when they were read, so an edit of the
+    /// object on the drawing reads it again.
+    pub loaded_from: Option<(ShapeKind, Affine)>,
+    /// The node chosen on the drawing that last chose a point.
+    pub followed_node: Option<(ShapeId, usize)>,
     /// The fields were placed on the page once.
     pub placed: bool,
 }
@@ -184,7 +198,11 @@ impl Default for CoordsState {
             curve: Vec::new(),
             current: None,
             closed: false,
+            curve_ctrl: Vec::new(),
+            curve_el: Vec::new(),
             loaded: None,
+            loaded_from: None,
+            followed_node: None,
             placed: false,
         }
     }
@@ -454,7 +472,7 @@ impl CoordsState {
                 let closed = self.closed && self.curve.len() > 2;
                 Some((
                     ShapeKind::Path {
-                        path: polyline_path(&self.curve, closed),
+                        path: self.curve_path(closed),
                         closed,
                     },
                     Affine::IDENTITY,
@@ -528,7 +546,7 @@ impl CoordsState {
             CoordPick::Start => self.start = p,
             CoordPick::End => self.end = p,
             CoordPick::Point => match self.current {
-                Some(i) if i < self.curve.len() => self.curve[i] = p,
+                Some(i) if i < self.curve.len() => self.set_curve_point(i, p),
                 _ => {
                     self.curve.push(p);
                     self.current = Some(self.curve.len() - 1);
@@ -554,7 +572,59 @@ impl CoordsState {
             _ => self.at,
         };
         self.curve.insert(at, p);
+        if at <= self.curve_ctrl.len() {
+            self.curve_ctrl.insert(at, None);
+        }
+        self.curve_el.clear();
         self.current = Some(at);
+    }
+
+    /// The control points of the segment ending at point `i`.
+    fn ctrl(&self, i: usize) -> Option<(Point, Point)> {
+        self.curve_ctrl.get(i).copied().flatten()
+    }
+
+    /// The multipoint curve's outline: straight segments, and the bends
+    /// of a curve read from the drawing.
+    fn curve_path(&self, closed: bool) -> BezPath {
+        if self.curve_ctrl.iter().all(Option::is_none) {
+            return polyline_path(&self.curve, closed);
+        }
+        let mut path = BezPath::new();
+        for (i, p) in self.curve.iter().enumerate() {
+            match (i, self.ctrl(i)) {
+                (0, _) => path.move_to(*p),
+                (_, Some((c1, c2))) => path.curve_to(c1, c2, *p),
+                (_, None) => path.line_to(*p),
+            }
+        }
+        if closed {
+            if let (Some((c1, c2)), Some(first)) = (self.ctrl(0), self.curve.first()) {
+                path.curve_to(c1, c2, *first);
+            }
+            path.close_path();
+        }
+        path
+    }
+
+    /// Move point `i` to `p`; the bends next to it move along, as a node
+    /// moved on the drawing takes its handles.
+    pub fn set_curve_point(&mut self, i: usize, p: Point) {
+        let Some(old) = self.curve.get(i).copied() else {
+            return;
+        };
+        let d = p - old;
+        self.curve[i] = p;
+        let n = self.curve.len();
+        if let Some(Some((_, c2))) = self.curve_ctrl.get_mut(i) {
+            *c2 += d;
+        }
+        let next = if i + 1 < n { i + 1 } else { 0 };
+        if next != i {
+            if let Some(Some((c1, _))) = self.curve_ctrl.get_mut(next) {
+                *c1 += d;
+            }
+        }
     }
 
     /// Delete the chosen point; the next one (or the last) is chosen.
@@ -567,6 +637,10 @@ impl CoordsState {
             return;
         }
         self.curve.remove(i);
+        if i < self.curve_ctrl.len() {
+            self.curve_ctrl.remove(i);
+        }
+        self.curve_el.clear();
         self.current = if self.curve.is_empty() {
             None
         } else {
@@ -575,7 +649,7 @@ impl CoordsState {
     }
 
     /// Read the fields from an object; false when the docker cannot draw
-    /// its kind (curves need straight segments only).
+    /// its kind (curves need one subpath; their bends are kept).
     pub fn load(&mut self, s: &Shape) -> bool {
         let t = s.transform;
         let (sx, sy) = axis_scale(t);
@@ -628,13 +702,43 @@ impl CoordsState {
             }
             ShapeKind::Path { path, closed } => {
                 let mut pts = Vec::new();
+                let mut ctrl: Vec<Option<(Point, Point)>> = Vec::new();
+                let mut els = Vec::new();
                 let mut ends = false;
+                let mut last = Point::ZERO;
                 for (i, el) in path.elements().iter().enumerate() {
+                    // One subpath only: nothing after its end.
+                    if ends {
+                        return false;
+                    }
                     match el {
-                        PathEl::MoveTo(p) if i == 0 => pts.push(t * *p),
-                        PathEl::LineTo(p) => pts.push(t * *p),
+                        PathEl::MoveTo(p) if i == 0 => {
+                            pts.push(t * *p);
+                            ctrl.push(None);
+                            last = *p;
+                        }
+                        PathEl::LineTo(p) => {
+                            pts.push(t * *p);
+                            ctrl.push(None);
+                            last = *p;
+                        }
+                        PathEl::QuadTo(q, p) => {
+                            let c1 = last + (*q - last) * (2.0 / 3.0);
+                            let c2 = *p + (*q - *p) * (2.0 / 3.0);
+                            pts.push(t * *p);
+                            ctrl.push(Some((t * c1, t * c2)));
+                            last = *p;
+                        }
+                        PathEl::CurveTo(c1, c2, p) => {
+                            pts.push(t * *p);
+                            ctrl.push(Some((t * *c1, t * *c2)));
+                            last = *p;
+                        }
                         PathEl::ClosePath => ends = true,
-                        _ => return false,
+                        PathEl::MoveTo(_) => return false,
+                    }
+                    if !matches!(el, PathEl::ClosePath) {
+                        els.push(i);
                     }
                 }
                 if pts.len() < 2 {
@@ -642,9 +746,14 @@ impl CoordsState {
                 }
                 let closed = *closed || ends;
                 if closed && pts.len() > 2 && (pts[0] - pts[pts.len() - 1]).hypot() < 1e-9 {
+                    // The closing segment ends at the first point.
                     pts.pop();
+                    els.pop();
+                    if let Some(c) = ctrl.pop() {
+                        ctrl[0] = c;
+                    }
                 }
-                if pts.len() == 2 && !closed {
+                if pts.len() == 2 && !closed && ctrl.iter().all(Option::is_none) {
                     self.kind = CoordKind::Line;
                     self.start = pts[0];
                     self.end = pts[1];
@@ -652,12 +761,27 @@ impl CoordsState {
                     self.kind = CoordKind::MultiPoint;
                     self.current = Some(pts.len() - 1);
                     self.curve = pts;
+                    self.curve_ctrl = ctrl;
+                    self.curve_el = els;
                     self.closed = closed;
                 }
             }
             _ => return false,
         }
         self.loaded = Some(s.id);
+        true
+    }
+
+    /// Choose the point of the node at element `el` of the curve the
+    /// fields were read from.
+    pub fn choose_node(&mut self, el: usize) -> bool {
+        if self.kind != CoordKind::MultiPoint {
+            return false;
+        }
+        let Some(i) = self.curve_el.iter().position(|e| *e == el) else {
+            return false;
+        };
+        self.current = Some(i);
         true
     }
 }
@@ -679,18 +803,34 @@ impl App {
         .then_some(s)
     }
 
-    /// Read the fields from a newly selected object.
+    /// Read the fields from a newly selected object, again when it was
+    /// changed on the drawing, and choose the point of a node chosen on
+    /// the drawing (#1889).
     pub fn coords_follow_selection(&mut self) {
         let Some(s) = self.coords_target() else {
             self.coords.loaded = None;
+            self.coords.loaded_from = None;
             return;
         };
-        if self.coords.loaded != Some(s.id) {
+        let now = (s.kind.clone(), s.transform);
+        if self.coords.loaded != Some(s.id) || self.coords.loaded_from.as_ref() != Some(&now) {
             let mut c = self.coords.clone();
             if c.load(&s) {
                 self.coords = c;
             } else {
                 self.coords.loaded = Some(s.id);
+            }
+            self.coords.loaded_from = Some(now);
+            self.coords.followed_node = None;
+        }
+        let node = match self.node_selection.as_slice() {
+            [(id, el)] if *id == s.id => Some((*id, *el)),
+            _ => None,
+        };
+        if node != self.coords.followed_node {
+            self.coords.followed_node = node;
+            if let Some((_, el)) = node {
+                self.coords.choose_node(el);
             }
         }
     }
@@ -991,6 +1131,80 @@ mod tests {
             (c.kind, c.points, c.complex_sharpness),
             (CoordKind::ComplexStar, 9, 3)
         );
+    }
+
+    /// A curve with bends reads into the multipoint curve's points with
+    /// its bends kept: drawn again from the fields it is the same outline;
+    /// a point moved takes the bends next to it along; a node chosen on
+    /// the drawing chooses its point (#1889).
+    #[test]
+    fn a_curve_with_bends_loads_and_follows_its_nodes() {
+        let mut app = App::headless();
+        let mut p = BezPath::new();
+        p.move_to((10.0, 10.0));
+        p.curve_to((20.0, 0.0), (30.0, 0.0), (40.0, 10.0));
+        p.line_to((40.0, 40.0));
+        p.curve_to((30.0, 50.0), (20.0, 50.0), (10.0, 10.0));
+        p.close_path();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: true,
+            })
+            .expect("curve");
+        app.select(vec![id]);
+        app.coords_follow_selection();
+        let c = &app.coords;
+        assert_eq!(c.kind, CoordKind::MultiPoint);
+        assert_eq!(c.curve.len(), 3, "{:?}", c.curve);
+        assert!(c.closed);
+        assert!(close(c.curve[1], Point::new(40.0, 10.0)));
+        let page = app.doc().find_shape(id).expect("shape").page_path();
+        let drawn = c.preview().expect("outline");
+        assert!((drawn.area() - page.area()).abs() < 1e-6);
+        assert!((drawn.bounding_box().center() - page.bounding_box().center()).hypot() < 1e-6);
+        // Node 2 (element 2, the corner at 40, 40) chosen on the drawing.
+        app.node_selection = vec![(id, 2)];
+        app.coords_follow_selection();
+        assert_eq!(app.coords.current, Some(2));
+        // A click in the list chooses another point; the same node choice
+        // does not take it back.
+        app.coords.current = Some(0);
+        app.coords_follow_selection();
+        assert_eq!(app.coords.current, Some(0));
+        // The closing segment's end chooses the first point.
+        app.node_selection = vec![(id, 3)];
+        app.coords_follow_selection();
+        assert_eq!(app.coords.current, Some(0));
+        // Moving the first point takes its bends along.
+        let mut c = app.coords.clone();
+        c.set_curve_point(0, Point::new(10.0, 20.0));
+        assert_eq!(
+            c.curve_ctrl[1],
+            Some((Point::new(20.0, 10.0), Point::new(30.0, 0.0)))
+        );
+        assert_eq!(
+            c.curve_ctrl[0],
+            Some((Point::new(30.0, 50.0), Point::new(20.0, 60.0)))
+        );
+        // Replace keeps the bends.
+        app.coords = c;
+        assert!(app.replace_from_coords());
+        let s = app.doc().find_shape(id).expect("shape");
+        let ShapeKind::Path { path, .. } = &s.kind else {
+            panic!("a curve");
+        };
+        assert!(path
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::CurveTo(..))));
+        // An edit on the drawing reads the curve again.
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((5.0, 0.0)),
+        });
+        app.coords_follow_selection();
+        assert!(close(app.coords.curve[1], Point::new(45.0, 10.0)));
     }
 
     #[test]

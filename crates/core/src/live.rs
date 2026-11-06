@@ -479,6 +479,7 @@ pub fn bake_outline_warps(shape: &Shape) -> Option<Shape> {
     out.parked_effects = parked;
     out.node_types.clear();
     out.spline = None;
+    out.spline_fixed.clear();
     Some(out)
 }
 
@@ -1077,6 +1078,7 @@ fn reshape(shape: &mut Shape, f: &dyn Fn(&BezPath, Rect) -> BezPath) {
             .collect();
         shape.kind = ShapeKind::Group { children };
         shape.spline = None;
+        shape.spline_fixed.clear();
         shape.node_types.clear();
         return;
     }
@@ -1139,6 +1141,7 @@ fn set_path(shape: &mut Shape, path: BezPath) {
     // A warped outline is no longer the B-spline of its control points,
     // and its nodes are new (#647).
     shape.spline = None;
+    shape.spline_fixed.clear();
     shape.node_types.clear();
 }
 

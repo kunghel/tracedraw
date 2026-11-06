@@ -6883,9 +6883,12 @@ fn a_hidden_object_casts_no_shadow_picture() {
     }
 }
 
-/// Objects on master layers are on every page they show on, behind or in
-/// front of the page's own objects as drawn (#1132): no file seen has
-/// objects on the master page, so each page gets a layer of copies.
+/// Objects on master layers show on every page they show on, behind or in
+/// front of the page's own objects as drawn (#1132). A master layer
+/// behind every page goes once onto the master page's desktop layer, as
+/// the files of #1775 hold such objects, and reopens as a master layer
+/// (#1775); one in front of the pages (no file seen) still goes to each
+/// page as a layer of copies.
 #[test]
 fn master_layer_objects_are_written_on_every_page_in_their_order() {
     let square = |ids: &mut tracedraw_core::id::IdSource, x: f64| {
@@ -6933,13 +6936,39 @@ fn master_layer_objects_are_written_on_every_page_in_their_order() {
                 .filter(|l| !l.shapes.is_empty())
                 .map(|l| l.name.as_str())
                 .collect();
-            assert_eq!(names, ["Under", "Ink", "Over"], "{v}: page {}", i + 1);
+            assert_eq!(names, ["Ink", "Over"], "{v}: page {}", i + 1);
             for l in &p.layers {
                 all.extend(l.shapes.iter().map(|s| s.bounds().x0.round() as i64));
             }
         }
+        // The master layer behind the pages: once, on the master page.
+        assert_eq!(
+            back.master.len(),
+            1,
+            "{v}: {:?}",
+            back.master
+                .iter()
+                .map(|l| (l.name.clone(), l.shapes.len()))
+                .collect::<Vec<_>>()
+        );
+        let under = &back.master[0];
+        assert_eq!(under.name, "Under", "{v}");
+        assert_eq!(under.scope, tracedraw_core::MasterScope::All, "{v}");
+        assert!(!under.in_front, "{v}");
+        all.extend(under.shapes.iter().map(|s| s.bounds().x0.round() as i64));
         all.sort();
-        assert_eq!(all, [0, 20, 40, 40, 60, 60], "{v}");
+        assert_eq!(all, [0, 20, 40, 60, 60], "{v}");
+        // Every page draws it behind its own objects.
+        for p in &back.pages {
+            let drawn: Vec<&str> = back
+                .layers_for_page(p.id)
+                .expect("page")
+                .iter()
+                .filter(|l| !l.shapes.is_empty())
+                .map(|l| l.name.as_str())
+                .collect();
+            assert_eq!(drawn, ["Under", "Ink", "Over"], "{v}");
+        }
     }
     // The drawing itself is left alone.
     assert_eq!(doc.master.len(), 2);
@@ -7466,18 +7495,16 @@ fn guidelines_round_trip_on_their_pages() {
         assert_eq!(back.pages.len(), 2, "{v}: {:?}", rep.warnings);
         assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
         for (page, want) in back.pages.iter().zip(&doc.pages) {
-            assert_eq!(
-                page.guides.len(),
-                want.guides.len(),
-                "{v}: {:?}",
-                page.guides
-            );
+            // Those every page has come back as the master page's (#1928):
+            // each page shows them with its own.
+            let shown = back.guides_on_page(page.id).expect("page");
+            assert_eq!(shown.len(), want.guides.len(), "{v}: {shown:?}");
             for g in &want.guides {
                 assert!(
-                    page.guides.iter().any(|h| near(&h.line, &g.line)),
+                    shown.iter().any(|h| near(&h.line, &g.line)),
                     "{v}: {:?} not in {:?}",
                     g.line,
-                    page.guides
+                    shown
                 );
             }
             // Guidelines are no objects of the drawing.
@@ -8375,4 +8402,93 @@ fn text_is_written_as_the_face_that_draws_it() {
         "{:?}",
         p.records
     );
+}
+
+/// The master page's guidelines (#1928) go to the master page's guides
+/// layer and come back as the drawing's master guidelines, once, not as
+/// a copy on each page; a page's own stay its own.
+#[test]
+fn master_guidelines_round_trip_as_master_guidelines() {
+    use tracedraw_core::document::{Guide, GuideLine};
+    let mut doc = guides_doc();
+    for p in &mut doc.pages {
+        p.guides.clear();
+    }
+    doc.master_guides = vec![
+        Guide::from(GuideLine::Vertical { x: 15.0 }),
+        Guide::from(GuideLine::Horizontal { y: 25.0 }),
+    ];
+    doc.pages[1]
+        .guides
+        .push(Guide::from(GuideLine::Vertical { x: 90.0 }));
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(back.master_guides.len(), 2, "{v}: {:?}", rep.warnings);
+        assert!(
+            back.pages[0].guides.is_empty(),
+            "{v}: {:?}",
+            back.pages[0].guides
+        );
+        assert_eq!(back.pages[1].guides.len(), 1, "{v}");
+        assert_eq!(
+            back.guides_on_page(back.pages[1].id).expect("page").len(),
+            3,
+            "{v}"
+        );
+    }
+}
+
+/// A curve whose fill rule is nonzero (#1919: traced lettering made of
+/// overlapping parts) keeps it through a save: from version 16 as the
+/// style string's `fill.winding` "1"; before 16, where no file holds a
+/// fill rule, as the outline of the area it covers, so the overlap is
+/// filled under the even-odd rule those versions use.
+#[test]
+fn a_nonzero_curve_keeps_its_overlaps_filled_through_a_save() {
+    use tracedraw_core::shaping::FillRule;
+    let mut p = BezPath::new();
+    for (x0, x1) in [(10.0, 60.0), (40.0, 90.0)] {
+        p.move_to((x0, 10.0));
+        p.line_to((x1, 10.0));
+        p.line_to((x1, 90.0));
+        p.line_to((x0, 90.0));
+        p.close_path();
+    }
+    let mut c = Shape::new(
+        tracedraw_core::ShapeId(1),
+        ShapeKind::Path {
+            path: p,
+            closed: true,
+        },
+    );
+    c.fill = Fill::Solid(Color::BLACK);
+    c.fill_rule = FillRule::NonZero;
+    let doc = doc_with(vec![c]);
+    let overlap = Point::new(50.0, 50.0);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        let path = s.transform * s.local_path();
+        let inside = match s.fill_rule {
+            FillRule::NonZero => path.winding(overlap) != 0,
+            FillRule::EvenOdd => path.winding(overlap) % 2 != 0,
+        };
+        assert!(inside, "{v}: {:?} {:?}", s.fill_rule, rep.warnings);
+        if v >= 16 {
+            assert_eq!(s.fill_rule, FillRule::NonZero, "{v}");
+        }
+    }
+    // An even-odd curve stays so, its overlap a hole.
+    let mut even = doc.clone();
+    even.pages[0].layers[0].shapes[0].fill_rule = FillRule::EvenOdd;
+    for v in versions() {
+        let bytes = document_to_cdr_version(&even, v);
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert_eq!(s.fill_rule, FillRule::EvenOdd, "{v}");
+        let path = s.transform * s.local_path();
+        assert_eq!(path.winding(overlap) % 2, 0, "{v}");
+    }
 }

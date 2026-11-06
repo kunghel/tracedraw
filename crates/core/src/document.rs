@@ -2128,6 +2128,12 @@ pub struct Shape {
     /// drops them and leaves an ordinary curve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spline: Option<Vec<Point>>,
+    /// Which of the B-spline's control points are fixed: the curve passes
+    /// through a fixed point (with a corner there), and only comes near
+    /// a floating one. Empty (every point floating), or one flag a point
+    /// of [`Shape::spline`] (#1758).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spline_fixed: Vec<bool>,
     /// The object's identity across saves, undo and moves between
     /// drawings (see [`Uid`]); the engine gives one to every object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2170,6 +2176,19 @@ pub struct Shape {
     /// again from it whenever it changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qr: Option<Box<QrCode>>,
+    /// How the fill covers the places where the outline's contours
+    /// overlap (#1211, #1919): even-odd (the default: an overlap of two
+    /// contours is a hole, as in a combined ring) or nonzero (an overlap
+    /// of contours turning the same way stays filled, as in traced
+    /// lettering made of overlapping parts). Text always fills nonzero.
+    #[serde(default, skip_serializing_if = "crate::shaping::FillRule::is_even_odd")]
+    pub fill_rule: crate::shaping::FillRule,
+    /// Linked text content (#1568): the texts carrying the same key keep
+    /// the same characters, each in its own font, colours and effects
+    /// (see [`crate::linked_text`]). Not the flow of linked paragraph
+    /// frames, which is another feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_link: Option<u64>,
 }
 
 /// What a QR code holds: the kind of content, which decides the fields
@@ -2459,6 +2478,7 @@ impl Shape {
             style: None,
             node_types: std::collections::BTreeMap::new(),
             spline: None,
+            spline_fixed: Vec::new(),
             uid: None,
             opacity_mask: None,
             parked_effects: Vec::new(),
@@ -2468,6 +2488,8 @@ impl Shape {
             extra_strokes: Vec::new(),
             raster_fx: None,
             qr: None,
+            fill_rule: crate::shaping::FillRule::EvenOdd,
+            content_link: None,
         }
     }
 
@@ -3184,6 +3206,7 @@ impl Shape {
             out.kind = kind;
             out.node_types.clear();
             out.spline = None;
+            out.spline_fixed.clear();
             changed = true;
         }
         if !container {
@@ -3291,6 +3314,7 @@ impl Shape {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
+                    self.spline_fixed.clear();
                 }
                 if bake && !container {
                     if let Some(b) = crate::live::bake_outline_warps(self) {
@@ -3349,6 +3373,7 @@ impl Shape {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
+                    self.spline_fixed.clear();
                 }
                 if bake && !container {
                     if let Some(b) = crate::live::bake_outline_warps(self) {
@@ -4502,6 +4527,10 @@ pub struct Document {
     /// Master layers, drawn beneath every page's own layers.
     #[serde(default)]
     pub master: Vec<Layer>,
+    /// The master page's guidelines (#1928): shown on every page, set
+    /// once for all of them, beside each page's own guidelines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_guides: Vec<Guide>,
     #[serde(default)]
     pub object_styles: Vec<ObjectStyle>,
     /// The fill and outline new objects get.
@@ -4804,6 +4833,7 @@ impl Document {
             pages: vec![page],
             ids,
             master: Vec::new(),
+            master_guides: Vec::new(),
             object_styles: Vec::new(),
             defaults: ObjectDefaults::default(),
             color_styles: Vec::new(),
@@ -4958,6 +4988,18 @@ impl Document {
     /// behind the page, the page's own layers as they are stored, then
     /// applicable master layers in front of the page (#1132); what clicks
     /// and selections take objects from.
+    /// The guidelines shown on `page`: the master page's (every page
+    /// has them, #1928), then the page's own.
+    pub fn guides_on_page(&self, page: PageId) -> Result<Vec<Guide>> {
+        let p = self.page(page)?;
+        Ok(self
+            .master_guides
+            .iter()
+            .chain(p.guides.iter())
+            .copied()
+            .collect())
+    }
+
     pub fn layers_for_page(&self, page: PageId) -> Result<Vec<&Layer>> {
         let idx = self.page_index(page)?;
         let masters = |front: bool| {

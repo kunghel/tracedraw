@@ -6,7 +6,7 @@ use crate::app::{App, Drag};
 use crate::i18n::tr;
 use egui::{Modifiers, PointerButton, Response};
 use tracedraw_core::{
-    document::ShapeKind,
+    document::{Shape, ShapeKind},
     geometry::{BezPath, PathEl, Point, Rect, Vec2},
     nodes::{self, NodeType, Which},
     Command, ShapeId,
@@ -328,18 +328,24 @@ impl App {
     /// A selected B-spline whose control polygon lies under the pointer,
     /// with its control points plus one at the pointer.
     pub(crate) fn spline_polygon_at(&self, p: Point) -> Option<(ShapeId, Vec<Point>)> {
+        self.spline_polygon_hit(p).map(|(s, pts)| (s.id, pts))
+    }
+
+    /// [`spline_polygon_at`](Self::spline_polygon_at) with the spline.
+    fn spline_polygon_hit(&self, p: Point) -> Option<(Shape, Vec<Point>)> {
         let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
         self.shape_tool_shapes()
             .into_iter()
-            .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s.id, pts)))
+            .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s, pts)))
     }
 
     /// Control handle under the pointer, for selected nodes only, or one
     /// of the two handles a chosen segment shows (its start node's
     /// outgoing handle and its end node's incoming one).
     pub(crate) fn ctrl_handle_at(&self, p: Point) -> Option<(ShapeId, usize, Which)> {
-        // The nearest handle within the pick distance, on the page.
-        let tol = self.settings.nodes.pick_px() / self.view.zoom as f64;
+        // The nearest handle within the pick distance, on the page; a
+        // press anywhere on its arrow head takes it (#1643).
+        let tol = self.settings.nodes.handle_pick_px() / self.view.zoom as f64;
         let mut best: Option<((ShapeId, usize, Which), f64)> = None;
         let mut take = |key: (ShapeId, usize, Which), c: Option<Point>| {
             let Some(c) = c else { return };
@@ -386,13 +392,18 @@ impl App {
                 if let Some(points) = crate::kind_nodes::spline_without(&s, index) {
                     self.run(Command::SetSpline {
                         shape: s.id,
+                        fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
                         points,
                     });
                 }
                 return;
             }
-            if let Some((id, points)) = self.spline_polygon_at(p) {
-                self.run(Command::SetSpline { shape: id, points });
+            if let Some((s, points)) = self.spline_polygon_hit(p) {
+                self.run(Command::SetSpline {
+                    shape: s.id,
+                    fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
+                    points,
+                });
                 return;
             }
             if let Some(hit) = self.node_at(p) {
@@ -803,7 +814,11 @@ impl App {
                             } else {
                                 crate::kind_nodes::spline_moved(&start, index, q)
                             }
-                            .map(|points| Command::SetSpline { shape, points })
+                            .map(|points| Command::SetSpline {
+                                shape,
+                                points,
+                                fixed: None,
+                            })
                         }
                         _ => crate::kind_nodes::drag_constrained(
                             &start, node, q, ctrl, chosen, &mut turn, step,
@@ -1225,6 +1240,7 @@ impl App {
             cmds.push(match crate::kind_nodes::spline_without_many(&s, &chosen) {
                 Some(points) => Command::SetSpline {
                     shape: s.id,
+                    fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
                     points,
                 },
                 None => Command::DeleteShapes { shapes: vec![s.id] },
@@ -1329,6 +1345,12 @@ impl App {
     /// length) as the type needs, and the type is kept with the curve, so
     /// a cusp node with aligned handles stays cusp. One undo step.
     pub fn set_selected_node_type(&mut self, ty: NodeType) {
+        // A B-spline's chosen control points: Cusp makes them fixed (the
+        // curve passes through them), Smooth and Symmetrical floating
+        // (#1758); its outline stays a B-spline.
+        if self.set_selected_spline_fixed(ty == NodeType::Cusp) {
+            return;
+        }
         let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
         for (id, i) in self.node_selection.clone() {
             by_shape.entry(id).or_default().push(i);
@@ -1356,6 +1378,68 @@ impl App {
         if !cmds.is_empty() {
             let _ = self.engine.run_batch("Node Type", &cmds);
         }
+    }
+
+    /// The chosen control points of the selected B-splines become fixed
+    /// (the curve passes through them) or floating, as one undo step;
+    /// false when no control point of a B-spline is chosen (#1758).
+    pub fn set_selected_spline_fixed(&mut self, fixed: bool) -> bool {
+        let mut cmds = Vec::new();
+        for s in self.shape_tool_shapes() {
+            let Some(points) = s.spline.clone() else {
+                continue;
+            };
+            let chosen: Vec<usize> = self
+                .node_selection
+                .iter()
+                .filter(|(id, i)| *id == s.id && *i < points.len())
+                .map(|(_, i)| *i)
+                .collect();
+            if chosen.is_empty() {
+                continue;
+            }
+            let mut flags = s.spline_fixed.clone();
+            flags.resize(points.len(), false);
+            for i in chosen {
+                flags[i] = fixed;
+            }
+            cmds.push(Command::SetSpline {
+                shape: s.id,
+                points,
+                fixed: Some(flags),
+            });
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        let label = if fixed {
+            "Fixed Control Point"
+        } else {
+            "Floating Control Point"
+        };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+        }
+        true
+    }
+
+    /// Whether a control point of a selected B-spline is chosen, and
+    /// whether all chosen ones are fixed.
+    pub fn chosen_spline_points(&self) -> Option<bool> {
+        let mut any = false;
+        let mut all_fixed = true;
+        for s in self.shape_tool_shapes() {
+            if s.spline.is_none() {
+                continue;
+            }
+            for (id, i) in &self.node_selection {
+                if *id == s.id {
+                    any = true;
+                    all_fixed &= s.spline_fixed.get(*i).copied().unwrap_or(false);
+                }
+            }
+        }
+        any.then_some(all_fixed)
     }
 
     /// The type of node `index` of curve `id`: as chosen for it, else as
@@ -1441,6 +1525,14 @@ impl App {
 
     /// Node type of the first selected node, for the property bar.
     pub fn current_node_type(&self) -> Option<NodeType> {
+        // B-spline control points: fixed ones read as cusps (#1758).
+        if let Some(all_fixed) = self.chosen_spline_points() {
+            return Some(if all_fixed {
+                NodeType::Cusp
+            } else {
+                NodeType::Smooth
+            });
+        }
         let (id, i) = *self.node_selection.first()?;
         self.path_of(id)?;
         Some(self.node_type_of(id, i))
@@ -1800,6 +1892,7 @@ fn erase_frame(
     };
     f.node_types.clear();
     f.spline = None;
+    f.spline_fixed.clear();
     Erased::Into(Box::new(f))
 }
 

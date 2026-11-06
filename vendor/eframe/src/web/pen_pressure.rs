@@ -6,7 +6,10 @@
 //! patched winit copy does on X11 and macOS (see `vendor/README.md`): an
 //! `egui::Event::Touch` of phase `Move` only, with the reading as `force`,
 //! which TraceDraw's raw input hook reads and then takes out before egui
-//! sees it (`apps/tracedraw/src/pen.rs`).
+//! sees it (`apps/tracedraw/src/pen.rs`). The pen's pointer events also
+//! move the pointer, and its touches are left out (#1655): Safari on iPad
+//! sends an Apple Pencil no mouse events (`pen_moved`, `is_stylus_touch`,
+//! `pen_cancelled`).
 //!
 //! The file uses nothing of the crate but egui, so that TraceDraw's tests
 //! can include and run it.
@@ -76,9 +79,87 @@ pub(crate) fn pen_touch(pointer_id: i32, pos: egui::Pos2, force: Option<f32>) ->
     }
 }
 
+/// The `touchType` Safari gives the touches of an Apple Pencil.
+pub(crate) const STYLUS: &str = "stylus";
+
+/// Whether a touch event's touch is a stylus's (#1655). Safari on iPad
+/// sends an Apple Pencil both as touches and as pen pointer events; the
+/// pen's position, press and pressure come from its pointer events, so
+/// its touches are left out, or the press would come twice and egui
+/// would take the Pencil for a finger. A finger has the `touchType`
+/// "direct", and browsers without the property give none.
+pub(crate) fn is_stylus_touch(touch_type: Option<&str>) -> bool {
+    touch_type == Some(STYLUS)
+}
+
+/// Where a pen's pointer event puts the pointer (#1655): Safari on iPad
+/// sends an Apple Pencil no mouse events at all, so the pen's own
+/// `pointerdown` and `pointermove` move the pointer, before the press
+/// they may carry. Nothing for a mouse or a touch, whose position comes
+/// from their mouse and touch events as before.
+pub(crate) fn pen_moved(pointer_type: &str, pos: egui::Pos2) -> Option<egui::Event> {
+    (pointer_type == PEN).then_some(egui::Event::PointerMoved(pos))
+}
+
+/// What a pen's `pointercancel` (the browser took the pen over, or it
+/// left the screen without a `pointerup`) tells egui: no pressure, the
+/// tip let go, the pointer gone, so that no drag is left pressed.
+pub(crate) fn pen_cancelled(
+    pointer_id: i32,
+    pos: egui::Pos2,
+    modifiers: egui::Modifiers,
+) -> [egui::Event; 3] {
+    [
+        pen_touch(pointer_id, pos, None),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        },
+        egui::Event::PointerGone,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An Apple Pencil's touches are left out; a finger's, or those of a
+    /// browser that gives no touch type, are not.
+    #[test]
+    fn only_a_stylus_touch_is_left_out() {
+        assert!(is_stylus_touch(Some("stylus")));
+        assert!(!is_stylus_touch(Some("direct")));
+        assert!(!is_stylus_touch(None));
+    }
+
+    /// A pen's pointer events move the pointer; a mouse's and a touch's
+    /// do not (their own events do).
+    #[test]
+    fn a_pens_pointer_events_move_the_pointer() {
+        let pos = egui::pos2(5.0, 6.0);
+        assert_eq!(pen_moved("pen", pos), Some(egui::Event::PointerMoved(pos)));
+        assert_eq!(pen_moved("mouse", pos), None);
+        assert_eq!(pen_moved("touch", pos), None);
+    }
+
+    /// A cancelled pen lets the tip go and leaves no pressure behind.
+    #[test]
+    fn a_cancelled_pen_lets_go() {
+        let pos = egui::pos2(1.0, 2.0);
+        let [touch, release, gone] = pen_cancelled(4, pos, egui::Modifiers::NONE);
+        assert_eq!(touch, pen_touch(4, pos, None));
+        assert!(matches!(
+            release,
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                ..
+            }
+        ));
+        assert_eq!(gone, egui::Event::PointerGone);
+    }
 
     #[test]
     fn only_a_pen_gives_pressure() {

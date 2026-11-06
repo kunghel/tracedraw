@@ -1063,8 +1063,10 @@ impl PageWriter<'_> {
         }
 
         // Fill.
-        let text = matches!(shape.kind, ShapeKind::Text { .. });
-        self.paint_area(&shape.fill, &path, bounds, text);
+        // Text, and a curve whose fill rule says so (#1919), fill nonzero.
+        let nonzero = matches!(shape.kind, ShapeKind::Text { .. })
+            || shape.fill_rule == tracedraw_core::shaping::FillRule::NonZero;
+        self.paint_area(&shape.fill, &path, bounds, nonzero);
 
         // Outline.
         if let Some(s) = &shape.stroke {
@@ -2854,6 +2856,38 @@ mod tests {
         assert!(s < f, "behind: the outline first ({s} {f})");
         let (s, f) = order(false);
         assert!(f < s, "in front: the fill first ({s} {f})");
+    }
+
+    /// A curve whose fill rule is nonzero (overlapping parts of traced
+    /// lettering, #1919) is filled with `f`; others with `f*`.
+    #[test]
+    fn a_curve_fills_by_its_own_fill_rule() {
+        use tracedraw_core::shaping::FillRule;
+        let op = |rule: FillRule| -> String {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut sq = Shape::new(
+                tracedraw_core::ShapeId(1),
+                ShapeKind::Rect {
+                    rect: tracedraw_core::Rect::new(10.0, 10.0, 60.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            sq.fill = Fill::Solid(Color::rgb8(0, 0, 0));
+            sq.stroke = None;
+            sq.fill_rule = rule;
+            doc.layer_mut(layer).unwrap().shapes.push(sq);
+            let content = page_content(&document_to_pdf(&doc));
+            content
+                .lines()
+                .map(str::trim)
+                .find(|l| *l == "f" || *l == "f*")
+                .expect("a fill")
+                .to_string()
+        };
+        assert_eq!(op(FillRule::NonZero), "f");
+        assert_eq!(op(FillRule::EvenOdd), "f*");
     }
 
     /// An outline that scales with its object is as wide in the PDF as in

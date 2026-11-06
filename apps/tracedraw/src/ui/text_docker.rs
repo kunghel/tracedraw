@@ -796,6 +796,24 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 edit_spans(app, move |sp| sp.underline = u);
             }
         }
+        // Strikethrough beside Underline, as on the text bar (#1022).
+        let on = span
+            .as_ref()
+            .map_or(app.text_strikethrough, |s| s.strikethrough);
+        if ui
+            .add_sized(
+                [26.0, 22.0],
+                egui::Button::selectable(on, egui::RichText::new("S").strikethrough().size(14.0)),
+            )
+            .rich_tip(tr("toolbar.strikethrough"))
+            .clicked()
+        {
+            app.text_strikethrough = !on;
+            let s = !on;
+            if span.is_some() {
+                edit_spans(app, move |sp| sp.strikethrough = s);
+            }
+        }
         row_check(app, ui, "underline");
     });
     // Text fill, background and outline.

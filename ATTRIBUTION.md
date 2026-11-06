@@ -7,7 +7,8 @@ Fonts embedded in PDF files are subset with the `subsetter` crate
 (MIT OR Apache-2.0); the fonts themselves are the user's and are put in
 only when their licence bits allow it. The desktop builds compile in
 libwebp (Copyright Google Inc., BSD 3-Clause licence, through the
-`libwebp-sys` crate) for lossy WebP export.
+`libwebp-sys` crate) for lossy WebP export; the browser build uses the
+pure-Rust `vaam-image-webp` crate (MIT OR Apache-2.0) for it instead.
 
 | Asset | Path | Author and source | License |
 |---|---|---|---|

@@ -5,6 +5,9 @@
 //! Links are kept in the object data of each frame (`text.next`,
 //! `text.prev`, shape ids), so they survive save and load without a model
 //! change. Re-flow runs after typing, linking and resizing a frame.
+//!
+//! Not the linked text content of `content_link.rs` (texts that hold the
+//! same characters); a frame takes part in one or the other.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -192,6 +195,18 @@ impl App {
             || self.prev_frame(b).is_some()
         {
             self.status = tr("status.link_already");
+            return false;
+        }
+        // A frame whose text content is linked (Link Text Content) keeps
+        // all of its text: it flows into no other frame (#1568).
+        let content_linked = |id| {
+            self.doc()
+                .find_shape(id)
+                .and_then(tracedraw_core::linked_text::link_of)
+                .is_some()
+        };
+        if content_linked(a) || content_linked(b) {
+            self.status = tr("status.flow_not_content_linked");
             return false;
         }
         let cmds = vec![

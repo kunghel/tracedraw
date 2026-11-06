@@ -368,6 +368,29 @@ pub fn transformed_bounds(path: &BezPath, transform: Affine) -> Rect {
 /// the last, its ends tangent to the control polygon. Closed: the
 /// periodic spline, smooth all round. Each knot span becomes one segment,
 /// its control points the blossoms of the span's ends.
+/// [`bspline_path`] with the control points `fixed` says (one flag a
+/// point, missing ones floating) made fixed: the curve passes through a
+/// fixed point, with a corner there between the lines of the control
+/// polygon, as a point taken three times by the cubic spline does. The
+/// ends of an open spline are fixed already (#1758).
+pub fn bspline_path_fixed(points: &[Point], fixed: &[bool], closed: bool) -> BezPath {
+    if !fixed.contains(&true) {
+        return bspline_path(points, closed);
+    }
+    let n = points.len();
+    let mut all = Vec::with_capacity(n + 2 * fixed.len());
+    for (i, p) in points.iter().enumerate() {
+        let end = !closed && (i == 0 || i + 1 == n);
+        let times = if fixed.get(i).copied().unwrap_or(false) && !end {
+            3
+        } else {
+            1
+        };
+        all.extend(std::iter::repeat_n(*p, times));
+    }
+    bspline_path(&all, closed)
+}
+
 pub fn bspline_path(points: &[Point], closed: bool) -> BezPath {
     let mut path = BezPath::new();
     let n = points.len();
@@ -508,6 +531,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A fixed control point is on the curve, a floating one is not; an
+    /// open spline's ends are on it either way (#1758).
+    #[test]
+    fn a_fixed_bspline_point_is_on_the_curve() {
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 20.0),
+            Point::new(30.0, 20.0),
+            Point::new(40.0, 0.0),
+            Point::new(60.0, 10.0),
+        ];
+        let dist = |path: &BezPath, q: Point| {
+            path.segments()
+                .flat_map(|s| (0..=200).map(move |k| s.eval(k as f64 / 200.0)))
+                .map(|p| (p - q).hypot())
+                .fold(f64::INFINITY, f64::min)
+        };
+        let floating = bspline_path(&pts, false);
+        assert!(dist(&floating, pts[2]) > 1.0);
+        let fixed = bspline_path_fixed(&pts, &[false, false, true], false);
+        assert!(dist(&fixed, pts[2]) < 1e-6, "through the fixed point");
+        assert!(dist(&fixed, pts[1]) > 1.0, "not the floating one");
+        assert!((fixed.segments().next().expect("seg").start() - pts[0]).hypot() < 1e-9);
+        // No flag set: the plain spline.
+        assert_eq!(bspline_path_fixed(&pts, &[false; 5], false), floating);
+        // Closed too.
+        let closed = bspline_path_fixed(&pts, &[false, true], true);
+        assert!(dist(&closed, pts[1]) < 1e-6);
+        assert!(dist(&bspline_path(&pts, true), pts[1]) > 1.0);
     }
 
     #[test]

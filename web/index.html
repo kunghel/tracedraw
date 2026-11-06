@@ -34,8 +34,11 @@
        and status bar when the page fills the screen as an installed app
        (viewport-fit=cover): eframe sizes the editor from the canvas's
        box, so the editor's bars stay where a finger can reach them. */
+    /* A finger or a pen on the canvas draws, picks and pans in the
+       editor: the browser neither scrolls nor zooms the page under it
+       nor takes an Apple Pencil for handwriting (#1655). */
     canvas#tracedraw {
-      position: absolute; outline: none;
+      position: absolute; outline: none; touch-action: none;
       top: env(safe-area-inset-top, 0px); left: env(safe-area-inset-left, 0px);
       width: calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
       height: calc(100% - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));

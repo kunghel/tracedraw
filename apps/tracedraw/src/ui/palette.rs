@@ -1240,6 +1240,7 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
         if item(ui, "palette.add_selection_to_palette", "", sel) {
             app.add_selection_colors_to_palette(i);
         }
+        bitmap_colors_items(app, ui, Some(i));
     }
     if let Row::Extra(k) = which {
         sep(ui);
@@ -1252,6 +1253,25 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
     } else if which == Row::Main && item(ui, "palette.rename", "", true) {
         crate::ui::palette_bars::start_rename(app, which);
     }
+}
+
+/// How many colours Add Colors from Bitmap offers to take.
+pub const BITMAP_COLOR_COUNTS: [u32; 4] = [8, 16, 32, 64];
+
+/// Add Colors from Bitmap (#1840): a submenu of how many colours of the
+/// selected picture join the user's palette `palette`, or the document
+/// palette when None; greyed without a picture selected.
+fn bitmap_colors_items(app: &mut App, ui: &mut Ui, palette: Option<usize>) {
+    use crate::ui::menus::{item_label, sub_if};
+    let picture = app.has_document() && app.selected_bitmap().is_some();
+    sub_if(ui, "palette.add_from_bitmap", picture, |ui| {
+        for n in BITMAP_COLOR_COUNTS {
+            let label = crate::i18n::trf("palette.count", &[("n", &n.to_string())]);
+            if item_label(ui, &label, "", picture) {
+                app.add_bitmap_colors_to_palette(palette, n);
+            }
+        }
+    });
 }
 
 /// The document palette's own items.
@@ -1279,6 +1299,7 @@ fn document_items(app: &mut App, ui: &mut Ui) {
     if item(ui, "palette.add_from_document", "", doc) {
         app.add_document_colors_to_palette();
     }
+    bitmap_colors_items(app, ui, None);
     let current = if doc {
         app.doc_palette_current
             .filter(|i| *i < app.doc().palette.len())
@@ -1578,6 +1599,110 @@ pub fn mix(a: Color, b: Color, share: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drawing with a picture of four colours (red, green, blue and
+    /// white quarters), selected when `select`.
+    fn app_with_picture(select: bool) -> App {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let img = image::RgbaImage::from_fn(40, 40, |x, y| match (x < 20, y < 20) {
+            (true, true) => image::Rgba([220, 20, 30, 255]),
+            (false, true) => image::Rgba([20, 160, 40, 255]),
+            (true, false) => image::Rgba([30, 40, 200, 255]),
+            (false, false) => image::Rgba([255, 255, 255, 255]),
+        });
+        let id = app.place_image(img, None).expect("picture");
+        if select {
+            app.select(vec![id]);
+        } else {
+            app.select(Vec::new());
+        }
+        app
+    }
+
+    /// Click the row labelled `label` of the palette menu of `which`, if
+    /// it is there and enabled. Says whether it was.
+    fn click_label(app: &mut App, make: impl Fn() -> App, which: Row, label: &str) -> bool {
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        for target in 0..300 {
+            let mut probe = make();
+            replay::start(target);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(&mut probe, ui, which));
+            out.textures_delta.clear();
+            let (hit, seen) = replay::finish();
+            if hit.as_deref() == Some(label) {
+                replay::start(target);
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(app, ui, which));
+                out.textures_delta.clear();
+                replay::finish();
+                return true;
+            }
+            if target >= seen {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Add Colors from Bitmap (#1840): the palette menu takes the colours
+    /// that stand for the selected picture into the document palette
+    /// (one undo step) or into a palette of the user's; without a
+    /// picture selected the rows are greyed.
+    #[test]
+    fn colours_come_from_the_selected_picture() {
+        let sixteen = crate::i18n::trf("palette.count", &[("n", "16")]);
+        let want = [
+            Color::rgb8(220, 20, 30),
+            Color::rgb8(20, 160, 40),
+            Color::rgb8(30, 40, 200),
+            Color::rgb8(255, 255, 255),
+        ];
+        // The document palette.
+        let mut app = app_with_picture(true);
+        let before = app.doc().palette.clone();
+        assert!(click_label(
+            &mut app,
+            || app_with_picture(true),
+            Row::Document,
+            &sixteen
+        ));
+        let after = app.doc().palette.clone();
+        assert!(after.starts_with(&before), "the colours there stay first");
+        for c in want {
+            assert!(after.contains(&c), "{c:?} in {after:?}");
+        }
+        assert_eq!(after.len(), before.len() + 4, "{after:?}");
+        app.undo();
+        assert_eq!(app.doc().palette, before, "one undo step");
+        // Nothing selected: greyed.
+        let mut app = app_with_picture(false);
+        assert!(!click_label(
+            &mut app,
+            || app_with_picture(false),
+            Row::Document,
+            &sixteen
+        ));
+        // A palette of the user's, from its own bar's menu.
+        let make = || {
+            let mut app = app_with_picture(true);
+            app.new_palette("Mine").expect("palette");
+            app
+        };
+        let mut app = make();
+        let i = app.palettes.len() - 1;
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|r| !r.document && r.index == i)
+            .expect("its bar");
+        assert!(click_label(&mut app, make, Row::Extra(k), &sixteen));
+        let got: Vec<Color> = app.palettes[i].colors.iter().map(|(_, c)| *c).collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        for c in want {
+            assert!(got.contains(&c), "{c:?} in {got:?}");
+        }
+    }
 
     #[test]
     fn tooltips_name_the_colour_and_its_values() {

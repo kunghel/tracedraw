@@ -684,11 +684,44 @@ fn multipoint(
         );
     }
     let top = area.min.y + 22.0;
+    // Eight rows show at a time; the wheel scrolls a longer list and the
+    // chosen point is always in view (a curve read from the drawing can
+    // have many, #1889).
+    let shown = 8usize;
+    let max_first = c.curve.len().saturating_sub(shown);
+    let first_id = id.with("first");
+    let mut first: usize = ui.data(|d| d.get_temp(first_id)).unwrap_or(0);
+    if focus.hovered() {
+        let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+        if wheel < -0.5 {
+            first += 1;
+        } else if wheel > 0.5 {
+            first = first.saturating_sub(1);
+        }
+    }
+    if let Some(i) = c.current.filter(|i| *i < c.curve.len()) {
+        if c.current
+            != ui
+                .data(|d| d.get_temp::<Option<usize>>(id.with("seen")))
+                .flatten()
+        {
+            if i < first {
+                first = i;
+            } else if i >= first + shown {
+                first = i + 1 - shown;
+            }
+        }
+    }
+    let first = first.min(max_first);
+    ui.data_mut(|d| {
+        d.insert_temp(first_id, first);
+        d.insert_temp(id.with("seen"), c.current);
+    });
     let mut clicked_row = None;
     let mut double_row = None;
     if let Some(pos) = focus.interact_pointer_pos() {
         if pos.y >= top {
-            let i = ((pos.y - top) / row_h) as usize;
+            let i = first + ((pos.y - top) / row_h) as usize;
             if i < c.curve.len() {
                 if focus.double_clicked() {
                     double_row = Some(i);
@@ -698,8 +731,8 @@ fn multipoint(
             }
         }
     }
-    for (i, p) in c.curve.iter().enumerate().take(8) {
-        let y = top + i as f32 * row_h;
+    for (i, p) in c.curve.iter().enumerate().skip(first).take(shown) {
+        let y = top + (i - first) as f32 * row_h;
         let row = Rect::from_min_size(
             Pos2::new(area.min.x + 1.0, y),
             Vec2::new(area.width() - 2.0, row_h),
@@ -757,7 +790,7 @@ fn multipoint(
         ui.horizontal(|ui| {
             let mut p = c.curve[i];
             if point_fields(ui, u, o, &mut p) {
-                c.curve[i] = p;
+                c.set_curve_point(i, p);
             }
         });
     }

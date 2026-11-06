@@ -26,7 +26,10 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 Text tool, and the Pick tool with only text selected (after the object
 fields): the font list (below), the size in points (a field and an arrow
 dropping 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48,
-60, 72, 96, 144 and 288), Bold, Italic, Underline, the alignment (a
+60, 72, 96, 144 and 288), Bold, Italic, Underline, Strikethrough (an
+S struck through; also beside Underline in the Text docker's Character
+section and on a table's cell bar, #1022,
+`pick_drag_tests::the_text_bar_has_a_strikethrough_button`), the alignment (a
 button with the alignment's picture dropping Left, Center, Right and
 Full justify), Bullets and Drop Cap (for paragraph text; they open their
 dialogs), Text Properties (the Text docker, Ctrl+T) and Edit Text
@@ -355,7 +358,14 @@ font maps (U+201A or U+0082, `tracedraw_text::tests::code_page_1252_places_go_by
 A letter the shaper's character map lacks while another map of the font
 has it (a symbol map beside a Unicode one) draws the font's glyph,
 never the empty notdef
-(`tracedraw_text::tests::letters_one_character_map_lacks_draw_from_the_other`),
+(`tracedraw_text::tests::letters_one_character_map_lacks_draw_from_the_other`).
+In a font with a symbol map only, a letter at 0x80 to 0x9F draws
+whether the text holds the code itself (U+0084), the character code
+page 1252 has there, as Windows delivers a code typed for such a font
+("„", U+201E), or the place the symbol map keeps it at, as text pasted
+from other programs holds it (U+F084); these went to another font and
+showed as a box (Tamil letters such as ஷ, #1937,
+`tracedraw_text::tests::a_symbol_font_draws_its_letters_at_the_places_of_code_page_1252`),
 and Autocorrect leaves the letters typed in such fonts as typed (see
 `writing-tools.md`).
 
@@ -497,6 +507,12 @@ on its own line, which is why the lines are joined first.
   (`the_flow_tab_links_to_a_new_frame_on_another_page`). A drag that
   starts on the tab does the same where it is let go (a release over a
   frame links to it, over empty space makes the new frame there).
+  The bottom tab works the same with the Text tool, on the frame being
+  edited or selected: a click or a drag on it ends the editing and
+  links as with the Pick tool; the Text tool stays. The top tab too
+  where it shows, though over a frame being edited the tab ruler takes
+  presses there (#1914,
+  `pick_drag_tests::text_frame_tabs_link_frames_with_the_text_tool`).
 - The top tab: a picked paragraph frame also has a tab over its top
   edge's middle, above the selection's top handle (two links when
   another frame flows into it, empty otherwise). A click (or a drag) on
@@ -514,6 +530,62 @@ on its own line, which is why the lines are joined first.
   flow into the original's next frame. Frames of a chain copied together
   (duplicated, pasted or imported as a set) are a chain of the copies
   (`textflow::relink_copies`).
+
+## Linked text content
+
+Two texts or more can share their characters while each keeps its own
+look (#1568, #1364, #1194): the same word set as a 3D blend, an
+extrusion, an outline copy or a shadow text is changed once. This is not
+the frame flow above: there one text runs on from frame to frame; here
+every text holds the whole text.
+
+- Text > Link Text Content (also on the object menu of a right click
+  when it can be used): with two texts or more selected (artistic or
+  paragraph, in groups too), their characters are linked. The texts
+  take the characters of the text selected first; a text already linked
+  brings its whole link along, so the links join. Greyed with fewer
+  than two texts, or when they are all in one link already.
+- From then on, whatever is typed, deleted, pasted or replaced in any of
+  them (typing in place, Edit Text, Find and Replace, a change of case,
+  a script) appears in the others at once, both ways. Only the
+  characters are shared: fonts, sizes, character colours and the rest
+  of each text's formatting, its fill, outline, frame, place and
+  effects (blend, extrude, envelope, contour, shadow, perspective) stay
+  its own. Characters both the old and the new text have at the start
+  and at the end keep their own style in each text; new characters take
+  the style of the character before them in that text.
+- The change and what it does to the linked texts are one step: one
+  Undo takes both back (`Engine` passes the change on in the step that
+  made it, `Document::sync_linked_text`).
+- A blend between two texts follows: its steps are made again from both
+  ends. The Blend panel has "Link text content of the ends" when the
+  selected blend goes from one text to another; it links or unlinks the
+  two.
+- The indicator: with a linked text selected or being edited, the other
+  texts of its link on the page are outlined with blue dashes, and each
+  linked text carries a small chain mark at its top right corner. The
+  status bar says "Artistic Text: ... (text content linked with 2 more)
+  on Layer 1", and while typing "Editing a linked text: what you type
+  changes 2 more".
+- Text > Unlink Text Content (and the object menu) takes the selected
+  texts out of their link; each keeps the text it shows. A text left
+  alone in a link leaves it too.
+- Frames of a frame flow chain (Paragraph Text Frame > Link) cannot
+  have their content linked, and a text whose content is linked cannot
+  flow into another frame: the status bar says which to unlink first.
+  Both features work in the same drawing on other texts.
+- Copies stay linked: Duplicate, Copy and Paste (in the same drawing or
+  another one), a copy made by a right click during a move, Clone and
+  Duplicate Page all make texts in the same link as their originals, so
+  a design copied for another colour still changes its word once. Use
+  Unlink Text Content on a copy that should go its own way. A pasted
+  copy whose characters differ from its link's (the original was
+  changed since it was copied) takes the link's characters.
+- Saved in `.tdraw` files as the text's `content_link` key (texts with
+  the same key are linked); a TraceDraw that does not know it opens the
+  texts unlinked. `.cdr`, PDF, SVG and the other formats get each text
+  as plain text with its own characters and looks; the link is not
+  written (`linked_text_content_goes_out_as_plain_texts`).
 
 ## Paragraph formatting
 
@@ -613,7 +685,12 @@ on its own line, which is why the lines are joined first.
     line down the frame where it would go; a drag starting away from a
     marker adds a stop and moves it. Released more than 18 points away
     from the strip, the stop is removed (its marker fades while it is
-    that far).
+    that far). The text flows to the stop while it moves, not only at
+    the release, laid out again at most every 1/30 s so a long text
+    keeps the drag smooth (and once more where the pointer rests); held
+    that far off the strip, the text shows without the stop. The drag
+    is one undo step (#1852, #1912,
+    `pick_drag_tests::the_text_follows_a_tab_stop_while_it_is_dragged`).
   - A right click on the strip opens a menu of the four kinds (Left,
     Center, Right, Decimal tab), the stop's own kind checked: a pick
     changes the stop under the pointer, or with none there adds a stop

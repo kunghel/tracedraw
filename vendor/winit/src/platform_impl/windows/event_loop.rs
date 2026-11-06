@@ -59,7 +59,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_POINTERDOWN, WM_POINTERUP,
     WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
     WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TOUCH, WM_WINDOWPOSCHANGED,
-    WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
+    WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WindowFromPoint, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP, WS_VISIBLE,
 };
 
@@ -1637,6 +1637,15 @@ unsafe fn public_window_callback_inner(
                 }
             }
 
+            // TraceDraw: Alt with a letter starts no keyboard menu mode in a
+            // window without a menu bar; the mode took the mouse, so the
+            // pointer was not updated until it moved (#1922).
+            let has_menu_bar = unsafe { GetMenu(window) != 0 };
+            if !crate::alt_shortcuts::system_command_passes(wparam, lparam, has_menu_bar) {
+                result = ProcResult::Value(0);
+                return;
+            }
+
             result = ProcResult::DefWindowProc(wparam);
         },
 
@@ -1714,6 +1723,17 @@ unsafe fn public_window_callback_inner(
             {
                 let mut w = userdata.window_state_lock();
                 w.mouse.set_cursor_flags(window, |f| f.set(CursorFlags::IN_WINDOW, false)).ok();
+            }
+
+            // TraceDraw: the system also ends the leave tracking when a
+            // menu mode or another window takes the mouse while the pointer
+            // stands still in the window (#1922). That is no leave: the
+            // program is not told, so it keeps updating the pointer. The
+            // flag above is cleared all the same, so the next move enters
+            // again and asks for the leave tracking anew.
+            if !pointer_left_window(window) {
+                result = ProcResult::Value(0);
+                return;
             }
 
             userdata.send_event(Event::WindowEvent {
@@ -2647,6 +2667,28 @@ enum PointerMoveKind {
     Leave,
     /// Pointer is inside the window or `GetClientRect` failed.
     None,
+}
+
+/// TraceDraw: whether the pointer has left `window` when a `WM_MOUSELEAVE`
+/// comes, read from where it is now (#1922, `crate::alt_shortcuts`).
+fn pointer_left_window(window: HWND) -> bool {
+    let mut client: RECT = unsafe { mem::zeroed() };
+    if unsafe { GetClientRect(window, &mut client) } == false.into() {
+        return true;
+    }
+    let mut screen = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut screen) } == false.into() {
+        return true;
+    }
+    let this_window_under = unsafe { WindowFromPoint(screen) } == window;
+    let mut local = screen;
+    let pointer = (unsafe { ScreenToClient(window, &mut local) } != false.into())
+        .then_some((local.x, local.y));
+    crate::alt_shortcuts::pointer_left(
+        pointer,
+        (client.left, client.top, client.right, client.bottom),
+        this_window_under,
+    )
 }
 
 fn get_pointer_move_kind(

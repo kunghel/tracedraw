@@ -43,7 +43,7 @@ that does something else says why in its tip.
 | Export docker, Browse and Export | picks the folder the assets go to | one zip file named after the drawing (`<name>.zip`, each asset in a folder of that name), downloaded; the folder row says so | the same zip file, where the system's save picker says |
 | File > Package, Browse | picks the folder | greyed with the reason (File > Package is greyed, #1416) | no folder row: the package is one zip file the save picker places (#1401) |
 | Font Manager, Add Folder | picks a folder of fonts | picks several font files at once, each added as Add Font adds one | the same |
-| Print Merge, Pictures folder | picks the folder | picks several pictures at once, kept together as the pictures folder (the docker shows how many) | the same, copied into the app's temporary folder |
+| Print Merge, Pictures folder | picks the folder | picks several pictures at once, kept together as the pictures folder (the docker shows how many) | the system's folder picker (`ACTION_OPEN_DOCUMENT_TREE`, #1926): the pictures in the folder chosen (not its subfolders) are copied into the app's temporary folder and kept together as the pictures folder |
 | Picture Mosaic, Browse | picks the library folder | picks several pictures at once as the library | the same |
 | Options > Text > Spelling, More dictionaries, Browse | picks a folder of dictionaries | (the row is not shown; Add Files does it) | picks `.dic` and `.aff` files, added as Add Files adds them |
 | Options > Save, backup folders, Browse | picks the folder | greyed: backups live in the page's storage | greyed: backups stay in the app's folder |

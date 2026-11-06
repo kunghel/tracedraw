@@ -1031,7 +1031,18 @@ impl App {
         let target = kept;
         let mut used: Vec<tracedraw_core::ShapeId> = ordered.iter().map(|s| s.id).collect();
         used.extend(&slicer_ids);
-        let paths: Vec<tracedraw_core::BezPath> = ordered.iter().map(Shape::page_path).collect();
+        // The area each object fills: a curve that fills nonzero (#1919)
+        // as the even-odd outline of that area, so its overlaps are not
+        // read as holes.
+        let paths: Vec<tracedraw_core::BezPath> = ordered
+            .iter()
+            .map(|s| match s.fill_rule {
+                tracedraw_core::shaping::FillRule::NonZero => {
+                    tracedraw_core::shaping::nonzero_as_even_odd(&s.page_path())
+                }
+                tracedraw_core::shaping::FillRule::EvenOdd => s.page_path(),
+            })
+            .collect();
         let open_result = open_target.then(|| {
             use tracedraw_core::shaping::{cut_open, Keep};
             let regions: Vec<tracedraw_core::BezPath> = ordered

@@ -22,12 +22,29 @@
     with its fill, outline and effects;
   - bitmaps, tables and symbols go into a clip frame of the area (no
     fill or outline), so their content stays whole and can be taken
-    out again (Extract Contents);
+    out again (Extract Contents). With the bar's Crop picture pixels
+    on (off by default; kept in the settings), an upright picture (not
+    turned or slanted) instead loses its pixels outside the area and
+    stays a free picture (#1913): every pixel the area touches is kept,
+    so the picture's new edges lie on its pixel edges; its transparency,
+    its CMYK ink channels and its bitmap effects' original are cut
+    alike. A turned or slanted picture still goes into a clip frame
+    (`crop_tool::tests::the_crop_tool_cuts_a_pictures_pixels`,
+    `a_turned_picture_still_goes_in_a_frame`);
   - groups are cropped member by member (a group left empty is
     deleted); a clip frame by its frame.
 - One undo step; the deleted objects leave the selection.
-- The bar (with an area): X and Y of the area's point at the object
-  origin, W and H (sized about that point), Crop, Clear Crop Area.
+- The bar: Crop picture pixels; with an area, X and Y of the area's
+  point at the object origin, W and H (sized about that point), Crop,
+  Clear Crop Area.
+- Bitmaps > Crop to Frame (with a clip frame holding one picture alone
+  selected, as the Crop tool and Crop Bitmap make): the picture's pixels
+  outside the frame's box are cut away. A frame that is a rectangle
+  along the picture's sides then lets the picture go: a free picture in
+  the clip frame's place, where it showed, with the transparency and
+  opacity the picture inside kept; any other frame stays, holding the
+  smaller picture. One undo step (#1913,
+  `crop_tool::tests::crop_to_frame_frees_the_picture`).
 - Not done: turning the crop area.
 
 ## Knife

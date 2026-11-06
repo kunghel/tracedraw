@@ -21,6 +21,16 @@ find out what changed and lists the highlights of the latest versions.
 
 ## Highlights of recent versions {#highlights}
 
+- **Touch and phones.** Shift, Ctrl and Alt buttons on the Standard toolbar
+  stay held for a finger; on Android the interface keeps clear of the camera
+  cutout and the rounded corners; the Apple Pencil works in Safari on iPad.
+- **Files.** .cdr files keep the fill rule of overlapping curves and open with
+  their tab stops, multi-column text, guidelines shared by every page and
+  master page objects.
+- **Pictures, printing and the workspace.** The Crop tool's Crop picture
+  pixels and [[menu.bitmaps > menu.bitmaps.crop_to_frame]] cut a picture's
+  pixels; printing in grayscale and in reverse order;
+  [[menu.view > menu.view.scrollbars]] hides the scrollbars.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] opens the tools for
   cutting plotters: plotter output, cut lines, nesting and measuring. See
   [TraceCut](../objects/tracecut.md).

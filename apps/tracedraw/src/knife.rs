@@ -422,6 +422,7 @@ impl App {
                     f.kind = ShapeKind::Path { path, closed };
                     f.node_types.clear();
                     f.spline = None;
+                    f.spline_fixed.clear();
                     f
                 };
                 let mut it = pieces.into_iter();

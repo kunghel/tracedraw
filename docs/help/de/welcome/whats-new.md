@@ -25,6 +25,18 @@ der letzten Versionen.
 
 ## Highlights der letzten Versionen {#highlights}
 
+- **Touch und Telefone.** Umschalt-, Strg- und Alt-Schaltflächen in der
+  Standardleiste bleiben für einen Finger gedrückt; unter Android hält die
+  Oberfläche Abstand zur Kameraaussparung und zu den abgerundeten Ecken; der
+  Apple Pencil funktioniert in Safari auf dem iPad.
+- **Dateien.** .cdr-Dateien behalten die Füllregel sich überlappender Kurven
+  und öffnen sich mit ihren Tabstopps, mehrspaltigem Text, Hilfslinien für
+  alle Seiten und den Objekten der Masterseite.
+- **Bilder, Drucken und Arbeitsbereich.** Bildpixel zuschneiden im
+  Zuschneidewerkzeug und [[menu.bitmaps > menu.bitmaps.crop_to_frame]]
+  schneiden die Pixel eines Bildes zu; Drucken in Graustufen und in
+  umgekehrter Reihenfolge; [[menu.view > menu.view.scrollbars]] blendet die
+  Bildlaufleisten aus.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] öffnet die Werkzeuge für
   Schneideplotter: Plotterausgabe, Schnittlinien, Verschachtelung und Messen.
   Siehe [TraceCut](../objects/tracecut.md).

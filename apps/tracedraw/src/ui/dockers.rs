@@ -894,6 +894,42 @@ fn object_opacity_row(app: &mut App, ui: &mut Ui, salt: &str) {
     }
 }
 
+/// Fill winding (#1211, #1919): on, the selected curves fill with the
+/// nonzero rule, so where their contours overlap turning the same way the
+/// fill stays (traced lettering made of overlapping parts); off, with the
+/// even-odd rule, where an overlap is a hole. Shown for curves and
+/// polygons (other shapes have no overlapping contours; text always
+/// fills nonzero); a selection that differs shows the box mixed.
+fn fill_winding_row(app: &mut App, ui: &mut Ui) {
+    use tracedraw_core::shaping::FillRule;
+    let ids: Vec<(tracedraw_core::ShapeId, FillRule)> = app
+        .selected_shapes()
+        .iter()
+        // Curves and polygons: the outlines whose contours can overlap.
+        .filter(|s| matches!(s.kind, ShapeKind::Path { .. } | ShapeKind::Polygon { .. }))
+        .map(|s| (s.id, s.fill_rule))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let nonzero = ids.iter().filter(|(_, r)| *r == FillRule::NonZero).count();
+    let mut on = nonzero == ids.len();
+    let mixed = nonzero > 0 && nonzero < ids.len();
+    let resp = ui
+        .add(egui::Checkbox::new(&mut on, tr("docker.fill_winding")).indeterminate(mixed))
+        .rich_tip(crate::ui::tips::keyed("docker.fill_winding"));
+    if resp.changed() {
+        app.run(Command::SetFillRule {
+            shapes: ids.into_iter().map(|(id, _)| id).collect(),
+            rule: if on {
+                FillRule::NonZero
+            } else {
+                FillRule::EvenOdd
+            },
+        });
+    }
+}
+
 fn extra_fills(app: &mut App, ui: &mut Ui, first: &tracedraw_core::Shape, has_fill: bool) {
     let mut fills = first.extra_fills.clone();
     let mut changed = false;
@@ -1205,6 +1241,7 @@ fn properties(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 object_opacity_row(app, ui, "fill");
+                fill_winding_row(app, ui);
                 extra_fills(app, ui, first, has);
             }
             "transparency" => {

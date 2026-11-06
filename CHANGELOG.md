@@ -6,6 +6,92 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Linked text content: Text > Link Text Content (also on the right-click menu) links the characters of two texts or more, so whatever is typed in any of them appears in the others at once, both ways, while each keeps its own font, size, colours and effects. Change the word of a 3D blend, an extrusion or a shadow text once. The Blend panel can link the two texts of a blend; a linked text shows the others of its link with dashed outlines and a chain mark, Undo takes a change back in all of them in one step, copies stay linked, and Unlink Text Content lets a text go its own way. This is not the frame flow of Paragraph Text Frame > Link; `.tdraw` files keep the link, `.cdr` files get plain texts (#1568, #1364, #1194).
+
+## 0.41.0 (2026-11-06)
+
+- Text in older fonts made for the symbol encoding (Tamil fonts among them): a letter the font keeps at codes 0x80 to 0x9F now draws when it is typed on Windows, which delivers it as the character code page 1252 has there ("„" for 0x84), and when pasted text holds it at U+F080 to U+F09F. Such letters went to another font and showed as a box or not at all (#1937).
+
+- Master guidelines: guidelines can be set once for all pages. The Objects docker shows "Guides (all pages)" under the Master Page and each page's own "Guides"; a click on a row chooses which guidelines new ones go to and which are picked and moved, and its padlock locks all of them. Opening a `.cdr` file puts the master page's guidelines there instead of a copy on every page, and saving writes them back to the master page (#1928).
+
+- Text tool: the flow tabs of a paragraph frame link frames as with the Pick tool. A click on the bottom tab of the frame being edited, then a click on another frame (or a drag from the tab onto it), flows the text on. Before, only the Pick tool could do this (#1914).
+
+- Windows: a tool shortcut with Alt (Alt+R set for the Rectangle tool) changes the pointer at once with the mouse standing still, as the F-key shortcuts do. The pointer stayed the system arrow, or vanished after a tool with its own pointer, until the mouse moved: Alt with a letter started the system's keyboard menu mode, which took the mouse, and the window then took the pointer for gone (#1922).
+
+- Duplicate: Undo right after the copies of a Duplicate were deselected by accident selects them again, and the next Duplicate repeats what was done to them again. No change of the drawing is undone (#1494).
+
+- Android: the camera cutout and the rounded corners of a phone's screen no longer hide the menu bar, the toolbox, the palette or the status bar. The interface keeps clear of the cutout, the system bars and the corners the system reports, and Options > Display > Screen margins adds margins of your own on each side, in dp, for phones that do not report their corners (with Same on all sides and Reset). The margins are filled with the theme's frame colour, Corner radius rounds the interface's corners to follow the glass, every change shows at once and the values stay when the screen turns (#1917).
+
+- Touch screens: Shift, Ctrl and Alt buttons on the Standard toolbar, beside Delete. A tap holds the key down until the next tap on it (the button stays pressed meanwhile), so a finger can add objects or nodes to the selection or take them out, keep a drag's angle or proportions, pick inside a group or the object behind, as with the keys held on a keyboard. They show on Android and wherever a finger has touched the window (#1499).
+
+- Browser on an iPad: the Apple Pencil draws, picks and taps the menus. Safari sends the Pencil no mouse events, only pen pointer events, which moved nothing, so the Pencil did nothing while a finger worked; a pen's pointer events now move the pointer and press and release it, with its pressure as before, and the page no longer scrolls or selects text under it (#1655).
+
+- Linux, Wayland: a graphics tablet's pen shows the tool's cursor over the drawing (the cross hair with the tool's badge, the Shape tool's arrow, the hand) instead of the system arrow on top of it, and follows the cursor as it changes, as the mouse does. The pen's tilt is now read too and goes with its pressure, which stays the same (#1841).
+
+- Browser: WebP export with Lossless off writes real lossy WebP, so a low Quality gives a far smaller file, as on the desktop. The browser had no lossy encoder and always wrote the near-lossless file whatever the checkbox said; it now uses a pure-Rust encoder (#592).
+
+- Android: Options no longer shows settings that do nothing there: Show the splash screen, Use hardware acceleration with the graphics card choice, and the AI agents section are hidden on Android (as the splash and the agents already were in the browser), and an agent link set on a desktop opens no port on the phone (#1415).
+
+- Android: Print Merge's pictures folder can be chosen. The button opened the picker for single files, so a folder could not be picked; it now opens the system's folder picker, and the pictures in the folder chosen are used for the merge (#1926).
+
+- Opening `.cdr` version 13: graded transparency fades as drawn. Shapes whose colour fades to see-through (pages 1 and 2 of the reporter's file) opened as one flat colour; version 13 holds the same transparency record as version 15, fixed in 0.40.0, and is now read the same way (#1257).
+
+- Opening `.cdr` version 7: the guidelines every page shows come in; that version keeps them in a chunk of their own, which was not read, so the file opened without guidelines (#1775).
+
+- Opening `.cdr`: centre and decimal tab stops come in as centre and decimal stops (they opened as left stops), and saving writes them back as such (versions 16 and later). Paragraph text frames of two or more columns in files of versions 7 to 15 open with their text and their columns; they were dropped with "2 objects could not be read" (#1852).
+
+- Saving to `.cdr`: objects on a master layer shown behind every page are written once, on the master page, as the program that reads these files keeps them; the file reopens with them on the master layer. They were copied onto every page, so the reopened file had a copy on each page that had to be edited page by page. Master layers in front of the pages or on odd or even pages only are still written as copies on each page (#1775).
+
+- Fill winding: every object now has a fill rule. Opened `.cdr` files (versions 16 and later) keep each curve's own rule, so traced lettering made of overlapping parts no longer shows white gaps where the parts meet, on screen, in print, PDF and SVG; saving to `.cdr` writes it back (before version 16, as the outline of the filled area). The Properties docker's Fill section has a Fill winding box to set it: on, overlaps stay filled; off (the default), they are holes (#1919, #1211).
+
+- Shape tools: panning with the middle button while a rectangle, ellipse or other shape is being dragged works. The preview froze, no shape was made, and the frozen preview stayed on the page after a tool change; now the shape follows the pointer over the moving page and is made when the left button goes up (#1923).
+
+- File > Import places the file with the import cursor. After the file is chosen the pointer becomes a corner bracket: a click puts the file's top left corner there at its own size, a drag draws the box it is fitted in (proportions kept), Space or Enter centres it on the page, Esc or a right click calls it off. It came in at once where the file had it. Options > Global > File Formats, "Place imported files with the import cursor", turns it off. The drawing's right-click menu has Import... too (#1936, #1931).
+
+- Edit > Repeat (Ctrl+R) replays the last group of actions done to the same objects, not only the newest one: after moving an object and changing its fill, Repeat moves and fills the selection, as one undo step. A change of selection between two actions starts a new group (#1566, #1547).
+
+- B-splines: a control point can be fixed or floating. With the Shape tool, C (Cusp) or Fixed Control Point on the right-click menu makes the chosen control points fixed, so the curve passes through them; C again, S or Floating Control Point lets them float again, so the curve only comes near them. A fixed point is drawn with a second frame, and the choice is kept in `.tdraw` files. There was no way to do this before (#1758).
+
+- Shape tool: control handle arrow heads grow with Options > Nodes and Handles > Node size (7, 9 or 11 pixels), and a press anywhere on the head takes the handle. They stayed 7 pixels whatever the node size (#1643).
+
+- Options > Nodes and Handles: Object click distance, how far from an object's outline a click still selects it (3 pixels by default as before, 0 to 20). Thin lines are easier to hit with a larger value (#1679).
+
+- Edit Fill and Outline Pen: the mouse wheel over the drawing zooms it (or scrolls it, as Options say) while the dialog is open. Clicks on the drawing still do nothing until the dialog closes (#1035).
+
+- Menu bar on a narrow window, a phone or the Touch workspace: Alt and a letter now open a menu whose title moved under the » title at the end of the bar. It opens » with that menu open in it and its first row lit, so the arrows and Enter go on from there; the menus under » keep the letters they have on a wide bar, underlined in the » menu. Alt and those letters did nothing, so these menus needed the mouse or a finger (#1301, #1839).
+
+- Document tabs: with more drawings open than the tab strip has room for, the tabs past the window edge can be reached. The strip now slides like an overflowing bar, with « and » buttons at its ends and the mouse wheel, and the tab of the drawing that becomes active (a new or opened drawing, the Window menu) slides into view. The tabs past the edge could not be reached at all, worst on a phone (#1908).
+
+- The mouse wheel over the Color docker's colour sliders (RGB, CMYK, HSB and the others) and its Tint slider, and over the Trace dialog's sliders, now steps them on hover, one a notch, as over every other slider. These sliders kept ignoring the wheel after #1335 (#1335).
+
+- Palettes: Add Colors from Bitmap. The document palette's menu and the bar menu of a palette of your own have a new submenu that adds 8, 16, 32 or 64 colours that stand for the selected picture (chosen as the Optimized palette of the bitmap colour conversion picks them), after the colours already there; in the document palette it is one undo step (#1840).
+
+- TraceCut > CutContour: the CutContour spot colour's swatch now joins the document palette, in the same undo step, so it can be picked again from there. The outlines got the spot colour, but the document palette stayed without it (#1927).
+
+- Floating bars: the close button stays at the right end of the title when the bar grows, for example the floating property bar of the Rectangle tool. It stayed where the bar's usual width put it, in the middle of the title, and the title strip ended there too (#1921).
+
+- Windows: the title bar follows the theme. With a dark theme the window's title bar and its buttons are now dark, with a light theme light, whatever Windows itself is set to, and they change at once when the theme is switched. The title bar stayed white with the dark theme (#1920).
+
+- Save Bitmap As TIFF and Edit Bitmap keep the transparency of a CMYK picture (one converted to CMYK with transparency, or a `.cdr` CMYK image with see-through parts): the TIFF carries an alpha channel beside the inks. The file was written flat, and Edit Bitmap then read the flat file back, so the transparency was lost from the drawing (#1925).
+
+- Printing: Grayscale (Print > Color, under Composite, and in Print Preview) prints every colour and picture as its grey, and Reverse order (Print > General, under Collate, and in Print Preview) prints the last sheet first, for a stack that comes out face up or for printing on the backs of printed sheets. Both are kept with the other print choices (#1657, #1394, #1571).
+
+- Cropping pictures for real: the Crop tool's bar has Crop picture pixels, which cuts an upright picture's pixels to the area so it stays a free picture (its transparency and CMYK inks cut alike) instead of going into a clip frame, and Bitmaps > Crop to Frame cuts a picture already in a clip frame to the frame and, for a rectangular frame, sets the picture free (#1913).
+
+- Tab ruler: the paragraph text flows to a tab stop while it is dragged, so the columns move with the marker; before, the text changed only when the button was let go. The text is laid out again at most 30 times a second, so long texts keep the drag smooth, and the drag stays one undo step (#1852, #1912).
+
+- View > Scrollbars: the drawing window's scrollbars can be hidden, on every platform, to give the drawing their room; the page tabs and the Navigator button stay. The choice is kept with the preferences (#1344).
+
+- Text bar: a Strikethrough button beside Bold, Italic and Underline (also beside Underline in the Text docker's Character section and on a table's cell bar), so a line through the text no longer needs the docker's extra options (#1022).
+
+- View > Page > Page Shadow: the page's shadow is an option of its own beside Page Border, so the shadow can go while the border stays (a white page on a white desktop keeps its edge) or the other way round. Page Border hid both (#1906).
+
+- View > Page > Printable Area uses the printer's own hard margins (Windows: the printer's printable area; Linux and macOS: the CUPS PPD's imageable area for the paper set), side by side as the printer reports them, instead of a fixed 5 mm, which stays only when the system does not say. Print Preview shades the edge the chosen printer cannot print and warns when the artwork reaches into it (#1924).
+
+- Edit > Repeat (Ctrl+R) after a mirror copy: with the copy selected, Repeat now mirrors a new copy over the same side of that copy, so the copies line up side by side. It mirrored over the original's side again and put the new copy on top of the original (#1909).
+
+- Coordinates panel: selecting a curve drawn with the Freehand or Bezier tool reads its nodes into the multipoint curve, with their real X and Y, and keeps its bends; choosing a node with the Shape tool chooses its row, the list scrolls to show it, and an edit of the curve on the drawing shows at once. Curves with bends were not read, so the panel kept showing the values of a rectangle and the multipoint curve's own two default points (#1889).
+
 ## 0.40.0 (2026-11-05)
 
 - Release note: the CMYK and Grayscale JPEG and TIFF export (#1763) was announced before 0.39.0 but did not reach that release; it is in 0.40.0 ("Export: JPEG and TIFF can be written in CMYK" below). The sharp zooming announced for 0.39.0 is also really in 0.40.0 ("Zooming" below).

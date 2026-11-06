@@ -266,12 +266,13 @@ mod tests {
         assert!(BRIDGE
             .contains("jni_str!(\"(ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V\")"));
         // Every call to the activity's methods, cancel included, ends in
-        // a result (the Rust side would otherwise wait for ever).
+        // a result (the Rust side would otherwise wait for ever): the open
+        // picker, the save picker and the folder picker (#1926).
         assert_eq!(
             ACTIVITY
                 .matches("nativeDocumentResult(request, null, null, null)")
                 .count(),
-            2
+            3
         );
         assert!(ACTIVITY.contains("nativeDocumentResult(requestCode, null, null, null)"));
         assert!(ACTIVITY.contains("takePersistableUriPermission"));
@@ -394,6 +395,54 @@ mod tests {
         let prefs = include_str!("system_prefs.rs");
         assert!(prefs.contains("crate::android::accessibility::read()"));
         assert!(prefs.contains("parse_android(&a)"));
+    }
+
+    /// The screen's safe area (#1917): the activity reads the bars, the
+    /// cutout and the rounded corners at each layout and answers them at
+    /// once in the order the settings reader parses; the editor asks for
+    /// them through the bridge.
+    #[test]
+    fn the_screen_safe_area_reaches_the_editor() {
+        assert!(ACTIVITY.contains("public String getScreenInsets()"));
+        assert!(ACTIVITY.contains("private volatile String screenInsets"));
+        assert!(BRIDGE.contains("jni_str!(\"getScreenInsets\")"));
+        for needed in [
+            "addOnGlobalLayoutListener",
+            "getRootWindowInsets()",
+            "WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()",
+            "getDisplayCutout()",
+            "getSafeInsetTop()",
+            "getRoundedCorner(positions[i])",
+            "RoundedCorner.POSITION_TOP_LEFT",
+            "RoundedCorner.POSITION_BOTTOM_LEFT",
+        ] {
+            assert!(ACTIVITY.contains(needed), "the activity lacks {needed:?}");
+        }
+        let margins = include_str!("ui/screen_margins.rs");
+        assert!(margins.contains("crate::android::screen_insets::read()"));
+        assert!(margins.contains("pub const OFFERED: bool = crate::files::ANDROID;"));
+    }
+
+    /// The folder picker (#1926): the bridge asks the activity for it,
+    /// and the activity lists the folder's documents (not its folders)
+    /// and answers them as picked documents, keeping the right to read.
+    #[test]
+    fn the_folder_picker_answers_the_folders_documents() {
+        assert!(ACTIVITY.contains("public void openDocumentTree(final int request)"));
+        assert!(BRIDGE.contains("jni_str!(\"openDocumentTree\")"));
+        assert!(BRIDGE.contains("jni_sig!(\"(I)V\")"));
+        for needed in [
+            "Intent.ACTION_OPEN_DOCUMENT_TREE",
+            "treeRequests.remove(requestCode)",
+            "buildChildDocumentsUriUsingTree",
+            "getTreeDocumentId(tree)",
+            "buildDocumentUriUsingTree(tree, id)",
+            "Document.MIME_TYPE_DIR.equals(mime)",
+            "takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)",
+            "sendTree(requestCode, data.getData())",
+        ] {
+            assert!(ACTIVITY.contains(needed), "the activity lacks {needed:?}");
+        }
     }
 
     /// The on-screen keyboard (#1309): the bridge shows it with the

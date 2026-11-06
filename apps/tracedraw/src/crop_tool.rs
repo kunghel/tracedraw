@@ -13,6 +13,12 @@
 //! frames are cropped member by member (a clip frame's frame only).
 //! Objects wholly inside are left as they are; objects wholly outside are
 //! deleted. One undo step.
+//!
+//! With the bar's "Crop picture pixels" on, an upright picture (not
+//! turned or slanted) loses its pixels outside the area instead and stays
+//! a free picture (#1913). Bitmaps > Crop to Frame does the same to a
+//! picture already in a clip frame: the pixels outside the frame go and a
+//! rectangular frame lets the picture go free.
 
 use crate::app::App;
 use tracedraw_core::{
@@ -181,13 +187,162 @@ pub(crate) fn frame_drops_transparency(s: &Shape) -> Vec<Command> {
     cmds
 }
 
+/// The whole pixels of a `width` by `height` picture laid on `rect` (its
+/// own space, rows from the top) that `area` (the same space) touches:
+/// columns `x0..x1` and rows `y0..y1`; `None` when it touches none.
+pub fn pixel_window(
+    rect: Rect,
+    width: u32,
+    height: u32,
+    area: Rect,
+) -> Option<(u32, u32, u32, u32)> {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 || width == 0 || height == 0 {
+        return None;
+    }
+    let (w, h) = (f64::from(width), f64::from(height));
+    // A hair's tolerance, so an area on a pixel edge keeps no extra
+    // column of pixels.
+    let lo = |v: f64| (v + 1e-6).floor();
+    let hi = |v: f64| (v - 1e-6).ceil();
+    let x0 = lo((area.x0 - rect.x0) / rect.width() * w).clamp(0.0, w);
+    let x1 = hi((area.x1 - rect.x0) / rect.width() * w).clamp(0.0, w);
+    let y0 = lo((rect.y1 - area.y1) / rect.height() * h).clamp(0.0, h);
+    let y1 = hi((rect.y1 - area.y0) / rect.height() * h).clamp(0.0, h);
+    if !(x0 < x1 && y0 < y1) {
+        return None;
+    }
+    Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
+}
+
+/// The picture `s` (a bitmap) with only its pixels inside `area` (a
+/// rectangle in the picture's own space, the space of its `rect`) kept,
+/// on its whole pixels: its new kind and its ink channels cut alike
+/// (#1913). The effects stack's original is cut the same way when it
+/// lies on the same pixels, else the effects stay in the pixels. `None`
+/// when the area keeps every pixel or none, or the picture cannot be
+/// read.
+pub fn crop_picture(
+    s: &Shape,
+    area: Rect,
+) -> Option<(
+    ShapeKind,
+    Option<Box<tracedraw_core::picture_inks::PictureInks>>,
+)> {
+    let ShapeKind::Bitmap {
+        rect,
+        width_px,
+        height_px,
+        png,
+        fx,
+    } = &s.kind
+    else {
+        return None;
+    };
+    let rect = rect.abs();
+    let (x0, y0, x1, y1) = pixel_window(rect, *width_px, *height_px, area)?;
+    if (x0, y0, x1, y1) == (0, 0, *width_px, *height_px) {
+        return None;
+    }
+    let cut = |png: &[u8]| -> Option<Vec<u8>> {
+        let img = crate::bitmap_fx::decode(png)?;
+        if img.width() != *width_px || img.height() != *height_px {
+            return None;
+        }
+        let part = image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image();
+        if crate::bitmap_fx::png_is_gray(png) {
+            crate::bitmap_fx::encode_gray(&part)
+        } else {
+            crate::bitmap_fx::encode(&part)
+        }
+    };
+    let new_png = cut(png)?;
+    let (w, h) = (f64::from(*width_px), f64::from(*height_px));
+    let new_rect = Rect::new(
+        rect.x0 + f64::from(x0) / w * rect.width(),
+        rect.y1 - f64::from(y1) / h * rect.height(),
+        rect.x0 + f64::from(x1) / w * rect.width(),
+        rect.y1 - f64::from(y0) / h * rect.height(),
+    );
+    let new_fx = fx.as_ref().and_then(|f| {
+        let same = f.width_px == *width_px
+            && f.height_px == *height_px
+            && (f.rect.abs().x0 - rect.x0).abs() < 1e-6
+            && (f.rect.abs().y0 - rect.y0).abs() < 1e-6
+            && (f.rect.abs().x1 - rect.x1).abs() < 1e-6
+            && (f.rect.abs().y1 - rect.y1).abs() < 1e-6;
+        let png = cut(&f.png).filter(|_| same)?;
+        let mut f = f.clone();
+        f.rect = new_rect;
+        f.width_px = x1 - x0;
+        f.height_px = y1 - y0;
+        f.png = png.into();
+        Some(f)
+    });
+    // The ink planes, one under the other, each cut like the pixels.
+    let inks = s
+        .picture_inks
+        .as_deref()
+        .filter(|i| i.fits(png.as_slice()))
+        .and_then(|i| {
+            let planes = image::load_from_memory(&i.png).ok()?.to_luma8();
+            let n = i.inks.len() as u32;
+            if n == 0 || planes.width() != *width_px || planes.height() != height_px * n {
+                return None;
+            }
+            let (cw, ch) = (x1 - x0, y1 - y0);
+            let mut out = image::GrayImage::new(cw, ch * n);
+            for k in 0..n {
+                let part =
+                    image::imageops::crop_imm(&planes, x0, k * height_px + y0, cw, ch).to_image();
+                image::imageops::replace(&mut out, &part, 0, i64::from(k * ch));
+            }
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            out.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+            Some(Box::new(tracedraw_core::picture_inks::PictureInks {
+                inks: i.inks.clone(),
+                png: bytes.into_inner().into(),
+                of: tracedraw_core::picture_inks::fingerprint(&new_png),
+            }))
+        });
+    Some((
+        ShapeKind::Bitmap {
+            rect: new_rect,
+            width_px: x1 - x0,
+            height_px: y1 - y0,
+            png: new_png.into(),
+            fx: new_fx,
+        },
+        inks,
+    ))
+}
+
+/// Whether `m` keeps a picture upright: no turn or slant, so its
+/// rectangle stays a rectangle along the page's axes.
+fn upright(m: Affine) -> bool {
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    b.abs() < 1e-9 && c.abs() < 1e-9 && a.abs() > 1e-12 && d.abs() > 1e-12
+}
+
 /// Crop `s` (whose parent maps to the page by `parent`) to `rect` (page
-/// space); `new_id` gives ids for the parts it adds.
+/// space); `new_id` gives ids for the parts it adds. Pictures go in a
+/// clip frame of the area; see [`crop_shape_with`] to cut their pixels.
 pub fn crop_shape(
     s: &Shape,
     parent: Affine,
     rect: Rect,
     new_id: &mut dyn FnMut() -> ShapeId,
+) -> Cropped {
+    crop_shape_with(s, parent, rect, new_id, false)
+}
+
+/// [`crop_shape`]; with `pixels` an upright picture loses its pixels
+/// outside the area instead of going in a clip frame (#1913).
+pub fn crop_shape_with(
+    s: &Shape,
+    parent: Affine,
+    rect: Rect,
+    new_id: &mut dyn FnMut() -> ShapeId,
+    pixels: bool,
 ) -> Cropped {
     let to_page = parent * s.transform;
     match &s.kind {
@@ -195,7 +350,7 @@ pub fn crop_shape(
             let mut out = Vec::with_capacity(children.len());
             let mut changed = false;
             for c in children {
-                match crop_shape(c, to_page, rect, new_id) {
+                match crop_shape_with(c, to_page, rect, new_id, pixels) {
                     Cropped::Keep => out.push(c.clone()),
                     Cropped::Gone => changed = true,
                     Cropped::Into(n) => {
@@ -244,6 +399,15 @@ pub fn crop_shape(
             }
             if b.intersect(rect).area() <= 0.0 && (b.width() > 0.0 && b.height() > 0.0) {
                 return Cropped::Gone;
+            }
+            if pixels && upright(to_page) && matches!(s.kind, ShapeKind::Bitmap { .. }) {
+                let area = to_page.inverse().transform_rect_bbox(rect);
+                if let Some((kind, inks)) = crop_picture(s, area) {
+                    let mut n = s.clone();
+                    n.kind = kind;
+                    n.picture_inks = inks;
+                    return Cropped::Into(Box::new(n));
+                }
             }
             match &s.kind {
                 ShapeKind::Bitmap { .. }
@@ -323,7 +487,8 @@ impl App {
                 .unwrap_or(Affine::IDENTITY);
             let engine = &mut self.engine;
             let mut new_id = || engine.new_shape_id();
-            match crop_shape(&s, parent, rect, &mut new_id) {
+            let pixels = self.settings.crop_picture_pixels;
+            match crop_shape_with(&s, parent, rect, &mut new_id, pixels) {
                 Cropped::Keep => {}
                 Cropped::Gone => removed.push(s.id),
                 Cropped::Into(n) => {
@@ -331,10 +496,21 @@ impl App {
                     // inside keeps the transparency, the frame drops it.
                     let framed = matches!(n.kind, ShapeKind::ClipFrame { .. })
                         && !matches!(s.kind, ShapeKind::ClipFrame { .. });
+                    // A picture whose pixels were cut keeps its inks,
+                    // cut alike.
+                    let inks_cut = matches!(n.kind, ShapeKind::Bitmap { .. })
+                        && n.picture_inks != s.picture_inks;
                     cmds.push(Command::SetShapeKind {
                         shape: s.id,
                         kind: n.kind,
                     });
+                    if inks_cut {
+                        cmds.push(Command::SetPictureInks {
+                            shape: s.id,
+                            cmyk: n.cmyk_bitmap,
+                            inks: n.picture_inks,
+                        });
+                    }
                     if framed {
                         cmds.extend(frame_drops_transparency(&s));
                     }
@@ -354,6 +530,110 @@ impl App {
             return;
         }
         self.selection.retain(|id| !removed.contains(id));
+    }
+
+    /// The selected clip frames that hold one picture alone: what
+    /// Bitmaps > Crop to Frame works on.
+    pub fn framed_pictures(&self) -> Vec<ShapeId> {
+        self.selected_shapes()
+            .iter()
+            .filter(|s| match &s.kind {
+                ShapeKind::ClipFrame { contents, .. } => {
+                    matches!(contents.as_slice(), [c] if matches!(c.kind, ShapeKind::Bitmap { .. }))
+                }
+                _ => false,
+            })
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Bitmaps > Crop to Frame (#1913): each selected clip frame holding a
+    /// picture alone loses the picture's pixels outside the frame; a
+    /// frame that is a rectangle along the picture's sides then lets the
+    /// picture go, a free picture in the frame's place (its transparency
+    /// and opacity, which the picture inside keeps, with it). Another
+    /// frame stays, holding the smaller picture. One undo step.
+    pub fn crop_pictures_to_frames(&mut self) {
+        let mut cmds = Vec::new();
+        for id in self.framed_pictures() {
+            let Some(s) = self.doc().find_shape(id).cloned() else {
+                continue;
+            };
+            let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+                continue;
+            };
+            let [pic] = contents.as_slice() else {
+                continue;
+            };
+            // The frame in the picture's own space.
+            let m = pic.transform;
+            if m.determinant().abs() < 1e-12 {
+                continue;
+            }
+            let path = m.inverse() * (frame.transform * frame.local_path());
+            let area = path.bounding_box();
+            if !finite_rect(area) {
+                continue;
+            }
+            let rectangular =
+                (path.area().abs() - area.area()).abs() <= 1e-6 * area.area().max(1e-9);
+            let cut = crop_picture(pic, area);
+            let mut inner = pic.clone();
+            if let Some((kind, inks)) = cut {
+                inner.kind = kind;
+                inner.picture_inks = inks;
+            } else if !rectangular {
+                continue;
+            }
+            if rectangular {
+                // The picture in the frame's place, free.
+                let free = inner;
+                cmds.push(Command::SetShapeKind {
+                    shape: s.id,
+                    kind: free.kind.clone(),
+                });
+                // The picture's own placement in the frame, laid on the
+                // object (a page-space transform: the parent's too).
+                let parent = self
+                    .doc()
+                    .parent_transform(s.id)
+                    .unwrap_or(Affine::IDENTITY);
+                let was = parent * s.transform;
+                cmds.push(Command::TransformShapes {
+                    shapes: vec![s.id],
+                    transform: was * m * was.inverse(),
+                });
+                cmds.push(Command::SetPictureInks {
+                    shape: s.id,
+                    cmyk: free.cmyk_bitmap,
+                    inks: free.picture_inks.clone(),
+                });
+                cmds.push(Command::SetEffects {
+                    shape: s.id,
+                    effects: free.effects.clone(),
+                });
+                cmds.push(Command::SetOpacity {
+                    shapes: vec![s.id],
+                    opacity: free.opacity,
+                });
+            } else {
+                let mut kept = s.clone();
+                kept.kind = ShapeKind::ClipFrame {
+                    frame: frame.clone(),
+                    contents: vec![inner],
+                };
+                cmds.push(Command::SetShapeKind {
+                    shape: s.id,
+                    kind: kept.kind,
+                });
+            }
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Crop to Frame", &cmds) {
+            self.status = e.to_string();
+        }
     }
 
     /// The handle of the crop area near `p` (page space), if any.
@@ -509,6 +789,185 @@ pub(crate) mod tests {
         for (b, a) in before.iter().zip(&after) {
             assert!(b.abs_diff(*a) <= 2, "before {before:?}, after {after:?}");
         }
+    }
+
+    /// A 4 by 2 picture on (0, 0) to (40, 20): each pixel 10 mm, its
+    /// columns red, green, blue and white, the top row opaque and the
+    /// bottom half see-through; CMYK inks that tell the columns apart.
+    fn striped_picture(app: &mut App) -> ShapeId {
+        let cols = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]];
+        let img = image::RgbaImage::from_fn(4, 2, |x, y| {
+            let [r, g, b] = cols[x as usize];
+            image::Rgba([r, g, b, if y == 0 { 255 } else { 128 }])
+        });
+        let png = crate::bitmap_fx::encode(&img).expect("png");
+        // Planes C, M, Y, K one under the other: column x has x * 60 of
+        // each ink, plus the plane's number.
+        let planes = image::GrayImage::from_fn(4, 8, |x, y| image::Luma([(x * 60 + y / 2) as u8]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        planes
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("planes");
+        let inks = tracedraw_core::picture_inks::PictureInks::cmyk(&png, bytes.into_inner().into());
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+                width_px: 4,
+                height_px: 2,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("picture");
+        app.run(Command::SetPictureInks {
+            shape: id,
+            cmyk: true,
+            inks: Some(Box::new(inks)),
+        });
+        id
+    }
+
+    fn pixels_of(s: &Shape) -> (Rect, image::RgbaImage) {
+        let ShapeKind::Bitmap {
+            rect,
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &s.kind
+        else {
+            panic!("not a picture: {:?}", s.kind);
+        };
+        let img = crate::bitmap_fx::decode(png).expect("pixels");
+        assert_eq!((img.width(), img.height()), (*width_px, *height_px));
+        (*rect, img)
+    }
+
+    fn planes_of(s: &Shape) -> Vec<u8> {
+        let inks = s.picture_inks.as_deref().expect("inks");
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("picture");
+        };
+        assert!(inks.fits(png.as_slice()), "the inks fit the pixels");
+        image::load_from_memory(&inks.png)
+            .expect("planes")
+            .to_luma8()
+            .into_raw()
+    }
+
+    /// #1913: with Crop picture pixels on, the Crop tool cuts a picture's
+    /// pixels to the area (on whole pixels) and the picture stays free;
+    /// its transparency and its CMYK inks are cut alike. Off, it goes in
+    /// a clip frame as before. Undo puts the whole picture back.
+    #[test]
+    fn the_crop_tool_cuts_a_pictures_pixels() {
+        let mut app = App::headless();
+        let id = striped_picture(&mut app);
+        let whole = app.doc().find_shape(id).cloned().expect("picture");
+        app.settings.crop_picture_pixels = true;
+        app.select(vec![id]);
+        // Columns 1 and 2, the top row: the area's edges are inside pixels.
+        app.crop_to(Rect::new(12.0, 11.0, 28.0, 30.0));
+        let s = app.doc().find_shape(id).cloned().expect("cropped");
+        let (rect, img) = pixels_of(&s);
+        assert_eq!(rect, Rect::new(10.0, 10.0, 30.0, 20.0), "whole pixels");
+        assert_eq!((img.width(), img.height()), (2, 1));
+        assert_eq!(img.get_pixel(0, 0).0, [0, 255, 0, 255]);
+        assert_eq!(img.get_pixel(1, 0).0, [0, 0, 255, 255]);
+        assert!(s.cmyk_bitmap);
+        // C, M, Y, K of columns 1 and 2, top row.
+        assert_eq!(planes_of(&s), [60, 120, 61, 121, 62, 122, 63, 123]);
+        // The bottom row keeps its transparency.
+        app.engine.undo().expect("undo");
+        assert_eq!(app.doc().find_shape(id), Some(&whole));
+        app.crop_to(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let (rect, img) = pixels_of(app.doc().find_shape(id).expect("cropped"));
+        assert_eq!(rect, Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 128]);
+
+        // Off: a clip frame, every pixel kept.
+        app.engine.undo().expect("undo");
+        app.settings.crop_picture_pixels = false;
+        app.crop_to(Rect::new(12.0, 11.0, 28.0, 30.0));
+        let s = app.doc().find_shape(id).expect("framed");
+        assert!(matches!(s.kind, ShapeKind::ClipFrame { .. }));
+    }
+
+    /// A turned picture is not cut (its pixels do not line up with the
+    /// area): it goes in a clip frame even with the option on.
+    #[test]
+    fn a_turned_picture_still_goes_in_a_frame() {
+        let mut app = App::headless();
+        let id = striped_picture(&mut app);
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::rotate(0.3),
+        });
+        app.settings.crop_picture_pixels = true;
+        app.select(vec![id]);
+        app.crop_to(Rect::new(10.0, 5.0, 25.0, 20.0));
+        let s = app.doc().find_shape(id).expect("framed");
+        assert!(matches!(s.kind, ShapeKind::ClipFrame { .. }));
+    }
+
+    /// #1913: Bitmaps > Crop to Frame cuts a framed picture's pixels to
+    /// the frame and, the frame being a rectangle, the picture goes free
+    /// where it was, with its transparency; a frame of another shape
+    /// stays, holding the smaller picture. One undo step.
+    #[test]
+    fn crop_to_frame_frees_the_picture() {
+        let mut app = App::headless();
+        let id = striped_picture(&mut app);
+        app.select(vec![id]);
+        app.crop_to(Rect::new(12.0, 0.0, 40.0, 20.0));
+        app.run(Command::SetOpacity {
+            shapes: vec![id],
+            opacity: 1.0,
+        });
+        // Moved after framing: the free picture follows.
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((100.0, 50.0)),
+        });
+        assert_eq!(app.framed_pictures(), vec![id]);
+        app.crop_pictures_to_frames();
+        let s = app.doc().find_shape(id).cloned().expect("free");
+        let (rect, img) = pixels_of(&s);
+        assert_eq!((img.width(), img.height()), (3, 2));
+        assert_eq!(img.get_pixel(0, 0).0, [0, 255, 0, 255]);
+        assert_eq!(img.get_pixel(0, 1).0, [0, 255, 0, 128]);
+        let b = s.transform.transform_rect_bbox(rect);
+        assert!(
+            (b.x0 - 110.0).abs() < 1e-9 && (b.x1 - 140.0).abs() < 1e-9,
+            "where the frame showed it: {b:?}"
+        );
+        assert!((b.y0 - 50.0).abs() < 1e-9 && (b.y1 - 70.0).abs() < 1e-9);
+        assert_eq!(planes_of(&s).len(), 3 * 2 * 4);
+        assert!(app.framed_pictures().is_empty());
+        app.engine.undo().expect("undo");
+        assert!(matches!(
+            app.doc().find_shape(id).expect("frame").kind,
+            ShapeKind::ClipFrame { .. }
+        ));
+
+        // An oval frame: the pixels outside its box go, the frame stays.
+        let pic = striped_picture(&mut app);
+        let oval = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 0.0, 30.0, 20.0),
+                arc: None,
+            })
+            .expect("oval");
+        app.place_inside(vec![pic], oval);
+        let frame = oval;
+        app.select(vec![frame]);
+        assert_eq!(app.framed_pictures(), vec![frame]);
+        app.crop_pictures_to_frames();
+        let s = app.doc().find_shape(frame).expect("frame");
+        let ShapeKind::ClipFrame { contents, .. } = &s.kind else {
+            panic!("still a frame");
+        };
+        let (_, img) = pixels_of(&contents[0]);
+        assert_eq!((img.width(), img.height()), (2, 2));
     }
 
     fn rect_shape(app: &mut App, r: Rect) -> ShapeId {

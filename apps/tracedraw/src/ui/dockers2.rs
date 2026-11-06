@@ -1641,6 +1641,18 @@ fn blend(app: &mut App, ui: &mut Ui) {
             }
         }
     });
+    // A blend between two texts: their characters linked, so the word
+    // changes once in both ends (#1568).
+    if let Some((_, linked)) = app.blend_text_ends() {
+        let mut on = linked;
+        if ui
+            .checkbox(&mut on, tr("docker.blend_link_text"))
+            .rich_tip(crate::ui::tips::keyed("docker.blend_link_text"))
+            .changed()
+        {
+            app.set_blend_text_link(on);
+        }
+    }
     // Apply: two objects selected and no blend yet, a blend between them
     // with these settings (#815).
     let two = cur.is_none() && app.selection.len() == 2;

@@ -343,9 +343,15 @@ pub(crate) fn open_whats_new(app: &mut App) {
 /// submenus that lead to them, by their keys. Each version replaces the
 /// list with its own.
 pub const NEW_IN_THIS_VERSION: &[&str] = &[
-    // Tools > TraceCut, the window of tools for cutting plotters.
-    "menu.tools",
-    "menu.tools.tracecut",
+    // View > Scrollbars hides the drawing window's scrollbars.
+    "menu.view",
+    "menu.view.scrollbars",
+    // View > Page > Page Shadow, apart from Page Border.
+    "menu.view.page",
+    "menu.view.page_shadow",
+    // Bitmaps > Crop to Frame cuts a framed picture to its frame.
+    "menu.bitmaps",
+    "menu.bitmaps.crop_to_frame",
 ];
 
 thread_local! {
@@ -624,6 +630,7 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.bitmaps.straighten_image" => Pic::StraightenImage,
         "menu.bitmaps.edit_bitmap" => Pic::EditBitmap,
         "menu.bitmaps.crop_bitmap" => Pic::CropBitmap,
+        "menu.bitmaps.crop_to_frame" => Pic::CropBitmap,
         "menu.bitmaps.resample" => Pic::Resample,
         "menu.bitmaps.break_link" => Pic::BreakLink,
         "menu.bitmaps.update_from_link" => Pic::UpdateLink,
@@ -791,19 +798,24 @@ pub(crate) fn sub_if<R>(ui: &mut Ui, key: &str, enabled: bool, add: impl FnOnce(
 
 /// A submenu row: the submenu opens beside it while it is hovered.
 pub(crate) fn sub<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) {
+    let _ = sub_row(ui, key, add);
+}
+
+/// [`sub`], returning the row when it was drawn.
+fn sub_row<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<egui::Response> {
     if invoke::active() {
         // Walked without the menus on screen: the submenu's items count
         // as if it were open.
         invoke::enter(key);
         let _ = add(ui);
         invoke::leave();
-        return;
+        return None;
     }
     #[cfg(test)]
     if replay::active() {
         // Replaying: submenus are laid out inline so their items count.
         let _ = add(ui);
-        return;
+        return None;
     }
     let (resp, slot) = menu_row(ui, &tr(key), "", true, Mark::Submenu);
     row_picture(ui, resp.rect, key, true);
@@ -825,12 +837,13 @@ pub(crate) fn sub<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) {
         .pointer_hover_pos()
         .is_none_or(|p| view.contains(p));
     if !view.intersects(resp.rect) || !(open || pointer_in_view) {
-        return;
+        return Some(resp);
     }
     egui::containers::menu::SubMenu::new().show(ui, &resp, |ui| {
         ui.set_min_width(MENU_WIDTH);
         body(ui, add)
     });
+    Some(resp)
 }
 
 /// Access keys: one letter of each menu row, underlined, that picks the
@@ -876,6 +889,16 @@ pub(crate) mod access {
             .find(|&i| word_start(i) && free(chars[i]))
             .or_else(|| (0..chars.len()).find(|&i| free(chars[i])))
             .map(|i| (i, lower(chars[i])))
+    }
+
+    /// Keep `letters` out of the rows of the menu body being drawn (the
+    /// menu bar's titles, for the menus under More).
+    pub fn reserve(letters: &[char]) {
+        TAKEN.with(|t| {
+            if let Some(taken) = t.borrow_mut().last_mut() {
+                taken.extend(letters.iter().filter(|c| **c != ' '));
+            }
+        });
     }
 
     /// The access key of a row of the menu body being drawn (none outside
@@ -1499,9 +1522,9 @@ mod tests {
                 "{key} is not in the menus"
             );
         }
-        assert!(!marked_new("menu.tools.tracecut"));
+        assert!(!marked_new("menu.view.scrollbars"));
         set_highlight_new(true);
-        assert!(marked_new("menu.tools.tracecut"));
+        assert!(marked_new("menu.view.scrollbars"));
         assert!(!marked_new("menu.file.export"));
         set_highlight_new(false);
         assert!(
@@ -2056,6 +2079,13 @@ const BAR_FONT: f32 = 13.0;
 /// its More title (`(Vec<Rect>, usize)` in the context's data).
 pub(crate) const MENU_BAR_LAYOUT: &str = "menu_bar_layout";
 
+/// The menu under More whose submenu opens once More is shown (Alt and
+/// its letter).
+const MORE_PENDING: &str = "menu_bar_more_pending";
+
+/// The access keys of the menus under More, in their order (for tests).
+pub(crate) const MENU_MORE_KEYS: &str = "menu_bar_more_keys";
+
 /// Room kept at the end of a menu bar too short for every title, for the
 /// "More" title (»).
 const MORE_W: f32 = 28.0;
@@ -2203,30 +2233,50 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                 used += r.rect.width() + gap;
                 titles.push(r);
             }
+            // The menus under More keep the access keys they have on a
+            // wide bar: Alt and the letter open More and that menu in it.
+            let bar_keys = keys.clone();
+            let mut more_keys: Vec<char> = Vec::new();
+            for (key, _) in &more {
+                let mut taken = bar_keys.clone();
+                taken.extend(&more_keys);
+                more_keys.push(access::choose(&tr(key), &taken).map_or(' ', |a| a.1));
+            }
+            let mut more_title = None;
             if !more.is_empty() {
+                let pending_id = egui::Id::new(MORE_PENDING);
                 let r = ui
                     .menu_button(egui::RichText::new("\u{bb}").size(BAR_FONT), |ui| {
                         ui.set_min_width(MENU_WIDTH);
                         body(ui, |ui| {
-                            for (key, f) in &more {
-                                ui.menu_button(tr(key), |ui| {
-                                    ui.set_min_width(MENU_WIDTH);
-                                    body(ui, |ui| f(app, ui))
-                                });
+                            access::reserve(&bar_keys);
+                            let pending = ui.ctx().data(|d| d.get_temp::<usize>(pending_id));
+                            for (i, (key, f)) in more.iter().enumerate() {
+                                let row = sub_row(ui, key, |ui| f(app, ui));
+                                if let Some(row) = row.filter(|_| pending == Some(i)) {
+                                    open_row_submenu(ui, row.id);
+                                    ui.ctx().data_mut(|d| d.remove::<usize>(pending_id));
+                                }
                             }
                         })
                     })
                     .response;
                 keys.push(' ');
+                more_title = Some(r.clone());
                 titles.push(r);
             }
             // Where the titles went and how many are under More, for the
             // layout checks.
             let shown: Vec<egui::Rect> = titles.iter().map(|r| r.rect).collect();
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::new(MENU_BAR_LAYOUT), (shown, more.len())));
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new(MENU_BAR_LAYOUT), (shown, more.len()));
+                d.insert_temp(egui::Id::new(MENU_MORE_KEYS), more_keys.clone());
+            });
             switch_on_hover(ui.ctx(), &titles);
             open_with_alt(ui.ctx(), &titles, &keys, &blocked);
+            if let Some(more_title) = &more_title {
+                open_more_with_alt(ui.ctx(), &titles, more_title, &more_keys, &blocked);
+            }
             // The titles for the keys of the next frame: Left and Right
             // go from menu to menu (#1839).
             crate::ui::keynav::note_titles(
@@ -2255,18 +2305,10 @@ fn open_with_alt(
     blocked: &dyn Fn(char) -> bool,
 ) {
     let popup_id = egui::Popup::default_response_id;
-    let hit = keys.iter().zip(titles).find(|(c, _)| {
-        !ALT_TAKEN.contains(c)
-            && !blocked(**c)
-            && access::key_of(**c).is_some_and(|key| {
-                ctx.input(|i| {
-                    i.events.iter().any(|e| {
-                        matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. }
-                            if *k == key && modifiers.alt && !modifiers.ctrl && !modifiers.shift)
-                    })
-                })
-            })
-    });
+    let hit = keys
+        .iter()
+        .zip(titles)
+        .find(|(c, _)| alt_pressed(ctx, **c, blocked));
     if let Some((_, r)) = hit {
         for t in titles {
             egui::Popup::close_id(ctx, popup_id(t));
@@ -2275,6 +2317,50 @@ fn open_with_alt(
         // Its first row lit, for the arrows and Enter (#1839).
         crate::ui::keynav::opened_by_keys(ctx, popup_id(r));
     }
+}
+
+/// Alt and the access key of a menu under More (») open More with that
+/// menu's submenu open, its first row lit, as the title would on a
+/// wide bar.
+fn open_more_with_alt(
+    ctx: &egui::Context,
+    titles: &[egui::Response],
+    more_title: &egui::Response,
+    more_keys: &[char],
+    blocked: &dyn Fn(char) -> bool,
+) {
+    let Some(at) = more_keys.iter().position(|c| alt_pressed(ctx, *c, blocked)) else {
+        return;
+    };
+    let popup_id = egui::Popup::default_response_id;
+    for t in titles {
+        egui::Popup::close_id(ctx, popup_id(t));
+    }
+    egui::Popup::open_id(ctx, popup_id(more_title));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(MORE_PENDING), at));
+    ctx.request_repaint();
+}
+
+/// Alt and the access key `c` were pressed (without Ctrl or Shift) and
+/// nothing else keeps that letter.
+fn alt_pressed(ctx: &egui::Context, c: char, blocked: &dyn Fn(char) -> bool) -> bool {
+    !ALT_TAKEN.contains(&c)
+        && !blocked(c)
+        && access::key_of(c).is_some_and(|key| {
+            ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. }
+                        if *k == key && modifiers.alt && !modifiers.ctrl && !modifiers.shift)
+                })
+            })
+        })
+}
+
+/// Open the submenu of the row `row` of the menu being drawn (next
+/// frame), its first row lit.
+fn open_row_submenu(ui: &Ui, row: egui::Id) {
+    let menu = egui::containers::menu::find_menu_root(ui).id;
+    crate::ui::keynav::open_submenu_by_keys(ui.ctx(), menu, row);
 }
 
 /// With one menu open, pointing at another title of the bar opens that
@@ -2662,6 +2748,9 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         if check(ui, "menu.view.page_border", "", app.show_page_border) {
             app.show_page_border = !app.show_page_border;
         }
+        if check(ui, "menu.view.page_shadow", "", app.show_page_shadow) {
+            app.show_page_shadow = !app.show_page_shadow;
+        }
         if check(ui, "menu.view.bleed", "", app.show_bleed) {
             app.show_bleed = !app.show_bleed;
         }
@@ -2682,6 +2771,10 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
     });
     if check(ui, "menu.view.rulers", "Alt+Shift+R", app.show_rulers) {
         app.show_rulers = !app.show_rulers;
+    }
+    if check(ui, "menu.view.scrollbars", "", app.settings.show_scrollbars) {
+        app.settings.show_scrollbars = !app.settings.show_scrollbars;
+        app.settings.save();
     }
     if check(ui, "menu.view.guidelines", "", app.show_guides) {
         app.show_guides = !app.show_guides;
@@ -3404,6 +3497,10 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.bitmaps.crop_bitmap", "", has_bitmap) {
         app.set_tool(crate::tools::Tool::Crop);
     }
+    let framed = !app.framed_pictures().is_empty();
+    if item(ui, "menu.bitmaps.crop_to_frame", "", framed) {
+        app.crop_pictures_to_frames();
+    }
     if item(ui, "menu.bitmaps.resample", "", has_bitmap) {
         app.open_resample();
     }
@@ -3628,6 +3725,24 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
             app.unlink_text_frames();
         }
     });
+    // Linked text content (#1568): texts that hold the same characters,
+    // each in its own look; not the frame flow above.
+    if item(
+        ui,
+        "menu.text.link_content",
+        "",
+        app.can_link_text_content(),
+    ) {
+        app.link_text_content();
+    }
+    if item(
+        ui,
+        "menu.text.unlink_content",
+        "",
+        app.selection_has_content_link(),
+    ) {
+        app.unlink_text_content();
+    }
     // Tables: a submenu of Text (its keys keep the `menu.table` prefix).
     sub(ui, "menu.table", |ui| table_menu(app, ui));
     sep(ui);

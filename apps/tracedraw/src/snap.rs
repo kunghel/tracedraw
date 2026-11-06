@@ -270,8 +270,9 @@ impl App {
             ys.extend(self.baseline_ys());
         }
         if s.guides && guides {
-            if let Ok(p) = self.doc().page(self.page) {
-                for g in &p.guides {
+            // The page's own guidelines and the master page's (#1928).
+            if let Ok(guides) = self.doc().guides_on_page(self.page) {
+                for g in &guides {
                     match g.line {
                         GuideLine::Horizontal { y } => ys.push(y),
                         GuideLine::Vertical { x } => xs.push(x),
@@ -622,9 +623,9 @@ impl App {
         }
         // Angled guides: project onto the nearest one within tolerance.
         let tol = self.snap_tolerance();
-        if let Ok(page) = self.doc().page(self.page) {
+        if let Ok(guides) = self.doc().guides_on_page(self.page) {
             let mut best: Option<(f64, Point)> = None;
-            for g in &page.guides {
+            for g in &guides {
                 if let GuideLine::Angled { .. } = g.line {
                     let d = g.distance(p).abs();
                     if d <= tol && best.map(|b| d < b.0).unwrap_or(true) {
@@ -654,8 +655,8 @@ impl App {
         let moved_x = (q.x - p.x).abs() > 1e-12;
         let moved_y = (q.y - p.y).abs() > 1e-12;
         let on_guide = self.snap.guides
-            && self.doc().page(self.page).is_ok_and(|pg| {
-                pg.guides.iter().any(|g| match g.line {
+            && self.doc().guides_on_page(self.page).is_ok_and(|guides| {
+                guides.iter().any(|g| match g.line {
                     GuideLine::Horizontal { y } => moved_y && (y - q.y).abs() < 1e-9,
                     GuideLine::Vertical { x } => moved_x && (x - q.x).abs() < 1e-9,
                     GuideLine::Angled { .. } => false,

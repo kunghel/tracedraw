@@ -690,6 +690,43 @@ fn artistic_text_runs_and_lines() {
     });
 }
 
+/// Texts whose content is linked (#1568) go out as plain texts, each
+/// with its own characters and looks: the link is TraceDraw's own and
+/// reads back as no link.
+#[test]
+fn linked_text_content_goes_out_as_plain_texts() {
+    let doc = drawing(200.0, 100.0, |ids| {
+        let mut a = text(
+            ids,
+            vec![TextSpan::new("SALE", "Verdana", 18.0)],
+            Point::new(20.0, 80.0),
+            TextAlign::Left,
+        );
+        let mut b = text(
+            ids,
+            vec![TextSpan::new("SALE", "Georgia", 30.0)],
+            Point::new(20.0, 40.0),
+            TextAlign::Left,
+        );
+        a.content_link = Some(7);
+        b.content_link = Some(7);
+        vec![a, b]
+    });
+    every_version(&doc, |r| {
+        r.count(2);
+        for (i, font) in [(0, "Verdana"), (1, "Georgia")] {
+            let s = r.shape(i);
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                panic!("version {}: {}", r.v, kind_name(&s.kind));
+            };
+            let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(joined, "SALE", "version {}", r.v);
+            assert_eq!(spans[0].font_family, font, "version {}", r.v);
+            assert_eq!(s.content_link, None, "version {}", r.v);
+        }
+    });
+}
+
 /// A line breaker for the paragraph case: no text engine is loaded
 /// here, so lines are broken at the widths a plain sans serif has (half
 /// an em a letter), one line height apart down from the frame's top.

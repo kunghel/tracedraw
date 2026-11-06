@@ -130,9 +130,14 @@ getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 boa_engine = { version = "0.20", features = ["js"] }
 jiff = { version = "0.2", features = ["js"] }
+# Lossy WebP export in the browser (#592): a pure-Rust VP8 encoder (MIT OR
+# Apache-2.0); libwebp, which the desktop uses, is C.
+vaam_webp = { package = "vaam-image-webp", version = "0.1" }
 
-# Reads back the PDFs the tests publish; ICC profiles built for tests.
+# Reads back the PDFs the tests publish; ICC profiles built for tests;
+# the browser's lossy WebP encoder, run natively by the tests (#592).
 [dev-dependencies]
+vaam_webp = { package = "vaam-image-webp", version = "0.1" }
 lopdf = { version = "0.46", default-features = false }
 roxmltree = "0.21"
 ttf-parser.workspace = true

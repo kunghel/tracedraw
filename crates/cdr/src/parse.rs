@@ -84,7 +84,7 @@ const ARRX_COUNT_AT: usize = 268;
 pub(crate) const KNOWN_CHUNKS: &[[u8; 4]] = &[
     *b"loda", *b"lobj", *b"trfd", *b"txsm", *b"flgs", *b"bbox", *b"spnd", *b"usdn", *b"ppdt",
     *b"vrsn", *b"mcfg", *b"fild", *b"fill", *b"outl", *b"stlt", *b"bmp ", *b"bmpf", *b"arrw",
-    *b"arrx", *b"font", *b"ftbl", *b"ole2", *b"olel", *b"vpat", *b"imhd", *b"envd",
+    *b"arrx", *b"font", *b"ftbl", *b"ole2", *b"olel", *b"vpat", *b"imhd", *b"envd", *b"guid",
 ];
 
 /// The `loda` argument types this reader interprets, in any version.
@@ -706,6 +706,15 @@ pub(crate) fn parse_document_kept(
     // desktop layer) go to master layers, drawn on every page (#1775).
     let has_pages = pages.iter().any(|pc| !ctx.page_is_master(pc));
     let mut master_guides: Vec<tracedraw_core::document::Guide> = Vec::new();
+    // Version 7 keeps the guidelines every page shows in a `guid` chunk
+    // of the document, not on the master page's guides layer (#1775).
+    if ctx.v == 7 {
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"guid") {
+                master_guides.extend(ctx.read_guid_chunk(c, page_size));
+            }
+        });
+    }
     for pc in pages.iter() {
         let page_id = doc.ids_mut().page();
         let is_master = ctx.page_is_master(pc);
@@ -767,7 +776,9 @@ pub(crate) fn parse_document_kept(
         page.layers.reverse();
         if is_master && has_pages {
             master_guides.append(&mut ctx.guides);
-            for mut layer in page.layers {
+            // The master page's entries for the pages' own layers (before
+            // version 14) hold nothing: no master layer of their own.
+            for mut layer in page.layers.into_iter().filter(|l| !l.shapes.is_empty()) {
                 layer.scope = tracedraw_core::document::MasterScope::All;
                 layer.in_front = false;
                 doc.master.push(layer);
@@ -794,22 +805,20 @@ pub(crate) fn parse_document_kept(
         && (first_is_master || doc.pages[0].layers.iter().all(|l| l.shapes.is_empty()))
         && doc.pages[0].layers.iter().all(|l| l.shapes.is_empty())
     {
-        // The master page's guidelines show on every page.
+        // The master page's guidelines show on every page (#1928).
         let master = doc.pages.remove(0);
-        for p in doc.pages.iter_mut() {
-            for g in &master.guides {
-                if !p.guides.contains(g) {
-                    p.guides.push(*g);
-                }
-            }
+        master_guides.extend(master.guides);
+    }
+    // The master page's guidelines are the drawing's master guidelines,
+    // shown on every page and set once for all (#1928); a page's own
+    // copy of one is left to the master.
+    for g in master_guides {
+        if !doc.master_guides.contains(&g) {
+            doc.master_guides.push(g);
         }
     }
     for p in doc.pages.iter_mut() {
-        for g in &master_guides {
-            if !p.guides.contains(g) {
-                p.guides.push(*g);
-            }
-        }
+        p.guides.retain(|g| !doc.master_guides.contains(g));
     }
     for (i, p) in doc.pages.iter_mut().enumerate() {
         if p.name.is_empty() {
@@ -2160,9 +2169,14 @@ impl<'a> Ctx<'a> {
                 );
             }
         }
-        // A frame of several columns (its record's settings, version 16+).
+        // A frame of several columns (its record's settings, version 16+,
+        // or its frame block before).
         if kind_code == OBJ_PARAGRAPH_TEXT {
-            let columns = parsed.frame_style.as_deref().and_then(text::frame_columns);
+            let columns = parsed
+                .frame_style
+                .as_deref()
+                .and_then(text::frame_columns)
+                .or(parsed.columns);
             if let (Some((n, gap)), ShapeKind::Text { para, .. }) = (columns, &mut kind) {
                 para.columns = n;
                 para.gutter = gap * 25.4 / 254000.0;
@@ -2681,6 +2695,36 @@ impl<'a> Ctx<'a> {
             return None;
         };
         Some(Guide::from(line))
+    }
+
+    /// The `guid` chunk of a version 7 file (#1775: one drawing a user
+    /// saved in each version from 7 to 21, whose four guidelines around
+    /// the page sit on the master page's guides layer from version 8):
+    /// the number of guidelines (u32), a second u32 (the same number in
+    /// the file seen), then a 40-byte record for each, laid out as
+    /// argument 16000 ([`Self::read_guide`]): 12 bytes not used, the
+    /// angle and three points from the page centre.
+    fn read_guid_chunk(&self, c: &Chunk, page_size: Size) -> Vec<tracedraw_core::document::Guide> {
+        const RECORD: usize = 40;
+        let d = self.data(c);
+        let Some(n) = d
+            .get(..4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        else {
+            return Vec::new();
+        };
+        let n = (n as usize).min(d.len().saturating_sub(8) / RECORD);
+        (0..n)
+            .filter_map(|i| {
+                let off = 8 + i * RECORD;
+                let arg = Arg {
+                    ty: ARG_GUIDE_LINE,
+                    off,
+                    end: off + RECORD,
+                };
+                self.read_guide(d, arg, page_size)
+            })
+            .collect()
     }
 
     fn object_bbox(&self, oc: &Chunk) -> Option<Rect> {
@@ -3715,6 +3759,10 @@ impl<'a> Ctx<'a> {
         shape.keep_corner_size();
         shape.name = name;
         shape.opacity = opacity;
+        // Version 16+: the fill's winding (#1919): "1" fills nonzero.
+        if style_string.as_deref().and_then(text::object_fill_winding) == Some(true) {
+            shape.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
+        }
         if let Some(d) = distortion {
             shape.effects.push(tracedraw_core::live::Effect::Distort(d));
         }
@@ -4217,13 +4265,16 @@ impl<'a> Ctx<'a> {
     /// files' previews draw the band between the points). Returns the
     /// mask and, for a linear fountain, its start and end, when the
     /// record names such a fill; other records (not seen in version 15)
-    /// keep the reading of the opacity argument.
+    /// keep the reading of the opacity argument. Version 13 files hold the
+    /// same record (#1257, pages 1 and 2 of the reporter's version 13
+    /// file, a fountain of greys in colour model 9).
     fn read_graded_transparency_v15(
         &mut self,
         d: &'a [u8],
         arg: Arg,
     ) -> Option<(Mask, Option<(Point, Point)>)> {
-        if self.v != 15 || arg.end.checked_sub(arg.off)? < 8 + 117 {
+        // Seen in versions 13 and 15 alike; no version 14 file seen.
+        if !matches!(self.v, 13 | 15) || arg.end.checked_sub(arg.off)? < 8 + 117 {
             return None;
         }
         let data = d.get(..arg.end)?;
@@ -8259,9 +8310,10 @@ pub(crate) mod tests {
             tracedraw_core::document::MasterScope::All
         );
         use tracedraw_core::document::GuideLine;
-        let xs = |i: usize| -> Vec<f64> {
-            doc.pages[i]
-                .guides
+        // The master page's guideline is the drawing's master guideline,
+        // shown on every page before the page's own (#1928).
+        let xs = |guides: Vec<tracedraw_core::document::Guide>| -> Vec<f64> {
+            guides
                 .iter()
                 .filter_map(|g| match g.line {
                     GuideLine::Vertical { x } => Some((x * 1000.0).round() / 1000.0),
@@ -8269,9 +8321,12 @@ pub(crate) mod tests {
                 })
                 .collect()
         };
-        assert_eq!(xs(0), [0.0]);
-        assert_eq!(xs(1), [105.0, 0.0]);
-        assert_eq!(xs(2), [0.0]);
+        assert_eq!(xs(doc.master_guides.clone()), [0.0]);
+        let shown = |i: usize| xs(doc.guides_on_page(doc.pages[i].id).unwrap_or_default());
+        assert_eq!(shown(0), [0.0]);
+        assert_eq!(shown(1), [0.0, 105.0]);
+        assert_eq!(shown(2), [0.0]);
+        assert_eq!(xs(doc.pages[1].guides.clone()), [105.0]);
         // Every page draws the master's desktop objects.
         let shown = doc.layers_for_page(doc.pages[1].id).unwrap_or_default();
         assert_eq!(shown.iter().map(|l| l.shapes.len()).sum::<usize>(), 1);
@@ -8862,6 +8917,48 @@ pub(crate) mod tests {
         }
         t.push(0); // no path
         t
+    }
+
+    /// A paragraph text frame of two columns (#1852: the fourth and
+    /// fifth frames of the combination files, versions 7 to 15): the
+    /// frame's block holds the column count (at byte 4, at byte 8 from
+    /// version 15) and a width and gutter for each column, so it is 8
+    /// bytes longer a column. Read as one column, the paragraph count came
+    /// from the wrong place and the frames were dropped as empty.
+    #[test]
+    fn a_two_column_frame_of_versions_9_to_15_keeps_its_text() {
+        let style = || Style7 {
+            chars: 3,
+            font: None,
+            flags: None,
+            size_units: None,
+            fill: None,
+        };
+        for v in 9u16..=15 {
+            let mut t = txsm7(v, false, &[style()], "abc");
+            let start = if v >= 15 { 105 } else { 96 };
+            let base = if v >= 15 {
+                40
+            } else if v >= 14 {
+                36
+            } else {
+                34
+            };
+            let at = start + if v >= 15 { 8 } else { 4 };
+            t[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
+            // The second column's width and gutter.
+            let cols = start + base;
+            t.splice(cols..cols, i32s(&[780_380, 288_736]));
+            let txsm = text::read_txsm(&t, v, 0, &mut |w| panic!("{v}: {w}")).expect("txsm");
+            let text: String = txsm
+                .paragraphs
+                .iter()
+                .flat_map(|p| p.runs.iter().map(|r| r.text.clone()))
+                .collect();
+            assert_eq!(text, "abc", "{v}");
+            // Two columns, the gutter after the first (zero here).
+            assert_eq!(txsm.columns.map(|c| c.0), Some(2), "{v}");
+        }
     }
 
     fn text_doc(
@@ -11317,6 +11414,81 @@ pub(crate) mod tests {
         }
     }
 
+    /// The shapes of pages 1 and 2 of the reporter's version 13 file
+    /// (#1257): argument 8000 holds the same 117-byte record as version
+    /// 15, here naming a fountain of greys (colour model 9, 255 to 0). The
+    /// objects opened flat, without the fade to see-through.
+    #[test]
+    fn version_13_graded_transparency_record() {
+        use tracedraw_core::live::Effect;
+        let mut b = vec![5u8];
+        b.extend_from_slice(&u32s(&[1, 0, 1]));
+        b.extend_from_slice(&i32s(&[-2_458_949, 2_369_502, 961_709, -876_740]));
+        b.extend_from_slice(&u32s(&[1, 264, 1]));
+        b.extend_from_slice(&i32s(&[-294_272, -155_932, -693_859, 109_615]));
+        b.extend_from_slice(&u32s(&[0]));
+        b.extend_from_slice(&f64s(&[0.0, 100.0]));
+        b.extend_from_slice(&u32s(&[0, 2, 0, 0, 0, 0, 0, 7, 0, 0]));
+        assert_eq!(b.len(), 117);
+        let mut op = u32s(&[0x514, 117]);
+        op.extend_from_slice(&b);
+        // The fountain of greys as the file holds it (id changed to 7).
+        let ramp_hex = concat!(
+            "0700000014050000740000000200140500006200000001000000000000000000",
+            "40a5ae023c00000027007aa893080000000000000000ff00000001003b000200",
+            "010c0000000900050000000000ff00006400000000000000010c000000090005",
+            "0000000000000000000000000000640000000000000000000000000000000000",
+        );
+        let ramp_hex: String = ramp_hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let ramp: Vec<u8> = (0..ramp_hex.len() / 2)
+            .map(|i| u8::from_str_radix(&ramp_hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(ramp.len(), 128);
+        let mut coords = u32s(&[5]);
+        coords.extend_from_slice(&i32s(&[0, 0, 254000, 0, 254000, 254000, 0, 254000, 0, 0]));
+        coords.extend_from_slice(&[0x08, 0x40, 0x40, 0x40, 0x48]);
+        let obj = list(
+            b"obj ",
+            &chunk(
+                b"loda",
+                &loda(
+                    OBJ_CURVE,
+                    &[
+                        (ARG_COORDS, coords),
+                        (ARG_FILL, u32s(&[3])),
+                        (ARG_OPACITY, op),
+                    ],
+                ),
+            ),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(13, 2_540_000, 2_540_000)),
+            chunk(b"fild", &solid_fild_v13(3, (176, 216, 176))),
+            chunk(b"fild", &ramp),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRD", &body), 13);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        let s = first_shape(&doc);
+        assert_eq!(s.opacity, 1.0);
+        match s.effects.as_slice() {
+            [Effect::Transparency {
+                mask: Fill::Fountain(f),
+                target: 2,
+                ..
+            }] => {
+                assert_eq!(f.kind, FountainKind::Linear);
+                assert_eq!(f.stops.len(), 2);
+                assert_eq!(f.stops[0].color, Color::Gray { v: 1.0 });
+                assert_eq!(f.stops[1].color, Color::Gray { v: 0.0 });
+                assert_eq!(f.edge_pad, 0.0);
+                assert!(f.handles.is_some());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn lens_records_in_the_transparency_argument() {
         use tracedraw_core::live::{Effect, Lens};
@@ -11370,6 +11542,58 @@ pub(crate) mod tests {
         b.extend_from_slice(&u32s(&[4]));
         b.resize(117, 0);
         b
+    }
+
+    /// The fill rule of a version 16+ curve (#1919): its style string's
+    /// `fill.winding`, "1" in the reporter's version 27 file for traced
+    /// letters made of overlapping parts (filled where they overlap),
+    /// "0" or left out for the even-odd rule.
+    #[test]
+    fn version_16_plus_fill_winding_is_the_curve_fill_rule() {
+        use tracedraw_core::shaping::FillRule;
+        let v = 24u16;
+        let read = |json: &str| {
+            let style = [u32s(&[1, json.len() as u32]), json.as_bytes().to_vec()].concat();
+            let mut coords = u32s(&[5]);
+            coords.extend_from_slice(&i32s(&[0, 0, 254000, 0, 254000, 254000, 0, 254000, 0, 0]));
+            coords.extend_from_slice(&[0x08, 0x40, 0x40, 0x40, 0x48]);
+            let obj = list(
+                b"obj ",
+                &chunk(
+                    b"loda",
+                    &loda(
+                        OBJ_CURVE,
+                        &[(ARG_STYLE_STRING, style), (ARG_COORDS, coords)],
+                    ),
+                ),
+            );
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRO", &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).fill_rule
+        };
+        let colour =
+            r#""primaryColor":"CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000000000""#;
+        assert_eq!(
+            read(&format!(
+                r#"{{"fill":{{"overprint":"0",{colour},"type":"1","winding":"1"}}}}"#
+            )),
+            FillRule::NonZero
+        );
+        assert_eq!(
+            read(&format!(
+                r#"{{"fill":{{{colour},"type":"1","winding":"0"}}}}"#
+            )),
+            FillRule::EvenOdd
+        );
+        assert_eq!(
+            read(&format!(r#"{{"fill":{{{colour},"type":"1"}}}}"#)),
+            FillRule::EvenOdd
+        );
     }
 
     #[test]
@@ -12095,6 +12319,73 @@ pub(crate) mod tests {
                 GuideLine::Vertical { x: cx + 10.0 },
                 GuideLine::Horizontal { y: cy - 20.0 }
             ]
+        );
+    }
+
+    /// Version 7 keeps the guidelines every page shows in the document's
+    /// `guid` chunk (#1775: the four guidelines around the page of the
+    /// reporter's version 7 file): a count, the count again, then a
+    /// 40-byte record each as argument 16000. They were not read.
+    #[test]
+    fn version_7_guidelines_come_from_the_guid_chunk() {
+        let far = 228_600_000;
+        let record = |angle: i32, pts: &[i32]| {
+            let mut a = vec![0u8; 12];
+            a.extend_from_slice(&i32s(&[angle]));
+            a.extend_from_slice(&i32s(pts));
+            a
+        };
+        let mut guid = u32s(&[2, 2]);
+        guid.extend(record(
+            90_000_000,
+            &[100_000, -far, 100_000, far, 100_000, far],
+        ));
+        guid.extend(record(0, &[-far, -200_000, far, -200_000, far, -200_000]));
+        let body = |v: u16| {
+            [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                chunk(b"guid", &guid),
+                list(b"page", &list(b"layr", &[])),
+                list(b"page", &list(b"layr", &[])),
+            ]
+            .concat()
+        };
+        let (doc, rep) = parse(&riff(b"CDR7", &body(7)), 7);
+        use tracedraw_core::document::GuideLine;
+        for page in &doc.pages {
+            let (cx, cy) = (page.size.width / 2.0, page.size.height / 2.0);
+            // The guidelines every page shows (#1928: the master page's).
+            let lines: Vec<GuideLine> = doc
+                .guides_on_page(page.id)
+                .expect("a page of the drawing")
+                .iter()
+                .map(|g| g.line)
+                .collect();
+            assert_eq!(
+                lines,
+                vec![
+                    GuideLine::Vertical { x: cx + 10.0 },
+                    GuideLine::Horizontal { y: cy - 20.0 }
+                ],
+                "{:?}",
+                rep.warnings
+            );
+        }
+        // A short chunk gives what it holds and no more.
+        let mut short = guid.clone();
+        short.truncate(8 + 40 + 10);
+        let body = [
+            chunk(b"mcfg", &mcfg(7, 2_540_000, 2_540_000)),
+            chunk(b"guid", &short),
+            list(b"page", &list(b"layr", &[])),
+        ]
+        .concat();
+        let (doc, _) = parse(&riff(b"CDR7", &body), 7);
+        assert_eq!(
+            doc.guides_on_page(doc.pages[0].id)
+                .expect("the drawing's page")
+                .len(),
+            1
         );
     }
 

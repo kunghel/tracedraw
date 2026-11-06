@@ -39,10 +39,10 @@ was changed on every tab (#633).
 
 | Page | Settings (defaults) |
 |---|---|
-| General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Undo levels, Regular (150) |
-| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below) |
+| General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Use hardware acceleration and the graphics card (from the next start); Undo levels, Regular (150). The splash, hardware acceleration and Global > General's AI agents section are shown on the desktop only: on Android and in the browser they do nothing and are hidden (`ui::options::DesktopOnly`, #1415) |
+| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below); Screen margins (Android only, see `android.md`, #1917) |
 | Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places: at most that many in the property bars' length fields, at least one, trailing zeros dropped; that many in the status bar) |
-| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G) |
+| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G); Pick distance (6 px, nodes and handles) and, on the same row, Object click distance (3 px by default, 0 to 20): how far from an object's outline a click still picks it with the Pick tool and the other tools that pick objects by a click (`App::object_pick_tol`, `pick_drag_tests::the_object_click_distance_is_a_setting`, #1679); control handle arrow heads are as long as the node size (#1643) |
 | clip frame | Auto-center new content: when it lies completely outside the frame (default), always, never; Show lines in empty clip frame frames (on, on screen) |
 | Snapping | Snap to objects, page, guidelines, grid, baseline grid, pixels; snapping radius (10 px); show snap location marks and the screen tip (on); the modes, each with its mark (all on), Select All, Deselect All |
 | Alignment Guides | On or off; guides for the selection as one or each object; edges, centres, the page, equal spacing, equal sizes; margins with offset and inset; colour and line style; Reset (see `live-guides.md`) |
@@ -150,9 +150,26 @@ for the next session (#617). Export for Web and Export for Office keep
 their own presets and never change these
 (`pick_drag_tests::the_export_dialog_starts_with_the_last_exports_choices`).
 
-Imported objects go (File > Import, Ctrl+I): where the file has them
-(the default), or centred in the middle of the view; the move is part of
-the import's undo step.
+Place imported files with the import cursor (`import_with_cursor`, on):
+after File > Import (Ctrl+I, the toolbar button or Import on the
+drawing's right-click menu) and the file chosen, nothing comes in yet;
+the pointer becomes a corner bracket. A click puts the top left corner
+of what the file holds there, at its own size; a drag draws the box it
+is fitted in, its proportions kept, from the box's top left corner;
+Space or Enter centres it on the page; Esc or a right click calls the
+import off. The move or the size is part of the import's undo step. An
+import that first asks a question (how to read a PDF's text, a
+password) is placed once the question is answered
+(`import_place.rs`, `pick_drag_tests::an_import_waits_for_a_click_and_its_corner_goes_there`,
+`pick_drag_tests::an_import_is_sized_by_a_drag_centred_by_space_or_called_off`, #1936).
+
+Imported objects go (File > Import with the import cursor off, Ctrl+I):
+where the file has them (the default), or centred in the middle of the
+view; the move is part of the import's undo step. Files dropped or
+pasted come in at once as before.
+
+The drawing's right-click menu (on the page with nothing selected) has
+Import... under Paste and Select All (#1931).
 
 Saving .cdr files: the Version Save As starts at and new drawings are
 saved in (`cdr_version`, 27 by default, 7 to 27; a value out of range
@@ -313,6 +330,17 @@ build) does not change the theme: egui's own theme preference is pinned
 and both of its style slots hold the chosen theme's visuals
 (`App::setup_context`, `ui::apply_theme` each frame;
 `ui::tests::the_system_dark_mode_does_not_change_the_theme`).
+The window's own title bar and frame follow the theme too, not the
+system's setting: a dark theme (Medium Dark, Dark, a dark High Contrast)
+asks the window for a dark frame, a light one for a light frame, at once
+when the theme changes (`ui::apply_theme` sends the window's theme and
+turns off egui's own sync, which follows the pinned Light preference and
+asked for a light frame;
+`ui::tests::the_window_frame_follows_the_theme`, #1920). On Windows 10
+(October 2018 update and later) and Windows 11 this sets the title bar's
+immersive dark mode attribute and redraws the frame (`vendor/README.md`);
+macOS and Linux desktops take it as the window's appearance or theme
+variant where they offer one.
 
 ## Coloured tool icons
 

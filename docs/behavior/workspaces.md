@@ -18,8 +18,9 @@ gesture drops what the first finger had begun, so it neither drags an
 object nor draws a marquee. Picking another workspace brings the
 interface back to the size chosen.
 
-With a finger only (#1611, #1707): the standard toolbar's Delete deletes
-the selection and its Panels button shows the dockers (Properties and
+With a finger only (#1611, #1707, #1499): the standard toolbar's Delete deletes
+the selection, its Shift, Ctrl and Alt buttons hold those keys down
+until they are tapped again (a tap adds to the selection with Shift held) and its Panels button shows the dockers (Properties and
 the rest); a finger held still on the drawing for 0.8 s is the right
 click (egui's long press), so it opens the menu of the object under it
 (picking it) or of the page, with Delete, Copy, Order, Group and the

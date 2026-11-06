@@ -133,11 +133,31 @@ pub fn write(
     }
     if is_cmyk(s) {
         let spots: Vec<(u32, [f32; 4])> = doc.inks.iter().map(|i| (i.id, i.cmyk)).collect();
-        let (w, h, ink) =
-            crate::picture_plates::picture_cmyk(s, &spots).ok_or("the picture cannot be read")?;
+        let cmyk = |alpha| {
+            crate::picture_plates::picture_cmyk(s, &spots, alpha)
+                .ok_or("the picture cannot be read")
+        };
         let out = match kind {
-            BitmapFile::Jpeg => tracedraw_io::cmyk_bitmap::cmyk_jpeg(w, h, &ink, QUALITY, dpi, icc),
-            _ => tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink, dpi, icc),
+            BitmapFile::Jpeg => {
+                // No transparency in a JPEG: the inks over white paper.
+                let (w, h, ink) = cmyk(false)?;
+                tracedraw_io::cmyk_bitmap::cmyk_jpeg(w, h, &ink, QUALITY, dpi, icc)
+            }
+            _ => {
+                // A TIFF keeps the transparency as an alpha channel
+                // beside the inks (#1925); an opaque picture stays four
+                // channels.
+                let (w, h, inka) = cmyk(true)?;
+                if inka.chunks_exact(5).all(|p| p[4] == 255) {
+                    let ink: Vec<u8> = inka
+                        .chunks_exact(5)
+                        .flat_map(|p| [p[0], p[1], p[2], p[3]])
+                        .collect();
+                    tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink, dpi, icc)
+                } else {
+                    tracedraw_io::cmyk_bitmap::cmyka_tiff(w, h, &inka, dpi, icc)
+                }
+            }
         };
         return out.ok_or_else(|| "CMYK encoding failed".to_string());
     }
@@ -400,6 +420,90 @@ mod tests {
         app.save_bitmap_to(id, &plain, BitmapFile::Tiff)
             .expect("plain");
         assert!(std::fs::read(&plain).expect("read").starts_with(b"II*\0"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #1925: a CMYK picture with transparency (here its right half is
+    /// clear) keeps it in Save Bitmap As TIFF, as an alpha channel
+    /// beside the full inks, and in Edit Bitmap: the file read back
+    /// leaves the picture transparent where it was.
+    #[test]
+    fn a_cmyk_picture_keeps_its_transparency_in_tiff_and_edit_bitmap() {
+        let mut app = App::headless();
+        let id = cmyk_picture(&mut app);
+        // The same picture with its right half (the black ink) clear.
+        let s = app.doc().find_shape(id).expect("picture").clone();
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("bitmap");
+        };
+        let mut px = crate::bitmap_fx::decode(png).expect("pixels");
+        for (x, _, p) in px.enumerate_pixels_mut() {
+            if x >= 2 {
+                p.0[3] = 0;
+            }
+        }
+        let clear = crate::bitmap_fx::encode(&px).expect("png");
+        let inks = PictureInks::cmyk(&clear, s.picture_inks.as_deref().expect("inks").png.clone());
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(30.0, 10.0, 30.0 + 4.0 * 25.4 / 300.0, 20.0),
+                width_px: 4,
+                height_px: 2,
+                png: clear.into(),
+                fx: None,
+            })
+            .expect("bitmap");
+        app.run(Command::SetPictureInks {
+            shape: id,
+            cmyk: true,
+            inks: Some(Box::new(inks)),
+        });
+        let before = app.doc().find_shape(id).expect("picture").clone();
+        let d = dir("alpha");
+
+        let tif = d.join("clear.tif");
+        app.save_bitmap_to(id, &tif, BitmapFile::Png).expect("tiff");
+        let bytes = std::fs::read(&tif).expect("read");
+        let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(&bytes)).expect("tiff");
+        assert_eq!(dec.colortype().expect("type"), tiff::ColorType::CMYKA(8));
+        let back = read(&bytes).expect("read back");
+        let alpha: Vec<u8> = back.rgba.pixels().map(|p| p.0[3]).collect();
+        assert_eq!(alpha, [255, 255, 0, 0, 255, 255, 0, 0], "clear half kept");
+        let (_, inks) = back.into_png().expect("png");
+        let got = image::load_from_memory(&inks.expect("inks").png)
+            .expect("planes")
+            .to_luma8()
+            .into_raw();
+        assert_eq!(got, planes(&before), "the full inks, not faded");
+
+        // Edit Bitmap: hand the file over, the other program saves it as
+        // it is, the picture is read back still clear on the right.
+        let path = app.write_bitmap_for_editing(id, &d).expect("written");
+        app.run(Command::SetObjectData {
+            shape: id,
+            data: vec![("bitmap.link".into(), path.display().to_string())],
+        });
+        let resaved = std::fs::read(&path).expect("read");
+        std::fs::write(&path, resaved).expect("write");
+        assert!(app.reload_linked_bitmap(id));
+        let s = app.doc().find_shape(id).expect("picture");
+        assert!(s.cmyk_bitmap);
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("bitmap");
+        };
+        let px = crate::bitmap_fx::decode(png).expect("pixels");
+        let alpha: Vec<u8> = px.pixels().map(|p| p.0[3]).collect();
+        assert_eq!(alpha, [255, 255, 0, 0, 255, 255, 0, 0], "still clear");
+        assert_eq!(planes(s), planes(&before));
+
+        // An opaque CMYK picture stays a four channel file.
+        let tif = d.join("opaque.tif");
+        let opaque = cmyk_picture(&mut app);
+        app.save_bitmap_to(opaque, &tif, BitmapFile::Png)
+            .expect("tiff");
+        let bytes = std::fs::read(&tif).expect("read");
+        let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(&bytes)).expect("tiff");
+        assert_eq!(dec.colortype().expect("type"), tiff::ColorType::CMYK(8));
         let _ = std::fs::remove_dir_all(&d);
     }
 

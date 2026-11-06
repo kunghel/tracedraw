@@ -24,6 +24,17 @@ listeler.
 
 ## Son sürümlerin öne çıkanları {#highlights}
 
+- **Dokunma ve telefonlar.** Standart çubuktaki Shift, Ctrl ve Alt düğmeleri
+  parmak için basılı kalır; Android'de arayüz kamera çentiğinden ve yuvarlak
+  köşelerden uzak durur; Apple Pencil iPad'deki Safari'de çalışır.
+- **Dosyalar.** .cdr dosyaları üst üste binen eğrilerin dolgu kuralını korur
+  ve sekme durakları, çok sütunlu metinleri, tüm sayfaların paylaştığı
+  kılavuzları ve ana sayfa nesneleriyle açılır.
+- **Resimler, yazdırma ve çalışma alanı.** Kırpma aracındaki resim
+  piksellerini kırpma seçeneği ve
+  [[menu.bitmaps > menu.bitmaps.crop_to_frame]] bir resmin piksellerini
+  kırpar; gri tonlamalı ve ters sırada yazdırma;
+  [[menu.view > menu.view.scrollbars]] kaydırma çubuklarını gizler.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] kesim plotterları için
   araçları açar: plotter çıktısı, kesim çizgileri, yerleştirme ve ölçme. Bkz.
   [TraceCut](../objects/tracecut.md).

@@ -81,6 +81,10 @@ pub enum ToolCursor {
     TableArrow {
         down: bool,
     },
+    /// File > Import waiting for its place: a corner bracket whose
+    /// corner is the hot spot, where the import's top left corner goes
+    /// (#1936).
+    PlaceCorner,
 }
 
 /// What a curve tool's press would do besides drawing.
@@ -307,6 +311,9 @@ pub fn for_tool(
     }
     if app.pending_palette_sample {
         return ToolCursor::Pipette;
+    }
+    if app.import_placing.is_some() {
+        return ToolCursor::PlaceCorner;
     }
     if app.pending_clip_frame
         || app.pending_order.is_some()
@@ -588,6 +595,7 @@ pub fn system_icon(cursor: ToolCursor) -> egui::CursorIcon {
         | ToolCursor::CurveBadge(..)
         | ToolCursor::Cross
         | ToolCursor::PenNib(_)
+        | ToolCursor::PlaceCorner
         | ToolCursor::Nib { .. } => C::Crosshair,
     }
 }
@@ -632,6 +640,21 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
             cross_hair(painter, p);
         }
         ToolCursor::TableArrow { down } => table_arrow(painter, p, down),
+        ToolCursor::PlaceCorner => place_corner(painter, p),
+    }
+}
+
+/// The import's placement cursor: a right-angle bracket opening to the
+/// lower right, its corner at `p`, black on a white halo.
+fn place_corner(painter: &Painter, p: Pos2) {
+    use egui::emath::GuiRounding as _;
+    let c = p.round_to_pixel_center(painter.pixels_per_point());
+    let arm = 14.0;
+    let lines = [[c, c + Vec2::new(arm, 0.0)], [c, c + Vec2::new(0.0, arm)]];
+    for (w, color) in [(4.0, HALO), (2.0, INK)] {
+        for l in lines {
+            painter.line_segment(l, Stroke::new(w, color));
+        }
     }
 }
 

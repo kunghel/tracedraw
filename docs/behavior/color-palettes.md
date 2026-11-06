@@ -212,7 +212,8 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
   under the pointer; with Ctrl it keeps sampling. Esc or a right click
   stops it.
 - Its menu: Automatically Update, Add from Selection, Add from Document
-  (every colour used in the drawing, after the ones already there),
+  (every colour used in the drawing, after the ones already there), Add
+  Colors from Bitmap (see below),
   Delete Color (the current swatch), Palette > Reset Palette (keeps only
   the colours the drawing still uses).
 - It is saved with the drawing; opening a `.cdr` reads its
@@ -260,7 +261,17 @@ Palette.
   colors here to add them to this palette". A swatch dragged from any
   palette onto the bar of a palette of the user's (not locked) joins it,
   and the bar's menu has Add Colors from Selection (the fill and outline
-  colours of the selected objects). Palettes made in TraceDraw (New
+  colours of the selected objects) and Add Colors from Bitmap.
+
+Add Colors from Bitmap (#1840), in the document palette's menu and in
+the bar menu of a palette of the user's: a submenu of 8, 16, 32 or 64
+colours, greyed unless a picture is selected. It takes at most that many
+colours that stand for the selected picture (its pixels as shown, effects
+included), chosen by the median cut of the paletted bitmap conversion
+(`bitmap-modes.md`, Optimized palette; transparent pixels are left out),
+as RGB colours ordered dark to light, and adds those the palette has not
+got after its colours; in the document palette that is one undo step.
+Check: `ui::palette::tests::colours_come_from_the_selected_picture`. Palettes made in TraceDraw (New
   Palette, Duplicate), which have no file, are kept with their colours
   in the preferences (`user_palettes`).
 

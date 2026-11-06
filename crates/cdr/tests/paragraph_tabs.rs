@@ -211,7 +211,8 @@ fn paragraph_frames_keep_their_tab_stops() {
             "{v}"
         );
     }
-    // A centre stop goes out as a left one.
+    // A centre stop goes out as a centre one (code 2, #1852; it went out
+    // as a left one before the code was known).
     if let ShapeKind::Text { para, .. } = &mut doc.pages[0].layers[0].shapes[0].kind {
         para.tabs[1].kind = TabKind::Center;
     }
@@ -235,5 +236,5 @@ fn paragraph_frames_keep_their_tab_stops() {
             _ => None,
         })
         .expect("paragraph text");
-    assert_eq!(tabs[1], TabStop::left(70.0));
+    assert_eq!(tabs[1], TabStop::new(70.0, TabKind::Center));
 }

@@ -154,7 +154,11 @@ Marks the selected objects' outlines as cut lines for print and cut: OK
 gives them an outline in the spot colour named **CutContour** (added to
 the drawing's spot colours once, its stand-in 100 % magenta), a hairline
 or the **outline width** given, and with **Remove the fill** no fill, in
-one undo step ("CutContour"). The name is kept on export: PDF writes a
+one undo step ("CutContour"). Its swatch joins the document palette in
+that step when it is not there yet, as a colour applied from the
+Properties docker does (unless the document palette's Automatically
+Update is off), so the CutContour colour can be picked again from it
+(#1927). The name is kept on export: PDF writes a
 Separation colour space named CutContour (as for every spot colour), EPS
 and PostScript a Separation colour space with the ink's name and its
 process stand-in, and SVG, which has no spot colours, writes the colour

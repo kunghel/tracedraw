@@ -27,6 +27,7 @@ pub mod geometry;
 pub mod icc;
 pub mod id;
 pub mod join;
+pub mod linked_text;
 pub mod live;
 pub mod nodes;
 pub mod painterly;
@@ -93,6 +94,8 @@ pub enum Error {
     NotClipFrame(ShapeId),
     #[error("object {0:?} is not a bitmap")]
     NotBitmap(ShapeId),
+    #[error("object {0:?} is not a text")]
+    NotText(ShapeId),
     #[error("a B-spline needs two finite control points or more")]
     BadSpline,
     #[error("serialization error: {0}")]

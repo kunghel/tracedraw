@@ -36,6 +36,9 @@ pub fn primary_touch_pos(
         (0..event.touches().length()).filter_map(|i| event.touches().get(i)),
         (0..event.changed_touches().length()).filter_map(|i| event.changed_touches().get(i)),
     )
+    // TraceDraw: an Apple Pencil's touches are not the pointer (#1655):
+    // its pen pointer events are.
+    .filter(|touch| !is_stylus(touch))
     .collect();
 
     if let Some(primary_touch) = runner.input.primary_touch {
@@ -71,6 +74,25 @@ pub fn primary_touch_pos(
     None
 }
 
+/// TraceDraw: whether `touch` is a stylus's (Safari's `touchType`, which
+/// web-sys does not bind), see `pen_pressure::is_stylus_touch` (#1655).
+pub fn is_stylus(touch: &web_sys::Touch) -> bool {
+    let touch_type = js_sys::Reflect::get(touch, &wasm_bindgen::JsValue::from_str("touchType"))
+        .ok()
+        .and_then(|v| v.as_string());
+    super::pen_pressure::is_stylus_touch(touch_type.as_deref())
+}
+
+/// TraceDraw: whether every touch a touch event changed is a stylus's
+/// (#1655): the event is then the pen's, which its pointer events carry.
+pub fn only_stylus(event: &web_sys::TouchEvent) -> bool {
+    let touches = event.changed_touches();
+    touches.length() > 0
+        && (0..touches.length())
+            .filter_map(|i| touches.item(i))
+            .all(|touch| is_stylus(&touch))
+}
+
 fn pos_from_touch(
     canvas_rect: egui::Rect,
     touch: &web_sys::Touch,
@@ -87,6 +109,11 @@ pub fn push_touches(runner: &mut AppRunner, phase: egui::TouchPhase, event: &web
     let canvas_rect = canvas_content_rect(runner.canvas());
     for touch_idx in 0..event.changed_touches().length() {
         if let Some(touch) = event.changed_touches().item(touch_idx) {
+            // TraceDraw: an Apple Pencil comes through its pen pointer
+            // events (#1655).
+            if is_stylus(&touch) {
+                continue;
+            }
             runner.input.raw.events.push(egui::Event::Touch {
                 device_id: egui::TouchDeviceId(0),
                 id: egui::TouchId::from(touch.identifier()),

@@ -20,7 +20,7 @@ Multipoint curve. The chosen object's name is shown under the buttons.
 | Polygon, Star, Complex star | Points or sides (complex stars 5..500, others 3..500); star sharpness 1..99 or -1..-99 (inverted), complex star sharpness 1..(points - 1) / 2 - 1; Angle of rotation (about the centre); Bounding circle: centre x, y, horizontal and vertical diameters of the ellipse the vertices lie on, Set proportional |
 | Regular polygon | Points or sides; Side length (the diameter is side / sin(180° / points)); Angle of rotation; Bounding circle: centre and diameter |
 | 2-point line | Start point and endpoint; Line length and Angle of rotation (changing them moves the endpoint) |
-| Multipoint curve | The points (number, x, y; click chooses one), the chosen point's x and y, Add point, Delete point, Set point interactively, Auto-close/open curve (closes only with three points or more) |
+| Multipoint curve | The points (number, x, y; click chooses one; eight show at a time, the mouse wheel scrolls the rest and the chosen one is kept in view), the chosen point's x and y, Add point, Delete point, Set point interactively, Auto-close/open curve (closes only with three points or more) |
 
 Positions are shown from the ruler origin, in the document unit; typed
 values may carry another unit (see `toolbars.md`). Changing the origin
@@ -52,9 +52,15 @@ input it waits for.
   hold (one undo step, "Replace Object").
 - Selecting an object reads it into the fields: rectangles (squares when
   the panel shows squares and the sides match), ellipses without an arc
-  (circles likewise), polygons, stars and complex stars, curves made of
-  straight segments (two points open: a line; otherwise a multipoint
-  curve). Size comes from the object's scale, the angle from its x axis.
+  (circles likewise), polygons, stars and complex stars, curves of one
+  subpath (two points joined by a straight segment, open: a line;
+  otherwise a multipoint curve). A curve's bends are kept: its points
+  are its nodes, moving a point takes the handles next to it along, and
+  Replace object gives the curve back with its bends. The object is read
+  again when it changes on the drawing, and a node chosen on it with the
+  Shape tool chooses its point in the list. Curves with bends were not
+  read before, so the panel kept showing the last rectangle (#1889).
+  Size comes from the object's scale, the angle from its x axis.
 
 ## Keyboard
 
@@ -69,6 +75,7 @@ a click on the drawing.
 - `coords::tests::polygons_stars_and_lines_from_their_fields`
 - `coords::tests::multipoint_curves_add_delete_and_close`
 - `coords::tests::objects_load_into_the_fields`
+- `coords::tests::a_curve_with_bends_loads_and_follows_its_nodes`
 - `coords::tests::create_and_replace_are_one_step_each`
 - `coords::tests::every_object_draws_from_the_defaults`
 - `coords::tests::picks_wait_for_a_click_or_a_drag`

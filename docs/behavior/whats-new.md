@@ -18,8 +18,8 @@
   submenu leading to one, and over the title of a menu leading to one.
   The rows are listed in `NEW_IN_THIS_VERSION` (`ui/menus.rs`); each
   version replaces the list with its own.
-- In this version: Window > New Window, Window > Dockers > Effects,
-  Object > Clip to Frame > Opacity Mask and Invert Mask, Help > Updates.
+- In this version: View > Scrollbars, View > Page > Page Shadow,
+  Bitmaps > Crop to Frame.
 
 ## Checks
 

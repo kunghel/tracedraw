@@ -522,14 +522,18 @@ TIFF for a CMYK picture, else PNG (#1834).
   ink it keeps goes in as its process mix. The TIFF is a separated
   image, the JPEG a four-component file, both with the picture's
   resolution and the CMYK profile in use (the writers of the CMYK
-  export, #1763). Neither holds transparency: a see-through pixel holds
+  export, #1763). The TIFF of a picture with see-through pixels keeps
+  them: a fifth channel, an unassociated alpha (ExtraSamples 2), beside
+  each pixel's full inks (#1925); an opaque picture stays four
+  channels. The JPEG holds no transparency: a see-through pixel holds
   that much less ink.
 - Any other picture as JPEG is RGB (grey for a Grayscale picture) at
   quality 92 over white paper, with its resolution; as TIFF it is RGB,
   with its alpha when a pixel is see-through.
 
 `bitmap_file::tests::save_bitmap_as_keeps_the_inks_of_a_cmyk_picture`,
-`bitmap_file::tests::save_bitmap_as_writes_an_rgb_picture_as_jpeg_or_tiff`.
+`bitmap_file::tests::save_bitmap_as_writes_an_rgb_picture_as_jpeg_or_tiff`,
+`bitmap_file::tests::a_cmyk_picture_keeps_its_transparency_in_tiff_and_edit_bitmap`.
 
 ## Color Mask docker
 

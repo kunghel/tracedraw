@@ -118,6 +118,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     crate::comments::draw_comments(app, painter);
     crate::perspective_draw::draw_grid(app, painter, rect);
     draw_frame_links(app, painter);
+    draw_content_links(app, painter);
     crate::tab_ruler::draw(app, painter);
     if app.pending_text_link.is_some() {
         let pointer = painter.ctx().pointer_hover_pos();
@@ -155,6 +156,10 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
         }
     }
 
+    // The box a drag sizes File > Import's file to (#1936).
+    if let Some(r) = app.import_placement_box() {
+        haloed_rect(painter, view.rect_to_screen(r), Tokens::SELECTION);
+    }
     // Rubber bands and in-progress tools.
     match &app.drag {
         Drag::Box {
@@ -295,6 +300,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
                 view.to_screen(*node),
                 view.to_screen(*h),
                 look.preview_color,
+                app.settings.nodes.size.handle_head(),
             );
         }
         for (p, mark) in &look.nodes {
@@ -348,8 +354,9 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
             if let Some(o) = out {
                 let so = view.to_screen(*o);
                 let mirrored = sp - (so - sp);
-                draw_control_handle(painter, sp, so, Tokens::SELECTION);
-                draw_control_handle(painter, sp, mirrored, Tokens::SELECTION);
+                let head = app.settings.nodes.size.handle_head();
+                draw_control_handle(painter, sp, so, Tokens::SELECTION, head);
+                draw_control_handle(painter, sp, mirrored, Tokens::SELECTION, head);
             }
             // A white edge round the hollow square, so it shows on a
             // black fill too (#672).
@@ -437,6 +444,21 @@ pub(crate) fn ime_at_caret(app: &App, painter: &Painter, top: Pos2, bottom: Pos2
         [Pos2::new(r.min.x, r.max.y), Pos2::new(r.max.x, r.max.y)],
         EStroke::new(1.0, Tokens::text()),
     );
+}
+
+/// The printable part of the page `shown` (page space, y up): inside
+/// the printer's hard margins (see [`App::printable_margins`]).
+pub fn printable_rect(
+    app: &App,
+    shown: tracedraw_core::geometry::Rect,
+) -> tracedraw_core::geometry::Rect {
+    let (m, _) = app.printable_margins(shown.width(), shown.height());
+    tracedraw_core::geometry::Rect::new(
+        shown.x0 + m.left,
+        shown.y0 + m.bottom,
+        (shown.x1 - m.right).max(shown.x0 + m.left),
+        (shown.y1 - m.top).max(shown.y0 + m.bottom),
+    )
 }
 
 /// The window's background, the page with its shadow and border, bleed
@@ -535,7 +557,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         let r = view.rect_to_screen(shown);
         ERect::from_min_max(r.min.round(), r.max.round())
     };
-    if app.show_page_border {
+    if app.show_page_shadow {
         painter.rect_filled(
             paper.expand(1.0).translate(Tokens::PAGE_SHADOW_OFFSET),
             0.0,
@@ -564,8 +586,9 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         }
     }
     if app.show_printable_area {
-        // Printable area: the page minus the printer's typical 5 mm hardware margin.
-        let r = view.rect_to_screen(shown.inflate(-5.0, -5.0));
+        // Printable area: the page minus the printer's hard margins, as
+        // the system reports them, else a typical 5 mm (#1924).
+        let r = view.rect_to_screen(printable_rect(app, shown));
         let dash = 4.0;
         for (a, b) in [
             (r.left_top(), r.right_top()),
@@ -1329,6 +1352,57 @@ fn draw_frame_links(app: &App, painter: &Painter) {
     }
 }
 
+/// Linked text content (#1568): with a linked text selected or being
+/// edited, each text of the page linked with it is outlined with dashes
+/// and carries a small chain mark, as the selected ones do.
+fn draw_content_links(app: &App, painter: &Painter) {
+    if !app.selection_has_content_link() {
+        return;
+    }
+    // Only a linked text is selected from here on: the drawing is
+    // searched for its link, never for every selected object.
+    let doc = app.doc();
+    let layers = app.page_layers();
+    let on_page = |id| {
+        doc.top_level_of(id)
+            .is_some_and(|top| layers.iter().any(|l| l.shapes.iter().any(|s| s.id == top)))
+    };
+    let view = &app.view;
+    let stroke = EStroke::new(1.0, Tokens::SELECTION);
+    let chain_at = |r: ERect| {
+        // Two links of a chain at the box's top right corner.
+        let c = r.right_top() + egui::vec2(8.0, -8.0);
+        for dx in [-3.0, 3.0] {
+            painter.rect_stroke(
+                ERect::from_center_size(c + egui::vec2(dx, 0.0), egui::vec2(8.0, 5.0)),
+                2.5,
+                EStroke::new(1.5, Tokens::SELECTION),
+                epaint::StrokeKind::Middle,
+            );
+        }
+    };
+    for id in app.linked_selection_ids() {
+        if let Some(s) = doc.shape_on_page(id).filter(|_| on_page(id)) {
+            chain_at(view.rect_to_screen(s.bounds()));
+        }
+    }
+    for id in app.content_linked_others() {
+        let Some(s) = doc.shape_on_page(id).filter(|_| on_page(id)) else {
+            continue;
+        };
+        let r = view.rect_to_screen(s.bounds()).expand(3.0);
+        let pts = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
+        chain_at(r);
+    }
+}
+
 /// Active table cells (Table tool): a filled highlight over each selected cell.
 fn draw_table_cells(app: &App, painter: &Painter) {
     let Some(e) = &app.table_edit else {
@@ -2017,7 +2091,8 @@ fn draw_pixel_grid(app: &App, painter: &Painter, rect: ERect) {
 /// A node's control handle: a dashed line from the node `node` to the
 /// control point `ctrl`, which is a solid arrow head pointing away from
 /// the node.
-fn draw_control_handle(painter: &Painter, node: Pos2, ctrl: Pos2, color: Color32) {
+/// The head is `head` long (the node size's, #1643) and as wide.
+fn draw_control_handle(painter: &Painter, node: Pos2, ctrl: Pos2, color: Color32, head: f32) {
     let d = ctrl - node;
     let len = d.length();
     if len < 0.5 {
@@ -2025,7 +2100,8 @@ fn draw_control_handle(painter: &Painter, node: Pos2, ctrl: Pos2, color: Color32
     }
     let u = d / len;
     let n = egui::vec2(-u.y, u.x);
-    let head = 7.0_f32.min(len);
+    let half = head / 2.0;
+    let head = head.min(len);
     let base = ctrl - u * head;
     if len > head {
         // Dashes in the colour and white in turn, as wide as the Pen
@@ -2041,7 +2117,7 @@ fn draw_control_handle(painter: &Painter, node: Pos2, ctrl: Pos2, color: Color32
         );
     }
     painter.add(epaint::PathShape::convex_polygon(
-        vec![ctrl, base + n * 3.5, base - n * 3.5],
+        vec![ctrl, base + n * half, base - n * half],
         color,
         EStroke::new(1.0, Color32::WHITE),
     ));
@@ -2162,8 +2238,9 @@ fn draw_nodes(app: &App, painter: &Painter) {
                     );
                     if let (Some(a), Some(b)) = ends {
                         let sp = |q| view.to_screen(s.transform * q);
-                        draw_control_handle(painter, sp(a), sp(c1), main);
-                        draw_control_handle(painter, sp(b), sp(c2), main);
+                        let head = prefs.size.handle_head();
+                        draw_control_handle(painter, sp(a), sp(c1), main, head);
+                        draw_control_handle(painter, sp(b), sp(c2), main, head);
                     }
                 }
             }
@@ -2255,6 +2332,11 @@ fn draw_nodes(app: &App, painter: &Painter) {
                     prefs.unselected_filled.then_some(Color32::WHITE)
                 };
                 node_marker(painter, p, size, prefs.cusp, fill, main);
+                // A fixed point, which the curve passes through, has a
+                // second frame around it (#1758).
+                if s.spline_fixed.get(index).copied().unwrap_or(false) {
+                    node_marker(painter, p, size + 6.0, prefs.cusp, None, main);
+                }
             }
             continue;
         }
@@ -2331,7 +2413,7 @@ fn draw_nodes(app: &App, painter: &Painter) {
             if selected {
                 for c in [n.ctrl_in, n.ctrl_out].into_iter().flatten() {
                     let cp = view.to_screen(s.transform * c);
-                    draw_control_handle(painter, p, cp, main);
+                    draw_control_handle(painter, p, cp, main, prefs.size.handle_head());
                 }
             }
             let shape = match nodes::node_type_of_with(&n, &s.node_types) {
@@ -2539,11 +2621,17 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
     if !app.show_guides {
         return;
     }
-    let Ok(page) = app.doc().page(app.page) else {
+    if app.doc().page(app.page).is_err() {
         return;
-    };
+    }
+    // The guidelines not being edited (the master page's, which every
+    // page shows, or the page's own, #1928), as they are.
+    for g in app.other_guides_on_page() {
+        let color = to_color32(app.guide_color(&g));
+        draw_guide_line(app, painter, rect, g.line, color, g.style.pattern());
+    }
     let moving = app.guide_drag_moves();
-    for (i, g) in page.guides.iter().enumerate() {
+    for (i, g) in app.page_guides().iter().enumerate() {
         let moved = moving.iter().find(|(k, _)| *k == i).map(|(_, g)| g);
         let g = match &app.drag {
             Drag::RotateGuide { index, guide, .. } if *index == i => guide,
@@ -3057,6 +3145,78 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1906: View > Page > Page Border and Page Shadow are two options:
+    /// each draws its part of the page's edge alone, and both are kept
+    /// with the view's preferences.
+    #[test]
+    fn the_page_border_and_its_shadow_are_separate_options() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let drawn = |app: &mut App| -> (bool, bool) {
+            let mut seen = (false, false);
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(ERect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+                out.textures_delta.clear();
+                // The page on the screen: other widgets share the border's
+                // grey, so only rectangles on the page's own edge count.
+                let r = app.view.rect_to_screen(app.page_rect());
+                let paper = ERect::from_min_max(r.min.round(), r.max.round());
+                fn walk(s: &egui::Shape, paper: ERect, seen: &mut (bool, bool)) {
+                    match s {
+                        egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, paper, seen)),
+                        egui::Shape::Rect(r) => {
+                            let shadow = paper.expand(1.0).translate(Tokens::PAGE_SHADOW_OFFSET);
+                            seen.0 |= r.fill == Tokens::page_shadow() && r.rect == shadow;
+                            seen.1 |= r.stroke.width > 0.0
+                                && r.stroke.color == Tokens::page_border()
+                                && r.rect == paper;
+                        }
+                        _ => {}
+                    }
+                }
+                seen = (false, false);
+                out.shapes
+                    .iter()
+                    .for_each(|c| walk(&c.shape, paper, &mut seen));
+            }
+            seen
+        };
+        assert_eq!(drawn(&mut app), (true, true), "both by default");
+        app.show_page_shadow = false;
+        assert_eq!(
+            drawn(&mut app),
+            (false, true),
+            "the border without the shadow"
+        );
+        app.show_page_shadow = true;
+        app.show_page_border = false;
+        assert_eq!(
+            drawn(&mut app),
+            (true, false),
+            "the shadow without the border"
+        );
+        app.show_page_shadow = false;
+        assert_eq!(drawn(&mut app), (false, false));
+        // Kept with the view's preferences, apart.
+        app.show_page_border = true;
+        let v = app.view_prefs();
+        assert!(v.page_border && !v.page_shadow);
+        let json = serde_json::to_string(&v).expect("json");
+        let back: crate::settings::ViewPrefs = serde_json::from_str(&json).expect("back");
+        let mut next = App::headless();
+        next.apply_view_prefs(&back);
+        assert!(next.show_page_border && !next.show_page_shadow);
+        // Older preferences, with no word on the shadow, keep it.
+        let old: crate::settings::ViewPrefs =
+            serde_json::from_str(r#"{"page_border": false}"#).expect("old");
+        assert!(!old.page_border && old.page_shadow);
+    }
 
     /// The parts of the window outside the pages: bands around one page,
     /// and around two side by side, with nothing left over or covered.

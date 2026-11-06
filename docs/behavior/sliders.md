@@ -51,7 +51,12 @@ does a number field: no click or focus first (#1335, a maintainer
 decision; it replaces the earlier rule that a slider stepped with the
 wheel only while focused or dragged, #1240). Anywhere else a docker or
 the Options dialog scrolls under the wheel as before. The wheel takes
-no keyboard focus.
+no keyboard focus. The Color docker's channel sliders and its Tint
+slider and the Trace dialog's sliders, drawn differently (gradient
+rails, ticks of their own), step the same way on hover: one a notch
+(a channel in its shown unit, 0 to 255 or 0 to 100), Ctrl a tenth,
+Shift ten. Check: `ui::color_docker::tests::the_wheel_over_a_colour_slider_steps_it`,
+`pick_drag_tests::the_wheel_over_a_trace_slider_steps_it`.
 
 The step is the one given (`step_by`), one for an integer slider, else a
 round hundredth of the range (1 for 0 to 100, 0.05 for 0.1 to 5). Every

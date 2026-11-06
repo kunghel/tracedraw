@@ -92,6 +92,7 @@ pub mod propbar;
 pub mod publish_pdf;
 pub mod rulers;
 pub mod save_as;
+pub mod screen_margins;
 pub mod shaping_docker;
 pub mod shelf_docker;
 pub mod slider;
@@ -158,6 +159,21 @@ pub(crate) fn apply_theme(ctx: &egui::Context, id: &str) {
         ctx.set_theme(egui::ThemePreference::Light);
         ctx.set_visuals_of(egui::Theme::Dark, crate::theme::visuals());
         ctx.set_visuals(crate::theme::visuals());
+        // The window's own title bar follows: dark with a dark theme, light
+        // with a light one, whatever the system's setting (#1920). egui's
+        // own sync would follow the pinned preference above and ask for a
+        // light frame at the end of the pass, so it is off.
+        ctx.options_mut(|o| o.sync_window_theme = false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme(wanted)));
+    }
+}
+
+/// The theme the window's title bar and frame take for `theme`.
+pub(crate) fn window_theme(theme: crate::theme::Theme) -> egui::SystemTheme {
+    if theme.is_dark() {
+        egui::SystemTheme::Dark
+    } else {
+        egui::SystemTheme::Light
     }
 }
 
@@ -262,7 +278,18 @@ pub fn root(app: &mut App, ui: &mut Ui) {
     let steps = app.step_merge_start();
     // Tab and Shift+Tab stay in the window that has the focus (#1258).
     tab_focus::begin(ui.ctx());
-    root_frame(app, ui);
+    // The interface keeps inside the screen's safe area: clear of the
+    // camera cutout and the rounded corners (#1917, screen_margins.rs).
+    let content = ui.ctx().content_rect();
+    if content != ui.ctx().viewport_rect() {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+            root_frame(app, ui)
+        });
+    } else {
+        root_frame(app, ui);
+    }
+    // An import that asked a question first goes where it was placed.
+    app.finish_waiting_import_placement();
     keynav::end_frame(ui.ctx());
     tab_focus::end(ui.ctx());
     // The steps a number field made one after another are one undo step.
@@ -828,9 +855,16 @@ fn smooth_wheel_notch(unit: egui::MouseWheelUnit, line_speed: f32, height: f32, 
 pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     let ruler = if app.show_rulers { Tokens::RULER } else { 0.0 };
     let sb = window_bars::BAR;
+    // Without scrollbars (View > Scrollbars off, #1344) the drawing takes
+    // the vertical bar's room; the bottom row keeps the page tabs.
+    let vbar = if app.settings.show_scrollbars {
+        sb
+    } else {
+        0.0
+    };
     let canvas_rect = egui::Rect::from_min_max(
         full.min + egui::vec2(ruler, ruler),
-        full.max - egui::vec2(sb, sb),
+        full.max - egui::vec2(vbar, sb),
     );
     app.canvas_rect = canvas_rect;
     app.anchor_view(canvas_rect.min);
@@ -850,7 +884,16 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     // pointer, Ctrl+wheel scrolls vertically and Alt+wheel
     // horizontally; with the scroll setting the wheel scrolls,
     // Shift+wheel horizontally and Ctrl+wheel zooms. Pinch zooms.
-    if response.hovered() {
+    // Edit Fill and Outline Pen leave the wheel to the drawing outside
+    // them, so it can be zoomed to see the change; nothing else of the
+    // drawing takes the pointer meanwhile (#1035).
+    let wheel_through_dialog = matches!(
+        app.dialog,
+        crate::ui::dialogs::Dialog::EditFill(_) | crate::ui::dialogs::Dialog::OutlinePen(_)
+    ) && ui.ctx().pointer_hover_pos().is_some_and(|p| {
+        canvas_rect.contains(p) && crate::ui::chrome::over_modal_blocker(ui.ctx(), p)
+    });
+    if response.hovered() || wheel_through_dialog {
         let (scroll, notches, zoom_delta, mods, unit) = ui.input(|i| {
             // Wheel notches this frame (the smoothed delta is spread
             // over several frames, so the zoom steps come from the
@@ -887,7 +930,12 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                 .data(|d| d.get_temp(unit_id))
                 .unwrap_or(egui::MouseWheelUnit::Line),
         };
-        if let Some(h) = response.hover_pos() {
+        let hover = response.hover_pos().or_else(|| {
+            wheel_through_dialog
+                .then(|| ui.ctx().pointer_hover_pos())
+                .flatten()
+        });
+        if let Some(h) = hover {
             let zoom_factor = 1.15f32.powf(notches);
             // Options > Tools > Zoom/Pan > Center mouse when zooming with
             // the mouse wheel: a notch brings the point under the pointer
@@ -1167,6 +1215,33 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
 
 #[cfg(test)]
 mod tests {
+    /// The window's title bar follows the theme chosen in TraceDraw, not
+    /// the system's: switching to Dark asks the window for a dark frame,
+    /// back to Light for a light one, at once (#1920).
+    #[test]
+    fn the_window_frame_follows_the_theme() {
+        let ctx = crate::theme::ui_context();
+        let theme_asked = |id: &str| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                super::apply_theme(ui.ctx(), id);
+            });
+            out.textures_delta.clear();
+            out.viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .into_iter()
+                .flat_map(|v| v.commands.iter())
+                .rev()
+                .find_map(|c| match c {
+                    egui::ViewportCommand::SetTheme(t) => Some(*t),
+                    _ => None,
+                })
+        };
+        assert_eq!(theme_asked("dark"), Some(egui::SystemTheme::Dark));
+        assert_eq!(theme_asked("medium_dark"), Some(egui::SystemTheme::Dark));
+        assert_eq!(theme_asked("light"), Some(egui::SystemTheme::Light));
+        crate::theme::set_theme(crate::theme::Theme::Light);
+    }
+
     /// One browser wheel notch (100 pixels, or three lines at egui's
     /// web line speed of 8 points) zooms 15 %, as a desktop notch
     /// does; it zoomed about 5.7 times or 52 % at once (#1016).
@@ -1541,6 +1616,167 @@ mod tests {
         finger(&mut app, empty, 1.2);
         assert!(app.context_menu.is_some(), "a long press on the page");
         assert_eq!(shape_count(&app), before);
+    }
+
+    /// Shift, Ctrl and Alt for a finger (#1499): the Standard toolbar
+    /// shows them once a finger touched the window; a tap on Shift holds
+    /// it, so a finger's tap on a second object adds it to the selection
+    /// and another tap takes it out again; a second tap on Shift lets it
+    /// go, and a tap then selects one object only. Alt held from the
+    /// toolbar does not put the bars in their customize mode.
+    #[test]
+    fn a_finger_holds_shift_from_the_toolbar_to_add_to_the_selection() {
+        use crate::ui::bar_items::{items, ItemBar};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.show_welcome = false;
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        let b = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(100.0, 10.0, 150.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(Vec::new());
+        app.set_workspace(crate::app::Workspace::Touch);
+        let clock = std::cell::Cell::new(0.0);
+        // A frame as the app's raw input hook gives it: with the keys
+        // held from the toolbar.
+        let timed = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.05);
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            app.touch_mods.apply(&ctx, &mut input);
+            let mut out = ctx.run_ui(input, |ui| root(app, ui));
+            out.textures_delta.clear();
+        };
+        let tap = |app: &mut App, at: egui::Pos2| {
+            let touch = |phase| egui::Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(3),
+                phase,
+                pos: at,
+                force: None,
+            };
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start),
+                    egui::Event::PointerMoved(at),
+                    button(at, true, egui::PointerButton::Primary),
+                ],
+            );
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End),
+                    button(at, false, egui::PointerButton::Primary),
+                    egui::Event::PointerGone,
+                ],
+            );
+            timed(app, Vec::new());
+        };
+        for _ in 0..5 {
+            timed(&mut app, Vec::new());
+        }
+        app.zoom_to_page();
+        timed(&mut app, Vec::new());
+        let on_a = app.view.to_screen(Point::new(35.0, 25.0));
+        let on_b = app.view.to_screen(Point::new(125.0, 25.0));
+        // The first tap makes the touch screen known: the keys show.
+        tap(&mut app, on_a);
+        assert_eq!(app.selection, vec![a]);
+        timed(&mut app, Vec::new());
+        let key_at = |app: &App, id: &str| {
+            let i = items(app, ItemBar::Standard)
+                .iter()
+                .position(|b| b == id)
+                .expect("on the bar");
+            let slot = app
+                .shown_bar_slots
+                .iter()
+                .find(|s| s.bar == ItemBar::Standard)
+                .expect("the Standard toolbar is drawn");
+            let r = slot.items[i];
+            assert!(r.width() > 0.0, "{id} is drawn with a touch screen");
+            r.center()
+        };
+        // Shift held: a tap adds, a second tap on the same object takes
+        // it out.
+        let key = key_at(&app, "shift");
+        tap(&mut app, key);
+        assert!(app.touch_mods.shift);
+        tap(&mut app, on_b);
+        assert_eq!(
+            app.selection.len(),
+            2,
+            "Shift held adds: {:?}",
+            app.selection
+        );
+        assert!(app.selection.contains(&a) && app.selection.contains(&b));
+        tap(&mut app, on_a);
+        assert_eq!(app.selection, vec![b], "Shift held takes out");
+        // Let go: a tap selects one object again.
+        let key = key_at(&app, "shift");
+        tap(&mut app, key);
+        assert!(!app.touch_mods.any());
+        tap(&mut app, on_a);
+        assert_eq!(app.selection, vec![a]);
+        // Alt held from the toolbar: the bars stay out of their
+        // customize mode, so the Alt button lets go on the next tap.
+        let key = key_at(&app, "alt");
+        tap(&mut app, key);
+        assert!(app.touch_mods.alt);
+        assert!(ctx.input(|i| i.modifiers.alt));
+        assert!(!crate::ui::bar_items::customizing(&app, &ctx));
+        let key = key_at(&app, "alt");
+        tap(&mut app, key);
+        assert!(!app.touch_mods.alt);
+        // Ctrl is offered as well.
+        let key = key_at(&app, "ctrl");
+        tap(&mut app, key);
+        assert!(app.touch_mods.ctrl);
+    }
+
+    /// Without a touch screen the Shift, Ctrl and Alt buttons are not
+    /// drawn: the desktop's bar keeps its look.
+    #[test]
+    fn the_modifier_buttons_need_a_touch_screen() {
+        use crate::ui::bar_items::{items, ItemBar};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        let slot = app
+            .shown_bar_slots
+            .iter()
+            .find(|s| s.bar == ItemBar::Standard)
+            .expect("the Standard toolbar is drawn")
+            .clone();
+        for id in ["shift", "ctrl", "alt"] {
+            let i = items(&app, ItemBar::Standard)
+                .iter()
+                .position(|b| b == id)
+                .expect("on the bar");
+            assert_eq!(slot.items[i].width(), 0.0, "{id} without a touch screen");
+        }
     }
 
     /// One frame on a screen of `dp` system points (a phone or a tablet,

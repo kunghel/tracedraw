@@ -152,6 +152,9 @@ pub struct Settings {
     /// The Welcome Screen tab was closed: it shows as its house alone
     /// until the Welcome Screen is shown again (#677).
     pub welcome_tab_closed: bool,
+    /// The Crop tool cuts an upright picture's pixels instead of putting
+    /// it in a clip frame (#1913).
+    pub crop_picture_pixels: bool,
     /// Options > Tools > Table: what Tab does in a cell.
     #[serde(default)]
     pub table: crate::table_tool::TablePrefs,
@@ -224,6 +227,11 @@ pub struct Settings {
     /// New (off: new drawings use the last settings at once).
     #[serde(default = "default_true")]
     pub show_new_document_dialog: bool,
+    /// View > Scrollbars: the drawing window's scrollbars shown (off:
+    /// the drawing takes their room; the page tabs and the Navigator
+    /// button stay, #1344).
+    #[serde(default = "default_true")]
+    pub show_scrollbars: bool,
     /// The Create a New Document dialog's last used settings.
     #[serde(default)]
     pub new_document: crate::new_document::NewDocSettings,
@@ -603,6 +611,10 @@ pub struct Settings {
     /// The step of tick snapping, mm.
     #[serde(default = "default_path_tick")]
     pub path_tick_mm: f64,
+    /// Options > Display, Screen margins (Android, #1917): the interface
+    /// keeps clear of the camera cutout and the screen's rounded corners.
+    #[serde(default)]
+    pub screen_margins: crate::ui::screen_margins::ScreenMargins,
 }
 
 fn default_path_tick() -> f64 {
@@ -882,6 +894,13 @@ impl NodeSize {
         }
     }
 
+    /// Length of a control handle's arrow head, screen pixels: as long
+    /// as a node is wide, so a larger node size gives larger heads too
+    /// (#1643), and as wide.
+    pub fn handle_head(self) -> f32 {
+        self.px()
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             NodeSize::Small => "options.node_small",
@@ -955,6 +974,11 @@ pub struct NodePrefs {
     /// control handle to take it (Shape tool, and the curve tools'
     /// nodes).
     pub pick_distance: f32,
+    /// How far, in screen pixels, a click may land from an object's
+    /// outline and still pick it (Pick tool and the other tools that
+    /// pick objects by clicking them); 0 for none beyond the outline
+    /// itself (#1679).
+    pub object_pick_distance: f32,
     /// The Shape tool shows a corner widget inside the corners of a curve
     /// (or of the chosen nodes), dragged to round them (#635). On by
     /// default; it can be turned off in Options > Nodes and Handles so it
@@ -981,6 +1005,7 @@ impl Default for NodePrefs {
             unselected_filled: true,
             show_direction: false,
             pick_distance: 6.0,
+            object_pick_distance: 3.0,
             corner_widgets: true,
             corner_one_at_a_time: true,
         }
@@ -997,6 +1022,23 @@ impl NodePrefs {
             6.0
         };
         f64::from(set.max(self.size.px() / 2.0 + 1.0))
+    }
+
+    /// How near a press must land on a control handle's end to take it:
+    /// the pick distance, and never less than its arrow head is long, so
+    /// the whole head takes a press (#1643).
+    pub fn handle_pick_px(&self) -> f64 {
+        self.pick_px().max(f64::from(self.size.handle_head()))
+    }
+
+    /// The object click distance in screen pixels, kept sensible
+    /// (#1679).
+    pub fn object_pick_px(&self) -> f64 {
+        if self.object_pick_distance.is_finite() {
+            f64::from(self.object_pick_distance.clamp(0.0, 20.0))
+        } else {
+            3.0
+        }
     }
 }
 
@@ -1493,6 +1535,8 @@ pub struct ViewPrefs {
     pub grid: bool,
     pub guides: bool,
     pub page_border: bool,
+    /// The page's shadow, apart from its border (#1906).
+    pub page_shadow: bool,
     pub bleed: bool,
     pub printable_area: bool,
     /// View > Mask Outside Page (#615).
@@ -1515,6 +1559,7 @@ impl Default for ViewPrefs {
             grid: false,
             guides: true,
             page_border: true,
+            page_shadow: true,
             bleed: false,
             printable_area: false,
             mask_outside_page: false,
@@ -1709,6 +1754,7 @@ impl Default for Settings {
             workspace: "default".into(),
             show_welcome_on_start: true,
             welcome_tab_closed: false,
+            crop_picture_pixels: false,
             table: Default::default(),
             units: "mm".into(),
             nudge_mm: 2.54,
@@ -1778,6 +1824,7 @@ impl Default for Settings {
             spelling: SpellingPrefs::default(),
             thesaurus_file: None,
             show_new_document_dialog: true,
+            show_scrollbars: true,
             new_document: crate::new_document::NewDocSettings::default(),
             desktop_rgb: default_desktop(),
             desktop_custom: false,
@@ -1842,6 +1889,7 @@ impl Default for Settings {
             show_text_frames: true,
             path_tick_snap: false,
             path_tick_mm: default_path_tick(),
+            screen_margins: crate::ui::screen_margins::ScreenMargins::default(),
         }
     }
 }

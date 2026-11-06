@@ -99,6 +99,7 @@ pueden mostrar sus propios atajos; vea
 | [[menu.view.pixel_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.baseline_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.rulers]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
+| [[menu.view.scrollbars]] | [El espacio de trabajo](../get-started/workspace.md#drawing-window) |
 | [[menu.view.guidelines]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.alignment_guides]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.dynamic_guides]] | [Snapping](../pages-layout/snapping.md) |

@@ -960,7 +960,13 @@ impl Window {
 
     #[inline]
     pub fn set_theme(&self, theme: Option<Theme>) {
-        try_theme(self.window, theme);
+        // TraceDraw: the theme asked for is kept, so a change of the
+        // system's theme (`WM_SETTINGCHANGE`) does not put the system's
+        // back over it, and the window reports the one it now has (#1920).
+        let current = try_theme(self.window, theme);
+        let mut state = self.window_state_lock();
+        state.preferred_theme = theme;
+        state.current_theme = current;
     }
 
     #[inline]

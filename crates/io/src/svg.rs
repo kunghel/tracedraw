@@ -420,8 +420,11 @@ fn write_unlinked(
         .map(|n| format!(" data-name=\"{}\"", escape(n)))
         .unwrap_or_default();
     // Shapes fill even-odd, as the renderer draws them (holes in combined
-    // curves, the middle of a complex star); text keeps the default.
-    let rule = if matches!(shape.kind, ShapeKind::Text { .. }) {
+    // curves, the middle of a complex star); text, and a curve whose fill
+    // rule is nonzero (#1919), keep the default (nonzero).
+    let rule = if matches!(shape.kind, ShapeKind::Text { .. })
+        || shape.fill_rule == tracedraw_core::shaping::FillRule::NonZero
+    {
         ""
     } else {
         " fill-rule=\"evenodd\""
@@ -1103,6 +1106,32 @@ mod tests {
             .find(|l| l.contains("fill=\"#ff0000\""))
             .expect("the star");
         assert!(line.contains("fill-rule=\"evenodd\""), "{line}");
+    }
+
+    /// A curve whose fill rule is nonzero (#1919) keeps the SVG default,
+    /// so its overlapping parts stay filled in the SVG too.
+    #[test]
+    fn a_nonzero_curve_keeps_the_default_fill_rule() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        s.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let svg = page_to_svg(&doc, 0);
+        let line = svg
+            .lines()
+            .find(|l| l.contains("fill=\"#ff0000\""))
+            .expect("the square");
+        assert!(!line.contains("fill-rule"), "{line}");
     }
 
     #[test]

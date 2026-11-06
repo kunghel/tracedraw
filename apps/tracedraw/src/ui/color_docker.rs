@@ -535,7 +535,7 @@ fn slider(
         // The rail goes under the slider: its shape is set once the
         // slider says where it is.
         let rail = ui.painter().add(Shape::Noop);
-        let resp = ui
+        let mut resp = ui
             .scope(|ui| {
                 ui.spacing_mut().slider_width = width;
                 ui.spacing_mut().slider_rail_height = RAIL_HEIGHT;
@@ -546,8 +546,10 @@ fn slider(
                         .max_decimals(1),
                 )
             })
-            .inner
-            .rich_tip(crate::ui::tips::pair(name, "color.channel_desc"));
+            .inner;
+        // The wheel on hover steps it by one, as the other sliders (#1335).
+        crate::ui::slider::wheel_on_hover(ui, &mut resp, &mut x, range.clone(), 1.0);
+        let resp = resp.rich_tip(crate::ui::tips::pair(name, "color.channel_desc"));
         let colors = rail_colors(
             ui,
             resp.id,
@@ -1365,12 +1367,19 @@ fn tint_row(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().slider_width = (ui.available_width() - 70.0).clamp(60.0, 140.0);
         // A rail in the slider colour: a plain slider's groove has the
         // white of fields and vanished on the panel (#949).
-        ui.add(crate::ui::Rail(
+        let mut resp = ui.add(crate::ui::Rail(
             egui::Slider::new(&mut app.color_docker.tint, 0.0..=100.0)
                 .suffix(" %")
                 .max_decimals(0),
-        ))
-        .rich_tip(crate::ui::tips::pair("docker.tint", "docker.tint_desc"));
+        ));
+        crate::ui::slider::wheel_on_hover(
+            ui,
+            &mut resp,
+            &mut app.color_docker.tint,
+            0.0..=100.0,
+            1.0,
+        );
+        resp.rich_tip(crate::ui::tips::pair("docker.tint", "docker.tint_desc"));
     });
 }
 
@@ -1378,6 +1387,71 @@ fn tint_row(app: &mut App, ui: &mut Ui) {
 pub(crate) mod tests {
     use super::*;
     use tracedraw_core::ShapeKind;
+
+    /// The wheel over a colour slider or the tint slider steps it by one
+    /// on hover, as over the other sliders, with no click first (#1335).
+    #[test]
+    fn the_wheel_over_a_colour_slider_steps_it() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut c = Color::Rgb {
+            r: 100.0 / 255.0,
+            g: 0.5,
+            b: 0.5,
+        };
+        let run = |ctx: &egui::Context, app: &mut App, c: &mut Color, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut rows = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let top = ui.cursor().top();
+                    sliders(ui, c);
+                    let mid = ui.cursor().top();
+                    tint_row(app, ui);
+                    rows.push((ui.min_rect().left(), top, mid, ui.cursor().top()));
+                });
+            });
+            out.textures_delta.clear();
+            rows
+        };
+        let notch = |up: bool| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, if up { 1.0 } else { -1.0 }),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        };
+        run(&ctx, &mut app, &mut c, Vec::new());
+        // Where the colour sliders start, end and the tint row ends.
+        let (left, top, mid, bottom) = run(&ctx, &mut app, &mut c, Vec::new())[0];
+        // The red slider: the first row, on its groove.
+        let red = Pos2::new(left + 60.0, top + 9.0);
+        run(&ctx, &mut app, &mut c, vec![egui::Event::PointerMoved(red)]);
+        run(&ctx, &mut app, &mut c, vec![notch(true)]);
+        let Color::Rgb { r, .. } = c else {
+            panic!("still RGB")
+        };
+        assert!(
+            (r * 255.0 - 101.0).abs() < 1e-3,
+            "a notch up: {}",
+            r * 255.0
+        );
+        assert!(crate::ui::field::wheel_taken(&ctx), "the panel stays");
+        // The tint slider: the last row.
+        app.color_docker.tint = 50.0;
+        let tint = Pos2::new(left + 80.0, (mid + bottom) / 2.0);
+        run(
+            &ctx,
+            &mut app,
+            &mut c,
+            vec![egui::Event::PointerMoved(tint)],
+        );
+        run(&ctx, &mut app, &mut c, vec![notch(false)]);
+        assert_eq!(app.color_docker.tint, 49.0, "a notch down");
+    }
 
     /// The other places that drew the same remove cross as a spot ink.
     const CROSS_SOURCES: [(&str, &str); 11] = [

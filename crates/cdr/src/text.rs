@@ -813,27 +813,36 @@ fn read_stlt_set11(
     out
 }
 
+/// The most columns a text frame is read with (versions 7 to 15).
+const MAX_COLUMNS: u32 = 64;
+
 /// The size of a style table tab entry (versions 7 to 15).
 pub(crate) const TAB_ENTRY_SIZE: usize = 784;
 /// The stops a style table tab entry holds at most.
 pub(crate) const TAB_ENTRY_STOPS: usize = 64;
 
-/// A tab stop kind as files give it: 0 left, 1 right (the only two the
-/// samples of #1852 hold, the right stops confirmed by the previews they
-/// carry). Codes no file has shown read as left.
+/// A tab stop kind as files give it: 0 left, 1 right (the right stops of
+/// the first #1852 samples confirmed by the previews they carry), 2
+/// centre and 3 decimal (the #1852 combination files, versions 7 to 21:
+/// a frame each of left, centre and right stops, from top to bottom 0, 2
+/// and 1, and menus with decimal stops, 3). Codes no file has shown read
+/// as left.
 pub(crate) fn tab_kind_of(code: u32) -> tracedraw_core::TabKind {
     match code {
         1 => tracedraw_core::TabKind::Right,
+        2 => tracedraw_core::TabKind::Center,
+        3 => tracedraw_core::TabKind::Decimal,
         _ => tracedraw_core::TabKind::Left,
     }
 }
 
-/// The code a file holds for a tab stop kind ([`tab_kind_of`]): centre
-/// and decimal stops have none known yet and go out as left stops.
+/// The code a file holds for a tab stop kind ([`tab_kind_of`]).
 pub(crate) fn tab_code(kind: tracedraw_core::TabKind) -> u32 {
     match kind {
+        tracedraw_core::TabKind::Left => 0,
         tracedraw_core::TabKind::Right => 1,
-        _ => 0,
+        tracedraw_core::TabKind::Center => 2,
+        tracedraw_core::TabKind::Decimal => 3,
     }
 }
 
@@ -949,6 +958,9 @@ pub(crate) struct Txsm {
     /// Version 16+ paragraph text (the frame flag clear): each
     /// paragraph's default style string as stored, for the checker.
     pub frame_text_styles: Vec<String>,
+    /// Versions 7 to 15: the first frame's columns when it has several
+    /// (their number and the gutter after the first, in file units).
+    pub columns: Option<(u32, f64)>,
 }
 
 /// How a text fitted to a path sits on it: the 40 bytes after the
@@ -1051,6 +1063,7 @@ fn early_paragraphs(chars: &[u8], size_pt: Option<f64>) -> Txsm {
         frame_style: None,
         layout: None,
         frame_text_styles: Vec::new(),
+        columns: None,
     }
 }
 
@@ -1142,6 +1155,9 @@ fn read_txsm_7_frames(
     if nf > MAX_FRAMES {
         return None;
     }
+    // The first frame's columns (count, gutter in file units) when it has
+    // several.
+    let mut out_columns: Option<(u32, f64)> = None;
     for _ in 0..nf {
         let _frame_id = r.u32()?;
         r.skip(48);
@@ -1163,18 +1179,43 @@ fn read_txsm_7_frames(
         }
         if !frame {
             // Version 8: 32 bytes (800) or 34 (the bidirectional 801),
-            // chosen by the caller.
-            r.skip(if v >= 15 {
-                40
-            } else if v >= 14 {
-                36
-            } else if v > 8 {
-                34
-            } else if v == 8 {
-                frame_v8
+            // chosen by the caller. The block holds the frame's column
+            // count (at byte 4, at byte 8 from version 15) and then a
+            // width and a gutter (two i32) for each column, so a frame of
+            // more than one column has 8 more bytes a column (#1852: the
+            // two-column frames of the combination files, versions 7 to
+            // 15).
+            let at = r.pos + if v >= 15 { 8 } else { 4 };
+            let word = |i: usize| {
+                d.get(i..i + 4)
+                    .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            };
+            let columns = word(at).map_or(1, |n| n as u32);
+            let extra = if (2..=MAX_COLUMNS).contains(&columns) {
+                // The first column's gutter: after the count, 2 bytes
+                // from version 8, and the column's width.
+                let gutter = word(at + 4 + if v >= 8 { 2 } else { 0 } + 4);
+                if out_columns.is_none() {
+                    out_columns = gutter.filter(|g| *g >= 0).map(|g| (columns, f64::from(g)));
+                }
+                (columns as usize - 1) * 8
             } else {
-                36
-            });
+                0
+            };
+            r.skip(
+                extra
+                    + if v >= 15 {
+                        40
+                    } else if v >= 14 {
+                        36
+                    } else if v > 8 {
+                        34
+                    } else if v == 8 {
+                        frame_v8
+                    } else {
+                        36
+                    },
+            );
         } else if v >= 15 {
             r.skip(4);
         }
@@ -1191,6 +1232,7 @@ fn read_txsm_7_frames(
         frame_style: None,
         layout: None,
         frame_text_styles: Vec::new(),
+        columns: out_columns,
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1564,6 +1606,7 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         frame_style,
         layout: Some(layout),
         frame_text_styles: Vec::new(),
+        columns: None,
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -2148,6 +2191,29 @@ pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
         })
 }
 
+/// Whether an object's version 16+ style string fills it with the
+/// nonzero rule: `fill.winding` "1" (#1919: a version 27 file whose traced
+/// lettering is made of overlapping parts, drawn filled where they overlap
+/// in the program that wrote it and in the page preview it carries) or
+/// "0" (even-odd). `None` without it.
+pub(crate) fn object_fill_winding(style: &str) -> Option<bool> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Json::Obj(items) = parse_json(t)? else {
+        return None;
+    };
+    let Json::Obj(fill) = &items.iter().find(|(k, _)| k == "fill")?.1 else {
+        return None;
+    };
+    let w = fill.iter().find(|(k, _)| k == "winding")?.1.num()?;
+    if w == 1.0 {
+        Some(true)
+    } else if w == 0.0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The opacity an object's version 16+ style string gives it: its
 /// `transparency` section's `uniformTransparency` is the share of the
 /// object that lets the background through (0.3 draws it at 70 %: the
@@ -2570,6 +2636,27 @@ mod tests {
         assert_eq!(tab_kind_of(7), tracedraw_core::TabKind::Left);
         assert_eq!(tab_code(tracedraw_core::TabKind::Right), 1);
         assert_eq!(tab_code(tracedraw_core::TabKind::Left), 0);
+    }
+
+    /// The four tab stop kinds of the #1852 combination files (versions 7
+    /// to 21, one frame each of left, centre and right stops and menus
+    /// with decimal stops): 0 left, 1 right, 2 centre, 3 decimal, read
+    /// and written alike.
+    #[test]
+    fn tab_kinds_centre_and_decimal_have_their_codes() {
+        use tracedraw_core::TabKind;
+        for (code, kind) in [
+            (0, TabKind::Left),
+            (1, TabKind::Right),
+            (2, TabKind::Center),
+            (3, TabKind::Decimal),
+        ] {
+            assert_eq!(tab_kind_of(code), kind);
+            assert_eq!(tab_code(kind), code);
+        }
+        let t = parse_tabs_member("0,2,799758|0,3,1788584").expect("stops");
+        assert_eq!(t[0].kind, TabKind::Center);
+        assert_eq!(t[1].kind, TabKind::Decimal);
     }
 
     #[test]

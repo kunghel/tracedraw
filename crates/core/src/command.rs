@@ -222,6 +222,11 @@ pub enum Command {
     SetSpline {
         shape: ShapeId,
         points: Vec<crate::geometry::Point>,
+        /// Which points are fixed (see [`Shape::spline_fixed`]); `None`
+        /// keeps the curve's own flags when the number of points stays,
+        /// else every point floats (#1758).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fixed: Option<Vec<bool>>,
     },
     /// A QR code object's settings (its children are set with
     /// [`Command::SetShapeKind`] in the same step).
@@ -293,6 +298,23 @@ pub enum Command {
     SetWrapText {
         shapes: Vec<ShapeId>,
         wrap: bool,
+    },
+    /// Link the text content of `shapes` (two texts or more, #1568): from
+    /// now on they hold the same characters, each with its own looks (see
+    /// [`crate::linked_text`]). The others take the characters of the
+    /// first; a text already linked brings its whole link along.
+    LinkTextContent {
+        shapes: Vec<ShapeId>,
+    },
+    /// Take `shapes` out of their content links; each keeps the text it
+    /// shows. A text left alone in its link leaves it too.
+    UnlinkTextContent {
+        shapes: Vec<ShapeId>,
+    },
+    /// How the fills of `shapes` cover overlapping contours (#1211).
+    SetFillRule {
+        shapes: Vec<ShapeId>,
+        rule: crate::shaping::FillRule,
     },
     /// Turn wrapping on for `shapes` with this wrap style and offset.
     SetWrapStyle {
@@ -405,6 +427,11 @@ pub enum Command {
         page: PageId,
         guides: Vec<Guide>,
     },
+    /// Replace the master page's guidelines, those every page shows
+    /// (#1928): one added, moved, deleted, locked or restyled.
+    SetMasterGuides {
+        guides: Vec<Guide>,
+    },
 }
 
 /// One object's change in [`Command::SetEffectsAndOpacity`].
@@ -511,6 +538,9 @@ impl Command {
             Command::SetOverprint { .. } => "Overprint",
             Command::SetLink { .. } => "Hyperlink",
             Command::SetWrapText { .. } => "Wrap Paragraph Text",
+            Command::LinkTextContent { .. } => "Link Text Content",
+            Command::UnlinkTextContent { .. } => "Unlink Text Content",
+            Command::SetFillRule { .. } => "Fill Winding",
             Command::SetWrapStyle { .. } => "Wrap Style",
             Command::SetObjectData { .. } => "Object Data",
             Command::SetPictureInks { .. } => "Edit Object",
@@ -535,6 +565,7 @@ impl Command {
             Command::MoveGuide { .. } => "Move Guideline",
             Command::DeleteGuide { .. } => "Delete Guideline",
             Command::SetGuides { .. } => "Guidelines",
+            Command::SetMasterGuides { .. } => "Guidelines",
         }
     }
 
@@ -876,6 +907,7 @@ impl Command {
                 }
                 // A B-spline given any other outline is an ordinary curve.
                 s.spline = None;
+                s.spline_fixed.clear();
                 s.kind = kind.clone();
                 if let Some(before) = before {
                     let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
@@ -883,7 +915,11 @@ impl Command {
                 }
                 keep_clip_frame_paint(doc, holder);
             }
-            Command::SetSpline { shape, points } => {
+            Command::SetSpline {
+                shape,
+                points,
+                fixed,
+            } => {
                 if points.len() < 2 || points.iter().any(|p| !p.is_finite()) {
                     return Err(Error::BadSpline);
                 }
@@ -892,10 +928,22 @@ impl Command {
                 let s = any_mut(doc, *shape)?;
                 let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
                 let before = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
+                let mut flags = match fixed {
+                    Some(f) => f.clone(),
+                    None if s.spline.as_ref().map(Vec::len) == Some(points.len()) => {
+                        s.spline_fixed.clone()
+                    }
+                    None => Vec::new(),
+                };
+                flags.resize(points.len(), false);
+                if !flags.contains(&true) {
+                    flags.clear();
+                }
                 s.kind = ShapeKind::Path {
-                    path: crate::geometry::bspline_path(points, closed),
+                    path: crate::geometry::bspline_path_fixed(points, &flags, closed),
                     closed,
                 };
+                s.spline_fixed = flags;
                 // Its gradients stay in place, as for any new outline.
                 let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
                 s.keep_paint_in_place(before, after);
@@ -1054,6 +1102,33 @@ impl Command {
                 }
                 for id in shapes {
                     any_mut(doc, *id)?.wrap_text = *wrap;
+                }
+            }
+            Command::LinkTextContent { shapes } => link_text_content(doc, shapes)?,
+            Command::UnlinkTextContent { shapes } => {
+                for id in shapes {
+                    any(doc, *id)?;
+                }
+                let mut links = std::collections::BTreeSet::new();
+                for id in shapes {
+                    let s = any_mut(doc, *id)?;
+                    if let Some(l) = s.content_link.take() {
+                        links.insert(l);
+                    }
+                }
+                // A text left alone in a link is linked to nothing.
+                for l in links {
+                    if let [last] = doc.content_link_members(l).as_slice() {
+                        any_mut(doc, *last)?.content_link = None;
+                    }
+                }
+            }
+            Command::SetFillRule { shapes, rule } => {
+                for id in shapes {
+                    any(doc, *id)?;
+                }
+                for id in shapes {
+                    any_mut(doc, *id)?.fill_rule = *rule;
                 }
             }
             Command::SetWrapStyle { shapes, style } => {
@@ -1244,6 +1319,7 @@ impl Command {
                                 };
                                 f.node_types.clear();
                                 f.spline = None;
+                                f.spline_fixed.clear();
                                 f
                             })
                             .collect();
@@ -1395,6 +1471,7 @@ impl Command {
                 }
             }
             Command::SetGuides { page, guides } => doc.page_mut(*page)?.guides = guides.clone(),
+            Command::SetMasterGuides { guides } => doc.master_guides = guides.clone(),
             Command::Ungroup { group } => {
                 let (layer_id, idx) = doc.locate(*group)?;
                 let g = doc.layer_mut(layer_id)?.shapes.remove(idx);
@@ -1536,6 +1613,59 @@ fn keep_clip_frame_paint(doc: &mut Document, holder: Option<(ShapeId, crate::geo
             s.keep_paint_in_place(before, after);
         }
     }
+}
+
+/// [`Command::LinkTextContent`]: every text of `shapes`, and every text
+/// linked with one of them already, under one key; the characters of the
+/// first given to the others.
+fn link_text_content(doc: &mut Document, shapes: &[ShapeId]) -> Result<()> {
+    let mut ids: Vec<ShapeId> = Vec::new();
+    for id in shapes {
+        if !matches!(any(doc, *id)?.kind, ShapeKind::Text { .. }) {
+            return Err(Error::NotText(*id));
+        }
+        if !ids.contains(id) {
+            ids.push(*id);
+        }
+    }
+    let Some(&first) = ids.first() else {
+        return Ok(());
+    };
+    // The links the texts are in already join the new one.
+    let old: std::collections::BTreeSet<u64> = ids
+        .iter()
+        .filter_map(|id| doc.find_shape(*id).and_then(|s| s.content_link))
+        .collect();
+    for l in &old {
+        for m in doc.content_link_members(*l) {
+            if !ids.contains(&m) {
+                ids.push(m);
+            }
+        }
+    }
+    if ids.len() < 2 {
+        return Ok(());
+    }
+    let first_shape = any(doc, first)?;
+    let key = match old.iter().next() {
+        Some(l) => *l,
+        None => {
+            let seed = first_shape
+                .uid
+                .map(|u| (u.0 as u64) ^ ((u.0 >> 64) as u64))
+                .unwrap_or(first.raw());
+            doc.fresh_content_link(seed)
+        }
+    };
+    let text = crate::linked_text::text_of(first_shape).unwrap_or_default();
+    for id in ids {
+        let s = any_mut(doc, id)?;
+        s.content_link = Some(key);
+        if let ShapeKind::Text { spans, .. } = &mut s.kind {
+            crate::linked_text::retext_spans(spans, &text);
+        }
+    }
+    Ok(())
 }
 
 fn any_mut(doc: &mut Document, id: ShapeId) -> Result<&mut Shape> {
@@ -1775,6 +1905,48 @@ fn for_group_deep(shape: &mut Shape, f: &mut dyn FnMut(&mut Shape)) {
 
 #[cfg(test)]
 mod tests {
+    /// Fill winding (#1211): the command sets the objects' fill rule in
+    /// one undo step, an unknown object changes nothing, and the rule
+    /// survives a `.tdraw`-style round trip through serde.
+    #[test]
+    fn set_fill_rule_sets_the_rule_and_undoes() {
+        use crate::document::ShapeKind;
+        use crate::shaping::FillRule;
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let id = e.new_shape_id();
+        let shape = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: crate::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        e.run(&Command::AddShape { layer, shape }).unwrap();
+        let rule = |e: &crate::Engine| e.document().find_shape(id).unwrap().fill_rule;
+        assert_eq!(rule(&e), FillRule::EvenOdd);
+        e.run(&Command::SetFillRule {
+            shapes: vec![id],
+            rule: FillRule::NonZero,
+        })
+        .unwrap();
+        assert_eq!(rule(&e), FillRule::NonZero);
+        let json = serde_json::to_string(e.document().find_shape(id).unwrap()).unwrap();
+        let back: Shape = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.fill_rule, FillRule::NonZero);
+        e.undo().unwrap();
+        assert_eq!(rule(&e), FillRule::EvenOdd);
+        let json = serde_json::to_string(e.document().find_shape(id).unwrap()).unwrap();
+        assert!(!json.contains("fill_rule"), "even-odd is left out");
+        assert!(e
+            .run(&Command::SetFillRule {
+                shapes: vec![crate::ShapeId(4242)],
+                rule: FillRule::NonZero,
+            })
+            .is_err());
+    }
+
     /// Swap Colors: fill and outline colours change places on each
     /// object, inside groups each on its own; an object selected with its
     /// group swaps once; others stay; one undo step; an unknown object
@@ -2087,6 +2259,7 @@ mod tests {
         eng.run(&Command::SetSpline {
             shape: id,
             points: pts.clone(),
+            fixed: None,
         })
         .expect("spline");
         let s = eng.document().find_shape(id).expect("shape");
@@ -2102,17 +2275,71 @@ mod tests {
         let json = serde_json::to_string(eng.document()).expect("json");
         let back: Document = serde_json::from_str(&json).expect("parsed");
         assert_eq!(back.find_shape(id).expect("shape").spline, s.spline);
+        // A point made fixed: the curve goes through it; a move of the
+        // points keeps it fixed, a new number of points with no flags
+        // given floats them all; the native format keeps the flags (#1758).
+        eng.run(&Command::SetSpline {
+            shape: id,
+            points: pts.clone(),
+            fixed: Some(vec![false, true]),
+        })
+        .expect("fixed");
+        let s = eng.document().find_shape(id).expect("shape");
+        assert_eq!(s.spline_fixed, vec![false, true, false, false]);
+        assert_eq!(
+            s.kind,
+            ShapeKind::Path {
+                path: crate::geometry::bspline_path_fixed(&pts, &[false, true], false),
+                closed: false,
+            }
+        );
+        let json = serde_json::to_string(eng.document()).expect("json");
+        let back: Document = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(
+            back.find_shape(id).expect("shape").spline_fixed,
+            s.spline_fixed
+        );
+        let mut moved = pts.clone();
+        moved[2].x += 5.0;
+        eng.run(&Command::SetSpline {
+            shape: id,
+            points: moved.clone(),
+            fixed: None,
+        })
+        .expect("moved");
+        let s = eng.document().find_shape(id).expect("shape");
+        assert_eq!(s.spline_fixed, vec![false, true, false, false]);
+        eng.run(&Command::SetSpline {
+            shape: id,
+            points: moved[..3].to_vec(),
+            fixed: None,
+        })
+        .expect("fewer");
+        assert!(eng
+            .document()
+            .find_shape(id)
+            .expect("shape")
+            .spline_fixed
+            .is_empty());
+        eng.run(&Command::SetSpline {
+            shape: id,
+            points: pts.clone(),
+            fixed: Some(Vec::new()),
+        })
+        .expect("back");
         // Fewer than two points, or a point that is not finite: refused.
         assert!(eng
             .run(&Command::SetSpline {
                 shape: id,
                 points: vec![Point::new(0.0, 0.0)],
+                fixed: None,
             })
             .is_err());
         assert!(eng
             .run(&Command::SetSpline {
                 shape: id,
                 points: vec![Point::new(0.0, 0.0), Point::new(f64::NAN, 0.0)],
+                fixed: None,
             })
             .is_err());
         // Any other outline makes it an ordinary curve.

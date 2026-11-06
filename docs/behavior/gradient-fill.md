@@ -22,6 +22,12 @@ gradient has no handles on the canvas.
 
 Shortcut: F11 opens the Edit Fill dialog; G is the Interactive Fill tool.
 
+While Edit Fill or Outline Pen is open, the mouse wheel over the
+drawing (outside the dialog) zooms or scrolls it as it does with no
+dialog open, so the change can be looked at closely; clicks and drags
+on the drawing still do nothing until the dialog closes (#1035,
+`pick_drag_tests::the_wheel_zooms_the_drawing_under_edit_fill_and_outline_pen`).
+
 Edit Fill dialog (#361, `ui/edit_fill.rs`): the fill kinds as pictures
 across the top (none, uniform, gradient, pattern, texture, mesh), then
 the kind's settings in a box of the same size for every kind

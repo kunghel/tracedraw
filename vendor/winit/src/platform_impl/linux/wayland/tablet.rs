@@ -44,6 +44,7 @@ use sctk::reexports::protocols::wp::tablet::zv2::client::zwp_tablet_v2::{self, Z
 use crate::dpi::{LogicalPosition, PhysicalPosition};
 use crate::event::{ElementState, Force, MouseButton, Touch, TouchPhase, WindowEvent};
 use crate::platform_impl::wayland::state::WinitState;
+use crate::platform_impl::wayland::window::state::TabletCursor;
 use crate::platform_impl::wayland::{self, DeviceId};
 use crate::tablet_tool::{PenButton, PenOut, ToolEvent, ToolState};
 
@@ -91,11 +92,24 @@ impl TabletState {
 pub struct TabletToolData {
     tool: Mutex<ToolState<WlSurface>>,
     cursor: Mutex<Option<WpCursorShapeDeviceV1>>,
+    /// The surface of the pen's custom cursor images, made when it first
+    /// comes over a window (#1841).
+    cursor_surface: Mutex<Option<WlSurface>>,
 }
 
 impl WinitState {
+    /// The pen `tool` left proximity: no window shows its cursor on it
+    /// any longer (#1841).
+    fn tablet_tool_left(&mut self, tool: &ZwpTabletToolV2) {
+        for window in self.windows.get_mut().values() {
+            window.lock().unwrap().tablet_tool_left(tool);
+        }
+    }
+
     /// Tell the window under each of `out` what the pen did.
-    fn send_pen(&mut self, touch_id: u64, out: Vec<PenOut<WlSurface>>) {
+    /// `altitude` is the pen's (radians), when it reports its tilt: it
+    /// goes out with the pressure, which stays the same share (#1841).
+    fn send_pen(&mut self, touch_id: u64, altitude: Option<f64>, out: Vec<PenOut<WlSurface>>) {
         let device_id = crate::event::DeviceId(crate::platform_impl::DeviceId::Wayland(DeviceId));
         for o in out {
             let surface = match &o {
@@ -133,7 +147,15 @@ impl WinitState {
                     device_id,
                     phase: TouchPhase::Moved,
                     location: physical(at),
-                    force: share.map(Force::Normalized),
+                    force: share.map(|force| match altitude {
+                        // egui-winit reads `force / max_possible_force`.
+                        Some(altitude) => Force::Calibrated {
+                            force,
+                            max_possible_force: 1.0,
+                            altitude_angle: Some(altitude),
+                        },
+                        None => Force::Normalized(force),
+                    }),
                     id: touch_id,
                 }),
                 PenOut::Button(_, button, pressed) => WindowEvent::MouseInput {
@@ -224,20 +246,58 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData> for WinitState {
             } => {
                 // The cursor over the window: without one the compositor
                 // may show none for the pen.
-                if let Some(manager) = state.tablet.as_ref().and_then(|t| t.cursor_shape.as_ref()) {
-                    let mut cursor = data.cursor.lock().unwrap();
-                    let device = cursor.get_or_insert_with(|| {
-                        manager.get_tablet_tool_v2(tool, queue_handle, GlobalData)
+                let shape = state
+                    .tablet
+                    .as_ref()
+                    .and_then(|t| t.cursor_shape.as_ref())
+                    .map(|manager| {
+                        data.cursor
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| {
+                                manager.get_tablet_tool_v2(tool, queue_handle, GlobalData)
+                            })
+                            .clone()
                     });
-                    device.set_shape(serial, Shape::Default);
+                // The window's own cursor, as its pointers show it: the
+                // tool's, or none where TraceDraw draws its own (#1841).
+                // Over the window's frame, the default arrow.
+                let window_id = wayland::make_wid(&surface);
+                let window = state.windows.get_mut().get(&window_id).cloned();
+                match window {
+                    Some(window) => {
+                        let cursor_surface = data
+                            .cursor_surface
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| {
+                                state.compositor_state.create_surface(queue_handle)
+                            })
+                            .clone();
+                        window.lock().unwrap().tablet_tool_entered(TabletCursor {
+                            tool: tool.clone(),
+                            serial,
+                            shape,
+                            surface: cursor_surface,
+                        });
+                    }
+                    None => {
+                        if let Some(device) = shape {
+                            device.set_shape(serial, Shape::Default);
+                        }
+                    }
                 }
                 ToolEvent::ProximityIn(surface)
             }
-            Event::ProximityOut => ToolEvent::ProximityOut,
+            Event::ProximityOut => {
+                state.tablet_tool_left(tool);
+                ToolEvent::ProximityOut
+            }
             Event::Down { .. } => ToolEvent::Down,
             Event::Up => ToolEvent::Up,
             Event::Motion { x, y } => ToolEvent::Motion(x, y),
             Event::Pressure { pressure } => ToolEvent::Pressure(pressure),
+            Event::Tilt { tilt_x, tilt_y } => ToolEvent::Tilt(tilt_x, tilt_y),
             Event::Button {
                 button,
                 state: WEnum::Value(button_state),
@@ -250,21 +310,33 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData> for WinitState {
             Event::Removed => {
                 let mut out = Vec::new();
                 data.tool.lock().unwrap().leave(&mut out);
-                state.send_pen(PEN_TOUCH_ID | u64::from(tool.id().protocol_id()), out);
+                state.send_pen(PEN_TOUCH_ID | u64::from(tool.id().protocol_id()), None, out);
+                state.tablet_tool_left(tool);
                 if let Some(cursor) = data.cursor.lock().unwrap().take() {
                     cursor.destroy();
+                }
+                if let Some(surface) = data.cursor_surface.lock().unwrap().take() {
+                    surface.destroy();
                 }
                 tool.destroy();
                 return;
             }
-            // The tool's type and ids, its tilt, distance, rotation,
-            // slider and wheel: not read (`crate::tablet_tool`).
+            // The tool's type and ids, its distance, rotation, slider and
+            // wheel: not read (`crate::tablet_tool`).
             _ => return,
         };
         let mut out = Vec::new();
-        data.tool.lock().unwrap().handle(event, &mut out);
+        let altitude = {
+            let mut tool_state = data.tool.lock().unwrap();
+            tool_state.handle(event, &mut out);
+            tool_state.altitude()
+        };
         if !out.is_empty() {
-            state.send_pen(PEN_TOUCH_ID | u64::from(tool.id().protocol_id()), out);
+            state.send_pen(
+                PEN_TOUCH_ID | u64::from(tool.id().protocol_id()),
+                altitude,
+                out,
+            );
         }
     }
 }

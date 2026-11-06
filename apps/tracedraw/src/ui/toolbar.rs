@@ -117,6 +117,22 @@ fn tip(key: &str) -> String {
     format!("{}\n{}", title, tr(&format!("{key}_desc")))
 }
 
+/// A Standard toolbar button that reads `label` (a key's name), drawn
+/// pressed while `held` (#1499).
+fn mod_button(ui: &mut Ui, label: &str, tip: &str, held: bool) -> egui::Response {
+    let font = egui::FontId::proportional((std_icon() * 0.55).max(10.0));
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font, Tokens::icon());
+    let width = (galley.size().x + 10.0).max(std_btn());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, std_btn()), egui::Sense::click());
+    std_frame(ui, rect, resp.hovered(), held);
+    let resp = resp.on_hover_ui(|ui| rich_tip(ui, tip));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, Tokens::icon());
+    resp
+}
+
 /// The small arrow after a button that opens its list.
 fn std_arrow(ui: &mut Ui, id: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
@@ -329,6 +345,9 @@ pub(crate) fn item_name(id: &str) -> Option<String> {
         "snap_to" => "menu.view.snap_to",
         "options" => "toolbar.options",
         "dockers" => "toolbar.dockers",
+        "shift" => "toolbar.mod_shift",
+        "ctrl" => "toolbar.mod_ctrl",
+        "alt" => "toolbar.mod_alt",
         "launch" => "toolbar.launch",
         "ai" => "toolbar.ai_generate",
         "zoom_in" => "menu.view.zoom_in",
@@ -519,6 +538,19 @@ pub(crate) fn draw_item(app: &mut App, ui: &mut Ui, bar: &str, id: &str) {
             .clicked()
             {
                 app.delete_command();
+            }
+        }
+        // Shift, Ctrl and Alt for a finger: a tap holds the key until the
+        // next tap (#1499). Only where there is a touch screen.
+        "shift" | "ctrl" | "alt" => {
+            if let (Some(key), true) = (
+                crate::touch_modifiers::ModKey::of_item(id),
+                crate::touch_modifiers::offered(ui.ctx()),
+            ) {
+                let held = app.touch_mods.held(key);
+                if mod_button(ui, key.label(), &tip(key.name_key()), held).clicked() {
+                    app.touch_mods.toggle(key);
+                }
             }
         }
         // The dockers, which the Touch workspace starts without (#1611).
@@ -2076,6 +2108,12 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
             egui::RichText::new("U").underline(),
             "toolbar.underline",
         ),
+        // Beside Underline (#1022).
+        (
+            app.text_strikethrough,
+            egui::RichText::new("S").strikethrough(),
+            "toolbar.strikethrough",
+        ),
     ] {
         if ui
             .add_sized([22.0, 22.0], egui::Button::selectable(on, label.size(14.0)))
@@ -2085,6 +2123,7 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
             match key {
                 "toolbar.bold" => app.text_bold = !app.text_bold,
                 "toolbar.italic" => app.text_italic = !app.text_italic,
+                "toolbar.strikethrough" => app.text_strikethrough = !app.text_strikethrough,
                 _ => app.text_underline = !app.text_underline,
             }
             changed = true;

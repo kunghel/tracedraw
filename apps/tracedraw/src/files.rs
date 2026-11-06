@@ -567,6 +567,8 @@ pub fn folder_tip(place: FolderUse, platform: Platform) -> Option<&'static str> 
         FolderAction::SaveZip if web => Some("folder.zip_web"),
         FolderAction::SaveZip => Some("folder.zip_android"),
         FolderAction::OpenFiles if web => Some("folder.files_web"),
+        // The pictures of Print Merge: the system's folder picker (#1926).
+        FolderAction::OpenFiles if place == FolderUse::MergePictures => Some("folder.tree_android"),
         FolderAction::OpenFiles => Some("folder.files_android"),
         FolderAction::Unavailable(key) => Some(key),
     }
@@ -1215,6 +1217,24 @@ pub fn run_finished(app: &mut App) {
     }
 }
 
+/// The paths whose extension is one of `exts` (lower case; any case in
+/// the name), all of them when `exts` is empty: a folder's files kept to
+/// the types a dialog asks for (#1926).
+#[cfg(any(target_os = "android", test))]
+pub fn with_extensions(paths: Vec<PathBuf>, exts: &[String]) -> Vec<PathBuf> {
+    if exts.is_empty() {
+        return paths;
+    }
+    paths
+        .into_iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
+        })
+        .collect()
+}
+
 /// The Android document picker (Storage Access Framework): a request
 /// shows the system's picker and remembers what to do with the answer,
 /// which the activity hands back on a later frame (`android.rs`).
@@ -1271,6 +1291,16 @@ mod android_pickers {
 
     pub fn pick_into(key: String) {
         pick(false, Waiting::Into(key));
+    }
+
+    /// Show the system's folder picker and run `then` with the documents
+    /// in the folder chosen (#1926).
+    pub fn pick_tree(then: Box<dyn FnOnce(&mut App, Vec<PathBuf>)>) {
+        let request = documents::next_request();
+        wait(request, Waiting::Many(then));
+        if !documents::open_tree(request) {
+            forget(request);
+        }
     }
 
     /// Show the picker for a place to save `name` and run `then` with the
@@ -1444,6 +1474,41 @@ impl Dialog {
 
     /// Pick one or more files and run `then` with their paths: at once
     /// natively, on a later frame in a browser and on Android.
+    /// Choose a folder where only files can be picked otherwise, and run
+    /// `then` with the files in it the filters take (#1926). On Android
+    /// the system's folder picker (`ACTION_OPEN_DOCUMENT_TREE`) asks for
+    /// the folder and its files come as picked documents, on a later
+    /// frame; in a browser, which has no folder picker, the files are
+    /// picked several at once ([`Self::pick_files`]).
+    pub fn pick_folder_files(
+        self,
+        app: &mut App,
+        then: impl FnOnce(&mut App, Vec<PathBuf>) + 'static,
+    ) {
+        #[cfg(target_os = "android")]
+        {
+            let _ = app;
+            let exts = self.extensions();
+            android_pickers::pick_tree(Box::new(move |app: &mut App, paths: Vec<PathBuf>| {
+                let paths = with_extensions(paths, &exts);
+                if !paths.is_empty() {
+                    then(app, paths);
+                }
+            }));
+        }
+        #[cfg(not(target_os = "android"))]
+        self.pick_files(app, then);
+    }
+
+    /// Every extension the filters name, lower case.
+    #[cfg(any(target_os = "android", test))]
+    fn extensions(&self) -> Vec<String> {
+        self.filters
+            .iter()
+            .flat_map(|(_, exts)| exts.iter().map(|e| e.to_ascii_lowercase()))
+            .collect()
+    }
+
     pub fn pick_files(self, app: &mut App, then: impl FnOnce(&mut App, Vec<PathBuf>) + 'static) {
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
@@ -1847,6 +1912,47 @@ mod tests {
         );
         assert_eq!(Platform::current(), Platform::Desktop);
         assert!(matches!(FontFolder.action(), PickFolder(_)));
+        // Print Merge's pictures: the folder picker on Android (#1926).
+        assert_eq!(
+            folder_tip(MergePictures, Platform::Android),
+            Some("folder.tree_android")
+        );
+        assert_eq!(
+            folder_tip(MergePictures, Platform::Web),
+            Some("folder.files_web")
+        );
+    }
+
+    /// #1926: a folder's documents are kept to the types the dialog asks
+    /// for (any case), all of them with no filter; the dialog's
+    /// extensions are its filters', lower case. The Print Merge docker
+    /// asks for a folder where only files could be picked, and on Android
+    /// the folder picker answers like the open picker.
+    #[test]
+    fn a_folders_files_keep_to_the_dialogs_types() {
+        let paths: Vec<PathBuf> = ["a.png", "b.JPG", "notes.txt", "c.tiff", "noext"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let d = Dialog::new()
+            .add_filter("Pictures", &["png", "JPG", "tiff"])
+            .add_filter("More", &["webp"]);
+        let exts = d.extensions();
+        assert_eq!(exts, ["png", "jpg", "tiff", "webp"]);
+        assert_eq!(
+            with_extensions(paths.clone(), &exts),
+            [
+                PathBuf::from("a.png"),
+                PathBuf::from("b.JPG"),
+                PathBuf::from("c.tiff")
+            ]
+        );
+        assert_eq!(with_extensions(paths.clone(), &[]), paths);
+        let docker = include_str!("ui/print_merge_docker.rs");
+        assert!(docker.contains(".pick_folder_files(app, |app, paths| {"));
+        let files = include_str!("files.rs");
+        assert!(files.contains("android_pickers::pick_tree("));
+        assert!(files.contains("if !documents::open_tree(request) {"));
     }
 
     /// The app's sources outside this file, as (path, text).

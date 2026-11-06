@@ -22,6 +22,16 @@ cara mengetahui apa yang berubah dan mencantumkan sorotan versi-versi terbaru.
 
 ## Sorotan versi terbaru {#highlights}
 
+- **Sentuh dan ponsel.** Tombol Shift, Ctrl, dan Alt di bilah standar tetap
+  tertekan untuk jari; di Android antarmuka menjauhi takik kamera dan sudut
+  yang membulat; Apple Pencil berfungsi di Safari pada iPad.
+- **Berkas.** Berkas .cdr mempertahankan aturan isian kurva yang bertumpang
+  tindih dan terbuka dengan tab stop, teks beberapa kolom, garis bantu yang
+  dipakai bersama semua halaman, serta objek halaman induk.
+- **Gambar, pencetakan, dan ruang kerja.** Pangkas piksel gambar di alat
+  Pangkas dan [[menu.bitmaps > menu.bitmaps.crop_to_frame]] memangkas piksel
+  gambar; cetak skala abu-abu dan urutan terbalik;
+  [[menu.view > menu.view.scrollbars]] menyembunyikan bilah gulir.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] membuka alat untuk
   plotter pemotong: keluaran plotter, garis potong, penyusunan, dan
   pengukuran. Lihat [TraceCut](../objects/tracecut.md).

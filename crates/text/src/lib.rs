@@ -955,23 +955,32 @@ fn cp1252_remapped(face: &ttf_parser::Face, text: &str) -> Option<String> {
 /// to 0x9F when it has that one, [`cp1252_twin`]), or for a font made for
 /// the symbol encoding (a Windows symbol map only) the glyph of the code
 /// 0x20 to 0xFF typed, found at U+F020 to U+F0FF as the system finds it
-/// (#469).
+/// (#469). A code of 0x80 to 0x9F typed on Windows comes in as the
+/// character code page 1252 has there ("„" for 0x84), so that name finds
+/// the code's glyph in a symbol map too (older Tamil fonts set letters
+/// such as ஷ there, #1937), and so does U+F020 to U+F0FF, where text
+/// from other programs keeps a symbol font's codes.
 pub(crate) fn face_glyph(face: &ttf_parser::Face, c: char) -> Option<ttf_parser::GlyphId> {
+    let symbol = |c: char| {
+        // The code typed, or the place the symbol map keeps it at, as
+        // text from other programs holds it (U+F084 for 0x84).
+        let cp = match c as u32 {
+            cp @ 0x20..=0xFF => cp,
+            cp @ 0xF020..=0xF0FF => cp - 0xF000,
+            _ => return None,
+        };
+        face.tables()
+            .cmap?
+            .subtables
+            .into_iter()
+            .filter(|s| s.platform_id == ttf_parser::PlatformId::Windows && s.encoding_id == 0)
+            .find_map(|s| s.glyph_index(0xF000 + cp).or_else(|| s.glyph_index(cp)))
+            .filter(|g| g.0 != 0)
+    };
     face.glyph_index(c)
         .or_else(|| cp1252_twin(c).and_then(|t| face.glyph_index(t)))
-        .or_else(|| {
-            let cp = c as u32;
-            if !(0x20..=0xFF).contains(&cp) {
-                return None;
-            }
-            face.tables()
-                .cmap?
-                .subtables
-                .into_iter()
-                .filter(|s| s.platform_id == ttf_parser::PlatformId::Windows && s.encoding_id == 0)
-                .find_map(|s| s.glyph_index(0xF000 + cp).or_else(|| s.glyph_index(cp)))
-                .filter(|g| g.0 != 0)
-        })
+        .or_else(|| symbol(c))
+        .or_else(|| cp1252_twin(c).and_then(symbol))
 }
 
 /// A letter of a symbol-encoded family as the character it draws; others
@@ -7613,6 +7622,64 @@ mod tests {
             (a.x0 - b.x0).abs() < 1e-6 && (a.x1 - b.x1).abs() < 1e-6,
             "{a:?} {b:?}"
         );
+    }
+
+    /// A font made for the symbol encoding with a letter at code 0x84
+    /// (where older Tamil fonts set letters such as ஷ): typed on Windows,
+    /// the code comes in as the character code page 1252 has there
+    /// ("„", U+201E), and text from other programs holds it as U+F084:
+    /// each draws the font's glyph at U+F084 as the code itself does,
+    /// never a box or another font's quote (#1937).
+    #[test]
+    fn a_symbol_font_draws_its_letters_at_the_places_of_code_page_1252() {
+        let face = ttf_parser::Face::parse(SELAWIK, 0).expect("font");
+        let a = face.glyph_index('A').expect("A").0;
+        // A symbol map only, with Selawik's "A" at U+F084.
+        let mut symbol = Vec::new();
+        for v in [
+            4u16,
+            32,
+            0,
+            4,
+            4,
+            1,
+            0,
+            0xF084,
+            0xFFFF,
+            0,
+            0xF084,
+            0xFFFF,
+            a.wrapping_sub(0xF084),
+            1,
+            0,
+            0,
+        ] {
+            symbol.extend_from_slice(&v.to_be_bytes());
+        }
+        let mut table = Vec::new();
+        for v in [0u16, 1, 3, 0] {
+            table.extend_from_slice(&v.to_be_bytes());
+        }
+        table.extend_from_slice(&12u32.to_be_bytes());
+        table.extend_from_slice(&symbol);
+        let font = with_table(SELAWIK, b"cmap", &table);
+        let parsed = ttf_parser::Face::parse(&font, 0).expect("font");
+        assert_eq!(face_glyph(&parsed, '\u{84}').map(|g| g.0), Some(a));
+        assert_eq!(face_glyph(&parsed, '\u{201E}').map(|g| g.0), Some(a));
+        assert_eq!(face_glyph(&parsed, '\u{F084}').map(|g| g.0), Some(a));
+        let fonts = system_with(&[&font, QUICKSAND]);
+        let family = "Selawik";
+        assert!(fonts.families().iter().any(|f| f == family));
+        let want = system_with(&[SELAWIK]).outline(&[TextSpan::new("A", "Selawik", 100.0)]);
+        for typed in ["\u{84}", "\u{201E}", "\u{F084}"] {
+            let got = fonts.outline(&[TextSpan::new(typed, family, 100.0)]);
+            assert_eq!(got.glyphs, 1, "{typed:?}");
+            assert_eq!(
+                got.path.elements().len(),
+                want.path.elements().len(),
+                "{typed:?} draws the font's letter"
+            );
+        }
     }
 
     /// A font with a symbol character map beside its Unicode one, the

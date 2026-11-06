@@ -326,10 +326,15 @@ fn cell_text(app: &mut App, ui: &mut Ui) {
         ("toolbar.bold", egui::RichText::new("B").strong()),
         ("toolbar.italic", egui::RichText::new("I").italics()),
         ("toolbar.underline", egui::RichText::new("U").underline()),
+        (
+            "toolbar.strikethrough",
+            egui::RichText::new("S").strikethrough(),
+        ),
     ] {
         let on = match key {
             "toolbar.bold" => app.text_bold,
             "toolbar.italic" => app.text_italic,
+            "toolbar.strikethrough" => app.text_strikethrough,
             _ => app.text_underline,
         };
         if ui
@@ -340,6 +345,7 @@ fn cell_text(app: &mut App, ui: &mut Ui) {
             match key {
                 "toolbar.bold" => app.text_bold = !on,
                 "toolbar.italic" => app.text_italic = !on,
+                "toolbar.strikethrough" => app.text_strikethrough = !on,
                 _ => app.text_underline = !on,
             }
             changed = true;

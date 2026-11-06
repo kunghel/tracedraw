@@ -856,12 +856,14 @@ impl App {
             self.text_underline,
             self.text_align,
         );
+        let strike = self.text_strikethrough;
         self.cells_apply_style(move |sp| {
             sp.font_family = font.clone();
             sp.size_pt = size;
             sp.bold = bold;
             sp.italic = italic;
             sp.underline = underline;
+            sp.strikethrough = strike;
         });
         let Some(e) = self.table_edit.clone() else {
             return;

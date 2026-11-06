@@ -41,6 +41,12 @@
 
 - Drag moves the view; the middle button pans with any tool. Pan never
   changes the document.
+- The middle button also pans while a shape (rectangle, ellipse,
+  polygon, star, and the other drag-to-draw shapes) is being drawn with
+  the left button held: the shape's far corner stays under the pointer
+  as the page moves, the drag goes on after the middle button is let
+  go, and releasing the left button makes the shape. Changing the tool
+  drops an unfinished shape drag (#1923).
 
 ## Navigator and scrollbars
 

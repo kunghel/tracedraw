@@ -36,7 +36,27 @@ box of the selection of the time: a rotation about the old box's centre
 (or a centre of rotation moved inside it) turns about the new box's
 centre, a resize from a side or corner handle resizes from the same
 side or corner, and a move moves as far; the object it is repeated on
-no longer moves away (#1289, `app::repeated_transform`). Each action is kept with the undo step it made
+no longer moves away (#1289, `app::repeated_transform`). A copy made
+with a right click during a drag is repeated the same way: a mirror
+copy made by dragging a side handle across mirrors the next copy over
+the same side of the selected copy, so the copies line up side by side;
+it was mirrored over the original's side again and landed on the
+original (#1909,
+`pick_drag_tests::repeat_after_a_mirror_copy_continues_from_the_selected_copy`).
+
+Repeat replays the last group of actions, not only the newest: the
+newest action still in effect together with the actions done right
+before it to the same objects, with no other undo step and no change of
+selection in between (a move and then a fill change of one object, or a
+copy made with a right click and then the copy's new fill), oldest
+first, as one undo step named Repeat; up to 16 actions. A change of
+selection between two actions starts a new group, so after moving one
+object and filling another only the fill is repeated. Repeat again
+replays the same group (#1566, #1547, `App::repeat_group`,
+`Engine::step_below`,
+`pick_drag_tests::repeat_replays_the_last_group_of_actions_on_one_selection`).
+
+Each action is kept with the undo step it made
 (`Engine::last_step_id`, `App::repeatables`): an action undone is never
 repeated, the one before it is (#366); redone, it is the last again; and
 an undone step replaced by another change is gone for good. A copy made

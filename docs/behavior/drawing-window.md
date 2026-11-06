@@ -8,7 +8,19 @@
   `#BFBFBF`: the bordered page rectangle moved 6 px right and 4 px down,
   drawn behind the page, so a 6 px band shows on the right and a 4 px
   band at the bottom. The page rectangle is snapped to whole pixels.
+  View > Page > Page Border hides the border and View > Page > Page
+  Shadow the shadow, each on its own, so a white page on a white
+  desktop keeps its edge without the shadow (#1906; also in Options >
+  Page Size and kept with the view's preferences and in workspaces;
+  `canvas::tests::the_page_border_and_its_shadow_are_separate_options`).
   View > Page > Page Border hides the border and the shadow.
+- View > Page > Printable Area dashes the part of the page the printer
+  can print: inside the hard margins of the printer printed to last
+  (else the system's default printer), as the system reports them (see
+  printing.md, Print Preview), turned with a page wider than tall; a
+  typical 5 mm a side only while they are read or when the system does
+  not say (#1924,
+  `print_preview::tests::the_printable_area_is_the_printers_own`).
 - View > Mask Outside Page, right after the view modes (Pixels; off by
   default, kept with the other view settings): an opaque colour covers
   everything outside the page
@@ -38,6 +50,13 @@
   whatever is visible. Dragging the thumb pans; a click on the track pages
   by 90 % of the window towards the click; an arrow moves 40 px, then
   repeats every 50 ms after 0.4 s while held.
+- View > Scrollbars (on by default, kept in the preferences as
+  `show_scrollbars`) hides both (#1344): the drawing takes the vertical
+  bar's 17 px on the right, the bottom row keeps the document navigator,
+  the page tabs (now up to the corner, no splitter) and the Navigator
+  button in its corner. Panning stays with Space, the middle button, the
+  Pan tool and the wheel. Check:
+  `ui::window_bars::tests::view_scrollbars_hides_and_shows_them`.
 
 ## Bottom row
 

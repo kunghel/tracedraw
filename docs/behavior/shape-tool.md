@@ -18,7 +18,9 @@ subpath as a slightly larger triangle. A selected node's control
 handles are dashed lines from the node on a white line twice as wide,
 each ending in a solid arrow head with a white edge at its control point
 (so they show on any colour, #670) (the curve tools show the handles of the curve
-being drawn the same way). The arrow showing the curve's
+being drawn the same way). The arrow head is as long and as wide as a
+node marker: 7, 9 or 11 pixels with Node size Small, Medium or Large
+(`NodeSize::handle_head`, #1643). The arrow showing the curve's
 direction is off by default (Options > Nodes and Handles).
 
 With several objects selected, the one picked last shows its outline in
@@ -33,7 +35,10 @@ two objects are not joined (#1007,
 A press takes the nearest node, or the nearest control handle of a
 chosen node, within the pick distance of it: Options > Nodes and
 Handles > Pick distance, 6 screen pixels by default (never less than
-the node marker reaches). A segment of a selected curve is taken a
+the node marker reaches). A control handle is also taken anywhere on
+its arrow head, however long the node size makes it
+(`NodePrefs::handle_pick_px`,
+`pick_drag_tests::control_handle_heads_follow_the_node_size`). A segment of a selected curve is taken a
 pixel further out. Distances are measured on the page, so a curve with
 a scale of its own (text converted to curves, for one) is picked like
 any other
@@ -261,6 +266,7 @@ nodes do not show and cannot be taken.
 | Drag a control point | the spline follows (`Command::SetSpline`: the outline becomes the spline of the points, open or closed as it was); a chosen point drags every chosen point of its spline with it; one undo step "Edit B-Spline" for the drag |
 | Double-click the control polygon | a control point there, between the two the line joins, at the foot of the pointer on the line |
 | Double-click a control point | removes it (two always stay) |
+| C, or Cusp on the property bar, or Fixed Control Point on the right-click menu | makes the chosen control points fixed: the curve passes through a fixed point, with a corner there between the lines of the control polygon (the point counts three times in the cubic spline, `geometry::bspline_path_fixed`); a fixed point has a second frame around its node. C again, S (Smooth), or Floating Control Point makes them floating again: the curve only comes near them. One undo step "Fixed Control Point" or "Floating Control Point"; the outline stays a B-spline. The flags (`Shape::spline_fixed`, saved in `.tdraw`) follow their points through moves, added and removed points; the ends of an open spline are always on the curve (#1758, `pick_drag_tests::a_bspline_control_point_is_made_fixed_and_floating`) |
 | Click the control polygon | keeps the selection, as a click near a node does |
 | Convert To Curves (Ctrl+Q), or any other change of the outline (node editing, the brushes, a join) | the outline stays as it is and the control points go: an ordinary curve with the spline's nodes |
 

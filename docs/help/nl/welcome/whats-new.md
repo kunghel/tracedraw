@@ -24,6 +24,18 @@ versies.
 
 ## Hoogtepunten van recente versies {#highlights}
 
+- **Aanraken en telefoons.** Shift-, Ctrl- en Alt-knoppen op de standaardbalk
+  blijven ingedrukt voor een vinger; op Android blijft de interface vrij van
+  de camera-uitsparing en de afgeronde hoeken; de Apple Pencil werkt in Safari
+  op de iPad.
+- **Bestanden.** .cdr-bestanden behouden de vulregel van overlappende curven
+  en openen met hun tabstops, tekst in meerdere kolommen, hulplijnen voor alle
+  pagina's en de objecten van de hoofdpagina.
+- **Afbeeldingen, afdrukken en werkruimte.** Pixels van de afbeelding
+  bijsnijden in het gereedschap Bijsnijden en
+  [[menu.bitmaps > menu.bitmaps.crop_to_frame]] snijden de pixels van een
+  afbeelding bij; afdrukken in grijstinten en in omgekeerde volgorde;
+  [[menu.view > menu.view.scrollbars]] verbergt de schuifbalken.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] opent de gereedschappen
   voor snijplotters: plotteruitvoer, snijlijnen, nesten en meten. Zie
   [TraceCut](../objects/tracecut.md).

@@ -43,6 +43,10 @@ pub struct PrintPrefs {
     pub orientation: usize,
     #[serde(default = "yes")]
     pub collate: bool,
+    /// Grayscale composite output (#1657).
+    pub grayscale: bool,
+    /// The sheets printed last first (#1394).
+    pub reverse_order: bool,
     pub spot_to_cmyk: bool,
     pub text_black: bool,
     pub overprint_black: bool,
@@ -80,6 +84,8 @@ impl Default for PrintPrefs {
             printer: st.printer.clone(),
             orientation: st.orientation,
             collate: st.collate,
+            grayscale: st.grayscale,
+            reverse_order: st.reverse_order,
             spot_to_cmyk: st.spot_to_cmyk,
             text_black: st.text_black,
             overprint_black: st.overprint_black,
@@ -119,6 +125,8 @@ impl PrintPrefs {
             printer: self.printer.clone(),
             orientation: self.orientation.min(2),
             collate: self.collate,
+            grayscale: self.grayscale,
+            reverse_order: self.reverse_order,
             spot_to_cmyk: self.spot_to_cmyk,
             text_black: self.text_black,
             overprint_black: self.overprint_black,
@@ -157,6 +165,8 @@ impl PrintPrefs {
         self.printer = st.printer.clone();
         self.orientation = st.orientation;
         self.collate = st.collate;
+        self.grayscale = st.grayscale;
+        self.reverse_order = st.reverse_order;
         self.spot_to_cmyk = st.spot_to_cmyk;
         self.text_black = st.text_black;
         self.overprint_black = st.overprint_black;
@@ -214,6 +224,9 @@ pub struct FormatPrefs {
     /// Exporting keeps the dialog's choices here for the next time.
     pub remember_last: bool,
     pub import_place: ImportPlace,
+    /// File > Import waits for a click, a drag or Space to place what
+    /// came (#1936); off, it comes in at once where `import_place` says.
+    pub import_with_cursor: bool,
     /// The `.cdr` version Save As starts at (#613).
     pub cdr_version: u16,
     /// Save As starts at `.cdr` rather than TraceDraw for a drawing
@@ -252,6 +265,7 @@ impl Default for FormatPrefs {
             export_by_format: Vec::new(),
             remember_last: true,
             import_place: ImportPlace::AsInFile,
+            import_with_cursor: true,
             cdr_version: tracedraw_cdr::write::NEWEST_VERSION,
             save_new_as_cdr: false,
             skip_export_dialog: false,

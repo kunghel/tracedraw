@@ -164,11 +164,17 @@ choices (standard, bleed, output condition). Presets are kept in the preferences
 ## WebP
 
 Lossless (off at first) and Quality (1 to 100). Off, the file is lossy
-WebP at that quality (libwebp, in the desktop builds), far smaller: a
-picture of 450 KB lossless comes to about 50 KB at quality 10. On, it is
+WebP at that quality, far smaller: a picture of 450 KB lossless comes to
+about 50 KB at quality 10. The desktop builds encode it with libwebp;
+the browser build, where that C library is not built, with a pure-Rust
+VP8 encoder (the `vaam-image-webp` crate, MIT OR Apache-2.0), whose
+files are somewhat larger than libwebp's at the same quality but follow
+Quality the same way and keep transparency (#592,
+`export::tests::the_browsers_lossy_webp_follows_the_quality`). On, it is
 lossless, and below 100 the colours are first rounded to fewer levels
-(near-lossless, #544). The browser build has no lossy encoder and always
-writes the lossless way (#592, `export::tests::webp_quality_shrinks_the_file`).
+(near-lossless, #544, `export::tests::webp_quality_shrinks_the_file`).
+A picture larger than WebP allows (16383 pixels a side) is written the
+lossless way in the browser.
 
 ## Starting choices
 

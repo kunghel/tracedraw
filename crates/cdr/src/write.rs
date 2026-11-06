@@ -133,6 +133,11 @@ pub struct ShadowPicture {
 /// (version 16 and later).
 pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Previews) -> Vec<u8> {
     let v = Ver(version.clamp(OLDEST_VERSION, NEWEST_VERSION));
+    // The guidelines every page shows (#1928) count as each page's; those
+    // all pages share go to the master page's guides layer
+    // ([`master_guides`]), as files hold them.
+    let guided = master_guides_on_pages(doc);
+    let doc = guided.as_ref().unwrap_or(doc);
     let on_pages = master_objects_on_pages(doc);
     let doc = on_pages.as_ref().unwrap_or(doc);
     let mut w = Writer::new(v, &doc.symbols, &doc.title);
@@ -202,14 +207,27 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     out
 }
 
-/// The drawing with the objects of its master layers on the pages, or
-/// `None` when no master layer holds any. No `.cdr` file seen has objects
-/// on a layer of the master page (717 files of versions 7 to 27), so the
-/// record a reader would take for one is not known; each page a master
-/// layer shows on gets a layer of that name with copies of its objects
-/// instead, behind the page's own layers or in front of them as it is
-/// drawn there (#1132), so every page looks as it did. The first page
-/// keeps the objects' ids, later pages' copies get new ones.
+/// Whether master layer `l` goes onto the master page's desktop layer:
+/// it shows behind every page and holds no page number field (whose
+/// copies show each page's own number). The files of #1775 (one drawing
+/// saved in each version from 7 to 21) hold objects that show behind
+/// every page on that layer.
+fn on_master_desktop(l: &tracedraw_core::document::Layer) -> bool {
+    l.scope == tracedraw_core::MasterScope::All
+        && !l.in_front
+        && !l.shapes.iter().any(Shape::holds_page_number)
+}
+
+/// The drawing with the objects of its other master layers on the pages,
+/// or `None` when no such layer holds any. No `.cdr` file seen has
+/// objects on a master layer in front of the pages or on some pages
+/// only, so the record a reader would take for one is not known; each
+/// page such a master layer shows on gets a layer of that name with
+/// copies of its objects instead, in front of the page's own layers or
+/// behind them as it is drawn there (#1132), so every page looks as it
+/// did. The first page keeps the objects' ids, later pages' copies get
+/// new ones. The master layers behind every page stay (see
+/// [`on_master_desktop`]).
 fn master_objects_on_pages(doc: &Document) -> Option<Document> {
     use tracedraw_core::id::IdSource;
     fn reid(s: &Shape, ids: &mut IdSource) -> Shape {
@@ -227,7 +245,11 @@ fn master_objects_on_pages(doc: &Document) -> Option<Document> {
         }
         c
     }
-    if doc.master.iter().all(|l| l.shapes.is_empty()) {
+    if doc
+        .master
+        .iter()
+        .all(|l| l.shapes.is_empty() || on_master_desktop(l))
+    {
         return None;
     }
     let mut out = doc.clone();
@@ -239,12 +261,12 @@ fn master_objects_on_pages(doc: &Document) -> Option<Document> {
         };
         let mut layers = Vec::with_capacity(drawn.len());
         for l in drawn {
-            let master = doc.master.iter().any(|m| m.id == l.id);
-            if !master {
+            let master = doc.master.iter().find(|m| m.id == l.id);
+            let Some(master) = master else {
                 layers.push(l.into_owned());
                 continue;
-            }
-            if l.shapes.is_empty() {
+            };
+            if l.shapes.is_empty() || on_master_desktop(master) {
                 continue;
             }
             let first = !seen.contains(&l.id);
@@ -264,7 +286,7 @@ fn master_objects_on_pages(doc: &Document) -> Option<Document> {
             p.layers = layers;
         }
     }
-    out.master.clear();
+    out.master.retain(on_master_desktop);
     out.set_ids(ids);
     Some(out)
 }
@@ -3123,12 +3145,19 @@ fn object_style_json(
     stroke: Option<&Stroke>,
     opacity: f64,
     graded: Option<(&tracedraw_core::Fountain, u8)>,
+    nonzero: bool,
 ) -> String {
+    // A nonzero fill rule is `winding` "1" in the fill (#1919); even-odd,
+    // the default, is left out as most files do.
+    let winding = if nonzero { r#","winding":"1""# } else { "" };
     let fill_part = match fill_colour(fill) {
         Some(c) if !matches!(fill, Fill::None) => {
-            format!(r#"{{"type":"1","primaryColor":"{}"}}"#, colour_spec(c))
+            format!(
+                r#"{{"type":"1","primaryColor":"{}"{winding}}}"#,
+                colour_spec(c)
+            )
         }
-        _ => r#"{"type":"0"}"#.to_string(),
+        _ => format!(r#"{{"type":"0"{winding}}}"#),
     };
     let outline_part = match stroke {
         // The mitre limit in degrees, where the reader takes it (#384).
@@ -3544,6 +3573,26 @@ fn frame_json(f: Size, para: &tracedraw_core::ParagraphStyle) -> String {
 /// size (a master guideline lies as far from each page's centre): they go
 /// on the master page's guides layer once, as the files of versions 11,
 /// 15 and 25 to 27 keep their guidelines (#1161).
+/// The drawing with the master page's guidelines (#1928) added to every
+/// page's own, or `None` when it has none.
+fn master_guides_on_pages(doc: &Document) -> Option<Document> {
+    if doc.master_guides.is_empty() {
+        return None;
+    }
+    let mut out = doc.clone();
+    for p in &mut out.pages {
+        let own = std::mem::take(&mut p.guides);
+        p.guides = doc.master_guides.clone();
+        for g in own {
+            if !p.guides.iter().any(|h| h.line == g.line) {
+                p.guides.push(g);
+            }
+        }
+    }
+    out.master_guides.clear();
+    Some(out)
+}
+
 fn master_guides(doc: &Document) -> Vec<tracedraw_core::document::GuideLine> {
     let Some(first) = doc.pages.first() else {
         return Vec::new();
@@ -3960,6 +4009,19 @@ impl<'a> Writer<'a> {
             .iter()
             .map(|g| self.guide(g, centre))
             .collect();
+        // The objects of the master layers behind every page, on the
+        // master page's desktop layer (front to back, as files list
+        // them), written now as they fill the tables too (#1775).
+        let mut desktop = Vec::new();
+        let mut unused = None;
+        for layer in doc.master.iter().rev().filter(|l| on_master_desktop(l)) {
+            desktop.extend(self.layer_objects(layer, centre, &mut unused));
+        }
+        let desktop_name = doc
+            .master
+            .iter()
+            .find(|l| on_master_desktop(l) && !l.shapes.is_empty())
+            .map(|l| l.name.clone());
         // Pages first: they fill the tables.
         self.layer_slots = layer_slots(doc);
         let mut pages = Vec::new();
@@ -4097,7 +4159,7 @@ impl<'a> Writer<'a> {
             Some(Fill::Solid(c)) => Some(*c),
             _ => None,
         };
-        out.push(self.master_page(background, master_guides));
+        out.push(self.master_page(background, master_guides, desktop, desktop_name));
         out.extend(pages);
         out
     }
@@ -4285,7 +4347,13 @@ impl<'a> Writer<'a> {
     /// each layer and a page's entry of the same rank carrying its
     /// objects. From 14 pages list their own layers by GUID and the master
     /// keeps only its three.
-    fn master_page(&mut self, background: Option<Color>, guides: Vec<Node>) -> Node {
+    fn master_page(
+        &mut self,
+        background: Option<Color>,
+        guides: Vec<Node>,
+        desktop: Vec<Node>,
+        desktop_name: Option<String>,
+    ) -> Node {
         let v = self.v;
         let mut children = vec![chunk(
             b"flgs",
@@ -4299,9 +4367,19 @@ impl<'a> Writer<'a> {
         } else {
             children.push(chunk(b"bbox", vec![0; 16]));
         }
+        // The desktop layer holds the objects of the master layers behind
+        // every page, named after the first of them (#1775).
+        let desktop = match desktop_name {
+            Some(name) if !desktop.is_empty() => {
+                let which = MasterLayer::Desktop;
+                let guid = self.master_guids[which as usize];
+                self.layer_entry(which.flags(), which.kind(), Some(&name), guid, desktop)
+            }
+            _ => self.master_layer_with(MasterLayer::Desktop, false, desktop),
+        };
         let mut layers = vec![
             self.master_layer_with(MasterLayer::Guides, false, guides),
-            self.master_layer(MasterLayer::Desktop, false),
+            desktop,
         ];
         if !v.zip() {
             let slots = std::mem::take(&mut self.layer_slots);
@@ -5007,7 +5085,8 @@ impl<'a> Writer<'a> {
         }
         if v.style_strings() {
             let graded = self.graded.get(&s.id).map(|(f, t)| (f, *t));
-            let mut json = object_style_json(fill, s.stroke.as_ref(), s.opacity, graded);
+            let nonzero = s.fill_rule == tracedraw_core::shaping::FillRule::NonZero;
+            let mut json = object_style_json(fill, s.stroke.as_ref(), s.opacity, graded, nonzero);
             if let Some((_, character, _)) = &text {
                 // Text objects keep their character settings there too.
                 json.pop();
@@ -5605,6 +5684,17 @@ impl<'a> Writer<'a> {
             }
             _ => {
                 let coords = match &s.kind {
+                    // Before version 16 no file seen holds a fill rule: a
+                    // curve that fills nonzero (#1919) goes out as the
+                    // outline of the area it covers, which fills the same
+                    // under the even-odd rule those versions draw with.
+                    ShapeKind::Path { path, .. }
+                        if v.0 < 16
+                            && s.fill_rule == tracedraw_core::shaping::FillRule::NonZero
+                            && !matches!(s.fill, Fill::None) =>
+                    {
+                        curve_coords(&tracedraw_core::shaping::nonzero_as_even_odd(path))
+                    }
                     ShapeKind::Path { path, .. } => curve_coords_typed(path, &s.node_types),
                     _ => curve_coords(&s.local_path()),
                 };

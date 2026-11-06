@@ -3089,12 +3089,14 @@ impl App {
                 self.text_italic,
                 self.text_underline,
             );
+            let strike = self.text_strikethrough;
             let differs = |f: &dyn Fn(&TextSpan) -> bool| shown.as_ref().is_none_or(f);
             let set_font = differs(&|s| s.font_family != font);
             let set_size = differs(&|s| ((s.size_pt - size) * scale).abs() > 0.005);
             let set_bold = differs(&|s| s.bold != bold);
             let set_italic = differs(&|s| s.italic != italic);
             let set_underline = differs(&|s| s.underline != underline);
+            let set_strike = differs(&|s| s.strikethrough != strike);
             self.text_apply_style(move |sp| {
                 if set_font {
                     sp.font_family = font.clone();
@@ -3110,6 +3112,9 @@ impl App {
                 }
                 if set_underline {
                     sp.underline = underline;
+                }
+                if set_strike {
+                    sp.strikethrough = strike;
                 }
             });
             return;
@@ -3134,6 +3139,7 @@ impl App {
         let set_bold = changed(&|t| t.bold != Some(self.text_bold));
         let set_italic = changed(&|t| t.italic != Some(self.text_italic));
         let set_underline = changed(&|t| t.underline != Some(self.text_underline));
+        let set_strike = changed(&|t| t.strikethrough != Some(self.text_strikethrough));
         let cmds: Vec<Command> = selected
             .iter()
             .filter_map(|s| match &s.kind {
@@ -3167,6 +3173,9 @@ impl App {
                         }
                         if set_underline {
                             sp.underline = self.text_underline;
+                        }
+                        if set_strike {
+                            sp.strikethrough = self.text_strikethrough;
                         }
                     });
                     Some(Command::SetShapeKind {
@@ -3887,6 +3896,58 @@ impl App {
         }
         if let Err(e) = self.engine.run_batch("Fill", &cmds) {
             self.status = e.to_string();
+        }
+    }
+
+    /// The colours that best stand for the selected picture: at most
+    /// `n`, chosen by the median cut the paletted conversion uses
+    /// ([`crate::bitmap_modes::build_palette`]), ordered dark to light.
+    /// None without a picture selected or when it cannot be read.
+    pub fn selected_bitmap_colors(&self, n: u32) -> Option<Vec<Color>> {
+        let id = self.selected_bitmap()?;
+        let ShapeKind::Bitmap { png, .. } = &self.doc().find_shape(id)?.kind else {
+            return None;
+        };
+        let img = crate::bitmap_fx::decode(png)?;
+        let settings = crate::bitmap_modes::PalettedSettings {
+            palette: crate::bitmap_modes::PaletteType::Optimized,
+            colors: n.clamp(2, 256),
+            ..Default::default()
+        };
+        let mut rgb = crate::bitmap_modes::build_palette(&img, &settings);
+        rgb.sort_by_key(|c| 299 * u32::from(c[0]) + 587 * u32::from(c[1]) + 114 * u32::from(c[2]));
+        rgb.dedup();
+        Some(
+            rgb.into_iter()
+                .map(|c| Color::rgb8(c[0], c[1], c[2]))
+                .collect(),
+        )
+    }
+
+    /// Add Colors from Bitmap (#1840): up to `n` colours of the selected
+    /// picture join the user's palette `palette`, or the document palette
+    /// when None (one undo step there), after the colours it has. Says
+    /// whether any was added.
+    pub fn add_bitmap_colors_to_palette(&mut self, palette: Option<usize>, n: u32) -> bool {
+        let Some(found) = self.selected_bitmap_colors(n) else {
+            return false;
+        };
+        match palette {
+            Some(i) => self.add_colors_to_palette(i, &found),
+            None => {
+                let mut colors = self.doc().palette.clone();
+                let before = colors.len();
+                for c in found {
+                    if !colors.contains(&c) {
+                        colors.push(c);
+                    }
+                }
+                if colors.len() == before {
+                    return false;
+                }
+                self.run(Command::SetDocumentPalette { colors });
+                true
+            }
         }
     }
 

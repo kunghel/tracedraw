@@ -71,8 +71,18 @@ change marked `TraceDraw:` in a comment.
   X11 and macOS: an `egui::Event::Touch` of phase `Move` only, of a
   device of its own (`PEN_DEVICE`), with the reading as `force`, which
   TraceDraw's raw input hook reads and takes out (`pen.rs`,
-  `docs/behavior/pen-pressure.md`). The pen's position and buttons
-  still come from the mouse events, as before. Only `pointerType` `pen`
+  `docs/behavior/pen-pressure.md`). The pen's position comes from its
+  own `pointerdown` and `pointermove` too (`pen_moved`, #1655): Safari
+  on iPad sends an Apple Pencil no mouse events at all, so the Pencil
+  did nothing; its press and release come from `pointerdown` and
+  `pointerup` as for every pointer, a pen's `pointerdown` on the canvas
+  is not left to the browser (`preventDefault`: no text selection or
+  handwriting), a `pointercancel` lets the tip go (`pen_cancelled`), and
+  the touches Safari also sends for the Pencil (`touchType` `stylus`)
+  are left out of the touch events (`input::is_stylus`), or the press
+  would come twice and egui would take the Pencil for a finger; a move
+  of the Pencil's touches alone only keeps the page from scrolling.
+  Only `pointerType` `pen`
   gives pressure: the mouse (whose 0.5 while pressed means no pressure)
   and touches (whose force still comes from the touch events) send
   nothing; a hovering or lifted pen, or a reading of 0, sends no force;
@@ -182,10 +192,20 @@ change marked `TraceDraw:` in a comment.
   `Force::Normalized` that the X11 and macOS changes send, no force once
   the tip lifts; a frame's events go out when the frame ends, and
   leaving proximity releases whatever is still held. A tool that comes
-  into proximity is given the default cursor shape
-  (`wp_cursor_shape_manager_v1`, when offered). Tilt, distance,
-  rotation, slider and wheel, and the pad's buttons, rings and strips,
-  are not read; over the window's frame the pen does nothing.
+  into proximity of a window shows the window's own cursor, as its
+  pointers do, and follows it when it changes (`WindowState::
+  tablet_tool_entered`, `apply_on_tablets`, called from `set_cursor`,
+  `set_custom_cursor` and `set_cursor_visible`): a named cursor through
+  `wp_cursor_shape_manager_v1` (`tablet_tool::cursor_shape_value`), a
+  custom image on a surface of the tool's own (`zwp_tablet_tool_v2.
+  set_cursor`), none while the window hides its cursor (TraceDraw draws
+  its tool cursors itself, so the pen showed the compositor's arrow on
+  top of them before); over the window's frame the default arrow. The
+  tilt is read and goes out with the pressure as the pen's altitude in
+  `Force::Calibrated { force, max_possible_force: 1, altitude_angle }`,
+  whose share egui-winit reads unchanged (`force / max_possible_force`).
+  Distance, rotation, slider and wheel, and the pad's buttons, rings and
+  strips, are not read; over the window's frame the pen does nothing.
   `src/tablet_tool.rs` depends on nothing in the crate, and TraceDraw's
   tests include and run it (`winit_tablet_tool::tests`).
 - Change: macOS hands the files opened from Finder (double click, Open
@@ -265,6 +285,37 @@ change marked `TraceDraw:` in a comment.
   depends on nothing in the crate, and TraceDraw's tests include and run
   it (`palm::winit_pointer_filter::tests`); TraceDraw's filter is
   `apps/tracedraw/src/palm.rs`.
+- Change: on Windows a window's theme set by the program reaches its
+  title bar (#1920). `Window::set_theme` called only the undocumented
+  composition attribute (`WCA_USEDARKMODECOLORS`) and `SetWindowTheme`,
+  which left the caption light on Windows 11 and later Windows 10, and
+  it neither kept the theme asked for nor redrew the frame.
+  `platform_impl/windows/dark_mode.rs` (`try_theme`) now also sets the
+  documented `DWMWA_USE_IMMERSIVE_DARK_MODE` (20, or 19 before Windows 10
+  build 18985) with `DwmSetWindowAttribute` and, for a window on show,
+  redraws the frame (`SetWindowPos` with `SWP_FRAMECHANGED`) so the title
+  bar changes at once; `platform_impl/windows/window.rs` (`set_theme`)
+  keeps the theme asked for as the preferred one, so a change of the
+  system's theme (`WM_SETTINGCHANGE`) no longer puts the system's back,
+  and records the theme the window now has.
+- Change: on Windows a shortcut with Alt keeps the pointer up to date
+  over a still mouse (#1922). For a moment the system showed its arrow,
+  then the window got a `WM_MOUSELEAVE` with the pointer still over it:
+  winit sent `CursorLeft`, and egui-winit applies no pointer until the
+  next `CursorMoved`, so the pointer stayed the arrow, or the blank image
+  of a drawn pointer (invisible), until the mouse moved. Both are the
+  marks of the keyboard menu mode, which takes the mouse while it runs.
+  `platform_impl/windows/event_loop.rs` now (1) answers a
+  `WM_SYSCOMMAND` with `SC_KEYMENU` and a character other than Space
+  itself in a window without a native menu bar, so no menu mode starts
+  (Alt+Space, the window menu, and every other command still reach
+  `DefWindowProcW`), and (2) on `WM_MOUSELEAVE` reads where the pointer
+  is (`GetCursorPos`, `WindowFromPoint`): still in the client area with
+  this window under it, no `CursorLeft` is sent; the inside flag is
+  cleared all the same, so the next move enters again and asks for the
+  leave tracking anew. Both decisions are in `src/alt_shortcuts.rs`,
+  which depends on nothing in the crate; TraceDraw's tests include and
+  run it (`winit_alt_shortcuts::tests`).
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
 - Drop the copy and the `[patch.crates-io]` entry when a winit release

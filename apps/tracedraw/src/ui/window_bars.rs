@@ -2,7 +2,8 @@
 //! vertical scrollbar on the right; along the bottom the document
 //! navigator (insert page before, first, previous, "1 of N", next, last,
 //! insert page after), the page tabs, a splitter, the horizontal
-//! scrollbar; and the Navigator button in the corner.
+//! scrollbar; and the Navigator button in the corner. With View >
+//! Scrollbars off the two scrollbars and the splitter are left out.
 
 use crate::app::App;
 use crate::i18n::{tr, trf};
@@ -18,6 +19,7 @@ const LINE: f32 = 40.0;
 /// Draw the scrollbars, the navigator row and the corner button around
 /// `canvas` inside `full`.
 pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: f32) {
+    let scrollbars = app.settings.show_scrollbars;
     let p = ui.painter_at(full);
     let row = Rect::from_min_max(
         Pos2::new(full.min.x, full.max.y - BAR),
@@ -29,7 +31,9 @@ pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: 
     );
     let corner = Rect::from_min_max(Pos2::new(full.max.x - BAR, full.max.y - BAR), full.max);
     p.rect_filled(row, 0.0, Tokens::panel());
-    p.rect_filled(vbar, 0.0, crate::theme::Tokens::panel());
+    if scrollbars {
+        p.rect_filled(vbar, 0.0, crate::theme::Tokens::panel());
+    }
     p.rect_filled(corner, 0.0, Tokens::panel());
     p.hline(row.x_range(), row.min.y, Stroke::new(1.0, Tokens::border()));
 
@@ -40,6 +44,19 @@ pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: 
         Pos2::new(row.min.x + ruler + nav_w, row.max.y),
     );
     let rest = Rect::from_min_max(Pos2::new(nav.max.x, row.min.y), row.max);
+    if !scrollbars {
+        // No scrollbars (#1344): the page tabs take the rest of the row,
+        // the Navigator button stays in its corner.
+        ui.scope_builder(egui::UiBuilder::new().max_rect(nav), |ui| {
+            page_navigator(app, ui)
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| {
+            ui.set_clip_rect(rest);
+            page_tabs(app, ui, rest)
+        });
+        super::view_navigator(app, ui, corner, canvas);
+        return;
+    }
     let split_x = rest.min.x + rest.width() * app.page_tabs_fraction.clamp(0.1, 0.9);
     let tabs = Rect::from_min_max(rest.min, Pos2::new(split_x - 4.0, rest.max.y));
     let grip = Rect::from_min_max(
@@ -661,6 +678,63 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
+
+    /// View > Scrollbars hides the drawing window's scrollbars: the
+    /// drawing gets their room on the right, the page tabs and the
+    /// Navigator button stay, and the command shows them again (#1344).
+    #[test]
+    fn view_scrollbars_hides_and_shows_them() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let frame = |ctx: &egui::Context, app: &mut App| {
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+                out.textures_delta.clear();
+            }
+        };
+        let drawn = |ctx: &egui::Context, id: &str| ctx.read_response(egui::Id::new(id)).is_some();
+        frame(&ctx, &mut app);
+        assert!(app.settings.show_scrollbars, "shown by default");
+        assert!(drawn(&ctx, "vscroll") && drawn(&ctx, "hscroll"));
+        let with = app.canvas_rect;
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.scrollbars"
+        ));
+        assert!(!app.settings.show_scrollbars);
+        frame(&ctx, &mut app);
+        assert!(!drawn(&ctx, "vscroll") && !drawn(&ctx, "hscroll"));
+        assert!(!drawn(&ctx, "vscroll_up") && !drawn(&ctx, "hscroll_left"));
+        let without = app.canvas_rect;
+        assert!(
+            (without.right() - with.right() - super::BAR).abs() < 0.5,
+            "{with:?} {without:?}"
+        );
+        assert_eq!(without.bottom(), with.bottom(), "the page tabs stay");
+        assert!(drawn(&ctx, "view_navigator"));
+        assert!(
+            ctx.read_response(egui::Id::new(("page_tab", 0usize)))
+                .is_some(),
+            "the page tab"
+        );
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.scrollbars"
+        ));
+        frame(&ctx, &mut app);
+        assert!(drawn(&ctx, "vscroll"));
+        assert_eq!(app.canvas_rect, with);
+    }
 
     #[test]
     fn the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages() {

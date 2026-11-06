@@ -297,11 +297,17 @@ pub fn inks_picture(
 /// management, as on the separation plates. A spot ink it keeps prints
 /// as its process mix over the process inks (`spots`: each ink's id
 /// and its C, M, Y and K from 0 to 1); a see-through pixel holds as much
-/// less ink as it lets the paper show.
-pub fn picture_cmyk(s: &Shape, spots: &[(u32, [f32; 4])]) -> Option<(u32, u32, Vec<u8>)> {
+/// less ink as it lets the paper show. With `alpha` each pixel keeps
+/// its full inks and a fifth byte, its opacity (unassociated alpha,
+/// #1925), for a file that keeps transparency.
+pub fn picture_cmyk(
+    s: &Shape,
+    spots: &[(u32, [f32; 4])],
+    alpha: bool,
+) -> Option<(u32, u32, Vec<u8>)> {
     let (png, inks) = picture(s)?;
     let sep = separate(png, inks)?;
-    let mut out = Vec::with_capacity(sep.alpha.len() * 4);
+    let mut out = Vec::with_capacity(sep.alpha.len() * if alpha { 5 } else { 4 });
     for (i, a) in sep.alpha.iter().enumerate() {
         let ink = sep.cmyk.get(i).copied().unwrap_or([0; 4]);
         let mut v = ink.map(|x| x as f32 / 255.0);
@@ -313,6 +319,11 @@ pub fn picture_cmyk(s: &Shape, spots: &[(u32, [f32; 4])]) -> Option<(u32, u32, V
             for (x, m) in v.iter_mut().zip(mix) {
                 *x = 1.0 - (1.0 - *x) * (1.0 - cover * m.clamp(0.0, 1.0));
             }
+        }
+        if alpha {
+            out.extend(v.map(byte));
+            out.push(*a);
+            continue;
         }
         let a = *a as f32 / 255.0;
         out.extend(v.map(|x| byte(x * a)));

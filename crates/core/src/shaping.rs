@@ -70,8 +70,9 @@ fn from_shapes(shapes: Vec<Vec<Vec<[f64; 2]>>>) -> BezPath {
     path
 }
 
-/// How the overlapping contours of an input fill.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// How the overlapping contours of an input fill. Also an object's own
+/// fill rule ([`crate::document::Shape::fill_rule`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FillRule {
     /// A place inside an odd number of contours is filled (how curves
     /// fill): overlapping contours make holes.
@@ -80,6 +81,13 @@ pub enum FillRule {
     /// A place the contours wind round is filled (how text fills):
     /// overlapping contours turning the same way stay filled.
     NonZero,
+}
+
+impl FillRule {
+    /// The default rule (for skipping it when saving).
+    pub fn is_even_odd(&self) -> bool {
+        *self == FillRule::EvenOdd
+    }
 }
 
 /// Combine `subject` and `clip` (both in the same coordinate space), each

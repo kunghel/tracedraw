@@ -639,6 +639,16 @@ impl App {
         if let Some(c) = add {
             out.changes.push(Change::Cmd(Box::new(c)));
         }
+        // Its swatch joins the document palette in the same step, as a
+        // colour applied from the Properties docker does (#1927).
+        if self.settings.palette.auto_update_document && !self.doc().palette.contains(&color) {
+            let mut colors = self.doc().palette.clone();
+            colors.push(color);
+            out.changes
+                .push(Change::Cmd(Box::new(Command::SetDocumentPalette {
+                    colors,
+                })));
+        }
         let width = if s.width.is_finite() && s.width > Stroke::HAIRLINE {
             s.width.min(10.0)
         } else {
@@ -937,9 +947,28 @@ mod tests {
         let stroke = sh.stroke.clone().expect("outline");
         assert!(matches!(stroke.color, Color::Spot { .. }));
         assert!((stroke.width - Stroke::HAIRLINE).abs() < 1e-12);
-        // Again: the same ink, no second one.
+        // Its swatch is in the document palette, once, and the undo step
+        // takes it out again with the ink (#1927).
+        assert_eq!(app.doc().palette, vec![stroke.color]);
+        // Again: the same ink, no second one, no second swatch.
         let (_, add) = app.tracecut_contour_ink();
         assert!(add.is_none());
+        let again = app.tracecut_cut_contour(&s);
+        assert!(app.tracecut_apply_changes(&again));
+        assert_eq!(app.doc().palette, vec![stroke.color]);
+        app.undo();
+        app.undo();
+        assert!(app.doc().palette.is_empty());
+        assert!(app.doc().inks.iter().all(|i| i.name != CUT_CONTOUR));
+        // With the document palette not following the colours used, it
+        // is left as it is.
+        let mut app = App::headless();
+        app.settings.palette.auto_update_document = false;
+        let a = rect(&mut app, 0.0, 0.0, 20.0, 20.0);
+        app.select(vec![a]);
+        let c = app.tracecut_cut_contour(&s);
+        assert!(app.tracecut_apply_changes(&c));
+        assert!(app.doc().palette.is_empty());
         // Kept by name in PDF, EPS and SVG.
         let pdf = tracedraw_io::pdf::document_to_pdf(app.doc());
         assert!(String::from_utf8_lossy(&pdf).contains("/Separation /CutContour"));

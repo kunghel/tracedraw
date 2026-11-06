@@ -99,6 +99,7 @@ próprios atalhos; veja
 | [[menu.view.pixel_grid]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.baseline_grid]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.rulers]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
+| [[menu.view.scrollbars]] | [O espaço de trabalho](../get-started/workspace.md#drawing-window) |
 | [[menu.view.guidelines]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.alignment_guides]] | [Encaixe](../pages-layout/snapping.md) |
 | [[menu.view.dynamic_guides]] | [Encaixe](../pages-layout/snapping.md) |

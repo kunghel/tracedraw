@@ -64,7 +64,19 @@ pub fn tool_hint_for(tool: Tool, nothing_selected: bool) -> String {
 /// "Rectangle on Layer 1", "3 Objects Selected on Layer 1", and with the
 /// Shape tool "Curve: 17 Nodes". Empty with nothing selected.
 pub fn object_info(app: &App) -> String {
-    if app.text_edit.is_some() {
+    if let Some(te) = &app.text_edit {
+        // Typing in a linked text changes the texts linked with it (#1568).
+        let doc = app.doc();
+        if doc
+            .find_shape(te.shape)
+            .and_then(tracedraw_core::linked_text::link_of)
+            .is_some()
+        {
+            let n = doc.content_linked_with(te.shape).len();
+            if n > 0 {
+                return trf("status.editing_linked_text", &[("n", &n.to_string())]);
+            }
+        }
         return tr("status.editing_text");
     }
     let shapes = app.selected_rc();
@@ -122,6 +134,15 @@ pub fn object_info(app: &App) -> String {
             };
             if app.is_effect_clone(s.id) {
                 kind = format!("{kind} ({})", tr("status.effect_clone"));
+            }
+            if tracedraw_core::linked_text::link_of(s).is_some() {
+                let n = app.doc().content_linked_with(s.id).len();
+                if n > 0 {
+                    kind = trf(
+                        "status.content_linked_kind",
+                        &[("k", &kind), ("n", &n.to_string())],
+                    );
+                }
             }
             if app.doc().is_nested(s.id) {
                 kind = trf("status.in_group", &[("k", &kind)]);

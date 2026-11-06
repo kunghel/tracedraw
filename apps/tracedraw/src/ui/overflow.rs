@@ -85,12 +85,24 @@ pub fn previous_offset(items: &[(f32, f32)], room: f32, offset: f32) -> f32 {
 /// Draw a horizontal bar with `add`, sliding when it is longer than the
 /// room it gets; the bar's whole length.
 pub fn row(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) -> f32 {
+    strip(ui, id_salt, true, |ui| {
+        add(ui);
+        None
+    })
+}
+
+/// [`row`] whose `add` may return an item's rectangle to bring into view
+/// (the bar slides just enough to show it whole).
+pub fn row_showing(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui) -> Option<Rect>) -> f32 {
     strip(ui, id_salt, true, add)
 }
 
 /// The vertical counterpart, for a column of tool buttons.
 pub fn column(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) -> f32 {
-    strip(ui, id_salt, false, add)
+    strip(ui, id_salt, false, |ui| {
+        add(ui);
+        None
+    })
 }
 
 /// The triangle of a column's scroll button, pointing up (`up`) or down,
@@ -113,7 +125,12 @@ fn arrow(ui: &Ui, resp: &egui::Response, up: bool) {
     ));
 }
 
-fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)) -> f32 {
+fn strip(
+    ui: &mut Ui,
+    id_salt: &str,
+    horizontal: bool,
+    add: impl FnOnce(&mut Ui) -> Option<Rect>,
+) -> f32 {
     let id = ui.make_persistent_id(("bar_overflow", id_salt));
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     let full = ui.available_rect_before_wrap();
@@ -154,7 +171,7 @@ fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)
             .id_salt(id.with("bar")),
     );
     child.set_clip_rect(clip.intersect(panel));
-    add(&mut child);
+    let keep = add(&mut child);
     let used = child.min_rect();
     let content = if horizontal {
         used.right() - origin.x
@@ -294,6 +311,19 @@ fn strip(ui: &mut Ui, id_salt: &str, horizontal: bool, add: impl FnOnce(&mut Ui)
             };
             if delta != 0.0 {
                 offset -= delta;
+            }
+        }
+        // An item asked to be seen: slid just enough to show it whole.
+        if let Some(r) = keep {
+            let (start, end) = if horizontal {
+                (r.min.x - origin.x, r.max.x - origin.x)
+            } else {
+                (r.min.y - origin.y, r.max.y - origin.y)
+            };
+            if start < offset {
+                offset = start;
+            } else if end > offset + view(room) {
+                offset = end - view(room);
             }
         }
         offset = offset.clamp(0.0, max_offset(content, room));

@@ -21,6 +21,16 @@ zjistit, co se změnilo, a uvádí hlavní novinky posledních verzí.
 
 ## Hlavní novinky posledních verzí {#highlights}
 
+- **Dotyk a telefony.** Tlačítka Shift, Ctrl a Alt na standardním panelu
+  zůstávají pro prst stisknutá; v systému Android se rozhraní vyhýbá výřezu
+  fotoaparátu a zaobleným rohům; Apple Pencil funguje v Safari na iPadu.
+- **Soubory.** Soubory .cdr si zachovají pravidlo výplně překrývajících se
+  křivek a otevřou se se zarážkami tabulátoru, textem ve více sloupcích,
+  vodítky společnými pro všechny stránky a objekty vzorové stránky.
+- **Obrázky, tisk a pracovní plocha.** Oříznutí pixelů obrázku v nástroji
+  Oříznutí a [[menu.bitmaps > menu.bitmaps.crop_to_frame]] oříznou pixely
+  obrázku; tisk ve stupních šedi a v obráceném pořadí;
+  [[menu.view > menu.view.scrollbars]] skryje posuvníky.
 - **TraceCut.** [[menu.tools > menu.tools.tracecut]] otevře nástroje pro
   řezací plotry: výstup do plotru, řezné čáry, rozmístění a měření. Viz
   [TraceCut](../objects/tracecut.md).

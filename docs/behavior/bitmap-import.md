@@ -17,7 +17,9 @@ The browser build has no outside editor.
 The file is a PNG, or a CMYK TIFF for a CMYK picture (a `.cdr` CMYK
 image, or one in the CMYK colour mode), holding the inks it prints from
 as Save Bitmap As writes them, so the editor works on the inks and not
-on RGB pixels (#1834). A CMYK TIFF read back (8 bits per ink, with or
+on RGB pixels (#1834); a picture with see-through pixels goes with its
+alpha channel beside the inks, so the transparency survives the round
+trip (#1925). A CMYK TIFF read back (8 bits per ink, with or
 without alpha, any compression) gives the picture those inks and pixels
 that show them through the colour management, and the CMYK mode; any
 other file gives pixels only, and inks the picture kept are dropped,

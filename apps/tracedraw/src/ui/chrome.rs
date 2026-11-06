@@ -526,6 +526,14 @@ pub fn modal_blocker_except(ctx: &Context, holes: &[Rect]) {
     }
 }
 
+/// The layer under `pos` is the modal blocker of an open dialog (not
+/// the dialog itself): what a dialog that lets the wheel through to the
+/// drawing checks (#1035).
+pub fn over_modal_blocker(ctx: &Context, pos: egui::Pos2) -> bool {
+    ctx.layer_id_at(pos)
+        .is_some_and(|l| l.id == egui::Id::new("modal_blocker"))
+}
+
 /// `screen` without `holes`, as rectangles: bands between the holes'
 /// top and bottom edges, each cut where holes cross it.
 pub fn uncovered(screen: Rect, holes: &[Rect]) -> Vec<Rect> {

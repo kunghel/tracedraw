@@ -50,8 +50,18 @@ each tool's events into what the other platforms send
 
 - The pen coming near the tablet over the window enters it, and moving
   away leaves it, as the mouse pointer does; its motion moves the
-  pointer. The compositor is asked for the default arrow as the pen's
-  cursor over the window (`wp_cursor_shape_manager_v1`, when offered).
+  pointer. Over the window the pen shows the window's own cursor and
+  follows its changes, as the mouse does: none where TraceDraw draws
+  the tool's cursor itself (the cross hair with the tool's badge, the
+  Shape tool's arrow, the hand), the system's resize, move or text
+  cursor through the cursor shape protocol (`wp_cursor_shape_manager_v1`,
+  when offered), a custom image on the pen's own cursor surface. Before
+  (#1841 follow-up) the compositor always showed its arrow for the pen.
+  Over the window's frame the pen shows the default arrow.
+- The pen's tilt is read and carried with its pressure as an altitude
+  (`Force::Calibrated`, whose share egui reads unchanged, so the
+  pressure is exactly as before); egui's touch events have no place for
+  it and no tool uses it yet.
 - The tip touching the tablet presses the primary button, lifting it
   releases it. The barrel buttons press the middle (`BTN_STYLUS`) and
   the secondary (`BTN_STYLUS2`) button, a third one (`BTN_STYLUS3`)
@@ -64,9 +74,9 @@ each tool's events into what the other platforms send
   releases any button the pen still held.
 - The protocol groups a tool's events into frames; a frame's place,
   pressure, presses and releases are sent together when it ends.
-- The pen's tilt, distance, rotation, slider and wheel, and the
-  tablet's own buttons, rings and strips (the pad) are not read: the
-  windowing layer's events have no place for them and no tool uses them.
+- The pen's distance, rotation, slider and wheel, and the tablet's own
+  buttons, rings and strips (the pad) are not read: the windowing
+  layer's events have no place for them and no tool uses them.
 - Over the window's frame (drawn by the windowing layer on GNOME) the
   pen does nothing; move or resize the window with the mouse.
 - A compositor without the tablet protocol (rare: GNOME, KDE and the
@@ -102,6 +112,20 @@ reading as its force, never a start or an end, which the raw input hook
 reads and takes out as above. It is sent at the pen's `pointerdown`,
 at every `pointermove` over the canvas (anywhere during a drag) and at
 `pointerup` and `pointercancel`, which give no pressure.
+
+The pen's place comes from its own pointer events as well (#1655):
+Safari on an iPad sends an Apple Pencil no mouse events, only pen
+pointer events and touches of `touchType` `stylus`, so the Pencil did
+nothing at all while a finger worked. A pen's `pointerdown` and every
+`pointermove` now also move the pointer, before the press they may
+carry; the browser is kept from handling a pen pressed on the canvas
+itself (no text selection, no handwriting), and the canvas takes every
+touch and pen gesture (`touch-action: none` in `web/index.html`, so the
+page neither scrolls nor zooms under it); a `pointercancel` releases the
+tip and the pointer, so no drag is left pressed; and the Pencil's touches
+are left out of the touch events, so it presses once and egui never takes
+it for a finger. On a desktop browser a pen's mouse events still come
+too and move the pointer to the same place.
 
 - Only a pen gives pressure. The mouse sends nothing: browsers report
   0.5 for any pressed button that cannot measure pressure, which is not
@@ -199,6 +223,13 @@ at every `pointermove` over the canvas (anywhere during a drag) and at
   the mouse's pointer events (0.5 while pressed) and a pen without
   pressure (a constant 0.5) give an outline without width nodes (test
   `a_pen_in_the_browser_sets_the_width`).
+- Given an Apple Pencil in Safari, whose pointer events alone (no mouse
+  events) carry its place, press and pressure, then a Freehand line is
+  drawn wide then thin and egui reports no touch screen; a cancel in the
+  middle of a stroke leaves nothing pressed
+  (`an_apple_pencil_in_safari_draws_with_its_pressure`); the web layer's
+  helpers leave out a stylus's touches only, move the pointer for a pen
+  only and release the tip on a cancel (`eframe_web_pen_pressure::tests`).
 - The web layer's mapping of a pointer event's type, pressure and
   buttons: nothing for a mouse or a touch, the reading for a pen pressed
   on its tip or eraser, no pressure for a hovering pen, a reading of 0
