@@ -39,8 +39,25 @@ palette's swatch size and one row. A palette shows in one bar at most.
   where). The palette menu's Position > Top, Bottom, Left, Right,
   Floating does the same; a double click on a floating bar's title docks
   it at the bottom. Lock Toolbars keeps the bars where they are.
+- Among the toolbars: along the top a bar can also lie between the rows
+  of toolbars, as a row of its own across the whole window. Dropped
+  within 7 px of the line between two rows of toolbars (a blue line
+  shows it), it lies between them; near the top line of the first row,
+  over them all; near the bottom line of the last row, under them all;
+  dropped back on a bar among the toolbars, at that bar's place. The
+  palette menu's Position > Dock at Top, Among the Toolbars puts it
+  under every toolbar; Position > Top puts it back beside the drawing.
+  The place is the index of the row of toolbars it lies over
+  (`PaletteBarPrefs::toolbar_row`, kept in the preferences and workspace
+  files; past the last row means under them all). Over the middle of a
+  row of toolbars a drop docks as before. The default palette keeps its
+  own places (`palette_bars::toolbar_target`,
+  `pick_drag_tests::a_palette_bar_docks_between_the_toolbars_at_the_top`).
 - Each bar has its own Rows and Swatch Size; the default palette's are
   the ones in Options, which the document palette row under it follows.
+  Options > Customization > Color Palette also has the default palette's
+  Position; its Rows and Position act as the palette menu's (a floating
+  palette's window takes the rows at its length, #1983).
 - Close Palette in its menu (or the close button of its floating window)
   closes the bar.
 - Floating: a small window with the palette's name (cut with an ellipsis
@@ -182,7 +199,7 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
 | Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects); every click counts: one whose pointer slipped a few pixels but was let go on the same swatch, and the first click after a hold that opened the shades (#1336, `pick_drag_tests::every_click_on_a_palette_colour_applies_it`) |
 | Right click | Outline colour (Options > Customization > Color Palette can make it open the palette menu instead); a right click that slipped a few pixels on the swatch counts too (#1336) |
 | Ctrl+click | A tenth of the colour mixes into the selection's uniform fill (CMYK with CMYK, else in RGB) |
-| A finger (touch screen): tap, hold, hold longer | A tap is a click (the fill). Held 0.5 s and let go: the outline colour, as the right click (when Options make the right click open the menu, a finger held 0.8 s opens it, egui's long press). Held 1 s: the shades pop-up, whose tap fills and whose long press colours the outline; the release then changes nothing. A finger that slides is a drag (#1611, #1707, `ui::palette::tests::a_finger_held_on_a_swatch_sets_the_outline`) |
+| A finger (touch screen): tap, hold, hold longer | A tap is a click (the fill). Held 0.5 s and let go: the outline colour, as the right click (when Options make the right click open the menu, a finger held 0.8 s opens it, egui's long press). Held 1 s: the shades pop-up, whose tap fills and whose long press colours the outline; the release then changes nothing. A finger that slides off the row (towards the drawing) drags the colour; one that slides along a row longer than its room scrolls the row with the finger, a swatch for every swatch's width, and fills nothing when it lifts (#1611, #1707, #1997, `ui::palette::tests::a_finger_held_on_a_swatch_sets_the_outline`, `ui::palette::tests::a_finger_dragged_along_the_palette_scrolls_it`) |
 | Click and hold (0.5 s) | A 5 x 5 pop-up of the colour's shades: lighter tints upwards, more black downwards, less colourful to the left, more to the right; click one (right click for the outline) |
 | Drag a swatch onto an object (left button) | Inside it (also inside a closed object with no fill): its uniform fill; within 4 points of its outline: the outline's colour (an object with no outline gets the default pen in that colour); No Color takes the fill or the outline away. The object need not be selected and the selection stays; one undo step; the colour joins the document palette as with a click |
 | Drag a swatch onto the document palette | The colour joins it |

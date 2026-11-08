@@ -65,6 +65,16 @@ sources do (Trim keeps them). Weld and Intersect leave open sources out:
 they stay as they are, and with no closed source left the operation does
 nothing and the status bar says so. Simplify leaves open curves alone.
 
+Weld of open curves alone (no closed object selected) joins them: ends
+that meet, or lie within the Join Curves gap, are joined end to end with
+the Join Curves joint, and all the curves become one open curve, those
+whose ends meet nothing as subpaths of it (#1934,
+`ops::curves_and_target_tests::weld_and_combine_of_open_curves_make_one_path`).
+Combine of open curves gives one open curve with a subpath for each;
+a closed object combined with them keeps its subpaths closed, so they
+still fill and Break Apart gives them back as closed curves
+(`command::tests::combining_open_curves_keeps_them_open`).
+
 When the object whose attributes the result takes is a group: Trim, Front
 Minus Back and Back Minus Front cut each object of the group on its own,
 each keeping its fill, outline and opacity, the pieces a group (pieces

@@ -1890,7 +1890,7 @@ pub fn document_to_pdf_with(doc: &Document, opts: &PdfOptions) -> Vec<u8> {
 /// [`document_to_pdf_with`], with what went into the file: its fonts and
 /// the fonts whose text became curves.
 pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, PdfReport) {
-    let doc = &*crate::resolve_open_fills(doc);
+    let doc = &*crate::for_export(doc, None);
     let std_ = opts.standard;
     let mut pdf = Pdf {
         objects: Vec::new(),

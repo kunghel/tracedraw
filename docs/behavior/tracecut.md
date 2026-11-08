@@ -221,7 +221,21 @@ quarter of the **tolerance** (0.05 mm at first); neighbouring segments
 of one subpath and segments running along each other do not count, and
 crossings closer than the tolerance for the same objects are one. With
 **Also between objects** (off at first) crossings between different
-objects count too. OK selects the objects that have crossings.
+objects count too.
+
+**On OK**: **Select them** (at first) selects the objects that have
+crossings and changes nothing; **Fix them** fixes the crossings in one
+undo step ("Fix Crossings"). Each outline crossing itself is split
+where it crosses and rebuilt, read with the object's fill rule, as the
+outlines of the area it fills (outer outlines and holes that cross
+nowhere): a figure eight becomes two loops, a star drawn as one line
+its outline or its points. Where two rebuilt loops would still touch at
+a former crossing, a dot as wide as the tolerance is cut out there so
+they come apart. With **Also between objects**, objects that cross each
+other are welded into the lowest of them and the others deleted. Open
+lines are kept as they are; curves, rectangles, ellipses and polygons
+become curves, and groups, text, pictures and locked objects are left
+alone.
 
 ## Nesting tools
 
@@ -244,8 +258,12 @@ layout starts from the **start corner** (bottom left).
 
 Objects by their true outlines: each becomes a region (its closed
 outlines flattened, open curves by their boxes; holes filled unless
-**use holes** is on, 0.5 mm **accuracy** at first), grown by half the
-spacing and drawn on a grid. Objects go largest first, each to the
+**use holes** is on, 0.5 mm **accuracy** at first; an open line inside
+an outline cuts no hole there), grown by half the spacing and drawn on
+a grid. The grown outline is kept as the polygon it is worked out as,
+so its round corners and curves stay outside the object and no object
+comes closer to another, or to the sheet's edge, than the spacing and
+margin allow. Objects go largest first, each to the
 lowest, then leftmost, place where it fits on the first sheet that has
 one, slid down and left in exact geometry until it touches, in each
 allowed **turn** (none, 0 and 180 degrees, every 90 at first, every 45);

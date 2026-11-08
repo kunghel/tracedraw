@@ -1,7 +1,10 @@
 //! Touch handling.
 
+use std::time::Duration;
+
 use tracing::warn;
 
+use sctk::compositor::SurfaceData;
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::client::protocol::wl_touch::WlTouch;
@@ -11,6 +14,7 @@ use sctk::seat::touch::{TouchData, TouchHandler};
 
 use crate::dpi::LogicalPosition;
 use crate::event::{Touch, TouchPhase, WindowEvent};
+use crate::frame_input::FrameInput;
 
 use crate::platform_impl::wayland::state::WinitState;
 use crate::platform_impl::wayland::{self, DeviceId};
@@ -21,12 +25,26 @@ impl TouchHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         touch: &WlTouch,
-        _: u32,
-        _: u32,
+        serial: u32,
+        time: u32,
         surface: WlSurface,
         id: i32,
         position: (f64, f64),
     ) {
+        // TraceDraw: a finger on the window's frame drives the frame, as
+        // the mouse does (#2070); before, the touch found no window and
+        // was dropped.
+        if frame_parent(&surface).is_some() {
+            let seat = touch.seat().clone();
+            let input = FrameInput::FingerDown(position.0, position.1);
+            self.frame_touch(&seat, &surface, input, serial, time);
+            if let Some(seat_state) = self.seats.get_mut(&seat.id()) {
+                let location = LogicalPosition::<f64>::from(position);
+                seat_state.touch_map.insert(id, TouchPoint { surface, location });
+            }
+            return;
+        }
+
         let window_id = wayland::make_wid(&surface);
         let scale_factor = match self.windows.get_mut().get(&window_id) {
             Some(window) => window.lock().unwrap().scale_factor(),
@@ -64,8 +82,8 @@ impl TouchHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         touch: &WlTouch,
-        _: u32,
-        _: u32,
+        serial: u32,
+        time: u32,
         id: i32,
     ) {
         let seat_state = match self.seats.get_mut(&touch.seat().id()) {
@@ -81,6 +99,13 @@ impl TouchHandler for WinitState {
             Some(touch_point) => touch_point,
             None => return,
         };
+
+        // TraceDraw: a finger lifted from the window's frame (#2070).
+        if frame_parent(&touch_point.surface).is_some() {
+            let seat = touch.seat().clone();
+            self.frame_touch(&seat, &touch_point.surface, FrameInput::FingerUp, serial, time);
+            return;
+        }
 
         let window_id = wayland::make_wid(&touch_point.surface);
         let scale_factor = match self.windows.get_mut().get(&window_id) {
@@ -107,7 +132,7 @@ impl TouchHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         touch: &WlTouch,
-        _: u32,
+        time: u32,
         id: i32,
         position: (f64, f64),
     ) {
@@ -124,6 +149,18 @@ impl TouchHandler for WinitState {
             Some(touch_point) => touch_point,
             None => return,
         };
+
+        // TraceDraw: a finger moving on the window's frame starts the move
+        // or the resize its press asked for, with the press's serial the
+        // window kept (#2070).
+        if frame_parent(&touch_point.surface).is_some() {
+            touch_point.location = LogicalPosition::<f64>::from(position);
+            let surface = touch_point.surface.clone();
+            let seat = touch.seat().clone();
+            let input = FrameInput::Moved(position.0, position.1);
+            self.frame_touch(&seat, &surface, input, 0, time);
+            return;
+        }
 
         let window_id = wayland::make_wid(&touch_point.surface);
         let scale_factor = match self.windows.get_mut().get(&window_id) {
@@ -156,7 +193,15 @@ impl TouchHandler for WinitState {
             },
         };
 
-        for (id, touch_point) in seat_state.touch_map.drain() {
+        // TraceDraw: the points are taken first, so that the frame under
+        // a finger can be left (#2070).
+        let points: Vec<_> = seat_state.touch_map.drain().collect();
+        for (id, touch_point) in points {
+            if frame_parent(&touch_point.surface).is_some() {
+                let seat = touch.seat().clone();
+                self.frame_touch(&seat, &touch_point.surface, FrameInput::Left, 0, 0);
+                continue;
+            }
             let window_id = wayland::make_wid(&touch_point.surface);
             let scale_factor = match self.windows.get_mut().get(&window_id) {
                 Some(window) => window.lock().unwrap().scale_factor(),
@@ -195,6 +240,42 @@ impl TouchHandler for WinitState {
     fn orientation(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlTouch, _: i32, _: f64) {
         // Blank.
     }
+}
+
+impl WinitState {
+    /// TraceDraw: tell the frame `surface` belongs to what a finger did on
+    /// it (#2070); `serial` is the press's, `time` the event's.
+    fn frame_touch(
+        &mut self,
+        seat: &WlSeat,
+        surface: &WlSurface,
+        input: FrameInput,
+        serial: u32,
+        time: u32,
+    ) {
+        let Some(parent) = frame_parent(surface) else {
+            return;
+        };
+        let window_id = wayland::make_wid(&parent);
+        let Some(window) = self.windows.get_mut().get(&window_id).cloned() else {
+            return;
+        };
+        window.lock().unwrap().frame_input(
+            input,
+            seat,
+            surface,
+            serial,
+            Duration::from_millis(time as u64),
+            window_id,
+            &mut self.window_compositor_updates,
+        );
+    }
+}
+
+/// TraceDraw: the window's surface for a surface of its frame (one with
+/// a parent); `None` for the window's own surface (#2070).
+fn frame_parent(surface: &WlSurface) -> Option<WlSurface> {
+    surface.data::<SurfaceData>()?.parent_surface().cloned()
 }
 
 /// The state of the touch point.

@@ -14,6 +14,14 @@ pressure 0.5, sprayer spacing 8 mm.
   outline; the Properties panel edits it like any curve.
 - Brush Strokes panel > Apply to curve replaces the selected curves by
   strokes of the current mode along their path.
+- Break Apart (Ctrl+K) on a stroke (a curve whose outline is a brush
+  band: widths along it or a calligraphic nib, a Variable Outline too)
+  gives two objects in one undo step: the band as a group of plain
+  filled curves (one per separate part, in the outline's colour or
+  fill, no outline) where the stroke was, and the path right above it,
+  the same object, with a plain hairline outline in the stroke's colour.
+  The stroke stayed one object (a live test of 0.41,
+  `command::tests::break_apart_sets_a_brush_stroke_apart_from_its_path`).
 
 ## Property bar
 

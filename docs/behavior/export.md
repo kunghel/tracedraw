@@ -22,6 +22,11 @@ Office presets start with their own (see `options.md`).
   exported before comes back with All pages or Current page as it was
   exported (a page list comes back as All pages, since it belongs to
   one drawing; #1161, `prefs::tests::pdf_exports_every_page_by_default`).
+- Spreads (shown when the drawing has facing pages, not with Selected
+  only, #1972): each spread of the chosen pages is written as one page
+  as wide as its pages side by side, numbered by spread in files of one
+  page; off, each page is written alone with what its facing page holds
+  across the spine and in the bleed beside it (see `facing-pages.md`).
 - PDF, AI (PDF-compatible), PostScript, PRN and HTML write one file holding the pages
   chosen (a multi-page PDF). The other formats (SVG, EPS, AI of version 8, DXF, EMF, WMF,
   PLT, PSD and the bitmap formats) hold one page: with more than one

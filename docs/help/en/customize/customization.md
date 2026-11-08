@@ -68,8 +68,11 @@ Zoom toolbars: drag a button you removed from a bar back onto it from there.
 
 - [[options.palette_auto_update]] and [[options.palette_show_document]] (both
   on).
-- **Rows** (1 to 8, or Fit) and **Swatch size** (Extra Small to Extra Large)
-  of the default palette.
+- [[options.palette_position]] (Top, Bottom, Left, Right or Floating),
+  **Rows** (1 to 8, or Fit) and **Swatch size** (Extra Small to Extra Large)
+  of the default palette, as its own menu sets them: a floating palette
+  takes the rows at its length. The position stays while the toolbars are
+  locked.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (on), and what
   the [[options.palette_right_button]] does: [[options.palette_set_outline]]
   (at first) or open the [[options.palette_context_menu]].

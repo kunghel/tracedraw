@@ -343,15 +343,22 @@ pub(crate) fn open_whats_new(app: &mut App) {
 /// submenus that lead to them, by their keys. Each version replaces the
 /// list with its own.
 pub const NEW_IN_THIS_VERSION: &[&str] = &[
-    // View > Scrollbars hides the drawing window's scrollbars.
-    "menu.view",
-    "menu.view.scrollbars",
-    // View > Page > Page Shadow, apart from Page Border.
-    "menu.view.page",
-    "menu.view.page_shadow",
-    // Bitmaps > Crop to Frame cuts a framed picture to its frame.
-    "menu.bitmaps",
-    "menu.bitmaps.crop_to_frame",
+    // Page > Facing Pages shows the pages side by side in spreads.
+    "menu.layout",
+    "menu.layout.facing_pages",
+    "menu.layout.facing_start",
+    // Text > Link Text Content links the characters of several texts.
+    "menu.text",
+    "menu.text.link_content",
+    // Help > Search Commands finds a menu command by its name.
+    "menu.help",
+    "menu.help.search_commands",
+    // Object > Nodes: the Shape tool's node commands, with keys (#2001).
+    "menu.object",
+    "menu.object.nodes",
+    // Object > Symbol > Edit Symbol changes a symbol in place (#1980).
+    "menu.object.symbol",
+    "menu.object.symbol_edit",
 ];
 
 thread_local! {
@@ -600,6 +607,14 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.to_back_of_page" => Pic::ToBack,
         "menu.object.to_back_of_layer" => Pic::ToBack,
         "menu.object.convert_to_curves" => Pic::ToCurves,
+        "menu.object.node_add" => Pic::AddNode,
+        "menu.object.node_join" => Pic::JoinNodes,
+        "menu.object.node_break" => Pic::BreakCurve,
+        "menu.object.node_to_line" => Pic::ToLine,
+        "menu.object.node_to_curve" => Pic::ToCurve,
+        "menu.object.node_cusp" => Pic::NodeCusp,
+        "menu.object.node_smooth" => Pic::NodeSmooth,
+        "menu.object.node_symmetrical" => Pic::NodeSymmetrical,
         "menu.object.lock_object" | "menu.object.lock" => Pic::Lock(true),
         "menu.object.group" => Pic::Group,
         "menu.object.shaping" => Pic::Weld,
@@ -1493,6 +1508,42 @@ mod tests {
         }
     }
 
+    /// Page > Facing Pages and its Start On submenu (#1972): run by key,
+    /// each one undo step; choosing a side turns facing pages on.
+    #[test]
+    fn the_page_menu_turns_facing_pages_on_and_picks_the_side() {
+        use tracedraw_core::spreads::PageSide;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut entries = Vec::new();
+        run_frame(&ctx, |ui| entries = commands(&mut app, ui.ctx()));
+        let pos = |key: &str| entries.iter().position(|e| e.key == key);
+        let left = pos("menu.layout.facing_start_left").expect("Left Side");
+        assert_eq!(
+            entries[left].path,
+            ["menu.layout", "menu.layout.facing_start"]
+        );
+        let mut ran = false;
+        run_frame(&ctx, |ui| {
+            ran = run_command(&mut app, ui.ctx(), "menu.layout.facing_pages")
+        });
+        assert!(ran);
+        assert!(app.doc().metadata.facing_pages);
+        assert_eq!(app.doc().metadata.facing_start, PageSide::Right);
+        run_frame(&ctx, |ui| {
+            run_command(&mut app, ui.ctx(), "menu.layout.facing_pages");
+        });
+        assert!(!app.doc().metadata.facing_pages);
+        run_frame(&ctx, |ui| {
+            run_command(&mut app, ui.ctx(), "menu.layout.facing_start_left");
+        });
+        assert!(app.doc().metadata.facing_pages);
+        assert_eq!(app.doc().metadata.facing_start, PageSide::Left);
+        app.undo();
+        assert!(!app.doc().metadata.facing_pages);
+        assert_eq!(app.doc().metadata.facing_start, PageSide::Right);
+    }
+
     #[test]
     fn menu_commands_are_listed_and_run_by_key() {
         let ctx = crate::theme::ui_context();
@@ -1522,9 +1573,9 @@ mod tests {
                 "{key} is not in the menus"
             );
         }
-        assert!(!marked_new("menu.view.scrollbars"));
+        assert!(!marked_new("menu.layout.facing_pages"));
         set_highlight_new(true);
-        assert!(marked_new("menu.view.scrollbars"));
+        assert!(marked_new("menu.layout.facing_pages"));
         assert!(!marked_new("menu.file.export"));
         set_highlight_new(false);
         assert!(
@@ -2628,8 +2679,10 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         ) {
             app.text_delete_forward();
         }
-    } else if item(ui, "menu.edit.delete", "Delete", has) {
-        app.delete_selection();
+    } else if item(ui, "menu.edit.delete", "Delete", has || app.nodes_chosen()) {
+        // With the Shape tool and nodes chosen: the nodes, not the
+        // object they belong to (#1982).
+        app.delete_nodes_or_selection();
     }
     sep(ui);
     // Guidelines selected (no objects) duplicate too.
@@ -2922,6 +2975,28 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
             };
         }
     });
+    // Facing pages: the pages in spreads, the first page on the right
+    // or on the left (#1972, #1660).
+    {
+        use tracedraw_core::spreads::PageSide;
+        let (on, start) = {
+            let m = &app.doc().metadata;
+            (m.facing_pages, m.facing_start)
+        };
+        if check(ui, "menu.layout.facing_pages", "", on) {
+            app.set_facing_pages(!on, start);
+        }
+        sub(ui, "menu.layout.facing_start", |ui| {
+            for (side, key) in [
+                (PageSide::Right, "menu.layout.facing_start_right"),
+                (PageSide::Left, "menu.layout.facing_start_left"),
+            ] {
+                if radio(ui, key, "", on && start == side) {
+                    app.set_facing_pages(true, side);
+                }
+            }
+        });
+    }
     if item(
         ui,
         "menu.layout.fit_page_selection",
@@ -2941,6 +3016,43 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.layout.page_background", "", true) {
         app.dialog = Dialog::Options;
         app.options_page = crate::ui::dialogs::OptionsPage::Background;
+    }
+}
+
+/// The Shape tool's node commands, with their keys (#2001): Object >
+/// Nodes, so that they are in Options > Customization > Commands and can
+/// take keys of the user's. They work on the chosen nodes with the Shape
+/// tool; the keys are also read by the canvas
+/// (`App::node_command_key`).
+pub(crate) const NODE_COMMANDS: [(&str, &str); 8] = [
+    ("menu.object.node_add", "+"),
+    ("menu.object.node_join", "Shift+J"),
+    ("menu.object.node_break", "Shift+B"),
+    ("menu.object.node_to_line", "Shift+L"),
+    ("menu.object.node_to_curve", "Shift+U"),
+    ("menu.object.node_cusp", "Shift+C"),
+    ("menu.object.node_smooth", "Shift+M"),
+    ("menu.object.node_symmetrical", "Shift+Y"),
+];
+
+/// Object > Nodes: the node commands of the Shape tool's property bar.
+fn node_items(app: &mut App, ui: &mut Ui) {
+    let has = app.tool == crate::tools::Tool::Shape && !app.node_selection.is_empty();
+    for (key, keys) in NODE_COMMANDS {
+        let enabled = if key == "menu.object.node_join" {
+            has && app.node_selection.len() == 2
+        } else {
+            has
+        };
+        if matches!(
+            key,
+            "menu.object.node_join" | "menu.object.node_to_line" | "menu.object.node_cusp"
+        ) {
+            sep(ui);
+        }
+        if item(ui, key, keys, enabled) {
+            app.run_node_command(key);
+        }
     }
 }
 
@@ -3035,7 +3147,11 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         // Walked for the list of commands (Options > Customization >
         // Commands) both rows count, so each can take a shortcut (#1148).
         let editing = app.clip_frame_edit.is_some();
-        if (editing || invoke::active()) && item(ui, "menu.object.clip_frame_finish", "", editing) {
+        // A symbol being edited finishes from the Symbol menu.
+        let clip_editing = editing && app.symbol_edit_index().is_none();
+        if (clip_editing || invoke::active())
+            && item(ui, "menu.object.clip_frame_finish", "", clip_editing)
+        {
             app.finish_clip_frame_edit();
         }
         if (!editing || invoke::active())
@@ -3107,6 +3223,27 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.object.symbol_insert", "", has_symbols) {
             let last = app.doc().symbols.len().saturating_sub(1);
             app.insert_symbol_instance(last);
+        }
+        // Edit Symbol and Finish Editing Symbol take turns (#1980); both
+        // rows count for the list of commands.
+        let editing_symbol = app.symbol_edit_index().is_some();
+        let one_instance = app.selected_symbol_instance();
+        if (!editing_symbol || invoke::active())
+            && item(
+                ui,
+                "menu.object.symbol_edit",
+                "",
+                one_instance.is_some() && app.clip_frame_edit.is_none(),
+            )
+        {
+            if let Some(id) = one_instance {
+                app.edit_symbol_instance(id);
+            }
+        }
+        if (editing_symbol || invoke::active())
+            && item(ui, "menu.object.symbol_finish", "", editing_symbol)
+        {
+            app.finish_clip_frame_edit();
         }
         if item(ui, "menu.object.symbol_revert", "", has_instance) {
             app.revert_symbol_instances();
@@ -3340,6 +3477,7 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         app.show_dockers = true;
         app.docker_tab = crate::app::DockerTab::JoinCurves;
     }
+    sub(ui, "menu.object.nodes", |ui| node_items(app, ui));
     sep(ui);
     let has_fill = app
         .selected_shapes()
@@ -3677,6 +3815,21 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         let on = app.vertical_text_on();
         if mark_item_if(ui, "menu.text.vertical_text", "", Mark::Check(on), offered) {
             app.set_vertical_text(!on);
+        }
+        // The columns of vertical text left to right (#1986).
+        let ltr = app.vertical_columns() == Some(tracedraw_core::VerticalColumns::LeftToRight);
+        if mark_item_if(
+            ui,
+            "menu.text.vertical_columns_ltr",
+            "",
+            Mark::Check(ltr),
+            offered && on,
+        ) {
+            app.set_vertical_columns(if ltr {
+                tracedraw_core::VerticalColumns::RightToLeft
+            } else {
+                tracedraw_core::VerticalColumns::LeftToRight
+            });
         }
     }
     if item(ui, "menu.text.edit_text", "Ctrl+Shift+T", is_text) {
@@ -4289,6 +4442,16 @@ fn help_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.help.product_help", "F1", true) {
         let topic = crate::help::context_topic(app);
         app.open_help(topic);
+    }
+    // Find a menu command by its name and run it (see
+    // `ui::command_search`).
+    if item(
+        ui,
+        crate::ui::command_search::MENU_KEY,
+        "Ctrl+Shift+P",
+        true,
+    ) {
+        app.command_search.open();
     }
     sep(ui);
     if item(ui, "menu.help.welcome_screen", "", true) {

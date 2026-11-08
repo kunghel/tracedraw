@@ -35,3 +35,20 @@ fehlen, weist eine Meldung darauf hin; siehe
 [Hinweise nach dem Öffnen](../get-started/open-and-save.md#open-notes). Sie
 können Dateien auch auf das Fenster ziehen oder aus anderen Programmen
 einfügen; siehe [Inhalte einfügen](../objects/paste-special.md).
+
+## PDF-Dateien mit mehreren Seiten {#pdf-pages}
+
+Wenn Sie eine PDF- oder AI-Datei mit mehr als einer Seite importieren, öffnet
+sich nach den Fragen zum Text und zum Kennwort das Dialogfeld
+[[pdf_pages.title]]. Wählen Sie [[pdf_pages.all]] oder geben Sie die Seiten
+ein, etwa `1-3, 5`; die Liste zeigt jede Seite mit Größe und Ausrichtung, und
+ein Häkchen fügt eine Seite hinzu. Wählen Sie dann, wohin sie kommen:
+
+- [[pdf_pages.new_pages]]: Jede Seite wird eine Seite der Zeichnung, mit
+  eigener Größe und Ausrichtung, in der Reihenfolge der Datei. So werden
+  PDF-Dateien zu einer Zeichnung zusammengeführt.
+- [[pdf_pages.current_page]]: Die Objekte kommen auf die aktive Ebene; bei
+  mehreren Seiten sind die Objekte jeder Seite eine Gruppe.
+
+Der ganze Import ist ein einziger Rückgängig-Schritt. Eine Datei mit einer
+Seite wird ohne das Dialogfeld importiert.

@@ -238,12 +238,13 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             pen.node(13.5, 7.0, true);
         }
         Tool::Pan => {
-            // A page shifted from its ghost, the drag arrow.
-            pen.ghost(&rrect(3.0, 3.0, 13.0, 13.0, 1.5), a(0.4));
-            pen.solid(&rrect(8.0, 8.0, 13.0, 13.0, 1.5));
-            pen.line("M6 6l5.5 5.5", acc);
-            pen.arrow_head(13.5, 13.5, 1.0, 1.0, 3.0, acc);
-            pen.node(6.0, 6.0, true);
+            // An open hand, the one that grabs the view (#1727): four
+            // fingers up, the thumb out to the left.
+            pen.body(
+                "M8 14.5V5.5a1.25 1.25 0 0 1 2.5 0V11V4a1.25 1.25 0 0 1 2.5 0v7V5\
+                 a1.25 1.25 0 0 1 2.5 0v6.5V7.5a1.25 1.25 0 0 1 2.5 0V15c0 3.5-2.5 6-6 6\
+                 h-1c-2.5 0-4-1.2-5.2-3l-2.2-4.4a1.3 1.3 0 0 1 2-1.6z",
+            );
         }
 
         // Curve group.

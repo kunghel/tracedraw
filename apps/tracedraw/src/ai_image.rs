@@ -576,27 +576,24 @@ pub fn extract_svg(reply: &str) -> Option<String> {
 
 /// The request for the service's models.
 pub fn build_models(prefs: &ImagePrefs, key: &str) -> HttpRequest {
+    // The Gemini API lists 50 models a page unless asked for more: its
+    // image models past the first page never showed.
+    let url = match prefs.provider {
+        ImageProvider::Gemini => format!("{}/models?pageSize=1000", prefs.endpoint()),
+        ImageProvider::OpenAi => format!("{}/models", prefs.endpoint()),
+    };
     HttpRequest {
         method: "GET",
-        url: format!("{}/models", prefs.endpoint()),
+        url,
         headers: headers(prefs, key, false),
         body: String::new(),
         bytes: Vec::new(),
     }
 }
 
+/// An error reply said plainly, as for drawings ([`crate::ai::http_error`]).
 fn http_error(r: &HttpResponse, v: Option<&Value>) -> String {
-    let message = v
-        .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()))
-        .map(str::to_string)
-        .unwrap_or_else(|| r.body.chars().take(200).collect());
-    trf(
-        "ai.http_error",
-        &[
-            ("status", &r.status.to_string()),
-            ("message", message.trim()),
-        ],
-    )
+    crate::ai::http_error(r, v)
 }
 
 /// The image models a service lists.
@@ -606,7 +603,7 @@ pub fn parse_models(provider: ImageProvider, r: &HttpResponse) -> Result<Vec<Str
         return Err(http_error(r, v.as_ref()));
     }
     let v = v.ok_or_else(|| tr("ai.unreadable_reply"))?;
-    let ids: Vec<String> = match provider {
+    let all: Vec<String> = match provider {
         ImageProvider::Gemini => v
             .get("models")
             .and_then(|m| m.as_array())
@@ -614,7 +611,6 @@ pub fn parse_models(provider: ImageProvider, r: &HttpResponse) -> Result<Vec<Str
                 l.iter()
                     .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
                     .map(|n| n.trim_start_matches("models/").to_string())
-                    .filter(|n| n.contains("image"))
                     .collect()
             })
             .unwrap_or_default(),
@@ -624,12 +620,20 @@ pub fn parse_models(provider: ImageProvider, r: &HttpResponse) -> Result<Vec<Str
             .map(|l| {
                 l.iter()
                     .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
-                    .filter(|i| i.contains("image") || i.starts_with("dall-e"))
                     .map(str::to_string)
                     .collect()
             })
             .unwrap_or_default(),
     };
+    // The image models among them, told by their names; a service whose
+    // image models have other names (a server of the user's) offers them
+    // all, rather than none.
+    let images: Vec<String> = all
+        .iter()
+        .filter(|i| i.contains("image") || i.starts_with("dall-e"))
+        .cloned()
+        .collect();
+    let ids = if images.is_empty() { all } else { images };
     if ids.is_empty() {
         return Err(tr("ai.no_models"));
     }
@@ -897,6 +901,21 @@ impl App {
     /// The image calls of the AI service, when it can make pictures.
     pub fn ai_image_prefs(&self) -> Option<ImagePrefs> {
         self.settings.ai.image_prefs()
+    }
+
+    /// The image models to choose from: the service's image models once
+    /// fetched, else the usual ones, with the image model set up first
+    /// when it is in neither (see [`crate::ai::model_choices`]). None when
+    /// the service makes no pictures.
+    pub fn ai_image_model_choices(&self) -> Vec<String> {
+        let Some(prefs) = self.ai_image_prefs() else {
+            return Vec::new();
+        };
+        crate::ai::model_choices(
+            &[prefs.model()],
+            &self.ai_image.models,
+            prefs.provider.preset_models(),
+        )
     }
 
     /// The AI service makes pictures (it can, has a model and its key
@@ -1277,7 +1296,7 @@ impl App {
         let mut i = 0;
         while i < self.ai_image.pending.len() {
             let got = match self.ai_image.pending[i].rx.try_recv() {
-                Ok(r) => Some(r),
+                Ok(r) => Some(r.map_err(crate::ai::network_error)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     Some(Err(tr("ai.connection_lost")))
@@ -1578,6 +1597,7 @@ mod tests {
 
     fn gemini_reply(png: &[u8]) -> HttpResult {
         Ok(HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"candidates": [{"content": {"parts": [
                 {"text": "Here it is"},
@@ -1761,6 +1781,7 @@ mod tests {
             vec![one.clone()]
         );
         let r = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"data": [{"b64_json": b64(&one)}, {"b64_json": b64(&one)}]}).to_string(),
         };
@@ -1771,6 +1792,7 @@ mod tests {
             2
         );
         let bad = HttpResponse {
+            retry_after: None,
             status: 401,
             body: json!({"error": {"message": "Incorrect API key"}}).to_string(),
         };
@@ -1778,6 +1800,7 @@ mod tests {
             .unwrap_err()
             .contains("Incorrect API key"));
         let blocked = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"promptFeedback": {"blockReason": "SAFETY"}}).to_string(),
         };
@@ -1785,6 +1808,7 @@ mod tests {
             .unwrap_err()
             .contains("SAFETY"));
         let words = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"candidates": [{"content": {"parts": [{"text": "I cannot draw that"}]}}]})
                 .to_string(),
@@ -1793,17 +1817,20 @@ mod tests {
             .unwrap_err()
             .contains("I cannot draw that"));
         let url = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"data": [{"url": "https://x"}]}).to_string(),
         };
         assert!(parse_images(ImageProvider::OpenAi, &url).is_err());
         let junk = HttpResponse {
+            retry_after: None,
             status: 200,
             body: "not json".into(),
         };
         assert!(parse_images(ImageProvider::Gemini, &junk).is_err());
         assert!(to_png(b"not a picture").is_none());
         let models = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"models": [{"name": "models/gemini-2.5-flash"}, {"name": "models/gemini-2.5-flash-image"}]}).to_string(),
         };
@@ -2032,6 +2059,7 @@ mod tests {
         let mut app = ready_app(ImageProvider::OpenAi);
         app.ai_image.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 429,
                 body: json!({"error": {"message": "Rate limit reached"}}).to_string(),
             })
@@ -2047,7 +2075,7 @@ mod tests {
         app.ai_create(false);
         assert_eq!(
             app.ai_image.status,
-            ImageStatus::Failed("network down".into())
+            ImageStatus::Failed(trf("ai.network_error", &[("e", "network down")]))
         );
     }
 
@@ -2082,6 +2110,7 @@ mod tests {
         let mut app = ready_app(ImageProvider::OpenAi);
         app.ai_image.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: json!({"data": [{"b64_json": b64(&png(4, 4, |_, _| [1, 1, 1, 255]))}]})
                     .to_string(),
@@ -2142,6 +2171,7 @@ mod tests {
         app.ai.key = "k".into();
         app.ai_image.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: json!({
                     "content": [{"type": "text", "text": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 50'><rect x='0' y='0' width='40' height='40' fill='#ff0000'/><circle cx='75' cy='25' r='20' fill='#0000ff'/></svg>"}],

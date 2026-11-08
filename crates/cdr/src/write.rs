@@ -133,6 +133,12 @@ pub struct ShadowPicture {
 /// (version 16 and later).
 pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Previews) -> Vec<u8> {
     let v = Ver(version.clamp(OLDEST_VERSION, NEWEST_VERSION));
+    let meshes = mesh_fills_kept_as_one_colour(doc);
+    if meshes > 0 {
+        log::warn!(
+            "{meshes} mesh fill(s) written to .cdr as one colour each (mesh fill records are not written)"
+        );
+    }
     // The guidelines every page shows (#1928) count as each page's; those
     // all pages share go to the master page's guides layer
     // ([`master_guides`]), as files hold them.
@@ -1593,12 +1599,48 @@ fn fill_colour(fill: &Fill) -> Option<Color> {
     }
 }
 
+/// How many objects of `doc` (inside groups and clip frames and in
+/// symbols too) have a mesh fill, which these files get as one colour,
+/// the mesh's mean colour: the records of mesh fill objects are only
+/// known as far as reading them needs (`docs/cdr-format.md`, object type
+/// 0x20), not well enough to write one (discussion #2073). The app tells
+/// the user after saving.
+pub fn mesh_fills_kept_as_one_colour(doc: &Document) -> usize {
+    fn count(shapes: &[Shape]) -> usize {
+        shapes
+            .iter()
+            .map(|s| {
+                let own = usize::from(matches!(s.fill, Fill::Mesh(_)));
+                own + match &s.kind {
+                    ShapeKind::Group { children } => count(children),
+                    ShapeKind::ClipFrame { frame, contents } => {
+                        count(std::slice::from_ref(&**frame)) + count(contents)
+                    }
+                    _ => 0,
+                }
+            })
+            .sum()
+    }
+    doc.pages
+        .iter()
+        .flat_map(|p| &p.layers)
+        .map(|l| count(&l.shapes))
+        .sum::<usize>()
+        + doc
+            .symbols
+            .iter()
+            .map(|s| count(std::slice::from_ref(&s.shape)))
+            .sum::<usize>()
+}
+
 /// The one colour written for a fill these files cannot hold yet: the
 /// mean colour of a bitmap pattern's tile, the middle of a texture's or a
-/// two-colour pattern's colours, else its preview colour.
+/// two-colour pattern's colours, the mean of a mesh's node colours
+/// (weighed by their opacity), else its preview colour.
 fn stand_in_colour(fill: &Fill) -> Option<Color> {
     use tracedraw_core::style::{lerp_color, Pattern};
     match fill {
+        Fill::Mesh(m) => m.mean_color().or_else(|| fill.preview_color()),
         Fill::Pattern(Pattern::Bitmap { png, .. }) => {
             let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
             let (mut sum, mut weight) = ([0.0f64; 3], 0.0f64);
@@ -2545,6 +2587,10 @@ struct StyleUses {
     graphic_fill: u32,
     outline: u32,
     font: u16,
+    /// The style flags of the face of `font` the styles name: the flags
+    /// of its first `font` record (0x40 where the regular face is used
+    /// or before version 16), so the styles name a face the file has.
+    font_flags: u32,
     /// Text formats of versions 7 to 15, one style each after the
     /// graphic style (ids from `GRAPHIC_STYLE_ID + 1`).
     formats: Vec<TextFormat>,
@@ -2663,7 +2709,7 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
         font,
         uses.font,
         (12.0 * 254000.0 / 72.0) as i32,
-        0x40,
+        uses.font_flags,
     );
     for (f, (_, entry)) in uses.formats.iter().zip(&format_entries) {
         font_entry(&mut t, *entry, f.font, f.size, f.flags);
@@ -4071,6 +4117,11 @@ impl<'a> Writer<'a> {
         if self.fonts.is_empty() {
             self.font_id("Arial");
         }
+        // The face the style table names: the first record of the first
+        // font, as the file of #1733 names its one face there (Khand at
+        // 0x1000, the bold face, with no regular record).
+        let first_font = self.fonts.first().map(|(id, _)| *id);
+        let mut style_face = 0x40;
         if !self.fonts.is_empty() {
             // What the package's font table says about each embedded
             // face, for the records of version 16 and later (faces not
@@ -4087,10 +4138,6 @@ impl<'a> Writer<'a> {
             };
             let mut fonts = Vec::new();
             for (id, f) in &self.fonts {
-                fonts.push(chunk(
-                    b"font",
-                    font_record(v, *id, f, 0x40, record_of(*id, 0x40)),
-                ));
                 // The faces the text asks for, and the faces the font
                 // table lists for them (a bold face drawing bold italic
                 // text), each of which has its record in files (#1455).
@@ -4104,10 +4151,22 @@ impl<'a> Writer<'a> {
                             .filter(|r| r.number == *id)
                             .flat_map(|r| r.flags.iter().copied()),
                     )
-                    .filter(|flags| *flags != 0x40)
                     .collect();
+                // Files of version 16 and later hold a record for each
+                // face used and none for a regular face nothing uses: the
+                // file of #1733 that program saved has one "Khand" record,
+                // the bold one. A plain record beside it named a regular
+                // face the file neither embeds nor needs, which was asked
+                // for where the font is not installed. Before 16 the
+                // regular record is the font the text styles name.
+                if faces.is_empty() || !v.redirects() {
+                    faces.push(0x40);
+                }
                 faces.sort_unstable();
                 faces.dedup();
+                if Some(*id) == first_font {
+                    style_face = faces[0];
+                }
                 for flags in faces {
                     fonts.push(chunk(
                         b"font",
@@ -4124,6 +4183,7 @@ impl<'a> Writer<'a> {
             graphic_fill: self.fill_id(&Fill::None),
             outline: self.outline_id(None),
             font: self.fonts.first().map(|(id, _)| *id).unwrap_or(1),
+            font_flags: style_face,
             formats: std::mem::take(&mut self.text_formats),
         };
 

@@ -18,6 +18,7 @@ TraceDraw 的每个版本都会增加功能和修复。本页介绍如何了解�
 
 ## 最近版本的亮点 {#highlights}
 
+- **对页和链接文本。** [[menu.layout > menu.layout.facing_pages]] 将页面并排显示为跨页；[[menu.text > menu.text.link_content]] 链接文本，在一个中输入会改变其他文本；多页 PDF 会询问要导入哪些页面；[[menu.edit > menu.edit.step_and_repeat]] 可以用副本填满页面。
 - **触控和手机。** 标准工具栏上的 Shift、Ctrl 和 Alt 按钮为手指保持按下；在 Android 上界面会避开摄像头挖孔和圆角；Apple Pencil 可在 iPad 的 Safari 中使用。
 - **文件。** .cdr 文件保留重叠曲线的填充规则，打开时保留制表位、多栏文本、所有页面共用的辅助线和主页面对象。
 - **图片、打印和工作区。** 裁剪工具的裁剪图片像素和 [[menu.bitmaps > menu.bitmaps.crop_to_frame]] 可以裁掉图片的像素；可以灰度打印和倒序打印；[[menu.view > menu.view.scrollbars]] 可以隐藏滚动条。

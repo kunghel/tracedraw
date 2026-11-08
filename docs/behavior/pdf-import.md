@@ -2,8 +2,45 @@
 
 File > Open and File > Import accept `.pdf` and `.ai` (PDF-compatible
 AI files, which carry a PDF after a PostScript preamble). Open
-makes one page per PDF page; Import places the first page's objects on
-the active layer.
+makes one page per PDF page. Import of a file of one page places its
+objects on the active layer; a file of several pages asks which pages
+come in and where (below).
+
+## Importing several pages
+
+When the file read for File > Import has more than one page, the Import
+PDF Pages dialog asks, after the Import PDF dialog (how to read the
+text) and the password of a protected file, so nothing is asked twice:
+
+- Pages to import: All (the default), or the pages typed as numbers
+  and ranges from 1 ("1-3, 5"). The list below shows each page with
+  its size in the document's units and its orientation, ticked when it
+  is chosen; ticking a page writes the range. Pages typed out of order
+  or twice come in once each, in the file's order; numbers past the
+  last page are left out. OK with no page chosen says so and keeps the
+  dialog open.
+- Place them:
+  - As new pages after the current page (the default): each chosen page
+    becomes a document page with that page's size and orientation (its
+    crop box and `/Rotate`, as Open reads them), in order, right after
+    the current page, with one layer holding its objects where the file
+    has them. The first new page is shown with its objects selected.
+    The placement cursor and the view centre (Options > File Formats)
+    do not move them.
+  - On the current page: the objects go on the active layer, as for a
+    file of one page; with several pages chosen each page's objects are
+    one group, named after its page, stacked in page order, all
+    selected. A place given with the import cursor, or the view centre
+    when Options > File Formats says so, applies to them all.
+- The file's spot inks join the drawing's as below, and everything
+  (inks, pages, objects) is one undo step ("Import"). Pictures of the
+  chosen pages that came in smaller are told as below.
+
+A file of one page comes in without the dialog, as before. Taking pages
+of several files into one drawing this way merges PDFs; Export or
+Publish to PDF with a page range splits them. The dialog is the same on
+the desktop, in the browser and on Android: the file is read once, and
+the dialog keeps what was read until OK or Cancel.
 
 ## What is read
 
@@ -179,6 +216,13 @@ their own crypt filter and signature contents are left alone.
   `what_is_encrypted_decrypts_again`,
   `revision_5_files_open_with_either_password`
 - `ui::pdf_password::tests::protected_pdfs_ask_for_their_password`
+- Several pages: `ui::pdf_pages::tests::importing_a_pdf_of_several_pages_asks_which_and_where`
+  (the text question, then the pages; nothing chosen; pages 3 and 1 as
+  new pages after the first of two, at 210 x 297 and 100 x 50 mm, in
+  one undo step; two pages on the current page as two groups),
+  `a_pdf_of_one_page_comes_in_without_asking`,
+  `page_lists_read_and_write_ranges`, and in the core
+  `command::tests::inserted_pages_keep_their_sizes_and_undo_as_one_step`.
 - Checked by hand: files protected by an independent PDF tool in
   revisions 2, 3, 4, 5 and 6, with and without object streams, convert to
   the same SVG as the unprotected file.

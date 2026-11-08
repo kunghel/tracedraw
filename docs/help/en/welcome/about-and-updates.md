@@ -31,11 +31,42 @@ To check now:
    - **Skip this version** stops offering that version.
    - [[dialog.close]] closes the box.
 
-When TraceDraw runs as a Linux AppImage, the box can also offer
-**Install**: it downloads the new AppImage next to the one you run, checks
-that the download is complete and genuine, and puts it in place of the old
-file. The new version starts the next time you open TraceDraw. If anything
-does not check out, the old file stays as it was and the box tells you why.
+When a newer version is known, a card opens in the middle of the window when
+TraceDraw starts, with the two version numbers and **Update now**, so you can
+update without opening the menu. **What's new** opens the release notes and
+**Dismiss** closes the card until the next start. Nothing is downloaded until
+you choose Update now.
+
+When your copy can update itself, the box also offers **Install**, so you do
+not have to uninstall anything first. That is the case for every copy that has
+a download: the Windows installer and portable zip, the Mac app, and the Linux
+AppImage, archive and `.deb`. Install downloads the new version, checks that
+the download is complete and genuine, and then:
+
+- on the **Windows installer**, waits for you to choose **Close and install**:
+  TraceDraw closes (asking about drawings with unsaved changes), the installer
+  runs over this copy and keeps your settings and file associations, and the
+  new version starts by itself;
+- on the **Windows portable zip**, replaces the program and its files in place
+  and never touches the settings folder; **Restart now** opens the new
+  version;
+- on a **Linux `.deb`**, waits for you to choose **Close and install**:
+  TraceDraw closes, the system asks for your administrator password, installs
+  the package and TraceDraw starts again (the old version starts if you cancel
+  the password);
+- on a **Linux archive** (tar.gz), replaces the program in place; **Restart
+  now** opens the new version;
+- on a **Mac**, replaces the TraceDraw app in place; **Restart now** opens the
+  new version;
+- on a **Linux AppImage**, puts the new file in place of the old one;
+  **Restart now** opens the new version.
+
+Choose **Later** to keep working: the new version then runs the next time you
+open TraceDraw (on Windows, the downloaded installer is not run until you
+choose Close and install; on a `.deb`, the downloaded package is not
+installed until then). If anything does not check out, the old version stays
+as it was and the box tells you why and offers **Download**. Copies without a
+download (other system packages, Flatpak, Snap) keep **Download**.
 
 If the check fails (for example without an internet connection), the box
 says so and offers the releases page.

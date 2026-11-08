@@ -22,6 +22,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | Ctrl+0 to Ctrl+9, 0 to 9, Alt+0 to Alt+9 | store, select (twice: zoom to) and add to selection groups |
 | Ctrl+A, Delete or Backspace | Select all (with a guideline selected: every guideline of the page, #1753), Delete |
 | Ctrl+F, Ctrl+J, Ctrl+W | Find and Replace panel, Options, Refresh window |
+| Ctrl+Shift+P | Help > Search Commands: find a menu command by typing part of its name and run it (see `command-search.md`) |
 
 
 ### Repeat
@@ -92,7 +93,7 @@ original, #471). Checks:
 | Shift+PgUp, Shift+PgDn | To front and back of the layer |
 | Ctrl+PgUp, Ctrl+PgDn | Forward one, back one |
 | Alt+Enter | Properties panel |
-| Ctrl+Shift+A | Paste Style From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`) |
+| Ctrl+Shift+A | Paste Style From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`). They are read from the object clicked inside a group or clip frame and written as the Attributes Eyedropper writes them (see `eyedroppers.md`; #1550, `pick_drag_tests::copying_properties_from_a_group_takes_the_object_clicked`) |
 | Alt+F7, Alt+F8, Alt+F9, Alt+F10 | Transformations panel on Position, Rotate, Scale and Mirror, Size |
 | Ctrl+M | Merge table cells |
 | Alt+Shift+F8, Alt+F11 | Run Macro, Macro Editor (Tools > Macros) |
@@ -128,6 +129,18 @@ none). Tools with letter keys: Z Zoom, H Pan, Y Polygon, A Spiral, D
 Graph Paper, G Interactive Fill, M Mesh Fill, X Eraser, W Smear, V
 Smudge, E Roughen, S Sketch, Shift+S Shape Recognition, I Artistic
 Media; the Bezier, Pen, Crop and Knife tools have no key.
+
+## Node keys
+
+With the Shape tool and nodes chosen, the node commands of its property
+bar have keys of their own (#2001), Shift and a letter so that they
+never take an align or tool key: Shift+L To Line, Shift+U To Curve,
+Shift+C Cusp, Shift+M Smooth, Shift+Y Symmetrical, Shift+B Break Curve,
+Shift+J Join Nodes, and + Add Node (- deletes the chosen nodes). The
+plain C, S and Y still switch the node type as before (see
+`shape-tool.md`). The commands are Object > Nodes, so Options >
+Customization > Commands lists them under Object and gives them other
+keys (`pick_drag_tests::node_commands_have_keys_of_their_own`).
 
 ## Modal dialogs
 

@@ -257,6 +257,67 @@ impl App {
             .map(|f| f.id)
     }
 
+    /// The flow tab under the screen point `at` whatever the tool, with
+    /// whether it is a frame's top tab (`true`: text flows into it) or
+    /// its bottom one. Nothing is looked up while no frame can show (no
+    /// Show Text Frames, nothing selected or edited): the pointer asks
+    /// at every frame.
+    pub fn any_flow_tab_at(&self, at: egui::Pos2) -> Option<(ShapeId, bool)> {
+        if !self.settings.show_text_frames && self.selection.is_empty() && self.text_edit.is_none()
+        {
+            return None;
+        }
+        // The frames are looked up once for both kinds of tab: as
+        // `flow_tab_at`, then as `flow_in_tab_at`.
+        let frames = self.shown_text_frames(None);
+        let hs = self.handle_size();
+        let screen = |p| self.view.to_screen(p);
+        frames
+            .iter()
+            .find(|f| {
+                (f.overflow || f.chosen)
+                    && !f.linked
+                    && crate::canvas::flow_tab_rect(screen(f.corners[0]), screen(f.corners[1]), hs)
+                        .expand(2.0)
+                        .contains(at)
+            })
+            .map(|f| (f.id, false))
+            .or_else(|| {
+                frames
+                    .iter()
+                    .find(|f| {
+                        f.chosen
+                            && !f.receives
+                            && crate::canvas::flow_in_tab_rect(
+                                screen(f.corners[3]),
+                                screen(f.corners[2]),
+                                hs,
+                            )
+                            .expand(2.0)
+                            .contains(at)
+                    })
+                    .map(|f| (f.id, true))
+            })
+    }
+
+    /// A press on a flow tab at the screen point `at` with any tool
+    /// (#1914, #1986): the text being edited is finished and the link
+    /// starts, the next click (or the end of the drag, `drag`) saying
+    /// where the text flows. `false` off the tabs.
+    pub fn press_flow_tab(&mut self, at: egui::Pos2, drag: bool) -> bool {
+        let Some((id, incoming)) = self.any_flow_tab_at(at) else {
+            return false;
+        };
+        self.finish_text();
+        if incoming {
+            self.start_text_link_in(id);
+        } else {
+            self.start_text_link(id);
+        }
+        self.text_link_from_tab = drag;
+        true
+    }
+
     /// A click on a frame's flow tab: the next click says where its text
     /// flows on (#371).
     pub fn start_text_link(&mut self, from: ShapeId) {
@@ -419,17 +480,39 @@ impl App {
         if chain.len() < 2 {
             return;
         }
-        // Gather the whole text in chain order.
+        let Some(all) = self.chain_text(&chain) else {
+            return;
+        };
+        let cmds = self.flow_commands(&chain, all);
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Text Flow", &cmds);
+        }
+    }
+
+    /// The whole text of the frames `chain`, in that order; `None` when
+    /// one of them is missing.
+    fn chain_text(&self, chain: &[ShapeId]) -> Option<Vec<TextSpan>> {
         let mut all: Vec<TextSpan> = Vec::new();
-        let mut kinds = Vec::new();
-        for id in &chain {
-            let Some(s) = self.doc().find_shape(*id) else {
-                return;
-            };
+        for id in chain {
+            let s = self.doc().find_shape(*id)?;
             if let ShapeKind::Text { spans, .. } = &s.kind {
                 all.extend(spans.iter().cloned());
             }
-            kinds.push(s.kind.clone());
+        }
+        Some(all)
+    }
+
+    /// The commands that lay the text `all` over the frames `chain` in
+    /// order: each frame keeps what fits, the rest flows on and the last
+    /// frame takes whatever is left. Only frames whose text changes get a
+    /// command.
+    fn flow_commands(&self, chain: &[ShapeId], all: Vec<TextSpan>) -> Vec<Command> {
+        let kinds: Vec<ShapeKind> = chain
+            .iter()
+            .filter_map(|id| self.doc().find_shape(*id).map(|s| s.kind.clone()))
+            .collect();
+        if kinds.len() != chain.len() {
+            return Vec::new();
         }
         let fonts = tracedraw_text::fonts();
         let mut cmds = Vec::new();
@@ -476,9 +559,85 @@ impl App {
                 },
             });
         }
-        if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Text Flow", &cmds);
+        cmds
+    }
+
+    /// The commands that keep the text of a chain when the objects
+    /// `shapes` are deleted (#1986): a frame of a chain among them, or
+    /// inside a group or clip frame among them, leaves its text to the
+    /// chain. The frames left are linked to one another in their order,
+    /// skipping the deleted ones, and the chain's whole text flows anew
+    /// over them: the frame after a deleted one shows what it showed, and
+    /// the last frame takes the rest, with the overflow mark when it does
+    /// not fit. A chain of two left with one frame leaves an ordinary
+    /// paragraph frame holding all the text. The commands are meant to
+    /// run after the deletion, in its step, so one Undo brings the frame
+    /// and the flow back together. Empty when no frame of a chain goes.
+    pub fn flow_around_deleted(&self, shapes: &[ShapeId]) -> Vec<Command> {
+        fn frames_in(s: &Shape, out: &mut Vec<ShapeId>) {
+            match &s.kind {
+                ShapeKind::Text { frame: Some(_), .. } => out.push(s.id),
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        frames_in(c, out);
+                    }
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    frames_in(frame, out);
+                    for c in contents {
+                        frames_in(c, out);
+                    }
+                }
+                _ => {}
+            }
         }
+        let mut gone = Vec::new();
+        for id in shapes {
+            if let Some(s) = self.doc().find_shape(*id) {
+                frames_in(s, &mut gone);
+            }
+        }
+        gone.retain(|id| self.is_linked_frame(*id));
+        let mut heads: Vec<ShapeId> = Vec::new();
+        for id in &gone {
+            let head = self.chain_head(*id);
+            if !heads.contains(&head) {
+                heads.push(head);
+            }
+        }
+        let mut cmds = Vec::new();
+        for head in heads {
+            let chain = self.chain_of(head);
+            let Some(all) = self.chain_text(&chain) else {
+                continue;
+            };
+            let left: Vec<ShapeId> = chain
+                .iter()
+                .copied()
+                .filter(|id| !gone.contains(id))
+                .collect();
+            if left.is_empty() {
+                continue;
+            }
+            // The frames left are linked in order, the first with nothing
+            // before it and the last with nothing after it.
+            for (i, id) in left.iter().enumerate() {
+                let Some(data) = self.frame_data(*id) else {
+                    continue;
+                };
+                let prev = i.checked_sub(1).and_then(|j| left.get(j).copied());
+                let next = left.get(i + 1).copied();
+                if data_id(&data, PREV) == prev && data_id(&data, NEXT) == next {
+                    continue;
+                }
+                cmds.push(Command::SetObjectData {
+                    shape: *id,
+                    data: with_key(with_key(data, PREV, prev), NEXT, next),
+                });
+            }
+            cmds.extend(self.flow_commands(&left, all));
+        }
+        cmds
     }
 
     /// Re-flow every chain that touches the given shapes (after a resize).
@@ -590,6 +749,214 @@ mod tests {
         app.page = first_page;
         app.select(vec![a]);
         assert_eq!(app.flow_tab_at(tab.center()), None);
+    }
+
+    fn text_of(app: &App, id: ShapeId) -> String {
+        match app.doc().find_shape(id).map(|s| &s.kind) {
+            Some(ShapeKind::Text { spans, .. }) => spans.iter().map(|s| s.text.as_str()).collect(),
+            _ => String::new(),
+        }
+    }
+
+    const LONG: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+
+    /// A chain of three frames, the first two a line high, the third
+    /// large enough for the rest; with the text each shows.
+    fn chain_of_three(app: &mut App) -> ([ShapeId; 3], [String; 3]) {
+        let a = frame(app, LONG, 30.0, 8.0);
+        let b = frame(app, "", 30.0, 8.0);
+        let c = frame(app, "", 60.0, 60.0);
+        assert!(app.link_frames(a, b));
+        assert!(app.link_frames(b, c));
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        let texts = [text_of(app, a), text_of(app, b), text_of(app, c)];
+        assert!(
+            texts.iter().all(|t| !t.is_empty()),
+            "every frame shows some of the text: {texts:?}"
+        );
+        assert_eq!(texts.concat(), LONG);
+        ([a, b, c], texts)
+    }
+
+    /// Deleting the middle frame of a chain (#1986): the frame goes, its
+    /// text does not. The frames left are a chain of two, the text flows
+    /// on into the last one (which shows what the deleted one had), and
+    /// one Undo brings the frame and the flow back.
+    #[test]
+    fn deleting_the_middle_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![b]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none(), "the frame is deleted");
+        assert_eq!(app.chain_of(a), vec![a, c], "a chain of two is left");
+        assert_eq!(app.next_frame(a), Some(c));
+        assert_eq!(app.prev_frame(c), Some(a));
+        assert_eq!(text_of(&app, a), ta, "the first frame shows the same");
+        assert_eq!(
+            text_of(&app, c),
+            format!("{tb}{tc}"),
+            "the last frame takes what the deleted one had"
+        );
+        assert_eq!(format!("{}{}", text_of(&app, a), text_of(&app, c)), LONG);
+        assert!(app.selection.is_empty());
+        // One Undo: the three frames and their flow as before.
+        assert_eq!(app.engine.undo_label(), Some("Delete"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, b), tb);
+        assert_eq!(text_of(&app, c), tc);
+        // Redo deletes it again, with the flow.
+        app.redo();
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+    }
+
+    /// Deleting the first frame: the text starts in the second, which
+    /// shows the start of it, and flows on as before.
+    #[test]
+    fn deleting_the_first_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![a]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(a).is_none());
+        assert_eq!(app.chain_of(c), vec![b, c]);
+        assert_eq!(app.prev_frame(b), None, "the second frame is now the head");
+        assert_eq!(app.next_frame(b), Some(c));
+        // The second frame is the first one's size: it shows the same
+        // start of the text.
+        assert_eq!(text_of(&app, b), ta);
+        assert_eq!(format!("{}{}", text_of(&app, b), text_of(&app, c)), LONG);
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(
+            [text_of(&app, a), text_of(&app, b), text_of(&app, c)],
+            [ta, tb, tc]
+        );
+    }
+
+    /// Deleting the last frame: the frame before it takes the rest of
+    /// the text and shows the overflow mark, since it does not fit.
+    #[test]
+    fn deleting_the_last_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![c]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(c).is_none());
+        assert_eq!(app.chain_of(a), vec![a, b]);
+        assert_eq!(app.next_frame(b), None, "the second frame is now the end");
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, b), format!("{tb}{tc}"));
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(app.text_overflows(&shape), "the rest does not fit");
+        app.select(vec![b]);
+        let shown = app
+            .shown_text_frames(None)
+            .into_iter()
+            .find(|f| f.id == b)
+            .expect("the frame is shown");
+        assert!(shown.overflow && !shown.linked && shown.receives);
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(
+            [text_of(&app, a), text_of(&app, b), text_of(&app, c)],
+            [ta, tb, tc]
+        );
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(!app.text_overflows(&shape), "the text flows on again");
+    }
+
+    /// Deleting a frame of a chain of two leaves one ordinary paragraph
+    /// frame with all the text: the small one overflows, the large one
+    /// holds it.
+    #[test]
+    fn deleting_a_frame_of_a_chain_of_two_leaves_one_frame_with_all_the_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let a = frame(&mut app, LONG, 30.0, 8.0);
+        let b = frame(&mut app, "", 60.0, 60.0);
+        assert!(app.link_frames(a, b));
+        let (ta, tb) = (text_of(&app, a), text_of(&app, b));
+        assert!(!ta.is_empty() && !tb.is_empty());
+        // The large frame deleted: the small one holds all the text and
+        // overflows, linked to nothing.
+        app.select(vec![b]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none());
+        assert!(!app.is_linked_frame(a));
+        assert_eq!(app.chain_of(a), vec![a]);
+        assert_eq!(text_of(&app, a), LONG);
+        let shape = app.doc().find_shape(a).cloned().expect("frame");
+        assert!(app.text_overflows(&shape));
+        assert_eq!(
+            app.doc().find_shape(a).map(|s| s.data.clone()),
+            Some(Vec::new()),
+            "no link is left in the frame's data"
+        );
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b]);
+        assert_eq!((text_of(&app, a), text_of(&app, b)), (ta, tb));
+        // The small frame deleted: the large one holds all the text.
+        app.select(vec![a]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(a).is_none());
+        assert!(!app.is_linked_frame(b));
+        assert_eq!(text_of(&app, b), LONG);
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(!app.text_overflows(&shape));
+    }
+
+    /// Cut takes a frame of a chain out the same way: the text stays
+    /// with the chain (the clipboard has the frame as it showed).
+    #[test]
+    fn cutting_a_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![b]);
+        app.cut();
+        assert!(app.doc().find_shape(b).is_none());
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, b), tb);
+    }
+
+    /// A frame of a chain deleted inside a group goes the same way: the
+    /// chain keeps its text.
+    #[test]
+    fn deleting_a_group_holding_a_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        let other = frame(&mut app, "aside", 20.0, 20.0);
+        app.select(vec![b, other]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert_ne!(group, b);
+        assert_eq!(
+            app.chain_of(a),
+            vec![a, b, c],
+            "a grouped frame stays in its chain"
+        );
+        app.select(vec![group]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none());
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, b), tb);
+        assert_eq!(text_of(&app, c), tc);
     }
 
     /// A copy of one frame of a chain is a frame of its own: editing it

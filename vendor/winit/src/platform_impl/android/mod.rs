@@ -145,6 +145,8 @@ pub struct EventLoop<T: 'static> {
     cause: StartCause,
     ignore_volume_keys: bool,
     combining_accent: Option<char>,
+    // TraceDraw: the modifier keys last told to the app (#2052).
+    modifiers: crate::keyboard::ModifiersState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +196,7 @@ impl<T: 'static> EventLoop<T> {
             cause: StartCause::Init,
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
+            modifiers: crate::keyboard::ModifiersState::empty(),
         })
     }
 
@@ -491,6 +494,19 @@ impl<T: 'static> EventLoop<T> {
                         input_status = InputStatus::Unhandled
                     },
                     keycode => {
+                        // TraceDraw: Shift, Ctrl, Alt and Meta of a hardware
+                        // keyboard, from the key event's meta state, which
+                        // winit's Android backend never passed on: the app
+                        // saw no modifier held (#2052).
+                        let modifiers = modifiers_of(key.meta_state());
+                        if modifiers != self.modifiers {
+                            self.modifiers = modifiers;
+                            let event = event::Event::WindowEvent {
+                                window_id: window::WindowId(WindowId),
+                                event: event::WindowEvent::ModifiersChanged(modifiers.into()),
+                            };
+                            callback(event, self.window_target());
+                        }
                         let state = match key.action() {
                             KeyAction::Down => event::ElementState::Pressed,
                             KeyAction::Up => event::ElementState::Released,
@@ -1195,6 +1211,18 @@ impl VideoModeHandle {
     pub fn monitor(&self) -> MonitorHandle {
         self.monitor.clone()
     }
+}
+
+/// TraceDraw: the modifier keys an Android key event's meta state holds
+/// (#2052).
+fn modifiers_of(meta: android_activity::input::MetaState) -> crate::keyboard::ModifiersState {
+    use crate::keyboard::ModifiersState as M;
+    let mut m = M::empty();
+    m.set(M::SHIFT, meta.shift_on());
+    m.set(M::CONTROL, meta.ctrl_on());
+    m.set(M::ALT, meta.alt_on());
+    m.set(M::SUPER, meta.meta_on());
+    m
 }
 
 /// TraceDraw: a pointer's tool as the program's filter names it (#1832).

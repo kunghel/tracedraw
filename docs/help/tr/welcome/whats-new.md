@@ -24,6 +24,7 @@ listeler.
 
 ## Son sürümlerin öne çıkanları {#highlights}
 
+- **Karşılıklı sayfalar ve bağlı metin.** [[menu.layout > menu.layout.facing_pages]] sayfaları yan yana çift sayfa olarak gösterir; [[menu.text > menu.text.link_content]] metinleri bağlar, böylece birine yazmak diğerlerini değiştirir; çok sayfalı bir PDF hangi sayfaların içe aktarılacağını sorar; [[menu.edit > menu.edit.step_and_repeat]] bir sayfayı kopyalarla doldurabilir.
 - **Dokunma ve telefonlar.** Standart çubuktaki Shift, Ctrl ve Alt düğmeleri
   parmak için basılı kalır; Android'de arayüz kamera çentiğinden ve yuvarlak
   köşelerden uzak durur; Apple Pencil iPad'deki Safari'de çalışır.

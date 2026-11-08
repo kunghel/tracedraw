@@ -206,8 +206,8 @@ with nothing selected, or use **From Selection** and **Reset** there.
 
 - **View > Proof Colors**, or the button at the right end of the status
   bar, shows the drawing as CMYK would print it.
-- Colour profiles and rendering intents are set in **Color Management**
-  (on the standard toolbar's **Launch** button). See
+- Colour profiles and rendering intents are set in **Tools > Color
+  Management**. See
   [the colour management notes](../behavior/colour-management.md).
 
 ## Where next

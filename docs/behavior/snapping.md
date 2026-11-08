@@ -26,7 +26,7 @@ Alt+Q turns all snapping off and on.
 | Tangent | from where the line being drawn starts: where it touches an ellipse or a curve | circle under a line |
 | Perpendicular | from the same start: the foot of the perpendicular on a segment | right angle |
 | Edge | the nearest point of an outline | hourglass |
-| Center | the centre of rectangles, ellipses, polygons, bitmaps and tables; the area centroid of closed curves | circle with a cross |
+| Center | the centre of rectangles, ellipses, polygons, bitmaps and tables; the area centroid of closed curves; the middle of the box of any other object (a group, a text, an open curve, a symbol, a clip frame) and of a selection of several objects for the Pick tool (#2004) | circle with a cross |
 | Text baseline | the nearest point of the baseline of a line of artistic or paragraph text | a T on a line |
 
 Groups and clip frames offer their contents' points. The line being drawn
@@ -80,7 +80,26 @@ most 16 segments each with its bounds, as for a node drag below (#1765,
 `snap::tests::a_move_snaps_to_where_the_selection_started`,
 `pick_drag_tests::a_move_snaps_to_where_the_selection_started`). A scale
 handle being dragged snaps like the pointer of a drawing tool, leaving
-out the selection's own points. The pointer turning the selection (a
+out the selection's own points. When that finds nothing on the axis a
+side moves, the side stops, as a guideline does, on the points of other
+objects it meets along its length (from end to end for a side handle,
+from the fixed corner to the pointer for a corner) and on their lines (a
+straight side along it, the outermost point of a curve), marked as the
+pointer's snaps are (#2004,
+`snap::tests::a_side_handle_stops_on_a_point_the_side_meets`). A corner
+keeping the proportions that snapped on one axis only (onto a vertical
+guideline, say) scales by that axis alone, so it stays on the guideline
+while the pointer drifts along it; it used to scale by a mix of both axes
+and slide off (#2004,
+`snap::tests::a_proportional_corner_stays_on_the_guideline_it_snapped_to`).
+The nodes of an interactive fill or transparency (start, end, colour
+nodes, the skew handle), the start node of one moved by its line (not
+with Ctrl), the ends of a new fill's or transparency's line (not with
+Ctrl) snap like the pointer too, onto the object's own points as well
+(#2004,
+`snap::tests::fill_nodes_snap_while_dragged`); so do the nodes of a mesh
+fill and their handles, and the corners of a perspective, keeping their
+offset from the pointer (discussion #2073). The pointer turning the selection (a
 rotate handle without Ctrl) snaps to the points of other objects and of
 the page only (nodes, midpoints, centres), so the turn aims at one;
 edges, guidelines and grid lines are left out, since the handle stands
@@ -107,10 +126,14 @@ pointer, so a curve of thousands of nodes drags as fast as without it
 A guideline being dragged (or dragged out of a ruler) and the ruler origin
 snap to everything except guidelines. Along its axis a guideline lines up
 with the objects' points by the modes on (nodes, segment midpoints, an
-ellipse's quadrants, centres), which win over the objects' box edges, the
-page and the grids; before, only the boxes' edges and centres caught it,
-so a guideline could not be put on a curve's node (#1645,
-`snap::tests::a_dragged_guideline_snaps_to_a_node`). The other way round,
+ellipse's quadrants, centres) and with their lines: where it touches a
+curve's outermost point (Tangent) or lies on a straight side; these win
+over the objects' box edges, the page and the grids. Before, only the
+boxes' edges and centres caught it, so a guideline could not be put on a
+curve's node (#1645, `snap::tests::a_dragged_guideline_snaps_to_a_node`).
+The point it lines up with is marked as the pointer's snaps are, so the
+snap shows (#2004,
+`snap::tests::a_dragged_guideline_touches_curves_and_takes_centres`). The other way round,
 an object moved by its snap point under the pointer (a node, a midpoint,
 a centre) puts that point on a guideline, a baseline or a grid line it
 comes near, on each axis, ahead of its box's edges and centre, when no

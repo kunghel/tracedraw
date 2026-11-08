@@ -1165,6 +1165,7 @@ fn the_style_table_numbers_its_entries_once_and_styles_name_them() {
         graphic_fill: 8,
         outline: 9,
         font: 3,
+        font_flags: 0x40,
         formats: Vec::new(),
     };
     for v in versions() {
@@ -2934,6 +2935,67 @@ fn fills_not_written_yet_go_out_as_their_mean_colour() {
     }
 }
 
+/// A mesh fill, which these files do not get as a mesh, goes out as the
+/// mean colour of its nodes (weighed by their opacity) rather than its
+/// first node's, and is counted so the app can say so (discussion
+/// #2073).
+#[test]
+fn a_mesh_fill_goes_out_as_its_mean_colour_and_is_counted() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut mesh = tracedraw_core::Mesh::new(
+        Rect::new(10.0, 10.0, 30.0, 30.0),
+        1,
+        1,
+        Color::rgb8(200, 0, 0),
+    );
+    mesh.nodes[2].color = Color::rgb8(0, 0, 100);
+    mesh.nodes[3].color = Color::rgb8(0, 0, 100);
+    let mut r = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    r.fill = Fill::Mesh(mesh);
+    let mut plain = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(40.0, 10.0, 60.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    plain.fill = Fill::Solid(Color::rgb8(0, 255, 0));
+    let mut inner = r.clone();
+    inner.id = ids.shape();
+    let group = Shape::new(
+        ids.shape(),
+        ShapeKind::Group {
+            children: vec![inner],
+        },
+    );
+    let doc = doc_with(vec![r, plain, group]);
+    // The one at the top and the one in the group.
+    assert_eq!(mesh_fills_kept_as_one_colour(&doc), 2);
+    assert_eq!(mesh_fills_kept_as_one_colour(&doc_with(Vec::new())), 0);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let got = back.pages[0].layers[0].shapes[0]
+            .fill
+            .preview_color()
+            .expect("fill")
+            .to_rgb8();
+        let near = got
+            .iter()
+            .zip([100, 0, 50])
+            .all(|(a, b)| (*a as i32 - b).abs() <= 3);
+        assert!(near, "{v}: {got:?}");
+    }
+}
+
 #[test]
 fn a_page_background_colour_round_trips_from_version_21() {
     let mut doc = doc_with(Vec::new());
@@ -4096,6 +4158,7 @@ fn a_version_8_style_table_with_set11_is_read() {
         graphic_fill: 2,
         outline: 3,
         font: 1,
+        font_flags: 0x40,
         formats: Vec::new(),
     };
     let d = stlt(Ver(9), uses);
@@ -4121,6 +4184,7 @@ fn version_8_style_tables_have_no_set11() {
         graphic_fill: 2,
         outline: 3,
         font: 1,
+        font_flags: 0x40,
         formats: Vec::new(),
     };
     let seven = stlt(Ver(7), uses.clone());
@@ -8491,4 +8555,52 @@ fn a_nonzero_curve_keeps_its_overlaps_filled_through_a_save() {
         let path = s.transform * s.local_path();
         assert_eq!(path.winding(overlap) % 2, 0, "{v}");
     }
+}
+
+/// From version 16 the `font` records are the faces the text uses, and
+/// the style table names the first of them: the file of #1733 that
+/// program saved for bold "Khand" text has one Khand record, the bold
+/// one, and its default style names Khand at 0x1000. A plain record
+/// beside it, and a style naming the regular face, named a face the
+/// file neither used nor embedded, which was asked for where the font
+/// is not installed. Regular text keeps its plain record, and files
+/// before 16 keep the regular record the text styles name.
+#[test]
+fn font_records_and_the_style_table_name_the_faces_the_text_uses() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut bold = TextSpan::new("Heading", "Khand", 20.0);
+    bold.bold = true;
+    let bold_doc = doc_with(vec![text_shape(&mut ids, vec![bold], TextAlign::Left)]);
+    let plain = TextSpan::new("body", "Khand", 10.0);
+    let plain_doc = doc_with(vec![text_shape(&mut ids, vec![plain], TextAlign::Left)]);
+    let records = |bytes: &[u8]| -> (Vec<(u16, u32)>, Vec<u8>) {
+        let (_, tree, riff) = chunk_ids(bytes);
+        let mut faces = Vec::new();
+        let mut stlt = Vec::new();
+        tree.root.walk(&mut |ch, _| {
+            let d = tree.data(&riff, ch);
+            if ch.id_str() == "font" {
+                let id = u16::from_le_bytes([d[0], d[1]]);
+                faces.push((id, u32::from_le_bytes(d[4..8].try_into().expect("u32"))));
+            } else if ch.id_str() == "stlt" {
+                stlt = d.to_vec();
+            }
+        });
+        (faces, stlt)
+    };
+    for v in [16, 19, NEWEST_VERSION] {
+        let (faces, stlt) = records(&document_to_cdr_version(&bold_doc, v));
+        assert_eq!(faces, vec![(1, 0x1000)], "{v}: {faces:x?}");
+        let styles = crate::text::read_stlt(&stlt, v, &mut |_| {});
+        let default = styles
+            .iter()
+            .find(|(_, s)| s.style.font_id == Some(1))
+            .map(|(_, s)| s.style.clone())
+            .unwrap_or_else(|| panic!("{v}: a style names font 1: {styles:?}"));
+        assert_eq!(default.flags.map(|f| f.0), Some(0x1000), "{v}: {default:?}");
+        let (faces, _) = records(&document_to_cdr_version(&plain_doc, v));
+        assert_eq!(faces, vec![(1, 0x40)], "{v}: {faces:x?}");
+    }
+    let (faces, _) = records(&document_to_cdr_version(&bold_doc, 15));
+    assert_eq!(faces, vec![(1, 0x40), (1, 0x1000)], "15: {faces:x?}");
 }

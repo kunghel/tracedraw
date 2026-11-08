@@ -47,8 +47,7 @@ La barra de herramientas estándar contiene, en grupos:
 7. Desactivar ajuste (<kbd>Alt+Q</kbd>) y la lista de elementos a los que
    ajustar.
 8. Opciones, que abre la lista de páginas de opciones.
-9. Iniciar: Administrador de fuentes, pantalla de bienvenida y Gestión del
-   color.
+9. Iniciar: Administrador de fuentes, TraceCut y pantalla de bienvenida.
 
 Pase el puntero sobre un botón para ver su nombre, su atajo y lo que hace.
 

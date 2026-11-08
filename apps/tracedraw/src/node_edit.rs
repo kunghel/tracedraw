@@ -437,6 +437,36 @@ impl App {
         }
     }
 
+    /// Run the Shape tool's node command `key` (Object > Nodes, #2001) on
+    /// the chosen nodes, as its property bar button does.
+    pub fn run_node_command(&mut self, key: &str) {
+        use tracedraw_core::nodes::NodeType;
+        match key {
+            "menu.object.node_add" => self.add_node_midpoints(),
+            "menu.object.node_join" => self.join_selected_nodes(),
+            "menu.object.node_break" => self.break_selected_nodes(),
+            "menu.object.node_to_line" => self.selected_segments_to_line(),
+            "menu.object.node_to_curve" => self.selected_segments_to_curve(),
+            "menu.object.node_cusp" => self.set_selected_node_type(NodeType::Cusp),
+            "menu.object.node_smooth" => self.set_selected_node_type(NodeType::Smooth),
+            "menu.object.node_symmetrical" => self.set_selected_node_type(NodeType::Symmetrical),
+            _ => {}
+        }
+    }
+
+    /// The node command (Object > Nodes) whose built-in key is `key` with
+    /// `mods`, read by the canvas while the Shape tool has nodes chosen
+    /// (#2001). + is left to the canvas's own + key, which also zooms
+    /// with no node chosen.
+    pub fn node_command_key(key: egui::Key, mods: Modifiers) -> Option<&'static str> {
+        let text = crate::shortcuts::format(mods, key);
+        crate::ui::menus::NODE_COMMANDS
+            .iter()
+            .filter(|(_, keys)| *keys != "+")
+            .find(|(_, keys)| crate::shortcuts::same(keys, &text))
+            .map(|(id, _)| *id)
+    }
+
     /// Tab and Shift+Tab with the Shape tool: the next or previous node of
     /// the curve; true when it did something.
     pub fn cycle_node(&mut self, forward: bool) -> bool {

@@ -611,7 +611,8 @@ fn tool_button(
 
     // Opening the flyout: the arrow, a drag, or a press
     // held for 0.4 s; with a flyout already open, hovering opens this
-    // one instead.
+    // one instead. Not by a finger sliding the toolbox along its length
+    // (#1997): the button under it is only passing by.
     if has_flyout {
         let held = resp.is_pointer_button_down_on()
             && ui.input(|i| {
@@ -623,12 +624,9 @@ fn tool_button(
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         let switch = resp.hovered() && app.flyout_open.is_some_and(|o| o != gi);
-        if (resp.clicked() && on_arrow)
-            || resp.drag_started()
-            || resp.long_touched()
-            || held
-            || switch
-        {
+        let pressed = (resp.drag_started() || resp.long_touched() || held)
+            && !crate::ui::overflow::finger_sliding(ui.ctx());
+        if (resp.clicked() && on_arrow) || pressed || switch {
             app.flyout_open = Some(gi);
         }
     }
@@ -1131,5 +1129,96 @@ mod tests {
         // A small toolbox never grows, and nothing to fit changes nothing.
         assert_eq!(fitted_side(20.0, 20, 300.0), 20.0);
         assert_eq!(fitted_side(32.0, 0, 10.0), 32.0);
+    }
+
+    /// The toolbox on a side, taller than the window: a finger dragged up
+    /// its column slides the column with the finger, so a tap at one spot
+    /// picks another tool after the slide than before; the slide opens no
+    /// flyout and picks nothing itself (#1997).
+    #[test]
+    fn a_finger_dragged_along_the_toolbox_column_slides_it() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.02);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 200.0))),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| toolbox(app, ui, crate::ui::bars::Dock::Left));
+            out.textures_delta.clear();
+        };
+
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(2),
+            phase,
+            pos,
+            force: None,
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger (or, without `finger`, the mouse) down at `from`, moved
+        // to `to` in `steps`; `lift` lets go there, else it stays down.
+        let drag = |app: &mut App,
+                    from: egui::Pos2,
+                    to: egui::Pos2,
+                    steps: usize,
+                    finger: bool,
+                    lift: bool| {
+            let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+            if finger {
+                events.insert(0, touch(egui::TouchPhase::Start, from));
+            }
+            frame(app, events);
+            for k in 1..=steps {
+                let p = from + (to - from) * (k as f32 / steps as f32);
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::Move, p));
+                }
+                frame(app, events);
+            }
+            if lift {
+                let mut events = vec![press(to, false), egui::Event::PointerGone];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::End, to));
+                }
+                frame(app, events);
+                frame(app, Vec::new());
+            }
+        };
+
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        assert!(
+            visible_groups(&app) as f32 * MIN_FITTED_SIDE > 200.0,
+            "the column is taller than the window"
+        );
+        let spot = egui::pos2(20.0, 60.0);
+        drag(&mut app, spot, spot, 1, true, true);
+        let before = app.tool;
+        // Up by 110 px: the first 10 decide the slide, 100 move the column.
+        drag(
+            &mut app,
+            egui::pos2(20.0, 150.0),
+            egui::pos2(20.0, 40.0),
+            11,
+            true,
+            true,
+        );
+        assert_eq!(app.tool, before, "the slide picked nothing");
+        assert_eq!(app.flyout_open, None, "the slide opened no flyout");
+        drag(&mut app, spot, spot, 1, true, true);
+        assert_ne!(app.tool, before, "another tool is under the spot now");
     }
 }

@@ -1174,7 +1174,44 @@ pub(crate) fn parse_user_dirs(text: &str, home: &Path) -> Vec<(String, PathBuf)>
 /// Decode an image file (any format the image crate was built with).
 pub fn open_image(path: impl AsRef<Path>) -> Result<image::DynamicImage, String> {
     let bytes = read(path).map_err(|e| e.to_string())?;
-    image::load_from_memory(&bytes).map_err(|e| e.to_string())
+    decode_picture(&bytes).map_err(|e| e.to_string())
+}
+
+/// The image library's own guard on the memory a picture may take to
+/// decode: 512 MiB.
+const LIBRARY_DECODE_LIMIT: u64 = 512 * 1024 * 1024;
+
+/// Most bytes decoding a picture file may take. The image library's own
+/// guard (512 MiB) turned print-size pictures away: a 1 m square at
+/// 300 dpi in CMYK needs 557 MB, so files of a metre and more did not
+/// import (#2000). Pictures may take what a PDF's pictures read at their
+/// own size take ([`FULL_PICTURE_PIXELS`] pixels, with room for 16-bit
+/// samples and a CMYK file's buffer beside the result); where pictures
+/// are always reduced (the browser, Android) and on 32-bit systems the
+/// library's guard stays.
+///
+/// [`FULL_PICTURE_PIXELS`]: tracedraw_io::pdf_import::FULL_PICTURE_PIXELS
+pub fn picture_decode_limit() -> u64 {
+    if crate::ui::pdf_import_dialog::always_reduce_pictures() || cfg!(target_pointer_width = "32") {
+        LIBRARY_DECODE_LIMIT
+    } else {
+        tracedraw_io::pdf_import::FULL_PICTURE_PIXELS.saturating_mul(8)
+    }
+}
+
+/// Decode a picture file (any format the image crate was built with)
+/// within [`picture_decode_limit`].
+pub fn decode_picture(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    decode_picture_within(bytes, picture_decode_limit())
+}
+
+/// Decode a picture file taking at most `limit` bytes.
+pub fn decode_picture_within(bytes: &[u8], limit: u64) -> image::ImageResult<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(limit);
+    reader.limits(limits);
+    reader.decode()
 }
 
 /// Keep bytes under a synthetic path so [`read`] finds them (browser).
@@ -1432,6 +1469,7 @@ pub fn picker_filters_by_type(user_agent: &str, platform: &str, touch_points: u3
 pub struct Dialog {
     filters: Vec<(String, Vec<String>)>,
     file_name: Option<String>,
+    directory: Option<PathBuf>,
 }
 
 impl Dialog {
@@ -1449,6 +1487,13 @@ impl Dialog {
 
     pub fn set_file_name(mut self, name: impl Into<String>) -> Self {
         self.file_name = Some(name.into());
+        self
+    }
+
+    /// The folder the desktop dialog opens in (ignored in a browser and
+    /// on Android, whose pickers choose their own).
+    pub fn set_directory(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.directory = Some(dir.into());
         self
     }
 
@@ -1631,6 +1676,9 @@ impl Dialog {
             if let Some(n) = &self.file_name {
                 d = d.set_file_name(n);
             }
+            if let Some(dir) = self.directory.as_ref().filter(|d| d.is_dir()) {
+                d = d.set_directory(dir);
+            }
             return d.save_file();
         }
         #[allow(unreachable_code)]
@@ -1728,6 +1776,37 @@ fn download(_name: &str, _bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2000: a print-size picture decodes past the image library's own
+    /// 512 MiB guard, which turned away files of about a metre and more
+    /// at print resolution; decoding is held to the limit given.
+    #[test]
+    fn print_size_pictures_decode_past_the_libraries_guard() {
+        // 2.5 x 1 m at 300 dpi, 8-bit CMYK: the file's samples beside the
+        // RGB result.
+        let need = 29_528u64 * 11_811 * (4 + 3);
+        assert!(
+            need > LIBRARY_DECODE_LIMIT,
+            "the library's guard refuses it"
+        );
+        if cfg!(target_pointer_width = "64")
+            && !crate::ui::pdf_import_dialog::always_reduce_pictures()
+        {
+            assert!(picture_decode_limit() >= need);
+        }
+        assert!(picture_decode_limit() >= LIBRARY_DECODE_LIMIT);
+        let img = image::RgbImage::from_pixel(60, 40, image::Rgb([10, 20, 30]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png)
+            .expect("png");
+        let png = png.into_inner();
+        assert!(decode_picture_within(&png, 60 * 40 * 3 - 1).is_err());
+        let back = decode_picture(&png).expect("decodes");
+        assert_eq!((back.width(), back.height()), (60, 40));
+        // Not a picture: an error, no panic.
+        assert!(decode_picture(b"not a picture").is_err());
+        assert!(decode_picture(&png[..png.len() / 2]).is_err());
+    }
 
     /// iPhones and iPads (also iPadOS, which calls itself a Mac with a
     /// touch screen) and Android browsers get a picker without extension

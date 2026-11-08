@@ -133,7 +133,7 @@ From top to bottom and left to right:
   the steps, so you can undo several at once); Import, Export and
   Export as PDF; the zoom box; Show Rulers, Show Grid and Show
   Guidelines; Snap Off and Snap To; Options; and Launch (Font Manager,
-  Welcome Screen, Color Management).
+  TraceCut, Welcome Screen).
 - **Property bar**: the settings for what you are doing right now. With
   nothing selected it shows the page size, orientation, units and nudge
   distance. With a selection it shows position, size, scale, rotation

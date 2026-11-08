@@ -27,6 +27,9 @@ off too and is lit while it is on (#1019).
   current, and its guidelines are then the ones picked, moved and
   snapped to.
 
+- With facing pages the pages sit in spreads, two spreads a row (see
+  `facing-pages.md`).
+
 ## Page spacing
 
 - The space between pages is a document property

@@ -61,6 +61,7 @@ jobs:
 
   build:
     needs: test
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +69,14 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
+          # 32-bit Windows 10 (#1975): the setup installs on 32-bit
+          # Windows only, the portable zip runs on either. New, so a
+          # failure of this build does not hold back the release of the
+          # others (`experimental`).
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            name: windows-x86
+            experimental: true
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
@@ -114,12 +123,12 @@ jobs:
       # #1405) on a real Windows: its tests alone, in a crate of their own
       # so the whole app is not built for tests.
       - name: Windows spell checker
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
         working-directory: scripts/windows/spell-check
         run: cargo test -- --nocapture
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p tracedraw -p tracedraw-cli
+        run: cargo build --release --target ${{ matrix.target }} -p tracedraw -p tracedraw-cli -p tracedraw-thumbnailer
 
       # The main window, after the splash screen and without it, can be
       # maximized and resized under a window manager (see
@@ -168,6 +177,7 @@ jobs:
           files: |
             ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw.exe
             ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw-cli.exe
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw_thumbnailer.dll
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -179,10 +189,12 @@ jobs:
         if: steps.signing.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-programs
+          # One per Windows build: artifact names are unique in a run.
+          name: unsigned-programs-${{ matrix.name }}
           path: |
             target/${{ matrix.target }}/release/tracedraw.exe
             target/${{ matrix.target }}/release/tracedraw-cli.exe
+            target/${{ matrix.target }}/release/tracedraw_thumbnailer.dll
           if-no-files-found: error
           retention-days: 1
 
@@ -204,7 +216,7 @@ jobs:
       - name: Use the signed programs (SignPath)
         if: steps.signing.outputs.provider == 'signpath'
         shell: pwsh
-        run: Copy-Item signed-programs\*.exe "target\${{ matrix.target }}\release\" -Force
+        run: Copy-Item signed-programs\*.exe,signed-programs\*.dll "target\${{ matrix.target }}\release\" -Force
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -212,17 +224,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           $src = "target\${{ matrix.target }}\release"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ steps.ver.outputs.version }} /DSrcDir="$PWD\$src" packaging\windows\tracedraw.iss
+          # The files' processor name, as the in-app updater looks for it
+          # (apps/tracedraw/src/updates.rs, asset_names): x86 for 32-bit.
+          $arch = if ("${{ matrix.target }}" -like "i686-*") { "x86" } else { "x86_64" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ steps.ver.outputs.version }} /DArch=$arch /DSrcDir="$PWD\$src" packaging\windows\tracedraw.iss
           # The portable zip carries the settings folder, so it keeps its
           # preferences beside the program and writes nothing to %APPDATA%.
           Copy-Item -Recurse -Force packaging\windows\portable\tracedraw-settings "$src\tracedraw-settings"
-          Compress-Archive -Path "$src\tracedraw.exe","$src\tracedraw-cli.exe","$src\tracedraw-settings",README.md,LICENSE-MIT,LICENSE-APACHE -DestinationPath "dist\tracedraw-${{ steps.ver.outputs.version }}-windows-x86_64-portable.zip"
+          Compress-Archive -Path "$src\tracedraw.exe","$src\tracedraw-cli.exe","$src\tracedraw-settings",README.md,LICENSE-MIT,LICENSE-APACHE -DestinationPath "dist\tracedraw-${{ steps.ver.outputs.version }}-windows-$arch-portable.zip"
 
       # The Microsoft Store package (the Store signs it). Attached to the
       # release once the Store identity variables are set; until then a
-      # check package is built and not published.
+      # check package is built and not published. 64-bit only.
       - name: Store package (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
         # Only a check until the Store identity is set: it must not hold
         # back the other downloads.
         continue-on-error: ${{ vars.MSIX_IDENTITY_NAME == '' }}
@@ -256,7 +271,7 @@ jobs:
         if: steps.signing.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-installer
+          name: unsigned-installer-${{ matrix.name }}
           path: dist/*-setup.exe
           if-no-files-found: error
           retention-days: 1
@@ -536,8 +551,10 @@ jobs:
 
   # GitHub Pages must be set to "GitHub Actions" (Settings > Pages); the
   # job tries to enable it and does not fail the build when it cannot.
+  # Runs for every push to main and for a manual run of main, so the site
+  # can be published again by hand after Pages was turned off.
   pages:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: web
     runs-on: ubuntu-latest
     continue-on-error: true

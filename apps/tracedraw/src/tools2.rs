@@ -182,8 +182,10 @@ impl App {
                 current: p,
                 from_center: mods.shift,
             };
+            self.box_regular = false;
         }
         if response.dragged_by(PointerButton::Primary) {
+            self.box_regular = mods.ctrl;
             if let Drag::Box {
                 start,
                 current,
@@ -213,7 +215,7 @@ impl App {
         from_center: bool,
     ) -> Option<BezPath> {
         use tracedraw_core::geometry::{
-            ellipse_arc_path, ellipse_path, polygon_path, polygon_rect_for_bounds,
+            ellipse_arc_path, ellipse_path, polygon_path,
         };
         let r = App::box_rect(start, current, from_center);
         let path = match self.tool {
@@ -223,17 +225,17 @@ impl App {
                 Some(a) => ellipse_arc_path(r, a.start_deg, a.end_deg, a.pie),
             },
             Tool::Polygon => polygon_path(
-                polygon_rect_for_bounds(r, self.polygon_points, 0.0),
+                self.polygon_model_rect(r, self.polygon_points, 0.0),
                 self.polygon_points,
                 0.0,
             ),
             Tool::Star if self.star_complex => tracedraw_core::geometry::complex_star_path(
-                polygon_rect_for_bounds(r, self.complex_points, 0.0),
+                self.polygon_model_rect(r, self.complex_points, 0.0),
                 self.complex_points,
                 self.complex_sharpness,
             ),
             Tool::Star => polygon_path(
-                polygon_rect_for_bounds(r, self.polygon_points, self.star_sharpness),
+                self.polygon_model_rect(r, self.polygon_points, self.star_sharpness),
                 self.polygon_points,
                 self.star_sharpness,
             ),

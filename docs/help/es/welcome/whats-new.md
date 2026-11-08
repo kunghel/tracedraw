@@ -23,6 +23,7 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
 
 ## Lo más destacado de las últimas versiones {#highlights}
 
+- **Páginas enfrentadas y texto vinculado.** [[menu.layout > menu.layout.facing_pages]] muestra las páginas una junto a otra en pliegos; [[menu.text > menu.text.link_content]] vincula textos para que escribir en uno cambie los demás; un PDF de varias páginas pregunta qué páginas importar; [[menu.edit > menu.edit.step_and_repeat]] puede llenar una página de copias.
 - **Táctil y teléfonos.** Los botones Mayús, Ctrl y Alt de la barra estándar
   quedan pulsados para un dedo; en Android la interfaz se aparta de la muesca
   de la cámara y de las esquinas redondeadas; el Apple Pencil funciona en

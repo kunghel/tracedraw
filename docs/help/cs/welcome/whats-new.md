@@ -21,6 +21,7 @@ zjistit, co se změnilo, a uvádí hlavní novinky posledních verzí.
 
 ## Hlavní novinky posledních verzí {#highlights}
 
+- **Protilehlé stránky a propojený text.** [[menu.layout > menu.layout.facing_pages]] zobrazí stránky vedle sebe jako dvoustrany; [[menu.text > menu.text.link_content]] propojí texty, aby psaní v jednom měnilo ostatní; vícestránkové PDF se ptá, které stránky importovat; [[menu.edit > menu.edit.step_and_repeat]] umí vyplnit stránku kopiemi.
 - **Dotyk a telefony.** Tlačítka Shift, Ctrl a Alt na standardním panelu
   zůstávají pro prst stisknutá; v systému Android se rozhraní vyhýbá výřezu
   fotoaparátu a zaobleným rohům; Apple Pencil funguje v Safari na iPadu.

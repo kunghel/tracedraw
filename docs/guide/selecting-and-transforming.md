@@ -97,6 +97,11 @@ Drag a selected object with the right button and let go: a menu offers
 **Copy All Properties**, **Place Inside** (the object under the pointer
 becomes a clip frame for the selection) and **Cancel**.
 
+Without the menu: start dragging a selected object with the left
+button, then hold `Alt` and let go over another object to give it the selection's fill;
+hold `Alt`+`Shift` to give it the outline instead. The selection stays
+where it was.
+
 ### Nudge with the arrow keys
 
 The arrow keys move the selection by the nudge distance (2.54 mm to

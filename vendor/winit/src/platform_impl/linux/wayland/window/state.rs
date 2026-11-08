@@ -510,6 +510,42 @@ impl WindowState {
         }
     }
 
+    /// TraceDraw: drive the frame from a finger or a pen on its surface
+    /// `surface` (#2070, `crate::frame_input`). `serial` is the press's,
+    /// which a move, a resize or the window menu is asked for with.
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_input(
+        &mut self,
+        input: crate::frame_input::FrameInput,
+        seat: &WlSeat,
+        surface: &WlSurface,
+        serial: u32,
+        timestamp: Duration,
+        window_id: WindowId,
+        updates: &mut Vec<WindowCompositorUpdate>,
+    ) {
+        use crate::frame_input::{frame_steps, FrameButton, FrameStep};
+        for step in frame_steps(input) {
+            match step {
+                FrameStep::Point(x, y) => {
+                    let _ = self.frame_point_moved(seat, surface, timestamp, x, y);
+                },
+                FrameStep::Click(button, pressed) => {
+                    let click = match button {
+                        FrameButton::Normal => FrameClick::Normal,
+                        FrameButton::Alternate => FrameClick::Alternate,
+                    };
+                    let _ =
+                        self.frame_click(click, pressed, seat, serial, timestamp, window_id, updates);
+                },
+                FrameStep::Leave => {
+                    self.has_pending_move = None;
+                    self.frame_point_left();
+                },
+            }
+        }
+    }
+
     // Move the point over decorations.
     pub fn frame_point_moved(
         &mut self,

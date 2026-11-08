@@ -29,3 +29,19 @@ When some objects of a file cannot be read, or fonts are missing, a message
 says so; see [Notes after opening](../get-started/open-and-save.md#open-notes).
 You can also drag files onto the window, or paste from other programs; see
 [Paste Special](../objects/paste-special.md).
+
+## PDF files of several pages {#pdf-pages}
+
+Importing a PDF or AI file of more than one page opens the
+[[pdf_pages.title]] dialog box, after the questions about its text and its
+password. Choose [[pdf_pages.all]] or type the pages, such as `1-3, 5`; the
+list shows each page with its size and orientation, and ticking a page adds
+it. Then choose where they go:
+
+- [[pdf_pages.new_pages]]: each page becomes a page of the drawing, with its
+  own size and orientation, in order. This merges PDF files into one drawing.
+- [[pdf_pages.current_page]]: the objects go on the active layer; with
+  several pages, each page's objects are a group.
+
+The whole import is one undo step. A file of one page comes in without the
+dialog box.

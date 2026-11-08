@@ -340,7 +340,7 @@ impl App {
                 *origin,
                 Some(*frame),
                 false,
-                para.vertical,
+                para.columns_from_right(),
             );
         let f = Rc::new(LiveFrame {
             frame: *frame,

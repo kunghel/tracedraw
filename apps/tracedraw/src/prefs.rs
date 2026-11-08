@@ -54,6 +54,9 @@ pub struct PrintPrefs {
     pub reverse_order: bool,
     pub spot_to_cmyk: bool,
     pub text_black: bool,
+    /// The pages' background colour prints (#1651).
+    #[serde(default = "yes")]
+    pub page_background: bool,
     pub overprint_black: bool,
     pub bleed_limit: f64,
     pub page_numbers: bool,
@@ -95,6 +98,7 @@ impl Default for PrintPrefs {
             reverse_order: st.reverse_order,
             spot_to_cmyk: st.spot_to_cmyk,
             text_black: st.text_black,
+            page_background: st.page_background,
             overprint_black: st.overprint_black,
             bleed_limit: st.bleed_limit,
             page_numbers: st.page_numbers,
@@ -136,6 +140,7 @@ impl PrintPrefs {
             reverse_order: self.reverse_order,
             spot_to_cmyk: self.spot_to_cmyk,
             text_black: self.text_black,
+            page_background: self.page_background,
             overprint_black: self.overprint_black,
             bleed_limit: if self.bleed_limit.is_finite() && self.bleed_limit > 0.0 {
                 self.bleed_limit.min(50.0)
@@ -177,6 +182,7 @@ impl PrintPrefs {
         self.reverse_order = st.reverse_order;
         self.spot_to_cmyk = st.spot_to_cmyk;
         self.text_black = st.text_black;
+        self.page_background = st.page_background;
         self.overprint_black = st.overprint_black;
         self.bleed_limit = st.bleed_limit;
         self.page_numbers = st.page_numbers;

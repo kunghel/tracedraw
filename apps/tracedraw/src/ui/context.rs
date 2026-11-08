@@ -471,6 +471,18 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     if ci(ui, close, "context.create_symbol", "", true) {
         app.create_symbol_from_selection();
     }
+    // A symbol instance: its symbol's objects edited in place (#1980).
+    if let Some(id) = app.selected_symbol_instance() {
+        if ci(
+            ui,
+            close,
+            "menu.object.symbol_edit",
+            "",
+            app.clip_frame_edit.is_none(),
+        ) {
+            app.edit_symbol_instance(id);
+        }
+    }
     sub(ui, "context.internet_links", |ui| {
         if ci(ui, close, "docker.hyperlink", "", true) {
             app.show_dockers = true;
@@ -558,7 +570,7 @@ pub(crate) fn object_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     }
 }
 
-fn node_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
+pub(crate) fn node_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     use tracedraw_core::nodes::NodeType;
     // A B-spline's chosen control points: fixed (the curve passes
     // through them) or floating (#1758).
@@ -577,8 +589,16 @@ fn node_menu(app: &mut App, ui: &mut Ui, close: &mut bool) {
     if ci(ui, close, "context.node_add", "", has_nodes) {
         app.add_node_midpoints();
     }
-    if ci(ui, close, "context.node_delete", "Delete", has_nodes) {
-        app.delete_selected_nodes();
+    // The chosen nodes go, the curve stays; with no node chosen the
+    // selected object goes, as with the Delete key (#1982).
+    if ci(
+        ui,
+        close,
+        "context.node_delete",
+        "Delete",
+        has_nodes || !app.selection.is_empty(),
+    ) {
+        app.delete_nodes_or_selection();
     }
     sep(ui);
     if ci(

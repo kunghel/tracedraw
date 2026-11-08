@@ -135,6 +135,10 @@ whatever tool is active.
   vertices lie on, so the ellipse is computed from the unit polygon's
   vertex bounds `(x0, x1, y0, y1)` as `rx = w / (x1 - x0)`,
   `ry = h / (y1 - y0)`, centre `(left - x0 rx, bottom - y0 ry)`.
+- With Ctrl the drag is held to a square and the polygon (or star) is
+  regular: its vertices lie on the circle of that square, every side
+  and angle equal, instead of being stretched to fill the square
+  (#1929, `pick_drag_tests::ctrl_draws_a_regular_polygon`).
 - Star sharpness: default 0.5 (0 = polygon, 1 = thinnest spikes). The
   inner points sit at `1 - sharpness` of the vertices' radius. A
   negative sharpness, down to -0.99, makes an inverted star (#1331): the

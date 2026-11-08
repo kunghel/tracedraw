@@ -505,6 +505,10 @@ impl App {
         use crate::app::Drag;
         match self.drag {
             Drag::FountainHandle { handle, begun } => {
+                // A node snaps as the pointer does: onto the object's own
+                // corners and centre, other objects, guidelines and the
+                // grid (#2004).
+                let p = self.snap_point(p);
                 self.drag_fountain_handle(handle, p, begun);
                 self.drag = Drag::FountainHandle {
                     handle,
@@ -517,6 +521,14 @@ impl App {
                 origin,
                 begun,
             } => {
+                // The start node, carried by the pointer, snaps; kept
+                // straight with Ctrl, it does not.
+                let p = if ctrl {
+                    p
+                } else {
+                    let to = origin + (p - press);
+                    press + (self.snap_point(to) - origin)
+                };
                 self.drag_fountain_line(press, origin, p, ctrl, begun);
                 self.drag = Drag::FountainLine {
                     press,

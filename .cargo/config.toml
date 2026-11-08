@@ -11,3 +11,7 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# 32-bit Windows 10 (#1975).
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

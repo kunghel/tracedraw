@@ -205,9 +205,34 @@ change marked `TraceDraw:` in a comment.
   `Force::Calibrated { force, max_possible_force: 1, altitude_angle }`,
   whose share egui-winit reads unchanged (`force / max_possible_force`).
   Distance, rotation, slider and wheel, and the pad's buttons, rings and
-  strips, are not read; over the window's frame the pen does nothing.
+  strips, are not read; over the window's frame the pen drives the
+  frame (next change).
   `src/tablet_tool.rs` depends on nothing in the crate, and TraceDraw's
   tests include and run it (`winit_tablet_tool::tests`).
+- Change: a finger and a graphics tablet's pen drive the window's frame
+  on Wayland (#2070). A compositor without the `xdg-decoration`
+  protocol (GNOME's) leaves the title bar to the program, and the copy
+  draws its plain frame on surfaces of their own beside the window's;
+  winit 0.30 drove that frame from the mouse alone: a touch on it found
+  no window and was dropped (`seat/touch/mod.rs`), and the pen was told
+  to do nothing there, so on a tablet without a mouse the window could
+  not be moved, resized, minimized, maximized or closed. A touch whose
+  surface has a parent (`frame_parent`) now goes to the frame
+  (`WinitState::frame_touch`): its press points there and presses the
+  frame's normal button with the touch's serial, its motion points
+  again (which starts the move or the resize the press asked for, as a
+  mouse motion does), its release releases the button (the title bar's
+  buttons act on it) and leaves the frame, a cancel leaves it. The
+  pen's motion, its tip (the normal button, with the serial of its last
+  `down`, kept in `TabletToolData::down_serial`), its `BTN_STYLUS2`
+  button (the alternate one: the window menu, on its press) and its
+  leaving do the same (`WinitState::pen_on_frame` in `tablet.rs`); the
+  tablet protocol does not name a tool's seat, so the move is asked for
+  on the first seat. `WindowState::frame_input` (`window/state.rs`)
+  hands the steps to the frame, and a leave drops a move asked for and
+  not started. What each input tells the frame is in `src/frame_input.rs`,
+  which depends on nothing in the crate; TraceDraw's tests include and
+  run it (`winit_frame_input::tests`).
 - Change: macOS hands the files opened from Finder (double click, Open
   With, a file dropped on the Dock icon) to the program (#646). macOS sends
   them as an "open documents" event, never on the command line, and winit
@@ -316,6 +341,14 @@ change marked `TraceDraw:` in a comment.
   leave tracking anew. Both decisions are in `src/alt_shortcuts.rs`,
   which depends on nothing in the crate; TraceDraw's tests include and
   run it (`winit_alt_shortcuts::tests`).
+- Change: Android passes on the modifier keys of a hardware keyboard
+  (#2052). winit's Android backend sent no `ModifiersChanged`, so with a
+  Bluetooth or USB keyboard Shift, Ctrl and Alt never reached the app
+  (shortcuts and Shift or Ctrl drags did nothing). In
+  `platform_impl/android/mod.rs` each key event's meta state
+  (`android_activity::input::MetaState`) gives the held modifiers
+  (`modifiers_of`); when they differ from the last ones told, a
+  `ModifiersChanged` is sent before the key's `KeyboardInput`.
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
 - Drop the copy and the `[patch.crates-io]` entry when a winit release

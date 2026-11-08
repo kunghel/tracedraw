@@ -4,6 +4,11 @@
 # (claude[bot]): the action exchanges this workflow's OIDC token for an app
 # token and gives it to `gh`.
 #
+# The action does not accept the push event, so the push only dispatches
+# this same workflow on the pushed branch (workflow_dispatch is one of the
+# two events GITHUB_TOKEN may raise), and the dispatched run opens the
+# pull request.
+#
 # The pull request takes its title from the branch's newest commit and its
 # description from the messages of the branch's commits.
 #
@@ -14,18 +19,30 @@ name: claude-pr
 on:
   push:
     branches: ["claude/**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: write
+  actions: write
   id-token: write
 
 concurrency:
-  group: claude-pr-${{ github.ref }}
+  group: claude-pr-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
+  dispatch:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run claude-pr.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+
   open:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,6 +53,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The dispatch job above raises this run with GITHUB_TOKEN, so the
+          # actor is github-actions[bot]; the action refuses bots by default.
+          allowed_bots: github-actions
           claude_args: |
             --max-turns 8
             --allowedTools "Bash(gh pr list:*),Bash(gh pr create:*),Bash(gh pr merge:*),Bash(git log:*)"

@@ -296,6 +296,35 @@ the bar and work as there (the bar is drawn once). A bar that fits shows
 no buttons; the slide is worked out again when the window changes size
 (`ui::overflow::tests`).
 
+On a touch screen a finger dragged along a bar longer than its room
+slides the bar with the finger (#1997): once the finger has moved past a
+tap's distance (6 px), more along the bar than across it, the bar follows
+its movement from there and stays where the finger leaves it. A tap on a
+button stays a click; a finger that slid the bar clicks nothing when it
+lifts, not the button it came down on and not the one under it then. While
+a finger slides a bar its items start no drag of their own: a number
+field's label or arrows step no value, a tool button opens no flyout, a
+docker tab does not move, a palette swatch drags no colour, a slider's
+thumb stays; a finger that moves across the bar instead (a colour dragged
+off the palette onto the drawing, a tool button dragged sideways for its
+flyout) keeps those drags. The mouse slides nothing by dragging: its
+drags on the bars stay what they were. The same finger drag slides the
+toolbox on a side (up and down), a tab column of dockers, the document
+tabs and the colour palette (`color-palettes.md`); a docker's contents
+longer than the docker scroll under a finger too (egui's scroll areas do
+this on a touch screen, as soon as the screen has been touched once).
+Nothing of this costs a frame anything until the screen has been touched
+(`ui::overflow::finger_slide`, `ui::overflow::finger_sliding`,
+`ui::overflow::tests::a_finger_dragged_along_a_long_bar_slides_it_with_the_finger`,
+`ui::overflow::tests::a_finger_dragged_along_a_column_slides_it`,
+`ui::overflow::tests::a_tap_clicks_a_button_and_a_slide_clicks_nothing`,
+`ui::overflow::tests::a_finger_moving_across_the_bar_does_not_slide_it`,
+`ui::overflow::tests::a_mouse_drag_does_not_slide_the_bar`,
+`ui::tests::a_finger_slides_the_standard_toolbar_on_a_phone`,
+`ui::toolbox::tests::a_finger_dragged_along_the_toolbox_column_slides_it`,
+`ui::palette::tests::a_finger_dragged_along_the_palette_scrolls_it`,
+`ui::dockers::tests::a_finger_dragged_up_a_docker_scrolls_its_contents`).
+
 Ctrl+wheel over a toolbar (docked or floating) steps the default button
 size (the bars' menu > Customize > Default Button Size) by the notches
 turned: up larger, down smaller, through the five sizes from Extra

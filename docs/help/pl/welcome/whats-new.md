@@ -22,6 +22,7 @@ sprawdzić, co się zmieniło, i wymienia najważniejsze nowości ostatnich wers
 
 ## Najważniejsze nowości ostatnich wersji {#highlights}
 
+- **Strony widzące i połączony tekst.** [[menu.layout > menu.layout.facing_pages]] pokazuje strony obok siebie jako rozkładówki; [[menu.text > menu.text.link_content]] łączy teksty, aby pisanie w jednym zmieniało pozostałe; wielostronicowy PDF pyta, które strony zaimportować; [[menu.edit > menu.edit.step_and_repeat]] może wypełnić stronę kopiami.
 - **Dotyk i telefony.** Przyciski Shift, Ctrl i Alt na pasku standardowym
   pozostają wciśnięte dla palca; na Androidzie interfejs omija wycięcie
   aparatu i zaokrąglone rogi; Apple Pencil działa w Safari na iPadzie.

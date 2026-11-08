@@ -61,6 +61,9 @@ pub enum Pic {
     CornerRound,
     CornerScallop,
     CornerChamfer,
+    /// Clear the rounding of a curve's corners: a sharp corner and a
+    /// small cross.
+    CornerClear,
     /// Relative corner scaling: a small corner, a larger one, an arrow.
     CornerScaling,
     ToFront,
@@ -533,6 +536,14 @@ pub fn draw_pic(painter: &Painter, r: Rect, pic: Pic, color: Color32) {
                 pts.push(q(r, 8.0 + 6.0 * t.cos(), 8.0 - 6.0 * t.sin()));
             }
             painter.add(epaint::PathShape::line(pts, s));
+        }
+        Pic::CornerClear => {
+            painter.add(epaint::PathShape::line(
+                vec![q(r, 2.0, 15.0), q(r, 2.0, 2.0), q(r, 15.0, 2.0)],
+                s,
+            ));
+            line((8.0, 8.0), (14.0, 14.0), s);
+            line((14.0, 8.0), (8.0, 14.0), s);
         }
         Pic::CornerScallop => {
             line((2.0, 15.0), (2.0, 8.0), s);
@@ -1402,7 +1413,13 @@ fn distance_in(
 
 /// [`distance`] for a value the selected objects do not share: the field
 /// is empty, a typed value goes to all of them.
-fn distance_mixed(ui: &mut Ui, app: &App, mm: f64, width: f32, mixed: bool) -> Option<f64> {
+pub(crate) fn distance_mixed(
+    ui: &mut Ui,
+    app: &App,
+    mm: f64,
+    width: f32,
+    mixed: bool,
+) -> Option<f64> {
     distance_in_mixed(ui, app, mm, width, Some(1.0), app.units.world_mm(), mixed)
 }
 

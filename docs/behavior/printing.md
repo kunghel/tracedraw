@@ -284,6 +284,9 @@ same function (`export::print_sheets`).
 
 ## Imposition
 
+- With facing pages each page prints with what its facing page holds
+  across the spine and in the bleed beside it (not for the selection
+  alone, nor with Fit to page; see `facing-pages.md`, #1972).
 - Pages keep their aspect ratio; each cell is as large as the largest
   page on its sheet and a smaller page sits in its middle.
 - Gap between pages (several pages per sheet and repeat on the sheet,

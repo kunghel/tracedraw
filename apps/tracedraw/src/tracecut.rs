@@ -18,7 +18,7 @@ use crate::tracecut_nest::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracedraw_core::geometry::{BezPath, Point, Rect, Shape as _};
-use tracedraw_core::{Command, ShapeId};
+use tracedraw_core::{Command, ShapeId, ShapeKind};
 use tracedraw_tracecut::cut::weed::WeedSpec;
 use tracedraw_tracecut::{cleanup, crossings};
 
@@ -182,6 +182,8 @@ pub struct CrossingsSettings {
     pub tolerance: f64,
     /// Also crossings between different objects (else each object's own).
     pub between: bool,
+    /// OK fixes the crossings (else it selects the objects that have them).
+    pub fix: bool,
 }
 
 impl Default for CrossingsSettings {
@@ -189,6 +191,7 @@ impl Default for CrossingsSettings {
         CrossingsSettings {
             tolerance: 0.05,
             between: false,
+            fix: false,
         }
     }
 }
@@ -676,6 +679,109 @@ impl App {
         }
     }
 
+    /// Fix the crossings of the targets in one undo step ("Fix
+    /// Crossings"): each outline crossing itself is rebuilt as the
+    /// outlines of the area it fills, and with `between` the objects
+    /// that cross each other are welded into the lowest of them, the
+    /// others deleted. Curves, rectangles, ellipses and polygons are
+    /// fixed; groups, text, pictures and locked objects are left as they
+    /// are. Returns whether anything changed; the status line says what.
+    pub fn tracecut_fix_crossings(&mut self, s: &CrossingsSettings) -> bool {
+        let targets = self.tracecut_targets();
+        let outlines = self.tracecut_outlines(&targets);
+        let tol = if s.tolerance.is_finite() {
+            s.tolerance.clamp(TOLERANCE_RANGE.0, TOLERANCE_RANGE.1)
+        } else {
+            CrossingsSettings::default().tolerance
+        };
+        let found = crossings::find_crossings(&outlines, s.between, tol);
+        let doc = self.doc();
+        // The object at index `i` on the page, when its outline can be
+        // replaced by a curve: with a page transform that can be undone.
+        let fixable = |i: usize| -> Option<tracedraw_core::Shape> {
+            let id = *targets.get(i)?;
+            let shape = doc.shape_on_page(id)?;
+            let plain = matches!(
+                shape.kind,
+                ShapeKind::Rect { .. }
+                    | ShapeKind::Ellipse { .. }
+                    | ShapeKind::Polygon { .. }
+                    | ShapeKind::Path { .. }
+            );
+            let det = shape.transform.determinant();
+            (plain && !shape.locked && det.is_finite() && det.abs() > 1e-12).then_some(shape)
+        };
+        // A page-space outline as the new outline of `shape`.
+        let kind_for = |shape: &tracedraw_core::Shape, page: BezPath| ShapeKind::Path {
+            path: shape.transform.inverse() * page,
+            closed: !matches!(shape.kind, ShapeKind::Path { closed: false, .. }),
+        };
+        let mut cmds: Vec<Command> = Vec::new();
+        let mut fixed: Vec<ShapeId> = Vec::new();
+        let mut deleted: Vec<ShapeId> = Vec::new();
+        let mut handled: Vec<usize> = Vec::new();
+        if s.between {
+            for group in crossings::crossing_groups(&found, targets.len()) {
+                let members: Vec<(usize, tracedraw_core::Shape)> = group
+                    .iter()
+                    .filter_map(|i| Some((*i, fixable(*i)?)))
+                    .collect();
+                let Some(((_, first), rest)) = members.split_first() else {
+                    continue;
+                };
+                if rest.is_empty() {
+                    continue;
+                }
+                let paths: Vec<_> = members
+                    .iter()
+                    .map(|(_, m)| (m.page_path(), m.fill_rule))
+                    .collect();
+                let welded = crossings::weld_crossing(&paths, tol);
+                cmds.push(Command::SetShapeKind {
+                    shape: first.id,
+                    kind: kind_for(first, welded),
+                });
+                fixed.push(first.id);
+                deleted.extend(rest.iter().map(|(_, m)| m.id));
+                handled.extend(members.iter().map(|(i, _)| *i));
+            }
+        }
+        let mut own: Vec<usize> = found.iter().filter(|c| c.a == c.b).map(|c| c.a).collect();
+        own.sort_unstable();
+        own.dedup();
+        for i in own {
+            if handled.contains(&i) {
+                continue;
+            }
+            let Some(shape) = fixable(i) else {
+                continue;
+            };
+            let resolved = crossings::resolve_crossings(&shape.page_path(), shape.fill_rule, tol);
+            cmds.push(Command::SetShapeKind {
+                shape: shape.id,
+                kind: kind_for(&shape, resolved),
+            });
+            fixed.push(shape.id);
+        }
+        if !deleted.is_empty() {
+            cmds.push(Command::DeleteShapes {
+                shapes: deleted.clone(),
+            });
+        }
+        if cmds.is_empty() {
+            self.status = tr("tracecut.crossings_not_fixed");
+            return false;
+        }
+        if let Err(e) = self.engine.run_batch("Fix Crossings", &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
+        let n = fixed.len() + deleted.len();
+        self.select(fixed);
+        self.status = trf("tracecut.crossings_fixed", &[("n", &n.to_string())]);
+        true
+    }
+
     /// Whether `w` still matches the drawing, the selection and the
     /// window's tool and settings.
     pub fn tracecut_current(&self, w: &Worked, tool: ToolId, settings: &ToolSettings) -> bool {
@@ -789,6 +895,9 @@ impl App {
                     self.status = tr("tracecut.no_crossings");
                     return false;
                 }
+                if settings.crossings.fix {
+                    return self.tracecut_fix_crossings(&settings.crossings);
+                }
                 self.select(objects.clone());
                 self.status = w.outcome.summary();
                 true
@@ -863,6 +972,50 @@ mod tests {
         assert!(app.tracecut_commit(&w, &settings, None));
         assert_eq!(app.selection, vec![b]);
         assert_eq!(app.engine.revision(), rev);
+    }
+
+    #[test]
+    fn ok_fixes_the_crossings_in_one_undo_step() {
+        let mut app = App::headless();
+        let mut eight = BezPath::new();
+        eight.move_to((0.0, 0.0));
+        eight.line_to((10.0, 10.0));
+        eight.line_to((10.0, 0.0));
+        eight.line_to((0.0, 10.0));
+        eight.close_path();
+        let e = app
+            .new_shape(ShapeKind::Path {
+                path: eight,
+                closed: true,
+            })
+            .expect("figure eight");
+        let a = rect(&mut app, 50.0, 0.0, 20.0, 20.0);
+        let b = rect(&mut app, 60.0, 10.0, 20.0, 20.0);
+        app.select(vec![e, a, b]);
+        let mut settings = ToolSettings::default();
+        settings.crossings.between = true;
+        settings.crossings.fix = true;
+        let w = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert!(matches!(&w.outcome, Outcome::Crossings { points, .. } if points.len() == 3));
+        let undo_before = app.engine.history_labels().0.len();
+        assert!(app.tracecut_commit(&w, &settings, None));
+        let (undo, _) = app.engine.history_labels();
+        assert_eq!(undo.len(), undo_before + 1);
+        assert_eq!(undo.last().copied(), Some("Fix Crossings"));
+        // The two squares are one outline now, the lower one kept.
+        assert!(app.doc().find_shape(a).is_some() && app.doc().find_shape(b).is_none());
+        app.select(vec![e, a]);
+        let again = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert!(
+            matches!(&again.outcome, Outcome::Crossings { points, .. } if points.is_empty()),
+            "{:?}",
+            again.outcome
+        );
+        app.undo();
+        assert!(app.doc().find_shape(b).is_some());
+        app.select(vec![e, a, b]);
+        let back = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert_eq!(back.outcome, w.outcome);
     }
 
     #[test]

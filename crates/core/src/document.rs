@@ -236,7 +236,12 @@ pub fn text_glyph_layout(kind: &ShapeKind) -> Option<text_outline::GlyphLayout> 
         para,
         on_path: on_path.as_ref(),
     })?;
-    let shift = text_layout_shift(*origin, *frame, on_path.is_some(), para.vertical);
+    let shift = text_layout_shift(
+        *origin,
+        *frame,
+        on_path.is_some(),
+        para.columns_from_right(),
+    );
     for g in &mut layout.glyphs {
         g.transform = shift * g.transform;
         g.path.apply_affine(shift);
@@ -246,19 +251,20 @@ pub fn text_glyph_layout(kind: &ShapeKind) -> Option<text_outline::GlyphLayout> 
 }
 
 /// From the text engine's layout space to a text's local space: paragraph
-/// text hangs from the top left of its frame (vertical text from the top
-/// right), artistic text sits on its first baseline at its origin
-/// (vertical text starts at the top of its first column there); text on
-/// a path is placed at the origin.
+/// text hangs from the top left of its frame (vertical text whose columns
+/// go right to left, `from_right`, from the top right), artistic text
+/// sits on its first baseline at its origin (vertical text starts at the
+/// top of its first column there); text on a path is placed at the
+/// origin. Callers pass [`ParagraphStyle::columns_from_right`].
 pub fn text_layout_shift(
     origin: Point,
     frame: Option<geometry::Size>,
     on_path: bool,
-    vertical: bool,
+    from_right: bool,
 ) -> Affine {
     match frame {
         Some(f) if !on_path => {
-            let dx = if vertical { f.width } else { 0.0 };
+            let dx = if from_right { f.width } else { 0.0 };
             Affine::translate((origin.x + dx, origin.y + f.height))
         }
         _ => Affine::translate(origin.to_vec2()),
@@ -310,7 +316,7 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
     };
     // The written lines to local space, as the outline is placed (the
     // columns of vertical text are the lines turned).
-    let to_local = text_layout_shift(*origin, *frame, false, para.vertical)
+    let to_local = text_layout_shift(*origin, *frame, false, para.columns_from_right())
         * if para.vertical {
             vertical_line_frame()
         } else {
@@ -377,7 +383,7 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
     })?;
     // The written lines to local space (vertical text: the columns run
     // down the frame's height, so the lines go across its width).
-    let to_local = text_layout_shift(*origin, Some(*frame), false, para.vertical)
+    let to_local = text_layout_shift(*origin, Some(*frame), false, para.columns_from_right())
         * if para.vertical {
             vertical_line_frame()
         } else {
@@ -393,8 +399,14 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
     let mut pieces = Vec::new();
     for line in &lines {
         // Below the frame: overflow, shown in the next linked frame or not
-        // at all.
-        if line.baseline < -depth - 1e-6 {
+        // at all. The columns of left to right vertical text are placed
+        // mirrored, their baselines going up from the frame's left edge.
+        let past = if para.columns_left_to_right() {
+            line.baseline + line.ascent - line.descent > depth + 1e-6
+        } else {
+            line.baseline < -depth - 1e-6
+        };
+        if past {
             break;
         }
         let (_, tail) = split_spans_at(spans, line.start_char);
@@ -1401,6 +1413,11 @@ pub struct ParagraphStyle {
     /// a path ignores it. See docs/behavior/text.md, Vertical text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub vertical: bool,
+    /// The order of vertical text's columns across the frame: right to
+    /// left (the default, from the top right) or left to right (from the
+    /// top left, #1986). Files from before it read as right to left.
+    #[serde(skip_serializing_if = "VerticalColumns::is_right_to_left")]
+    pub vertical_columns: VerticalColumns,
     /// The paragraph frame's background; `None` = transparent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_fill: Option<Fill>,
@@ -1580,6 +1597,23 @@ impl ParagraphStyle {
     }
 }
 
+/// Which way the columns of vertical text follow one another across the
+/// frame (Text > Vertical Text, the Text docker's Frame section): right to
+/// left, as CJK typesetting has them, or left to right (#1986).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerticalColumns {
+    #[default]
+    RightToLeft,
+    LeftToRight,
+}
+
+impl VerticalColumns {
+    pub fn is_right_to_left(&self) -> bool {
+        *self == VerticalColumns::RightToLeft
+    }
+}
+
 /// Where paragraph text sits in its frame (the Text docker's Frame
 /// section): at the top, in the middle or at the bottom of the room its
 /// lines leave. Text that overflows the frame starts at the top.
@@ -1616,9 +1650,23 @@ impl Default for ParagraphStyle {
             baseline_grid_mm: 0.0,
             vertical_align: VerticalAlign::Top,
             vertical: false,
+            vertical_columns: VerticalColumns::RightToLeft,
             frame_fill: None,
             flow: crate::text_flow::FrameFlow::default(),
         }
+    }
+}
+
+impl ParagraphStyle {
+    /// Vertical text whose columns go left to right: its lines are
+    /// placed mirrored across the frame (see [`text_layout_shift`]).
+    pub fn columns_left_to_right(&self) -> bool {
+        self.vertical && self.vertical_columns == VerticalColumns::LeftToRight
+    }
+
+    /// Vertical text whose columns start at the frame's right edge.
+    pub fn columns_from_right(&self) -> bool {
+        self.vertical && self.vertical_columns == VerticalColumns::RightToLeft
     }
 }
 
@@ -2834,9 +2882,14 @@ impl Shape {
     }
 
     /// Whether Break Apart has parts to give: a curve of several
-    /// subpaths, or a clip frame whose frame is one (each part then a
-    /// clip frame holding the contents, #1607).
+    /// subpaths, a brush stroke (its band and its path, see
+    /// [`Self::is_brush_stroke`]), or a clip frame whose frame is a curve
+    /// of several subpaths (each part then a clip frame holding the
+    /// contents, #1607).
     pub fn breaks_into_parts(&self) -> bool {
+        if self.is_brush_stroke() {
+            return true;
+        }
         let path = match &self.kind {
             ShapeKind::Path { path, .. } => path,
             ShapeKind::ClipFrame { frame, .. } => match &frame.kind {
@@ -2850,6 +2903,76 @@ impl Shape {
             .filter(|e| matches!(e, geometry::PathEl::MoveTo(_)))
             .count()
             > 1
+    }
+
+    /// A curve drawn with a brush: its outline is a band of its own
+    /// shape along it (a brush stroke, a variable or calligraphic
+    /// outline). Break Apart sets the band apart from the path.
+    pub fn is_brush_stroke(&self) -> bool {
+        matches!(self.kind, ShapeKind::Path { .. })
+            && self.stroke.as_ref().is_some_and(|s| s.is_brush())
+    }
+
+    /// The band a brush stroke draws (see [`Self::is_brush_stroke`]), in
+    /// page space as its object stands in its layer, fitted to curves:
+    /// one path per separate part, each an outer contour with its holes.
+    /// `None` for any other object, or a band that comes out empty.
+    pub fn brush_band_parts(&self) -> Option<Vec<BezPath>> {
+        if !self.is_brush_stroke() {
+            return None;
+        }
+        let st = self.stroke.as_ref()?;
+        let page = self.page_path();
+        let scale = if st.scale_with_object {
+            let c = self.transform.as_coeffs();
+            ((c[0] * c[3] - c[1] * c[2]).abs()).sqrt().max(1e-6)
+        } else {
+            1.0
+        };
+        // A variable width from a finer flattening, as it is fitted to
+        // curves (as Convert Outline to Object does, #627).
+        let band = if st.widths.is_empty() {
+            crate::shaping::outline_band(&page, st, scale)?
+        } else {
+            let nodes: Vec<crate::style::WidthNode> = st
+                .widths
+                .iter()
+                .map(|n| crate::style::WidthNode {
+                    at: n.at,
+                    left: n.left * scale,
+                    right: n.right * scale,
+                })
+                .collect();
+            crate::shaping::variable_band_within(&page, st.width * scale, &nodes, 0.005)
+        };
+        let band = crate::fit::fit_path(&band, 0.01);
+        // The contours come outer first, then its holes, which wind the
+        // other way.
+        let mut parts: Vec<BezPath> = Vec::new();
+        let mut outer_sign = 0.0;
+        let mut contour = BezPath::new();
+        let mut flush = |contour: &mut BezPath, parts: &mut Vec<BezPath>| {
+            let c = std::mem::take(contour);
+            let area = c.area();
+            if c.elements().is_empty() || !area.is_finite() || area.abs() <= 1e-12 {
+                return;
+            }
+            if outer_sign == 0.0 {
+                outer_sign = area.signum();
+            }
+            match parts.last_mut() {
+                Some(part) if area.signum() != outer_sign => part.extend(c),
+                _ => parts.push(c),
+            }
+        };
+        for el in band.elements() {
+            if matches!(el, geometry::PathEl::MoveTo(_)) {
+                flush(&mut contour, &mut parts);
+            }
+            contour.push(*el);
+        }
+        flush(&mut contour, &mut parts);
+        (!parts.is_empty()).then_some(parts)
     }
 
     /// A copy with ids from `next` for the object and everything inside
@@ -3043,7 +3166,8 @@ impl Shape {
                     }
                     // Paragraph text hangs from the top of its frame;
                     // artistic text sits on its baseline.
-                    return text_layout_shift(*origin, *frame, false, para.vertical) * p;
+                    return text_layout_shift(*origin, *frame, false, para.columns_from_right())
+                        * p;
                 }
                 // No text engine registered: rough box, 0.5 em per character.
                 let size_mm: f64 =
@@ -3527,7 +3651,7 @@ impl Shape {
         let local = if on_path.is_some() {
             Affine::translate(origin.to_vec2())
         } else {
-            text_layout_shift(*origin, *frame, false, para.vertical)
+            text_layout_shift(*origin, *frame, false, para.columns_from_right())
         };
         let m = self.transform * local;
         let [a, b, c, d, _, _] = m.as_coeffs();
@@ -3998,6 +4122,37 @@ pub struct Symbol {
     pub shape: Shape,
 }
 
+/// Whether `shape` draws an instance of symbol `index`, directly or
+/// through the definitions of the symbols it draws (Edit Symbol refuses
+/// such a definition: it would draw itself without end). Symbols met
+/// once are not walked again, so a cycle already in a file ends.
+pub fn draws_symbol(shape: &Shape, index: usize, symbols: &[Symbol]) -> bool {
+    fn walk(s: &Shape, index: usize, symbols: &[Symbol], seen: &mut Vec<bool>) -> bool {
+        match &s.kind {
+            ShapeKind::SymbolInstance { index: i } => {
+                if *i == index {
+                    return true;
+                }
+                match (symbols.get(*i), seen.get_mut(*i)) {
+                    (Some(sym), Some(flag)) if !*flag => {
+                        *flag = true;
+                        walk(&sym.shape, index, symbols, seen)
+                    }
+                    _ => false,
+                }
+            }
+            ShapeKind::Group { children } => children.iter().any(|c| walk(c, index, symbols, seen)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                walk(frame, index, symbols, seen)
+                    || contents.iter().any(|c| walk(c, index, symbols, seen))
+            }
+            _ => false,
+        }
+    }
+    let mut seen = vec![false; symbols.len()];
+    walk(shape, index, symbols, &mut seen)
+}
+
 /// Document properties (File > Document Properties).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -4038,6 +4193,15 @@ pub struct Metadata {
     /// older drawings read and write as before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_spacing: Option<f64>,
+    /// Facing pages (Layout > Facing Pages, Document Options > Layout,
+    /// #1972, #1660): the pages show side by side in spreads, see
+    /// [`crate::spreads`]. Left out of the file while off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub facing_pages: bool,
+    /// The side the first page of facing pages sits on: alone on the
+    /// right (the default) or starting a spread on the left.
+    #[serde(skip_serializing_if = "crate::spreads::PageSide::is_right")]
+    pub facing_start: crate::spreads::PageSide,
 }
 
 /// The space between pages in the Multipage View when a drawing sets
@@ -7255,6 +7419,36 @@ mod tests {
             (p.x - 1.0).abs() < 1e-9 && (p.y - -5.0).abs() < 1e-9,
             "{p:?}"
         );
+    }
+
+    /// The column order of vertical text (#1986): older files read as
+    /// right to left, left to right is saved and read back, and such a
+    /// frame's text is placed from its top left.
+    #[test]
+    fn vertical_columns_default_to_right_to_left_and_round_trip() {
+        let old: ParagraphStyle = serde_json::from_str(r#"{"vertical":true}"#).expect("parses");
+        assert_eq!(old.vertical_columns, VerticalColumns::RightToLeft);
+        assert!(old.columns_from_right() && !old.columns_left_to_right());
+        let json = serde_json::to_string(&old).expect("writes");
+        assert!(!json.contains("vertical_columns"), "{json}");
+        let mut ltr = old.clone();
+        ltr.vertical_columns = VerticalColumns::LeftToRight;
+        let json = serde_json::to_string(&ltr).expect("writes");
+        assert!(
+            json.contains("\"vertical_columns\":\"left_to_right\""),
+            "{json}"
+        );
+        let back: ParagraphStyle = serde_json::from_str(&json).expect("reads");
+        assert_eq!(back, ltr);
+        assert!(back.columns_left_to_right() && !back.columns_from_right());
+        // Text set in lines keeps the setting but is not in columns.
+        let mut flat = ltr.clone();
+        flat.vertical = false;
+        assert!(!flat.columns_left_to_right() && !flat.columns_from_right());
+        let o = Point::new(10.0, 20.0);
+        let f = Some(geometry::Size::new(50.0, 80.0));
+        let shift = text_layout_shift(o, f, false, back.columns_from_right());
+        assert_eq!(shift * Point::ZERO, Point::new(10.0, 100.0));
     }
 
     #[test]

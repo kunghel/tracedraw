@@ -41,6 +41,9 @@ pub enum DistributeTo {
     #[default]
     Selection,
     Page,
+    /// From the first object on, a set distance apart (`App::distribute_gap`):
+    /// the gaps between them, or their edges or centres (#2005).
+    Spacing,
 }
 
 impl DistributeTo {
@@ -49,6 +52,7 @@ impl DistributeTo {
         match self {
             DistributeTo::Selection => "selection",
             DistributeTo::Page => "page",
+            DistributeTo::Spacing => "spacing",
         }
     }
 
@@ -56,6 +60,7 @@ impl DistributeTo {
     pub fn from_id(id: &str) -> DistributeTo {
         match id {
             "page" => DistributeTo::Page,
+            "spacing" => DistributeTo::Spacing,
             _ => DistributeTo::Selection,
         }
     }
@@ -159,11 +164,11 @@ impl App {
     }
 
     /// How many objects `to` needs: three between the outermost ones, two
-    /// across the page.
+    /// across the page or a set distance apart.
     pub fn can_distribute(&self, to: DistributeTo) -> bool {
         let need = match to {
             DistributeTo::Selection => 3,
-            DistributeTo::Page => 2,
+            DistributeTo::Page | DistributeTo::Spacing => 2,
         };
         self.selection.len() >= need
     }
@@ -171,7 +176,8 @@ impl App {
     /// Spread the selected objects evenly along x or y: their left edges,
     /// centres or right edges (top, centres, bottom), or the gaps between
     /// them. Between the outermost objects they stay put; across the page
-    /// the first and last touch its edges.
+    /// the first and last touch its edges; with a set spacing the first
+    /// stays put and the others follow it `distribute_gap` apart.
     pub fn distribute_with(&mut self, how: Distribute, to: DistributeTo) {
         if !self.can_distribute(to) {
             return;
@@ -230,10 +236,13 @@ impl App {
         if kind == 3 {
             let total: f64 = boxes.iter().map(|(_, b)| hi(b) - lo(b)).sum();
             let (start, end) = match to {
-                DistributeTo::Selection => (lo(&first), hi(&last)),
+                DistributeTo::Selection | DistributeTo::Spacing => (lo(&first), hi(&last)),
                 DistributeTo::Page => (e0, e1),
             };
-            let gap = (end - start - total) / (n - 1) as f64;
+            let gap = match to {
+                DistributeTo::Spacing => self.distribute_gap,
+                _ => (end - start - total) / (n - 1) as f64,
+            };
             let mut cursor = start;
             for (s, b) in &boxes {
                 shift(s, cursor - lo(b));
@@ -243,6 +252,10 @@ impl App {
             let len = |b: &Rect| hi(b) - lo(b);
             let (k0, k1) = match to {
                 DistributeTo::Selection => (key(&first), key(&last)),
+                DistributeTo::Spacing => (
+                    key(&first),
+                    key(&first) + self.distribute_gap * (n - 1) as f64,
+                ),
                 DistributeTo::Page => match kind {
                     0 => (e0, e1 - len(&last)),
                     1 => (e0 + len(&first) / 2.0, e1 - len(&last) / 2.0),
@@ -623,8 +636,9 @@ impl App {
                 return;
             }
         };
-        let img = match image::load_from_memory(&bytes) {
-            Ok(i) => i.to_rgba8(),
+        // Print-size pictures too (#2000).
+        let img = match crate::files::decode_picture(&bytes) {
+            Ok(i) => i.into_rgba8(),
             Err(e) => {
                 self.status = crate::i18n::trf(
                     "status.could_not_read",
@@ -695,8 +709,9 @@ impl App {
                 return;
             }
         };
-        let img = match image::load_from_memory(&bytes) {
-            Ok(i) => i.to_rgba8(),
+        // Print-size pictures too (#2000).
+        let img = match crate::files::decode_picture(&bytes) {
+            Ok(i) => i.into_rgba8(),
             Err(e) => {
                 self.status = crate::i18n::trf(
                     "status.could_not_read",
@@ -996,6 +1011,14 @@ impl App {
             _ => target.clone(),
         };
         let open = |s: &Shape| matches!(s.kind, ShapeKind::Path { closed: false, .. });
+        // Weld of open curves alone: there is no area to unite, so the
+        // curves are joined end to end where their ends meet (Object >
+        // Join Curves, with its gap setting) into one object, instead of
+        // nothing happening (#1934).
+        if matches!(op, Shaping::Weld) && shapes.len() >= 2 && shapes.iter().all(open) {
+            self.weld_open_curves();
+            return;
+        }
         let subtracts = matches!(
             op,
             Shaping::Trim | Shaping::FrontMinusBack | Shaping::BackMinusFront
@@ -1282,7 +1305,16 @@ impl App {
                         closed: !open_target,
                     },
                 );
-                shape.fill = attrs.fill.clone();
+                // The result lies in page space: a mesh fill's nodes, kept
+                // in the object's own space, go there with it, or the mesh
+                // sat away from the result and its colour was lost (live
+                // test of 0.41).
+                shape.fill = match &attrs.fill {
+                    tracedraw_core::Fill::Mesh(m) => {
+                        tracedraw_core::Fill::Mesh(m.transformed(attrs.transform))
+                    }
+                    f => f.clone(),
+                };
                 shape.stroke = attrs.stroke.clone();
                 shape.opacity = attrs.opacity;
                 shape
@@ -2509,5 +2541,81 @@ mod curves_and_target_tests {
         assert_eq!(app.join_curves(), 1);
         assert_eq!(app.selection, vec![a]);
         assert!(app.doc().find_shape(b).is_none());
+    }
+
+    /// #1934: Weld of open curves alone joins the ends that meet or
+    /// nearly meet into one path; curves whose ends meet nothing still
+    /// become one object, a subpath each, as Combine makes them. Combine
+    /// keeps open curves open.
+    #[test]
+    fn weld_and_combine_of_open_curves_make_one_path() {
+        use tracedraw_core::geometry::PathEl;
+        let line = |app: &mut App, a: (f64, f64), b: (f64, f64)| {
+            let mut p = tracedraw_core::BezPath::new();
+            p.move_to(a);
+            p.line_to(b);
+            app.new_shape(ShapeKind::Path {
+                path: p,
+                closed: false,
+            })
+            .expect("a line")
+        };
+        let count = |app: &App| {
+            app.doc()
+                .all_layers()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let result = |app: &App| -> (tracedraw_core::BezPath, bool) {
+            let s = app.selected_shapes()[0].clone();
+            match &s.kind {
+                ShapeKind::Path { closed, .. } => (s.page_path(), *closed),
+                other => panic!("not a curve: {other:?}"),
+            }
+        };
+        let moves = |p: &tracedraw_core::BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count()
+        };
+        // Ends on the same point, ends 0.5 mm apart: one open path.
+        for gap in [0.0, 0.5] {
+            let mut app = App::headless();
+            let a = line(&mut app, (100.0, 100.0), (120.0, 100.0));
+            let b = line(&mut app, (120.0 + gap, 100.0), (120.0 + gap, 130.0));
+            let c = line(&mut app, (120.0 + gap, 130.0), (100.0, 130.0));
+            app.select(vec![a, b, c]);
+            app.shaping(Shaping::Weld);
+            assert_eq!(count(&app), 1, "gap {gap}");
+            let (path, closed) = result(&app);
+            assert_eq!(moves(&path), 1, "gap {gap}: one path {path:?}");
+            assert!(!closed);
+            let nodes = tracedraw_core::nodes::nodes(&path);
+            assert_eq!(nodes.len(), 4, "gap {gap}: {nodes:?}");
+            // One undo brings the three lines back.
+            app.undo();
+            assert_eq!(count(&app), 3);
+        }
+        // Lines far apart: one object of two open subpaths.
+        let mut app = App::headless();
+        let a = line(&mut app, (100.0, 100.0), (120.0, 100.0));
+        let b = line(&mut app, (100.0, 150.0), (120.0, 150.0));
+        app.select(vec![a, b]);
+        app.shaping(Shaping::Weld);
+        assert_eq!(count(&app), 1);
+        let (path, closed) = result(&app);
+        assert_eq!(moves(&path), 2);
+        assert!(!closed);
+        // Combine: one open curve, a subpath each.
+        let mut app = App::headless();
+        let a = line(&mut app, (100.0, 100.0), (120.0, 100.0));
+        let b = line(&mut app, (120.0, 100.0), (120.0, 130.0));
+        app.select(vec![a, b]);
+        app.combine();
+        assert_eq!(count(&app), 1);
+        let (path, closed) = result(&app);
+        assert_eq!(moves(&path), 2);
+        assert!(!closed, "combined open curves stay open");
     }
 }

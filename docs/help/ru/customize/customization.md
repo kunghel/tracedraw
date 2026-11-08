@@ -74,6 +74,9 @@
 
 - [[options.palette_auto_update]] и [[options.palette_show_document]] (оба
   включены).
+- [[options.palette_position]] (сверху, снизу, слева, справа или плавающая)
+  основной палитры, как её задаёт собственное меню палитры; не меняется,
+  пока панели инструментов заблокированы.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (включено) и что
   делает [[options.palette_right_button]]: [[options.palette_set_outline]] (по
   умолчанию) или открывает [[options.palette_context_menu]].

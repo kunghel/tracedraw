@@ -121,7 +121,17 @@ pub fn installer_language() -> Option<String> {
 mod windows {
     use std::ffi::c_void;
 
-    #[link(name = "kernel32", kind = "raw-dylib")]
+    // 32-bit Windows: the DLLs export the plain names, not the stdcall
+    // decorated ones raw-dylib imports by default (#1975).
+    #[cfg_attr(
+        target_arch = "x86",
+        link(
+            name = "kernel32",
+            kind = "raw-dylib",
+            import_name_type = "undecorated"
+        )
+    )]
+    #[cfg_attr(not(target_arch = "x86"), link(name = "kernel32", kind = "raw-dylib"))]
     unsafe extern "system" {
         fn GetUserPreferredUILanguages(
             flags: u32,
@@ -132,7 +142,15 @@ mod windows {
         fn GetUserDefaultUILanguage() -> u16;
     }
 
-    #[link(name = "advapi32", kind = "raw-dylib")]
+    #[cfg_attr(
+        target_arch = "x86",
+        link(
+            name = "advapi32",
+            kind = "raw-dylib",
+            import_name_type = "undecorated"
+        )
+    )]
+    #[cfg_attr(not(target_arch = "x86"), link(name = "advapi32", kind = "raw-dylib"))]
     unsafe extern "system" {
         fn RegGetValueW(
             key: *mut c_void,

@@ -312,10 +312,12 @@ impl<N: Numeric> NumField<'_, N> {
         }
         // A drag left or right (or down and up) on the arrows or the
         // label: a step every few pixels, the part left over kept for the
-        // next frame (#1303).
+        // next frame (#1303). A finger sliding the bar the field is on
+        // steps nothing (#1997).
         let drag_id = id.with("drag");
         let drags = [Some(&spin_resp), label_resp.as_ref()];
-        let dragging = drags.iter().flatten().any(|r| r.dragged());
+        let dragging = drags.iter().flatten().any(|r| r.dragged())
+            && !crate::ui::overflow::finger_sliding(ui.ctx());
         if dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             let d = drags

@@ -512,6 +512,7 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
     }
     app.page_tabs_first = first;
     let mut x = area.min.x + 4.0;
+    let mut pending_move: Option<(tracedraw_core::PageId, usize)> = None;
     let mut clicked = None;
     let mut double = None;
     for (i, name) in names.iter().enumerate().skip(first) {
@@ -524,8 +525,36 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             break;
         }
         let resp = ui
-            .interact(r, egui::Id::new(("page_tab", i)), Sense::click())
+            .interact(r, egui::Id::new(("page_tab", i)), Sense::click_and_drag())
             .rich_tip(format!("{name}\n{}", tr("view.page_tab_desc")));
+        // A tab dragged along the row and let go over another moves its
+        // page there (#2064).
+        if resp.drag_started() {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("page_tab_drag"), i));
+        }
+        if resp.drag_stopped() {
+            let from = ui
+                .ctx()
+                .data_mut(|d| d.remove_temp::<usize>(egui::Id::new("page_tab_drag")));
+            let at = ui.ctx().input(|inp| inp.pointer.latest_pos());
+            if let (Some(from), Some(at)) = (from, at) {
+                if let Some(to) = app
+                    .page_tab_rects
+                    .iter()
+                    .chain(std::iter::once(&(i, r)))
+                    .find(|(_, tr)| tr.contains(at))
+                    .map(|(j, _)| *j)
+                    .or_else(|| (at.x > area.max.x - 8.0).then_some(n - 1))
+                {
+                    if to != from {
+                        if let Some(id) = app.doc().pages.get(from).map(|p| p.id) {
+                            pending_move = Some((id, to));
+                        }
+                    }
+                }
+            }
+        }
         // A selection moved onto the tab goes to its page (#1346).
         app.page_tab_rects.push((i, r.intersect(area)));
         let drop_target = app.page_tab_hover.is_some_and(|(j, _)| j == i);
@@ -537,8 +566,10 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             Pos2::new(r.max.x - slant, r.max.y),
             Pos2::new(r.min.x + slant, r.max.y),
         ];
+        // The current page's tab is highlighted as the active document
+        // tab above the rulers is (#2049).
         let fill = if selected {
-            crate::theme::Tokens::field()
+            crate::theme::Tokens::tab_active()
         } else if resp.hovered() || drop_target {
             Tokens::tool_hover()
         } else {
@@ -586,7 +617,10 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs_f64(0.1));
     }
-    if let Some(i) = clicked {
+    if let Some((page, to)) = pending_move {
+        app.run(tracedraw_core::Command::MovePage { page, to });
+        app.page_tabs_followed = None;
+    } else if let Some(i) = clicked {
         app.goto_page(i);
     }
     if let Some(i) = double {

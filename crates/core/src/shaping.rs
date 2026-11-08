@@ -863,7 +863,11 @@ pub enum Enclosed {
 /// outline (or its own start) that [`enclosed_area`] closes: the hairline
 /// gaps files carry from rounding (a few ten thousandths of a millimetre,
 /// #899), not a gap anyone drew.
-const GAP: f64 = 0.01;
+// At least the flattening's own error: an end that lies exactly on a
+// curve (Virtual Segment Delete leaves its ends there) may sit up to
+// TOL outside the curve's flattened chords, and must still close the
+// area (#2076).
+const GAP: f64 = 2.0 * TOL;
 
 /// How far a bridge runs on past the outline it meets, and back behind
 /// the end it starts from, as a share of the outlines' extent. The overlay
@@ -1149,6 +1153,22 @@ pub fn offset(path: &BezPath, d: f64) -> BezPath {
 /// Offset a closed path outward (positive) or inward (negative) by `d` mm,
 /// the corners turned as `join` says.
 pub fn offset_with(path: &BezPath, d: f64, join: Join) -> BezPath {
+    if !d.is_finite() {
+        return BezPath::new();
+    }
+    fit_polygon_curves(&offset_polygon_with(path, d, join), FIT_TOL)
+}
+
+/// Offset a closed path like [`offset`], round corners, but keep the
+/// straight pieces the overlay library gives instead of fitting curves
+/// to them: every point of the result is the offset's own, so the region
+/// it bounds can be read as a polygon without losing the outside of its
+/// curves (shape nesting needs a region that covers the grown outline).
+pub fn offset_polygon(path: &BezPath, d: f64) -> BezPath {
+    offset_polygon_with(path, d, Join::Round)
+}
+
+fn offset_polygon_with(path: &BezPath, d: f64, join: Join) -> BezPath {
     use i_overlay::float::simplify::SimplifyShape;
     use i_overlay::mesh::float::outline::offset::OutlineOffset;
     use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
@@ -1163,8 +1183,7 @@ pub fn offset_with(path: &BezPath, d: f64, join: Join) -> BezPath {
         Join::Round => LineJoin::Round(0.05),
         Join::Bevel => LineJoin::Bevel,
     });
-    let out = clean.outline(&style);
-    fit_polygon_curves(&from_shapes(out), FIT_TOL)
+    from_shapes(clean.outline(&style))
 }
 
 /// How far the curves an offset is fitted with may stray from it, mm:
@@ -1680,28 +1699,113 @@ pub fn variable_band_within(
     }
     marks.extend(eased);
     marks.sort_by(|a, b| a.total_cmp(b));
+    // A bend of the flattened path below this (radians) is part of a
+    // curve: the normal turns through it smoothly, the pieces on both
+    // sides sharing the halfway normal at the bend. Past it, a corner,
+    // joined with a round fan on its outer side.
+    const SMOOTH_TURN: f64 = 0.5;
+    // Fine enough that a fan's chords, and the far edges of pieces whose
+    // normal turns, stay within `FAN_TOL` of the arc they stand for,
+    // however wide the reach (#776).
+    const FAN_TOL: f64 = 0.005;
+    let per_turn = |len: f64| 2.0 * (1.0 - (FAN_TOL / len).min(1.0)).acos();
+    let turn_between =
+        |a: [f64; 2], b: [f64; 2]| (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
+    // The widest reach anywhere, for how finely a turning normal is
+    // followed.
+    let widest = nodes
+        .iter()
+        .flat_map(|n| [n.left, n.right])
+        .chain([base / 2.0])
+        .filter(|r| r.is_finite())
+        .fold(0.0, f64::max);
     let mut polys: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut run = 0.0;
     for (line, closed) in &lines {
-        // Resampled points with their length along the whole path, and
-        // the unit normal (to the left) of each piece. The pieces of one
-        // segment share its normal: computed piece by piece, rounding
-        // tilted them apart, and the union left cracks between them that
-        // showed as spikes and holes (#627).
-        let mut pts: Vec<(Point, f64)> = Vec::new();
-        let mut normals: Vec<Option<[f64; 2]>> = Vec::new();
+        // The segments of the polyline (empty ones left out, the next one
+        // starting where the last one ended) with their unit normal, to
+        // the left.
+        let mut segs: Vec<(Point, Point, [f64; 2])> = Vec::new();
         for w in line.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            let len = (b - a).hypot();
-            if pts.is_empty() {
-                pts.push((a, run));
+            let a = segs.last().map_or(w[0], |s| s.1);
+            let b = w[1];
+            let d = b - a;
+            let len = d.hypot();
+            if len > 1e-12 {
+                segs.push((a, b, [-d.y / len, d.x / len]));
             }
-            if len <= 1e-12 {
+        }
+        let count = segs.len();
+        // The segment after segment `j`, across the bend at its end
+        // (round the seam of a closed subpath too).
+        let after = |j: usize| -> Option<usize> {
+            if j + 1 < count {
+                Some(j + 1)
+            } else if *closed && count > 1 {
+                Some(0)
+            } else {
+                None
+            }
+        };
+        // The normal at each segment's start and end. Across a slight bend
+        // both segments take the halfway normal, computed once, so their
+        // pieces meet exactly: `smooth[j]` says the bend at the end of
+        // segment `j` is one. A segment's own normal for all its pieces
+        // let their far ends zigzag where a reach wider than the curve's
+        // radius runs past its centre: a staircase edge and loose slivers
+        // (a closed loop with a wide inner reach, a live test of 0.41).
+        let mut ends: Vec<([f64; 2], [f64; 2])> = segs.iter().map(|s| (s.2, s.2)).collect();
+        let mut smooth = vec![false; count];
+        for j in 0..count {
+            let Some(k) = after(j) else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (segs.get(j).map(|s| s.2), segs.get(k).map(|s| s.2)) else {
+                continue;
+            };
+            if turn_between(a, b).abs() >= SMOOTH_TURN {
                 continue;
             }
-            let d = b - a;
-            let n = Some([-d.y / len, d.x / len]);
-            let k = ((len / step).ceil() as usize).clamp(1, 4096);
+            // Each normal weighted by the other segment's length: the
+            // normal of the circle through the bend and its neighbours,
+            // which points at the curve's centre where the plain halfway
+            // normal of two segments of different lengths missed it, and
+            // the pieces' far ends near the centre came out ragged.
+            let len = |s: Option<&(Point, Point, [f64; 2])>| s.map_or(1.0, |s| (s.1 - s.0).hypot());
+            let (la, lb) = (len(segs.get(j)), len(segs.get(k)));
+            let m = [a[0] * lb + b[0] * la, a[1] * lb + b[1] * la];
+            let ml = m[0].hypot(m[1]);
+            if ml <= 1e-12 {
+                continue;
+            }
+            let m = [m[0] / ml, m[1] / ml];
+            if let Some(e) = ends.get_mut(j) {
+                e.1 = m;
+            }
+            if let Some(e) = ends.get_mut(k) {
+                e.0 = m;
+            }
+            if let Some(s) = smooth.get_mut(j) {
+                *s = true;
+            }
+        }
+        // Resampled points with their length along the whole path and
+        // their normal, eased from the segment's start normal to its end
+        // normal, and whether a piece joins them to the point before (not
+        // across a corner, where a fan joins them). Each point is worked
+        // out once and shared by the two pieces either side of it:
+        // computed piece by piece, rounding tilted them apart, and the
+        // union left cracks between them that showed as spikes and holes
+        // (#627).
+        let mut pts: Vec<(Point, f64, [f64; 2], bool)> = Vec::new();
+        let mut seg_end: Vec<f64> = Vec::with_capacity(count);
+        for (j, &(a, b, n)) in segs.iter().enumerate() {
+            let (n0, n1) = ends.get(j).copied().unwrap_or((n, n));
+            let len = (b - a).hypot();
+            let swing = turn_between(n0, n1).abs();
+            let by_len = (len / step).ceil();
+            let by_turn = (swing / per_turn(widest).max(1e-3)).ceil();
+            let k = (by_len.max(by_turn) as usize).clamp(1, 4096);
             let mut cuts: Vec<f64> = (1..k).map(|i| i as f64 / k as f64).collect();
             cuts.extend(
                 marks
@@ -1710,32 +1814,101 @@ pub fn variable_band_within(
                     .map(|m| (m - run) / len),
             );
             cuts.sort_by(|x, y| x.total_cmp(y));
-            for u in cuts {
-                pts.push((a + (b - a) * u, run + u * len));
-                normals.push(n);
+            let normal_at = |u: f64| {
+                let m = [n0[0] + (n1[0] - n0[0]) * u, n0[1] + (n1[1] - n0[1]) * u];
+                let ml = m[0].hypot(m[1]);
+                if ml <= 1e-12 {
+                    n0
+                } else {
+                    [m[0] / ml, m[1] / ml]
+                }
+            };
+            // After a slight bend the segment starts at the last point.
+            let joined = j > 0 && smooth.get(j - 1).copied().unwrap_or(false);
+            if !joined {
+                pts.push((a, run, n0, false));
             }
-            run += len;
-            pts.push((b, run));
-            normals.push(n);
+            for u in cuts {
+                pts.push((a + (b - a) * u, run + u * len, normal_at(u), true));
+            }
+            let end = run + len;
+            pts.push((b, end, n1, true));
+            seg_end.push(end);
+            run = end;
         }
-        for (i, w) in pts.windows(2).enumerate() {
-            let Some(n) = normals.get(i).copied().flatten() else {
+        // How far each side may reach from each point: no further than
+        // where its normal meets the normal of a point next to it, the
+        // curve's centre there. Past it the piece between them crossed
+        // over into a bow tie, whose halves wind opposite ways and
+        // cancelled other pieces in the union (holes, and a staircase
+        // standing out past the far side of a loop); a reach that wide
+        // fills the inside of the curve up to its centre instead. Worked
+        // out per point, so the pieces either side keep sharing their
+        // edge.
+        let mut room = vec![[f64::INFINITY; 2]; pts.len()];
+        for k in 1..pts.len() {
+            let (Some(&(p, _, mp, _)), Some(&(q, _, mq, true))) = (pts.get(k - 1), pts.get(k))
+            else {
                 continue;
             };
-            let ((p, s0), (q, s1)) = (w[0], w[1]);
+            for (side, sign) in [(0, 1.0), (1, -1.0)] {
+                let (dp, dq) = ([mp[0] * sign, mp[1] * sign], [mq[0] * sign, mq[1] * sign]);
+                if let Some((t, u)) = rays_meet(p, dp, q, dq) {
+                    if let Some(r) = room.get_mut(k - 1) {
+                        r[side] = r[side].min(t);
+                    }
+                    if let Some(r) = room.get_mut(k) {
+                        r[side] = r[side].min(u);
+                    }
+                }
+            }
+        }
+        // Round the seam of a smooth loop the first point and the last are
+        // one.
+        if *closed && smooth.last().copied().unwrap_or(false) {
+            if let (Some(&f), Some(&l)) = (room.first(), room.last()) {
+                let both = [f[0].min(l[0]), f[1].min(l[1])];
+                if let Some(r) = room.first_mut() {
+                    *r = both;
+                }
+                if let Some(r) = room.last_mut() {
+                    *r = both;
+                }
+            }
+        }
+        for k in 1..pts.len() {
+            let (Some(&(p, s0, m0, _)), Some(&(q, s1, m1, true))) = (pts.get(k - 1), pts.get(k))
+            else {
+                continue;
+            };
+            let (Some(rp), Some(rq)) = (room.get(k - 1), room.get(k)) else {
+                continue;
+            };
             let (l0, r0) = reach(s0);
             let (l1, r1) = reach(s1);
+            // Where this piece's own normals meet on a side both reach
+            // past: its far edge runs out to that point, so the pieces
+            // whose room ends a little short of it leave no slit there.
+            let tip = |sign: f64, a: f64, b: f64| {
+                let (dp, dq) = ([m0[0] * sign, m0[1] * sign], [m1[0] * sign, m1[1] * sign]);
+                rays_meet(p, dp, q, dq)
+                    .filter(|(t, u)| a >= *t && b >= *u)
+                    .map(|(t, _)| [p.x + dp[0] * t, p.y + dp[1] * t])
+            };
+            let (left_tip, right_tip) = (tip(1.0, l0, l1), tip(-1.0, r0, r1));
+            let (l0, r0, l1, r1) = (l0.min(rp[0]), r0.min(rp[1]), l1.min(rq[0]), r1.min(rq[1]));
             // The ends of the piece on the path are corners too: a join's
             // fan starts there, and a point of it in the middle of an edge
             // left a crack after rounding.
-            let mut poly = vec![
-                [p.x + n[0] * l0, p.y + n[1] * l0],
-                [q.x + n[0] * l1, q.y + n[1] * l1],
+            let mut poly = vec![[p.x + m0[0] * l0, p.y + m0[1] * l0]];
+            poly.extend(left_tip);
+            poly.extend([
+                [q.x + m1[0] * l1, q.y + m1[1] * l1],
                 [q.x, q.y],
-                [q.x - n[0] * r1, q.y - n[1] * r1],
-                [p.x - n[0] * r0, p.y - n[1] * r0],
-                [p.x, p.y],
-            ];
+                [q.x - m1[0] * r1, q.y - m1[1] * r1],
+            ]);
+            poly.extend(right_tip);
+            poly.extend([[p.x - m0[0] * r0, p.y - m0[1] * r0], [p.x, p.y]]);
             // A side of no reach repeats the point on the path.
             poly.dedup();
             if poly.first() == poly.last() {
@@ -1743,33 +1916,23 @@ pub fn variable_band_within(
             }
             polys.push(poly);
         }
-        // Round joins between consecutive pieces (and around the seam of
-        // a closed subpath): a fan from one normal to the next on the
+        // Round joins at the corners (and at a corner on the seam of a
+        // closed subpath): a fan from one normal to the next on the
         // outer side of the turn. The inner side is covered by the two
         // pieces themselves; a fan there, as wide as the reach at the
         // corner, stood out past a reach that falls away after the
         // corner and left a notch where it met the band (#776).
-        let valid: Vec<(usize, [f64; 2])> = normals
-            .iter()
-            .enumerate()
-            .filter_map(|(i, n)| n.map(|n| (i, n)))
-            .collect();
-        let count = valid.len();
-        let pairs = if *closed {
-            count
-        } else {
-            count.saturating_sub(1)
-        };
-        for k in 0..pairs {
-            let (Some(&(i, a)), Some(&(_, b))) = (valid.get(k), valid.get((k + 1) % count.max(1)))
+        for j in 0..count {
+            let Some(k) = after(j) else {
+                continue;
+            };
+            let (Some(&(_, c, a)), Some(&(_, _, b)), Some(&sc)) =
+                (segs.get(j), segs.get(k), seg_end.get(j))
             else {
                 continue;
             };
-            let Some(&(c, sc)) = pts.get(i + 1) else {
-                continue;
-            };
-            let turn = (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
-            if turn.abs() < 1e-6 {
+            let turn = turn_between(a, b);
+            if turn.abs() < SMOOTH_TURN {
                 continue;
             }
             let (l, r) = reach(sc);
@@ -1779,10 +1942,7 @@ pub fn variable_band_within(
             if len <= 0.0 {
                 continue;
             }
-            // Fine enough that the fan's chords stay within `FAN_TOL` of
-            // its arc, however wide the reach (#776).
-            const FAN_TOL: f64 = 0.005;
-            let per = 2.0 * (1.0 - (FAN_TOL / len).min(1.0)).acos();
+            let per = per_turn(len);
             let steps = ((turn.abs() / per.max(1e-3)).ceil() as usize).clamp(1, 256);
             // The first and last points exactly the corners of the
             // pieces, so no crack opens between them and the fan.
@@ -1820,7 +1980,45 @@ pub fn variable_band_within(
             > 1e-12
     });
     let empty: Vec<Vec<[f64; 2]>> = Vec::new();
-    from_shapes(polys.overlay(&empty, OverlayRule::Subject, IFill::NonZero))
+    let mut shapes = polys.overlay(&empty, OverlayRule::Subject, IFill::NonZero);
+    // Where a reach wider than a curve's radius runs past its centre and
+    // eases off, the pieces can just miss each other and leave a pinhole
+    // far smaller than the reach; it is filled, so the band keeps one
+    // outer and one inner contour round a loop (a live test of 0.41).
+    let pinhole = (0.05 * widest).powi(2);
+    for shape in shapes.iter_mut() {
+        let mut first = true;
+        shape.retain(|c| {
+            let keep = first || ring_area(c).abs() >= pinhole;
+            first = false;
+            keep
+        });
+    }
+    from_shapes(shapes)
+}
+
+/// Where the rays from `p` along `dp` and from `q` along `dq` meet: how
+/// far along each (both ahead); `None` when they are parallel or meet
+/// behind either start.
+fn rays_meet(p: Point, dp: [f64; 2], q: Point, dq: [f64; 2]) -> Option<(f64, f64)> {
+    let den = dp[0] * dq[1] - dp[1] * dq[0];
+    if den.abs() <= 1e-12 {
+        return None;
+    }
+    let (fx, fy) = (q.x - p.x, q.y - p.y);
+    let t = (fx * dq[1] - fy * dq[0]) / den;
+    let u = (fx * dp[1] - fy * dp[0]) / den;
+    (t > 0.0 && u > 0.0).then_some((t, u))
+}
+
+/// The signed area of a closed ring of points (positive when it runs
+/// counter-clockwise).
+fn ring_area(ring: &[[f64; 2]]) -> f64 {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+        .sum::<f64>()
+        / 2.0
 }
 
 /// The filled area that stands for an outline that cannot be drawn as a
@@ -2449,6 +2647,30 @@ mod tests {
         }
     }
 
+    /// The polygon offset keeps its straight pieces: every corner lies on
+    /// the grown circle, so the polygon read point by point is the offset.
+    #[test]
+    fn a_polygon_offset_has_only_straight_pieces_on_the_outline() {
+        use super::offset_polygon;
+        use crate::geometry::{PathEl, Point, Shape as _};
+        let circle = kurbo::Circle::new(Point::new(50.0, 50.0), 20.0).to_path(0.001);
+        let q = offset_polygon(&circle, 5.0);
+        let mut corners = 0;
+        for el in q.elements() {
+            match *el {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => {
+                    let r = (p - Point::new(50.0, 50.0)).hypot();
+                    assert!((r - 25.0).abs() < 0.01, "{r}");
+                    corners += 1;
+                }
+                PathEl::ClosePath => {}
+                _ => panic!("a curve in {q:?}"),
+            }
+        }
+        assert!(corners > 32, "{corners}");
+        assert!(offset_polygon(&circle, f64::NAN).elements().is_empty());
+    }
+
     /// Sharp corners stay sharp: a mitred square's contour is four
     /// straight sides.
     #[test]
@@ -2720,6 +2942,30 @@ mod tests {
     /// the frame, as files carry from rounding, gives the half under the
     /// click; a gap anyone could see (0.2 mm) stays open, and so does a
     /// line that merely touches nothing.
+    /// #2076: an open line whose ends lie exactly on a large circle (as
+    /// Virtual Segment Delete leaves them) closes the area between them,
+    /// though the ends sit outside the circle's flattened chords.
+    #[test]
+    fn an_open_line_ending_on_a_curve_closes_the_area() {
+        use crate::geometry::{ellipse_path, Rect};
+        let circle = ellipse_path(Rect::new(
+            -2679.2041015625,
+            -660.82666015625,
+            -1884.3549499511719,
+            134.02249145507812,
+        ));
+        let mut line = BezPath::new();
+        line.move_to((-2043.4652370224053, -581.4763041392267));
+        line.line_to((-1919.4439697265625, -876.7652587890625));
+        line.line_to((-2542.3212890625, -870.6586303710938));
+        line.line_to((-2479.0868160819336, -608.4672507635786));
+        let parts = vec![(circle, false), (line, false)];
+        assert!(matches!(
+            enclosed_visible_area(&parts, Point::new(-2281.0, -760.0)),
+            Enclosed::Area(_)
+        ));
+    }
+
     #[test]
     fn enclosed_area_closes_hairline_gaps() {
         use super::{enclosed_area, Enclosed};
@@ -2948,10 +3194,10 @@ mod tests {
         assert!((t - 0.25).abs() < 1e-9 && (d - 3.0).abs() < 1e-9 && !left);
     }
 
-    /// #1322: an ellipse is one closed loop, so a single wide node gives
-    /// the band that width all the way round, across the seam at the
-    /// ellipse's start too; the open arc of the same size thins to the
-    /// base width at its ends.
+    /// #1322: an ellipse is one closed loop, so wide nodes at its top
+    /// and bottom give the band that width all the way round, across
+    /// the seam at the ellipse's start too; the open arc of the same
+    /// size thins to the base width at its ends.
     #[test]
     fn a_closed_loops_variable_band_runs_on_across_its_seam() {
         use super::{is_single_loop, variable_band};
@@ -2960,7 +3206,11 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
         let circle = ellipse_path(rect);
         assert!(is_single_loop(&circle));
-        let band = variable_band(&circle, 2.0, &[WidthNode::symmetric(0.5, 10.0)]);
+        let wide = [
+            WidthNode::symmetric(0.25, 10.0),
+            WidthNode::symmetric(0.75, 10.0),
+        ];
+        let band = variable_band(&circle, 2.0, &wide);
         let b = band.bounding_box();
         // 5 mm out on every side, the seam (the start, at the right) too.
         assert!((b.x1 - 105.0).abs() < 0.05, "{b:?}");
@@ -2971,13 +3221,128 @@ mod tests {
         // The open arc: half the base width (1 mm) at its ends.
         let arc = ellipse_arc_path(rect, 0.0, 359.0, false);
         assert!(!is_single_loop(&arc));
-        let b = variable_band(&arc, 2.0, &[WidthNode::symmetric(0.5, 10.0)]).bounding_box();
+        let b = variable_band(&arc, 2.0, &wide).bounding_box();
         assert!((b.x1 - 101.0).abs() < 0.1, "{b:?}");
         // Two loops are not one.
         let mut two = circle.clone();
         two.extend(ellipse_path(Rect::new(20.0, 20.0, 80.0, 80.0)));
         assert!(!is_single_loop(&two));
         assert!(!is_single_loop(&BezPath::new()));
+    }
+
+    /// A live test of 0.41: on a circle the band tapers as on an open
+    /// path and stays one ring, an outer and an inner contour. One node
+    /// is wide at its place and eases to the base width half way round;
+    /// a reach to the inside only (Shift), wider than the circle's
+    /// radius, runs past its centre with smooth edges: no staircase, no
+    /// loose slivers or extra contours.
+    #[test]
+    fn a_closed_loops_variable_band_is_a_tapering_ring() {
+        use super::variable_band;
+        use crate::geometry::{ellipse_path, PathEl, Point, Rect, Shape as _};
+        use crate::style::WidthNode;
+        // Counter-clockwise from the right: its left (inside) faces the
+        // centre, (50, 50); a quarter of the way round is the top.
+        let circle = ellipse_path(Rect::new(0.0, 0.0, 100.0, 100.0));
+        // The contours of a band: their points, each one closed.
+        let contours = |band: &crate::geometry::BezPath| {
+            let mut out: Vec<Vec<Point>> = Vec::new();
+            for el in band.elements() {
+                match el {
+                    PathEl::MoveTo(p) => out.push(vec![*p]),
+                    PathEl::LineTo(p) => {
+                        if let Some(c) = out.last_mut() {
+                            c.push(*p);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
+        };
+        // The sharp corners of a set of contours: a smooth edge has
+        // none, a staircase dozens.
+        let sharp = |rings: &[Vec<Point>]| {
+            rings
+                .iter()
+                .map(|c| {
+                    let n = c.len();
+                    (0..n)
+                        .filter(|&i| {
+                            let (a, b, d) = (c[i], c[(i + 1) % n], c[(i + 2) % n]);
+                            let (u, v) = (b - a, d - b);
+                            let turn = (u.x * v.y - u.y * v.x).atan2(u.x * v.x + u.y * v.y);
+                            turn.abs() > 0.6
+                        })
+                        .count()
+                })
+                .sum::<usize>()
+        };
+        // One node, 10 mm wide at the top.
+        let band = variable_band(&circle, 2.0, &[WidthNode::symmetric(0.25, 10.0)]);
+        let rings = contours(&band);
+        assert_eq!(rings.len(), 2, "an outer and an inner contour");
+        // 5 mm each way at the top, half the base width (1 mm) at the
+        // bottom, between the two at the sides, the same on both.
+        assert!(band.contains(Point::new(50.0, 104.8)));
+        assert!(band.contains(Point::new(50.0, 95.2)));
+        assert!(!band.contains(Point::new(50.0, 105.3)));
+        assert!(band.contains(Point::new(50.0, -0.9)));
+        assert!(!band.contains(Point::new(50.0, -1.2)));
+        assert!(!band.contains(Point::new(50.0, 1.2)));
+        let reach_out = |x: f64| {
+            (0..400)
+                .map(|i| x.signum() * (50.0 + i as f64 * 0.025))
+                .take_while(|d| band.contains(Point::new(50.0 + d, 50.0)))
+                .last()
+                .map_or(0.0, |d| d.abs() - 50.0)
+        };
+        let (right, left) = (reach_out(1.0), reach_out(-1.0));
+        assert!(right > 1.5 && right < 4.5, "{right}");
+        assert!((right - left).abs() < 0.1, "{right} {left}");
+        assert!(!band.contains(Point::new(50.0, 50.0)), "a ring");
+        // Both smooth.
+        assert_eq!(sharp(&rings), 0);
+        // A reach of 75 mm inside at the top, easing to 1 mm by 0.6,
+        // the outside 1 mm all round: still one ring with smooth edges.
+        let inside = [
+            WidthNode {
+                at: 0.25,
+                left: 75.0,
+                right: 1.0,
+            },
+            WidthNode::symmetric(0.6, 2.0),
+        ];
+        let band = variable_band(&circle, 2.0, &inside);
+        let rings = contours(&band);
+        assert_eq!(rings.len(), 2, "an outer and an inner contour");
+        // The centre is covered, the top a ring's width out and no more.
+        assert!(band.contains(Point::new(50.0, 50.0)));
+        assert!(band.contains(Point::new(50.0, 100.9)));
+        assert!(!band.contains(Point::new(50.0, 101.2)));
+        // Smooth but for a few short notches where the pieces meet at the
+        // centre; their far ends zigzagged into over a hundred corners
+        // and left a sliver.
+        let corners = sharp(&rings);
+        assert!(corners <= 16, "{corners}");
+        // Wider than the whole circle: no slivers, no staircase.
+        let band = variable_band(
+            &circle,
+            2.0,
+            &[
+                WidthNode {
+                    at: 0.25,
+                    left: 120.0,
+                    right: 1.0,
+                },
+                WidthNode::symmetric(0.6, 2.0),
+            ],
+        );
+        let rings = contours(&band);
+        assert!(rings.len() <= 2, "{}", rings.len());
+        assert!(rings.iter().all(|c| c.len() > 20), "a sliver");
+        let corners = sharp(&rings);
+        assert!(corners <= 16, "{corners}");
     }
 
     #[test]

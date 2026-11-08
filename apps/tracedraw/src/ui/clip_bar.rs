@@ -142,7 +142,11 @@ fn finish_button(app: &mut App, ui: &mut egui::Ui) {
             )
             .frame(false),
         )
-        .rich_tip(tr("menu.object.clip_frame_finish"));
+        .rich_tip(tr(if app.symbol_edit_index().is_some() {
+            "menu.object.symbol_finish"
+        } else {
+            "menu.object.clip_frame_finish"
+        }));
     let r = finish.rect;
     ui.painter().text(
         egui::pos2(r.left() + 2.0, r.center().y),

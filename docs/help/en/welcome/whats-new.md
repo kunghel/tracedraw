@@ -21,6 +21,7 @@ find out what changed and lists the highlights of the latest versions.
 
 ## Highlights of recent versions {#highlights}
 
+- **Facing pages and linked text.** [[menu.layout > menu.layout.facing_pages]] shows the pages side by side in spreads; [[menu.text > menu.text.link_content]] links texts so that typing in one changes the others; a PDF of several pages asks which pages to import; [[menu.edit > menu.edit.step_and_repeat]] can fill a page with copies.
 - **Touch and phones.** Shift, Ctrl and Alt buttons on the Standard toolbar
   stay held for a finger; on Android the interface keeps clear of the camera
   cutout and the rounded corners; the Apple Pencil works in Safari on iPad.

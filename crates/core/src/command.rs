@@ -29,6 +29,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layer: Option<String>,
     },
+    /// A page of `size` put at index `at` (past the end: at the end) with
+    /// one layer holding `shapes`, which get fresh ids: the pages of
+    /// another file brought in by File > Import, several in one undo
+    /// step.
+    InsertPage {
+        at: usize,
+        name: Option<String>,
+        size: Size,
+        /// The name of the page's layer ("Layer 1" when none).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layer: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        shapes: Vec<Shape>,
+    },
     DeletePage {
         page: PageId,
     },
@@ -142,6 +156,14 @@ pub enum Command {
     },
     AddSymbol {
         symbol: Symbol,
+    },
+    /// Replace the objects of symbol `index` (Edit Symbol): every
+    /// instance draws the new ones. The symbol keeps its name. A
+    /// definition that would draw an instance of the symbol itself, at
+    /// any depth, is refused.
+    SetSymbolShape {
+        index: usize,
+        shape: Shape,
     },
     /// Move a page to another index (Page Sorter drag).
     MovePage {
@@ -480,7 +502,7 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Command::SetTitle { .. } => "Rename Document",
-            Command::AddPage { .. } => "Insert Page",
+            Command::AddPage { .. } | Command::InsertPage { .. } => "Insert Page",
             Command::DeletePage { .. } => "Delete Page",
             Command::ResizePage { .. } => "Resize Page",
             Command::AddLayer { .. } => "New Layer",
@@ -506,6 +528,7 @@ impl Command {
             Command::SetOpacityMask { .. } => "Opacity Mask",
             Command::SetRasterFx { .. } => "Effect",
             Command::AddSymbol { .. } => "New Symbol",
+            Command::SetSymbolShape { .. } => "Edit Symbol",
             Command::MovePage { .. } => "Move Page",
             Command::DeleteLayer { .. } => "Delete Layer",
             Command::SetLayerVisible { .. } => "Layer Visibility",
@@ -590,6 +613,34 @@ impl Command {
                     guides: Vec::new(),
                     background: None,
                 });
+            }
+            Command::InsertPage {
+                at,
+                name,
+                size,
+                layer,
+                shapes,
+            } => {
+                let n = doc.pages.len() + 1;
+                let page_id = doc.ids_mut().page();
+                let layer_id = doc.ids_mut().layer();
+                let mut l = Layer::new(
+                    layer_id,
+                    layer.clone().unwrap_or_else(|| "Layer 1".to_string()),
+                );
+                l.shapes = shapes.iter().map(|s| reid_shape(s, doc)).collect();
+                let at = (*at).min(doc.pages.len());
+                doc.pages.insert(
+                    at,
+                    Page {
+                        id: page_id,
+                        name: name.clone().unwrap_or_else(|| format!("Page {n}")),
+                        size: *size,
+                        layers: vec![l],
+                        guides: Vec::new(),
+                        background: None,
+                    },
+                );
             }
             Command::DeletePage { page } => {
                 if doc.pages.len() <= 1 {
@@ -739,6 +790,17 @@ impl Command {
             }
             Command::AddSymbol { symbol } => {
                 doc.symbols.push(symbol.clone());
+            }
+            Command::SetSymbolShape { index, shape } => {
+                if *index >= doc.symbols.len() {
+                    return Err(Error::SymbolNotFound(*index));
+                }
+                if crate::document::draws_symbol(shape, *index, &doc.symbols) {
+                    return Err(Error::SymbolCycle(*index));
+                }
+                if let Some(sym) = doc.symbols.get_mut(*index) {
+                    sym.shape = shape.clone();
+                }
             }
             Command::MovePage { page, to } => {
                 let from = doc
@@ -1235,10 +1297,24 @@ impl Command {
                 let top = doc.shape(top_id)?.1.clone();
                 let layer_id = located[0].1;
                 let insert_at = located[0].2;
+                // Open curves stay open (#1934): the result is an open
+                // curve of several subpaths when any part is open, and the
+                // parts that were closed keep a close of their own, so
+                // they still fill and break apart as closed curves.
+                let any_open = located.iter().any(|(id, _, _)| {
+                    doc.shape(*id)
+                        .is_ok_and(|(_, s)| matches!(s.kind, ShapeKind::Path { closed: false, .. }))
+                });
                 let mut path = BezPath::new();
                 for (id, _, _) in &located {
                     let s = doc.shape(*id)?.1;
-                    path.extend(s.page_path());
+                    let part = s.page_path();
+                    let open = matches!(s.kind, ShapeKind::Path { closed: false, .. });
+                    if any_open && !open {
+                        path.extend(close_subpaths(&part));
+                    } else {
+                        path.extend(part);
+                    }
                 }
                 for (id, l, _) in &located {
                     let layer = doc.layer_mut(*l)?;
@@ -1246,7 +1322,13 @@ impl Command {
                         layer.shapes.remove(i);
                     }
                 }
-                let mut combined = Shape::new(top_id, ShapeKind::Path { path, closed: true });
+                let mut combined = Shape::new(
+                    top_id,
+                    ShapeKind::Path {
+                        path,
+                        closed: !any_open,
+                    },
+                );
                 combined.fill = top.fill;
                 combined.stroke = top.stroke;
                 combined.opacity = top.opacity;
@@ -1256,6 +1338,42 @@ impl Command {
             Command::BreakApart { shape } => {
                 let (layer_id, idx) = doc.locate(*shape)?;
                 let s = doc.shape(*shape)?.1.clone();
+                // A brush stroke: its band becomes a group of plain filled
+                // curves where it was, and its path a plain line right
+                // above it, keeping the object (a live test of 0.41: the
+                // stroke stayed one object).
+                if let (Some(parts), Some(st)) = (s.brush_band_parts(), s.stroke.as_ref()) {
+                    let fill = st.fill.as_deref().cloned().unwrap_or(Fill::Solid(st.color));
+                    let children: Vec<Shape> = parts
+                        .into_iter()
+                        .map(|path| {
+                            let mut c = Shape::new(
+                                doc.ids_mut().shape(),
+                                ShapeKind::Path { path, closed: true },
+                            );
+                            c.fill = fill.clone();
+                            c.stroke = None;
+                            c
+                        })
+                        .collect();
+                    let mut band = Shape::new(doc.ids_mut().shape(), ShapeKind::Group { children });
+                    band.opacity = s.opacity;
+                    band.name = s.name.clone();
+                    let mut line = s.clone();
+                    line.stroke = Some(Stroke {
+                        width: Stroke::HAIRLINE,
+                        widths: Vec::new(),
+                        stretch: 1.0,
+                        fill: None,
+                        ..st.clone()
+                    });
+                    let layer = doc.layer_mut(layer_id)?;
+                    if let Some(slot) = layer.shapes.get_mut(idx) {
+                        *slot = line;
+                    }
+                    layer.shapes.insert(idx.min(layer.shapes.len()), band);
+                    return Ok(());
+                }
                 // A clip frame breaks apart through its frame: each part
                 // of the frame becomes a clip frame holding the contents
                 // (#1607).
@@ -1293,13 +1411,12 @@ impl Command {
                             .into_iter()
                             .zip(ids)
                             .map(|(p, id)| {
-                                let mut piece = Shape::new(
-                                    id,
-                                    ShapeKind::Path {
-                                        path: p,
-                                        closed: *closed,
-                                    },
-                                );
+                                // A closed part of an open curve (Combine
+                                // of open and closed curves) comes out
+                                // closed (#1934).
+                                let closed =
+                                    *closed || p.elements().last() == Some(&PathEl::ClosePath);
+                                let mut piece = Shape::new(id, ShapeKind::Path { path: p, closed });
                                 piece.transform = s.transform;
                                 piece.fill = s.fill.clone();
                                 piece.stroke = s.stroke.clone();
@@ -1748,6 +1865,30 @@ fn clip_frame_pieces(
             piece
         })
         .collect()
+}
+
+/// `path` with every subpath that has a segment ended by a close.
+fn close_subpaths(path: &BezPath) -> BezPath {
+    let mut out = BezPath::new();
+    // Whether the subpath being copied has a segment and no close yet.
+    let mut open = false;
+    for el in path.elements() {
+        match el {
+            PathEl::MoveTo(_) => {
+                if open {
+                    out.close_path();
+                }
+                open = false;
+            }
+            PathEl::ClosePath => open = false,
+            _ => open = true,
+        }
+        out.push(*el);
+    }
+    if open {
+        out.close_path();
+    }
+    out
 }
 
 fn reid_shape(s: &Shape, doc: &mut Document) -> Shape {
@@ -3154,6 +3295,179 @@ mod tests {
         assert_eq!(doc.layer(layer).unwrap().shapes.len(), 2);
     }
 
+    /// A live test of 0.41: Break Apart (Ctrl+K) on a brush stroke gives
+    /// two objects, the stroke's band as a group of plain filled curves
+    /// and its path as a plain line right above it, in one undo step.
+    #[test]
+    fn break_apart_sets_a_brush_stroke_apart_from_its_path() {
+        use crate::geometry::{Point, Shape as _};
+        use crate::style::WidthNode;
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let id = e.new_shape_id();
+        let mut path = BezPath::new();
+        path.move_to(Point::new(10.0, 50.0));
+        path.curve_to(
+            Point::new(40.0, 80.0),
+            Point::new(70.0, 20.0),
+            Point::new(100.0, 50.0),
+        );
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Path {
+                path: path.clone(),
+                closed: false,
+            },
+        );
+        s.fill = Fill::None;
+        let red = Color::rgb8(200, 0, 0);
+        let mut st = Stroke::new(red, 8.0);
+        st.widths = vec![
+            WidthNode::symmetric(0.0, 0.0),
+            WidthNode::symmetric(0.5, 8.0),
+            WidthNode::symmetric(1.0, 0.0),
+        ];
+        s.stroke = Some(st);
+        s.name = Some("Brush stroke".into());
+        e.run(&Command::AddShape { layer, shape: s }).unwrap();
+        assert!(e.document().find_shape(id).unwrap().breaks_into_parts());
+        let before = e.document().clone();
+        e.run(&Command::BreakApart { shape: id }).unwrap();
+        let shapes = &e.document().layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 2);
+        // Below: the band, a group of filled curves in the stroke's
+        // colour with no outline, as wide as the brush in the middle.
+        let ShapeKind::Group { children } = &shapes[0].kind else {
+            panic!("a group: {:?}", shapes[0].kind);
+        };
+        assert!(!children.is_empty());
+        for c in children {
+            assert!(matches!(c.kind, ShapeKind::Path { closed: true, .. }));
+            assert_eq!(c.fill, Fill::Solid(red));
+            assert!(c.stroke.is_none());
+        }
+        let band = shapes[0].page_path();
+        // The middle of the curve, where the brush is widest (4 mm each
+        // way across it).
+        let mid = Point::new(55.0, 50.0);
+        assert!(band.contains(mid));
+        assert!(band.contains(Point::new(mid.x, mid.y + 3.0)));
+        assert!(!band.contains(Point::new(mid.x, mid.y + 5.0)));
+        assert!(band.bounding_box().width() > 85.0);
+        // Above: the path itself, the same object, now a plain line.
+        let line = &shapes[1];
+        assert_eq!(line.id, id);
+        let ShapeKind::Path { path: kept, .. } = &line.kind else {
+            panic!("a curve: {:?}", line.kind);
+        };
+        assert_eq!(kept.elements(), path.elements());
+        let st = line.stroke.as_ref().unwrap();
+        assert!(!st.is_brush());
+        assert_eq!(st.color, red);
+        assert!(!line.breaks_into_parts());
+        assert!(!shapes[0].breaks_into_parts());
+        // Breaking the line apart again changes nothing.
+        e.run(&Command::BreakApart { shape: id }).unwrap();
+        assert_eq!(e.document().layer(layer).unwrap().shapes.len(), 2);
+        // One step back gives the brush stroke again.
+        e.undo().unwrap();
+        e.undo().unwrap();
+        assert_eq!(
+            serde_json::to_string(e.document().layer(layer).unwrap()).unwrap(),
+            serde_json::to_string(before.layer(layer).unwrap()).unwrap()
+        );
+        // A calligraphic nib breaks apart the same way.
+        let mut nib = Stroke::new(red, 6.0);
+        nib.stretch = 0.2;
+        let shape = e.document().find_shape(id).unwrap().clone();
+        let mut shape = Shape {
+            stroke: Some(nib),
+            ..shape
+        };
+        shape.id = e.new_shape_id();
+        let nib_id = shape.id;
+        e.run(&Command::AddShape { layer, shape }).unwrap();
+        e.run(&Command::BreakApart { shape: nib_id }).unwrap();
+        let shapes = &e.document().layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 3);
+        assert!(matches!(shapes[1].kind, ShapeKind::Group { .. }));
+        assert_eq!(shapes[2].id, nib_id);
+    }
+
+    /// Combine of open curves gives one open curve with a subpath for
+    /// each; with a closed object among them, that part keeps its close
+    /// (it still fills) and Break Apart gives it back closed (#1934).
+    #[test]
+    fn combining_open_curves_keeps_them_open() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let line = |doc: &mut Document, y: f64| {
+            let mut p = BezPath::new();
+            p.move_to((0.0, y));
+            p.line_to((10.0, y));
+            Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Path {
+                    path: p,
+                    closed: false,
+                },
+            )
+        };
+        let a = line(&mut doc, 0.0);
+        let b = line(&mut doc, 5.0);
+        let mut square = BezPath::new();
+        square.move_to((20.0, 0.0));
+        square.line_to((30.0, 0.0));
+        square.line_to((30.0, 10.0));
+        square.line_to((20.0, 0.0));
+        let c = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Path {
+                path: square,
+                closed: true,
+            },
+        );
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        for shape in [a, b, c] {
+            Command::AddShape { layer, shape }.apply(&mut doc).unwrap();
+        }
+        Command::Combine {
+            shapes: vec![ia, ib],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let ShapeKind::Path { path, closed } = &doc.find_shape(ib).unwrap().kind else {
+            panic!("a curve");
+        };
+        assert!(!closed, "two lines combine into an open curve");
+        let moves = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count()
+        };
+        assert_eq!(moves(path), 2);
+        assert!(!path.elements().contains(&PathEl::ClosePath));
+        Command::Combine {
+            shapes: vec![ib, ic],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let ShapeKind::Path { path, closed } = &doc.find_shape(ic).unwrap().kind else {
+            panic!("a curve");
+        };
+        assert!(!closed);
+        assert_eq!(moves(path), 3);
+        assert_eq!(path.elements().last(), Some(&PathEl::ClosePath));
+        Command::BreakApart { shape: ic }.apply(&mut doc).unwrap();
+        let shapes = &doc.layer(layer).unwrap().shapes;
+        let closed: Vec<bool> = shapes
+            .iter()
+            .map(|s| matches!(s.kind, ShapeKind::Path { closed: true, .. }))
+            .collect();
+        assert_eq!(closed, vec![false, false, true]);
+    }
+
     #[test]
     fn duplicate_page_copies_shapes_with_new_ids() {
         let mut doc = Document::default();
@@ -3243,6 +3557,79 @@ mod tests {
         assert!(Command::duplicate_page(PageId(9999))
             .apply(&mut Document::default())
             .is_err());
+    }
+
+    /// Pages of another file go in after the current one with their own
+    /// sizes, their objects under fresh ids, all in one undo step.
+    #[test]
+    fn inserted_pages_keep_their_sizes_and_undo_as_one_step() {
+        let mut doc = Document::default();
+        let first = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let a = rect(&mut doc, 0.0);
+        let a_id = a.id;
+        Command::AddShape {
+            layer,
+            shape: a.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        Command::AddPage {
+            name: Some("Last".into()),
+            size: Size::new(100.0, 100.0),
+            layer: None,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let mut eng = crate::Engine::new(doc);
+        let landscape = Size::new(297.0, 210.0);
+        let small = Size::new(70.56, 35.28);
+        let cmds = vec![
+            Command::InsertPage {
+                at: 1,
+                name: Some("A".into()),
+                size: landscape,
+                layer: Some("Layer".into()),
+                shapes: vec![a.clone(), a.clone()],
+            },
+            Command::InsertPage {
+                at: 2,
+                name: Some("B".into()),
+                size: small,
+                layer: None,
+                shapes: Vec::new(),
+            },
+        ];
+        eng.run_batch("Import", &cmds).unwrap();
+        let d = eng.document();
+        let names: Vec<&str> = d.pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names[1..], ["A", "B", "Last"]);
+        assert_eq!(d.pages[0].id, first);
+        assert_eq!(d.pages[1].size, landscape);
+        assert_eq!(d.pages[2].size, small);
+        assert_eq!(d.pages[1].layers[0].name, "Layer");
+        assert_eq!(d.pages[2].layers[0].name, "Layer 1");
+        // The objects came with ids of their own.
+        let ids: Vec<ShapeId> = d.pages[1].layers[0].shapes.iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids[0] != ids[1] && !ids.contains(&a_id));
+        assert_ne!(d.pages[1].layers[0].id, d.pages[2].layers[0].id);
+        // One undo takes every page back.
+        eng.undo().unwrap();
+        assert_eq!(eng.document().pages.len(), 2);
+        // An index past the end puts the page at the end.
+        let mut d = eng.document().clone();
+        Command::InsertPage {
+            at: 99,
+            name: None,
+            size: small,
+            layer: None,
+            shapes: Vec::new(),
+        }
+        .apply(&mut d)
+        .unwrap();
+        assert_eq!(d.pages.last().map(|p| p.size), Some(small));
+        assert_eq!(d.pages.last().map(|p| p.name.as_str()), Some("Page 3"));
     }
 
     #[test]
@@ -4128,5 +4515,105 @@ mod tests {
         assert!(f.handles.is_some());
         let t1 = f.param_at(s.bounds(), thirty * p0).expect("after");
         assert!((t0 - t1).abs() < 1e-9, "{t0} {t1}");
+    }
+
+    /// Edit Symbol (#1980): a new definition shows in every instance at
+    /// once, keeps the symbol's name, and one undo puts the old objects
+    /// back. A definition drawing the symbol itself, or a symbol that is
+    /// not there, changes nothing.
+    #[test]
+    fn editing_a_symbol_updates_every_instance_and_undoes() {
+        use crate::document::{ShapeKind, Symbol};
+        let rect = |w: f64| {
+            Shape::new(
+                ShapeId(0),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, w, 5.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            )
+        };
+        let instance = |index: usize| Shape::new(ShapeId(0), ShapeKind::SymbolInstance { index });
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        e.run(&Command::AddSymbol {
+            symbol: Symbol {
+                name: "Logo".into(),
+                shape: rect(10.0),
+            },
+        })
+        .unwrap();
+        let mut ids = Vec::new();
+        for x in [0.0, 50.0] {
+            let id = e.new_shape_id();
+            let mut inst = instance(0);
+            inst.id = id;
+            inst.transform = Affine::translate((x, 20.0));
+            e.run(&Command::AddShape { layer, shape: inst }).unwrap();
+            ids.push(id);
+        }
+        let widths = |e: &crate::Engine| -> Vec<f64> {
+            ids.iter()
+                .map(|id| {
+                    let s = e.document().find_shape(*id).unwrap();
+                    let parts = s.expand(&e.document().symbols);
+                    assert_eq!(parts.len(), 1);
+                    parts[0].bounds().width()
+                })
+                .collect()
+        };
+        assert_eq!(widths(&e), vec![10.0, 10.0]);
+        e.run(&Command::SetSymbolShape {
+            index: 0,
+            shape: rect(30.0),
+        })
+        .unwrap();
+        assert_eq!(e.undo_label(), Some("Edit Symbol"));
+        assert_eq!(widths(&e), vec![30.0, 30.0]);
+        assert_eq!(e.document().symbols[0].name, "Logo");
+        e.undo().unwrap();
+        assert_eq!(widths(&e), vec![10.0, 10.0]);
+        e.redo().unwrap();
+        assert_eq!(widths(&e), vec![30.0, 30.0]);
+
+        // An instance of the symbol inside its own definition, directly
+        // or through another symbol, is refused.
+        let mut own = Shape::new(
+            ShapeId(0),
+            ShapeKind::Group {
+                children: vec![rect(4.0), instance(0)],
+            },
+        );
+        own.fill = Fill::None;
+        assert!(matches!(
+            e.run(&Command::SetSymbolShape {
+                index: 0,
+                shape: own
+            }),
+            Err(Error::SymbolCycle(0))
+        ));
+        e.run(&Command::AddSymbol {
+            symbol: Symbol {
+                name: "Holder".into(),
+                shape: instance(0),
+            },
+        })
+        .unwrap();
+        assert!(matches!(
+            e.run(&Command::SetSymbolShape {
+                index: 0,
+                shape: instance(1)
+            }),
+            Err(Error::SymbolCycle(0))
+        ));
+        assert!(matches!(
+            e.run(&Command::SetSymbolShape {
+                index: 7,
+                shape: rect(1.0)
+            }),
+            Err(Error::SymbolNotFound(7))
+        ));
+        assert_eq!(widths(&e), vec![30.0, 30.0]);
     }
 }

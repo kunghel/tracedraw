@@ -550,33 +550,138 @@ pub fn build_request_with(
 
 /// The request for the service's list of models.
 pub fn build_models_request(prefs: &AiPrefs, key: &str) -> HttpRequest {
+    // The Messages API lists 20 models a page unless asked for more:
+    // models past the first page never showed.
+    let url = match prefs.provider {
+        Provider::Anthropic => format!("{}?limit=1000", prefs.models_endpoint()),
+        Provider::OpenAiCompatible => prefs.models_endpoint(),
+    };
     HttpRequest {
         method: "GET",
-        url: prefs.models_endpoint(),
+        url,
         headers: headers(prefs, key),
         body: String::new(),
         bytes: Vec::new(),
     }
 }
 
-/// The message for a response that is an error: the service's own words
-/// with the status.
-fn http_error(r: &HttpResponse, v: Option<&Value>) -> String {
-    let message = v
-        .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()))
-        .map(str::to_string)
-        .unwrap_or_else(|| r.body.chars().take(200).collect());
-    trf(
-        "ai.http_error",
-        &[
-            ("status", &r.status.to_string()),
-            ("message", message.trim()),
-        ],
-    )
+/// The service's own words in an error reply: `error.message` (also in
+/// a list, as some services send it, or `error` as plain text), else the
+/// start of the body.
+fn service_words(r: &HttpResponse, v: Option<&Value>) -> String {
+    let said = v.and_then(|v| {
+        ["/error/message", "/0/error/message", "/error", "/message"]
+            .iter()
+            .find_map(|p| v.pointer(p).and_then(|m| m.as_str()))
+    });
+    match said {
+        Some(s) => s.trim().to_string(),
+        None => r
+            .body
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+    }
 }
 
-/// The models a service listed (`data[].id` in both kinds of service),
-/// or why there are none.
+/// What the service's `Retry-After` asks: wait so many seconds, or until
+/// a date; nothing when it sent none.
+fn retry_after(r: &HttpResponse) -> Option<String> {
+    let v = r.retry_after.as_deref()?.trim();
+    if v.is_empty() {
+        return None;
+    }
+    Some(match v.parse::<u64>() {
+        Ok(s) => trf("ai.error_retry_in", &[("seconds", &s.to_string())]),
+        Err(_) => trf("ai.error_retry_at", &[("when", v)]),
+    })
+}
+
+/// The message for a response that is an error, said plainly for the
+/// usual causes (live test of 0.41: a bare 429 or a time out left the
+/// user guessing): 429 is a used up quota or too many requests (with how
+/// long to wait when the service says), 401 and 403 a key the service
+/// refuses, 408, 504 and 524 a service that took too long, 502, 503 and
+/// 529 a service that is busy or down, 404 an address or model it does
+/// not know. The service's own words follow; any other status is shown
+/// with them as it is.
+pub(crate) fn http_error(r: &HttpResponse, v: Option<&Value>) -> String {
+    let status = r.status.to_string();
+    let said = service_words(r, v);
+    let key = match r.status {
+        429 => "ai.error_rate_limited",
+        401 | 403 => "ai.error_key",
+        408 | 504 | 524 => "ai.error_timeout",
+        502 | 503 | 529 => "ai.error_busy",
+        404 => "ai.error_not_found",
+        _ => return trf("ai.http_error", &[("status", &status), ("message", &said)]),
+    };
+    let mut out = trf(key, &[("status", &status)]);
+    if matches!(r.status, 429 | 502 | 503 | 529) {
+        if let Some(wait) = retry_after(r) {
+            out.push(' ');
+            out.push_str(&wait);
+        }
+    }
+    if !said.is_empty() {
+        out.push(' ');
+        out.push_str(&trf("ai.error_said", &[("message", &said)]));
+    }
+    out
+}
+
+/// The message for a request that got no answer: a timeout said plainly
+/// (the service took too long; try again), anything else as why the
+/// service could not be reached.
+pub(crate) fn network_error(e: String) -> String {
+    let lower = e.to_ascii_lowercase();
+    if e == crate::net::TIMED_OUT
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("time out")
+    {
+        tr("ai.error_timeout")
+    } else {
+        trf("ai.network_error", &[("e", e.trim())])
+    }
+}
+
+/// The models a model list offers: the service's list once fetched
+/// (`listed`), else the usual ones of its kind (`usual`), and before them
+/// every model the user set up (`configured`: the model in use, typed or
+/// picked) that is in neither, so a model of one's own is always there to
+/// pick again (live test of 0.41: set up models went missing from the
+/// list once the service's list came). Blank names are left out and each
+/// model comes once.
+pub fn model_choices(configured: &[String], listed: &[String], usual: &[&str]) -> Vec<String> {
+    let mut list: Vec<String> = Vec::new();
+    let base: Vec<String> = if listed.is_empty() {
+        usual.iter().map(|m| m.to_string()).collect()
+    } else {
+        listed.to_vec()
+    };
+    for m in base {
+        let m = m.trim().to_string();
+        if !m.is_empty() && !list.contains(&m) {
+            list.push(m);
+        }
+    }
+    let mut own: Vec<String> = Vec::new();
+    for m in configured {
+        let m = m.trim().to_string();
+        if !m.is_empty() && !list.contains(&m) && !own.contains(&m) {
+            own.push(m);
+        }
+    }
+    own.extend(list);
+    own
+}
+
+/// The models a service listed (`data[].id` in both kinds of service,
+/// without the `models/` some services put before each name), or why
+/// there are none.
 pub fn parse_models(r: &HttpResponse) -> Result<Vec<String>, String> {
     let v: Option<Value> = serde_json::from_str(&r.body).ok();
     if !(200..300).contains(&r.status) {
@@ -589,7 +694,8 @@ pub fn parse_models(r: &HttpResponse) -> Result<Vec<String>, String> {
         .map(|list| {
             list.iter()
                 .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
-                .map(str::to_string)
+                .map(|i| i.trim().trim_start_matches("models/").to_string())
+                .filter(|i| !i.is_empty())
                 .collect()
         })
         .unwrap_or_default();
@@ -792,24 +898,14 @@ impl App {
     }
 
     /// The models to choose from: the service's list once fetched, else
-    /// the usual ones, with the model in use first when it is in neither.
+    /// the usual ones, with the model in use first when it is in neither
+    /// (see [`model_choices`]).
     pub fn ai_model_choices(&self) -> Vec<String> {
-        let mut list: Vec<String> = if self.ai.models.is_empty() {
-            self.settings
-                .ai
-                .provider
-                .preset_models()
-                .iter()
-                .map(|m| m.to_string())
-                .collect()
-        } else {
-            self.ai.models.clone()
-        };
-        let current = self.settings.ai.model();
-        if !current.is_empty() && !list.contains(&current) {
-            list.insert(0, current);
-        }
-        list
+        model_choices(
+            &[self.settings.ai.model()],
+            &self.ai.models,
+            self.settings.ai.provider.preset_models(),
+        )
     }
 
     /// Stop waiting for the reply (it is dropped when it comes).
@@ -836,7 +932,7 @@ impl App {
             return false;
         };
         let result = match p.rx.try_recv() {
-            Ok(r) => r,
+            Ok(r) => r.map_err(network_error),
             Err(std::sync::mpsc::TryRecvError::Empty) => return true,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(tr("ai.connection_lost")),
         };
@@ -916,6 +1012,7 @@ mod tests {
 
     fn anthropic_reply(text: &str) -> HttpResult {
         Ok(HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({
                 "content": [{"type": "text", "text": text}],
@@ -1043,6 +1140,7 @@ mod tests {
             .expect("text")
             .contains("print(1)"));
         let chat = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]})
                 .to_string(),
@@ -1053,6 +1151,7 @@ mod tests {
         );
         // The service's own message for an error.
         let denied = HttpResponse {
+            retry_after: None,
             status: 401,
             body: json!({"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})
                 .to_string(),
@@ -1061,6 +1160,7 @@ mod tests {
         assert!(e.contains("401") && e.contains("invalid x-api-key"), "{e}");
         // Not JSON at all.
         let page = HttpResponse {
+            retry_after: None,
             status: 502,
             body: "<html>Bad gateway</html>".into(),
         };
@@ -1069,12 +1169,14 @@ mod tests {
             .contains("502"));
         // Cut short, and empty.
         let cut = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"content": [{"type": "text", "text": "```js\nActiveLayer."}], "stop_reason": "max_tokens"})
                 .to_string(),
         };
         assert!(parse_reply(Provider::Anthropic, &cut).is_err());
         let empty = HttpResponse {
+            retry_after: None,
             status: 200,
             body: json!({"choices": [{"message": {"content": ""}}]}).to_string(),
         };
@@ -1245,9 +1347,13 @@ mod tests {
         app.ai.request = "a tree".into();
         app.ai.fake = Some(|_| Err("connection refused".into()));
         app.ai_draw();
-        assert_eq!(app.ai.status, AiStatus::Failed("connection refused".into()));
+        assert_eq!(
+            app.ai.status,
+            AiStatus::Failed(trf("ai.network_error", &[("e", "connection refused")]))
+        );
         app.ai.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 429,
                 body: json!({"error": {"message": "slow down"}}).to_string(),
             })
@@ -1258,6 +1364,224 @@ mod tests {
         app.ai_draw();
         assert_eq!(app.ai.status, AiStatus::Failed(tr("ai.no_script")));
         assert!(!app.ai.busy());
+    }
+
+    /// Error replies say what went wrong (live test of 0.41: a bare 429
+    /// or "Time out" left the user guessing): 429 is a used up quota or
+    /// too many requests, with the wait the service asks for; 401 and
+    /// 403 a key the service refuses; 408, 504 and 524 a service that
+    /// took too long; 502, 503 and 529 a busy service; 404 an unknown
+    /// address or model. The service's own words follow, read also from
+    /// a list or a plain `error`; other statuses read as before.
+    #[test]
+    fn error_replies_say_what_went_wrong() {
+        let reply = |status: u16, retry: Option<&str>, body: &str| HttpResponse {
+            status,
+            body: body.into(),
+            retry_after: retry.map(str::to_string),
+        };
+        let said = r#"{"error":{"message":"You exceeded your current quota"}}"#;
+        let st = |s: u16| s.to_string();
+        let e = parse_reply(Provider::OpenAiCompatible, &reply(429, Some("30"), said))
+            .expect_err("an error");
+        assert!(
+            e.starts_with(&trf("ai.error_rate_limited", &[("status", "429")])),
+            "{e}"
+        );
+        assert!(
+            e.contains(&trf("ai.error_retry_in", &[("seconds", "30")])),
+            "{e}"
+        );
+        assert!(e.contains(&trf(
+            "ai.error_said",
+            &[("message", "You exceeded your current quota")]
+        )));
+        // A date to wait for; no wait at all when none is given.
+        let when = "Wed, 21 Oct 2026 07:28:00 GMT";
+        let e = parse_reply(Provider::Anthropic, &reply(429, Some(when), "{}")).expect_err("error");
+        assert!(
+            e.contains(&trf("ai.error_retry_at", &[("when", when)])),
+            "{e}"
+        );
+        let e = parse_reply(Provider::Anthropic, &reply(429, None, said)).expect_err("error");
+        let plain = trf("ai.error_rate_limited", &[("status", "429")]);
+        let wait = tr("ai.error_retry_in");
+        let wait = wait.split("{seconds}").next().unwrap_or_default();
+        assert!(!wait.is_empty() && !e.contains(wait), "{e}");
+        assert!(e.starts_with(&plain));
+        // The key, a slow service, a busy one, an unknown model.
+        for (status, key) in [
+            (401, "ai.error_key"),
+            (403, "ai.error_key"),
+            (408, "ai.error_timeout"),
+            (504, "ai.error_timeout"),
+            (524, "ai.error_timeout"),
+            (502, "ai.error_busy"),
+            (503, "ai.error_busy"),
+            (529, "ai.error_busy"),
+            (404, "ai.error_not_found"),
+        ] {
+            let e = parse_models(&reply(status, None, said)).expect_err("an error");
+            let head = trf(key, &[("status", &st(status))]);
+            assert!(e.starts_with(&head), "{status}: {e}");
+            assert!(
+                e.contains("You exceeded your current quota"),
+                "{status}: {e}"
+            );
+        }
+        // A busy service's wait is passed on too.
+        let e = parse_models(&reply(503, Some("5"), "")).expect_err("an error");
+        assert!(
+            e.contains(&trf("ai.error_retry_in", &[("seconds", "5")])),
+            "{e}"
+        );
+        // The words in a list, or a plain error text.
+        let listed = r#"[{"error":{"code":429,"message":"Resource has been exhausted"}}]"#;
+        let e = parse_models(&reply(429, None, listed)).expect_err("an error");
+        assert!(e.contains("Resource has been exhausted"), "{e}");
+        let e = parse_models(&reply(401, None, r#"{"error":"bad token"}"#)).expect_err("error");
+        assert!(e.contains("bad token"), "{e}");
+        // Any other status as before.
+        let e = parse_models(&reply(500, None, said)).expect_err("an error");
+        assert_eq!(
+            e,
+            trf(
+                "ai.http_error",
+                &[
+                    ("status", "500"),
+                    ("message", "You exceeded your current quota")
+                ]
+            )
+        );
+        // No answer: a timeout said plainly, else why it failed.
+        for timeout in [
+            crate::net::TIMED_OUT,
+            "timeout: global",
+            "Request timed out",
+        ] {
+            assert_eq!(network_error(timeout.into()), tr("ai.error_timeout"));
+        }
+        assert_eq!(
+            network_error("connection refused".into()),
+            trf("ai.network_error", &[("e", "connection refused")])
+        );
+        // In English the messages name the cause.
+        let en = include_str!("../lang/en.toml");
+        for words in ["quota", "API key", "took too long", "try again"] {
+            assert!(en.contains(words), "{words}");
+        }
+    }
+
+    /// Through Draw and Generate: a 429 with its wait and a timeout end
+    /// in those messages, not in the bare status or "timed out".
+    #[test]
+    fn requests_that_fail_say_why() {
+        let mut app = app();
+        app.ai.request = "a tree".into();
+        app.ai.fake = Some(|_| {
+            Ok(HttpResponse {
+                status: 429,
+                body: json!({"error": {"message": "rate limited"}}).to_string(),
+                retry_after: Some("12".into()),
+            })
+        });
+        app.ai_draw();
+        let AiStatus::Failed(e) = &app.ai.status else {
+            panic!("{:?}", app.ai.status);
+        };
+        assert!(
+            e.contains(&trf("ai.error_retry_in", &[("seconds", "12")])),
+            "{e}"
+        );
+        app.ai.fake = Some(|_| Err(crate::net::TIMED_OUT.into()));
+        app.ai_draw();
+        assert_eq!(app.ai.status, AiStatus::Failed(tr("ai.error_timeout")));
+        app.ai.fake = Some(|_| Err(crate::net::TIMED_OUT.into()));
+        app.ai_fetch_models();
+        assert_eq!(app.ai.status, AiStatus::Failed(tr("ai.error_timeout")));
+    }
+
+    /// Every model set up is in the model lists (live test of 0.41: they
+    /// went missing once the service's list came): first when the list
+    /// does not hold it, each model once, blank names left out; the text
+    /// model and the image model alike. A service's `models/` before each
+    /// name goes, so the names match the ones set up.
+    #[test]
+    fn model_lists_hold_every_model_set_up() {
+        let s = |v: &[&str]| v.iter().map(|m| m.to_string()).collect::<Vec<String>>();
+        assert_eq!(
+            model_choices(&s(&["mine"]), &[], &["a", "b"]),
+            s(&["mine", "a", "b"])
+        );
+        assert_eq!(model_choices(&s(&["b"]), &[], &["a", "b"]), s(&["a", "b"]));
+        assert_eq!(
+            model_choices(
+                &s(&["mine", " ", "mine", "x"]),
+                &s(&["x", "x", "y"]),
+                &["a"]
+            ),
+            s(&["mine", "x", "y"])
+        );
+        assert_eq!(
+            model_choices(&s(&["one", "two"]), &s(&["y"]), &[]),
+            s(&["one", "two", "y"])
+        );
+        assert!(model_choices(&s(&[""]), &[], &[]).is_empty());
+
+        let mut app = app();
+        app.settings.ai = AiPrefs {
+            provider: Provider::OpenAiCompatible,
+            endpoint: "https://api.openai.com/v1/chat/completions".into(),
+            model: "my-tuned-model".into(),
+            image_model: "my-image-model".into(),
+            ..Default::default()
+        };
+        app.ai.models = s(&["gpt-x", "gpt-y"]);
+        app.ai_image.models = s(&["gpt-image-1"]);
+        assert_eq!(
+            app.ai_model_choices(),
+            s(&["my-tuned-model", "gpt-x", "gpt-y"])
+        );
+        assert_eq!(
+            app.ai_image_model_choices(),
+            s(&["my-image-model", "gpt-image-1"])
+        );
+        // Before any list: the usual image models, the one set up first.
+        app.ai_image.models.clear();
+        let usual = app.ai_image_model_choices();
+        assert_eq!(usual.first().map(String::as_str), Some("my-image-model"));
+        assert!(usual.contains(&"gpt-image-1".to_string()));
+        // A service with no pictures has no image models to offer.
+        app.settings.ai.provider = Provider::Anthropic;
+        assert!(app.ai_image_model_choices().is_empty());
+
+        // The service's names without `models/`.
+        let listed = HttpResponse {
+            status: 200,
+            body: r#"{"data":[{"id":"models/gemini-2.5-flash"},{"id":"gpt-x"}]}"#.into(),
+            retry_after: None,
+        };
+        assert_eq!(
+            parse_models(&listed).expect("models"),
+            s(&["gemini-2.5-flash", "gpt-x"])
+        );
+        // An image service whose models are not named as image models
+        // offers them all rather than none.
+        let own = HttpResponse {
+            status: 200,
+            body: r#"{"data":[{"id":"flux-dev"},{"id":"sdxl-turbo"}]}"#.into(),
+            retry_after: None,
+        };
+        assert_eq!(
+            crate::ai_image::parse_models(crate::ai_image::ImageProvider::OpenAi, &own)
+                .expect("models"),
+            s(&["flux-dev", "sdxl-turbo"])
+        );
+        // The full lists are asked for.
+        let anthropic = AiPrefs::default();
+        assert!(build_models_request(&anthropic, "k")
+            .url
+            .ends_with("/models?limit=1000"));
     }
 
     /// The desktop transport against a server on this computer: the

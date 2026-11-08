@@ -24,6 +24,7 @@ saber o que mudou e lista os destaques das versões mais recentes.
 
 ## Destaques das versões recentes {#highlights}
 
+- **Páginas espelhadas e texto vinculado.** [[menu.layout > menu.layout.facing_pages]] mostra as páginas lado a lado em spreads; [[menu.text > menu.text.link_content]] vincula textos para que digitar em um altere os outros; um PDF de várias páginas pergunta quais páginas importar; [[menu.edit > menu.edit.step_and_repeat]] pode preencher uma página com cópias.
 - **Toque e celulares.** Os botões Shift, Ctrl e Alt da barra padrão ficam
   pressionados para um dedo; no Android a interface fica longe do entalhe da
   câmera e dos cantos arredondados; o Apple Pencil funciona no Safari do iPad.

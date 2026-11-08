@@ -265,22 +265,35 @@ pub fn release_chorded_left(ctx: &egui::Context, raw: &mut egui::RawInput) {
     });
 }
 
-/// Half the width of the outline of `s` (in page space) as it is drawn:
-/// its own width, scaled by the object's scale when the outline scales
-/// with the object, as the renderer draws it; 0 without an outline.
-fn outline_half_width(s: &tracedraw_core::Shape) -> f64 {
+/// How far the outline of `s` reaches from its path on the page, as it
+/// is drawn: half its width, all of it for a closed object whose outline
+/// lies inside or outside the path, the widest side of a variable-width
+/// outline's nodes; scaled by `to_page` (the object's transform to the
+/// page) when the outline scales with the object, as the renderer draws
+/// it; 0 without an outline. A click within this, plus the pick
+/// distance, picks the object (#1678, #1935).
+pub(crate) fn outline_reach(s: &tracedraw_core::Shape, to_page: Affine) -> f64 {
     let Some(stroke) = &s.stroke else {
         return 0.0;
     };
     let scale = if stroke.scale_with_object {
-        let c = s.transform.as_coeffs();
+        let c = to_page.as_coeffs();
         (c[0] * c[3] - c[1] * c[2]).abs().sqrt()
     } else {
         1.0
     };
-    let half = stroke.width * scale / 2.0;
-    if half.is_finite() {
-        half.max(0.0)
+    let open = matches!(s.kind, ShapeKind::Path { closed: false, .. });
+    let mut reach = match stroke.position {
+        tracedraw_core::OutlinePosition::Center => stroke.width / 2.0,
+        _ if open => stroke.width / 2.0,
+        _ => stroke.width,
+    };
+    for n in &stroke.widths {
+        reach = reach.max(n.left).max(n.right);
+    }
+    let r = reach * scale;
+    if r.is_finite() {
+        r.max(0.0)
     } else {
         0.0
     }
@@ -335,6 +348,14 @@ impl App {
         let (_, s) = self.doc().shape(id).ok()?;
         let tol = self.object_pick_tol();
         Some(self.leaf_at(s, p, tol).unwrap_or_else(|| s.clone()))
+    }
+
+    /// The innermost part of the object `id` under `p` (see
+    /// [`Self::leaf_to_read`]), its transforms composed; `None` when
+    /// `p` is on no part of it.
+    pub fn leaf_of(&self, id: tracedraw_core::ShapeId, p: Point) -> Option<tracedraw_core::Shape> {
+        let (_, s) = self.doc().shape(id).ok()?;
+        self.leaf_at(s, p, self.object_pick_tol())
     }
 
     fn leaf_at(
@@ -496,7 +517,7 @@ impl App {
         // A thick outline is picked anywhere it shows, out to the
         // tolerance beyond its visible edge, not only near its centre
         // line (#1678); a thin one within the tolerance as before.
-        let half = outline_half_width(s);
+        let half = outline_reach(s, s.transform);
         if !self
             .visual_bounds(s)
             .inflate(tol + half, tol + half)
@@ -1080,6 +1101,8 @@ impl App {
             };
             return;
         }
+        self.drop_colour = None;
+        self.drop_colour_target = None;
         self.drag = Drag::Move {
             start: p,
             last: p,
@@ -1470,6 +1493,17 @@ impl App {
             }
             return;
         }
+        // A frame's flow tab takes a press with any tool, as with the Pick
+        // and Text tools (which look for it themselves, after their
+        // handles): its text flows where the next click says (#1986).
+        if !matches!(self.tool, Tool::Pick | Tool::FreeformPick | Tool::Text)
+            && matches!(self.drag, Drag::None)
+            && (response.clicked_by(PointerButton::Primary)
+                || response.drag_started_by(PointerButton::Primary))
+            && self.press_flow_tab(screen, response.drag_started_by(PointerButton::Primary))
+        {
+            return;
+        }
         // A click with a tool whose click has no job of its own selects;
         // a drag goes on to the tool below.
         if self.tool.click_selects() && response.clicked_by(PointerButton::Primary) {
@@ -1658,10 +1692,12 @@ impl App {
                     // The selection takes the mask; an unselected object
                     // pressed outside it is picked and takes it (#1661).
                     if let Some(shape) = self.transparency_drag_target(p) {
+                        // The mask's start snaps (#2004).
+                        let start = self.snap_point(p);
                         self.drag = Drag::FillGradient {
                             shape,
-                            start: p,
-                            current: p,
+                            start,
+                            current: start,
                         };
                     }
                 }
@@ -1820,6 +1856,7 @@ impl App {
                         current: p - grab,
                         grab,
                         mods: crate::app::HandleMods::of(mods),
+                        snapped: (false, false),
                     };
                 }
                 // The drag starts once the pointer has gone a few pixels
@@ -1999,7 +2036,7 @@ impl App {
             }
             // A guideline where no object is: the Guidelines panel on it.
             if self.hit_test(p).is_none() {
-                if let Some(i) = self.guide_at(p) {
+                if let Some(i) = self.pick_guide_at(p) {
                     self.open_guide_properties(i);
                     return;
                 }
@@ -2022,6 +2059,17 @@ impl App {
                 }
                 // A dimension's label: editing it in place (#644).
                 if self.edit_dimension_label_at(p) {
+                    return;
+                }
+                // A symbol instance: editing its symbol's objects in
+                // place (#1980).
+                if self.clip_frame_edit.is_none()
+                    && self
+                        .doc()
+                        .find_shape(id)
+                        .is_some_and(|s| matches!(s.kind, ShapeKind::SymbolInstance { .. }))
+                {
+                    self.edit_symbol_instance(id);
                     return;
                 }
                 // A group or clip frame: into focus mode.
@@ -2052,6 +2100,14 @@ impl App {
             // Alt adds to the frame as W does (#1337).
             self.drop_keys =
                 ctx.input(|i| (i.key_down(Key::W) || i.modifiers.alt, i.key_down(Key::K)));
+            // Alt copies the fill onto the object the selection is let go
+            // over, Alt+Shift its outline (discussion #2066).
+            let m = ctx.input(|i| i.modifiers);
+            self.drop_colour = match (m.alt, m.shift) {
+                (true, true) => Some(crate::drop_menu::DropAction::CopyOutline),
+                (true, false) => Some(crate::drop_menu::DropAction::CopyFill),
+                _ => None,
+            };
         }
     }
 
@@ -2121,8 +2177,16 @@ impl App {
         // a scale or skew handle stands for. The pointer turning the
         // selection (unless Ctrl turns it in steps) snaps to points only
         // (#933, see `snap_turn_point`).
+        // A scale handle's moving side also stops on the points and lines
+        // of other objects it meets, and a corner keeping the proportions
+        // follows the axis that snapped (#2004).
+        let mut scale_snapped = (false, false);
         let snapped_handle = match &self.drag {
-            Drag::Scale { grab, .. } => self.snap_point_excluding(p - *grab, &self.selection),
+            Drag::Scale { grab, .. } => {
+                let (q, axes) = self.snap_scale_handle(p - *grab);
+                scale_snapped = axes;
+                q
+            }
             Drag::Skew {
                 handle,
                 start_bounds,
@@ -2150,6 +2214,14 @@ impl App {
                 // Over a clip frame that is not being moved: a drop
                 // target (W adds to it, K replaces its contents).
                 self.drop_frame = self.frame_under_pointer(p);
+                // With Alt (Alt+Shift) held: the object that would take
+                // the fill (outline), looked for only then.
+                self.drop_colour_target = if self.drop_colour.is_some() {
+                    let moving = self.selection.clone();
+                    self.hit_test_where(p, |id| moving.contains(&id))
+                } else {
+                    None
+                };
             }
             Drag::Marquee {
                 start,
@@ -2180,11 +2252,15 @@ impl App {
                 *touching = mods.alt != self.settings.marquee_touching;
             }
             Drag::Scale {
-                current, mods: m, ..
+                current,
+                mods: m,
+                snapped,
+                ..
             } => {
                 // The handle snaps to other objects, guidelines, the grid
                 // and the page, never to the selection's own points.
                 *current = snapped_handle;
+                *snapped = scale_snapped;
                 *m = crate::app::HandleMods::of(mods);
             }
             Drag::Skew {
@@ -2229,18 +2305,7 @@ impl App {
         {
             let screen = self.view.to_screen(p);
             let from_tab = response.drag_started_by(PointerButton::Primary);
-            let tab = self
-                .flow_tab_at(screen)
-                .map(|id| (id, false))
-                .or_else(|| self.flow_in_tab_at(screen).map(|id| (id, true)));
-            if let Some((id, incoming)) = tab {
-                self.finish_text();
-                if incoming {
-                    self.start_text_link_in(id);
-                } else {
-                    self.start_text_link(id);
-                }
-                self.text_link_from_tab = from_tab;
+            if self.press_flow_tab(screen, from_tab) {
                 return;
             }
         }
@@ -2380,6 +2445,7 @@ impl App {
                 current: p,
                 from_center: mods.shift,
             };
+            self.box_regular = false;
             boxing = true;
         }
         if !boxing {
@@ -2408,6 +2474,7 @@ impl App {
 
     /// The far corner of the shape being drawn moves to `now`.
     fn box_follow(&mut self, now: Point, mods: Modifiers) {
+        self.box_regular = mods.ctrl;
         if let Drag::Box {
             start,
             current,
@@ -2694,8 +2761,17 @@ impl App {
             // C held (pressed before or during the pull): a cusp; it stays
             // one after C is let go.
             let c_pressed = response.ctx.input(|i| i.key_down(egui::Key::C));
+            // Polyline: a drag draws freehand, a node every few pixels
+            // along the pointer's way, as a click places a straight
+            // segment (#2074).
+            let polyline = self.tool == Tool::Polyline;
+            let spacing = 2.0 / self.view.zoom.max(1e-6) as f64;
             if let Some(c) = &mut self.curve {
-                if c.closing.is_some() {
+                if polyline && c.dragging_handle && c.closing.is_none() {
+                    if c.nodes.last().is_none_or(|n| (n.0 - p).hypot() >= spacing) {
+                        c.nodes.push((p, None));
+                    }
+                } else if c.closing.is_some() {
                     c.closing = Some(closing_at(c, step));
                 } else if c.dragging_handle && smooth {
                     if c_pressed {
@@ -2949,10 +3025,12 @@ impl App {
             }
             if let Some(id) = self.hit_test_inside(p) {
                 self.select(vec![id]);
+                // The fill's start snaps (#2004).
+                let start = self.snap_point(p);
                 self.drag = Drag::FillGradient {
                     shape: id,
-                    start: p,
-                    current: p,
+                    start,
+                    current: start,
                 };
             }
         }
@@ -3002,11 +3080,19 @@ impl App {
     /// the constrain angle about where the drag began (#1661).
     fn fill_gradient_drag_to(&mut self, p: Point, mods: Modifiers) {
         let step = self.settings.constrain_angle;
+        // The end of the new fill's line snaps as the pointer does
+        // (#2004); kept to the constrain angle with Ctrl, it does not.
+        let constrained = mods.ctrl || mods.command;
+        let q = if constrained || !matches!(self.drag, Drag::FillGradient { .. }) {
+            p
+        } else {
+            self.snap_point(p)
+        };
         if let Drag::FillGradient { start, current, .. } = &mut self.drag {
-            *current = if mods.ctrl || mods.command {
+            *current = if constrained {
                 constrain_from(*start, p, step)
             } else {
-                p
+                q
             };
         }
     }
@@ -3139,6 +3225,25 @@ impl App {
             Drag::Move { .. } if self.over_document_palette() => {
                 self.drag_copy = false;
                 self.palette_from_selection();
+                self.end_page_drag_group();
+            }
+            // Let go over another object with Alt (Alt+Shift) held: it
+            // takes the selection's fill (outline), as Copy Fill Here and
+            // Copy Outline Here of the right-button drag do, and the
+            // selection stays where it was. Alt alone over a clip frame
+            // still puts the selection into it (#1337) (discussion #2066).
+            Drag::Move { .. }
+                if self.drop_colour_target.is_some()
+                    && !(self.drop_colour == Some(crate::drop_menu::DropAction::CopyFill)
+                        && self.drop_frame.is_some()) =>
+            {
+                let action = self.drop_colour.take();
+                let target = self.drop_colour_target.take();
+                self.drag_copy = false;
+                self.drop_frame = None;
+                if let (Some(action), Some(target)) = (action, target) {
+                    self.copy_style_onto(target, action);
+                }
                 self.end_page_drag_group();
             }
             Drag::Move { total, .. } => {
@@ -3312,6 +3417,7 @@ impl App {
                 start_bounds,
                 current,
                 mods,
+                snapped,
                 ..
             } => {
                 let b = *start_bounds;
@@ -3353,9 +3459,16 @@ impl App {
                     // the pointer falls along the box's diagonal, so the
                     // corner follows the pointer and a wide, low box (a
                     // line of text) does not grow with the short side's
-                    // pace (#383).
+                    // pace (#383). A corner snapped on one axis only (onto
+                    // a guideline, a line, another object's side) scales
+                    // by that axis, so it stays on what it snapped to
+                    // whichever way the pointer drifts along it (#2004).
                     let (w2, h2) = (w * w, h * h);
-                    let s = (sx.abs() * w2 + sy.abs() * h2) / (w2 + h2);
+                    let s = match snapped {
+                        (true, false) => sx.abs(),
+                        (false, true) => sy.abs(),
+                        _ => (sx.abs() * w2 + sy.abs() * h2) / (w2 + h2),
+                    };
                     sx = s * sx.signum();
                     sy = s * sy.signum();
                 }
@@ -3539,6 +3652,18 @@ impl App {
         // Text typing has priority; the zoom keys, which type nothing,
         // still zoom (#1699).
         if self.text_edit.is_some() && !dialog_open {
+            // Shift+F3 while typing: Text > Change Case for the text being
+            // edited, which the editing ends and selects first (#2059).
+            if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
+                let shape = self.text_edit.as_ref().map(|t| t.shape);
+                self.finish_text();
+                if let Some(shape) = shape {
+                    self.select(vec![shape]);
+                }
+                self.dialog =
+                    crate::ui::dialogs::Dialog::ChangeCase(crate::ops2::CaseMode::Sentence);
+                return;
+            }
             self.text_view_keys(ctx);
             self.text_keyboard(ctx);
             return;
@@ -3727,6 +3852,11 @@ impl App {
             self.open_macro_editor();
             return;
         }
+        // Help > Search Commands, with or without a drawing open.
+        if first_pressed(Key::P, cmd | Modifiers::SHIFT) {
+            self.command_search.open();
+            return;
+        }
         // The Welcome Screen alone (no drawing open): only the commands
         // that need no drawing.
         if !self.has_document() {
@@ -3873,6 +4003,16 @@ impl App {
         }
         if pressed(Key::J, cmd) {
             self.dialog = crate::ui::dialogs::Dialog::Options;
+        }
+        // Ctrl+Tab and Ctrl+Shift+Tab: the next and the previous document
+        // tab, round the end (#2068, #2058).
+        if self.docs.len() > 1 {
+            let n = self.docs.len();
+            if pressed(Key::Tab, Modifiers::CTRL) {
+                self.switch_document((self.active_doc + 1) % n);
+            } else if pressed(Key::Tab, Modifiers::CTRL | Modifiers::SHIFT) {
+                self.switch_document((self.active_doc + n - 1) % n);
+            }
         }
         // With the Shape tool, Tab steps through the nodes of the curve.
         let shape_tool = self.tool == Tool::Shape;
@@ -4153,6 +4293,11 @@ impl App {
                 self.finish_curve();
                 return;
             }
+            // Editing a symbol with nothing selected: Finish (#1980).
+            if self.selection.is_empty() && self.symbol_edit_index().is_some() {
+                self.finish_clip_frame_edit();
+                return;
+            }
             // In focus mode with nothing selected: one level out.
             if self.selection.is_empty() && self.focus_target().is_some() {
                 self.focus_up();
@@ -4201,6 +4346,17 @@ impl App {
         // tool letters).
         let nodes_chosen = self.tool == Tool::Shape && !self.node_selection.is_empty();
         if nodes_chosen {
+            // The node commands' own keys (Object > Nodes, Shift and a
+            // letter: To Line Shift+L, To Curve Shift+U, Cusp Shift+C,
+            // Smooth Shift+M, Symmetrical Shift+Y, Break Shift+B, Join
+            // Shift+J; #2001).
+            if let Some(id) = presses
+                .iter()
+                .find_map(|(k, m)| App::node_command_key(*k, *m))
+            {
+                self.run_node_command(id);
+                return;
+            }
             use tracedraw_core::nodes::NodeType;
             let now = self.current_node_type();
             let toggled = |key: Key, pair: NodeType| {

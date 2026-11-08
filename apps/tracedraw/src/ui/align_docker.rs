@@ -240,6 +240,15 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
                     pen.block(6.75, 6.0, 9.25, 10.0);
                     pen.block(12.0, 6.0, 14.5, 10.0);
                 }
+                DistributeTo::Spacing => {
+                    // Three blocks with the set gap measured between two.
+                    pen.block(1.0, 6.0, 4.0, 12.0);
+                    pen.block(6.5, 6.0, 9.5, 12.0);
+                    pen.block(12.0, 6.0, 15.0, 12.0);
+                    pen.line(4.0, 3.5, 6.5, 3.5, 0.9);
+                    pen.line(4.0, 2.0, 4.0, 5.0, 0.9);
+                    pen.line(6.5, 2.0, 6.5, 5.0, 0.9);
+                }
             }
         }
         Icon::Outline => {
@@ -406,6 +415,7 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
         for (to, key) in [
             (DistributeTo::Selection, "docker.distribute_selection"),
             (DistributeTo::Page, "docker.distribute_page"),
+            (DistributeTo::Spacing, "docker.distribute_spacing"),
         ] {
             if button(
                 ui,
@@ -425,8 +435,35 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
         tr(match app.distribute_to {
             DistributeTo::Selection => "docker.distribute_selection",
             DistributeTo::Page => "docker.distribute_page",
+            DistributeTo::Spacing => "docker.distribute_spacing",
         }),
     );
+    // The set spacing, in the ruler unit through the drawing scale.
+    if app.distribute_to == DistributeTo::Spacing {
+        ui.horizontal(|ui| {
+            ui.label(tr("docker.distribute_gap"));
+            let units = app.units;
+            let unit_mm = units.world_mm();
+            let unit_mm = if unit_mm.is_finite() && unit_mm > 0.0 {
+                unit_mm
+            } else {
+                1.0
+            };
+            let mut v = app.distribute_gap / unit_mm;
+            if ui
+                .add(
+                    crate::ui::field::NumField::new(&mut v)
+                        .speed(0.1)
+                        .max_decimals(4)
+                        .suffix(format!(" {}", units.short())),
+                )
+                .changed()
+                && v.is_finite()
+            {
+                app.distribute_gap = v * unit_mm;
+            }
+        });
+    }
     if !can {
         ui.add_space(2.0);
         dim(
@@ -434,6 +471,7 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
             tr(match app.distribute_to {
                 DistributeTo::Selection => "docker.distribute_hint",
                 DistributeTo::Page => "docker.distribute_page_hint",
+                DistributeTo::Spacing => "docker.distribute_spacing_hint",
             }),
         );
     }
@@ -543,6 +581,28 @@ mod tests {
         let tops = [bounds(&app, a).y1, bounds(&app, c).y1];
         assert!(tops.iter().any(|t| near(*t, page.y1)));
         assert!(tops.iter().any(|t| near(*t, page.y0 + 10.0)));
+    }
+
+    /// A set spacing: the first object stays, the others follow it the
+    /// spacing apart, as gaps or between left edges (#2005).
+    #[test]
+    fn distribute_with_a_set_spacing() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 10.0, 10.0);
+        let b = rect(&mut app, 30.0, 0.0, 50.0, 10.0);
+        let c = rect(&mut app, 90.0, 0.0, 100.0, 10.0);
+        app.select(vec![a, c]);
+        assert!(app.can_distribute(DistributeTo::Spacing));
+        app.select(vec![a, b, c]);
+        app.distribute_gap = 0.5;
+        app.distribute_with(Distribute::SpacingH, DistributeTo::Spacing);
+        assert!(near(bounds(&app, a).x0, 0.0));
+        assert!(near(bounds(&app, b).x0, 10.5));
+        assert!(near(bounds(&app, c).x0, 31.0));
+        app.distribute_gap = 15.0;
+        app.distribute_with(Distribute::Left, DistributeTo::Spacing);
+        assert!(near(bounds(&app, b).x0, 15.0));
+        assert!(near(bounds(&app, c).x0, 30.0));
     }
 
     #[test]

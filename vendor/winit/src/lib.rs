@@ -230,6 +230,10 @@ pub(crate) mod file_drop;
 // TraceDraw: a graphics tablet's pen on Wayland (vendor/README.md).
 #[cfg(wayland_platform)]
 pub(crate) mod tablet_tool;
+// TraceDraw: a finger or a pen on the window's frame on Wayland
+// (vendor/README.md).
+#[cfg(wayland_platform)]
+pub(crate) mod frame_input;
 // TraceDraw: the pointer kept on a shortcut with Alt on Windows
 // (vendor/README.md).
 #[cfg(windows_platform)]

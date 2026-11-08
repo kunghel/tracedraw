@@ -76,6 +76,9 @@ desde ahí de vuelta a la barra un botón que haya quitado.
 
 - [[options.palette_auto_update]] y [[options.palette_show_document]] (ambas
   activadas).
+- [[options.palette_position]] (Arriba, Abajo, Izquierda, Derecha o Flotante)
+  de la paleta predeterminada, como la ajusta su propio menú; no cambia
+  mientras las barras de herramientas están bloqueadas.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (activado), y lo
   que hace el [[options.palette_right_button]]: [[options.palette_set_outline]]
   (opción predeterminada) o abrir el [[options.palette_context_menu]].

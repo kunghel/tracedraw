@@ -73,6 +73,9 @@ dari sana kembali ke bilah tombol yang telah Anda hapus.
 
 - [[options.palette_auto_update]] dan [[options.palette_show_document]]
   (keduanya aktif).
+- [[options.palette_position]] (Atas, Bawah, Kiri, Kanan, atau Mengambang)
+  palet bawaan, seperti yang diatur menunya sendiri; tidak berubah selama
+  bilah alat terkunci.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (aktif), dan apa
   yang dilakukan [[options.palette_right_button]]:
   [[options.palette_set_outline]] (bawaan) atau membuka

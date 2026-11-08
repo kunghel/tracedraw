@@ -111,7 +111,13 @@ fn image_sample(img: &image::RgbaImage) -> u64 {
 /// a paste can tell nothing changed without reading the clipboard.
 #[cfg(windows)]
 pub fn change_count() -> Option<u32> {
-    #[link(name = "user32", kind = "raw-dylib")]
+    // 32-bit Windows: the DLL exports the plain name, not the stdcall
+    // decorated one raw-dylib imports by default (#1975).
+    #[cfg_attr(
+        target_arch = "x86",
+        link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")
+    )]
+    #[cfg_attr(not(target_arch = "x86"), link(name = "user32", kind = "raw-dylib"))]
     unsafe extern "system" {
         fn GetClipboardSequenceNumber() -> u32;
     }
@@ -223,7 +229,7 @@ fn read_system_image() -> Option<image::RgbaImage> {
 fn read_system_image() -> Option<image::RgbaImage> {
     let (_, uri) = split_documents(crate::android::clipboard::documents());
     let bytes = crate::android::documents::read(&uri?).ok()?;
-    match image::load_from_memory(&bytes) {
+    match crate::files::decode_picture(&bytes) {
         Ok(img) => Some(img.into_rgba8()),
         Err(e) => {
             log::warn!("the copied picture cannot be read: {e}");
@@ -463,7 +469,7 @@ fn lone_picture(files: &[PastedFile]) -> Option<image::RgbaImage> {
     if !file.mime.starts_with("image/") {
         return None;
     }
-    match image::load_from_memory(&file.bytes) {
+    match crate::files::decode_picture(&file.bytes) {
         Ok(img) => Some(img.into_rgba8()),
         Err(e) => {
             log::warn!("the pasted picture cannot be read: {e}");

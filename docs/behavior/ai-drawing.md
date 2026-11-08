@@ -22,11 +22,14 @@ Screen. The request is shared with the panel's, and a request that drew
 clears it.
 
 The model list offers the service's own models once fetched ("Fetch the
-service's models": a GET of `models` next to the address, `/v1/models`
-for the Messages API, `data[].id` of the reply), before that the usual
-ones (`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`,
-`claude-fable-5-1` for the Messages API, none for chat completions); the
-model in use is always listed.
+service's models": a GET of `models` next to the address,
+`/v1/models?limit=1000` for the Messages API so every page of models
+comes, `data[].id` of the reply without a leading `models/`), before
+that the usual ones (`claude-sonnet-5-5`, `claude-opus-5-5`,
+`claude-haiku-5-5`, `claude-fable-5-1` for the Messages API, none for
+chat completions); the model in use, and the image model set up in the
+image model lists, are always listed, first when the service's list does
+not hold them (`ai::model_choices`).
 
 ## Connection
 
@@ -84,8 +87,16 @@ apply).
   the program printed, and keeps the program under Script, where Open in
   Scripts copies it to the Scripts panel for editing and running again.
 - New conversation forgets the earlier requests.
-- Errors shown: the service's own message with the HTTP status (a wrong
-  key, no credit, too many requests), a network error, a reply cut short
+- Errors shown, said plainly and followed by the service's own message
+  (`ai::http_error`, also for AI Generate and Remove Background): 429 as
+  a used up quota or credit or too many requests, with the wait the
+  service's `Retry-After` asks for (seconds or a date); 401 and 403 as a
+  key the service refuses; 408, 504 and 524 as a service that took too
+  long; 502, 503 and 529 as a busy service (with its wait); 404 as an
+  address or model it does not know; any other status with the service's
+  message as it is. A request that gets no answer in five minutes says
+  the service took too long and to try again; other network failures
+  say the service could not be reached and why. Also a reply cut short
   (ask for less at a time), a reply with no program, a program over
   256 KB.
 - The program can also use `ActiveLayer.CreatePath(d)`: SVG path data
@@ -121,7 +132,11 @@ allow the page's origin (for example `OLLAMA_ORIGINS`).
   (`ai::tests::the_program_is_taken_from_its_code_block`).
 - No request leaves without words, a key (where needed) and a model
   (`ai::tests::requests_need_words_a_key_and_a_model`); network and
-  service errors are shown (`ai::tests::errors_of_the_service_and_the_network_are_shown`).
+  service errors are shown (`ai::tests::errors_of_the_service_and_the_network_are_shown`);
+  the plain messages for 429 (with its wait), the key, timeouts, a busy
+  service and an unknown model (`ai::tests::error_replies_say_what_went_wrong`,
+  `requests_that_fail_say_why`); every model set up stays in the lists
+  (`ai::tests::model_lists_hold_every_model_set_up`).
 - The desktop transport posts to a server on the same computer and reads
   its error replies (`ai::tests::the_desktop_transport_posts_and_reads_error_replies`);
   the real Messages API refuses a made-up key with 401

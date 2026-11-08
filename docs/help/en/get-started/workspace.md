@@ -40,7 +40,7 @@ The standard toolbar holds, in groups:
 6. Show rulers, show grid and show guidelines, drawn pressed while on.
 7. Snap off (<kbd>Alt+Q</kbd>) and the list of what to snap to.
 8. Options, which opens the list of option pages.
-9. Launch: Font Manager, Welcome Screen and Color Management.
+9. Launch: Font Manager, TraceCut and Welcome Screen.
 
 Hover a button to see its name, its shortcut and what it does.
 

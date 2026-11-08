@@ -136,6 +136,7 @@ pub fn for_key(key: &str) -> Option<Glyph> {
     use Glyph::*;
     Some(match key {
         "menu.help.product_help" | "menu.help.help_topics" => Help,
+        "menu.help.search_commands" => Find,
         "menu.help.video_tutorials" => Video,
         "menu.help.quick_start_guide" => QuickStart,
         "menu.help.user_guide" => UserGuide,
@@ -208,8 +209,8 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.object.objects" => ObjectsDocker,
         "menu.object.clip_frame_place_inside" | "menu.object.clip_frame" => ClipInside,
         "menu.object.clip_frame_extract" => ClipExtract,
-        "menu.object.clip_frame_edit" => ClipEdit,
-        "menu.object.clip_frame_finish" => ClipFinish,
+        "menu.object.clip_frame_edit" | "menu.object.symbol_edit" => ClipEdit,
+        "menu.object.clip_frame_finish" | "menu.object.symbol_finish" => ClipFinish,
         "menu.object.insert_barcode" | "menu.object.insert" => Barcode,
         "menu.object.insert_qr" => QrCode,
         "menu.object.symmetry_create" | "menu.object.symmetry_edit" | "menu.object.symmetry" => {

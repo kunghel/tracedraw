@@ -125,6 +125,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
         draw_pending_text_link(app, painter, pointer);
     }
     draw_drop_frame(app, painter);
+    draw_drop_colour(app, painter);
     draw_symmetry_lines(app, painter, rect);
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
@@ -504,7 +505,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     // drawing is copied once a change, not once a render (a zoom renders
     // at once, every few frames).
     #[cfg(not(target_arch = "wasm32"))]
-    let shares = app.multipage && revision == app.engine.revision();
+    let shares = app.shows_other_pages() && revision == app.engine.revision();
     #[cfg(not(target_arch = "wasm32"))]
     if shares {
         if let Some((r, d)) = app.page_snapshot.borrow().as_ref() {
@@ -542,9 +543,11 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             }
         }
     }
-    if app.multipage {
-        crate::multipage::draw_other_pages(app, painter, rect, started, main_rendered);
-    }
+    // The pages beside the current one (the Multipage View, a spread of
+    // facing pages): their shadows and paper now, their objects over
+    // the current page's paper below, so what they hold across the
+    // spine shows on it (#1972).
+    let others = app.shows_other_pages();
 
     // Page: a flat grey shadow offset right and down, the white page, a
     // one-pixel grey border (pixel-aligned so it stays crisp). While
@@ -564,6 +567,9 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             Tokens::page_shadow(),
         );
     }
+    if others {
+        crate::multipage::draw_other_papers(app, painter, rect);
+    }
     painter.rect_filled(paper, 0.0, Tokens::PAGE);
     if app.show_page_border {
         painter.rect_stroke(
@@ -576,7 +582,16 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     if app.show_bleed {
         let b = app.doc().metadata.bleed.max(0.0);
         if b > 0.0 {
-            let r = view.rect_to_screen(shown.inflate(b, b));
+            // Around the whole spread with facing pages, not at the
+            // spine (#1660).
+            let around = if app.doc().facing().is_some() {
+                app.shown_spread_rect(app.page)
+                    .map(|r| r.union(shown))
+                    .unwrap_or(shown)
+            } else {
+                shown
+            };
+            let r = view.rect_to_screen(around.inflate(b, b));
             painter.rect_stroke(
                 r,
                 0.0,
@@ -614,6 +629,9 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
     if app.show_baseline_grid {
         draw_baseline_grid(app, painter, rect, paper);
+    }
+    if others {
+        crate::multipage::draw_other_pages(app, painter, rect, started, main_rendered);
     }
 
     if let Some((tex, at)) = main {
@@ -656,9 +674,9 @@ pub(crate) fn outside_page_mask_color(app: &App) -> Color32 {
 /// rectangles a frame and the outlines flattened once per change.
 fn mask_outside_pages(app: &App, painter: &Painter, rect: ERect, paper: ERect) {
     let mut pages = vec![paper];
-    if app.multipage {
+    if app.shows_other_pages() {
         pages.extend(
-            app.multipage_layout()
+            app.shown_pages()
                 .iter()
                 .filter(|(id, _)| *id != app.page)
                 .map(|(_, r)| {
@@ -994,6 +1012,50 @@ fn draw_drop_frame(app: &App, painter: &Painter) {
         painter.galley(egui::pos2(bg.left() + 6.0, y), g, Tokens::text());
         y += h + 2.0;
     }
+}
+
+/// The object a move let go with Alt (Alt+Shift) would copy the fill
+/// (outline) onto: its outline in the selection colour, and under the
+/// pointer what the drop does (discussion #2066).
+fn draw_drop_colour(app: &App, painter: &Painter) {
+    use crate::drop_menu::DropAction;
+    if !matches!(app.drag, crate::app::Drag::Move { .. }) {
+        return;
+    }
+    let (Some(action), Some(target)) = (app.drop_colour, app.drop_colour_target) else {
+        return;
+    };
+    // Alt alone over a clip frame puts the selection into it instead.
+    if action == DropAction::CopyFill && app.drop_frame.is_some() {
+        return;
+    }
+    let Some(s) = app.doc().find_shape(target) else {
+        return;
+    };
+    let accent = Tokens::ACCENT;
+    for (pts, _) in flatten(&s.page_path(), &app.view) {
+        if pts.len() >= 2 {
+            painter.add(egui::Shape::line(pts, EStroke::new(1.5, accent)));
+        }
+    }
+    let Some(p) = app.pointer_page else {
+        return;
+    };
+    let at = app.view.to_screen(p) + egui::vec2(18.0, 24.0);
+    let g = painter.layout_no_wrap(
+        crate::i18n::tr(action.key()),
+        egui::FontId::proportional(12.0),
+        Tokens::text(),
+    );
+    let bg = ERect::from_min_size(at, g.size() + egui::vec2(12.0, 8.0));
+    painter.rect(
+        bg,
+        2.0,
+        Tokens::panel(),
+        EStroke::new(1.0, Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(bg.min + egui::vec2(6.0, 4.0), g, Tokens::text());
 }
 
 fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
@@ -1658,7 +1720,10 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
             .rotation_center()
             .map(|c| app.view.to_screen(c))
             .unwrap_or(r.center());
-        // The centre of rotation: a ring with a dot.
+        // The centre of rotation: a ring with a dot, black on a white
+        // edge so it shows on a dark drawing (#1664).
+        painter.circle_stroke(c, 8.0, EStroke::new(4.0, Color32::WHITE));
+        painter.circle_filled(c, 3.0, Color32::WHITE);
         painter.circle_stroke(c, 8.0, EStroke::new(2.0, Color32::BLACK));
         painter.circle_filled(c, 2.0, Color32::BLACK);
         for (h, p) in app.handle_positions(bounds) {
@@ -1705,10 +1770,31 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
 /// A rotate mode handle at `p`: a curved double arrow around each
 /// corner, a straight double arrow along each side (sideways at the top
 /// and bottom, up and down at the left and right). Black, 2 points thick,
-/// with solid heads.
+/// with solid heads, over a white edge so it shows on a dark drawing
+/// (#1664).
 fn draw_rotate_handle(painter: &Painter, p: Pos2, h: Handle) {
-    let ink = Color32::BLACK;
-    let stroke = EStroke::new(2.0, ink);
+    draw_rotate_arrows(
+        painter,
+        p,
+        h,
+        Color32::WHITE,
+        4.0,
+        EStroke::new(1.5, Color32::WHITE),
+    );
+    draw_rotate_arrows(painter, p, h, Color32::BLACK, 2.0, EStroke::NONE);
+}
+
+/// One pass of [`draw_rotate_handle`]: its arrows in `ink`, `width` thick,
+/// the heads with an `edge`.
+fn draw_rotate_arrows(
+    painter: &Painter,
+    p: Pos2,
+    h: Handle,
+    ink: Color32,
+    width: f32,
+    edge: EStroke,
+) {
+    let stroke = EStroke::new(width, ink);
     // A solid head with its tip at `tip`, pointing along `dir`.
     let head = |tip: Pos2, dir: egui::Vec2| {
         let d = dir.normalized();
@@ -1716,7 +1802,7 @@ fn draw_rotate_handle(painter: &Painter, p: Pos2, h: Handle) {
         epaint::PathShape::convex_polygon(
             vec![tip, tip - d * 4.5 + n * 3.0, tip - d * 4.5 - n * 3.0],
             ink,
-            EStroke::NONE,
+            edge,
         )
     };
     if h.is_corner() {
@@ -3120,6 +3206,25 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
             for c in 0..=m.cols {
                 for r in 0..m.rows {
                     line(r, c, false);
+                }
+            }
+        }
+        // The selected mesh node's handles: one on each grid line leaving
+        // it, dragged to bend the line (discussion #2073).
+        if let Some((_, i)) = app.selected_mesh_node().filter(|(id, _)| *id == s.id) {
+            let base = crate::mesh_tool::MESH_NODE_BASE + i;
+            if let Some(node) = crate::interaction2::effect_point(s, base) {
+                let from = app.view.to_screen(node);
+                for (k, q) in crate::interaction2::mesh_handle_points(s, i) {
+                    let to = app.view.to_screen(q);
+                    painter.line_segment([from, to], egui::Stroke::new(1.0, blue));
+                    let held = app.effect_node_drag == Some((s.id, k));
+                    painter.circle(
+                        to,
+                        3.5,
+                        if held { blue } else { egui::Color32::WHITE },
+                        egui::Stroke::new(1.0, blue),
+                    );
                 }
             }
         }

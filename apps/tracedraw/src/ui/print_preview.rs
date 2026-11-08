@@ -931,6 +931,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             Ok(msg) => app.status = msg,
             Err(e) => app.status = format!("{}: {e}", tr("dialog.print_failed")),
         }
+        if pv.st.destination == 0 {
+            app.printer_last = pv.st.printer.clone();
+        }
         if app.settings.printing.remember_last {
             app.settings.printing.remember(&pv.st);
             app.settings.save();

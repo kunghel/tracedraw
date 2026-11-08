@@ -52,6 +52,9 @@ pub struct ExportState {
     /// "1-3, 5" (#1382).
     pub page_list: bool,
     pub pages: String,
+    /// With facing pages: each spread of the chosen pages as one page as
+    /// wide as both (#1972); else every page on its own.
+    pub spreads: bool,
     pub selection_only: bool,
     pub transparent: bool,
     pub quality: u8,
@@ -100,6 +103,7 @@ impl Default for ExportState {
             all_pages: false,
             page_list: false,
             pages: String::new(),
+            spreads: false,
             selection_only: false,
             transparent: true,
             quality: 90,
@@ -514,6 +518,9 @@ pub struct PrintState {
     pub spot_to_cmyk: bool,
     /// Text in black, whatever its colour.
     pub text_black: bool,
+    /// The pages' background colour prints; off, it shows on screen only
+    /// (#1651).
+    pub page_background: bool,
     /// Black fills and outlines overprint what lies below.
     pub overprint_black: bool,
     /// How far beyond the page objects print, mm (with Bleed on).
@@ -792,6 +799,7 @@ impl Default for PrintState {
             bitmap_dpi: 300.0,
             spot_to_cmyk: false,
             text_black: false,
+            page_background: true,
             overprint_black: false,
             bleed_limit: 4.0,
             info_text: String::new(),
@@ -1106,6 +1114,9 @@ pub enum Dialog {
     },
     /// How a PDF's text is read in (#386).
     PdfText(crate::ui::pdf_import_dialog::PdfTextState),
+    /// Which pages of a PDF of several pages File > Import brings in,
+    /// and where.
+    PdfPages(crate::ui::pdf_pages::PdfPagesState),
     /// The Edit Fill dialog (F11, #361).
     EditFill(Box<crate::ui::edit_fill::EditFillState>),
     /// The Outline Pen dialog (F12, #357).
@@ -2005,6 +2016,7 @@ pub fn show(app: &mut App, ctx: &Context) {
         Dialog::OutlinePen(st) => crate::ui::outline_pen::dialog(app, ctx, st, &mut close),
         Dialog::EditFill(st) => crate::ui::edit_fill::dialog(app, ctx, st, &mut close),
         Dialog::PdfText(st) => crate::ui::pdf_import_dialog::dialog(app, ctx, st, &mut close),
+        Dialog::PdfPages(st) => crate::ui::pdf_pages::dialog(app, ctx, st, &mut close),
         Dialog::OldCdrVersion { version } => {
             let mut choose = false;
             window(ctx, tr("dialog.old_cdr_title")).show(ctx, |ui| {
@@ -2092,7 +2104,11 @@ pub fn show(app: &mut App, ctx: &Context) {
                         }
                         InstallState::Installed(v) => (
                             trf("updates.installed", &[("new", v)]),
-                            vec![close_label.clone()],
+                            vec![tr("updates.restart"), tr("updates.later")],
+                        ),
+                        InstallState::Ready(v) => (
+                            trf("updates.ready", &[("new", v)]),
+                            vec![tr("updates.restart_install"), tr("updates.later")],
                         ),
                         InstallState::Failed(e) => (
                             trf("updates.install_failed", &[("error", e)]),
@@ -2110,6 +2126,20 @@ pub fn show(app: &mut App, ctx: &Context) {
                         Some(0) if matches!(install, InstallState::Failed(_)) => {
                             let url = r.download.clone().unwrap_or_else(|| r.page.clone());
                             app.open_url(&url);
+                            close = true;
+                        }
+                        // Restart: exit the usual way (asking about unsaved
+                        // drawings); the new version starts when the
+                        // program has exited.
+                        Some(0)
+                            if matches!(
+                                install,
+                                InstallState::Installed(_) | InstallState::Ready(_)
+                            ) =>
+                        {
+                            if app.installer.arm() {
+                                app.request_exit();
+                            }
                             close = true;
                         }
                         Some(_) => close = true,
@@ -2152,9 +2182,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                         tr("updates.notes"),
                         tr("updates.skip"),
                     );
-                    // A running AppImage can be replaced in place.
-                    let target = crate::updates::appimage_target();
-                    let in_place = r.appimage.clone().zip(target);
+                    // An AppImage, a Windows setup copy and a macOS app
+                    // update themselves in place.
+                    let in_place = r.installer.clone().zip(crate::updates::install_target());
                     let install_label = tr("updates.install");
                     let mut labels: Vec<&str> = Vec::new();
                     if in_place.is_some() {
@@ -3791,6 +3821,7 @@ fn export_preview_key(app: &App, st: &ExportState) -> u64 {
     st.all_pages.hash(&mut h);
     st.page_list.hash(&mut h);
     st.pages.hash(&mut h);
+    st.spreads.hash(&mut h);
     st.text_as_curves.hash(&mut h);
     st.ai_version.hash(&mut h);
     st.quality.hash(&mut h);
@@ -3916,10 +3947,48 @@ pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "Graphic1".into());
     let st = st.clone();
-    crate::files::Dialog::new()
-        .add_filter(name, &[ext])
+    // The chosen format first, then every other one, so the file dialog
+    // offers them all (live test of 0.41: only the format of Options >
+    // File Formats was offered); the extension of the name typed decides.
+    let mut dialog = crate::files::Dialog::new().add_filter(name, &[ext]);
+    for (other, e) in EXPORT_FORMATS.iter() {
+        if *e != ext {
+            dialog = dialog.add_filter(*other, &[*e]);
+        }
+    }
+    // The folder exported to last, else the drawing's own (#1817).
+    let folder = app
+        .settings
+        .last_export_dir
+        .clone()
+        .filter(|d| crate::files::is_dir(d))
+        .or_else(|| {
+            app.file
+                .as_ref()
+                .and_then(|f| f.parent())
+                .map(|p| p.to_path_buf())
+        })
+        .or_else(|| app.settings.last_dir.clone());
+    if let Some(dir) = folder {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog
         .set_file_name(format!("{stem}.{ext}"))
         .save_file(app, move |app, path| {
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                app.settings.last_export_dir = Some(dir.to_path_buf());
+            }
+            let mut st = st.clone();
+            if let Some(typed) = path.extension().and_then(|e| e.to_str()) {
+                if let Some(i) = EXPORT_FORMATS
+                    .iter()
+                    .position(|(_, e)| e.eq_ignore_ascii_case(typed))
+                {
+                    if i != st.format {
+                        app.recall_export_format(&mut st, i);
+                    }
+                }
+            }
             match crate::export::export(app, &path, &st) {
                 Ok(msg) => app.status = msg,
                 Err(e) => app.status = format!("{}: {e}", tr("dialog.export_failed")),
@@ -4517,6 +4586,11 @@ fn export_range_fields(app: &App, ui: &mut Ui, st: &mut ExportState) {
     });
     st.all_pages = range != 0;
     st.page_list = range == 2;
+    // Facing pages: the spreads as pages of their own (#1972).
+    if app.doc().facing().is_some() && !st.selection_only {
+        ui.checkbox(&mut st.spreads, tr("dialog.export_spreads"))
+            .rich_tip(pair("dialog.export_spreads", "dialog.export_spreads_desc"));
+    }
     let current = app
         .doc()
         .pages
@@ -5345,6 +5419,9 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
                         Ok(_) => {}
                         Err(e) => app.status = format!("{}: {e}", tr("dialog.print_failed")),
                     }
+                    if st.destination == 0 {
+                        app.printer_last = st.printer.clone();
+                    }
                     if app.settings.printing.remember_last {
                         app.settings.printing.remember(st);
                         app.settings.save();
@@ -5631,6 +5708,7 @@ fn print_tab_composite(ui: &mut Ui, st: &mut PrintState) {
     print_group(ui, &tr("print.options"), |ui| {
         ui.checkbox(&mut st.text_black, tr("print.text_black"));
         ui.checkbox(&mut st.overprint_black, tr("print.overprint_black"));
+        ui.checkbox(&mut st.page_background, tr("print.page_background"));
     });
 }
 
@@ -7907,7 +7985,7 @@ pub(crate) mod tests {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
             download: None,
-            appimage: Some(Package {
+            installer: Some(Package {
                 url: "https://example.org/a.AppImage".into(),
                 sha256: "0".repeat(64),
                 size: 3 << 20,
@@ -7927,6 +8005,7 @@ pub(crate) mod tests {
                 total: 3 << 20,
             },
             InstallState::Installed("9.0.0".into()),
+            InstallState::Ready("9.0.0".into()),
             InstallState::Failed("digest".into()),
         ];
         for check in &checks {

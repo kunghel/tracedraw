@@ -81,7 +81,7 @@ fn mutate(data: &[u8], seed: u64) -> Vec<u8> {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage:\n  tracedraw-cli inspect <file.cdr> [chunk id]\n  tracedraw-cli info <file.cdr|file.cmx|file.tdraw> [--unknown]\n  tracedraw-cli check <file.cdr>   findings of a written file (curves, boxes, ids, text, references)\n  tracedraw-cli icc <profile.icc>\n  tracedraw-cli stress <file> [iterations]   mutation test of the file's reader\n  tracedraw-cli convert <in.cdr|in.cmx|in.tdraw|in.svg|in.pdf|in.ai|in.eps|in.ps|in.prn|in.dxf|in.psd|in.emf|in.wmf|in.plt|in.txt|in.rtf|in.docx> <out.svg|out.pdf|out.eps|out.ps|out.prn|out.dxf|out.emf|out.wmf|out.plt|out.psd|out.html|out.png|out.tdraw|out.cdr>");
+    eprintln!("usage:\n  tracedraw-cli inspect <file.cdr> [chunk id]\n  tracedraw-cli info <file.cdr|file.cmx|file.tdraw> [--unknown]\n  tracedraw-cli check <file.cdr>   findings of a written file (curves, boxes, ids, text, references)\n  tracedraw-cli icc <profile.icc>\n  tracedraw-cli thumbnail <file> <out.png> [size]   the first page as a picture, for file managers\n  tracedraw-cli stress <file> [iterations]   mutation test of the file's reader\n  tracedraw-cli convert <in.cdr|in.cmx|in.tdraw|in.svg|in.pdf|in.ai|in.eps|in.ps|in.prn|in.dxf|in.psd|in.emf|in.wmf|in.plt|in.txt|in.rtf|in.docx> <out.svg|out.pdf|out.eps|out.ps|out.prn|out.dxf|out.emf|out.wmf|out.plt|out.psd|out.html|out.png|out.tdraw|out.cdr>");
     ExitCode::from(2)
 }
 
@@ -635,6 +635,44 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
+            }
+        }
+        // A picture of the first page for the file manager (the Linux
+        // thumbnailer runs it): `thumbnail <in> <out.png> [size]`, the
+        // long side `size` pixels (256 by default), white paper.
+        Some("thumbnail") => {
+            let (Some(input), Some(output)) = (args.get(2), args.get(3)) else {
+                return usage();
+            };
+            let size = args
+                .get(4)
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|s| s.is_finite() && *s >= 16.0)
+                .unwrap_or(256.0)
+                .min(2048.0);
+            let doc = match load(input) {
+                Ok((doc, _)) => doc,
+                Err(e) => {
+                    eprintln!("{input}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let Some(page) = doc.pages.first() else {
+                eprintln!("{input}: no page");
+                return ExitCode::FAILURE;
+            };
+            let long = page.size.width.max(page.size.height).max(1e-3);
+            let dpi = size / long * 25.4;
+            let Some(pm) = tracedraw_render::render_page_image(&doc, page.id, dpi) else {
+                eprintln!("{input}: nothing to draw");
+                return ExitCode::FAILURE;
+            };
+            match pm.save_png(output) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{output}: {e}");
+                    ExitCode::FAILURE
+                }
             }
         }
         Some("convert") => {

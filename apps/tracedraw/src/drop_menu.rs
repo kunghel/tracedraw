@@ -4,7 +4,9 @@
 //! Copy Fill Here, Copy Outline Here, Copy All Properties (onto the object
 //! under the pointer), Place Inside (that object becomes the selection's
 //! clip frame), or Cancel. Ctrl keeps the drag horizontal or vertical;
-//! Esc cancels it.
+//! Esc cancels it. A move with the left button let go over another object
+//! with Alt held copies the fill there without a menu, with Alt+Shift
+//! the outline (`App::copy_style_onto`, discussion #2066).
 
 use crate::app::App;
 use egui::{Painter, Response, Ui};
@@ -158,43 +160,15 @@ impl App {
 
     /// Carry out a drop menu choice.
     pub fn drop_action(&mut self, menu: DropMenu, action: DropAction) {
-        let sources = self.selected_shapes();
-        let Some(first) = sources.first().cloned() else {
+        if self.selection.is_empty() {
             return;
-        };
+        }
         match action {
             DropAction::Move => self.transform_selection(Affine::translate(menu.offset)),
             DropAction::Copy => self.duplicate_by(menu.offset),
             DropAction::CopyFill | DropAction::CopyOutline | DropAction::CopyProperties => {
-                let Some(target) = menu.target else {
-                    return;
-                };
-                let mut cmds = Vec::new();
-                if action != DropAction::CopyOutline {
-                    cmds.push(Command::SetFill {
-                        shapes: vec![target],
-                        fill: first.fill.clone(),
-                    });
-                }
-                if action != DropAction::CopyFill {
-                    cmds.push(Command::SetStroke {
-                        shapes: vec![target],
-                        stroke: first.stroke.clone(),
-                    });
-                }
-                if action == DropAction::CopyProperties {
-                    cmds.push(Command::SetOpacity {
-                        shapes: vec![target],
-                        opacity: first.opacity,
-                    });
-                }
-                let label = match action {
-                    DropAction::CopyFill => "Copy Fill",
-                    DropAction::CopyOutline => "Copy Outline",
-                    _ => "Copy Properties",
-                };
-                if let Err(e) = self.engine.run_batch(label, &cmds) {
-                    self.status = e.to_string();
+                if let Some(target) = menu.target {
+                    self.copy_style_onto(target, action);
                 }
             }
             DropAction::PlaceInside => {
@@ -213,6 +187,53 @@ impl App {
                 }
             }
             DropAction::Cancel => {}
+        }
+    }
+
+    /// Copy Fill Here, Copy Outline Here or Copy All Properties: object
+    /// `target` takes the fill, the outline or both and the transparency
+    /// of the first selected object, one undo step. The right-button drop
+    /// menu and a left-button move let go with Alt (Alt+Shift) held do
+    /// this (discussion #2066). Other actions do nothing here.
+    pub fn copy_style_onto(&mut self, target: ShapeId, action: DropAction) {
+        if !matches!(
+            action,
+            DropAction::CopyFill | DropAction::CopyOutline | DropAction::CopyProperties
+        ) {
+            return;
+        }
+        let Some(first) = self.selected_shapes().first().cloned() else {
+            return;
+        };
+        if first.id == target {
+            return;
+        }
+        let mut cmds = Vec::new();
+        if action != DropAction::CopyOutline {
+            cmds.push(Command::SetFill {
+                shapes: vec![target],
+                fill: first.fill.clone(),
+            });
+        }
+        if action != DropAction::CopyFill {
+            cmds.push(Command::SetStroke {
+                shapes: vec![target],
+                stroke: first.stroke.clone(),
+            });
+        }
+        if action == DropAction::CopyProperties {
+            cmds.push(Command::SetOpacity {
+                shapes: vec![target],
+                opacity: first.opacity,
+            });
+        }
+        let label = match action {
+            DropAction::CopyFill => "Copy Fill",
+            DropAction::CopyOutline => "Copy Outline",
+            _ => "Copy Properties",
+        };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
         }
     }
 

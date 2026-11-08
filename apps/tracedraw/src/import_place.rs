@@ -125,6 +125,7 @@ impl App {
         match &self.dialog {
             Dialog::PdfText(st) => st.import,
             Dialog::PdfPassword(st) => st.import,
+            Dialog::PdfPages(_) => true,
             _ => false,
         }
     }

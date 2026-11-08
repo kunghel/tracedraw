@@ -237,7 +237,8 @@ pub fn draw_bar(app: &mut App, ui: &mut Ui, bar: ItemBar, draw: fn(&mut App, &mu
                     egui::StrokeKind::Inside,
                 );
             }
-            if resp.drag_started() {
+            // Not while a finger slides the bar along (#1997).
+            if resp.drag_started() && !crate::ui::overflow::finger_sliding(ui.ctx()) {
                 app.bar_item_drag = Some(ItemDrag {
                     item: id.to_string(),
                     from: Some((bar, i)),

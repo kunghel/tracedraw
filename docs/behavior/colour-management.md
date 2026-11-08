@@ -12,7 +12,7 @@
 
 ## The Color Management Settings dialog
 
-Tools > Color Management (and the Launch list) opens a dialog with two
+Tools > Color Management opens a dialog with two
 tabs; nothing changes until OK. "?" opens the help.
 
 **Document**: Current Profiles (the drawing's RGB, CMYK and grayscale

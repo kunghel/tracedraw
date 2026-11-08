@@ -10,6 +10,12 @@
 //! edge it docks there, elsewhere it floats. Every bar, its place, rows
 //! and size are kept in the preferences and in workspace files.
 //!
+//! Along the top a bar lies beside the drawing, or among the toolbars:
+//! dropped on the line between two rows of toolbars (or over or under
+//! them all) it lies there, across the window, as a row of its own
+//! between the toolbars (`PaletteBarPrefs::toolbar_row`); its menu's
+//! Position > Top, Among the Toolbars puts it under them all.
+//!
 //! The default palette floating is drawn here too, so it flows and
 //! resizes the same way; it keeps the bars' drag (see `bars.rs`) and its
 //! own places beside the drawing.
@@ -105,6 +111,7 @@ pub fn set_dock(app: &mut App, which: Row, dock: Dock, at: Option<Pos2>) {
         Row::Extra(k) => {
             if let Some(b) = app.settings.palette_bars.get_mut(k) {
                 b.dock = dock;
+                b.toolbar_row = None;
                 if let (Dock::Floating, Some(p)) = (dock, at) {
                     b.pos = [p.x, p.y];
                 }
@@ -125,6 +132,98 @@ pub fn set_dock(app: &mut App, which: Row, dock: Dock, at: Option<Pos2>) {
             crate::ui::bars::move_palette(app, dock, spot, at);
         }
     }
+}
+
+/// Put the palette bar `which` among the toolbars along the top, over
+/// the row of toolbars `row` (past the last one: under them all). The
+/// default palette keeps its own places.
+pub fn set_among_toolbars(app: &mut App, which: Row, row: u32) {
+    match which {
+        Row::Extra(k) => {
+            if let Some(b) = app.settings.palette_bars.get_mut(k) {
+                b.dock = Dock::Top;
+                b.toolbar_row = Some(row.min(crate::settings::MAX_TOOLBAR_ROW));
+            }
+        }
+        Row::Document => {
+            if let Some(k) = detach_document_row(app) {
+                set_among_toolbars(app, Row::Extra(k), row);
+            }
+        }
+        Row::Main => {}
+    }
+}
+
+/// Whether the palette bar `which` lies among the toolbars.
+pub fn among_toolbars(app: &App, which: Row) -> bool {
+    match which {
+        Row::Extra(k) => app
+            .settings
+            .palette_bars
+            .get(k)
+            .is_some_and(|b| b.among_toolbars()),
+        _ => false,
+    }
+}
+
+/// The palette bars among the toolbars, as (the row of toolbars each
+/// lies over, the bar), top to bottom.
+pub fn toolbar_bands(app: &App) -> Vec<(u32, usize)> {
+    let mut bands: Vec<(u32, usize)> = app
+        .settings
+        .palette_bars
+        .iter()
+        .enumerate()
+        .filter(|(k, b)| b.among_toolbars() && *k < app.extra_palettes.len())
+        .filter_map(|(k, b)| Some((b.toolbar_row?, k)))
+        .collect();
+    bands.sort();
+    bands
+}
+
+/// The palette bar `k` among the toolbars, over their row `row`: a band
+/// across the window. Where it was drawn goes to `app.palette_bands` for
+/// the drops of a dragged palette bar.
+pub fn toolbar_band(app: &mut App, ui: &mut Ui, k: usize, row: u32) {
+    let which = Row::Extra(k);
+    let resp = egui::Panel::top(egui::Id::new(("palette_extra", which)))
+        .exact_size(crate::ui::palette::thickness(app, which))
+        .resizable(false)
+        .show_separator_line(true)
+        .frame(egui::Frame::new().fill(Tokens::panel()))
+        .show(ui, |ui| crate::ui::palette::strip(app, ui, which, false));
+    app.palette_bands.push((row, resp.response.rect));
+}
+
+/// Where a palette bar dropped at `p` goes among the toolbars along the
+/// top, and the line that marks it: near the line between two rows of
+/// toolbars, or the top or bottom line of them all (within
+/// [`ROW_EDGE`]), that place; over a palette bar among them, its place.
+/// `None` elsewhere: over the middle of a row the bar docks as before.
+///
+/// [`ROW_EDGE`]: crate::ui::bars::ROW_EDGE
+pub fn toolbar_target(
+    rows: &[crate::ui::bars::RowSpot],
+    bands: &[(u32, Rect)],
+    p: Pos2,
+) -> Option<(u32, Rect)> {
+    let line =
+        |r: Rect, y: f32| Rect::from_min_max(pos2(r.left(), y - 3.0), pos2(r.right(), y + 3.0));
+    if let Some((row, r)) = bands.iter().find(|(_, r)| r.contains(p)) {
+        return Some((*row, line(*r, r.top())));
+    }
+    let edge = crate::ui::bars::ROW_EDGE;
+    let spot = rows
+        .iter()
+        .find(|s| s.dock == Dock::Top && s.rect.contains(p))?;
+    let row = u32::try_from(spot.row).unwrap_or(crate::settings::MAX_TOOLBAR_ROW);
+    if p.y < spot.rect.top() + edge {
+        return Some((row, line(spot.rect, spot.rect.top())));
+    }
+    if p.y > spot.rect.bottom() - edge {
+        return Some((row.saturating_add(1), line(spot.rect, spot.rect.bottom())));
+    }
+    None
 }
 
 /// The name a bar shows: its palette's (as the user named it).
@@ -202,10 +301,19 @@ pub fn strip_items(app: &mut App, ui: &mut Ui, which: Row) {
     });
     sub(ui, "palette.position", |ui| {
         let locked = app.settings.bars.locked;
+        let among = among_toolbars(app, which);
         for (dock, key) in PLACES {
-            if crate::ui::menus::radio_if(ui, key, "", prefs.dock == dock, !locked) {
+            let on = prefs.dock == dock && !(dock == Dock::Top && among);
+            if crate::ui::menus::radio_if(ui, key, "", on, !locked) {
                 set_dock(app, which, dock, None);
             }
+        }
+        // A palette bar also lies among the toolbars along the top (the
+        // default palette has its own places at the top).
+        if which != Row::Main
+            && crate::ui::menus::radio_if(ui, "palette.among_toolbars", "", among, !locked)
+        {
+            set_among_toolbars(app, which, crate::settings::MAX_TOOLBAR_ROW);
         }
     });
 }
@@ -464,12 +572,13 @@ pub fn docked(app: &mut App, ui: &mut Ui, dock: Dock) {
     if dock == Dock::Floating {
         return;
     }
+    // Those among the toolbars come with the toolbars (`toolbar_band`).
     let mut bars: Vec<usize> = (0..app.extra_palettes.len())
         .filter(|k| {
             app.settings
                 .palette_bars
                 .get(*k)
-                .is_some_and(|b| b.dock == dock)
+                .is_some_and(|b| b.dock == dock && !b.among_toolbars())
         })
         .collect();
     // Along the bottom a panel added later lies above the earlier ones:
@@ -745,12 +854,22 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context, menu_h: f32) {
     drag.last = Some(p);
     app.palette_bar_drag = Some(drag);
     ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-    let dock = crate::ui::bars::target_dock(Bar::Palette, screen, menu_h, p);
-    let zone = drop_zone(app, drag, dock, screen, menu_h, p);
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         egui::Id::new("palette_bar_drag_overlay"),
     ));
+    // On the line between two rows of toolbars along the top: a row of
+    // its own there, among them.
+    if let Some((row, mark)) = toolbar_target(&app.bar_rows, &app.palette_bands, p) {
+        painter.rect_filled(mark, 1.0, Color32::from_rgb(0x1E, 0x78, 0xD7));
+        if !down {
+            app.palette_bar_drag = None;
+            set_among_toolbars(app, Row::Extra(drag.bar), row);
+        }
+        return;
+    }
+    let dock = crate::ui::bars::target_dock(Bar::Palette, screen, menu_h, p);
+    let zone = drop_zone(app, drag, dock, screen, menu_h, p);
     painter.rect(
         zone,
         2.0,
@@ -894,6 +1013,86 @@ mod tests {
         assert!(bar_keys.iter().any(|k| k == "palette.close"));
         assert!(bar_keys.iter().any(|k| k == "palette.rows_8"));
         assert!(bar_keys.iter().any(|k| k == "palette.size_xl"));
+    }
+
+    /// A palette bar's menu puts it among the toolbars along the top,
+    /// under them all; Dock at Top puts it back beside the drawing. The
+    /// default palette's menu has no such place. A hand-edited file
+    /// keeps the place only at the top.
+    #[test]
+    fn the_menu_puts_a_bar_among_the_toolbars() {
+        let mut app = App::headless();
+        let id = crate::settings::palette_id(&app.palettes[3]);
+        app.open_palette_bar(&id);
+        click_item(&mut app, Row::Extra(0), "palette.among_toolbars");
+        let bar = &app.settings.palette_bars[0];
+        assert_eq!(bar.dock, Dock::Top);
+        assert_eq!(bar.toolbar_row, Some(crate::settings::MAX_TOOLBAR_ROW));
+        assert!(among_toolbars(&app, Row::Extra(0)));
+        assert_eq!(
+            toolbar_bands(&app),
+            vec![(crate::settings::MAX_TOOLBAR_ROW, 0)]
+        );
+        click_item(&mut app, Row::Extra(0), "bars.top");
+        let bar = &app.settings.palette_bars[0];
+        assert_eq!((bar.dock, bar.toolbar_row), (Dock::Top, None));
+        assert!(toolbar_bands(&app).is_empty());
+        assert!(!menu_keys(Row::Main, |_| {}).contains(&"palette.among_toolbars".to_string()));
+        let mut odd = crate::settings::PaletteBarPrefs {
+            dock: Dock::Left,
+            toolbar_row: Some(2),
+            ..Default::default()
+        };
+        odd.sanitize();
+        assert_eq!(odd.toolbar_row, None);
+        let mut far = crate::settings::PaletteBarPrefs {
+            dock: Dock::Top,
+            toolbar_row: Some(u32::MAX),
+            ..Default::default()
+        };
+        far.sanitize();
+        assert_eq!(far.toolbar_row, Some(crate::settings::MAX_TOOLBAR_ROW));
+    }
+
+    /// A palette bar dragged near the line between two rows of toolbars
+    /// goes between them; near the top or the bottom of them all, over or
+    /// under them; over a palette bar among them, to its place; over the
+    /// middle of a row or anywhere else, nowhere among them.
+    #[test]
+    fn a_drop_near_the_line_between_toolbar_rows_goes_there() {
+        use crate::ui::bars::{Bar, RowSpot, ROW_EDGE};
+        let spot = |row: usize, top: f32, h: f32| RowSpot {
+            dock: Dock::Top,
+            row,
+            rect: Rect::from_min_size(pos2(0.0, top), vec2(1600.0, h)),
+            slots: vec![(Bar::Standard, Rect::NOTHING)],
+        };
+        let rows = [spot(0, 50.0, 36.0), spot(1, 86.0, 53.0)];
+        let at = |y: f32| toolbar_target(&rows, &[], pos2(400.0, y)).map(|(r, _)| r);
+        assert_eq!(at(51.0), Some(0));
+        assert_eq!(at(84.0), Some(1));
+        assert_eq!(at(87.0), Some(1));
+        assert_eq!(at(138.0), Some(2));
+        assert_eq!(at(70.0), None, "the middle of a row");
+        assert_eq!(at(110.0), None);
+        assert_eq!(at(300.0), None, "off the rows");
+        assert_eq!(at(86.0 + ROW_EDGE + 1.0), None);
+        // The mark is a line across the rows at the place.
+        let (_, mark) = toolbar_target(&rows, &[], pos2(400.0, 84.0)).expect("a place");
+        assert!(mark.contains(pos2(10.0, 86.0)) && mark.width() == 1600.0);
+        // Over a palette bar among the toolbars: its place.
+        let band = Rect::from_min_size(pos2(0.0, 139.0), vec2(1600.0, 30.0));
+        let bands = [(2, band)];
+        assert_eq!(
+            toolbar_target(&rows, &bands, pos2(400.0, 150.0)).map(|(r, _)| r),
+            Some(2)
+        );
+        // Rows at the bottom take no palette bar among them.
+        let bottom = RowSpot {
+            dock: Dock::Bottom,
+            ..spot(0, 900.0, 36.0)
+        };
+        assert_eq!(toolbar_target(&[bottom], &[], pos2(400.0, 901.0)), None);
     }
 
     #[test]

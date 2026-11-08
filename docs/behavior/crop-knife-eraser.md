@@ -23,14 +23,22 @@
   - bitmaps, tables and symbols go into a clip frame of the area (no
     fill or outline), so their content stays whole and can be taken
     out again (Extract Contents). With the bar's Crop picture pixels
-    on (off by default; kept in the settings), an upright picture (not
+    on (on by default since 0.41's live test, and once for preferences
+    saved before; kept in the settings), an upright picture (not
     turned or slanted) instead loses its pixels outside the area and
     stays a free picture (#1913): every pixel the area touches is kept,
     so the picture's new edges lie on its pixel edges; its transparency,
     its CMYK ink channels and its bitmap effects' original are cut
-    alike. A turned or slanted picture still goes into a clip frame
-    (`crop_tool::tests::the_crop_tool_cuts_a_pictures_pixels`,
+    alike. A turned or slanted picture, or one with a gradient
+    transparency (it lies on the picture's box), still goes into a clip
+    frame (`crop_tool::tests::the_crop_tool_cuts_a_pictures_pixels`,
     `a_turned_picture_still_goes_in_a_frame`);
+  - exports (SVG, PDF, EPS, EMF and WMF) leave out the pixels of a
+    picture in a clip frame that lie outside the frame's box, so what a
+    crop hid is not in the file; a picture with an outline, a shadow or
+    effects laid on its box keeps them all
+    (`tracedraw_io::picture_crop::tests`). Raster exports and previews
+    are drawn clipped;
   - groups are cropped member by member (a group left empty is
     deleted); a clip frame by its frame.
 - One undo step; the deleted objects leave the selection.

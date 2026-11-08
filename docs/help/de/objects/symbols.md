@@ -32,6 +32,24 @@ wird, bringt ihr Symbol mit (und die Symbole, die sie zeigt), sodass sie dort
 dieselben Objekte zeigt. Erneutes Einfügen verwendet das bereits mitgebrachte
 Symbol.
 
+## Ein Symbol bearbeiten {#edit}
+
+Klicken Sie im Andockfenster neben einem Symbol auf [[docker.edit_symbol]],
+wählen Sie [[menu.object.symbol_edit]] im Kontextmenü einer Instanz oder
+[[menu.object > menu.object.symbol > menu.object.symbol_edit]], oder
+doppelklicken Sie mit dem Auswahlwerkzeug auf eine Instanz. Die Objekte des
+Symbols erscheinen dort auf der Seite, wo diese Instanz sie zeigt, und der Rest
+der Seite wird blass: Verschieben, umformen, umfärben, hinzufügen oder löschen
+Sie Objekte wie gewohnt. Klicken Sie auf [[clip.finish]] in der Leiste oben
+links im Zeichenfenster, wählen Sie
+[[menu.object > menu.object.symbol > menu.object.symbol_finish]] oder drücken
+Sie <kbd>Esc</kbd>, wenn nichts ausgewählt ist: Jede Instanz zeigt die
+Änderung. Rückgängig geht schrittweise durch die Bearbeitung wie durch jede
+andere.
+
+Ein Symbol kann keine Instanz von sich selbst enthalten; Beenden meldet das,
+und die Bearbeitung geht weiter, bis diese Instanz entfernt ist.
+
 ## Instanzen wieder in Objekte umwandeln {#revert}
 
 Wählen Sie Instanzen aus und klicken Sie auf [[docker.revert_to_objects]], oder

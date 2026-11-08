@@ -57,7 +57,16 @@ the version on the right).
   of the way in 30 s) so that it never stands still. Nothing holds the
   splash back: it stays up for as long as the start takes (it used to
   stay at least 1.6 s), one frame with the last status after the fonts it
-  waits for are in, and goes with the editor built.
+  waits for are in, and goes with the editor built. The editor is built
+  only once the splash has been drawn on at least three frames over at
+  least 0.1 s (`splash::SHOWN_FRAMES`, `splash::SHOWN_SECONDS`), so that
+  it is on the screen while the editor is built: the windowing layer
+  draws the first frame with the window hidden and shows it after, and
+  on X11 a frame presented before the window manager has mapped the
+  window never shows. With the fonts in at once (a second start) the
+  editor was built on the second frame and the window stayed white
+  until it was, the splash never seen (#1911,
+  `splash::tests::the_splash_is_on_the_screen_before_the_editor_is_built`).
 - Each start logs `the editor was built in N ms` and `first frame N s
   after the start` (the start of the program to the first frame of the
   editor), the numbers to compare when a start seems slower.
@@ -84,8 +93,16 @@ the version on the right).
   that asks for it and every frame until the window has its size (or,
   when it starts maximized, until it is maximized and fills the screen)
   are drawn plain in the interface's background colour, for at most one
-  second (`splash::GROW_SECONDS`); the editor's first frame is drawn at
-  the window's final size. The editor used to draw at once: its first
+  second (`splash::GROW_SECONDS`), and so are two more frames once it
+  has its size (`splash::GROWN_FRAMES`); the editor's first frame is
+  drawn at the window's final size, with a plain frame of that size on
+  the screen while it is. The editor's first frame came in the very
+  frame the window first reported its new size, so nothing had been
+  presented at that size, and the grown window showed torn blocks of
+  leftover pixels for the half second to a second that frame took
+  (#1911,
+  `splash::tests::the_grown_window_is_drawn_plain_before_the_editors_first_frame`).
+  The editor used to draw at once: its first
   frames came at the splash's size while the window grew, so the grown
   window showed the last splash frame in its top left corner, the
   editor squeezed below it and torn, leftover pixels over the rest for
@@ -111,6 +128,23 @@ the version on the right).
   window's backend. With no
   `DISPLAY` it prints that `--x11` needs XWayland or an X11 session and
   exits with status 2 instead of trying every renderer.
+- The title bar (Linux, #2070): on X11 the window manager draws it, and
+  on a Wayland desktop that offers title bars to programs (the
+  `xdg-decoration` protocol: KDE Plasma, Sway and most others) the
+  windowing layer asks for the desktop's. A compositor without it
+  (GNOME's) leaves the title bar to the program, and the windowing
+  layer draws a plain one; it answers a finger and a pen as it does the
+  mouse (vendor/README.md). Options > General > Use the desktop's title
+  bar (off by default) opens the window through XWayland on such a
+  desktop from the next start, where the desktop draws its own title
+  bar; on a desktop that offers title bars, on X11 or without
+  `DISPLAY` it changes nothing. Before the window is made, one
+  connection to the compositor asks whether it offers title bars
+  (`title_bar::compositor_offers_title_bars`); the log says
+  `opening the window through X11 for the desktop's title bar` when it
+  goes through XWayland (`title_bar::tests`). Through XWayland a monitor
+  scaled by a fraction shows the window slightly blurred, which is why
+  the option is off unless chosen.
 - The browser build has no splash: the page shows its own loader.
 
 ## One window for every start (#646)
@@ -300,17 +334,37 @@ and `--reset-settings` starts open windows of their own.
   graphics driver that crashes the process, or hangs it until it is
   closed, inside wgpu's set-up. So before the window is opened the start
   writes the renderer it tries to `renderer-attempt` in the settings
-  folder, and removes the file as soon as the window is open. A start
-  that finds the file logs "the last start did not open the window with
-  ..." and begins with the renderer after that one (after the last one,
-  the first choice again); `--renderer=` from a hand-over still wins.
+  folder, and removes the file only once a frame of the window reached
+  the screen (`gpu::note_frame`: the root window's second frame begins,
+  so eframe drew and presented the first). The window being made is not
+  enough: eframe keeps it hidden until its first frame is drawn, and a
+  driver that hangs drawing or presenting that frame (Vulkan on a
+  GeForce GT 750M beside an Intel HD 4600, #1999) left it hidden for
+  good while the start already counted as working. A start that finds
+  the file logs "the last start did not show the window with ..." and
+  begins with the renderer after that one (after the last one, the
+  first choice again); `--renderer=` from a hand-over still wins.
   The renderer that then opens the window is remembered as above, so a
   computer whose card crashes in wgpu opens with OpenGL from the second
   start on, without `--renderer=gl` typed (#570,
-  `gpu::tests::a_start_that_never_opened_its_window_is_followed_by_the_next_renderer`).
-- A start whose window has not opened 20 seconds after it began
-  (`gpu::WINDOW_WAIT`: the driver hung it inside wgpu's set-up, so it
-  never comes back to hand over) starts TraceDraw again with the next
+  `gpu::tests::a_start_that_never_opened_its_window_is_followed_by_the_next_renderer`,
+  `gpu::tests::a_window_whose_first_frame_never_shows_goes_on_with_opengl`).
+  The renderer that works is remembered (`working_renderer`) only then
+  too, once its first frame is on the screen
+  (`gpu::tests::a_frame_counts_as_shown_once_the_next_one_begins`).
+- A start that stands in for a renderer that showed nothing (the last
+  start left `renderer-attempt` behind and this one draws with another
+  renderer than Options asks for, `gpu::fell_back`) says so once in the
+  status bar as soon as its first frame is shown: "The last start could
+  not show the window, so TraceDraw now draws with ...", and a click on
+  it opens Options > General to choose the graphics card or hardware
+  acceleration again; a new choice there is tried afresh at the next
+  start (`gpu::tests::the_fallback_is_said_only_after_a_failed_start`).
+  `--renderer=gl` typed with nothing failed says nothing.
+- A start that has shown no frame 20 seconds after it began
+  (`gpu::WINDOW_WAIT`: the driver hung it inside wgpu's set-up or while
+  it drew the first frame, so it never comes back to hand over; logged
+  as "no frame on the screen after 20s with ...") starts TraceDraw again with the next
   renderer itself, the other arguments kept, and ends. Before that it
   answers no to later starts, so a file opened meanwhile goes to a window
   of its own instead of to the window that never shows. With the last
@@ -325,7 +379,9 @@ and `--reset-settings` starts open windows of their own.
   (`gpu::tests::a_start_that_handed_over_is_not_started_again`).
 - The log names every graphics adapter wgpu offers (backend, type,
   vendor and device ids, driver) with why it was taken or left, the
-  renderer each start tries and the one that opened the window; an
+  renderer each start tries, the one the window was made with ("the window
+  was made with ...; waiting for its first frame") and "the first frame
+  reached the screen with ..." once it is shown; an
   OpenGL start adds the driver's vendor, renderer and versions.
 - The log goes to `tracedraw.log` in the settings folder as well as to
   the console (written afresh each start; a start handed over to the

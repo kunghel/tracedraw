@@ -435,10 +435,10 @@ fn add_on(
 }
 
 /// The points of `geo` for the modes on, with no pointer to measure
-/// from: the outlines' nodes and segment midpoints, an ellipse's
-/// quadrants and the centres. What a guideline being dragged lines up
-/// with along its axis (#1645).
-pub fn points(geo: &[Geo], modes: &SnapModes) -> Vec<Point> {
+/// from, each with the mode that offers it: the outlines' nodes and
+/// segment midpoints, an ellipse's quadrants and the centres. What a
+/// guideline being dragged lines up with along its axis (#1645).
+pub fn points_with_modes(geo: &[Geo], modes: &SnapModes) -> Vec<(Point, SnapMode)> {
     let mut out = Vec::new();
     for g in geo {
         match g {
@@ -447,15 +447,23 @@ pub fn points(geo: &[Geo], modes: &SnapModes) -> Vec<Point> {
                     continue;
                 }
                 if modes.node {
-                    out.extend(tracedraw_core::nodes::nodes(path).iter().map(|n| n.pos));
+                    out.extend(
+                        tracedraw_core::nodes::nodes(path)
+                            .iter()
+                            .map(|n| (n.pos, SnapMode::Node)),
+                    );
                 }
                 if modes.midpoint {
-                    out.extend(segments(path).iter().map(midpoint));
+                    out.extend(
+                        segments(path)
+                            .iter()
+                            .map(|s| (midpoint(s), SnapMode::Midpoint)),
+                    );
                 }
             }
             Geo::Nodes(ns) => {
                 if modes.node {
-                    out.extend(ns.iter().copied());
+                    out.extend(ns.iter().map(|n| (*n, SnapMode::Node)));
                 }
             }
             Geo::Ellipse {
@@ -475,21 +483,168 @@ pub fn points(geo: &[Geo], modes: &SnapModes) -> Vec<Point> {
                     for deg in [0.0, 90.0, 180.0, 270.0] {
                         if inside(deg) {
                             let a = deg.to_radians();
-                            out.push(*center + *rx * a.cos() + *ry * a.sin());
+                            out.push((*center + *rx * a.cos() + *ry * a.sin(), SnapMode::Quadrant));
                         }
                     }
                 }
             }
             Geo::Center(c) => {
                 if modes.center {
-                    out.push(*c);
+                    out.push((*c, SnapMode::Center));
                 }
             }
             Geo::Baseline(..) => {}
         }
     }
-    out.retain(|p| p.x.is_finite() && p.y.is_finite());
+    out.retain(|(p, _)| p.x.is_finite() && p.y.is_finite());
     out
+}
+
+/// Where a straight line along one axis meets `geo` as it slides
+/// across: a vertical line (`x_axis`, the values are x coordinates) or a
+/// horizontal one. The points of [`points_with_modes`]; the places where
+/// an outline turns back across the line's direction (a curve's outermost
+/// point that is no node, where the line touches it: Tangent); and the
+/// outline's straight sides that run along the line (Edge). Each comes
+/// with the point the line touches and its mode. With `span`, the line
+/// is only that stretch of the other axis (the side of a box being
+/// resized): what lies off it, by more than `tol`, does not count; a
+/// side running along the line counts where it overlaps the stretch.
+pub fn axis_stops(
+    geo: &[Geo],
+    modes: &SnapModes,
+    x_axis: bool,
+    span: Option<(f64, f64)>,
+    tol: f64,
+) -> Vec<(f64, Point, SnapMode)> {
+    let along = |p: Point| if x_axis { p.x } else { p.y };
+    let across = |p: Point| if x_axis { p.y } else { p.x };
+    let (lo, hi) = match span {
+        Some((a, b)) => (a.min(b) - tol, a.max(b) + tol),
+        None => (f64::NEG_INFINITY, f64::INFINITY),
+    };
+    let on_span = |p: Point| (lo..=hi).contains(&across(p));
+    let mut out: Vec<(f64, Point, SnapMode)> = points_with_modes(geo, modes)
+        .into_iter()
+        .filter(|(p, _)| on_span(*p))
+        .map(|(p, m)| (along(p), p, m))
+        .collect();
+    for g in geo {
+        let Geo::Outline { path, points: true } = g else {
+            continue;
+        };
+        if span.is_some() {
+            let b = path.bounding_box();
+            let (b0, b1) = if x_axis { (b.y0, b.y1) } else { (b.x0, b.x1) };
+            if b1 < lo || b0 > hi {
+                continue;
+            }
+        }
+        for seg in path.segments() {
+            match seg {
+                PathSeg::Line(l) => {
+                    if !modes.edge {
+                        continue;
+                    }
+                    // A side along the line: where it overlaps the stretch.
+                    let (a, b) = (l.p0, l.p1);
+                    if (along(a) - along(b)).abs() > 1e-9 {
+                        continue;
+                    }
+                    let (s0, s1) = (across(a).min(across(b)), across(a).max(across(b)));
+                    if s1 < lo || s0 > hi {
+                        continue;
+                    }
+                    let mid = if span.is_some() {
+                        ((s0.max(lo) + s1.min(hi)) / 2.0).clamp(s0, s1)
+                    } else {
+                        (s0 + s1) / 2.0
+                    };
+                    let p = if x_axis {
+                        Point::new(a.x, mid)
+                    } else {
+                        Point::new(mid, a.y)
+                    };
+                    out.push((along(p), p, SnapMode::Edge));
+                }
+                _ if modes.tangent => {
+                    for t in turning_params(&seg, x_axis) {
+                        let p = seg.eval(t);
+                        if on_span(p) {
+                            out.push((along(p), p, SnapMode::Tangent));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.retain(|(v, p, _)| v.is_finite() && p.x.is_finite() && p.y.is_finite());
+    out
+}
+
+/// Parameters strictly inside a curved segment where it runs across the
+/// x axis (`x_axis`: its x is at a turning point) or the y axis: the
+/// roots of that coordinate's derivative, solved in closed form.
+fn turning_params(seg: &PathSeg, x_axis: bool) -> Vec<f64> {
+    let c = |v: Vec2| if x_axis { v.x } else { v.y };
+    let mut ts = Vec::new();
+    match seg {
+        PathSeg::Line(_) => {}
+        PathSeg::Quad(q) => {
+            // 2((1 - t) a + t b) = 0.
+            let (a, b) = (c(q.p1 - q.p0), c(q.p2 - q.p1));
+            if (a - b).abs() > 1e-12 {
+                ts.push(a / (a - b));
+            }
+        }
+        PathSeg::Cubic(k) => {
+            // 3((1 - t)^2 a + 2 (1 - t) t b + t^2 d) = 0.
+            let (a, b, d) = (c(k.p1 - k.p0), c(k.p2 - k.p1), c(k.p3 - k.p2));
+            let qa = a - 2.0 * b + d;
+            let qb = 2.0 * (b - a);
+            let qc = a;
+            if qa.abs() < 1e-12 {
+                if qb.abs() > 1e-12 {
+                    ts.push(-qc / qb);
+                }
+            } else {
+                let disc = qb * qb - 4.0 * qa * qc;
+                if disc >= 0.0 {
+                    let r = disc.sqrt();
+                    ts.push((-qb + r) / (2.0 * qa));
+                    ts.push((-qb - r) / (2.0 * qa));
+                }
+            }
+        }
+    }
+    ts.retain(|t| t.is_finite() && *t > 1e-6 && *t < 1.0 - 1e-6);
+    ts
+}
+
+/// [`geometry`] of a top-level object on the page, with the centre of
+/// its box for the objects whose own geometry has no centre (groups,
+/// texts, open curves, symbols, clip frames): the Pick tool and every
+/// snapping drag can take any object by its middle (#2004).
+pub fn object_geometry(s: &Shape, baselines: BaselinesOf, out: &mut Vec<Geo>) {
+    if !s.visible {
+        return;
+    }
+    let start = out.len();
+    geometry(s, Affine::IDENTITY, baselines, out);
+    let composite = matches!(
+        s.kind,
+        ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+    );
+    let own_centre = !composite && out.len() > start && matches!(out.last(), Some(Geo::Center(_)));
+    if own_centre {
+        return;
+    }
+    let b = s.bounds();
+    let c = b.center();
+    if b.width().is_finite() && b.height().is_finite() && c.x.is_finite() && c.y.is_finite() {
+        out.push(Geo::Center(c));
+    }
 }
 
 /// Every snap target of `geo` within `tol` of `p`, with its distance, for
@@ -1041,5 +1196,97 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.mode, SnapMode::Center);
+    }
+
+    /// Groups, open curves and other objects without a centre of their
+    /// own offer the middle of their box; a rectangle keeps its one
+    /// centre (#2004).
+    #[test]
+    fn every_object_offers_a_centre() {
+        let none = |_: &Shape, _: Affine| Vec::new();
+        let centres = |s: &Shape| {
+            let mut g = Vec::new();
+            object_geometry(s, &none, &mut g);
+            g.iter()
+                .filter_map(|g| match g {
+                    Geo::Center(c) => Some(*c),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let group = Shape::new(
+            ShapeId(3),
+            ShapeKind::Group {
+                children: vec![rect(0.0, 0.0, 10.0, 10.0), rect(30.0, 0.0, 40.0, 20.0)],
+            },
+        );
+        // The two boxes' centres and the group's.
+        let c = centres(&group);
+        assert_eq!(c.len(), 3, "{c:?}");
+        assert!(c.contains(&Point::new(20.0, 10.0)), "{c:?}");
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.line_to((10.0, 30.0));
+        let open = Shape::new(
+            ShapeId(4),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        assert_eq!(centres(&open), vec![Point::new(5.0, 15.0)]);
+        assert_eq!(
+            centres(&rect(0.0, 0.0, 40.0, 20.0)),
+            vec![Point::new(20.0, 10.0)]
+        );
+    }
+
+    /// Where a line along an axis stops: the points, a curve's outermost
+    /// point, a straight side along it; with a stretch, only what lies
+    /// on it (#2004).
+    #[test]
+    fn lines_along_an_axis_stop_on_points_curves_and_sides() {
+        let modes = SnapModes {
+            midpoint: false,
+            center: false,
+            ..SnapModes::default()
+        };
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((0.0, 20.0), (40.0, 20.0), (40.0, 0.0));
+        path.line_to((60.0, 0.0));
+        path.line_to((60.0, 50.0));
+        let s = Shape::new(
+            ShapeId(5),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        let g = geo_of(&[s]);
+        // Horizontal lines: the bump's top at y = 15 (x = 20).
+        let ys = axis_stops(&g, &modes, false, None, 1.0);
+        assert!(
+            ys.iter().any(|(v, p, m)| (*v - 15.0).abs() < 1e-9
+                && (*p - Point::new(20.0, 15.0)).hypot() < 1e-9
+                && *m == SnapMode::Tangent),
+            "{ys:?}"
+        );
+        // Vertical lines: the side x = 60 from y 0 to 50, also on a
+        // stretch from y 20 to 30 that holds none of its nodes.
+        let xs = axis_stops(&g, &modes, true, Some((20.0, 30.0)), 1.0);
+        assert!(
+            xs.iter()
+                .any(|(v, p, m)| *v == 60.0 && *m == SnapMode::Edge && p.y == 25.0),
+            "{xs:?}"
+        );
+        // The nodes at y = 0 lie off that stretch.
+        assert!(!xs.iter().any(|(_, _, m)| *m == SnapMode::Node), "{xs:?}");
+        // Without a stretch they count.
+        let xs = axis_stops(&g, &modes, true, None, 1.0);
+        assert!(xs
+            .iter()
+            .any(|(v, _, m)| *v == 40.0 && *m == SnapMode::Node));
     }
 }

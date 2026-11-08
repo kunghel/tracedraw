@@ -6,9 +6,17 @@
 //! segments of the same subpath, which meet at their shared node, do not
 //! count. Lines that run along each other (an overlap, see
 //! [`crate::cleanup`]) do not count either.
+//!
+//! [`resolve_crossings`] and [`weld_crossing`] fix what was found: the
+//! closed outlines are split where they cross and rebuilt as the outlines
+//! of the area they fill, which cross nowhere. Where two rebuilt outlines
+//! would still touch at a former crossing (the two loops of a figure
+//! eight), a dot as wide as the tolerance is cut out there so they come
+//! apart. Open lines are kept as they are.
 
 use crate::subpaths;
 use tracedraw_core::geometry::{BezPath, Point};
+use tracedraw_core::shaping::{self, FillRule, Op};
 
 /// One crossing: where, and which objects (the same index twice for an
 /// outline crossing itself).
@@ -145,6 +153,141 @@ fn intersect(a0: Point, a1: Point, b0: Point, b1: Point) -> Option<Point> {
     }
 }
 
+/// The closed subpaths of `path`, and its open ones.
+fn split_open(path: &BezPath) -> (BezPath, BezPath) {
+    let (mut closed, mut open) = (BezPath::new(), BezPath::new());
+    for sub in subpaths(path) {
+        let to = if sub.closed { &mut closed } else { &mut open };
+        for el in sub.path.elements() {
+            to.push(*el);
+        }
+    }
+    (closed, open)
+}
+
+/// The area `closed` fills under `fill`, as outlines that cross nowhere.
+fn filled_area(closed: &BezPath, fill: FillRule) -> BezPath {
+    shaping::overlay_with(closed, &BezPath::new(), Op::Weld, fill)
+}
+
+/// `area` with a dot `gap` wide cut out wherever its outlines still
+/// touch, then `open` added back.
+fn finish(area: BezPath, open: &BezPath, gap: f64) -> BezPath {
+    let gap = if gap.is_finite() { gap.max(1e-3) } else { 0.05 };
+    let touches = find_crossings(&[vec![area.clone()]], false, gap);
+    let mut out = if touches.is_empty() {
+        area
+    } else {
+        let dots = touches
+            .iter()
+            .map(|c| dot(c.point, gap / 2.0))
+            .reduce(|a, b| shaping::overlay(&a, &b, Op::Weld))
+            .unwrap_or_default();
+        shaping::overlay(&area, &dots, Op::Trim)
+    };
+    for el in open.elements() {
+        out.push(*el);
+    }
+    out
+}
+
+/// A twelve-sided dot of radius `r` round `c`, in straight lines: a
+/// circle this small would be flattened by the overlay to too few points
+/// to cut anything.
+fn dot(c: Point, r: f64) -> BezPath {
+    let mut p = BezPath::new();
+    for k in 0..12 {
+        let a = k as f64 * std::f64::consts::PI / 6.0;
+        let q = Point::new(c.x + r * a.cos(), c.y + r * a.sin());
+        if k == 0 {
+            p.move_to(q);
+        } else {
+            p.line_to(q);
+        }
+    }
+    p.close_path();
+    p
+}
+
+/// One object's outline with its own crossings fixed: its closed
+/// subpaths, read with the object's `fill` rule, rebuilt as the outlines
+/// of the area they fill (outer outlines and holes that cross neither
+/// themselves nor each other), pulled `gap` apart where they would
+/// still touch; its open subpaths kept as they are. A path without closed
+/// subpaths comes back unchanged.
+pub fn resolve_crossings(path: &BezPath, fill: FillRule, gap: f64) -> BezPath {
+    let (closed, open) = split_open(path);
+    if closed.elements().is_empty() {
+        return path.clone();
+    }
+    finish(filled_area(&closed, fill), &open, gap)
+}
+
+/// Objects that cross each other welded into one outline: the areas
+/// their closed outlines fill (each read with its own fill rule) joined
+/// and rebuilt like [`resolve_crossings`], their open lines kept. All
+/// paths in one space.
+pub fn weld_crossing(paths: &[(BezPath, FillRule)], gap: f64) -> BezPath {
+    let mut area: Option<BezPath> = None;
+    let mut open_all = BezPath::new();
+    for (path, fill) in paths {
+        let (closed, open) = split_open(path);
+        for el in open.elements() {
+            open_all.push(*el);
+        }
+        if closed.elements().is_empty() {
+            continue;
+        }
+        let a = filled_area(&closed, *fill);
+        area = Some(match area {
+            None => a,
+            Some(u) => shaping::overlay(&u, &a, Op::Weld),
+        });
+    }
+    finish(area.unwrap_or_default(), &open_all, gap)
+}
+
+/// The sets of objects that cross one another, from the crossings
+/// [`find_crossings`] found between `n` objects: each set in index order,
+/// two objects at least, sets ordered by their first object.
+pub fn crossing_groups(found: &[Crossing], n: usize) -> Vec<Vec<usize>> {
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while let Some(&p) = parent.get(i) {
+            if p == i {
+                break;
+            }
+            let up = parent.get(p).copied().unwrap_or(p);
+            if let Some(slot) = parent.get_mut(i) {
+                *slot = up;
+            }
+            i = p;
+        }
+        i
+    }
+    for c in found {
+        if c.a == c.b || c.a >= n || c.b >= n {
+            continue;
+        }
+        let (ra, rb) = (root(&mut parent, c.a), root(&mut parent, c.b));
+        if ra != rb {
+            let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            if let Some(slot) = parent.get_mut(hi) {
+                *slot = lo;
+            }
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let r = root(&mut parent, i);
+        if let Some(g) = groups.get_mut(r) {
+            g.push(i);
+        }
+    }
+    groups.retain(|g| g.len() >= 2);
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +334,93 @@ mod tests {
         p.line_to((5.0, -5.0));
         let c = find_crossings(&[vec![p]], false, 0.01);
         assert_eq!(c.len(), 1);
+    }
+
+    fn area(p: &BezPath) -> f64 {
+        crate::measure::measure_object(std::slice::from_ref(p)).area
+    }
+
+    fn closed_subpaths(p: &BezPath) -> usize {
+        subpaths(p).iter().filter(|s| s.closed).count()
+    }
+
+    #[test]
+    fn a_fixed_figure_eight_is_two_loops_that_cross_nowhere() {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((10.0, 10.0));
+        p.line_to((10.0, 0.0));
+        p.line_to((0.0, 10.0));
+        p.close_path();
+        for fill in [FillRule::EvenOdd, FillRule::NonZero] {
+            let f = resolve_crossings(&p, fill, 0.05);
+            assert!(
+                find_crossings(&[vec![f.clone()]], false, 0.05).is_empty(),
+                "{f:?}"
+            );
+            assert_eq!(closed_subpaths(&f), 2, "{f:?}");
+            // Two triangles of 25 mm2, less the dot cut where they met.
+            let a = area(&f);
+            assert!(a < 50.0 && a > 49.99, "{fill:?}: {a}");
+        }
+    }
+
+    #[test]
+    fn a_fixed_star_follows_the_fill_rule_and_keeps_open_lines() {
+        // A five-pointed star drawn as one closed line crossing itself
+        // five times, and an open line beside it.
+        let mut p = BezPath::new();
+        for k in 0..5 {
+            let a = std::f64::consts::FRAC_PI_2 + k as f64 * 4.0 * std::f64::consts::PI / 5.0;
+            let q = Point::new(50.0 * a.cos(), 50.0 * a.sin());
+            if k == 0 {
+                p.move_to(q);
+            } else {
+                p.line_to(q);
+            }
+        }
+        p.close_path();
+        let before = find_crossings(&[vec![p.clone()]], false, 0.05);
+        assert_eq!(before.len(), 5);
+        p.move_to((80.0, 0.0));
+        p.line_to((90.0, 10.0));
+        let nonzero = resolve_crossings(&p, FillRule::NonZero, 0.05);
+        let even_odd = resolve_crossings(&p, FillRule::EvenOdd, 0.05);
+        for f in [&nonzero, &even_odd] {
+            assert!(find_crossings(&[vec![f.clone()]], false, 0.05).is_empty());
+            let open: Vec<_> = subpaths(f).into_iter().filter(|s| !s.closed).collect();
+            assert_eq!(open.len(), 1, "the open line is kept");
+        }
+        // Nonzero fills the middle: one outline of ten corners. Even-odd
+        // leaves it out: five points apart.
+        assert_eq!(closed_subpaths(&nonzero), 1);
+        assert_eq!(closed_subpaths(&even_odd), 5);
+        assert!(area(&nonzero) > area(&even_odd) + 100.0);
+        // Paths without closed outlines come back as they are.
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((10.0, 0.0));
+        assert_eq!(resolve_crossings(&line, FillRule::EvenOdd, f64::NAN), line);
+    }
+
+    #[test]
+    fn crossing_objects_weld_into_one_outline() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let b = Rect::new(5.0, 5.0, 15.0, 15.0).to_path(0.01);
+        let c = Rect::new(40.0, 0.0, 50.0, 10.0).to_path(0.01);
+        let d = Rect::new(45.0, 5.0, 55.0, 15.0).to_path(0.01);
+        let e = Rect::new(100.0, 0.0, 110.0, 10.0).to_path(0.01);
+        let objects = [vec![a.clone()], vec![c], vec![b.clone()], vec![e], vec![d]];
+        let found = find_crossings(&objects, true, 0.05);
+        assert_eq!(
+            crossing_groups(&found, objects.len()),
+            vec![vec![0, 2], vec![1, 4]]
+        );
+        assert!(crossing_groups(&found, 0).is_empty());
+        let w = weld_crossing(&[(a, FillRule::EvenOdd), (b, FillRule::NonZero)], 0.05);
+        assert_eq!(closed_subpaths(&w), 1);
+        assert!((area(&w) - 175.0).abs() < 1e-6, "{}", area(&w));
+        assert!(find_crossings(&[vec![w]], false, 0.05).is_empty());
+        assert!(weld_crossing(&[], 0.05).elements().is_empty());
     }
 }

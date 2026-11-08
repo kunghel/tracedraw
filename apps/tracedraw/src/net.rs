@@ -16,14 +16,30 @@ pub struct HttpRequest {
 }
 
 /// What the service answered.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// The `Retry-After` header, when the service sent one (with 429
+    /// and 503: seconds, or a date).
+    pub retry_after: Option<String>,
 }
 
 /// A response, or why none came (network, address, certificate).
 pub type HttpResult = Result<HttpResponse, String>;
+
+/// The error of a request that got no answer in time.
+pub const TIMED_OUT: &str = "timed out";
+
+/// Why a request failed, with a timeout as [`TIMED_OUT`], so the callers
+/// can tell it from other failures.
+#[cfg(not(target_arch = "wasm32"))]
+fn failure(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Timeout(_) => TIMED_OUT.to_string(),
+        e => e.to_string(),
+    }
+}
 
 /// Send `req` and deliver the answer (at most `limit` bytes of body) on
 /// `tx`: on a thread on the desktop, as a fetch in a browser.
@@ -160,15 +176,25 @@ pub fn send(req: &HttpRequest, limit: u64) -> HttpResult {
             }
         }
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(failure)?;
     let status = resp.status().as_u16();
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let body = resp
         .body_mut()
         .with_config()
         .limit(limit)
         .read_to_string()
-        .map_err(|e| e.to_string())?;
-    Ok(HttpResponse { status, body })
+        .map_err(failure)?;
+    Ok(HttpResponse {
+        status,
+        body,
+        retry_after,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -205,12 +231,20 @@ pub async fn send(req: HttpRequest) -> HttpResult {
         .map_err(js)?;
     let resp: web_sys::Response = resp.dyn_into().map_err(js)?;
     let status = resp.status();
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(js)?)
         .await
         .map_err(js)?;
     Ok(HttpResponse {
         status,
         body: text.as_string().unwrap_or_default(),
+        retry_after,
     })
 }
 

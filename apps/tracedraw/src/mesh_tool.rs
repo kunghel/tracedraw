@@ -1,21 +1,51 @@
 //! The Mesh Fill tool. A click on an object gives it a mesh fill of the
 //! property bar's rows and columns (or selects an object that has one);
-//! its nodes are clicked, dragged and coloured from the colour palette;
-//! a double-click adds a grid line through the nearest node and Delete
-//! removes the lines through the selected node. The property bar sets the
-//! grid, Smooth colour, the selected node's transparency and Clear Mesh.
+//! its nodes, those on the mesh's edge too, are clicked, dragged (their
+//! colour goes with them, and they snap) and coloured from the colour
+//! palette; the selected node shows a handle on each grid line leaving
+//! it, dragged to bend the line; a double-click adds grid lines through
+//! the point and Delete removes the lines through the selected node. The
+//! property bar sets the grid, Smooth colour, the selected node's
+//! transparency and Clear Mesh.
 
 use crate::app::App;
 use crate::i18n::tr;
 use egui::{PointerButton, Response};
 use tracedraw_core::{
     geometry::{Point, Shape as _},
-    Color, Command, Fill, Mesh, ShapeId,
+    Color, Command, Fill, Mesh, MeshHandle, ShapeId,
 };
 
 /// Mesh nodes count from 200 in the effect node numbers (see
 /// `interaction2::effect_nodes`).
 pub const MESH_NODE_BASE: usize = 200;
+
+/// The handles of mesh nodes count from here in the effect node numbers,
+/// four a node (see [`mesh_handle_index`]), past any node's number.
+pub const MESH_HANDLE_BASE: usize = 1_000_000;
+
+/// The effect node number of handle `h` of mesh node `i`.
+pub fn mesh_handle_index(i: usize, h: MeshHandle) -> usize {
+    MESH_HANDLE_BASE + i * 4 + h as usize
+}
+
+/// The mesh node and handle an effect node number stands for, if it is
+/// a handle's.
+pub fn mesh_handle_of(index: usize) -> Option<(usize, MeshHandle)> {
+    let k = index.checked_sub(MESH_HANDLE_BASE)?;
+    let h = match k % 4 {
+        0 => MeshHandle::Right,
+        1 => MeshHandle::Left,
+        2 => MeshHandle::Down,
+        _ => MeshHandle::Up,
+    };
+    Some((k / 4, h))
+}
+
+/// The effect node number is a mesh handle's.
+pub fn is_mesh_handle(index: usize) -> bool {
+    index >= MESH_HANDLE_BASE
+}
 
 impl App {
     /// The selected mesh node of a selected object: (object, node).

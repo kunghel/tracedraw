@@ -209,6 +209,9 @@ pub struct SampledAttrs {
     pub opacity: f64,
     pub shadow: Option<Shadow>,
     pub effects: Vec<Effect>,
+    /// The object the fill was read from, which a mesh fill is fitted
+    /// from.
+    pub fill_source: Option<Box<tracedraw_core::Shape>>,
 }
 
 /// Rotation of a shape's transform in radians (angle of its x axis).
@@ -355,14 +358,26 @@ impl App {
     pub fn sample_attrs_at(&self, p: Point) -> Option<SampledAttrs> {
         let id = self.hit_test_to_read(p)?;
         let (_, s) = self.doc().shape(id).ok()?;
+        // The outline, fill and text of the object clicked inside a
+        // group or clip frame, which shows them (#1550: a group has none
+        // of its own, and applying them took the fill and outline away);
+        // the size, place and effects of the object as a whole.
+        let shown = self
+            .leaf_of(id, p)
+            .unwrap_or_else(|| crate::copy_props::properties_source(s));
         let b = s.bounds();
-        let text = match &s.kind {
-            ShapeKind::Text { spans, .. } => spans.first().cloned(),
+        let text = match &shown.kind {
+            ShapeKind::Text { spans, .. } => spans
+                .iter()
+                .find(|sp| !sp.text.is_empty())
+                .or(spans.first())
+                .cloned(),
             _ => None,
         };
         Some(SampledAttrs {
-            fill: s.fill.clone(),
-            stroke: s.stroke.clone(),
+            fill: crate::copy_props::shown_fill(&shown),
+            stroke: crate::copy_props::shown_stroke(&shown),
+            fill_source: Some(Box::new(shown.clone())),
             text,
             width: b.width(),
             height: b.height(),
@@ -385,35 +400,32 @@ impl App {
         let s = s.clone();
         let mut cmds = Vec::new();
         let shapes = vec![id];
+        let targets = [s.clone()];
         if g.fill {
-            cmds.push(Command::SetFill {
-                shapes: shapes.clone(),
-                fill: a.fill.clone(),
-            });
+            let src = a.fill_source.as_deref().unwrap_or(&s);
+            cmds.extend(crate::copy_props::fill_commands(&a.fill, src, &targets));
         }
         if g.outline {
+            cmds.extend(crate::copy_props::clear_character_outlines(&targets));
             cmds.push(Command::SetStroke {
                 shapes: shapes.clone(),
                 stroke: a.stroke.clone(),
             });
         }
         if g.text {
-            if let (Some(t), ShapeKind::Text { spans, .. }) = (&a.text, &s.kind) {
-                let mut kind = s.kind.clone();
-                if let ShapeKind::Text { spans: ns, .. } = &mut kind {
-                    *ns = spans
-                        .iter()
-                        .map(|sp| TextSpan {
-                            text: sp.text.clone(),
-                            font_family: t.font_family.clone(),
-                            size_pt: t.size_pt,
-                            bold: t.bold,
-                            italic: t.italic,
-                            ..sp.clone()
-                        })
-                        .collect();
+            if let Some(t) = &a.text {
+                // The kind as the commands above left it (the
+                // characters' own colours let go).
+                let now = crate::copy_props::kind_after(&cmds, &s);
+                let mut kind = now.clone();
+                if let ShapeKind::Text { spans, .. } = &mut kind {
+                    for sp in spans.iter_mut() {
+                        *sp = crate::copy_props::with_character_format(sp, t);
+                    }
+                    if kind != now {
+                        cmds.push(Command::SetShapeKind { shape: id, kind });
+                    }
                 }
-                cmds.push(Command::SetShapeKind { shape: id, kind });
             }
         }
         if g.transparency && !g.effects {

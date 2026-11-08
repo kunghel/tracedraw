@@ -368,6 +368,11 @@ pub enum Drag {
         /// pointer without a jump.
         grab: tracedraw_core::geometry::Vec2,
         mods: HandleMods,
+        /// Whether snapping put `current` where it is on the x and on the
+        /// y axis: a corner keeping the proportions then scales by the
+        /// snapped axis alone, so the side stays on what it snapped to
+        /// (#2004).
+        snapped: (bool, bool),
     },
     /// Skewing the selection with a side handle in rotate mode: the
     /// opposite side stays (the centre line with Shift).
@@ -967,6 +972,13 @@ pub struct App {
     pub drop_frame: Option<ShapeId>,
     /// W and K held during that move.
     pub drop_keys: (bool, bool),
+    /// Alt (the fill) or Alt+Shift (the outline) held while the selection
+    /// is moved with the left button: a release over another object
+    /// copies that onto it, as the right-button drop menu does, and the
+    /// selection stays (discussion #2066).
+    pub drop_colour: Option<crate::drop_menu::DropAction>,
+    /// The object under the pointer that would take it.
+    pub drop_colour_target: Option<ShapeId>,
     /// The Pen or Bezier tool is dragging a node of the selected curve
     /// (as the Shape tool does), not drawing.
     pub pen_editing: bool,
@@ -1096,6 +1108,10 @@ pub struct App {
     pub last_guide_duplicate: Option<crate::guides::GuideDuplicate>,
     // Defaults for new objects (no fill, black hairline).
     pub polygon_points: u32,
+    /// The box drag of a polygon or star is held to a square with Ctrl:
+    /// the polygon is then regular, inscribed in that square's circle,
+    /// not stretched to fill the square (#1929).
+    pub box_regular: bool,
     pub star_sharpness: f64,
     /// Star tool: draw complex stars (sides crossing), their points and
     /// sharpness.
@@ -1419,6 +1435,11 @@ pub struct App {
     /// meanwhile (#810). The status it ends with.
     pub print_job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub printers_seen: Vec<crate::printers::Printer>,
+    /// The printer printed to last in this session, which the next Print
+    /// dialog and Print Preview start on; not kept across runs, which
+    /// start on the system's default again unless Printing remembers the
+    /// last choices (#2056).
+    pub printer_last: Option<String>,
     pub preview_selected_only: bool,
     pub page_sorter: bool,
     /// View > Multipage View: every page laid out beside the current one.
@@ -1473,6 +1494,8 @@ pub struct App {
     /// A menu command to run this frame (its key), from a shortcut of the
     /// user's.
     pub pending_command: Option<String>,
+    /// Help > Search Commands: its box (see `ui::command_search`).
+    pub command_search: crate::ui::command_search::CommandSearch,
     /// When the last auto-backup ran (set on the first frame).
     pub last_auto_backup: Option<web_time::Instant>,
     /// The auto-backup being written on a thread of its own.
@@ -1498,9 +1521,11 @@ pub struct App {
     pub updates: crate::updates::Checker,
     /// Help > Updates, Install: an AppImage replaced in place.
     pub installer: crate::updates::Installer,
-    /// The running check was started at start, not asked for: only a
-    /// newer release, not skipped, is shown.
-    pub update_quiet: bool,
+    /// The update notice was closed with its cross, for this session.
+    pub update_card_hidden: bool,
+    /// The version whose finished download the card already came back
+    /// for, after it was dismissed while the file was downloading.
+    pub update_card_done: String,
     /// Page size changes apply to every page (the page bar's All pages).
     pub page_size_all: bool,
     /// The property bar's object origin: (column, row) of the 3 x 3
@@ -1548,6 +1573,10 @@ pub struct App {
     /// The rows of toolbars drawn this frame, for the drops of a dragged
     /// toolbar (see ui/bars.rs).
     pub bar_rows: Vec<crate::ui::bars::RowSpot>,
+    /// The palette bars drawn among the toolbars along the top this
+    /// frame: the row of toolbars each lies over and its band, for the
+    /// drops of a dragged palette bar (`palette_bars::toolbar_target`).
+    pub palette_bands: Vec<(u32, egui::Rect)>,
     /// A toolbar button being moved, and where the bars that take them
     /// were drawn this frame (see ui/bar_items.rs).
     pub bar_item_drag: Option<crate::ui::bar_items::ItemDrag>,
@@ -1647,6 +1676,8 @@ pub struct App {
     /// Align and Distribute docker: spread between the outermost objects
     /// or across the page.
     pub distribute_to: crate::ops::DistributeTo,
+    /// Distribute with a set spacing: the distance, mm (#2005).
+    pub distribute_gap: f64,
     pub lens: crate::lens::LensSettings,
     /// How dragging an envelope node reshapes its sides.
     pub envelope_mode: tracedraw_core::envelope::Mode,
@@ -1736,6 +1767,10 @@ pub struct App {
     pub effect_node_drag: Option<(ShapeId, usize)>,
     /// A step of the effect node drag under way is on the undo list.
     pub effect_node_stepped: bool,
+    /// How far the dragged effect node (or mesh handle) lay from the
+    /// press, on the page: it keeps that offset from the pointer and
+    /// snaps where it lands (discussion #2073).
+    pub effect_node_grab: tracedraw_core::geometry::Vec2,
     /// The dockers of the default column (at the right; `docker_tab` is
     /// the one in front, `show_dockers` whether the column is open).
     pub open_dockers: Vec<DockerTab>,
@@ -1777,6 +1812,9 @@ pub struct App {
     pub brush: crate::ui::brush_bars::BrushSettings,
     /// A step of the brush stroke under way is on the undo list.
     pub brush_stepped: bool,
+    /// The shaping brushes' nib being sized by a Shift+drag (see
+    /// `brushes.rs`).
+    pub brush_resize: Option<crate::brushes::BrushResize>,
     /// The style new dimensions take (the dimension tools' bar).
     pub dimension_style: crate::dimensions::DimensionStyle,
     /// The document revision dimensions were last checked at for moves
@@ -2538,6 +2576,8 @@ impl App {
             drag_copy: false,
             drop_frame: None,
             drop_keys: (false, false),
+            drop_colour: None,
+            drop_colour_target: None,
             pen_editing: false,
             paste_seen: false,
             curve: None,
@@ -2586,6 +2626,7 @@ impl App {
             forgotten_duplicate: None,
             last_guide_duplicate: None,
             polygon_points: 5,
+            box_regular: false,
             star_sharpness: 0.5,
             star_complex: false,
             complex_points: 9,
@@ -2738,6 +2779,7 @@ impl App {
             printer_fetch: None,
             print_job: None,
             printers_seen: Vec::new(),
+            printer_last: None,
             preview_selected_only: false,
             page_sorter: false,
             multipage: false,
@@ -2766,6 +2808,7 @@ impl App {
             options_snapshot: None,
             shortcut_editor: Default::default(),
             pending_command: None,
+            command_search: Default::default(),
             last_auto_backup: None,
             auto_backup_job: None,
             backed_up: Default::default(),
@@ -2776,7 +2819,8 @@ impl App {
             highlight_whats_new: false,
             updates: Default::default(),
             installer: Default::default(),
-            update_quiet: false,
+            update_card_hidden: false,
+            update_card_done: String::new(),
             recent_thumbs: Default::default(),
             shelf: Default::default(),
             export_assets: crate::export_assets::ExportAssets::new(),
@@ -2806,6 +2850,7 @@ impl App {
             right_drag: None,
             bar_drag: None,
             bar_rows: Vec::new(),
+            palette_bands: Vec::new(),
             bar_item_drag: None,
             bar_slots: Vec::new(),
             shown_bar_slots: Vec::new(),
@@ -2863,6 +2908,7 @@ impl App {
             align_to: Default::default(),
             align_use_outline: false,
             distribute_to: Default::default(),
+            distribute_gap: 1.0,
             lens: Default::default(),
             envelope_mode: Default::default(),
             envelope_mapping: Default::default(),
@@ -2904,6 +2950,7 @@ impl App {
             font_filter: String::new(),
             effect_node_drag: None,
             effect_node_stepped: false,
+            effect_node_grab: tracedraw_core::geometry::Vec2::ZERO,
             open_dockers: DockerTab::default_strip(),
             left_dockers: Vec::new(),
             left_tab: DockerTab::Hints,
@@ -2922,6 +2969,7 @@ impl App {
             roughen_amount: 2.0,
             brush: Default::default(),
             brush_stepped: false,
+            brush_resize: None,
             dimension_style: Default::default(),
             dimensions_checked: u64::MAX,
             dimension_labels_seen: Default::default(),
@@ -3666,6 +3714,7 @@ impl App {
             align_to: self.align_to.id().into(),
             align_use_outline: self.align_use_outline,
             distribute_to: self.distribute_to.id().into(),
+            distribute_gap: self.distribute_gap,
             shaping_op: self.shaping_op.id().into(),
             shaping_leave: self.shaping_leave,
         }
@@ -3685,6 +3734,9 @@ impl App {
         self.align_to = crate::ops2::AlignTo::from_id(&p.align_to);
         self.align_use_outline = p.align_use_outline;
         self.distribute_to = crate::ops::DistributeTo::from_id(&p.distribute_to);
+        if p.distribute_gap.is_finite() {
+            self.distribute_gap = p.distribute_gap;
+        }
         self.shaping_op = crate::ops::Shaping::from_id(&p.shaping_op);
         self.shaping_leave = p.shaping_leave;
     }
@@ -4901,6 +4953,17 @@ impl App {
     /// The bounds of what `s` (in page space) draws, its live effects
     /// included; measured once per change of the drawing.
     pub fn visual_bounds(&self, s: &Shape) -> Rect {
+        // A symbol instance's box is its symbol's, placed by the instance's
+        // transform; the shape alone only knows a unit box, which put the
+        // handles of a new symbol in its corner at 10 x 10 mm (#1939).
+        if let ShapeKind::SymbolInstance { index } = &s.kind {
+            if let Some(def) = self.doc().symbols.get(*index) {
+                return tracedraw_core::geometry::transformed_bounds(
+                    &def.shape.page_path(),
+                    s.transform,
+                );
+            }
+        }
         if !s.has_live_effects() {
             return s.bounds();
         }
@@ -5089,6 +5152,18 @@ impl App {
         }
     }
 
+    /// The ellipse rectangle of a polygon or star drawn in `bounds`: the
+    /// one whose polygon fills `bounds`, or, when the drag was held to a
+    /// square with Ctrl, `bounds` itself, so the polygon is regular, its
+    /// vertices on the square's circle (#1929).
+    pub fn polygon_model_rect(&self, bounds: Rect, points: u32, sharpness: f64) -> Rect {
+        if self.box_regular {
+            bounds
+        } else {
+            tracedraw_core::geometry::polygon_rect_for_bounds(bounds, points, sharpness)
+        }
+    }
+
     pub fn create_box_shape(&mut self, a: Point, b: Point) {
         let rect = Rect::from_points(a, b);
         if rect.width() < 0.05 || rect.height() < 0.05 {
@@ -5104,11 +5179,7 @@ impl App {
             },
             // The dragged box is the polygon's own bounding box.
             Tool::Polygon => ShapeKind::Polygon {
-                rect: tracedraw_core::geometry::polygon_rect_for_bounds(
-                    rect,
-                    self.polygon_points,
-                    0.0,
-                ),
+                rect: self.polygon_model_rect(rect, self.polygon_points, 0.0),
                 points: self.polygon_points,
                 sharpness: 0.0,
                 complex: None,
@@ -5116,22 +5187,14 @@ impl App {
             },
             // A complex star's vertices are those of a polygon.
             Tool::Star if self.star_complex => ShapeKind::Polygon {
-                rect: tracedraw_core::geometry::polygon_rect_for_bounds(
-                    rect,
-                    self.complex_points,
-                    0.0,
-                ),
+                rect: self.polygon_model_rect(rect, self.complex_points, 0.0),
                 points: self.complex_points,
                 sharpness: 0.0,
                 complex: Some(self.complex_sharpness),
                 twist: 0.0,
             },
             Tool::Star => ShapeKind::Polygon {
-                rect: tracedraw_core::geometry::polygon_rect_for_bounds(
-                    rect,
-                    self.polygon_points,
-                    self.star_sharpness,
-                ),
+                rect: self.polygon_model_rect(rect, self.polygon_points, self.star_sharpness),
                 points: self.polygon_points,
                 sharpness: self.star_sharpness,
                 complex: None,
@@ -5682,7 +5745,40 @@ impl App {
             return;
         }
         let shapes = std::mem::take(&mut self.selection);
+        // A frame of a linked chain goes without its text: the frames
+        // left take it, in the same step (#1986, see `textflow.rs`).
+        let flow = self.flow_around_deleted(&shapes);
+        let before = self.engine.revision();
         self.run(Command::DeleteShapes { shapes });
+        if flow.is_empty() || self.engine.revision() == before {
+            return;
+        }
+        if let Err(e) = self.engine.amend_batch("Delete", &flow) {
+            self.status = e.to_string();
+            return;
+        }
+        if let Some(rec) = &mut self.recording {
+            rec.extend(flow);
+        }
+    }
+
+    /// Whether the Shape tool has nodes chosen: Delete then takes the
+    /// nodes, never the object they belong to.
+    pub fn nodes_chosen(&self) -> bool {
+        self.tool == Tool::Shape && !self.node_selection.is_empty()
+    }
+
+    /// Edit > Delete and the Delete row of the right-click menu (#1982):
+    /// with the Shape tool and nodes chosen, the chosen nodes go and the
+    /// curve stays, as the Delete key does; otherwise the selected
+    /// objects go. Before, the menus deleted the whole object while nodes
+    /// were chosen.
+    pub fn delete_nodes_or_selection(&mut self) {
+        if self.nodes_chosen() {
+            self.delete_selected_nodes();
+        } else {
+            self.delete_selection();
+        }
     }
 
     /// Whether the toolbar's Delete button has something to delete: the
@@ -5692,9 +5788,7 @@ impl App {
         if self.editing_text() {
             return self.text_selection_active();
         }
-        (self.tool == Tool::Shape && !self.node_selection.is_empty())
-            || !self.selected_guides.is_empty()
-            || !self.selection.is_empty()
+        self.nodes_chosen() || !self.selected_guides.is_empty() || !self.selection.is_empty()
     }
 
     /// The toolbar's Delete button (#1611): what the Delete key does to
@@ -5704,7 +5798,7 @@ impl App {
             if self.text_selection_active() {
                 self.text_delete_forward();
             }
-        } else if self.tool == Tool::Shape && !self.node_selection.is_empty() {
+        } else if self.nodes_chosen() {
             self.delete_selected_nodes();
         } else if !self.selected_guides.is_empty() && self.selection.is_empty() {
             if !self.delete_selected_guides() {
@@ -7232,7 +7326,15 @@ impl App {
     pub(crate) fn save_to(&mut self, path: PathBuf) {
         // Time counted for the active task goes into the file too.
         self.flush_tracked_time();
-        let bytes = if is_cdr_path(&path) {
+        // Mesh fills a `.cdr` file gets as one colour each: the status
+        // says so once it is saved (discussion #2073).
+        let cdr = is_cdr_path(&path);
+        let meshes = if cdr {
+            tracedraw_cdr::write::mesh_fills_kept_as_one_colour(self.engine.document())
+        } else {
+            0
+        };
+        let bytes = if cdr {
             let doc = self.engine.document();
             let changed;
             let doc = if !self.cdr_embed_profile && doc.cmyk_profile.is_some() {
@@ -7289,7 +7391,15 @@ impl App {
         };
         self.backup_before_save(&path);
         let result = bytes.and_then(|b| crate::files::write(&path, b).map_err(|e| e.to_string()));
+        let saved = result.is_ok();
         self.saved_to(path, result);
+        if saved && meshes > 0 {
+            self.status = format!(
+                "{} {}",
+                self.status,
+                crate::i18n::trf("status.saved_mesh_as_colour", &[("n", &meshes.to_string())])
+            );
+        }
     }
 
     /// After writing the drawing to `path`: its state, the status line and
@@ -7664,14 +7774,17 @@ impl App {
             self.open_url(crate::updates::STORE_PAGE);
             return;
         }
-        self.update_quiet = false;
+        // The box says what the card would: no card over it afterwards.
+        self.update_card_hidden = true;
         self.updates.start(ctx);
         self.dialog = crate::ui::dialogs::Dialog::Updates;
     }
 
     /// Called every frame with the time in seconds: once a day (Options >
-    /// Global > General), start a quiet check; when it finds a release
-    /// newer than this one that the user did not skip, show it. A copy
+    /// Global > General), and at every start while an update found
+    /// earlier is not installed or skipped, start a quiet check; a
+    /// release newer than this one that the user did not skip is shown
+    /// by the update card (`ui/update_card.rs`). A copy
     /// installed from the Microsoft Store never checks: the Store updates it.
     pub fn update_tick(&mut self, now: u64, ctx: Option<egui::Context>) {
         if crate::files::WEB || cfg!(test) || crate::updates::store_install() {
@@ -7691,27 +7804,30 @@ impl App {
             }
             return;
         }
+        // Remember what the last check found, so that every start asks
+        // again while the update is not installed (the card shows then).
+        match self.updates.get() {
+            crate::updates::UpdateState::Available(r)
+                if self.settings.pending_update != r.version =>
+            {
+                self.settings.pending_update = r.version;
+                self.settings.save();
+            }
+            crate::updates::UpdateState::Latest if !self.settings.pending_update.is_empty() => {
+                self.settings.pending_update.clear();
+                self.settings.save();
+            }
+            _ => {}
+        }
+        let pending = self.settings.pending_update != self.settings.skipped_update
+            && crate::updates::is_newer(&self.settings.pending_update, env!("CARGO_PKG_VERSION"));
+        let due = now.saturating_sub(self.settings.last_update_check) >= crate::updates::DAILY;
         if self.settings.check_updates
-            && now.saturating_sub(self.settings.last_update_check) >= crate::updates::DAILY
+            && (due || pending)
             && self.updates.get() == crate::updates::UpdateState::Idle
         {
             self.settings.last_update_check = now;
-            self.update_quiet = true;
             self.updates.start(ctx);
-        }
-        if self.update_quiet {
-            match self.updates.get() {
-                crate::updates::UpdateState::Checking => {}
-                crate::updates::UpdateState::Available(r)
-                    if r.version != self.settings.skipped_update
-                        && matches!(self.dialog, crate::ui::dialogs::Dialog::None) =>
-                {
-                    self.update_quiet = false;
-                    self.dialog = crate::ui::dialogs::Dialog::Updates;
-                }
-                crate::updates::UpdateState::Available(_) => {}
-                _ => self.update_quiet = false,
-            }
         }
     }
 
@@ -7973,6 +8089,9 @@ impl App {
         // it happens off the interface's thread; the list read last shows
         // meanwhile (#614).
         st.printers = self.printers_seen.clone();
+        if self.printer_last.is_some() {
+            st.printer = self.printer_last.clone();
+        }
         if !st.printers.is_empty() {
             st.printer = crate::printers::starting_printer(st.printer.as_deref(), &st.printers);
         }
@@ -8087,6 +8206,9 @@ impl App {
         // thread, as the Print dialog does.
         if st.printers.is_empty() {
             st.printers = self.printers_seen.clone();
+            if !st.printer_picked && self.printer_last.is_some() {
+                st.printer = self.printer_last.clone();
+            }
             if !st.printers.is_empty() && !st.printer_picked {
                 st.printer = crate::printers::starting_printer(st.printer.as_deref(), &st.printers);
             }
@@ -8143,7 +8265,7 @@ impl App {
     /// Imported text with a word that has custom optional hyphens gets
     /// hyphenation (Text > Custom Optional Hyphens, "When pasting and
     /// importing text").
-    fn hyphenate_imported(&mut self, ids: &[ShapeId]) {
+    pub(crate) fn hyphenate_imported(&mut self, ids: &[ShapeId]) {
         if self.settings.hyphens_when_pasting && !self.settings.custom_hyphens.is_empty() {
             crate::ui::writing_tools::apply_custom_hyphens(self, ids);
         }
@@ -8171,6 +8293,12 @@ impl App {
         if self.selection == before || self.selection.is_empty() {
             return;
         }
+        self.move_import_to(at);
+    }
+
+    /// Put the middle of the selection, just imported, at `at`, in the
+    /// import's own undo step.
+    pub fn move_import_to(&mut self, at: Point) {
         let Some(b) = self.selection_bounds() else {
             return;
         };
@@ -8355,7 +8483,8 @@ impl App {
         }
     }
 
-    /// Import the first page of a PDF or AI file into the active layer.
+    /// Import a PDF or AI file: one page goes into the active layer; for
+    /// several, a dialog asks which pages and where.
     pub fn import_pdf(&mut self, path: &std::path::Path) {
         self.import_pdf_with_password(path, "");
     }
@@ -8363,9 +8492,6 @@ impl App {
     /// [`App::import_pdf`] with the password of a protected file.
     pub fn import_pdf_with_password(&mut self, path: &std::path::Path, password: &str) {
         use tracedraw_io::pdf_import::ImportError;
-        let Some(layer) = self.active_layer() else {
-            return;
-        };
         if self.ask_pdf_text(path, true) {
             return;
         }
@@ -8385,61 +8511,22 @@ impl App {
             self.ask_pdf_password(path.to_path_buf(), true, !password.is_empty());
             return;
         }
-        let parsed = parsed.map_err(|e| e.to_string());
         match parsed {
             Ok(mut imported) => {
                 if options.text_as_curves {
                     crate::ui::pdf_import_dialog::remaining_text_to_curves(&mut imported.pages);
                 }
-                let mut cmds = Vec::new();
-                let mut ids = Vec::new();
-                let Some(first) = imported.pages.into_iter().next() else {
-                    return;
-                };
-                // The file's spot inks join the drawing's: one of the same
-                // name is the same ink, the others are added.
-                let (inks, map) = merge_inks(&self.doc().inks, &imported.inks);
-                if inks != self.doc().inks {
-                    cmds.push(Command::SetInks { inks });
-                }
-                for mut s in first.shapes {
-                    if !map.is_empty() {
-                        crate::color_policy::recolor_shape(&mut s, &|c| renumber_ink(c, &map));
-                    }
-                    let id = self.engine.new_shape_id();
-                    let shape = reid(s, id, &mut self.engine);
-                    ids.push(id);
-                    cmds.push(Command::AddShape { layer, shape });
-                }
-                if let Err(e) = self.engine.run_batch("Import", &cmds) {
-                    self.status = e.to_string();
-                }
-                if !imported.warnings.is_empty() {
-                    log::warn!("pdf import: {}", imported.warnings.join("; "));
-                }
-                self.hyphenate_imported(&ids);
-                self.select(ids);
-                // The first page's pictures that came in smaller (#1835).
-                let shrunk: Vec<_> = imported
-                    .shrunk_pictures
-                    .iter()
-                    .filter(|p| p.page == 0)
-                    .copied()
-                    .collect();
-                if !shrunk.is_empty() && matches!(self.dialog, crate::ui::dialogs::Dialog::None) {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    self.dialog =
-                        crate::ui::dialogs::Dialog::OpenNotes(crate::ui::dialogs::OpenNotes {
-                            name,
-                            shrunk: crate::ui::dialogs::shrunk_sizes(&shrunk),
-                            ..Default::default()
-                        });
+                if imported.pages.len() > 1 {
+                    // Which pages, and where (a page of their own each, or
+                    // the current page).
+                    self.ask_pdf_pages(path, imported);
+                } else {
+                    self.import_pdf_pages(path, &imported, &[0], false);
                 }
             }
-            Err(e) => self.status = crate::i18n::trf("status.import_failed", &[("e", &e)]),
+            Err(e) => {
+                self.status = crate::i18n::trf("status.import_failed", &[("e", &e.to_string())])
+            }
         }
     }
 
@@ -8942,8 +9029,15 @@ impl App {
     }
 
     pub fn goto_page(&mut self, idx: usize) {
-        if self.multipage {
-            if let Some(id) = self.doc().pages.get(idx).map(|p| p.id) {
+        // A page on the desktop already (the Multipage View, the other
+        // page of a spread of facing pages) becomes current where it is.
+        let id = self.doc().pages.get(idx).map(|p| p.id);
+        if self.multipage
+            || id.is_some_and(|id| {
+                id != self.page && self.shown_pages().iter().any(|(p, _)| *p == id)
+            })
+        {
+            if let Some(id) = id {
                 self.multipage_activate(id);
             }
             return;
@@ -9016,7 +9110,7 @@ fn reid(mut s: Shape, id: ShapeId, engine: &mut Engine) -> Shape {
 /// an ink of a name the drawing has is that ink, the others are added
 /// with numbers of their own. Gives the inks and, for each imported ink
 /// whose number changes, its old and new number.
-fn merge_inks(
+pub(crate) fn merge_inks(
     have: &[tracedraw_core::document::Ink],
     come: &[tracedraw_core::document::Ink],
 ) -> (Vec<tracedraw_core::document::Ink>, Vec<(u32, u32)>) {
@@ -9043,7 +9137,7 @@ fn merge_inks(
 }
 
 /// A spot colour of an imported ink on the number `map` gives it.
-fn renumber_ink(c: Color, map: &[(u32, u32)]) -> Color {
+pub(crate) fn renumber_ink(c: Color, map: &[(u32, u32)]) -> Color {
     let mut c = c;
     if let Color::Spot { ink, .. } = &mut c {
         if let Some((_, to)) = map.iter().find(|(from, _)| from == ink) {
@@ -11073,6 +11167,32 @@ mod tests {
         assert_eq!(app.updates.get(), crate::updates::UpdateState::Idle);
         app.set_update_policy(true);
         assert!(app.settings.check_updates);
+    }
+
+    /// What a check finds is remembered, so that every start asks again
+    /// (and the update card shows) until it is installed or skipped; a
+    /// check that finds this version the latest forgets it.
+    #[test]
+    fn a_found_update_is_remembered_until_it_is_gone() {
+        use crate::updates::{Release, UpdateState};
+        let mut app = App::headless();
+        app.settings.update_check_asked = true;
+        app.settings.check_updates = false;
+        assert!(app.settings.pending_update.is_empty());
+        *app.updates.state.lock().expect("lock") = UpdateState::Available(Release {
+            version: "9.0.0".into(),
+            page: String::new(),
+            download: None,
+            installer: None,
+        });
+        app.update_tick_desktop(10 * crate::updates::DAILY, None);
+        assert_eq!(app.settings.pending_update, "9.0.0");
+        *app.updates.state.lock().expect("lock") = UpdateState::Latest;
+        app.update_tick_desktop(10 * crate::updates::DAILY, None);
+        assert!(app.settings.pending_update.is_empty());
+        // Older settings have none.
+        let s: crate::settings::Settings = serde_json::from_str("{}").expect("defaults");
+        assert!(s.pending_update.is_empty());
     }
 
     /// Settings saved by older versions have no answer yet, so the

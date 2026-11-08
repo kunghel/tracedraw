@@ -85,6 +85,10 @@ pub enum ToolCursor {
     /// corner is the hot spot, where the import's top left corner goes
     /// (#1936).
     PlaceCorner,
+    /// Over a paragraph frame's flow tab, with any tool: the arrow with a
+    /// small frame of text lines and the tab's down arrow beside it; a
+    /// press starts flowing the text into another frame (#1986).
+    FlowText,
 }
 
 /// What a curve tool's press would do besides drawing.
@@ -323,6 +327,15 @@ pub fn for_tool(
     {
         return ToolCursor::TargetArrow;
     }
+    // A frame's flow tab takes a press with any tool (#1986); the Pick
+    // tool's handles come first, as they do for the press.
+    if let Some(at) = pos.filter(|_| !primary_down && matches!(app.drag, Drag::None)) {
+        let handle =
+            matches!(app.tool, Tool::Pick | Tool::FreeformPick) && app.handle_at(at).is_some();
+        if !handle && app.any_flow_tab_at(at).is_some() {
+            return ToolCursor::FlowText;
+        }
+    }
     if matches!(app.tool, Tool::Pick | Tool::FreeformPick) {
         if let Some(c) = pick_cursor(app, pos) {
             return c;
@@ -408,6 +421,11 @@ pub fn for_tool(
                 || pos.is_some_and(|s| app.distortion_line_at(app.view.to_page(s))) =>
         {
             ToolCursor::System(egui::CursorIcon::Move)
+        }
+        // The nib being sized by a Shift+drag: its circle stays at the
+        // press (see `brushes::draw_resize`), the pointer sizes it across.
+        t if t.is_shaping_brush() && app.brush_resize.is_some() => {
+            ToolCursor::System(egui::CursorIcon::ResizeHorizontal)
         }
         Tool::Eraser => ToolCursor::Nib {
             radius: nib_px(app.eraser_width / 2.0, app.view.zoom),
@@ -589,6 +607,7 @@ pub fn system_icon(cursor: ToolCursor) -> egui::CursorIcon {
         ToolCursor::ShapeArrow(_) | ToolCursor::TargetArrow | ToolCursor::TableArrow { .. } => {
             C::Default
         }
+        ToolCursor::FlowText => C::Alias,
         ToolCursor::Pipette
         | ToolCursor::Bucket
         | ToolCursor::Badge(_)
@@ -641,7 +660,74 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
         }
         ToolCursor::TableArrow { down } => table_arrow(painter, p, down),
         ToolCursor::PlaceCorner => place_corner(painter, p),
+        ToolCursor::FlowText => flow_text(painter, p),
     }
+}
+
+/// The flow tab's pointer: a white arrow outlined in black, its tip at
+/// `tip`, with a small text frame (three lines of text) at its lower
+/// right and, under the frame, the tab's down arrow.
+fn flow_text(painter: &Painter, tip: Pos2) {
+    let at = |x: f32, y: f32| tip + Vec2::new(x, y);
+    let arrow = vec![
+        at(0.0, 0.0),
+        at(0.0, 15.0),
+        at(3.6, 11.6),
+        at(6.2, 17.4),
+        at(8.6, 16.4),
+        at(6.0, 10.8),
+        at(10.8, 10.8),
+    ];
+    painter.add(Shape::closed_line(arrow.clone(), Stroke::new(3.0, HALO)));
+    for part in [
+        vec![
+            at(0.0, 0.0),
+            at(0.0, 15.0),
+            at(3.6, 11.6),
+            at(6.0, 10.8),
+            at(10.8, 10.8),
+        ],
+        vec![at(3.6, 11.6), at(6.2, 17.4), at(8.6, 16.4), at(6.0, 10.8)],
+    ] {
+        painter.add(Shape::convex_polygon(part, HALO, Stroke::NONE));
+    }
+    painter.add(Shape::closed_line(arrow, Stroke::new(1.0, INK)));
+    // The frame with its lines of text.
+    let b = Rect::from_min_size(at(10.0, 12.0), Vec2::new(10.0, 9.0));
+    painter.rect(
+        b.expand(1.0),
+        CornerRadius::ZERO,
+        HALO,
+        Stroke::NONE,
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        b,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, INK),
+        egui::StrokeKind::Inside,
+    );
+    for (i, w) in [6.0, 6.0, 4.0].into_iter().enumerate() {
+        let y = b.top() + 2.5 + i as f32 * 2.0;
+        painter.line_segment(
+            [
+                Pos2::new(b.left() + 2.0, y),
+                Pos2::new(b.left() + 2.0 + w, y),
+            ],
+            Stroke::new(1.0, INK),
+        );
+    }
+    // The tab's down arrow below the frame's middle.
+    let c = Pos2::new(b.center().x, b.bottom() + 3.5);
+    painter.add(Shape::convex_polygon(
+        vec![
+            c + Vec2::new(-3.5, -2.0),
+            c + Vec2::new(3.5, -2.0),
+            c + Vec2::new(0.0, 2.5),
+        ],
+        INK,
+        Stroke::new(1.5, HALO),
+    ));
 }
 
 /// The import's placement cursor: a right-angle bracket opening to the

@@ -304,19 +304,36 @@ impl App {
                     );
                     if d <= (l.max(r) * scale) + grab {
                         let mut nodes = stroke.widths.clone();
+                        let new = nodes.len();
                         nodes.push(WidthNode {
                             at: t,
                             left: l,
                             right: r,
                         });
-                        let last = nodes.len() - 1;
-                        let (nodes, index) = sorted(nodes, last);
+                        // A lone node on a loop tapers to half the base
+                        // width half way round; with a second node that
+                        // point becomes a node of its own, so the far side
+                        // keeps its taper instead of easing between the
+                        // two (a live test of 0.41).
+                        nodes.extend(
+                            tracedraw_core::style::loop_anchor(
+                                stroke.width,
+                                &stroke.widths,
+                                closed,
+                            )
+                            .filter(|a| {
+                                let gap = (a.at - t).rem_euclid(1.0);
+                                gap.min(1.0 - gap) > 1e-3
+                            }),
+                        );
+                        let (nodes, map) = sorted_map(nodes);
+                        let index = map.get(new).copied().unwrap_or(0);
                         self.set_width_nodes(id, nodes, false);
-                        // The nodes after the new one move up one place.
+                        // The nodes after the new ones move up.
                         let shifted: Vec<usize> = self
                             .picked_width_nodes()
                             .into_iter()
-                            .map(|k| if k >= index { k + 1 } else { k })
+                            .filter_map(|k| map.get(k).copied())
                             .collect();
                         self.vo.more = if extend { shifted } else { Vec::new() };
                         self.vo.node = Some(index);
@@ -759,40 +776,40 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!((w[0].at - 0.1).abs() < 0.01, "{w:?}");
         assert!((w[0].left - 6.0).abs() < 0.05 && (w[0].right - 6.0).abs() < 0.05);
-        // A second node halfway round, 1 mm each way (the reach there is
-        // 6 mm all round, as the loop has no ends).
-        app.variable_outline_press(on_circle(0.5, 0.0), false);
+        // A second node half way round from the first, where the lone
+        // node's taper ends (a live test of 0.41), then 1 mm each way: it
+        // starts with the tapered reach, not the first node's.
+        app.variable_outline_press(on_circle(0.6, 0.0), false);
         let w = widths(&app, id);
-        assert_eq!(w.len(), 2);
-        assert!((w[1].left - 6.0).abs() < 0.05, "{w:?}");
-        app.variable_outline_drag(on_circle(0.5, 1.0));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[1].left < 5.5, "{w:?}");
+        app.variable_outline_drag(on_circle(0.6, 1.0));
         app.vo.drag = None;
-        // The first node, dragged backwards through the start to eight
+        // The first node, dragged backwards through the start to nine
         // tenths: it comes last in path order and stays the picked one.
         app.variable_outline_press(on_circle(0.1, 0.0), false);
         app.variable_outline_drag(on_circle(0.05, 0.0));
-        app.variable_outline_drag(on_circle(0.8, 0.0));
+        app.variable_outline_drag(on_circle(0.9, 0.0));
         app.vo.drag = None;
         let w = widths(&app, id);
         assert_eq!(w.len(), 2);
         assert!(
-            (w[0].at - 0.5).abs() < 0.01 && (w[1].at - 0.8).abs() < 0.01,
+            (w[0].at - 0.6).abs() < 0.01 && (w[1].at - 0.9).abs() < 0.01,
             "{w:?}"
         );
         assert!((w[1].left - 6.0).abs() < 0.05 && (w[0].left - 1.0).abs() < 0.05);
         assert_eq!(app.vo.node, Some(1));
-        // It cannot pass the other node: pulled to six tenths it stops
-        // just short of the node at a half... from the other side.
-        app.variable_outline_press(on_circle(0.8, 0.0), false);
-        app.variable_outline_drag(on_circle(0.75, 0.0));
-        app.variable_outline_drag(on_circle(0.52, 0.0));
+        // Pulled back to 0.62 it stays after the node at 0.6.
+        app.variable_outline_press(on_circle(0.9, 0.0), false);
+        app.variable_outline_drag(on_circle(0.85, 0.0));
+        app.variable_outline_drag(on_circle(0.62, 0.0));
         app.vo.drag = None;
         let w = widths(&app, id);
-        assert!(w[0].at < w[1].at && (w[1].at - 0.52).abs() < 0.01, "{w:?}");
+        assert!(w[0].at < w[1].at && (w[1].at - 0.62).abs() < 0.01, "{w:?}");
         // One undo step per drag.
         app.undo();
         let w = widths(&app, id);
-        assert!((w[1].at - 0.8).abs() < 0.01, "{w:?}");
+        assert!((w[1].at - 0.9).abs() < 0.01, "{w:?}");
         // On an open path the ends still stop a node (the line test above).
         assert!((slide_target(&w, 1, 0.95, false) - 0.95).abs() < 1e-9);
         assert!((slide_target(&w, 0, 0.9, false) - (w[1].at - 1e-4)).abs() < 1e-9);

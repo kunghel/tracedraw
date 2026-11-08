@@ -266,11 +266,45 @@ pub fn next_renderer() -> Option<Mode> {
 
 /// Whether the window of this run opened (the app is being built): a
 /// panic before that is a renderer that failed to start, after it one of
-/// the app.
+/// the app. The start does not count as working yet: see `PRESENTED`.
 static OPENED: AtomicBool = AtomicBool::new(false);
 
 pub fn window_opened() -> bool {
     OPENED.load(Ordering::SeqCst)
+}
+
+/// Whether a frame of this run reached the screen: the renderer drew the
+/// first frame and handed it to the window, which only then shows. Until
+/// then the start has not worked, however far it got: a driver that hangs
+/// drawing or presenting the first frame leaves the window hidden for
+/// good (#1999), so the renderer stays noted as tried (`ATTEMPT_FILE`)
+/// and the watch goes on with the next one.
+static PRESENTED: AtomicBool = AtomicBool::new(false);
+
+pub fn frame_presented() -> bool {
+    PRESENTED.load(Ordering::SeqCst)
+}
+
+/// Whether a frame has reached the screen, judged in the root window's
+/// `ui` from the frames egui completed before this one: eframe draws and
+/// presents a frame right after its `ui` returns, so a second `ui` comes
+/// only once the first frame was presented (an extra layout pass within
+/// one frame does not count, it completes no frame).
+pub fn presented_before(completed_frames: u64) -> bool {
+    completed_frames >= 1
+}
+
+/// Called at the start of every frame of the root window: the first one
+/// asks for a second, whose start says the first reached the screen.
+pub fn note_frame(ctx: &egui::Context, mode: Mode) {
+    if frame_presented() {
+        return;
+    }
+    if presented_before(ctx.cumulative_frame_nr()) {
+        note_presented(mode);
+    } else {
+        ctx.request_repaint();
+    }
 }
 
 /// Whether this run handed the window over to a new start with another
@@ -287,16 +321,23 @@ fn handed_over() -> bool {
     HANDED_OVER.load(Ordering::SeqCst)
 }
 
-/// The window of this start opened, or a new start took its place.
+/// A frame of this start reached the screen, or a new start took its
+/// place. The window being created is not enough (#1999).
 fn start_settled() -> bool {
-    window_opened() || handed_over()
+    settled(frame_presented(), handed_over())
+}
+
+fn settled(presented: bool, handed_over: bool) -> bool {
+    presented || handed_over
 }
 
 /// The file that names the renderer a start is trying, written before
-/// the window is opened and removed as soon as it is. A start that finds
-/// it knows the last one never got a window with that renderer: the
-/// driver crashed the program or hung it, so nothing could hand over to
-/// the next renderer (#570).
+/// the window is opened and removed once a frame of it reached the screen
+/// (`PRESENTED`). A start that finds it knows the last one never showed a
+/// window with that renderer: the driver crashed the program or hung it,
+/// before the window was made (#570) or while it drew the first frame,
+/// with the window still hidden (#1999), so nothing could hand over to
+/// the next renderer.
 const ATTEMPT_FILE: &str = "renderer-attempt";
 
 fn attempt_path() -> Option<std::path::PathBuf> {
@@ -332,7 +373,7 @@ fn begin_attempt_at(path: &std::path::Path, mode: Mode) {
     }
 }
 
-/// The window opened: the attempt worked.
+/// A frame reached the screen: the attempt worked.
 fn end_attempt() {
     if let Some(path) = attempt_path() {
         end_attempt_at(&path);
@@ -343,12 +384,14 @@ fn end_attempt_at(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// How long a start waits for its window before it takes the renderer
-/// for hung (#570). Opening it takes a second or two, a software adapter
-/// on an old computer a few more.
+/// How long a start waits for its first frame to reach the screen before
+/// it takes the renderer for hung (#570, #1999). Opening the window and
+/// drawing a frame take a second or two, a software adapter on an old
+/// computer a few more.
 pub const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// What a start does once it has waited `waited` for its window.
+/// What a start does once it has waited `waited` for its first frame on
+/// the screen (`shown`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Watch {
     /// The window is open, or there is time left.
@@ -359,8 +402,8 @@ pub enum Watch {
     Last,
 }
 
-pub fn watch(opened: bool, waited: std::time::Duration, next: Option<Mode>) -> Watch {
-    if opened || waited < WINDOW_WAIT {
+pub fn watch(shown: bool, waited: std::time::Duration, next: Option<Mode>) -> Watch {
+    if shown || waited < WINDOW_WAIT {
         return Watch::Wait;
     }
     next.map_or(Watch::Last, Watch::Next)
@@ -368,7 +411,9 @@ pub fn watch(opened: bool, waited: std::time::Duration, next: Option<Mode>) -> W
 
 /// Watch this start: a renderer that hangs inside the graphics driver
 /// never returns to hand over to the next one, so after `WINDOW_WAIT`
-/// without a window the next renderer is started from here and this
+/// without a frame on the screen (no window, or a window that stays
+/// hidden because its first frame never got drawn, #1999) the next
+/// renderer is started from here and this
 /// process ends. `decline` makes this start refuse files from later starts
 /// first, so the new one opens its own window (#570).
 pub fn watch_start(
@@ -387,7 +432,7 @@ pub fn watch_start(
                     Watch::Wait => std::thread::sleep(std::time::Duration::from_millis(100)),
                     Watch::Last => {
                         log::warn!(
-                            "no window after {}s with {mode:?}, the last renderer; still waiting",
+                            "no frame on the screen after {}s with {mode:?}, the last renderer; still waiting",
                             WINDOW_WAIT.as_secs()
                         );
                         return;
@@ -395,7 +440,7 @@ pub fn watch_start(
                     Watch::Next(_) if start_settled() => return,
                     Watch::Next(n) => {
                         log::warn!(
-                            "no window after {}s with {mode:?}; starting again with {n:?}",
+                            "no frame on the screen after {}s with {mode:?}; starting again with {n:?}",
                             WINDOW_WAIT.as_secs()
                         );
                         if let Some(d) = &decline {
@@ -420,20 +465,65 @@ pub fn in_use() -> Option<&'static str> {
     IN_USE.get().map(String::as_str)
 }
 
-/// Note what the window was opened with; a renderer other than the
-/// first choice is remembered, so the next start goes straight to it.
-pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
-    OPENED.store(true, Ordering::SeqCst);
-    let _ = MODE_IN_USE.set(mode);
+/// What the settings remember as the renderer that works once `mode`
+/// showed a frame: nothing when it is the first choice anyway, so a start
+/// tries that first; else `mode`, which the next start goes straight to.
+pub fn remembered(mode: Mode, first: Mode) -> &'static str {
+    if mode == first {
+        ""
+    } else {
+        mode.name()
+    }
+}
+
+/// The first frame of this run reached the screen with `mode`: the start
+/// worked. The attempt note goes, and a renderer other than the first
+/// choice is remembered, so the next start goes straight to it.
+fn note_presented(mode: Mode) {
+    if PRESENTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     end_attempt();
-    crate::startup_log::quiet_panics(false);
     let mut s = crate::settings::Settings::load();
-    let first = Mode::first(&s);
-    let remember = if mode == first { "" } else { mode.name() };
+    let remember = remembered(mode, Mode::first(&s));
     if s.working_renderer != remember {
         s.working_renderer = remember.to_string();
         s.save();
     }
+    log::info!("the first frame reached the screen with {mode:?}");
+}
+
+/// Whether this start, in `mode`, stands in for a renderer that failed:
+/// the last start tried `last_failed` and never showed a frame with it
+/// (it hung or crashed, or handed over at once), and this one is not the
+/// renderer Options asks for (`first`). The status bar then says so once
+/// and offers Options (#1999).
+pub fn fell_back(mode: Mode, first: Mode, last_failed: Option<Mode>) -> bool {
+    mode != first && last_failed.is_some_and(|f| f != mode)
+}
+
+/// Set at start when `fell_back` holds, until the status bar said it.
+static FALLBACK_NOTE: AtomicBool = AtomicBool::new(false);
+
+pub fn note_fallback(on: bool) {
+    FALLBACK_NOTE.store(on, Ordering::SeqCst);
+}
+
+/// What draws the window, once, when this start stands in for a renderer
+/// that showed no window, as soon as a frame of it is on the screen.
+pub fn take_fallback_note() -> Option<&'static str> {
+    if !frame_presented() || !FALLBACK_NOTE.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    in_use()
+}
+
+/// Note what the window was opened with. The start counts as working
+/// only once a frame reached the screen (`note_frame`, #1999).
+pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
+    OPENED.store(true, Ordering::SeqCst);
+    let _ = MODE_IN_USE.set(mode);
+    crate::startup_log::quiet_panics(false);
     let what = match cc.wgpu_render_state.as_ref() {
         Some(rs) => {
             let i = rs.adapter.get_info();
@@ -453,7 +543,7 @@ pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
         .map(|p| unsafe { gl.get_parameter_string(p) });
         log::info!("OpenGL: {vendor}, {renderer}, version {version}, GLSL {glsl}");
     }
-    log::info!("the window opened with {mode:?}: {what}");
+    log::info!("the window was made with {mode:?}: {what}; waiting for its first frame");
     let _ = IN_USE.set(what);
 }
 
@@ -1045,6 +1135,110 @@ mod tests {
             args_with(Mode::Gl, &args),
             vec!["a.cdr".to_string(), Mode::Gl.arg()]
         );
+    }
+
+    /// #1999: the window was made with Vulkan on the separate card, but
+    /// the driver never drew or presented its first frame, so the window,
+    /// hidden until then, never showed. That start has not worked: its
+    /// watch goes on with OpenGL after `WINDOW_WAIT`, the attempt note
+    /// stays so a start after it was closed by hand goes on with OpenGL
+    /// too, and only a frame on the screen remembers the renderer.
+    #[test]
+    fn a_window_whose_first_frame_never_shows_goes_on_with_opengl() {
+        let s = crate::settings::Settings::default();
+        let args: Vec<String> = Vec::new();
+        let first = Mode::first(&s);
+        let mode = Mode::for_start(&args, &s, None);
+        assert_eq!(mode, Mode::Hardware);
+        let next = mode.next(first);
+        assert_eq!(next, Some(Mode::Gl));
+        // The window is made (the app is built) but no frame is shown:
+        // not settled, so the watch starts OpenGL in time.
+        assert!(!settled(false, false));
+        assert_eq!(
+            watch(settled(false, false), WINDOW_WAIT, next),
+            Watch::Next(Mode::Gl)
+        );
+        // Killed by hand instead: the note names Hardware, the next
+        // start takes OpenGL and says so once.
+        let again = Mode::for_start(&args, &s, Some(Mode::Hardware));
+        assert_eq!(again, Mode::Gl);
+        assert!(fell_back(again, first, Some(Mode::Hardware)));
+        // Its frame on the screen remembers OpenGL for later starts.
+        assert!(settled(true, false));
+        assert_eq!(
+            watch(true, WINDOW_WAIT * 2, Some(Mode::Software)),
+            Watch::Wait
+        );
+        assert_eq!(remembered(Mode::Gl, first), "gl");
+        assert_eq!(remembered(Mode::Hardware, first), "");
+        let mut later = s.clone();
+        later.working_renderer = remembered(Mode::Gl, first).into();
+        assert_eq!(Mode::for_start(&args, &later, None), Mode::Gl);
+        // A later start that uses the remembered renderer, with nothing
+        // failed, says nothing.
+        assert!(!fell_back(Mode::Gl, first, None));
+    }
+
+    /// A frame reached the screen once egui completed one before the
+    /// frame being built: eframe draws and presents it right after its
+    /// `ui` returns, so the next `ui` comes only after that (#1999).
+    #[test]
+    fn a_frame_counts_as_shown_once_the_next_one_begins() {
+        assert!(!presented_before(0));
+        assert!(presented_before(1));
+        assert!(presented_before(500));
+        // The root window's `ui` asks for it every frame, and the window
+        // being made no longer counts as a start that worked.
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("gpu::note_frame(ui.ctx(), mode);"));
+        let made = include_str!("gpu.rs")
+            .split("pub fn note_renderer(")
+            .nth(1)
+            .and_then(|b| b.split("\n}\n").next())
+            .expect("note_renderer");
+        assert!(!made.contains("end_attempt"));
+        assert!(!made.contains("working_renderer"));
+    }
+
+    /// The status bar says that this start stands in for a renderer that
+    /// showed nothing only when that is so: not for `--renderer=gl` typed
+    /// with nothing failed, not for the first choice, not for a renderer
+    /// that is the one that failed (#1999).
+    #[test]
+    fn the_fallback_is_said_only_after_a_failed_start() {
+        use Mode::*;
+        assert!(fell_back(Gl, Hardware, Some(Hardware)));
+        assert!(fell_back(Software, Hardware, Some(Gl)));
+        assert!(!fell_back(Gl, Hardware, None));
+        assert!(!fell_back(Hardware, Hardware, Some(Software)));
+        assert!(!fell_back(Gl, Hardware, Some(Gl)));
+        assert!(fell_back(Gl, Software, Some(Software)));
+    }
+
+    /// The reporter's adapters (#1999 log): wgpu offers the separate card
+    /// on Vulkan and Direct3D 12 (and its OpenGL) and the software
+    /// adapter, but not the built-in Intel HD 4600, which only the OpenGL
+    /// renderer reaches. Fastest available takes the Vulkan one; naming
+    /// the Direct3D 12 one in Options takes that.
+    #[test]
+    fn the_reporters_adapters_of_1999() {
+        use eframe::wgpu::DeviceType::*;
+        let list = [
+            adapter("GeForce GT 750M", DiscreteGpu, true),
+            adapter("NVIDIA GeForce GT 750M", DiscreteGpu, true),
+            adapter("Microsoft Basic Render Driver", Cpu, true),
+            adapter("GeForce GT 750M/PCIe/SSE2", Other, true),
+        ];
+        let (pick, notes) = choose(Mode::Hardware, "", &list);
+        assert_eq!(pick, Some(0));
+        assert_eq!(notes[1], "usable, not picked");
+        assert!(notes[2].starts_with("rejected: software adapter"));
+        assert_eq!(
+            choose(Mode::Hardware, "NVIDIA GeForce GT 750M", &list).0,
+            Some(1)
+        );
+        assert!(list.iter().all(|c| c.kind != IntegratedGpu));
     }
 
     fn adapter(name: &str, kind: eframe::wgpu::DeviceType, surface: bool) -> Candidate {

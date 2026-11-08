@@ -75,6 +75,9 @@ barra un pulsante che avete tolto.
 
 - [[options.palette_auto_update]] e [[options.palette_show_document]]
   (entrambi attivi).
+- [[options.palette_position]] (In alto, In basso, A sinistra, A destra o
+  Mobile) della tavolozza predefinita, come la imposta il suo menu; non
+  cambia mentre le barre degli strumenti sono bloccate.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (attivo), e cosa
   fa il [[options.palette_right_button]]: [[options.palette_set_outline]] (in
   partenza) o aprire il [[options.palette_context_menu]].

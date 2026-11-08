@@ -89,6 +89,23 @@ hangul; `App::vertical_text_offered`, `tracedraw_text::upright`).
   room left. Text fitted to a path, and text wrapping around objects,
   stay horizontal. Files of other formats hold the text as written lines
   (`.cdr`, SVG as curves); `.tdraw` keeps the flag.
+- Column order (#1986): the columns run right to left (the default) or
+  left to right. The two arrow buttons after the Vertical text button on
+  the property bar (shown while the text is vertical) and Text >
+  Vertical Columns Left to Right (a check item) set it for the selected
+  texts and the one being edited, one "Column Order" undo step
+  (`App::set_vertical_columns`, `ParagraphStyle::vertical_columns`,
+  saved in `.tdraw` only when left to right, so older files read as
+  right to left; a text set back in lines keeps it). Left to right,
+  paragraph text starts at the top left of its frame and artistic text
+  at its origin, the columns going right. Each written line is placed
+  mirrored across its own band (`tracedraw_text::mirrored_baseline`:
+  the baseline `y` with ascent `a` and descent `d` goes to
+  `-y - a + d`), so the columns change order while every letter keeps
+  its orientation; vertical alignment moves them towards the far (right)
+  side. `TextLayout::columns_left_to_right` tells the caret code: Right
+  moves to the next column and Left to the previous one
+  (`vertical_columns_can_run_left_to_right`).
 
 ## Font list
 
@@ -482,6 +499,20 @@ on its own line, which is why the lines are joined first.
   typing, linking and resizing (`textflow.rs`, links kept in the object
   data as `text.next` and `text.prev`). Unlink leaves each frame with the
   text it shows.
+- Deleting a frame of a chain (Delete, Cut, or a group or clip frame
+  holding it) removes only the frame: the frames left are linked to one
+  another in their order and the chain's whole text flows anew over them,
+  so the frame after the deleted one shows what it showed and the last
+  frame takes the rest (with the overflow mark when it does not fit). A
+  chain of two left with one frame is an ordinary paragraph frame holding
+  all the text. The relinking and the flow join the Delete step, so one
+  Undo brings the frame and the flow back (#1986,
+  `textflow::tests::deleting_the_middle_frame_of_a_chain_keeps_its_text`,
+  `deleting_the_first_frame_of_a_chain_keeps_its_text`,
+  `deleting_the_last_frame_of_a_chain_keeps_its_text`,
+  `deleting_a_frame_of_a_chain_of_two_leaves_one_frame_with_all_the_text`,
+  `cutting_a_frame_of_a_chain_keeps_its_text`,
+  `deleting_a_group_holding_a_frame_of_a_chain_keeps_its_text`).
 - Text > Convert keeps the letters in place both ways: the new frame
   (paragraph text) is the text's own box plus 2 mm, and the new text is
   moved so that its first letter sits where the old one's did, in the
@@ -513,6 +544,15 @@ on its own line, which is why the lines are joined first.
   where it shows, though over a frame being edited the tab ruler takes
   presses there (#1914,
   `pick_drag_tests::text_frame_tabs_link_frames_with_the_text_tool`).
+  Every other tool takes a press on a tab too (the Shape tool, the
+  drawing tools, ...): the frames and their tabs show whatever the tool,
+  so a click or a drag on a tab links as with the Pick tool and the tool
+  stays. Over a tab the pointer is the text flow pointer, an arrow with
+  a small frame of text lines and the tab's down arrow beside it (the
+  system's link pointer on a software adapter); over a Pick tool handle
+  the handle's pointer comes first. The tabs are looked up only while a
+  frame can show (Show Text Frames on, or something selected or edited)
+  (#1986, `pick_drag_tests::the_overflow_tab_works_with_any_tool`).
 - The top tab: a picked paragraph frame also has a tab over its top
   edge's middle, above the selection's top handle (two links when
   another frame flows into it, empty otherwise). A click (or a drag) on
@@ -864,7 +904,12 @@ Window > Panels > Glyphs. From the top:
   `text_nodes::tests::right_to_left_characters_have_their_nodes_under_their_glyphs`), on its (shifted)
   baseline; newlines have none. Click chooses one, Ctrl+click adds or
   removes, Shift+click adds, a marquee (rectangular or freehand) chooses
-  the nodes inside. Chosen nodes are filled.
+  the nodes inside. Chosen nodes are filled. A second click on a node
+  within the double-click time and distance counts as a click: a quick
+  Shift+click on the next character's node, a few pixels away, adds it
+  too; it used to select the text again and let go of the chosen
+  characters (#1933,
+  `pick_drag_tests::shift_click_on_a_character_node_adds_it`).
 - Dragging a node moves the chosen characters (the one dragged when it
   was not chosen); Ctrl keeps the move horizontal or vertical. The move
   becomes their offsets (layout space, so rotated text moves along its

@@ -175,6 +175,9 @@ pub struct Settings {
     #[serde(default)]
     pub bitmap_editor: String,
     pub last_dir: Option<PathBuf>,
+    /// The folder exported to last: File > Export's dialog opens there
+    /// (#1817).
+    pub last_export_dir: Option<PathBuf>,
     /// Folders bookmarked in the Save Drawing dialog (#1391).
     pub folder_bookmarks: Vec<PathBuf>,
     pub color: ColorPrefs,
@@ -289,6 +292,12 @@ pub struct Settings {
     /// not ("software" or "gl"); cleared when the choice changes.
     #[serde(default)]
     pub working_renderer: String,
+    /// Options > General, Linux: on a Wayland desktop that leaves the
+    /// title bar to the application, open the window through XWayland so
+    /// that the desktop draws its own, from the next start (#2070,
+    /// `title_bar.rs`).
+    #[serde(default)]
+    pub system_title_bar: bool,
     /// Customization > Appearance: dialogs open in the middle of the
     /// window and stay there; off, they move by their title bar and open
     /// where they were left.
@@ -583,6 +592,11 @@ pub struct Settings {
     /// A release the user chose to skip: not offered again at start.
     #[serde(default)]
     pub skipped_update: String,
+    /// The newest release the last check found that this version is
+    /// older than: while it is not installed or skipped, every start asks
+    /// again, so the update card shows at each start until it is done.
+    #[serde(default)]
+    pub pending_update: String,
     /// Scripts panel > Install as Filter: file formats that scripts read
     /// or write (see `behavior/script-filters.md`).
     #[serde(default)]
@@ -700,7 +714,7 @@ fn default_desktop() -> [u8; 3] {
 }
 
 /// How many one-time upgrades `Settings::upgrade` knows.
-const UPGRADES: u32 = 5;
+const UPGRADES: u32 = 6;
 
 fn default_outline_units() -> String {
     "pt".into()
@@ -1014,21 +1028,28 @@ impl Default for NodePrefs {
 
 impl NodePrefs {
     /// The pick distance in screen pixels, kept sensible and never less
-    /// than the node marker reaches.
+    /// than the node marker reaches, out to the corners of its square,
+    /// and a pixel more: larger nodes take a press on all of their marker
+    /// (#1935).
     pub fn pick_px(&self) -> f64 {
         let set = if self.pick_distance.is_finite() {
             self.pick_distance.clamp(2.0, 20.0)
         } else {
             6.0
         };
-        f64::from(set.max(self.size.px() / 2.0 + 1.0))
+        let corner = f64::from(self.size.px()) / 2.0 * std::f64::consts::SQRT_2;
+        f64::from(set).max(corner + 1.0)
     }
 
     /// How near a press must land on a control handle's end to take it:
-    /// the pick distance, and never less than its arrow head is long, so
-    /// the whole head takes a press (#1643).
+    /// the pick distance, and never less than the far corners of its
+    /// arrow head lie from its tip (the head is as long as a node is
+    /// wide and half as wide on each side, so they lie at the root of
+    /// 5/4 of its length) and a pixel more, so the whole head takes a
+    /// press and the reach grows with the node size (#1643, #1935).
     pub fn handle_pick_px(&self) -> f64 {
-        self.pick_px().max(f64::from(self.size.handle_head()))
+        let head = f64::from(self.size.handle_head());
+        self.pick_px().max(head * 1.25f64.sqrt() + 1.0)
     }
 
     /// The object click distance in screen pixels, kept sensible
@@ -1185,6 +1206,11 @@ pub struct PaletteBarPrefs {
     pub rows: u8,
     /// As [`PalettePrefs::swatch_size`].
     pub swatch_size: u8,
+    /// Docked at the top among the toolbars: the row of toolbars it lies
+    /// over (an index into `BarLayout::rows_at(Dock::Top)`; past the last
+    /// one, under every toolbar). None: beside the drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolbar_row: Option<u32>,
 }
 
 impl Default for PaletteBarPrefs {
@@ -1196,6 +1222,7 @@ impl Default for PaletteBarPrefs {
             float_size: FLOAT_SIZE,
             rows: 1,
             swatch_size: SWATCH_DEFAULT,
+            toolbar_row: None,
         }
     }
 }
@@ -1216,8 +1243,23 @@ impl PaletteBarPrefs {
         }
         self.rows = self.rows.min(MAX_ROWS);
         self.swatch_size = self.swatch_size.clamp(SWATCH_MIN, SWATCH_MAX);
+        // Among the toolbars only at the top; past every row is under
+        // them all.
+        if self.dock != crate::ui::bars::Dock::Top {
+            self.toolbar_row = None;
+        }
+        self.toolbar_row = self.toolbar_row.map(|r| r.min(MAX_TOOLBAR_ROW));
+    }
+
+    /// Whether the bar lies among the toolbars along the top.
+    pub fn among_toolbars(&self) -> bool {
+        self.dock == crate::ui::bars::Dock::Top && self.toolbar_row.is_some()
     }
 }
+
+/// The furthest row index a palette bar among the toolbars keeps: more
+/// than the toolbars can make, so it means under every one of them.
+pub const MAX_TOOLBAR_ROW: u32 = 64;
 
 pub fn swatch_resized(size: u8, steps: i32) -> u8 {
     let to = i32::from(size.clamp(SWATCH_MIN, SWATCH_MAX))
@@ -1588,6 +1630,8 @@ pub struct PanelPrefs {
     pub align_to: String,
     pub align_use_outline: bool,
     pub distribute_to: String,
+    /// Distribute with a set spacing: the distance, mm (#2005).
+    pub distribute_gap: f64,
     /// The Shaping docker's operation (`Shaping::id`) and what Weld,
     /// Trim and Intersect leave: [source objects, target] each.
     pub shaping_op: String,
@@ -1602,6 +1646,7 @@ impl Default for PanelPrefs {
             align_to: "active".into(),
             align_use_outline: false,
             distribute_to: "selection".into(),
+            distribute_gap: 1.0,
             shaping_op: "weld".into(),
             shaping_leave: [[false, false], [true, false], [true, true]],
         }
@@ -1754,7 +1799,7 @@ impl Default for Settings {
             workspace: "default".into(),
             show_welcome_on_start: true,
             welcome_tab_closed: false,
-            crop_picture_pixels: false,
+            crop_picture_pixels: true,
             table: Default::default(),
             units: "mm".into(),
             nudge_mm: 2.54,
@@ -1768,6 +1813,7 @@ impl Default for Settings {
             shortcuts: Vec::new(),
             bitmap_editor: String::new(),
             last_dir: None,
+            last_export_dir: None,
             folder_bookmarks: Vec::new(),
             color: ColorPrefs::default(),
             show_outline_flyout: false,
@@ -1840,6 +1886,7 @@ impl Default for Settings {
             hardware_acceleration: true,
             gpu_adapter: String::new(),
             working_renderer: String::new(),
+            system_title_bar: false,
             center_dialogs: true,
             ui_shadows: true,
             colored_icons: false,
@@ -1881,6 +1928,7 @@ impl Default for Settings {
             update_check_asked: false,
             last_update_check: 0,
             skipped_update: String::new(),
+            pending_update: String::new(),
             script_filters: Vec::new(),
             github: Default::default(),
             tracing: Default::default(),
@@ -1944,6 +1992,7 @@ impl Settings {
         Settings {
             recent_files: self.recent_files.clone(),
             last_dir: self.last_dir.clone(),
+            last_export_dir: self.last_export_dir.clone(),
             folder_bookmarks: self.folder_bookmarks.clone(),
             window_maximized: self.window_maximized,
             window_size: self.window_size,
@@ -1960,7 +2009,8 @@ impl Settings {
     ///    selects it), which older versions saved switched off;
     /// 2. new rectangles keep their corners; 3. the alignment and dynamic
     ///    guides start off; 4. the last export's settings are remembered;
-    /// 5. Duplicate's old default offset (6.35 mm) becomes none.
+    /// 5. Duplicate's old default offset (6.35 mm) becomes none; 6. the
+    /// Crop tool cuts a picture's pixels.
     pub fn upgrade(mut self) -> Settings {
         self.autocorrect.upgrade();
         if self.upgrades < 1 {
@@ -1993,6 +2043,13 @@ impl Settings {
         // Duplicate repeats that (#1494). An offset of one's own stays.
         if self.upgrades < 5 && self.duplicate_offset_mm == [6.35, 6.35] {
             self.duplicate_offset_mm = [0.0, 0.0];
+        }
+        // The Crop tool put a picture in a clip frame of the area by
+        // default, keeping every pixel, which looked like a mask and not
+        // a crop (live test of 0.41): it now cuts an upright picture's
+        // pixels. On once; switched off afterwards it stays off.
+        if self.upgrades < 6 {
+            self.crop_picture_pixels = true;
         }
         self.upgrades = self.upgrades.max(UPGRADES);
         self.migrate_ai();
@@ -2451,6 +2508,24 @@ mod tests {
         assert_eq!(again.upgrade().duplicate_offset_mm, [6.35, 6.35]);
     }
 
+    /// The Crop tool cuts a picture's pixels by default, and preferences
+    /// saved with the old off get it on once; off again afterwards, it
+    /// stays off (live test of 0.41).
+    #[test]
+    fn older_preferences_get_picture_pixels_cropped_once() {
+        assert!(Settings::default().crop_picture_pixels);
+        let old: Settings =
+            serde_json::from_str(r#"{"upgrades": 5, "crop_picture_pixels": false}"#)
+                .expect("old preferences");
+        let mut s = old.upgrade();
+        assert!(s.crop_picture_pixels);
+        assert_eq!(s.upgrades, UPGRADES);
+        s.crop_picture_pixels = false;
+        let saved = serde_json::to_string(&s).expect("saved");
+        let again: Settings = serde_json::from_str(&saved).expect("read back");
+        assert!(!again.upgrade().crop_picture_pixels);
+    }
+
     /// Preferences saved before the last export's settings were kept
     /// between sessions stored the old off (the option existed with that
     /// default), so File > Export went on starting at SVG every session
@@ -2719,6 +2794,7 @@ mod tests {
         let mut s = Settings::default();
         s.recent_files = vec!["/a.tdraw".into()];
         s.last_dir = Some("/drawings".into());
+        s.last_export_dir = Some("/exports".into());
         s.window_maximized = false;
         s.window_size = [1200.0, 800.0];
         s.shortcuts = vec![("menu.file.export".into(), "Ctrl+Shift+X".into())];
@@ -2731,6 +2807,7 @@ mod tests {
         let r = s.reset_keeping_history();
         assert_eq!(r.recent_files, s.recent_files);
         assert_eq!(r.last_dir, s.last_dir);
+        assert_eq!(r.last_export_dir, s.last_export_dir);
         assert_eq!(
             (r.window_maximized, r.window_size),
             (false, [1200.0, 800.0])

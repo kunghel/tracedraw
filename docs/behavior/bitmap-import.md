@@ -55,6 +55,17 @@ vertical dpi. A file that records no resolution, only an aspect ratio,
 or a value outside 1 to 100000 dpi comes in at 96 dpi. Pasted images
 and generated pictures are placed at 96 dpi.
 
+Print-size pictures come in whole: decoding a picture file may take up
+to 3 GB, 8 bytes for each of the 375 megapixels a PDF's picture is read
+at at its own size (room for 16-bit samples, or a CMYK file's samples
+beside the RGB result; `files::picture_decode_limit`). The image library's own
+guard, 512 MiB, turned away a 1 m square at 300 dpi in CMYK or a
+2.5 x 1 m banner at 300 dpi, and nothing came in (#2000,
+`files::tests::print_size_pictures_decode_past_the_libraries_guard`,
+`image_dpi::tests::a_picture_longer_than_a_metre_imports_at_its_size`).
+The browser, Android and 32-bit systems keep the library's guard. A
+file past the limit is not imported and the status bar says why.
+
 ## On screen and in exports
 
 A picture is decoded once and kept (`crates/render/src/image_cache.rs`,

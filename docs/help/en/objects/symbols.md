@@ -27,6 +27,22 @@ An instance copied in one drawing and pasted in another brings its symbol
 along (and the symbols it shows), so it shows the same objects there.
 Pasting again reuses the symbol already brought.
 
+## Editing a symbol {#edit}
+
+Click [[docker.edit_symbol]] beside a symbol in the panel, choose
+[[menu.object.symbol_edit]] on the right-click menu of an instance or
+[[menu.object > menu.object.symbol > menu.object.symbol_edit]], or
+double-click an instance with the Pick tool. The symbol's objects come onto
+the page where that instance shows them and the rest of the page fades:
+move, reshape, recolour, add or delete objects as usual. Click
+[[clip.finish]] on the bar at the top left of the drawing window, choose
+[[menu.object > menu.object.symbol > menu.object.symbol_finish]], or press
+<kbd>Esc</kbd> with nothing selected: every instance shows the change. Undo
+steps back through the edit as through any other.
+
+A symbol cannot hold an instance of itself; Finish says so and the edit
+goes on until that instance is removed.
+
 ## Turning instances back into objects {#revert}
 
 Select instances and click [[docker.revert_to_objects]], or choose

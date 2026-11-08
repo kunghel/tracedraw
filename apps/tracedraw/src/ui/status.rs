@@ -48,9 +48,20 @@ impl StatusInfo {
     }
 }
 
-/// The active tool's hint; the Pick tool's depends on the selection.
+/// The active tool's hint; the Pick tool's depends on the selection. The
+/// shaping brushes add how their nib is sized, with the wheel's key of
+/// the wheel setting (see `brushes::wheel_resizes`).
 pub fn tool_hint(app: &App) -> String {
-    tool_hint_for(app.tool, app.selection.is_empty())
+    let hint = tool_hint_for(app.tool, app.selection.is_empty());
+    if !app.tool.is_shaping_brush() {
+        return hint;
+    }
+    let size = tr(if app.settings.wheel_zooms {
+        "status_hint.brush_size"
+    } else {
+        "status_hint.brush_size_alt"
+    });
+    format!("{hint} · {size}")
 }
 
 /// A tool's hint, with or without a selection.

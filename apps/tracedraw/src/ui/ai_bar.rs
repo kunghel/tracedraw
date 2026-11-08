@@ -176,8 +176,9 @@ mod tests {
         // Fetching asks the models address and lists what came.
         app.ai.fake = Some(|req| {
             assert_eq!(req.method, "GET");
-            assert_eq!(req.url, "https://api.anthropic.com/v1/models");
+            assert_eq!(req.url, "https://api.anthropic.com/v1/models?limit=1000");
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: r#"{"data":[{"id":"model-a"},{"id":"model-b"}],"has_more":false}"#.into(),
             })
@@ -210,6 +211,7 @@ mod tests {
         // Errors are shown.
         app.ai.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 403,
                 body: r#"{"error":{"message":"no access"}}"#.into(),
             })

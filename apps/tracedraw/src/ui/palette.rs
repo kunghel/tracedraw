@@ -767,6 +767,38 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     } else if steps > 0 {
         *scroll_of(app, which) = scroll.saturating_sub(by);
     }
+    // A finger dragged along a strip longer than its room scrolls it with
+    // the finger, a swatch for every swatch's width; one dragged off the
+    // strip drags a colour as before (#1997). Known before the swatches
+    // are drawn, so the one under the finger drags and fills nothing.
+    if ui.input(|i| i.has_touch_screen()) {
+        let key = egui::Id::new(("palette_finger", which.key()));
+        let before: Option<crate::ui::overflow::Grab> = ui.ctx().data(|d| d.get_temp(key));
+        let mut grab = before;
+        if max_scroll > 0 {
+            let room = ax.rect(LEAD, 0.0, (len - LEAD - TAIL).max(0.0), thick);
+            let was = scroll as f32 * st;
+            if let Some(pos) =
+                crate::ui::overflow::finger_slide(ui, key, &mut grab, room, !vertical, was)
+            {
+                let to = (pos / st).round().max(0.0) as usize;
+                *scroll_of(app, which) = to.min(max_scroll);
+                app.palette_drag = None;
+            }
+        } else {
+            grab = None;
+        }
+        if grab != before {
+            ui.ctx().data_mut(|d| match grab {
+                Some(g) => {
+                    d.insert_temp(key, g);
+                }
+                None => {
+                    d.remove::<crate::ui::overflow::Grab>(key);
+                }
+            });
+        }
+    }
     for slot in 0..shown {
         let index = scroll + slot;
         let cell = ax.rect(
@@ -862,8 +894,14 @@ fn swatch(
     };
 
     // Dragging the colour: inside an object it fills it, on its outline
-    // it colours the outline, on the document palette it joins it.
-    if resp.drag_started_by(egui::PointerButton::Primary) && app.palette_shades.is_none() {
+    // it colours the outline, on the document palette it joins it. A
+    // finger sliding the strip along drags no colour, and the swatch it
+    // lifts from takes no click (#1997).
+    let sliding = || crate::ui::overflow::finger_sliding(ui.ctx());
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && app.palette_shades.is_none()
+        && !sliding()
+    {
         app.palette_drag = Some(entry.map(|(_, c)| *c));
     }
     if app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -882,7 +920,7 @@ fn swatch(
         .ctx()
         .pointer_latest_pos()
         .is_some_and(|pos| cell.contains(pos));
-    let slipped_click = resp.drag_stopped_by(egui::PointerButton::Primary) && on_cell;
+    let slipped_click = resp.drag_stopped_by(egui::PointerButton::Primary) && on_cell && !sliding();
     let slipped_right = resp.drag_stopped_by(egui::PointerButton::Secondary) && on_cell;
     if resp.drag_stopped() {
         let dragged = app.palette_drag.take();
@@ -2504,5 +2542,151 @@ mod tests {
         );
         frame(&mut app, vec![press(false)], 0.05);
         assert_eq!(look(&app), (fill0, outline0));
+    }
+
+    /// A finger dragged along a palette row longer than its room scrolls
+    /// the row with the finger, a swatch for every swatch's width, and
+    /// fills nothing when it lifts; a finger dragged off the row drags
+    /// its colour as before; the mouse dragged along the row scrolls
+    /// nothing (#1997).
+    #[test]
+    fn a_finger_dragged_along_the_palette_scrolls_it() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.02);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 40.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(2),
+            phase,
+            pos,
+            force: None,
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger (or, without `finger`, the mouse) down at `from`, moved
+        // to `to` in `steps`; `lift` lets go there, else it stays down.
+        let drag = |app: &mut App,
+                    from: egui::Pos2,
+                    to: egui::Pos2,
+                    steps: usize,
+                    finger: bool,
+                    lift: bool| {
+            let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+            if finger {
+                events.insert(0, touch(egui::TouchPhase::Start, from));
+            }
+            frame(app, events);
+            for k in 1..=steps {
+                let p = from + (to - from) * (k as f32 / steps as f32);
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::Move, p));
+                }
+                frame(app, events);
+            }
+            if lift {
+                let mut events = vec![press(to, false), egui::Event::PointerGone];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::End, to));
+                }
+                frame(app, events);
+                frame(app, Vec::new());
+            }
+        };
+
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let fill = |app: &App| app.doc().find_shape(id).expect("rect").fill.clone();
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        assert_eq!(app.palette_scroll, 0);
+        assert!(
+            swatch_count(&app, Row::Main) > visible_slots(300.0, STRIDE),
+            "the row is longer than its room"
+        );
+        let fill0 = fill(&app);
+        // The fifth swatch, dragged 80 px along the row: the first 10
+        // decide the slide, the 70 after it scroll three swatches.
+        let at = egui::pos2(LEAD + 1.0 + 4.0 * STRIDE + 10.0, 13.0);
+        drag(&mut app, at, at - egui::vec2(80.0, 0.0), 8, true, true);
+        assert_eq!(app.palette_scroll, 3);
+        assert_eq!(fill(&app), fill0, "the slide filled nothing");
+        assert_eq!(app.palette_drag, None);
+        // Off the row: the colour comes along.
+        drag(&mut app, at, at - egui::vec2(0.0, 30.0), 3, true, false);
+        assert!(
+            app.palette_drag.is_some(),
+            "a finger dragged off the row drags the colour"
+        );
+        assert_eq!(app.palette_scroll, 3);
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame(
+            &mut app,
+            vec![
+                touch(egui::TouchPhase::End, at - egui::vec2(0.0, 30.0)),
+                press(at - egui::vec2(0.0, 30.0), false),
+                egui::Event::PointerGone,
+            ],
+        );
+        frame(&mut app, Vec::new());
+        // The mouse along the row scrolls nothing (it drags the colour).
+        drag(&mut app, at, at - egui::vec2(80.0, 0.0), 8, false, false);
+        assert_eq!(app.palette_scroll, 3, "the mouse scrolls nothing");
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame(
+            &mut app,
+            vec![
+                press(at - egui::vec2(80.0, 0.0), false),
+                egui::Event::PointerGone,
+            ],
+        );
+        assert_eq!(app.palette_scroll, 3);
+        assert_eq!(fill(&app), fill0);
     }
 }

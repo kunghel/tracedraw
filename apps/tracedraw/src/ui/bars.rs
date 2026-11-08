@@ -1285,7 +1285,22 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
     if dock == Dock::Bottom {
         order.reverse();
     }
+    // Along the top, palette bars may lie among the rows, each over the
+    // row it was put before (`palette_bars::toolbar_band`).
+    let bands = if dock == Dock::Top {
+        crate::ui::palette_bars::toolbar_bands(app)
+    } else {
+        Vec::new()
+    };
+    let mut next_band = 0;
     for (index, bars) in order {
+        while let Some(&(row, k)) = bands.get(next_band) {
+            if row as usize > index {
+                break;
+            }
+            crate::ui::palette_bars::toolbar_band(app, ui, k, row);
+            next_band += 1;
+        }
         let height = bars.iter().map(|b| b.row_height()).fold(0.0, f32::max);
         let panel = if dock == Dock::Top {
             egui::Panel::top(egui::Id::new(("bar_row_top", index)))
@@ -1352,6 +1367,10 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
                     slots: spots,
                 });
             });
+    }
+    // Under every row of toolbars.
+    for &(row, k) in bands.get(next_band..).unwrap_or_default() {
+        crate::ui::palette_bars::toolbar_band(app, ui, k, row);
     }
 }
 

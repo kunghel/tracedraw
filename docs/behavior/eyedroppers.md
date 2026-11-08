@@ -88,15 +88,26 @@ ms on the test machine).
   default), the
   Transformations menu (Size, Rotation, Position; off by default) and
   Effects (off by default).
-- Select mode, click: reads fill, outline, the first text span's font
-  (family, size, bold, italic), bounds width and height, rotation of the
-  transform (angle of its x axis), bounds centre, opacity, drop shadow
-  and live effects.
+- Select mode, click: reads fill, outline and the first text span's
+  character format (font family, size, bold, italic, underline,
+  strikethrough, letter spacing, OpenType features, variable font axes)
+  from the innermost object under the pointer (a group's child, a clip
+  frame's frame or content), and the bounds width and height, rotation
+  of the transform (angle of its x axis), bounds centre, opacity, drop
+  shadow and live effects from the object as a whole. A text whose
+  characters all carry the same colour (or outline) of their own gives
+  that as its fill (outline). Reading the fill and outline of the group
+  itself, which has none, made Apply take them away (#1550,
+  `pick_drag_tests::copying_properties_from_a_group_takes_the_object_clicked`).
 - Apply mode, click (Shift+click samples again instead): one batch
   "Copy Attributes" with the ticked groups.
-  - Fill and Outline: `SetFill`, `SetStroke`.
+  - Fill and Outline: `SetFill`, `SetStroke`. The characters of a text
+    target let the colours (outlines) they carry of their own go, so the
+    copied fill (outline) shows. A mesh fill, whose nodes lie in its
+    object's own space, is fitted to the target's box
+    (`copy_props::tests::a_mesh_fill_is_fitted_to_the_object_it_goes_to`).
   - Text: when both objects are text, every span of the target takes
-    the sampled font; the text itself is kept.
+    the sampled character format; the text itself is kept.
   - Transparency: the opacity and the transparency mask (fountain,
     pattern or texture, with its merge mode and what it applies to) in
     place of the target's own; its other live effects stay; a sample

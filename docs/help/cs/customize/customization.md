@@ -71,6 +71,9 @@ a Lupa: tlačítko odebrané z panelu odtud přetáhněte zpět.
 
 - [[options.palette_auto_update]] a [[options.palette_show_document]] (obojí
   zapnuto).
+- [[options.palette_position]] (Nahoře, Dole, Vlevo, Vpravo nebo Plovoucí)
+  výchozí palety, jak ji nastavuje její vlastní nabídka; při zamčených
+  panelech nástrojů se nemění.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (zapnuto) a co
   dělá [[options.palette_right_button]]: [[options.palette_set_outline]]
   (výchozí) nebo otevře [[options.palette_context_menu]].

@@ -31,3 +31,20 @@ mensagem avisa; veja
 [Observações após abrir](../get-started/open-and-save.md#open-notes). Você
 também pode arrastar arquivos para a janela, ou colar de outros programas; veja
 [Colar especial](../objects/paste-special.md).
+
+## Arquivos PDF de várias páginas {#pdf-pages}
+
+Importar um arquivo PDF ou AI de mais de uma página abre a caixa de diálogo
+[[pdf_pages.title]], depois das perguntas sobre o texto e a senha. Escolha
+[[pdf_pages.all]] ou digite as páginas, como `1-3, 5`; a lista mostra cada
+página com o tamanho e a orientação, e marcar uma página a acrescenta. Depois
+escolha onde elas ficam:
+
+- [[pdf_pages.new_pages]]: cada página vira uma página do desenho, com o
+  próprio tamanho e orientação, na ordem do arquivo. Assim você junta arquivos
+  PDF num só desenho.
+- [[pdf_pages.current_page]]: os objetos vão para a camada ativa; com várias
+  páginas, os objetos de cada página formam um grupo.
+
+A importação inteira é um passo de desfazer. Um arquivo de uma página entra
+sem a caixa de diálogo.

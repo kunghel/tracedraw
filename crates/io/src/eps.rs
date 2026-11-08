@@ -102,6 +102,8 @@ fn rgb_array(c: Color) -> String {
 const PROCS: &str = "/m {moveto} def /l {lineto} def /c {curveto} def /h {closepath} def";
 
 pub fn page_to_eps(doc: &Document, page_index: usize) -> String {
+    // Pictures in clip frames without the pixels their frames hide.
+    let doc = &*crate::picture_crop::trim_framed_pictures(doc, Some(page_index));
     let Some(page) = doc.pages.get(page_index) else {
         return String::new();
     };
@@ -132,6 +134,8 @@ pub fn page_to_eps(doc: &Document, page_index: usize) -> String {
 /// 3.0): each page sets its size with `setpagedevice` and ends with
 /// `showpage`. `.prn` print files are written the same way.
 pub fn document_to_ps(doc: &Document) -> String {
+    // Pictures in clip frames without the pixels their frames hide.
+    let doc = &*crate::picture_crop::trim_framed_pictures(doc, None);
     let pt = |mm: f64| mm * MM_PT;
     let (mw, mh) = doc.pages.iter().fold((0.0f64, 0.0f64), |(w, h), p| {
         (w.max(pt(p.size.width)), h.max(pt(p.size.height)))

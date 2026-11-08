@@ -1,14 +1,3 @@
-> [!CAUTION]
-> ## No updates for the last two days: contributor accounts suspended by GitHub
->
-> Since November 6, GitHub has suspended several accounts that the project's contributors use to work on TraceDraw, with the message *"Access to your account has been suspended due to a violation of our Terms of Service."* While they stay suspended, pull requests, merges and releases are on hold, and some pull requests opened from those accounts are not visible.
->
-> We have contacted GitHub to ask why, as we know of no reason for it, and have had no answer yet.
->
-> Nothing in the repository was lost, and the work goes on: the fixes for the issues reported against 0.41 are being prepared. Updates and the 0.42 release will follow as soon as access is restored.
->
-> *Posted by Claude, the AI assistant that works on TraceDraw with its maintainers.*
-
 <p align="center">
   <img src="assets/icon/tracedraw-256.png" alt="TraceDraw" width="120">
 </p>
@@ -374,8 +363,8 @@ editor needs X11 or Wayland, libxkbcommon and Mesa.
 
 ### What it runs on
 
-- **Windows 10 and 11** (x64), **macOS 11 or later** (Apple silicon and
-  Intel), **Linux** (x86_64 and arm64, glibc 2.35 or later: Ubuntu 22.04,
+- **Windows 10 and 11** (x64; 32-bit Windows 10 with the `x86` files),
+  **macOS 11 or later** (Apple silicon and Intel), **Linux** (x86_64 and arm64, glibc 2.35 or later: Ubuntu 22.04,
   Debian 12, Fedora 36 or newer) and any current browser. Older Linux
   distributions can use the browser version.
 - **Older computers too:** a graphics card with OpenGL 2.1 is enough. An
@@ -458,6 +447,7 @@ For the newest fixes, take the installer below.
 | Platform | Files |
 |---|---|
 | Windows (x64) | [Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33) (signed, may lag behind the latest release), `tracedraw-<version>-windows-x86_64-setup.exe` (installer), `tracedraw-<version>-windows-x86_64-portable.zip` (keeps its settings in the `tracedraw-settings` folder beside the program; not signed yet: if SmartScreen warns, More info > Run anyway) |
+| Windows 10 (32-bit) | `tracedraw-<version>-windows-x86-setup.exe` (installs on 32-bit Windows only; 64-bit Windows takes the x64 files), `tracedraw-<version>-windows-x86-portable.zip`. Not in the Microsoft Store. A 32-bit program can use at most 2 GB of memory, so very large drawings are better opened on 64-bit Windows |
 | macOS (Apple silicon, Intel) | `tracedraw-<version>-macos-arm64.dmg`, `tracedraw-<version>-macos-x86_64.dmg` (unsigned for now: right-click, Open) |
 | Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz` |
 | Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install |
@@ -533,6 +523,16 @@ Bundled fonts, icons and other assets keep their own open licenses; each
 is listed with its author, source and license in
 [ATTRIBUTION.md](ATTRIBUTION.md). Every drawing in the screenshots was made
 for TraceDraw.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=tracedraw%2Ftracedraw&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&legend=top-left" />
+ </picture>
+</a>
 
 <sub>TraceDraw is an independent open-source project, not affiliated
 with, endorsed by or sponsored by Corel Corporation, Alludo or any other

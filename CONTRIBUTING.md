@@ -113,6 +113,11 @@ people who answer for them.
   `python3 scripts/ci/check_merged_work.py --base origin/main --head HEAD
   --body-file description.md` (add `--repo tracedraw/tracedraw` to group
   lines by pull request through `gh`).
+- Branches named `claude/<topic>` need no pull request opened by hand:
+  the `claude-pr` workflow opens one for every push to such a branch and
+  turns on auto-merge, so it lands as soon as the required checks pass.
+  The pull request takes its title from the branch's newest commit and
+  its description from the commit messages, so write them accordingly.
 
 ## Review and credit
 

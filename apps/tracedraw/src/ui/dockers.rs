@@ -128,7 +128,11 @@ pub fn tab_strip(app: &mut App, ui: &mut Ui, place: DockerPlace) {
             }
             ts.angle = std::f32::consts::FRAC_PI_2;
             ui.painter().add(ts);
-            if resp.drag_started_by(egui::PointerButton::Primary) {
+            // A tab dragged moves its docker; not when a finger slides a
+            // long column along its length to reach the tabs below (#1997).
+            if resp.drag_started_by(egui::PointerButton::Primary)
+                && !crate::ui::overflow::finger_sliding(ui.ctx())
+            {
                 let grab = resp
                     .interact_pointer_pos()
                     .map(|p| p - r.min)
@@ -2494,7 +2498,9 @@ fn outline_editor_mixed(
                     .add(
                         crate::ui::Slider::new(&mut s.width, 0.1..=25.0)
                             .logarithmic(true)
-                            .show_value(false),
+                            .show_value(false)
+                            // The width box and the unit list after it.
+                            .reserve(150.0),
                     )
                     .rich_tip(width_tip.clone());
                 let mut w = r.settled();
@@ -4191,5 +4197,121 @@ pub(crate) mod tests {
             let s = app.doc().find_shape(id).expect("shape");
             assert!(s.stroke.as_ref().and_then(|st| st.fill.as_ref()).is_some());
         }
+    }
+
+    /// A docker whose contents are longer than the docker: a finger
+    /// dragged up them scrolls them, as egui's scroll areas do on a touch
+    /// screen (#1997).
+    #[test]
+    fn a_finger_dragged_up_a_docker_scrolls_its_contents() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let scroll_id = std::cell::Cell::new(egui::Id::NULL);
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.02);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(240.0, 160.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                // The id the scroll area gives itself from its salt.
+                scroll_id.set(ui.make_persistent_id(egui::IdSalt::new((
+                    "docker_scroll",
+                    DockerTab::Properties.key(),
+                ))));
+                docker_page(app, ui, DockerTab::Properties);
+            });
+            out.textures_delta.clear();
+        };
+
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(2),
+            phase,
+            pos,
+            force: None,
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger (or, without `finger`, the mouse) down at `from`, moved
+        // to `to` in `steps`; `lift` lets go there, else it stays down.
+        let drag = |app: &mut App,
+                    from: egui::Pos2,
+                    to: egui::Pos2,
+                    steps: usize,
+                    finger: bool,
+                    lift: bool| {
+            let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+            if finger {
+                events.insert(0, touch(egui::TouchPhase::Start, from));
+            }
+            frame(app, events);
+            for k in 1..=steps {
+                let p = from + (to - from) * (k as f32 / steps as f32);
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::Move, p));
+                }
+                frame(app, events);
+            }
+            if lift {
+                let mut events = vec![press(to, false), egui::Event::PointerGone];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::End, to));
+                }
+                frame(app, events);
+                frame(app, Vec::new());
+            }
+        };
+
+        let offset = || {
+            egui::scroll_area::State::load(&ctx, scroll_id.get())
+                .map(|s| s.offset.y)
+                .unwrap_or(0.0)
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        assert_eq!(offset(), 0.0);
+        // The screen touched once (beside the docker), so egui knows it
+        // is a touch screen, then a finger dragged up the contents.
+        let off = egui::pos2(-10.0, -10.0);
+        frame(
+            &mut app,
+            vec![
+                touch(egui::TouchPhase::Start, off),
+                touch(egui::TouchPhase::End, off),
+            ],
+        );
+        frame(&mut app, Vec::new());
+        drag(
+            &mut app,
+            egui::pos2(200.0, 140.0),
+            egui::pos2(200.0, 40.0),
+            10,
+            true,
+            true,
+        );
+        // 100 px of finger: egui's drag-to-scroll has no tap distance.
+        assert!(offset() > 50.0, "the contents scrolled up: {}", offset());
     }
 }

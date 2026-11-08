@@ -309,7 +309,8 @@ impl App {
     /// Page > Insert Page Number: an artistic text "1", "2"... on the
     /// chosen pages (bottom centre), named "page-number". With a master
     /// layer active it is one field on that layer that shows the number
-    /// of each page it is drawn on (#807).
+    /// of each page it is drawn on (#807); for all, odd or even pages a
+    /// master layer showing on those pages is made to hold it (#1709).
     pub fn insert_page_number(&mut self, where_: PageNumberWhere) {
         let pages: Vec<(usize, tracedraw_core::PageId)> = self
             .doc()
@@ -323,6 +324,51 @@ impl App {
             .active_layer()
             .and_then(|l| self.doc().master.iter().find(|m| m.id == l))
             .map(|m| (m.id, m.scope));
+        // All, odd or even pages with no master layer active: a master
+        // layer of its own showing on those pages, in front, holding one
+        // field that shows each page's number, as one undo step (#1709).
+        if master.is_none() && where_ != PageNumberWhere::Active {
+            let scope = match where_ {
+                PageNumberWhere::Odd => tracedraw_core::MasterScope::Odd,
+                PageNumberWhere::Even => tracedraw_core::MasterScope::Even,
+                _ => tracedraw_core::MasterScope::All,
+            };
+            let i = (0..pages.len()).find(|i| scope.applies(*i)).unwrap_or(0);
+            let Some(size) = pages
+                .get(i)
+                .and_then(|(_, p)| self.doc().page(*p).ok())
+                .map(|p| p.size)
+            else {
+                return;
+            };
+            let name = tr("docker.page_numbers_layer");
+            if let Err(e) = self.engine.run_batch(
+                "Insert Page Number",
+                &[Command::AddMasterLayer { name, scope }],
+            ) {
+                self.status = e.to_string();
+                return;
+            }
+            let Some(layer) = self.doc().master.last().map(|l| l.id) else {
+                return;
+            };
+            let mut s = self.page_number_text(i, size);
+            s.page_number = Some(self.page_numbers.field());
+            for cmd in [
+                Command::SetLayerInFront {
+                    layer,
+                    in_front: true,
+                },
+                Command::AddShape { layer, shape: s },
+            ] {
+                if let Err(e) = self.engine.amend(&cmd) {
+                    self.status = e.to_string();
+                    return;
+                }
+            }
+            self.objects_master_closed = false;
+            return;
+        }
         let mut cmds = Vec::new();
         if let Some((layer, scope)) = master {
             // The field lines up as on the page in view, or on the first
@@ -1183,7 +1229,11 @@ impl App {
             self.clip_frame_edit = Some((mark.frame, mark.outside));
             let contents = self.clip_edit_contents();
             self.select(contents);
-            self.status = tr("status.editing_clip_frame");
+            self.status = if self.symbol_edit_index().is_some() {
+                tr("status.editing_symbol")
+            } else {
+                tr("status.editing_clip_frame")
+            };
         } else {
             self.clip_frame_edit = None;
             self.select(vec![mark.frame]);
@@ -1217,6 +1267,13 @@ impl App {
             return;
         };
         if self.doc().find_shape(frame).is_none() {
+            return;
+        }
+        if let Some(ShapeKind::SymbolInstance { index }) =
+            self.doc().find_shape(frame).map(|s| &s.kind)
+        {
+            let index = *index;
+            self.finish_symbol_edit(frame, index, contents, outside);
             return;
         }
         if contents.is_empty() {
@@ -1300,7 +1357,13 @@ impl App {
     /// (Edit Contents).
     pub fn render_focus(&self) -> Option<(Vec<ShapeId>, f32)> {
         if let Some((frame, _)) = &self.clip_frame_edit {
-            let mut all = vec![*frame];
+            // The instance of a symbol being edited fades with the rest:
+            // its objects on the page stand in for it until Finish.
+            let mut all = if self.symbol_edit_index().is_some() {
+                Vec::new()
+            } else {
+                vec![*frame]
+            };
             all.extend(self.clip_edit_contents());
             return Some((all, CLIP_EDIT_VISIBILITY));
         }
@@ -1510,34 +1573,50 @@ impl App {
 
     /// Copy Properties From: the properties ticked in its dialog
     /// (outline pen, outline colour, fill, text) from `source` to the
-    /// other selected objects, one undo step.
+    /// other selected objects, one undo step. A group gives the
+    /// properties of its frontmost object (see
+    /// [`App::copy_properties_from_shape`]).
     pub fn copy_properties_from(&mut self, source: ShapeId) {
         let Some(src) = self.doc().find_shape(source).cloned() else {
             return;
+        };
+        let shown = crate::copy_props::properties_source(&src);
+        self.copy_properties_from_shape(source, &shown);
+    }
+
+    /// Copy Properties From with `src` the object the properties are
+    /// read from: the one clicked inside the group or clip frame
+    /// `source`, or `source` itself (#1550: copying from a group took
+    /// the fill and outline away, a group having none of its own).
+    pub fn copy_properties_from_shape(&mut self, source: ShapeId, src: &Shape) {
+        use crate::copy_props::{
+            clear_character_outlines, fill_commands, kind_after, shown_fill, shown_stroke,
+            with_character_format,
         };
         let c = self.copy_properties_choice;
         let targets: Vec<Shape> = self
             .selected_shapes()
             .into_iter()
-            .filter(|s| s.id != source)
+            .filter(|s| s.id != source && s.id != src.id)
             .collect();
         if targets.is_empty() {
             return;
         }
+        let src_stroke = shown_stroke(src);
         let mut cmds = Vec::new();
         if c.fill {
-            cmds.push(Command::SetFill {
-                shapes: targets.iter().map(|s| s.id).collect(),
-                fill: src.fill.clone(),
-            });
+            cmds.extend(fill_commands(&shown_fill(src), src, &targets));
+        }
+        if c.outline_pen && c.outline_color {
+            cmds.extend(clear_character_outlines(&targets));
         }
         for t in &targets {
             let stroke = match (c.outline_pen, c.outline_color) {
                 (false, false) => continue,
-                (true, true) => src.stroke.clone(),
+                (true, true) => src_stroke.clone(),
                 // The pen (width, style, ends, corners) with the target's
                 // own colour.
-                (true, false) => match (&src.stroke, &t.stroke) {
+                (true, false) => match (&src_stroke, &t.stroke) {
                     (Some(s), Some(own)) => Some(Stroke {
                         color: own.color,
                         fill: own.fill.clone(),
@@ -1546,7 +1625,7 @@ impl App {
                     (s, _) => s.clone(),
                 },
                 // The colour on the target's own pen.
-                (false, true) => match (&src.stroke, &t.stroke) {
+                (false, true) => match (&src_stroke, &t.stroke) {
                     (Some(s), Some(own)) => Some(Stroke {
                         color: s.color,
                         fill: s.fill.clone(),
@@ -1565,17 +1644,17 @@ impl App {
         }
         if c.text {
             if let ShapeKind::Text { spans: from, .. } = &src.kind {
-                if let Some(f) = from.first() {
+                if let Some(f) = from.iter().find(|sp| !sp.text.is_empty()).or(from.first()) {
                     for t in &targets {
-                        let mut kind = t.kind.clone();
+                        // The kind as the commands above left it (the
+                        // characters' own colours let go).
+                        let now = kind_after(&cmds, t);
+                        let mut kind = now.clone();
                         if let ShapeKind::Text { spans, .. } = &mut kind {
                             for sp in spans.iter_mut() {
-                                sp.font_family = f.font_family.clone();
-                                sp.size_pt = f.size_pt;
-                                sp.bold = f.bold;
-                                sp.italic = f.italic;
+                                *sp = with_character_format(sp, f);
                             }
-                            if kind != t.kind {
+                            if kind != now {
                                 cmds.push(Command::SetShapeKind { shape: t.id, kind });
                             }
                         }
@@ -1748,6 +1827,19 @@ impl App {
     /// the place and properties of the curve selected last. Returns the
     /// number of joints made.
     pub fn join_curves(&mut self) -> usize {
+        self.join_selected_curves(false)
+    }
+
+    /// Weld of open curves alone (#1934): their ends that meet, or lie
+    /// within the Join Curves gap, are joined as [`App::join_curves`]
+    /// joins them, and the curves become one object either way, the
+    /// parts whose ends meet nothing as subpaths of it (as welding
+    /// closed objects apart from each other gives one object).
+    pub fn weld_open_curves(&mut self) -> usize {
+        self.join_selected_curves(true)
+    }
+
+    fn join_selected_curves(&mut self, weld: bool) -> usize {
         let shapes: Vec<Shape> = self
             .selected_shapes_target_last()
             .into_iter()
@@ -1767,7 +1859,7 @@ impl App {
             JoinKind::Bezier => tracedraw_core::join::JoinMode::Bezier,
         };
         let (joined, n) = tracedraw_core::join::join_curves(&paths, mode, j.gap);
-        if n == 0 {
+        if n == 0 && !(weld && shapes.len() > 1) {
             self.status = tr("status.join_gap_too_small");
             return 0;
         }
@@ -1805,7 +1897,8 @@ impl App {
         if !others.is_empty() {
             cmds.push(Command::DeleteShapes { shapes: others });
         }
-        if let Err(e) = self.engine.run_batch("Join Curves", &cmds) {
+        let label = if weld { "Weld" } else { "Join Curves" };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
             self.status = e.to_string();
             return 0;
         }
@@ -2696,6 +2789,7 @@ impl App {
             own.baseline_grid_mm = para.baseline_grid_mm;
             own.vertical_align = para.vertical_align;
             own.vertical = para.vertical;
+            own.vertical_columns = para.vertical_columns;
             own.frame_fill = para.frame_fill.clone();
         }
         let before = tracedraw_core::ParagraphFormat::of(align, &old);
@@ -4385,6 +4479,170 @@ impl App {
             self.selection = new_sel;
         }
     }
+
+    /// The symbol whose objects are being edited (Edit Symbol), when the
+    /// edit going on is one.
+    pub fn symbol_edit_index(&self) -> Option<usize> {
+        let (frame, _) = self.clip_frame_edit.as_ref()?;
+        match self.doc().find_shape(*frame)?.kind {
+            ShapeKind::SymbolInstance { index } => Some(index),
+            _ => None,
+        }
+    }
+
+    /// The one symbol instance selected, for Edit Symbol.
+    pub fn selected_symbol_instance(&self) -> Option<ShapeId> {
+        match self.selected_shapes().as_slice() {
+            [s] if matches!(s.kind, ShapeKind::SymbolInstance { .. }) => Some(s.id),
+            _ => None,
+        }
+    }
+
+    /// Edit Symbol from the Symbols docker: the first instance of symbol
+    /// `index` on the page is edited, a new one placed at the page centre
+    /// when the page has none.
+    pub fn edit_symbol(&mut self, index: usize) {
+        if index >= self.doc().symbols.len() {
+            return;
+        }
+        fn find(shapes: &[Shape], index: usize) -> Option<ShapeId> {
+            shapes.iter().find_map(|s| match &s.kind {
+                ShapeKind::SymbolInstance { index: i } if *i == index => Some(s.id),
+                ShapeKind::Group { children } => find(children, index),
+                ShapeKind::ClipFrame { contents, .. } => find(contents, index),
+                _ => None,
+            })
+        }
+        let on_page = self
+            .page_layers()
+            .iter()
+            .find_map(|l| find(&l.shapes, index));
+        let instance = match on_page {
+            Some(id) => id,
+            None => {
+                self.insert_symbol_instance(index);
+                match self.selected_symbol_instance() {
+                    Some(id) => id,
+                    None => return,
+                }
+            }
+        };
+        self.edit_symbol_instance(instance);
+    }
+
+    /// Edit Symbol (#1980): the objects of the symbol shown by `instance`
+    /// come onto the page over it, as the instance places them, to be
+    /// edited like any object while the rest of the page fades. Finish
+    /// (the bar, the menu, Esc with nothing selected, a Ctrl+click off
+    /// them) makes them the symbol's objects again, so every instance
+    /// shows the change. The edit uses the clip frame contents edit
+    /// with the instance as its frame, so undo inside it keeps to it.
+    pub fn edit_symbol_instance(&mut self, instance: ShapeId) {
+        if self.clip_frame_edit.is_some() {
+            return;
+        }
+        self.finish_text();
+        let doc = self.doc();
+        let Some(inst) = doc.shape_on_page(instance) else {
+            return;
+        };
+        let ShapeKind::SymbolInstance { index } = inst.kind else {
+            return;
+        };
+        let Some(def) = doc.symbols.get(index).map(|s| s.shape.clone()) else {
+            return;
+        };
+        let top = doc.top_level_of(instance).unwrap_or(instance);
+        let Ok((layer, _)) = doc.shape(top) else {
+            return;
+        };
+        let layer = layer.id;
+        // An instance squeezed flat cannot give its objects back.
+        if !invertible(inst.transform) {
+            return;
+        }
+        let outside: std::collections::HashSet<ShapeId> = self
+            .page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .map(|s| s.id)
+            .filter(|id| *id != instance)
+            .collect();
+        let engine = &mut self.engine;
+        let mut copy = def.with_fresh_ids(&mut || engine.new_shape_id());
+        copy.transform_by(inst.transform);
+        let first = copy.id;
+        let before = self.engine.last_step_id();
+        if let Err(e) = self
+            .engine
+            .run_batch("Edit Symbol", &[Command::AddShape { layer, shape: copy }])
+        {
+            self.status = e.to_string();
+            return;
+        }
+        self.mark_clip_edit_step(before, instance, &outside, true);
+        self.clip_frame_edit = Some((instance, outside));
+        self.select(vec![first]);
+        self.status = tr("status.editing_symbol");
+    }
+
+    /// The end of Edit Symbol: `contents` (page objects, in their order)
+    /// become the objects of symbol `index`, placed back by the inverse
+    /// of `instance`'s transform, and leave the page; one undo step. A
+    /// symbol left with no objects keeps the ones it had. Contents that
+    /// hold an instance of the symbol itself keep the edit going, with
+    /// a message.
+    fn finish_symbol_edit(
+        &mut self,
+        instance: ShapeId,
+        index: usize,
+        contents: Vec<ShapeId>,
+        outside: std::collections::HashSet<ShapeId>,
+    ) {
+        let Some(t) = self.doc().shape_on_page(instance).map(|s| s.transform) else {
+            return;
+        };
+        let mut parts: Vec<Shape> = contents
+            .iter()
+            .filter_map(|id| self.doc().find_shape(*id).cloned())
+            .collect();
+        if parts.is_empty() || !invertible(t) {
+            self.select(vec![instance]);
+            return;
+        }
+        let mut def = if parts.len() == 1 {
+            parts.remove(0)
+        } else {
+            let mut g = Shape::new(ShapeId(0), ShapeKind::Group { children: parts });
+            g.fill = Fill::None;
+            g
+        };
+        def.transform_by(t.inverse());
+        def.id = ShapeId(0);
+        let cmds = [
+            Command::SetSymbolShape { index, shape: def },
+            Command::DeleteShapes { shapes: contents },
+        ];
+        let before = self.engine.last_step_id();
+        if let Err(e) = self.engine.run_batch("Finish Editing Symbol", &cmds) {
+            self.status = match e {
+                tracedraw_core::Error::SymbolCycle(_) => tr("status.symbol_holds_itself"),
+                e => e.to_string(),
+            };
+            // Still editing: the objects are all there to be put right.
+            self.clip_frame_edit = Some((instance, outside));
+            return;
+        }
+        self.mark_clip_edit_step(before, instance, &outside, false);
+        self.select(vec![instance]);
+        self.status = String::new();
+    }
+}
+
+/// Whether `t` can be undone (an instance scaled to nothing cannot).
+fn invertible(t: Affine) -> bool {
+    let d = t.determinant();
+    d.is_finite() && d.abs() > 1e-12
 }
 
 impl App {
@@ -4521,6 +4779,64 @@ mod tests {
         assert!((copy.y0 - orig.y0 - 20.0).abs() < 1e-9);
     }
 
+    /// Edit Symbol (#1980): the symbol's objects come onto the page where
+    /// the instance shows them; changed and finished, every instance
+    /// shows the change. Undo goes back into the edit, then out of it
+    /// with the symbol as it was.
+    #[test]
+    fn editing_a_symbol_changes_every_instance() {
+        let mut app = App::headless();
+        let a = symbol_of(&mut app, kurbo::Rect::new(20.0, 30.0, 30.0, 40.0));
+        app.insert_symbol_instance(0);
+        let b = app.selection[0];
+        let width = |app: &App, id: ShapeId| {
+            let s = app.doc().find_shape(id).expect("instance");
+            let parts = s.expand(&app.doc().symbols);
+            parts.iter().map(|p| p.bounds().width()).sum::<f64>()
+        };
+        assert!((width(&app, b) - 10.0).abs() < 1e-9);
+        app.edit_symbol_instance(a);
+        assert_eq!(app.symbol_edit_index(), Some(0));
+        let copy = app.selection[0];
+        assert_ne!(copy, a);
+        // The objects lie where instance `a` draws them.
+        let on_page = app.doc().shape_on_page(copy).expect("copy").bounds();
+        assert!((on_page.x0 - 20.0).abs() < 1e-9 && (on_page.y0 - 30.0).abs() < 1e-9);
+        // Twice as wide, about their left side.
+        app.run(Command::TransformShapes {
+            shapes: vec![copy],
+            transform: Affine::translate((20.0, 0.0))
+                * Affine::scale_non_uniform(2.0, 1.0)
+                * Affine::translate((-20.0, 0.0)),
+        });
+        app.finish_clip_frame_edit();
+        assert!(app.clip_frame_edit.is_none());
+        assert!(
+            app.doc().find_shape(copy).is_none(),
+            "the objects left the page"
+        );
+        assert!((width(&app, a) - 20.0).abs() < 1e-9);
+        assert!((width(&app, b) - 20.0).abs() < 1e-9);
+        // Undo: back in the edit; again: the scaling undone, still in it;
+        // again: out of it, the symbol as it was.
+        app.undo();
+        assert_eq!(app.symbol_edit_index(), Some(0));
+        assert!((width(&app, b) - 10.0).abs() < 1e-9);
+        app.undo();
+        app.undo();
+        assert!(app.clip_frame_edit.is_none());
+        assert!(app.doc().find_shape(copy).is_none());
+        assert!((width(&app, b) - 10.0).abs() < 1e-9);
+
+        // A copy of the symbol among its own objects: the edit goes on.
+        app.edit_symbol_instance(a);
+        app.select(vec![b]);
+        app.duplicate();
+        app.finish_clip_frame_edit();
+        assert_eq!(app.symbol_edit_index(), Some(0));
+        assert_eq!(app.status, tr("status.symbol_holds_itself"));
+    }
+
     /// New Symbol is one step to undo: the symbol goes with its instance.
     #[test]
     fn undoing_new_symbol_removes_the_symbol() {
@@ -4602,6 +4918,31 @@ mod tests {
             back.master[0].shapes[0].page_number,
             Some(app.page_numbers.field())
         );
+    }
+
+    /// Insert Page Number on odd pages with no master layer active makes
+    /// a master layer showing on the odd pages, in front, holding one
+    /// field; one undo takes both away (#1709).
+    #[test]
+    fn page_numbers_for_odd_pages_go_on_a_master_layer_of_their_own() {
+        let mut app = App::headless();
+        app.add_page();
+        app.add_page();
+        assert!(app.doc().master.is_empty());
+        app.insert_page_number(PageNumberWhere::Odd);
+        let doc = app.doc().clone();
+        assert_eq!(doc.master.len(), 1);
+        let layer = &doc.master[0];
+        assert_eq!(layer.scope, tracedraw_core::MasterScope::Odd);
+        assert!(layer.in_front);
+        assert_eq!(layer.shapes.len(), 1);
+        assert!(layer.shapes[0].page_number.is_some());
+        assert!(doc
+            .pages
+            .iter()
+            .all(|p| p.layers.iter().all(|l| l.shapes.is_empty())));
+        app.undo();
+        assert!(app.doc().master.is_empty());
     }
 
     /// While Autofit Page's popup is open the page it would make is the

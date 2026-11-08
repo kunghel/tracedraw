@@ -827,6 +827,14 @@ fn general_page(app: &mut App, ui: &mut Ui) {
         if DesktopOnly::HardwareAcceleration.shown() {
             hardware_acceleration(app, ui);
         }
+        // Linux: the desktop's title bar on a Wayland desktop that leaves
+        // it to the application, from the next start (#2070).
+        #[cfg(target_os = "linux")]
+        ui.checkbox(
+            &mut app.settings.system_title_bar,
+            tr("options.system_title_bar"),
+        )
+        .rich_tip(crate::ui::tips::keyed("options.system_title_bar"));
     });
     chrome::section(ui, &tr("options.undo_levels"));
     ui.indent("undo", |ui| {
@@ -2939,64 +2947,8 @@ fn color_palette_page(app: &mut App, ui: &mut Ui) {
             "options.palette_no_color",
             "options.palette_no_color_tip",
         ));
-    // Rows of the default palette (columns docked on a side, #610).
-    p.rows = p.rows.min(crate::settings::MAX_ROWS);
-    grid("palette_rows").show(ui, |ui| {
-        row_label(ui, &tr("options.palette_rows"));
-        crate::ui::tips::tip_over(
-            ui,
-            crate::ui::tips::pair("options.palette_rows", "options.palette_rows_tip"),
-            |ui| {
-                combo(
-                    ui,
-                    "opt_palette_rows",
-                    &mut p.rows,
-                    &[1, 2, 3, 4, 5, 6, 7, 8, crate::settings::ROWS_FIT],
-                    |n| {
-                        if n == crate::settings::ROWS_FIT {
-                            tr("palette.rows_fit")
-                        } else {
-                            n.to_string()
-                        }
-                    },
-                    90.0,
-                );
-            },
-        );
-        ui.end_row();
-        // The swatch size, as the palette menu names its steps; a size
-        // set with Ctrl+wheel between two shows as it is.
-        row_label(ui, &tr("options.palette_swatch_size"));
-        crate::ui::tips::tip_over(
-            ui,
-            crate::ui::tips::pair(
-                "options.palette_swatch_size",
-                "options.palette_swatch_size_tip",
-            ),
-            |ui| {
-                let mut sizes: Vec<u8> = crate::settings::SWATCH_STEPS
-                    .iter()
-                    .map(|(s, _)| *s)
-                    .collect();
-                if !sizes.contains(&p.swatch_size) {
-                    sizes.push(p.swatch_size);
-                    sizes.sort_unstable();
-                }
-                combo(
-                    ui,
-                    "opt_palette_swatch_size",
-                    &mut p.swatch_size,
-                    &sizes,
-                    |n| match crate::settings::swatch_step_of(n) {
-                        Some(i) => tr(crate::settings::SWATCH_STEPS[i].1),
-                        None => crate::i18n::trf("palette.size_custom", &[("n", &n.to_string())]),
-                    },
-                    140.0,
-                );
-            },
-        );
-        ui.end_row();
-    });
+    palette_layout_grid(app, ui);
+    let p = &mut app.settings.palette;
     crate::ui::chrome::section(ui, &tr("options.palette_right_button"));
     ui.radio_value(
         &mut p.right_click_outline,
@@ -3024,6 +2976,126 @@ fn color_palette_page(app: &mut App, ui: &mut Ui) {
             );
         });
     }
+}
+
+/// The default palette's place, rows and swatch size on the Color
+/// Palette page, set as the palette's own menu sets them: a floating
+/// palette takes the rows at its length, and a palette put elsewhere goes
+/// there at once (#1983).
+fn palette_layout_grid(app: &mut App, ui: &mut Ui) {
+    use crate::ui::bars::{Bar, Dock};
+    use crate::ui::palette::Row;
+    use crate::ui::palette_bars::{set_dock, set_rows, set_swatch, PLACES};
+    let dock = app.settings.bars.dock(Bar::Palette);
+    let floating = dock == Dock::Floating;
+    grid("palette_rows").show(ui, |ui| {
+        // Where it lies: a side of the window, or floating.
+        row_label(ui, &tr("options.palette_position"));
+        let locked = app.settings.bars.locked;
+        let mut place = dock;
+        let changed = ui
+            .add_enabled_ui(!locked, |ui| {
+                crate::ui::tips::tip_over(
+                    ui,
+                    crate::ui::tips::pair(
+                        "options.palette_position",
+                        "options.palette_position_tip",
+                    ),
+                    |ui| {
+                        let docks: Vec<Dock> = PLACES.iter().map(|(d, _)| *d).collect();
+                        combo(
+                            ui,
+                            "opt_palette_position",
+                            &mut place,
+                            &docks,
+                            |d| {
+                                PLACES
+                                    .iter()
+                                    .find(|(p, _)| *p == d)
+                                    .map(|(_, k)| tr(k))
+                                    .unwrap_or_default()
+                            },
+                            140.0,
+                        )
+                    },
+                )
+            })
+            .inner;
+        if changed && place != dock {
+            set_dock(app, Row::Main, place, None);
+        }
+        ui.end_row();
+        // Rows of the default palette (columns docked on a side, #610);
+        // floating, the lines its window shows.
+        row_label(ui, &tr("options.palette_rows"));
+        let mut rows = if floating {
+            crate::ui::palette::lines_of(app, Row::Main).min(usize::from(crate::settings::MAX_ROWS))
+                as u8
+        } else {
+            app.settings.palette.rows.min(crate::settings::MAX_ROWS)
+        };
+        let before = rows;
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::pair("options.palette_rows", "options.palette_rows_tip"),
+            |ui| {
+                combo(
+                    ui,
+                    "opt_palette_rows",
+                    &mut rows,
+                    &[1, 2, 3, 4, 5, 6, 7, 8, crate::settings::ROWS_FIT],
+                    |n| {
+                        if n == crate::settings::ROWS_FIT {
+                            tr("palette.rows_fit")
+                        } else {
+                            n.to_string()
+                        }
+                    },
+                    90.0,
+                );
+            },
+        );
+        if rows != before {
+            set_rows(app, Row::Main, rows);
+        }
+        ui.end_row();
+        // The swatch size, as the palette menu names its steps; a size
+        // set with Ctrl+wheel between two shows as it is.
+        row_label(ui, &tr("options.palette_swatch_size"));
+        let mut size = app.settings.palette.swatch_size;
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::pair(
+                "options.palette_swatch_size",
+                "options.palette_swatch_size_tip",
+            ),
+            |ui| {
+                let mut sizes: Vec<u8> = crate::settings::SWATCH_STEPS
+                    .iter()
+                    .map(|(s, _)| *s)
+                    .collect();
+                if !sizes.contains(&size) {
+                    sizes.push(size);
+                    sizes.sort_unstable();
+                }
+                combo(
+                    ui,
+                    "opt_palette_swatch_size",
+                    &mut size,
+                    &sizes,
+                    |n| match crate::settings::swatch_step_of(n) {
+                        Some(i) => tr(crate::settings::SWATCH_STEPS[i].1),
+                        None => trf("palette.size_custom", &[("n", &n.to_string())]),
+                    },
+                    140.0,
+                );
+            },
+        );
+        if size != app.settings.palette.swatch_size {
+            set_swatch(app, Row::Main, size);
+        }
+        ui.end_row();
+    });
 }
 
 /// Options > Customization > Commands: the menu commands found, the
@@ -4803,6 +4875,7 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
         app.fit_pending = true;
     }
     page_spacing_row(app, ui);
+    facing_pages_row(app, ui);
     ui.separator();
     ui.strong(tr("options.master_layers"));
     type MasterRow = (
@@ -4868,6 +4941,49 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
     // Which kinds of master layer are drawn in front of the page's
     // layers, now and when made (#1132, #1477).
     crate::ui::objects_docker::master_front_choices(app, ui);
+}
+
+/// Document Setup > Layout: Facing pages and the side the first page
+/// starts on (#1972, #1660), one undo step each.
+fn facing_pages_row(app: &mut App, ui: &mut Ui) {
+    use tracedraw_core::spreads::PageSide;
+    let (mut on, mut start) = {
+        let m = &app.doc().metadata;
+        (m.facing_pages, m.facing_start)
+    };
+    let r = ui
+        .checkbox(&mut on, tr("options.facing_pages"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.facing_pages",
+            "options.facing_pages_tip",
+        ));
+    let mut changed = r.changed();
+    ui.add_enabled_ui(on, |ui| {
+        grid("doc_facing_start").show(ui, |ui| {
+            row_label(ui, &tr("options.facing_start"));
+            ui.horizontal(|ui| {
+                for (side, key) in [
+                    (PageSide::Right, "options.facing_start_right"),
+                    (PageSide::Left, "options.facing_start_left"),
+                ] {
+                    if ui
+                        .radio_value(&mut start, side, tr(key))
+                        .rich_tip(crate::ui::tips::pair(
+                            "options.facing_start",
+                            "options.facing_start_tip",
+                        ))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                }
+            });
+            ui.end_row();
+        });
+    });
+    if changed {
+        app.set_facing_pages(on, start);
+    }
 }
 
 /// Document Setup > Layout: the space between the pages of the
@@ -5041,6 +5157,45 @@ mod tests {
             let label = tr(key);
             assert!(texts.contains(&label), "{label:?} in {texts:?}");
         }
+    }
+
+    /// On Linux the General page offers the desktop's title bar, and its
+    /// box turns the setting on (#2070).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_offers_the_desktops_title_bar() {
+        let mut app = App::headless();
+        assert!(!app.settings.system_title_bar);
+        let ctx = crate::theme::ui_context();
+        let label = tr("options.system_title_bar");
+        let mut at = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| general_page(&mut app, ui));
+        out.textures_delta.clear();
+        for c in &out.shapes {
+            if let egui::Shape::Text(t) = &c.shape {
+                if t.galley.text() == label {
+                    at = Some(t.visual_bounding_rect().center());
+                }
+            }
+        }
+        let at = at.unwrap_or_else(|| panic!("{label:?} is not on the General page"));
+        for pressed in [true, false] {
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| general_page(&mut app, ui));
+            out.textures_delta.clear();
+        }
+        assert!(app.settings.system_title_bar);
     }
 
     /// #1148: every command can take a shortcut. A bar button that runs
@@ -5704,6 +5859,130 @@ mod tests {
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
         assert_eq!(app.options_page, OptionsPage::Text);
         assert_eq!(app.options_text_tab, AUTOCORRECT_TAB);
+    }
+
+    /// Customization > Color Palette sets the default palette's layout as
+    /// its own menu does: Rows on a floating palette gives its window that
+    /// many lines (before, only the docked rows were set, and a floating
+    /// palette stayed as it was), and Position docks or floats it (#1983).
+    #[test]
+    fn the_color_palette_page_sets_the_palette_layout() {
+        use crate::ui::bars::{Bar, Dock};
+        use crate::ui::palette::{lines_of, Row};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.options_page = OptionsPage::ColorPalette;
+        crate::ui::palette_bars::set_dock(&mut app, Row::Main, Dock::Floating, None);
+        assert_eq!(lines_of(&app, Row::Main), 1);
+        let clock = std::cell::Cell::new(0.0);
+        // One frame of the dialog with `events`; each text drawn and where.
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.1);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let mut close = false;
+                options_dialog(app, ui.ctx(), &mut close);
+            });
+            out.textures_delta.clear();
+            fn walk(s: &egui::Shape, texts: &mut Vec<(String, egui::Rect)>) {
+                match s {
+                    egui::Shape::Text(t) => texts.push((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                    _ => {}
+                }
+            }
+            let mut texts = Vec::new();
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+            texts
+        };
+        let click = |p: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        // The value shown on the row of `label`, right of it.
+        let value_of = |texts: &[(String, egui::Rect)], label: &str, value: &str| {
+            let (_, l) = texts
+                .iter()
+                .find(|(t, _)| t == label)
+                .unwrap_or_else(|| panic!("no {label} row"));
+            texts
+                .iter()
+                .find(|(t, r)| {
+                    t == value && r.left() > l.right() && (r.center().y - l.center().y).abs() < 6.0
+                })
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("no {value} on the {label} row"))
+        };
+        // A choice in the open list: the one away from the row.
+        let choice = |texts: &[(String, egui::Rect)], value: &str, row: egui::Pos2| {
+            texts
+                .iter()
+                .filter(|(t, r)| t == value && (r.center().y - row.y).abs() > 6.0)
+                .map(|(_, r)| r.center())
+                .next()
+                .unwrap_or_else(|| panic!("no {value} in the list"))
+        };
+        frame(&mut app, Vec::new());
+        let texts = frame(&mut app, Vec::new());
+        let rows = tr("options.palette_rows");
+        let at = value_of(&texts, &rows, "1");
+        frame(&mut app, click(at));
+        let texts = frame(&mut app, Vec::new());
+        let three = choice(&texts, "3", at);
+        frame(&mut app, click(three));
+        frame(&mut app, Vec::new());
+        assert_eq!(
+            app.settings.bars.dock(Bar::Palette),
+            Dock::Floating,
+            "still floating"
+        );
+        assert_eq!(lines_of(&app, Row::Main), 3, "the floating palette's lines");
+        // Position: docked at the left.
+        let texts = frame(&mut app, Vec::new());
+        let position = tr("options.palette_position");
+        let at = value_of(&texts, &position, &tr("palette.float"));
+        frame(&mut app, click(at));
+        let texts = frame(&mut app, Vec::new());
+        let left = choice(&texts, &tr("bars.left"), at);
+        frame(&mut app, click(left));
+        frame(&mut app, Vec::new());
+        assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Left);
+        // Locked toolbars keep it where it is.
+        app.settings.bars.locked = true;
+        let texts = frame(&mut app, Vec::new());
+        let at = value_of(&texts, &position, &tr("bars.left"));
+        frame(&mut app, click(at));
+        let texts = frame(&mut app, Vec::new());
+        assert!(
+            !texts
+                .iter()
+                .any(|(t, r)| t == &tr("bars.right") && (r.center().y - at.y).abs() > 6.0),
+            "no list while locked"
+        );
     }
 
     #[test]

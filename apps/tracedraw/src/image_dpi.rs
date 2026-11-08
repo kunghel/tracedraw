@@ -295,6 +295,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #2000: a picture 2.5 m long comes in at its own size, whole.
+    #[test]
+    fn a_picture_longer_than_a_metre_imports_at_its_size() {
+        let dir = std::env::temp_dir().join(format!("tracedraw-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // 9449 pixels at 96 dpi: 2500 mm.
+        let long = dir.join("banner.png");
+        let img = image::RgbImage::from_pixel(9449, 3, image::Rgb([200, 0, 0]));
+        img.save(&long).expect("write");
+        let mut app = crate::app::App::headless();
+        app.import_bitmap(&long);
+        let s = app.selected_shapes();
+        assert_eq!(s.len(), 1, "imported: {}", app.status);
+        let tracedraw_core::ShapeKind::Bitmap { rect, width_px, .. } = &s[0].kind else {
+            panic!("not a bitmap: {:?}", s[0].kind);
+        };
+        assert_eq!(*width_px, 9449);
+        assert!((rect.width() - 2500.0).abs() < 0.1, "{rect:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn broken_or_unknown_input_gives_nothing() {
         for b in [

@@ -43,6 +43,7 @@ use sctk::reexports::protocols::wp::tablet::zv2::client::zwp_tablet_v2::{self, Z
 
 use crate::dpi::{LogicalPosition, PhysicalPosition};
 use crate::event::{ElementState, Force, MouseButton, Touch, TouchPhase, WindowEvent};
+use crate::frame_input::{FrameButton, FrameInput};
 use crate::platform_impl::wayland::state::WinitState;
 use crate::platform_impl::wayland::window::state::TabletCursor;
 use crate::platform_impl::wayland::{self, DeviceId};
@@ -95,6 +96,9 @@ pub struct TabletToolData {
     /// The surface of the pen's custom cursor images, made when it first
     /// comes over a window (#1841).
     cursor_surface: Mutex<Option<WlSurface>>,
+    /// The serial of the tip's last `down`, which a move or a resize of
+    /// the window from its frame is asked for with (#2070).
+    down_serial: Mutex<u32>,
 }
 
 impl WinitState {
@@ -109,7 +113,14 @@ impl WinitState {
     /// Tell the window under each of `out` what the pen did.
     /// `altitude` is the pen's (radians), when it reports its tilt: it
     /// goes out with the pressure, which stays the same share (#1841).
-    fn send_pen(&mut self, touch_id: u64, altitude: Option<f64>, out: Vec<PenOut<WlSurface>>) {
+    /// `down_serial` is the serial of the tip's last press.
+    fn send_pen(
+        &mut self,
+        touch_id: u64,
+        altitude: Option<f64>,
+        down_serial: u32,
+        out: Vec<PenOut<WlSurface>>,
+    ) {
         let device_id = crate::event::DeviceId(crate::platform_impl::DeviceId::Wayland(DeviceId));
         for o in out {
             let surface = match &o {
@@ -119,12 +130,13 @@ impl WinitState {
                 | PenOut::Button(s, _, _)
                 | PenOut::Left(s) => s,
             };
-            // Over the window's frame (a surface of its own) the pen
-            // does nothing.
             let Some(parent) = surface.data::<SurfaceData>().map(|d| d.parent_surface()) else {
                 continue;
             };
-            if parent.is_some() {
+            // Over the window's frame (a surface of its own) the pen
+            // drives the frame as the mouse does (#2070).
+            if let Some(parent) = parent.cloned() {
+                self.pen_on_frame(&parent, &o, down_serial);
                 continue;
             }
             let window_id = wayland::make_wid(surface);
@@ -178,6 +190,43 @@ impl WinitState {
             self.events_sink.push_window_event(event, window_id);
             self.dispatched_events = true;
         }
+    }
+
+    /// The pen did `out` over a surface of the frame of the window whose
+    /// surface is `parent` (#2070, `crate::frame_input`). The tablet
+    /// protocol does not say which seat a tool belongs to; a move, a
+    /// resize or the window menu is asked for on the first seat, the only
+    /// one on nearly every computer.
+    fn pen_on_frame(&mut self, parent: &WlSurface, out: &PenOut<WlSurface>, down_serial: u32) {
+        let (surface, input) = match out {
+            PenOut::Moved(s, (x, y)) => (s, FrameInput::Moved(*x, *y)),
+            PenOut::Button(s, PenButton::Primary, pressed) => {
+                (s, FrameInput::PenButton(FrameButton::Normal, *pressed))
+            }
+            PenOut::Button(s, PenButton::Secondary, pressed) => {
+                (s, FrameInput::PenButton(FrameButton::Alternate, *pressed))
+            }
+            PenOut::Left(s) => (s, FrameInput::Left),
+            // Entering points nowhere yet (a motion follows), the
+            // pressure and the other buttons do nothing on the frame.
+            _ => return,
+        };
+        let Some(seat) = self.seat_state.seats().next() else {
+            return;
+        };
+        let window_id = wayland::make_wid(parent);
+        let Some(window) = self.windows.get_mut().get(&window_id).cloned() else {
+            return;
+        };
+        window.lock().unwrap().frame_input(
+            input,
+            &seat,
+            surface,
+            down_serial,
+            std::time::Duration::ZERO,
+            window_id,
+            &mut self.window_compositor_updates,
+        );
     }
 }
 
@@ -293,7 +342,12 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData> for WinitState {
                 state.tablet_tool_left(tool);
                 ToolEvent::ProximityOut
             }
-            Event::Down { .. } => ToolEvent::Down,
+            Event::Down { serial } => {
+                // The press a move of the window from its frame is asked
+                // for with (#2070).
+                *data.down_serial.lock().unwrap() = serial;
+                ToolEvent::Down
+            }
             Event::Up => ToolEvent::Up,
             Event::Motion { x, y } => ToolEvent::Motion(x, y),
             Event::Pressure { pressure } => ToolEvent::Pressure(pressure),
@@ -310,7 +364,9 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData> for WinitState {
             Event::Removed => {
                 let mut out = Vec::new();
                 data.tool.lock().unwrap().leave(&mut out);
-                state.send_pen(PEN_TOUCH_ID | u64::from(tool.id().protocol_id()), None, out);
+                let serial = *data.down_serial.lock().unwrap();
+                let id = PEN_TOUCH_ID | u64::from(tool.id().protocol_id());
+                state.send_pen(id, None, serial, out);
                 state.tablet_tool_left(tool);
                 if let Some(cursor) = data.cursor.lock().unwrap().take() {
                     cursor.destroy();
@@ -335,6 +391,7 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData> for WinitState {
             state.send_pen(
                 PEN_TOUCH_ID | u64::from(tool.id().protocol_id()),
                 altitude,
+                *data.down_serial.lock().unwrap(),
                 out,
             );
         }

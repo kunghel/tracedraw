@@ -25,6 +25,7 @@ dernières versions.
 
 ## Points forts des dernières versions {#highlights}
 
+- **Pages en vis-à-vis et texte lié.** [[menu.layout > menu.layout.facing_pages]] affiche les pages côte à côte en planches ; [[menu.text > menu.text.link_content]] lie des textes pour que la saisie dans l'un modifie les autres ; un PDF de plusieurs pages demande quelles pages importer ; [[menu.edit > menu.edit.step_and_repeat]] peut remplir une page de copies.
 - **Tactile et téléphones.** Des boutons Maj, Ctrl et Alt dans la barre
   standard restent enfoncés pour le doigt ; sous Android, l'interface évite
   l'encoche de la caméra et les coins arrondis ; l'Apple Pencil fonctionne

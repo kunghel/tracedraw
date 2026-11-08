@@ -22,6 +22,7 @@ cara mengetahui apa yang berubah dan mencantumkan sorotan versi-versi terbaru.
 
 ## Sorotan versi terbaru {#highlights}
 
+- **Halaman berhadapan dan teks tertaut.** [[menu.layout > menu.layout.facing_pages]] menampilkan halaman berdampingan sebagai bentangan; [[menu.text > menu.text.link_content]] menautkan teks sehingga mengetik di satu teks mengubah yang lain; PDF beberapa halaman menanyakan halaman mana yang diimpor; [[menu.edit > menu.edit.step_and_repeat]] dapat mengisi halaman dengan salinan.
 - **Sentuh dan ponsel.** Tombol Shift, Ctrl, dan Alt di bilah standar tetap
   tertekan untuk jari; di Android antarmuka menjauhi takik kamera dan sudut
   yang membulat; Apple Pencil berfungsi di Safari pada iPad.

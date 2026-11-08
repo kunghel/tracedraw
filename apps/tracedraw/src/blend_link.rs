@@ -163,7 +163,24 @@ impl App {
                 // The end object is gone: so is the blend.
                 None => None,
                 Some(now) => {
-                    let copy = end_copy(&now);
+                    // The copy lives where the start object's effects do:
+                    // in the space of the group or frame holding it, which
+                    // is the page for an object on a layer. Kept in page
+                    // space, the steps of a grouped blend were drawn
+                    // through the group's transform twice and stayed
+                    // behind when the group moved (#2023).
+                    let mut copy = end_copy(&now);
+                    let parent = self
+                        .doc()
+                        .parent_transform(id)
+                        .unwrap_or(tracedraw_core::Affine::IDENTITY);
+                    let det = parent.determinant();
+                    if det.is_finite()
+                        && det.abs() > 1e-12
+                        && parent != tracedraw_core::Affine::IDENTITY
+                    {
+                        copy.transform = parent.inverse() * copy.transform;
+                    }
                     // The steps go between the two objects: below the
                     // start when the end is below it.
                     let below = self.stacked_below(*end_id, id);
@@ -288,6 +305,37 @@ mod tests {
         let s = app.doc().find_shape(start).cloned().expect("start");
         let e = tracedraw_core::live::evaluate(&s);
         assert_eq!(e.below.len() + e.above.len(), 20);
+    }
+
+    /// A blend grouped and the group moved: its steps go with the two
+    /// objects and stay between them (#2023).
+    #[test]
+    fn a_grouped_blend_moves_with_its_group() {
+        let mut app = App::headless();
+        let a = square(&mut app, 0.0, Color::rgb8(255, 0, 0));
+        let b = square(&mut app, 100.0, Color::rgb8(0, 0, 255));
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.select(vec![a, b]);
+        app.group_selection();
+        app.refresh_blends();
+        let group = app.selection[0];
+        app.run(Command::TransformShapes {
+            shapes: vec![group],
+            transform: Affine::translate((0.0, 40.0)),
+        });
+        app.refresh_blends();
+        // The middle step, through the group's transform, lies halfway
+        // between the two moved squares.
+        let parent = app.doc().parent_transform(a).expect("in the group");
+        let mut mid = steps_of(&app, a)[1].clone();
+        mid.transform = parent * mid.transform;
+        let c = mid.bounds().center();
+        assert!(
+            (c.x - 55.0).abs() < 0.5 && (c.y - 45.0).abs() < 0.5,
+            "{c:?}"
+        );
     }
 
     #[test]

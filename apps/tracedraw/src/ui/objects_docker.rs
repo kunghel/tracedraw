@@ -58,6 +58,9 @@ struct Actions {
     rename_page: Option<String>,
     delete_layer: Option<LayerId>,
     reorder: Option<(LayerId, usize)>,
+    /// Each object row drawn and where, for a row dragged along the list
+    /// (live test of 0.41).
+    object_rows: Vec<(ShapeId, Rect)>,
     collapse: Option<LayerId>,
     expand_group: Option<ShapeId>,
     toggle_page: Option<PageId>,
@@ -69,6 +72,8 @@ struct Actions {
     /// the top of a layer (#1477).
     move_to_layer: Option<(Vec<ShapeId>, LayerId)>,
     select_layer: Option<LayerId>,
+    /// Cut, copy or paste a whole layer's objects from its menu (#1992).
+    layer_clip: Option<(LayerId, LayerClip)>,
     new_layer: bool,
     new_master: Option<MasterScope>,
     delete_object: Option<Vec<ShapeId>>,
@@ -418,8 +423,10 @@ fn row(ui: &mut Ui, look: Look) -> (Rect, egui::Response) {
 
 /// A full-width row `height` high.
 fn row_of(ui: &mut Ui, look: Look, height: f32) -> (Rect, egui::Response) {
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        Sense::click_and_drag(),
+    );
     let p = ui.painter();
     match look {
         Look::Object { selected: true } => {
@@ -779,6 +786,22 @@ fn layer_rows(
             act.select_layer = Some(layer.id);
             ui.close();
         }
+        // The layer's objects to the clipboard, or the clipboard's onto
+        // the layer (#1992).
+        ui.separator();
+        let has = !layer.shapes.is_empty();
+        let can_paste = app.clipboard.is_some() && !layer.locked;
+        for (what, key, on) in [
+            (LayerClip::Cut, "menu.edit.cut", has && !layer.locked),
+            (LayerClip::Copy, "menu.edit.copy", has),
+            (LayerClip::Paste, "menu.edit.paste", can_paste),
+        ] {
+            if ui.add_enabled(on, egui::Button::new(tr(key))).clicked() {
+                act.goto = elsewhere;
+                act.layer_clip = Some((layer.id, what));
+                ui.close();
+            }
+        }
         ui.separator();
         let mut visible = layer.visible;
         if ui.checkbox(&mut visible, tr("docker.show_hide")).clicked() {
@@ -1117,6 +1140,13 @@ fn object_row(
     if l.rich_tip(tr(lock_tip)).clicked() {
         act.object_locked = Some((s.id, !s.locked));
     }
+    // A row dragged along the list moves its object in the stacking order
+    // where it is let go (see `drag_rows`).
+    act.object_rows.push((s.id, rect));
+    if resp.drag_started() && !s.locked {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(ROW_DRAG), s.id));
+    }
     if resp.double_clicked() {
         act.rename_object = Some((s.id, s.name.clone().unwrap_or_else(|| label.clone())));
     } else if resp.clicked() {
@@ -1442,6 +1472,14 @@ pub fn master_front_choices(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// What a layer's menu does with the clipboard (#1992).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LayerClip {
+    Cut,
+    Copy,
+    Paste,
+}
+
 /// Select the objects of `layer` that can be (shown and not locked).
 fn select_layer_objects(app: &mut App, layer: LayerId) {
     let ids: Vec<ShapeId> = app
@@ -1661,7 +1699,47 @@ fn layer_holding(app: &App, id: ShapeId) -> Option<LayerId> {
         .map(|l| l.id)
 }
 
+/// The object row being dragged, kept in the context's memory.
+const ROW_DRAG: &str = "objects_row_drag";
+
+/// An object row dragged along the list: a line shows where it goes, and
+/// let go over another object's row it goes in front of that object when
+/// dropped on the row's upper half, behind it on the lower half (the list
+/// shows the front object first), in the layer and page of that object.
+fn drag_rows(app: &mut App, ui: &Ui, rows: &[(ShapeId, Rect)]) {
+    let id = egui::Id::new(ROW_DRAG);
+    let Some(dragged) = ui.ctx().data(|d| d.get_temp::<ShapeId>(id)) else {
+        return;
+    };
+    let (pos, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+    let target = pos.and_then(|p| {
+        rows.iter()
+            .find(|(sid, r)| *sid != dragged && r.contains(p))
+            .map(|(sid, r)| (*sid, *r, p.y < r.center().y))
+    });
+    if down {
+        if let Some((_, r, front)) = target {
+            let y = if front { r.top() } else { r.bottom() };
+            ui.painter().line_segment(
+                [Pos2::new(r.left(), y), Pos2::new(r.right(), y)],
+                Stroke::new(2.0, Tokens::ACCENT),
+            );
+        }
+        return;
+    }
+    ui.ctx().data_mut(|d| d.remove::<ShapeId>(id));
+    if let Some((reference, _, in_front)) = target {
+        app.run(Command::OrderRelative {
+            shapes: vec![dragged],
+            reference,
+            in_front,
+        });
+        app.select(vec![dragged]);
+    }
+}
+
 fn apply(app: &mut App, ui: &Ui, act: Actions) {
+    drag_rows(app, ui, &act.object_rows);
     if let Some((layer, visible)) = act.visible {
         app.run(Command::SetLayerVisible { layer, visible });
     }
@@ -1754,6 +1832,22 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     }
     if let Some(layer) = act.select_layer {
         select_layer_objects(app, layer);
+    }
+    if let Some((layer, what)) = act.layer_clip {
+        match what {
+            LayerClip::Cut => {
+                select_layer_objects(app, layer);
+                app.cut();
+            }
+            LayerClip::Copy => {
+                select_layer_objects(app, layer);
+                app.copy();
+            }
+            LayerClip::Paste => {
+                app.picked_layer = Some(layer);
+                app.paste();
+            }
+        }
     }
     if let Some((ids, layer)) = act.move_to_layer {
         move_to_layer(app, &ids, layer);
@@ -2054,10 +2148,16 @@ mod tests {
             });
         }
         app.selection.clear();
-        for _ in 0..6 {
+        // A few thumbnails are drawn per frame: frames until the rows in
+        // sight all have theirs (how many fit depends on the fonts).
+        let mut drawn = u64::MAX;
+        for _ in 0..30 {
             frame(&ctx, &mut app, 400.0, Vec::new());
+            if app.object_thumbs.renders == drawn {
+                break;
+            }
+            drawn = app.object_thumbs.renders;
         }
-        let drawn = app.object_thumbs.renders;
         assert!((5..40).contains(&drawn), "{drawn}");
         frame(&ctx, &mut app, 400.0, Vec::new());
         assert_eq!(app.object_thumbs.renders, drawn);
@@ -2368,5 +2468,43 @@ mod tests {
         });
         assert_eq!(app.selection, vec![id]);
         assert_eq!(app.active_layer(), Some(low));
+    }
+
+    /// A layer's menu copies or cuts its objects and pastes the
+    /// clipboard onto it (#1992).
+    #[test]
+    fn a_layers_menu_cuts_copies_and_pastes_its_objects() {
+        let mut app = App::headless();
+        let low = app.doc().pages[0].layers[0].id;
+        app.new_shape(rect_kind()).expect("shape");
+        app.new_shape(rect_kind()).expect("shape");
+        new_layer(&mut app);
+        let high = app.active_layer().expect("new layer");
+        assert_ne!(high, low);
+        let count = |app: &App, id: LayerId| {
+            app.doc()
+                .all_layers()
+                .find(|l| l.id == id)
+                .map_or(0, |l| l.shapes.len())
+        };
+        let run = |app: &mut App, clip: (LayerId, LayerClip)| {
+            with_ui(|ui| {
+                apply(
+                    app,
+                    ui,
+                    Actions {
+                        layer_clip: Some(clip),
+                        ..Default::default()
+                    },
+                );
+            });
+        };
+        run(&mut app, (low, LayerClip::Copy));
+        run(&mut app, (high, LayerClip::Paste));
+        assert_eq!((count(&app, low), count(&app, high)), (2, 2));
+        run(&mut app, (low, LayerClip::Cut));
+        assert_eq!(count(&app, low), 0);
+        run(&mut app, (low, LayerClip::Paste));
+        assert_eq!(count(&app, low), 2);
     }
 }

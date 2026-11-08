@@ -71,6 +71,9 @@ Powiększenie: przeciągnij stamtąd z powrotem na pasek usunięty przycisk.
 
 - [[options.palette_auto_update]] i [[options.palette_show_document]] (obie
   włączone).
+- [[options.palette_position]] (Góra, Dół, Lewo, Prawo lub Swobodna)
+  domyślnej palety, tak jak ustawia ją jej własne menu; nie zmienia się,
+  gdy paski narzędzi są zablokowane.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (włączone) oraz
   działanie opcji [[options.palette_right_button]]: [[options.palette_set_outline]]
   (domyślnie) lub otwarcie menu [[options.palette_context_menu]].

@@ -187,134 +187,9 @@ pub(crate) fn frame_drops_transparency(s: &Shape) -> Vec<Command> {
     cmds
 }
 
-/// The whole pixels of a `width` by `height` picture laid on `rect` (its
-/// own space, rows from the top) that `area` (the same space) touches:
-/// columns `x0..x1` and rows `y0..y1`; `None` when it touches none.
-pub fn pixel_window(
-    rect: Rect,
-    width: u32,
-    height: u32,
-    area: Rect,
-) -> Option<(u32, u32, u32, u32)> {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 || width == 0 || height == 0 {
-        return None;
-    }
-    let (w, h) = (f64::from(width), f64::from(height));
-    // A hair's tolerance, so an area on a pixel edge keeps no extra
-    // column of pixels.
-    let lo = |v: f64| (v + 1e-6).floor();
-    let hi = |v: f64| (v - 1e-6).ceil();
-    let x0 = lo((area.x0 - rect.x0) / rect.width() * w).clamp(0.0, w);
-    let x1 = hi((area.x1 - rect.x0) / rect.width() * w).clamp(0.0, w);
-    let y0 = lo((rect.y1 - area.y1) / rect.height() * h).clamp(0.0, h);
-    let y1 = hi((rect.y1 - area.y0) / rect.height() * h).clamp(0.0, h);
-    if !(x0 < x1 && y0 < y1) {
-        return None;
-    }
-    Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
-}
-
-/// The picture `s` (a bitmap) with only its pixels inside `area` (a
-/// rectangle in the picture's own space, the space of its `rect`) kept,
-/// on its whole pixels: its new kind and its ink channels cut alike
-/// (#1913). The effects stack's original is cut the same way when it
-/// lies on the same pixels, else the effects stay in the pixels. `None`
-/// when the area keeps every pixel or none, or the picture cannot be
-/// read.
-pub fn crop_picture(
-    s: &Shape,
-    area: Rect,
-) -> Option<(
-    ShapeKind,
-    Option<Box<tracedraw_core::picture_inks::PictureInks>>,
-)> {
-    let ShapeKind::Bitmap {
-        rect,
-        width_px,
-        height_px,
-        png,
-        fx,
-    } = &s.kind
-    else {
-        return None;
-    };
-    let rect = rect.abs();
-    let (x0, y0, x1, y1) = pixel_window(rect, *width_px, *height_px, area)?;
-    if (x0, y0, x1, y1) == (0, 0, *width_px, *height_px) {
-        return None;
-    }
-    let cut = |png: &[u8]| -> Option<Vec<u8>> {
-        let img = crate::bitmap_fx::decode(png)?;
-        if img.width() != *width_px || img.height() != *height_px {
-            return None;
-        }
-        let part = image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image();
-        if crate::bitmap_fx::png_is_gray(png) {
-            crate::bitmap_fx::encode_gray(&part)
-        } else {
-            crate::bitmap_fx::encode(&part)
-        }
-    };
-    let new_png = cut(png)?;
-    let (w, h) = (f64::from(*width_px), f64::from(*height_px));
-    let new_rect = Rect::new(
-        rect.x0 + f64::from(x0) / w * rect.width(),
-        rect.y1 - f64::from(y1) / h * rect.height(),
-        rect.x0 + f64::from(x1) / w * rect.width(),
-        rect.y1 - f64::from(y0) / h * rect.height(),
-    );
-    let new_fx = fx.as_ref().and_then(|f| {
-        let same = f.width_px == *width_px
-            && f.height_px == *height_px
-            && (f.rect.abs().x0 - rect.x0).abs() < 1e-6
-            && (f.rect.abs().y0 - rect.y0).abs() < 1e-6
-            && (f.rect.abs().x1 - rect.x1).abs() < 1e-6
-            && (f.rect.abs().y1 - rect.y1).abs() < 1e-6;
-        let png = cut(&f.png).filter(|_| same)?;
-        let mut f = f.clone();
-        f.rect = new_rect;
-        f.width_px = x1 - x0;
-        f.height_px = y1 - y0;
-        f.png = png.into();
-        Some(f)
-    });
-    // The ink planes, one under the other, each cut like the pixels.
-    let inks = s
-        .picture_inks
-        .as_deref()
-        .filter(|i| i.fits(png.as_slice()))
-        .and_then(|i| {
-            let planes = image::load_from_memory(&i.png).ok()?.to_luma8();
-            let n = i.inks.len() as u32;
-            if n == 0 || planes.width() != *width_px || planes.height() != height_px * n {
-                return None;
-            }
-            let (cw, ch) = (x1 - x0, y1 - y0);
-            let mut out = image::GrayImage::new(cw, ch * n);
-            for k in 0..n {
-                let part =
-                    image::imageops::crop_imm(&planes, x0, k * height_px + y0, cw, ch).to_image();
-                image::imageops::replace(&mut out, &part, 0, i64::from(k * ch));
-            }
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            out.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
-            Some(Box::new(tracedraw_core::picture_inks::PictureInks {
-                inks: i.inks.clone(),
-                png: bytes.into_inner().into(),
-                of: tracedraw_core::picture_inks::fingerprint(&new_png),
-            }))
-        });
-    Some((
-        ShapeKind::Bitmap {
-            rect: new_rect,
-            width_px: x1 - x0,
-            height_px: y1 - y0,
-            png: new_png.into(),
-            fx: new_fx,
-        },
-        inks,
-    ))
-}
+/// Cutting a picture's pixels to an area lives with the exports, which
+/// leave out the pixels of a picture that its clip frame hides alike.
+pub use tracedraw_io::picture_crop::crop_picture;
 
 /// Whether `m` keeps a picture upright: no turn or slant, so its
 /// rectangle stays a rectangle along the page's axes.
@@ -400,7 +275,14 @@ pub fn crop_shape_with(
             if b.intersect(rect).area() <= 0.0 && (b.width() > 0.0 && b.height() > 0.0) {
                 return Cropped::Gone;
             }
-            if pixels && upright(to_page) && matches!(s.kind, ShapeKind::Bitmap { .. }) {
+            // A gradient transparency lies on the picture's box: cutting
+            // the pixels would stretch it over the smaller box, so such a
+            // picture goes in a frame and keeps its look (#1491).
+            if pixels
+                && upright(to_page)
+                && matches!(s.kind, ShapeKind::Bitmap { .. })
+                && tracedraw_io::picture_crop::effects_fit_any_box(s)
+            {
                 let area = to_page.inverse().transform_rect_bbox(rect);
                 if let Some((kind, inks)) = crop_picture(s, area) {
                     let mut n = s.clone();
@@ -917,6 +799,8 @@ pub(crate) mod tests {
     fn crop_to_frame_frees_the_picture() {
         let mut app = App::headless();
         let id = striped_picture(&mut app);
+        // A clip frame of the area, every pixel kept.
+        app.settings.crop_picture_pixels = false;
         app.select(vec![id]);
         app.crop_to(Rect::new(12.0, 0.0, 40.0, 20.0));
         app.run(Command::SetOpacity {

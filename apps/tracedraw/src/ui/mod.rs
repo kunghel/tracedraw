@@ -23,6 +23,7 @@ pub mod clip_bar;
 pub mod color_docker;
 pub mod color_management;
 pub mod color_picker;
+pub mod command_search;
 pub mod comments_docker;
 pub mod connector_bar;
 pub mod context;
@@ -81,6 +82,7 @@ pub mod palette;
 pub mod palette_bars;
 pub mod palette_manager;
 pub mod pdf_import_dialog;
+pub mod pdf_pages;
 pub mod pdf_password;
 pub mod phone;
 pub mod picture_mosaic_docker;
@@ -110,6 +112,7 @@ pub mod trace_dialog;
 pub mod tracecut;
 pub mod tracecut_cut;
 pub mod tracecut_nest;
+pub mod update_card;
 // The audit reads widget names, which egui keeps only in debug builds.
 #[cfg(all(test, debug_assertions))]
 mod tip_audit;
@@ -368,6 +371,14 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if let Some(name) = crate::gpu::take_software_note() {
         note_software_renderer(app, &name);
     }
+    // Said once: the last start showed no window, so this one draws with
+    // the next renderer; a click opens Options to choose again (#1999).
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(name) = crate::gpu::take_fallback_note() {
+        app.status = crate::i18n::trf("status.renderer_fell_back", &[("name", name)]);
+        app.status_opens_options =
+            Some((app.status.clone(), crate::ui::dialogs::OptionsPage::General));
+    }
     crate::ui::icons::set_colored(app.settings.colored_icons);
     menus::invoke::set_bindings(&app.settings.shortcuts);
     // F1: the Help page of the open dialog, the docker or the tool.
@@ -518,6 +529,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // toolbar, 53 px for the property bar, each closed by a light line),
     // several side by side in a row where they were put (#837, #855).
     app.bar_rows.clear();
+    app.palette_bands.clear();
     bars::docked_rows(app, ui, Dock::Top);
     if app.show_status_bar && status_dock == Dock::Bottom {
         status_panel(app, ui, Panel::bottom("status_bar"));
@@ -699,6 +711,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| welcome::welcome_screen(app, ui));
+        command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
     }
@@ -707,6 +720,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |_| {});
+        command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
     }
@@ -714,6 +728,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| preview::page_sorter(app, ui));
+        command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
     }
@@ -736,6 +751,8 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         effect_picker::show(app, &ctx);
         crate::perspective_draw::show_bar(app, &ctx);
     }
+    update_card::show(app, &ctx);
+    command_search::show(app, &ctx);
     dialogs::show(app, &ctx);
     // A change this frame made to a master shows on its clones at once.
     let before = app.engine.revision();
@@ -894,18 +911,23 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
         canvas_rect.contains(p) && crate::ui::chrome::over_modal_blocker(ui.ctx(), p)
     });
     if response.hovered() || wheel_through_dialog {
-        let (scroll, notches, zoom_delta, mods, unit) = ui.input(|i| {
+        let (scroll, notches, any_notches, zoom_delta, mods, unit) = ui.input(|i| {
             // Wheel notches this frame (the smoothed delta is spread
             // over several frames, so the zoom steps come from the
             // raw events).
             let mut unit = None;
+            let mut any_notches = 0.0;
             let notches: f32 = i
                 .events
                 .iter()
                 .map(|e| match e {
                     egui::Event::MouseWheel { unit: u, delta, .. } => {
                         unit = Some(*u);
-                        delta.y / wheel_notch(*u, crate::ui::field::web_wheel())
+                        let per = wheel_notch(*u, crate::ui::field::web_wheel());
+                        // Either way: a system can send Shift+wheel
+                        // sideways.
+                        any_notches += (delta.x + delta.y) / per;
+                        delta.y / per
                     }
                     _ => 0.0,
                 })
@@ -913,6 +935,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
             (
                 i.smooth_scroll_delta,
                 notches,
+                any_notches,
                 i.zoom_delta(),
                 i.modifiers,
                 unit,
@@ -935,7 +958,15 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                 .then(|| ui.ctx().pointer_hover_pos())
                 .flatten()
         });
-        if let Some(h) = hover {
+        // A shaping brush: Shift+wheel (Alt+wheel while the wheel
+        // scrolls) sizes its nib, and neither zooms nor scrolls.
+        let brush_wheel = response.hovered()
+            && app.tool.is_shaping_brush()
+            && crate::brushes::wheel_resizes(app.settings.wheel_zooms, mods);
+        if brush_wheel {
+            app.brush_wheel(any_notches);
+        }
+        if let Some(h) = hover.filter(|_| !brush_wheel) {
             let zoom_factor = 1.15f32.powf(notches);
             // Options > Tools > Zoom/Pan > Center mouse when zooming with
             // the mouse wheel: a notch brings the point under the pointer
@@ -1011,7 +1042,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
 
     // A guideline or the ruler origin dragged out of the rulers
     // follows the pointer until release.
-    if app.multipage && two_fingers.is_none() {
+    if app.shows_other_pages() && two_fingers.is_none() {
         let press = ui.input(|i| {
             i.pointer
                 .primary_pressed()
@@ -1029,6 +1060,13 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     {
         app.canvas_input(&response, mods);
     }
+    // A Shift+drag sizing the brush ends with the button, wherever it is
+    // let go, and with the tool.
+    if app.brush_resize.is_some()
+        && (!app.tool.is_shaping_brush() || !ui.input(|i| i.pointer.primary_down()))
+    {
+        app.brush_resize = None;
+    }
     app.perspective_tick();
 
     canvas::draw_canvas(app, &painter, canvas_rect);
@@ -1045,6 +1083,7 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     crate::step_repeat::draw_preview(app, &painter);
     canvas::draw_live_guides(app, &painter, canvas_rect);
     canvas::draw_snap_mark(app, &painter);
+    crate::brushes::draw_resize(app, &painter);
     app.draw_right_drag(&painter);
     context::context_menu(app, ui, &response);
     crate::drop_menu::drop_menu_ui(app, ui);
@@ -1115,8 +1154,14 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
     painter.line_segment([c + egui::vec2(-2.5, 0.0), c + egui::vec2(2.5, 0.0)], s);
     painter.line_segment([c + egui::vec2(0.0, -2.5), c + egui::vec2(0.0, 2.5)], s);
     let resp = resp.rich_tip(crate::i18n::tr("status.navigator"));
-    let down = ui.input(|i| i.pointer.primary_down());
-    if resp.drag_started() || resp.is_pointer_button_down_on() {
+    // N held over the drawing opens the Navigator as the held button does
+    // (live test of 0.41), while no field or text takes the keys.
+    let n_held = app.text_edit.is_none()
+        && !ui.ctx().egui_wants_keyboard_input()
+        && matches!(app.dialog, crate::ui::dialogs::Dialog::None)
+        && ui.input(|i| i.key_down(egui::Key::N) && i.modifiers.is_none());
+    let down = ui.input(|i| i.pointer.primary_down()) || n_held;
+    if resp.drag_started() || resp.is_pointer_button_down_on() || n_held {
         app.navigator_open = true;
     }
     if !down {
@@ -1127,9 +1172,16 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
     if !app.navigator_open {
         return;
     }
-    // Thumbnail of the page, rendered once per opening.
-    let page = app.page_rect();
-    // Fit the page in a 220 px square without changing its aspect.
+    // Thumbnail of the whole drawing, the page and whatever lies around
+    // it on the desktop (#2053), rendered once per opening.
+    let page_rect = app.page_rect();
+    let page = app
+        .doc()
+        .content_bounds(app.page)
+        .ok()
+        .flatten()
+        .map_or(page_rect, |b| b.union(page_rect));
+    // Fit it in a 220 px square without changing its aspect.
     let max_side = 220.0_f32;
     let ratio = (page.height() / page.width().max(1e-6)) as f32;
     let (thumb_w, thumb_h) = if ratio > 1.0 {
@@ -1139,7 +1191,7 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
     };
     if app.navigator_tex.is_none() {
         let dpi = thumb_w as f64 / page.width() * 25.4;
-        if let Some(pm) = tracedraw_render::render_page_image(app.doc(), app.page, dpi) {
+        if let Some(pm) = tracedraw_render::render_area_image(app.doc(), app.page, page, dpi) {
             let (w, h) = (pm.width() as usize, pm.height() as usize);
             let mut rgba = Vec::with_capacity(w * h * 4);
             for px in pm.pixels() {
@@ -1176,8 +1228,6 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
                         egui::Color32::WHITE,
                     );
                 }
-                // Visible area as a rectangle on the thumbnail.
-                let vis = app.view.visible_page_rect(canvas);
                 let sx = rect.width() / page.width() as f32;
                 let sy = rect.height() / page.height() as f32;
                 let to_thumb = |x: f64, y: f64| {
@@ -1186,6 +1236,19 @@ pub(crate) fn view_navigator(app: &mut App, ui: &mut Ui, corner: egui::Rect, can
                         rect.max.y - (y - page.y0) as f32 * sy,
                     )
                 };
+                // The page's edge, so the desktop around it can be told.
+                let pr = egui::Rect::from_two_pos(
+                    to_thumb(page_rect.x0, page_rect.y1),
+                    to_thumb(page_rect.x1, page_rect.y0),
+                );
+                pt.rect_stroke(
+                    pr,
+                    0.0,
+                    egui::Stroke::new(1.0, Tokens::text_dim()),
+                    egui::StrokeKind::Inside,
+                );
+                // Visible area as a rectangle on the thumbnail.
+                let vis = app.view.visible_page_rect(canvas);
                 let vr =
                     egui::Rect::from_two_pos(to_thumb(vis.x0, vis.y1), to_thumb(vis.x1, vis.y0))
                         .intersect(rect);
@@ -1954,6 +2017,114 @@ mod tests {
             app.dialog = crate::ui::dialogs::Dialog::None;
             phone::set_phone(false);
         }
+    }
+
+    /// On a phone the standard toolbar is longer than the screen: a
+    /// finger dragged along it slides it with the finger, and the buttons
+    /// stay where the finger left them (#1997).
+    #[test]
+    fn a_finger_slides_the_standard_toolbar_on_a_phone() {
+        let dp = egui::vec2(360.0, 640.0);
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        app.set_workspace(crate::app::Workspace::Touch);
+        app.show_welcome = false;
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.02);
+            let zoom = ctx.zoom_factor();
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, dp / zoom)),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let vp = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+            vp.native_pixels_per_point = Some(1.0);
+            vp.monitor_size = Some(dp / zoom);
+            let mut out = ctx.run_ui(input, |ui| root(app, ui));
+            out.textures_delta.clear();
+        };
+
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(2),
+            phase,
+            pos,
+            force: None,
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger (or, without `finger`, the mouse) down at `from`, moved
+        // to `to` in `steps`; `lift` lets go there, else it stays down.
+        let drag = |app: &mut App,
+                    from: egui::Pos2,
+                    to: egui::Pos2,
+                    steps: usize,
+                    finger: bool,
+                    lift: bool| {
+            let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+            if finger {
+                events.insert(0, touch(egui::TouchPhase::Start, from));
+            }
+            frame(app, events);
+            for k in 1..=steps {
+                let p = from + (to - from) * (k as f32 / steps as f32);
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::Move, p));
+                }
+                frame(app, events);
+            }
+            if lift {
+                let mut events = vec![press(to, false), egui::Event::PointerGone];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::End, to));
+                }
+                frame(app, events);
+                frame(app, Vec::new());
+            }
+        };
+
+        for _ in 0..6 {
+            frame(&mut app, Vec::new());
+        }
+        assert!(phone::phone());
+        let slot = |app: &App| {
+            app.shown_bar_slots
+                .iter()
+                .find(|s| s.bar == crate::ui::bar_items::ItemBar::Standard)
+                .cloned()
+                .expect("the Standard toolbar is drawn")
+        };
+        let before = slot(&app);
+        let screen_w = ctx.content_rect().width();
+        assert!(
+            before.rect.right() > screen_w,
+            "the bar is longer than the screen: {:?}",
+            before.rect
+        );
+        // A button shown whole near the bar's start.
+        let (i, item) = before
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.width() > 10.0 && r.left() > 30.0 && r.right() < screen_w - 60.0)
+            .map(|(i, r)| (i, *r))
+            .expect("a button in view");
+        let from = item.center();
+        drag(&mut app, from, from - egui::vec2(80.0, 0.0), 8, true, true);
+        let after = slot(&app).items[i];
+        assert!(
+            (after.min.x - (item.min.x - 70.0)).abs() < 0.5,
+            "{after:?} from {item:?}"
+        );
+        assert_eq!(after.min.y, item.min.y);
+        phone::set_phone(false);
     }
 
     fn key(ctx: &egui::Context, app: &mut App, key: egui::Key, modifiers: egui::Modifiers) {

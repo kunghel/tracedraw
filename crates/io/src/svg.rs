@@ -46,7 +46,7 @@ fn spot_attrs(fill: &Fill, stroke: Option<&tracedraw_core::Stroke>) -> String {
 }
 
 pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
-    let doc = &*crate::resolve_open_fills(doc);
+    let doc = &*crate::for_export(doc, Some(page_index));
     INKS.with(|i| {
         *i.borrow_mut() = doc.inks.iter().map(|k| (k.id, k.name.clone())).collect();
     });

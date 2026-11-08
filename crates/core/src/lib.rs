@@ -37,6 +37,7 @@ pub mod picture_inks;
 mod press;
 pub mod shadow;
 pub mod shaping;
+pub mod spreads;
 pub mod style;
 pub mod table;
 pub mod text_flow;
@@ -52,7 +53,7 @@ pub use document::{
     LeadingUnit, MasterScope, Metadata, ObjectDefaults, ObjectStyle, Page, ParagraphStyle,
     PathTextOrientation, PathTextVertical, QrCode, QrKind, Shadow, Shape, ShapeKind, StyleParts,
     Symbol, TabKind, TabStop, Table, TableCell, TextAlign, TextOnPath, TextSpan, TimeTracker,
-    TrackedTask, VerticalAlign, DEFAULT_TAB_STEP,
+    TrackedTask, VerticalAlign, VerticalColumns, DEFAULT_TAB_STEP,
 };
 pub use engine::Engine;
 pub use geometry::{Affine, BezPath, Point, Rect, Size, Vec2};
@@ -98,6 +99,10 @@ pub enum Error {
     NotText(ShapeId),
     #[error("a B-spline needs two finite control points or more")]
     BadSpline,
+    #[error("symbol {0} not found")]
+    SymbolNotFound(usize),
+    #[error("symbol {0} cannot hold an instance of itself")]
+    SymbolCycle(usize),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 }

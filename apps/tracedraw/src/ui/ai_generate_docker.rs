@@ -180,19 +180,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
             return;
         };
         let current = prefs.model();
-        let mut list: Vec<String> = if app.ai_image.models.is_empty() {
-            prefs
-                .provider
-                .preset_models()
-                .iter()
-                .map(|m| m.to_string())
-                .collect()
-        } else {
-            app.ai_image.models.clone()
-        };
-        if !list.contains(&current) {
-            list.insert(0, current.clone());
-        }
+        let list = app.ai_image_model_choices();
         crate::ui::keynav::ComboBox::from_id_salt("aigen_model")
             .width((ui.available_width() - 34.0).max(80.0))
             .selected_text(current.clone())

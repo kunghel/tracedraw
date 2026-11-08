@@ -25,6 +25,7 @@ der letzten Versionen.
 
 ## Highlights der letzten Versionen {#highlights}
 
+- **Doppelseiten und verknüpfter Text.** [[menu.layout > menu.layout.facing_pages]] zeigt die Seiten nebeneinander als Druckbögen; [[menu.text > menu.text.link_content]] verknüpft Texte, sodass Tippen in einem die anderen ändert; ein mehrseitiges PDF fragt, welche Seiten importiert werden; [[menu.edit > menu.edit.step_and_repeat]] kann eine Seite mit Kopien füllen.
 - **Touch und Telefone.** Umschalt-, Strg- und Alt-Schaltflächen in der
   Standardleiste bleiben für einen Finger gedrückt; unter Android hält die
   Oberfläche Abstand zur Kameraaussparung und zu den abgerundeten Ecken; der

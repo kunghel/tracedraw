@@ -45,7 +45,7 @@ La barre d'outils standard contient, par groupes :
 7. Désactiver le magnétisme (<kbd>Alt+Q</kbd>) et la liste des éléments
    magnétiques.
 8. Options, qui ouvre la liste des pages d'options.
-9. Lancer : Gestionnaire de polices, écran d'accueil et Gestion des couleurs.
+9. Lancer : Gestionnaire de polices, TraceCut et écran d'accueil.
 
 Survolez un bouton pour voir son nom, son raccourci et ce qu'il fait.
 

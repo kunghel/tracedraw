@@ -270,8 +270,17 @@ pub fn ruler_drag(app: &mut App, ui: &Ui) -> bool {
     let released = ui.input(|i| i.pointer.primary_released());
     match app.drag {
         Drag::NewGuide { horizontal, .. } => {
+            // The canvas, which clears the snap mark each frame, sees no
+            // pointer meanwhile: the mark is the guideline's own.
+            app.snap_mark.set(None);
             if let Some(s) = pos {
-                let p = app.snap_point_without_guides(app.view.to_page(s));
+                // Only the guideline's own axis snaps (and is marked).
+                let q = app.view.to_page(s);
+                let p = if horizontal {
+                    tracedraw_core::geometry::Point::new(q.x, app.snap_y_without_guides(q.y))
+                } else {
+                    tracedraw_core::geometry::Point::new(app.snap_x_without_guides(q.x), q.y)
+                };
                 app.drag = Drag::NewGuide { horizontal, pos: p };
             }
             if released {
@@ -280,6 +289,7 @@ pub fn ruler_drag(app: &mut App, ui: &Ui) -> bool {
             true
         }
         Drag::RulerOrigin { .. } => {
+            app.snap_mark.set(None);
             if let Some(s) = pos {
                 let p = app.snap_point_without_guides(app.view.to_page(s));
                 app.drag = Drag::RulerOrigin { pos: p };

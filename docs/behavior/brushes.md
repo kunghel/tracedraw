@@ -16,6 +16,19 @@ drag is one undo step; the next drag is another.
   taken back into the object's own space, so the nib, the moves and the
   settings' millimetres are what is seen whatever the object's scale: a
   10 mm nib reshapes 10 mm of a curve scaled five times, not 50 mm.
+- The nib is also sized on the drawing. A drag that starts with Shift
+  held (Shift down before the button) sizes it instead of brushing: the
+  circle stays where the button went down and its edge follows the
+  pointer across, right grows it, left shrinks it, by the distance the
+  pointer moved on screen; the pointer shows a left-right arrow, the
+  status bar the new size and the bar's Nib size follows. Shift pressed
+  later in a stroke still swaps Twirl's turn and Attract and Repel. The
+  wheel over the drawing with Shift held steps the nib by 10 % a notch
+  (up grows it); while Options sets the wheel to scroll instead of
+  zoom, where Shift+wheel scrolls sideways, Alt+wheel does it. Ctrl and
+  the plain wheel keep their zoom or scroll. The nib stays between 0.5
+  and 500 mm (`brushes::wheel_resizes`,
+  `pick_drag_tests::shift_drag_and_the_wheel_size_the_brush_nib`).
 - The effect falls off from full at the centre to nothing at the edge of
   the nib (`w = 1 - d / radius`).
 - Only the stretch of a curve within the nib's reach changes: the pieces

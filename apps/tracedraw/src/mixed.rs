@@ -85,7 +85,10 @@ fn uniform_amount(c: tracedraw_core::Color) -> f64 {
 /// The transparency effect and the opacity that stand for uniform
 /// transparency of `amount` % with `merge`.
 pub fn uniform_transparency(amount: f64, merge: MergeMode, target: u8) -> (Option<Effect>, f64) {
-    if merge == MergeMode::Normal {
+    // Normal on the whole object is the object's opacity; on the fill or
+    // the outline alone it is a mask of one grey with that target, which
+    // the opacity cannot say.
+    if merge == MergeMode::Normal && target >= 2 {
         (None, 1.0 - (amount / 100.0).clamp(0.0, 1.0))
     } else {
         (

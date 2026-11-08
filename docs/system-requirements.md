@@ -10,13 +10,13 @@ memory, processor and disk lines are measured or estimated, and say so.
 
 |                 | Minimum                                             | Recommended                                     |
 |-----------------|-----------------------------------------------------|-------------------------------------------------|
-| Windows         | Windows 10 version 1809, x64                        | Windows 10 22H2 or Windows 11, x64              |
+| Windows         | Windows 10 version 1809, x64 or 32-bit x86          | Windows 10 22H2 or Windows 11, x64              |
 | macOS           | macOS 11 Big Sur, Apple silicon or Intel            | A current macOS release                         |
 | Linux           | x86_64 or arm64 with glibc 2.35 (Ubuntu 22.04, Debian 12, Fedora 36 or later) | A current distribution, X11 or Wayland |
 | Browser         | WebGL 2                                             | A current Chrome, Edge, Firefox or Safari       |
 | Graphics        | OpenGL 2.1, or none (drawn on the CPU)              | A card with Direct3D 12, Vulkan or Metal        |
 | Memory (RAM)    | 2 GB (estimate)                                     | 8 GB (estimate)                                 |
-| Processor       | Any 64-bit x86_64 or ARM64 processor, 2 cores       | 4 cores or more                                 |
+| Processor       | x86_64 or ARM64 (x86 on 32-bit Windows), 2 cores    | 4 cores or more                                 |
 | Disk            | 150 MB free                                         | 500 MB free                                     |
 
 ## Operating systems
@@ -24,8 +24,12 @@ memory, processor and disk lines are measured or estimated, and say so.
 - **Windows:** 10 version 1809 (build 17763) or later, x64. That is the
   floor of the Store package (`packaging/windows/msix/AppxManifest.xml`);
   the installer and the portable zip carry the C runtime inside the
-  program, so a fresh Windows needs nothing more. There is no 32-bit
-  build and no Windows on ARM build.
+  program, so a fresh Windows needs nothing more. 32-bit Windows 10 has
+  its own installer and portable zip (`windows-x86`, built for
+  `i686-pc-windows-msvc`, #1975); its installer refuses 64-bit Windows,
+  which takes the x64 files, and the Store has no 32-bit package. A
+  32-bit program can use at most 2 GB of memory, so very large drawings
+  and exports are better done on 64-bit Windows. There is no Windows on ARM build.
 - **macOS:** 11 Big Sur or later (`LSMinimumSystemVersion` in
   `packaging/macos/Info.plist`), with a separate download for Apple
   silicon (arm64) and for Intel (x86_64).

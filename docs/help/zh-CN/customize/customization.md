@@ -42,6 +42,7 @@
 ![自定义选项的调色板页面](../../img/customize-customization-color-palette.png)
 
 - [[options.palette_auto_update]] 和 [[options.palette_show_document]]（均打开）。
+- 默认调色板的 [[options.palette_position]]（顶部、底部、左侧、右侧或浮动），与其自身菜单的设置相同；工具栏锁定时不可更改。
 - [[options.palette_swatches]]：[[options.palette_no_color]]（打开），以及 [[options.palette_right_button]] 的作用：[[options.palette_set_outline]]（起初选用）或打开 [[options.palette_context_menu]]。
 
 请参阅 [调色板](../color/palettes.md)。

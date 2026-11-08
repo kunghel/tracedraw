@@ -77,6 +77,9 @@ place. Sous [[options.other]] : [[bars.lock]] et
 
 - [[options.palette_auto_update]] et [[options.palette_show_document]]
   (actifs tous les deux).
+- [[options.palette_position]] (Haut, Bas, Gauche, Droite ou Flottante) de
+  la palette par défaut, comme son propre menu la règle ; elle ne change
+  pas tant que les barres d'outils sont verrouillées.
 - [[options.palette_swatches]] : [[options.palette_no_color]] (actif), et ce
   que fait le [[options.palette_right_button]] :
   [[options.palette_set_outline]] (au départ) ou ouvrir le

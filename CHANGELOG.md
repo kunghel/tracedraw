@@ -4,17 +4,131 @@ Versions follow the tags of this repository; every push to `main` also
 publishes a nightly build. [`docs/features.md`](docs/features.md) has the
 full, row-by-row status.
 
-## Unreleased
+## 0.42.0 (2026-11-08)
 
+- Export opens the file dialog in the folder exported to last, kept between sessions, instead of the drawing's folder or the default one (#1817).
+
+- Objects docker: a layer's menu has Cut, Copy and Paste for the layer's objects, as the Edit menu has for the selection (#1992).
+
+- Insert Page Number on all, odd or even pages with no master layer active makes a master layer showing on those pages ("Page Numbers", in front) holding one page number field, so pages added or moved later show their own number; one undo step takes both away (#1709).
+
+- Rotate mode: the turning and slanting arrows and the centre mark get a white edge, so they show on dark objects (#1664).
+
+- The Pan tool's icon is an open hand (#1727).
+
+- Print: "Print the page background" on the Composite tab; off, print and Print Preview leave the page colour out while the screen and exports keep it (#1651).
+
+- Align and Distribute: Distribute to has Set spacing, a distance in the ruler unit kept between the objects, their edges or their centres, the first object staying where it is (#2005).
+
+- Shape Nesting keeps the spacing between objects and keeps them on the sheet: rounded outlines were read by their chords and overlapped or ran past the edge. An open line inside an outline is a piece of its own.
+
+- Find Crossings has On OK: Select them (as before) or Fix them, which rebuilds outlines that cross themselves and, with Also between objects, welds objects that cross each other, one undo step.
+
+- Blends inside a group follow the group when it is moved, resized or turned, on screen and in exports (#2023).
+
+- Android: Shift, Ctrl and Alt of a Bluetooth or USB keyboard reach the app, so shortcuts and modified drags work (#2052).
+
+- Smooth, Smear, Twirl, Attract and Repel, Smudge and Roughen: a drag that starts with Shift held sizes the nib on the drawing, and Shift+wheel (Alt+wheel while the wheel scrolls) steps it by 10 %.
+
+- Help > Search Commands (Ctrl+Shift+P) finds a menu command by its name, menus or shortcut and runs it.
+
+- A palette in a bar of its own can dock among the toolbars along the top, between two rows of them or under them all (Position > Dock at Top, Among the Toolbars).
+
+- Clip frames with a drop shadow no longer show a thin line along the frame's edge, and a filled frame's shadow has no dark rim.
+
+- The Crop tool cuts an upright picture's pixels by default; SVG, PDF, EPS, EMF and WMF exports trim a picture inside a clip frame to what the frame shows instead of writing the hidden part.
+
+- AI Drawing, AI Generate, recolouring and Remove Background say why a request failed (a used up quota, a refused key, a service that took too long or is busy, an unknown model), and the model lists keep every model set up by hand and list every model the service has.
+
+- Shape tool: a quick Shift+click on the next character's node adds it, where it was taken as a double click and emptied the chosen nodes (#1933).
+
+- Shape tool: with the corner rings on, the property bar has Corner rounding, the radius of the chosen corners or of every corner of the selected curves, and Clear Rounding; a plain click on a ring chooses its corner (#2057).
+
+- Shape tool: the node commands have keys of their own while nodes are chosen (Shift+L To Line, Shift+U To Curve, Shift+C Cusp, Shift+M Smooth, Shift+Y Symmetrical, Shift+B Break Curve, Shift+J Join Nodes) and are in Object > Nodes, so Options > Customization > Commands lists them and can give them other keys (#2001).
+
+- Variable Outline tapers on closed objects: a lone width node eases to half the outline width half way round the loop, and a wide reach on the inside of a curve fills it to its centre with smooth edges instead of a staircase and loose slivers.
+
+- Break Apart (Ctrl+K) on a brush stroke gives its band as a group of filled curves and its path as a plain line above it, one undo step.
+
+- Edit Symbol (the Symbols docker's Edit button, an instance's right-click menu, Object > Symbol, or a double-click on an instance) puts the symbol's objects on the page to be changed in place; Finish updates every instance in one undo step (#1980).
+
+- The overflow tab of a paragraph frame takes a click with any tool, and the pointer over it shows that the text can flow on (#1986).
+
+- Vertical text can set its columns left to right as well as right to left, from the property bar or Text > Vertical Columns Left to Right (#1986).
+
+- Snapping: a dragged guideline stops on the points and lines of objects and marks the snap; a side being resized stops on the points and lines it meets along its length; a corner keeping its proportions stays on the guideline it snapped to; interactive fill and transparency nodes snap; groups, texts and open curves offer their centre (#2004).
+
+- A thick outline is picked where it shows, by the Pick tool, the Shape tool's segments and colour drops, also outlines lying outside or inside a closed object and variable widths; nodes and control handles are taken on their whole marker (#1935).
+
+- Mesh fill: the nodes, those on the mesh's edge too, are dragged with their colour and snap, and the selected node shows a handle on each grid line leaving it to bend the line. Saving as .cdr keeps a mesh as its mean colour and the status bar says how many went out that way (discussion #2073).
+
+- A move with the left button let go over another object with Alt held copies the fill onto it, with Alt+Shift the outline; the selection stays where it was (discussion #2066).
+
+- Saving .cdr (version 16 and later) with Embed fonts: a drawing whose text uses only the bold face of a font (bold "Khand" text, or regular Khand text drawn by the only Khand file installed, the bold one) no longer lists a regular face of that font too. The file carried a plain record of the regular face and named it in its style table, two references to a face it neither used nor embedded, so the program that reads `.cdr` files could ask for "Khand (Normal)" on a computer where Khand is not installed, although the bold face is in the file. Files that program saves hold a record per face used and name the first of them in the style table, and TraceDraw now writes the same; regular text keeps its record, and files before version 16 are unchanged (#1733, #1009, #1055).
+
+- File > Export with "Do not show filter dialog" on offers every format in the file dialog, the one set in Options > File Formats first, and exports in the format of the extension chosen; it offered that one format only.
+
+- Weld, Trim and the other shaping operations keep a mesh fill: the result showed no colour when the object with the mesh had been moved or resized.
+
+- Objects docker: an object's row dragged up or down the list moves the object in the stacking order, in front of the row it is let go on (its upper half) or behind it (its lower half), with a line showing where it goes; before, only the Order commands and their shortcuts changed the order.
+
+- Holding N opens the Navigator, as holding its button in the corner between the scrollbars does: move the pointer over the picture to go there.
+
+- Twirl and Attract and Repel start at the press and keep working with the button held still; they waited for the pointer to move before doing anything. Roughen adds its teeth once per spacing along the stroke instead of at every frame, so going over a stretch no longer piles nodes into a tangle.
+
+- Area Fill fills the area an open line closes off when its ends lie exactly on another outline, as Virtual Segment Delete leaves them: on a large circle the ends sat a hair outside the outline as it is measured, and the area was taken for open (#2076).
+
+- Sliders in dockers and dialogs take the whole width of their row, as Object opacity does, also when a box or a unit list shares the row (the outline width, tolerances, the font sample size); before they kept a short fixed length there.
+
+- File managers show a .tdraw drawing as a small picture of its first page. On Windows the installer adds a thumbnail provider for the Explorer; on Linux the .deb installs the drawing type and a thumbnailer, and `tracedraw-cli thumbnail <file> <out.png> [size]` makes the picture for any file TraceDraw opens.
+
+- Ellipse arcs stay unfilled while Fill open curves is off; uniform transparency set on the fill alone or on the outline alone fades only that part; the dimension tools snap to the ends, nodes and edges of objects even with Snap To Objects off.
+
+- Page tabs: a tab dragged along the row and let go over another tab moves its page there, so pages can be put in another order without the Page Sorter (#2064).
+
+- Polyline tool: a drag draws a freehand line, as a click places a straight segment, so one curve can mix straight and freehand parts (#2074).
+
+- Multipage View: a press on an object that lies off its page, on the desktop, or over the current page while it belongs to another page, makes that object's page current and picks the object in the same click; such objects could not be selected (#2055).
+
+- Guidelines: a click on a guideline of the master page (every page shows them; opening a `.cdr` file puts its guidelines there) picks it, moves it or deletes it, and a right click opens its menu, also while the page's own guidelines were the ones being edited: the click switches to the set the guideline is in. Such a guideline could be seen but not touched (#2029).
+
+- Ctrl+Tab brings the next document tab to the front and Ctrl+Shift+Tab the previous one, round the end, so open drawings can be switched from the keyboard (#2068, #2058).
+
+- Symbols: Create New Symbol keeps the selection handles around the new symbol. They jumped to its lower left corner as a 10 x 10 mm box, and a symbol inserted from the Symbols docker was picked the same way (#1939, #1980).
+
+- Text: Shift+F3 opens Text > Change Case while a text is being typed as well; the shortcut did nothing until the text was selected with the Pick tool (#2059).
+
+- Page tabs: the current page's tab is highlighted in the same colour as the active document tab above the rulers, so the page being worked on stands out (#2049).
+
+- Print and Print Preview: the printer printed to last is offered again for the rest of the session, instead of the system's default every time; a new run starts on the default again unless Options > Printing remembers the last choices (#2056).
+
+- Touch screens: a finger dragged along a toolbar, the property bar, the toolbox, the colour palette or a column of docker tabs that is longer than the screen slides it with the finger, so the hidden buttons, tools, options and colours of a phone's narrow screen can be reached; a tap on a button still works, a finger that slid the bar presses nothing when it lifts, and a finger dragged off the palette onto the drawing still drags the colour. The mouse keeps its drags on the bars. A docker's contents longer than the docker scroll under a finger too (#1997).
+
+- Update card: when a newer release is known, a card opens in the middle of the window at start with the icon, an UPDATE badge, the two versions and Update now, so TraceDraw can be updated from there without opening Help > Updates; it shows the download and then offers Restart now, What's new opens the release notes, and Dismiss closes it until the next start (which brings it back until the update is installed or skipped).
+- Help > Updates: Install now works for every kind of copy that has a release file, not only for a Linux AppImage: the Windows installer and portable zip, the macOS app, the Linux tar.gz and the Linux `.deb`, so a new version no longer needs the old one to be uninstalled first (the `.deb` asks for the administrator's password through the system's dialog; the portable zip keeps its settings folder). The download is checked against the release's digest; on Windows TraceDraw then closes (asking about unsaved drawings), the installer runs over the existing copy with your settings and file associations kept, and the new version starts by itself; on a Mac the app is replaced in place. After an in-place install a Restart now button opens the new version. A failed check leaves the installed copy untouched and offers Download.
 - Linked text content: Text > Link Text Content (also on the right-click menu) links the characters of two texts or more, so whatever is typed in any of them appears in the others at once, both ways, while each keeps its own font, size, colours and effects. Change the word of a 3D blend, an extrusion or a shadow text once. The Blend panel can link the two texts of a blend; a linked text shows the others of its link with dashed outlines and a chain mark, Undo takes a change back in all of them in one step, copies stay linked, and Unlink Text Content lets a text go its own way. This is not the frame flow of Paragraph Text Frame > Link; `.tdraw` files keep the link, `.cdr` files get plain texts (#1568, #1364, #1194).
 
+- File > Import of a PDF (or PDF-compatible `.ai`) file of several pages asks which pages to bring in and where, in a new Import PDF Pages dialog: All or a list such as "1-3, 5", with each page's size and orientation shown and ticked. As new pages after the current page (the default), each chosen page becomes a page of the drawing with its own size and orientation, in order, its spot inks joining the drawing's; On the current page puts each page's objects on the active layer as a group. The whole import is one undo step, and it follows the text question and the password of a protected file as before, on the desktop, in the browser and on Android. This merges PDFs into one drawing; before, Import took only the first page. A file of one page comes in as before, without asking.
+
+- Facing pages: Page > Facing Pages (and Document Options > Layout) shows the pages side by side in spreads while drawing, page 1 alone on the right and then 2-3, 4-5..., or 1-2, 3-4... with Page > Facing Pages Start On > Left Side. Objects can be drawn across the spine and show on both pages; a press, the page tabs or the navigator make the facing page current without moving the view; guidelines, snapping, the bleed (around the whole spread) and the Multipage View (spreads two a row) follow. Adding or removing pages reflows the spreads. Export has a Spreads option that writes each spread as one page; pages exported or printed alone carry what reaches over the spine from the facing page. The setting is saved in `.tdraw` files; `.cdr` files do not carry it (#1972, #1660).
+
 - Tools > TraceCut... has a picture of its own in the menus: a dashed cut line with the knife on it.
+
 - TraceCut: the preview zooms and pans as the drawing does. The wheel zooms at the pointer (Ctrl+wheel too, and a pinch on touch screens and touchpads), a drag with the left or middle button pans, a double click fits again, and buttons in its corner zoom in and out, fit the whole result, zoom to the selected objects and show real size (1:1); + and - zoom and 0 fits with the pointer over it. The outlines are drawn again at each zoom, so they stay sharp, and what is outside the box is skipped. Each tool keeps its zoom while the window is open. With nothing selected the preview says "Select the objects to cut, nest or measure" instead of showing an empty box, and Apply and OK, greyed out, say why. The Measure tools show perimeter, area, cutting time and cost beside the preview at once and as the selection or settings change, without Apply.
+
+- Windows with two graphics cards: a start whose window never shows now goes on with OpenGL by itself. The start counted as working once the window was made, before the graphics card had drawn anything, so a driver that hung on the first frame (Vulkan on a GeForce GT 750M beside an Intel HD 4600) left the window hidden for good and the next start tried the same card again. A start now works only once its first frame is on the screen: after 20 seconds without one TraceDraw starts again with OpenGL, a start after one closed by hand goes on with OpenGL too, and the status bar says so once, with a click to Options > General to choose the graphics card again (#1999).
+
 - Repeat Copies: Fill page tiles the selection over the page, or an area of it, as many copies as fit: margins (one for all sides or each side apart), a gap across and down, every second row shifted if asked, the copies as they stand, turned 90 degrees or whichever fits more, with the count of each way shown ("4 x 6 = 24 copies") and trim marks at every cut line. The places are outlined while the panel is worked in, and Apply is one undo step (#1255).
+
+- Standard toolbar: the Launch list no longer holds Color Management. Launch is for the tools that come with TraceDraw (Font Manager, TraceCut, the Welcome Screen); Color Management is a settings dialog and stays in the Tools menu.
 
 - Print and Print Preview: the gap between pages is set across and down apart, for several pages per sheet and repeat on the sheet (#1795).
 
+- Linked paragraph text frames: deleting a frame of a chain (Delete, Cut, a group holding it) removes only the frame. Its text stays with the chain and flows on into the frames left, the frame after it showing what it showed and the last frame taking the rest with the overflow mark when it does not fit; a chain of two left with one frame becomes an ordinary paragraph frame holding all the text. One Undo brings the frame and the flow back. The text was deleted with the frame and the chain broke in two (#1986, item 2).
+
 - Print and Print Preview: several pages per sheet can run down the columns, either on each sheet (1 2 3 down the first column, 4 5 6 down the second) or through all sheets, so the columns cut from the stack run in one series, for serial numbers on ID cards (#1658).
+
+- Shape tool: Edit > Delete removes the chosen nodes, as the Delete key and the right-click menu do, and the curve stays; it deleted the whole object while nodes were chosen. With no node chosen, Edit > Delete and the right-click menu's Delete remove the selected object as the Delete key does (the menu row was greyed then). One undo step brings the nodes back (#1982).
 
 - Print and Print Preview: the layout (imposition, sheet, gaps, margins, booklet settings, bleed and marks) can be kept as a named preset and chosen again, and saved to a `.tdlayout` file and loaded from one (#1796).
 

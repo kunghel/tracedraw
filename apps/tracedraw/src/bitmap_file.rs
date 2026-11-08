@@ -231,9 +231,9 @@ pub fn read(bytes: &[u8]) -> Result<ReadPicture, String> {
     if let Some(p) = read_cmyk_tiff(bytes) {
         return Ok(p);
     }
-    let rgba = image::load_from_memory(bytes)
+    let rgba = crate::files::decode_picture(bytes)
         .map_err(|e| e.to_string())?
-        .to_rgba8();
+        .into_rgba8();
     Ok(ReadPicture { rgba, planes: None })
 }
 
@@ -241,7 +241,14 @@ fn read_cmyk_tiff(bytes: &[u8]) -> Option<ReadPicture> {
     if !(bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*")) {
         return None;
     }
-    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).ok()?;
+    // Print-size pictures too (#2000): the reader's own guard is 256 MiB.
+    let limit = usize::try_from(crate::files::picture_decode_limit()).unwrap_or(usize::MAX);
+    let mut limits = tiff::decoder::Limits::default();
+    limits.decoding_buffer_size = limits.decoding_buffer_size.max(limit);
+    limits.intermediate_buffer_size = limits.intermediate_buffer_size.max(limit);
+    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes))
+        .ok()?
+        .with_limits(limits);
     let step = match dec.colortype().ok()? {
         tiff::ColorType::CMYK(8) => 4,
         tiff::ColorType::CMYKA(8) => 5,

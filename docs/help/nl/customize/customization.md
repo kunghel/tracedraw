@@ -75,6 +75,9 @@ de balk.
 
 - [[options.palette_auto_update]] en [[options.palette_show_document]] (beide
   aan).
+- [[options.palette_position]] (Boven, Onder, Links, Rechts of Zwevend) van
+  het standaardpalet, zoals het eigen menu van het palet die instelt; die
+  verandert niet zolang de werkbalken vergrendeld zijn.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (aan), en wat de
   [[options.palette_right_button]] doet: [[options.palette_set_outline]] (in
   het begin) of het [[options.palette_context_menu]] openen.

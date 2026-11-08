@@ -961,10 +961,8 @@ fn launch_button(app: &mut App, ui: &mut Ui, bar: &str) {
                 app.show_welcome = true;
                 ui.close();
             }
-            if ui.button(tr("menu.tools.color_management")).clicked() {
-                app.dialog = crate::ui::dialogs::Dialog::ColorManagement(Default::default());
-                ui.close();
-            }
+            // Color Management is a settings dialog, not a tool: it is in
+            // the Tools menu only.
         });
 }
 
@@ -2162,6 +2160,29 @@ fn text_properties(app: &mut App, ui: &mut Ui) {
         {
             app.set_vertical_text(true);
         }
+        // The order of the columns of vertical text (#1986).
+        if let Some(cols) = app.vertical_columns() {
+            use tracedraw_core::VerticalColumns as C;
+            for (value, label, key) in [
+                (C::RightToLeft, "\u{25C0}", "toolbar.columns_right_to_left"),
+                (C::LeftToRight, "\u{25B6}", "toolbar.columns_left_to_right"),
+            ] {
+                if ui
+                    .add_sized(
+                        [22.0, 22.0],
+                        egui::Button::selectable(
+                            cols == value,
+                            egui::RichText::new(label).size(14.0),
+                        ),
+                    )
+                    .rich_tip(crate::ui::tips::keyed(key))
+                    .clicked()
+                    && cols != value
+                {
+                    app.set_vertical_columns(value);
+                }
+            }
+        }
     }
     vsep(ui);
     let shapes = app.selected_rc();
@@ -2928,6 +2949,36 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
     if r.changed() {
         app.set_curve_smoothness(v);
     }
+    // The corners' rounding, as the corner widgets set it by dragging
+    // (#2057): the chosen rings' radius, or every corner's with none
+    // chosen; the button makes them sharp again.
+    if let Some((radius, mixed)) = app.corner_rounding() {
+        sep(ui);
+        let mut set = None;
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::keyed("toolbar.corner_rounding"),
+            |ui| {
+                let size = Tokens::prop_icon();
+                let (spot, _) =
+                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                crate::ui::propbar::draw_pic(ui.painter(), spot, Pic::CornerRound, Tokens::icon());
+                set = crate::ui::propbar::distance_mixed(ui, app, radius, 72.0, mixed);
+            },
+        );
+        if button(
+            ui,
+            Pic::CornerClear,
+            "toolbar.clear_rounding",
+            mixed || radius > 0.0,
+            false,
+        ) {
+            set = Some(0.0);
+        }
+        if let Some(r) = set {
+            app.set_corner_rounding(r);
+        }
+    }
     if !has_curve && !app.selection.is_empty() {
         sep(ui);
         if pic_button(
@@ -3563,5 +3614,83 @@ fn shadow_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::Shape]) {
     }
     if shapes.is_empty() {
         dim(ui, "toolbar.shadow_hint");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::dialogs::Dialog;
+
+    /// One frame of the whole window; the texts it drew and where.
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, egui::Rect)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The Launch list holds the tools (Font Manager, TraceCut, the
+    /// Welcome Screen) and no longer Color Management, a settings dialog
+    /// kept in the Tools menu; a click on an entry opens it.
+    #[test]
+    fn the_launch_list_holds_the_tools_and_opens_them() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.settings.tracecut.show = true;
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        egui::Popup::open_id(&ctx, egui::Id::new(("launch_menu", "standard")));
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame(&ctx, &mut app, Vec::new());
+        }
+        let has = |key: &str| texts.iter().any(|(t, _)| *t == tr(key));
+        assert!(has("menu.tools.font_manager"));
+        assert!(has("menu.tools.tracecut"));
+        assert!(has("menu.window.welcome_screen"));
+        assert!(
+            !has("menu.tools.color_management"),
+            "not in the Launch list"
+        );
+        let at = texts
+            .iter()
+            .find(|(t, _)| *t == tr("menu.tools.font_manager"))
+            .map(|(_, r)| r.center())
+            .expect("Font Manager in the list");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(true)]);
+        frame(&ctx, &mut app, vec![button(false)]);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        assert!(matches!(app.dialog, Dialog::FontManager(_)));
     }
 }

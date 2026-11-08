@@ -84,7 +84,12 @@ impl App {
         } else if self.pending_copy_properties {
             self.pending_copy_properties = false;
             if let Some(t) = target {
-                self.copy_properties_from(t);
+                // Read from the object clicked inside a group or clip
+                // frame, which shows the properties (#1550).
+                match self.leaf_of(t, p) {
+                    Some(leaf) => self.copy_properties_from_shape(t, &leaf),
+                    None => self.copy_properties_from(t),
+                }
             }
         } else if let Some(kind) = self.pending_copy_effect.take() {
             if let Some(t) = target {
@@ -487,24 +492,54 @@ impl App {
     }
 
     /// Effect nodes (perspective, mesh) under the pointer, for the Shape
-    /// and Mesh Fill tools: (shape, node index).
+    /// and Mesh Fill tools: (shape, node index). The nearest within the
+    /// pick distance (it grows with the node size, #1935) of the nodes and
+    /// of the handles of the selected mesh node (they lie along its grid
+    /// lines); a node wins over a handle as near.
     pub fn effect_node_at(&self, p: Point) -> Option<(ShapeId, usize)> {
-        let tol = 5.0 / self.view.zoom as f64;
-        for s in self.selected_shapes() {
-            for (i, q) in effect_nodes(&s) {
-                if (q - p).hypot() <= tol {
-                    return Some((s.id, i));
-                }
+        let tol = self.settings.nodes.pick_px() / self.view.zoom.max(1e-6) as f64;
+        let nearest = |points: Vec<((ShapeId, usize), Point)>| {
+            points
+                .into_iter()
+                .map(|(key, q)| (key, (q - p).hypot()))
+                .filter(|(_, d)| *d <= tol)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(key, _)| key)
+        };
+        let mut points: Vec<((ShapeId, usize), Point)> = self
+            .selected_shapes()
+            .iter()
+            .flat_map(|s| {
+                effect_nodes(s)
+                    .into_iter()
+                    .map(move |(i, q)| ((s.id, i), q))
+            })
+            .collect();
+        // After the nodes: a node and a handle as near win the node.
+        if let Some((id, i)) = self.selected_mesh_node() {
+            if let Some(s) = self.doc().find_shape(id) {
+                points.extend(
+                    mesh_handle_points(s, i)
+                        .into_iter()
+                        .map(|(k, q)| ((id, k), q)),
+                );
             }
         }
-        None
+        nearest(points)
     }
 
-    /// Drag an effect node; returns true when handled.
+    /// Drag an effect node; returns true when handled. A drag takes the
+    /// node (or the selected mesh node's handle) under the press, not
+    /// under the pointer where the drag is noticed a few pixels on, and
+    /// the node follows the pointer, snapping where it lands (#2004,
+    /// discussion #2073).
     pub fn effect_node_input(&mut self, response: &Response, p: Point) -> bool {
         if response.clicked_by(PointerButton::Primary) {
             if let Some(hit) = self.effect_node_at(p) {
-                self.selected_effect_node = Some(hit);
+                // A handle keeps its node selected.
+                if !crate::mesh_tool::is_mesh_handle(hit.1) {
+                    self.selected_effect_node = Some(hit);
+                }
                 return true;
             }
         }
@@ -536,46 +571,38 @@ impl App {
             }
         }
         if response.drag_started_by(PointerButton::Primary) {
-            if let Some(hit) = self.effect_node_at(p) {
-                self.effect_node_drag = Some(hit);
-                self.selected_effect_node = Some(hit);
+            let press = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .map(|o| self.view.to_page(o))
+                .unwrap_or(p);
+            let hit = self
+                .effect_node_at(press)
+                .map(|h| (h, press))
+                .or_else(|| self.effect_node_at(p).map(|h| (h, p)));
+            if let Some(((id, index), from)) = hit {
+                let at = self
+                    .doc()
+                    .find_shape(id)
+                    .and_then(|s| effect_point(s, index))
+                    .unwrap_or(from);
+                self.effect_node_grab = at - from;
+                self.effect_node_drag = Some((id, index));
+                if !crate::mesh_tool::is_mesh_handle(index) {
+                    self.selected_effect_node = Some((id, index));
+                }
                 self.effect_node_stepped = false;
-                self.drag = Drag::Node { last: p };
+                self.drag = Drag::Node { last: from };
+                // The node catches up with the pointer now.
+                self.effect_node_drag_to(p);
                 return true;
             }
         }
-        let Some((id, index)) = self.effect_node_drag else {
+        if self.effect_node_drag.is_none() {
             return false;
-        };
+        }
         if response.dragged_by(PointerButton::Primary) {
-            if let Drag::Node { last } = self.drag {
-                let delta = p - last;
-                if let Some(s) = self.doc().find_shape(id).cloned() {
-                    let inv = s.transform.inverse();
-                    let ld = (inv * (Point::ZERO + delta)) - (inv * Point::ZERO);
-                    let mut effects = s.effects.clone();
-                    let mut fill = s.fill.clone();
-                    move_effect_node(&mut effects, &mut fill, index, ld);
-                    // One undo step for the whole drag.
-                    if self.effect_node_stepped && self.engine.undo_label() == Some("Edit Effect") {
-                        let _ = self.engine.undo();
-                    }
-                    self.effect_node_stepped = true;
-                    let _ = self
-                        .engine
-                        .run_with_label(&Command::SetEffects { shape: id, effects }, "Edit Effect");
-                    if fill != s.fill {
-                        let _ = self.engine.run_with_label(
-                            &Command::SetFill {
-                                shapes: vec![id],
-                                fill,
-                            },
-                            "Edit Effect",
-                        );
-                    }
-                }
-                self.drag = Drag::Node { last: p };
-            }
+            self.effect_node_drag_to(p);
             return true;
         }
         if response.drag_stopped() {
@@ -584,6 +611,51 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// The pointer of an effect node drag is at `p`: the node (or handle)
+    /// goes to it, less the offset it was grabbed at, snapped; one undo
+    /// step for the whole drag.
+    pub fn effect_node_drag_to(&mut self, p: Point) {
+        let Some((id, index)) = self.effect_node_drag else {
+            return;
+        };
+        let Some(s) = self.doc().find_shape(id).cloned() else {
+            return;
+        };
+        let Some(at) = effect_point(&s, index) else {
+            return;
+        };
+        let to = self.snap_point(p + self.effect_node_grab);
+        let delta = to - at;
+        if delta.hypot() > 0.0 {
+            let inv = s.transform.inverse();
+            let ld = (inv * (Point::ZERO + delta)) - (inv * Point::ZERO);
+            let mut effects = s.effects.clone();
+            let mut fill = s.fill.clone();
+            move_effect_node(&mut effects, &mut fill, index, ld);
+            let mut cmds = Vec::new();
+            if effects != s.effects {
+                cmds.push(Command::SetEffects { shape: id, effects });
+            }
+            if fill != s.fill {
+                cmds.push(Command::SetFill {
+                    shapes: vec![id],
+                    fill,
+                });
+            }
+            if !cmds.is_empty() {
+                // One undo step for the whole drag.
+                if self.effect_node_stepped && self.engine.undo_label() == Some("Edit Effect") {
+                    let _ = self.engine.undo();
+                }
+                self.effect_node_stepped = true;
+                if let Err(e) = self.engine.run_batch("Edit Effect", &cmds) {
+                    self.status = e.to_string();
+                }
+            }
+        }
+        self.drag = Drag::Node { last: p };
     }
 
     /// Right-click: remember where, the UI draws the context menu.
@@ -602,7 +674,7 @@ impl App {
                 if !self.selection.contains(&id) {
                     self.select(vec![id]);
                 }
-            } else if let Some(i) = self.guide_at(p) {
+            } else if let Some(i) = self.pick_guide_at(p) {
                 // A guideline under the pointer gets its own menu.
                 if !self.selected_guides.contains(&i) {
                     self.select(Vec::new());
@@ -661,7 +733,50 @@ pub fn effect_nodes(s: &Shape) -> Vec<(usize, Point)> {
     out
 }
 
+/// The handles of mesh node `i` of `s` on the page, with their effect
+/// node numbers (see [`crate::mesh_tool::mesh_handle_index`]): one on
+/// each grid line that leaves the node, the mesh's edge lines included.
+pub fn mesh_handle_points(s: &Shape, i: usize) -> Vec<(usize, Point)> {
+    use tracedraw_core::MeshHandle;
+    let Fill::Mesh(m) = &s.fill else {
+        return Vec::new();
+    };
+    [
+        MeshHandle::Right,
+        MeshHandle::Left,
+        MeshHandle::Down,
+        MeshHandle::Up,
+    ]
+    .into_iter()
+    .filter_map(|h| {
+        m.handle_point(i, h)
+            .map(|q| (crate::mesh_tool::mesh_handle_index(i, h), s.transform * q))
+    })
+    .collect()
+}
+
+/// Where effect node `index` of `s` is on the page: a perspective
+/// corner, a mesh node or a mesh node's handle.
+pub fn effect_point(s: &Shape, index: usize) -> Option<Point> {
+    if let Some((i, h)) = crate::mesh_tool::mesh_handle_of(index) {
+        let Fill::Mesh(m) = &s.fill else {
+            return None;
+        };
+        return m.handle_point(i, h).map(|q| s.transform * q);
+    }
+    effect_nodes(s)
+        .into_iter()
+        .find(|(k, _)| *k == index)
+        .map(|(_, q)| q)
+}
+
 fn move_effect_node(effects: &mut [Effect], fill: &mut Fill, index: usize, d: Vec2) {
+    if let Some((i, h)) = crate::mesh_tool::mesh_handle_of(index) {
+        if let Fill::Mesh(m) = fill {
+            m.move_handle(i, h, d);
+        }
+        return;
+    }
     for e in effects.iter_mut() {
         if let Effect::Perspective { corners } = e {
             if let Some(c) = index.checked_sub(100).and_then(|i| corners.get_mut(i)) {

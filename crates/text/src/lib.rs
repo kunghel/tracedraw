@@ -1442,6 +1442,11 @@ pub struct TextLayout {
     /// `lines` and `baselines` describe the written lines as if
     /// horizontal; [`TextLayout::line_frame`] maps those into the columns.
     pub vertical: bool,
+    /// Vertical text whose columns go left to right (#1986): each written
+    /// line is placed mirrored across its own band, so its baseline goes
+    /// up (`baselines` and `lines` grow from 0) and the columns run right
+    /// from the frame's left edge, the letters keeping their orientation.
+    pub columns_left_to_right: bool,
 }
 
 impl TextLayout {
@@ -3812,6 +3817,7 @@ impl FontSystem {
                 lines: Vec::new(),
                 glyph_layout: GlyphLayout::default(),
                 vertical: false,
+                columns_left_to_right: false,
             };
         }
         let para = req.para;
@@ -3819,6 +3825,9 @@ impl FontSystem {
         // its side (the columns run down the frame's height), and turned
         // into columns as the glyphs are placed; see `orient` below.
         let vertical = para.vertical && req.on_path.is_none();
+        // Columns going left to right: each line mirrored across its own
+        // band (`mirrored_baseline`), as the glyphs are placed.
+        let mirror = vertical && para.columns_left_to_right();
         let frame = req.frame.map(|f| {
             if vertical {
                 Size::new(f.height, f.width)
@@ -4140,6 +4149,8 @@ impl FontSystem {
         let mut glyphs_out = GlyphLayout::default();
         let mut glyph_count = 0usize;
         let mut min_y = 0.0f64;
+        // The far side of the lines placed mirrored (`mirror`).
+        let mut max_y = 0.0f64;
         let mut max_x = 0.0f64;
         let mut line_baselines: Vec<(f64, f64)> = Vec::new();
         let mut line_boxes: Vec<LineBox> = Vec::new();
@@ -4194,7 +4205,11 @@ impl FontSystem {
             let (align, ps) = style_of(line.para);
             let align = *align;
             let step = ps.line_step(m.line_height, m.size);
-            let y = line.y;
+            let y = if mirror {
+                mirrored_baseline(line.y, m.ascent, m.descent)
+            } else {
+                line.y
+            };
             // Drawn only while the text fits the frame: the rest overflows.
             let line_drawn = overflow_line.is_none_or(|o| li < o);
 
@@ -4209,7 +4224,14 @@ impl FontSystem {
             let x0 = line.x0;
             if let (Some(cap_x), Some(g), false) = (line.cap_x, glyphs.first(), artistic) {
                 let n = ps.drop_cap_lines as f64;
-                let (scale, baseline) = drop_cap_placement(&g.path, n, step, y, m.ascent);
+                let (scale, baseline) = drop_cap_placement(&g.path, n, step, line.y, m.ascent);
+                // Mirrored: the cap's band runs from the first line's top
+                // to its own descent, its baseline on the band's left.
+                let baseline = if mirror {
+                    -(line.y + m.ascent) + m.descent * scale
+                } else {
+                    baseline
+                };
                 let a = Affine::translate((cap_x, baseline)) * Affine::scale(scale);
                 let a = orient(a, g, m.ascent * scale);
                 if span_drawn(g.span) {
@@ -4483,6 +4505,7 @@ impl FontSystem {
             line_baselines.push((line_start, y));
             max_x = max_x.max(pen);
             min_y = min_y.min(y - m.descent);
+            max_y = max_y.max(y + m.ascent);
         }
 
         // Vertical alignment in the frame: the lines move down together
@@ -4494,7 +4517,13 @@ impl FontSystem {
                 VerticalAlign::Center => 0.5,
                 VerticalAlign::Bottom => 1.0,
             };
-            let dy = -(h + min_y).max(0.0) * share;
+            // Mirrored lines leave their room on the far side of the
+            // frame (`max_y` from its edge) and move towards it.
+            let dy = if mirror {
+                (h - max_y).max(0.0) * share
+            } else {
+                -(h + min_y).max(0.0) * share
+            };
             if dy.abs() > 1e-9 {
                 // In the columns of vertical text the move is sideways.
                 let shift = if vertical {
@@ -4515,6 +4544,7 @@ impl FontSystem {
                     lb.baseline += dy;
                 }
                 min_y += dy;
+                max_y += dy;
             }
         }
 
@@ -4523,11 +4553,12 @@ impl FontSystem {
         } else {
             0.0
         };
+        let (low, high) = if mirror { (-top, max_y) } else { (min_y, top) };
         let bounds = Rect::new(
             0.0,
-            min_y,
+            low,
             max_x.max(frame.map(|f| f.width).unwrap_or(0.0)),
-            top,
+            high,
         );
         let bounds = if vertical {
             (turn * bounds.to_path(0.01)).bounding_box()
@@ -4549,6 +4580,7 @@ impl FontSystem {
                 lines: line_boxes,
                 glyph_layout: on_path,
                 vertical: false,
+                columns_left_to_right: false,
             };
         }
 
@@ -4562,8 +4594,19 @@ impl FontSystem {
             lines: line_boxes,
             glyph_layout: glyphs_out,
             vertical,
+            columns_left_to_right: mirror,
         }
     }
+}
+
+/// The baseline of a written line of vertical text whose columns go left
+/// to right: the line at `y` (its band from `y - descent` to `y + ascent`)
+/// mirrored across the frame's edge, `y = 0`, its band keeping its
+/// orientation. The first line of a frame (at `-ascent`) lands at
+/// `descent`, its band starting at the edge; the lines after it go up,
+/// which the quarter turn of the columns makes rightwards.
+pub fn mirrored_baseline(y: f64, ascent: f64, descent: f64) -> f64 {
+    -y - ascent + descent
 }
 
 /// Whether a character stands upright in vertical text (ideographs,
@@ -8337,6 +8380,90 @@ mod tests {
             g.with_embedded_fonts(&doc),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// Vertical text with its columns left to right (#1986): every
+    /// written line is the right to left one mirrored across its band, so
+    /// the columns go right from the frame's left edge, the letters keep
+    /// their orientation (each column is the other's moved sideways), and
+    /// the caret's lines say so.
+    #[test]
+    fn vertical_columns_can_run_left_to_right() {
+        use tracedraw_core::document::VerticalColumns;
+        let f = system_with(&[SELAWIK]);
+        let mut sp = TextSpan::new("abcd abcd abcd abcd abcd", "Selawik", 24.0);
+        sp.size_pt = 24.0;
+        let spans = [sp];
+        let mut rtl = ParagraphStyle::default();
+        rtl.vertical = true;
+        let mut ltr = rtl.clone();
+        ltr.vertical_columns = VerticalColumns::LeftToRight;
+        // Columns 40 mm deep across a frame 60 mm wide.
+        let frame = Some(Size::new(60.0, 40.0));
+        let lay = |para: &ParagraphStyle, frame: Option<Size>| {
+            f.layout(&TextRequest {
+                spans: &spans,
+                frame,
+                align: TextAlign::Left,
+                para,
+                on_path: None,
+            })
+        };
+        let (r, l) = (lay(&rtl, frame), lay(&ltr, frame));
+        assert!(!r.columns_left_to_right && l.columns_left_to_right);
+        assert!(r.lines.len() >= 2, "{} lines", r.lines.len());
+        assert_eq!(r.lines.len(), l.lines.len());
+        assert_eq!(r.glyphs, l.glyphs);
+        assert_eq!(r.overflow, l.overflow);
+        for (a, b) in r.lines.iter().zip(&l.lines) {
+            assert_eq!((a.start_char, a.end_char), (b.start_char, b.end_char));
+            assert_eq!(a.edges, b.edges);
+            let m = mirrored_baseline(a.baseline, a.ascent, a.descent);
+            assert!((b.baseline - m).abs() < 1e-9, "{} vs {m}", b.baseline);
+        }
+        // Across the frame: right to left the columns go left from its
+        // right edge (x <= 0), left to right they go right from its left
+        // edge (x >= 0), the first column at the edge.
+        let col =
+            |t: &TextLayout, i: usize| (t.line_frame() * Point::new(0.0, t.lines[i].baseline)).x;
+        assert!(col(&r, 0) > col(&r, 1) && col(&r, 0) < 0.0);
+        assert!(col(&l, 0) < col(&l, 1) && col(&l, 0) > 0.0);
+        let (rb, lb) = (r.path.bounding_box(), l.path.bounding_box());
+        assert!(rb.x1 <= 0.5 && rb.x0 < -5.0, "{rb:?}");
+        assert!(lb.x0 >= -0.5 && lb.x1 > 5.0, "{lb:?}");
+        // The same depth down the columns, the same room across.
+        assert!((rb.y0 - lb.y0).abs() < 1e-6 && (rb.y1 - lb.y1).abs() < 1e-6);
+        assert!((rb.width() - lb.width()).abs() < 1.0, "{rb:?} {lb:?}");
+        assert!(l.bounds.x0.abs() < 1e-9 && r.bounds.x1.abs() < 1e-9);
+
+        // One column: the letters only move sideways, never mirror.
+        let short = [TextSpan {
+            text: "ab".into(),
+            ..spans[0].clone()
+        }];
+        let one = |para: &ParagraphStyle| {
+            f.layout(&TextRequest {
+                spans: &short,
+                frame: None,
+                align: TextAlign::Left,
+                para,
+                on_path: None,
+            })
+        };
+        let (r1, l1) = (one(&rtl), one(&ltr));
+        let line = &r1.lines[0];
+        let dx = mirrored_baseline(line.baseline, line.ascent, line.descent) - line.baseline;
+        let moved = Affine::translate((dx, 0.0)) * r1.path.clone();
+        let (a, b) = (moved.bounding_box(), l1.path.bounding_box());
+        for (p, q) in [(a.x0, b.x0), (a.x1, b.x1), (a.y0, b.y0), (a.y1, b.y1)] {
+            assert!((p - q).abs() < 1e-6, "{a:?} vs {b:?}");
+        }
+        assert!((moved.area() - l1.path.area()).abs() < 1e-6);
+        // The setting is ignored for text in lines.
+        let mut flat = ltr.clone();
+        flat.vertical = false;
+        let h = lay(&flat, frame);
+        assert!(!h.vertical && !h.columns_left_to_right);
     }
 
     /// Vertical text (#257): the written line becomes a column going

@@ -22,6 +22,7 @@ TraceDraw の各バージョンでは機能と修正が加わります。この�
 
 ## 最近のバージョンの主な新機能 {#highlights}
 
+- **見開きページとリンクされたテキスト。** [[menu.layout > menu.layout.facing_pages]] でページを見開きで並べて表示し、[[menu.text > menu.text.link_content]] でテキストをリンクして 1 つへの入力をほかにも反映します。複数ページの PDF は読み込むページを尋ね、[[menu.edit > menu.edit.step_and_repeat]] でページをコピーで埋められます。
 - **タッチとスマートフォン。** 標準ツールバーの Shift、Ctrl、Alt ボタンは指のために押されたままになります。Android ではインターフェースがカメラの切り欠きや角の丸みを避けます。iPad の Safari で Apple Pencil が使えます。
 - **ファイル。** .cdr ファイルは重なった曲線の塗りつぶし規則を保ち、タブ位置、段組みのテキスト、全ページ共通のガイドライン、マスターページのオブジェクトを保って開きます。
 - **画像、印刷、作業領域。** トリミングツールの画像ピクセルのトリミングと [[menu.bitmaps > menu.bitmaps.crop_to_frame]] で画像のピクセルを切り取れます。グレースケールと逆順で印刷できます。[[menu.view > menu.view.scrollbars]] でスクロールバーを隠せます。

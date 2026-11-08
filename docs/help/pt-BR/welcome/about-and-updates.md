@@ -32,11 +32,41 @@ Para procurar agora:
    - **Pular esta versão** deixa de oferecer essa versão.
    - [[dialog.close]] fecha a caixa.
 
-Quando o TraceDraw roda como AppImage no Linux, a caixa também pode oferecer
-**Instalar**: ela baixa o novo AppImage ao lado do que está em uso, confere se
-o download está completo e é autêntico e o coloca no lugar do arquivo antigo. A
-nova versão começa na próxima vez que você abrir o TraceDraw. Se algo não
-conferir, o arquivo antigo fica como estava e a caixa diz por quê.
+Quando uma versão mais nova é conhecida, um cartão abre no meio da janela ao
+iniciar o TraceDraw, com os dois números de versão e **Atualizar agora**, e você
+atualiza sem abrir o menu. **Novidades** abre as notas da versão e **Dispensar**
+fecha o cartão até a próxima abertura. Nada é baixado até você escolher
+Atualizar agora.
+
+Quando a sua cópia pode se atualizar sozinha, a caixa também oferece
+**Instalar**, e você não precisa desinstalar nada antes. Isso vale para toda
+cópia que tem um download: o instalador e o zip portátil do Windows, o app do
+Mac e, no Linux, o AppImage, o arquivo compactado e o `.deb`. Instalar baixa a
+nova versão, confere se o download está completo e é autêntico e depois:
+
+- no **instalador do Windows**, espera você escolher **Fechar e instalar**: o TraceDraw
+  fecha (perguntando sobre desenhos com alterações não salvas), o instalador
+  roda por cima desta cópia, mantém suas configurações e associações de
+  arquivo, e a nova versão abre sozinha;
+- no **zip portátil do Windows**, troca o programa e seus arquivos no próprio
+  lugar e nunca mexe na pasta de configurações; **Reiniciar agora** abre a
+  nova versão;
+- num **`.deb` no Linux**, espera você escolher **Fechar e instalar**: o
+  TraceDraw fecha, o sistema pede sua senha de administrador, instala o pacote
+  e o TraceDraw abre de novo (se você cancelar a senha, abre a versão antiga);
+- num **arquivo compactado (tar.gz) no Linux**, troca o programa no próprio
+  lugar; **Reiniciar agora** abre a nova versão;
+- no **Mac**, troca o app do TraceDraw no próprio lugar; **Reiniciar agora**
+  abre a nova versão;
+- num **AppImage no Linux**, coloca o novo arquivo no lugar do antigo;
+  **Reiniciar agora** abre a nova versão.
+
+Escolha **Mais tarde** para continuar trabalhando: a nova versão roda na
+próxima vez que você abrir o TraceDraw (no Windows, o instalador baixado só
+roda quando você escolhe Fechar e instalar; num `.deb`, o pacote baixado só é
+instalado nessa hora). Se algo não conferir, a versão antiga fica como estava e
+a caixa diz por quê e oferece **Baixar**. As cópias sem download (outros
+pacotes do sistema, Flatpak, Snap) ficam com **Baixar**.
 
 Se a verificação falhar (por exemplo, sem conexão com a internet), a caixa diz
 isso e oferece a página de versões.

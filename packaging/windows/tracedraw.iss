@@ -1,11 +1,16 @@
 ﻿; Inno Setup script for TraceDraw. Built by CI on windows-latest.
 ; Variables: /DVersion=x.y.z /DSrcDir=<dir with tracedraw.exe and tracedraw-cli.exe>
+; /DArch=x86 for the 32-bit Windows build (i686-pc-windows-msvc, #1975);
+; x86_64 when not given.
 
 #ifndef Version
   #define Version "0.0.0"
 #endif
 #ifndef SrcDir
   #define SrcDir "..\..\target\release"
+#endif
+#ifndef Arch
+  #define Arch "x86_64"
 #endif
 
 [Setup]
@@ -19,13 +24,19 @@ DefaultDirName={autopf}\TraceDraw
 DefaultGroupName=TraceDraw
 UninstallDisplayIcon={app}\tracedraw.exe
 OutputDir=..\..\dist
-OutputBaseFilename=tracedraw-{#Version}-windows-x86_64-setup
+OutputBaseFilename=tracedraw-{#Version}-windows-{#Arch}-setup
 SetupIconFile=..\..\assets\icon\tracedraw.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+#if Arch == "x86"
+; The 32-bit build installs on 32-bit Windows only: 64-bit Windows takes
+; the x86_64 setup, which shares this AppId and folder.
+ArchitecturesAllowed=x86os
+#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 PrivilegesRequiredOverridesAllowed=dialog
 ChangesAssociations=yes
 ChangesEnvironment=yes
@@ -124,6 +135,8 @@ Name: "addtopath"; Description: "{cm:AddToPath}"; GroupDescription: "{cm:Command
 [Files]
 Source: "{#SrcDir}\tracedraw.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\tracedraw-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Explorer thumbnails of .tdraw drawings (the first page)
+Source: "{#SrcDir}\tracedraw_thumbnailer.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
@@ -139,6 +152,14 @@ Root: HKA; Subkey: "Software\Classes\.tdraw"; ValueType: string; ValueName: ""; 
 Root: HKA; Subkey: "Software\Classes\TraceDraw.Document"; ValueType: string; ValueName: ""; ValueData: "TraceDraw Document"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\tracedraw.exe,0"
 Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\tracedraw.exe"" ""%1"""
+; Explorer shows a .tdraw file as a picture of its first page: the
+; thumbnail provider in tracedraw_thumbnailer.dll (apps/tracedraw-thumbnailer)
+Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; ValueType: string; ValueName: ""; ValueData: "TraceDraw thumbnails"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\tracedraw_thumbnailer.dll"
+Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; ValueType: dword; ValueName: "DisableProcessIsolation"; ValueData: "0"
+Root: HKA; Subkey: "Software\Classes\.tdraw\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
 ; "Open with TraceDraw" for .cdr, without stealing the default
 Root: HKA; Subkey: "Software\Classes\.cdr\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Document"; ValueData: ""; Flags: uninsdeletevalue
 ; TraceDraw's language as chosen on the "TraceDraw's language" page:
@@ -152,6 +173,9 @@ Root: HKA; Subkey: "{code:PathRegKey}"; ValueType: expandsz; ValueName: "Path"; 
 
 [Run]
 Filename: "{app}\tracedraw.exe"; Description: "{cm:LaunchProgram,TraceDraw}"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
+; Help > Updates > Install runs this setup quietly with /relaunch=1 once TraceDraw has
+; exited; the new version then starts by itself (the entry above is for the wizard).
+Filename: "{app}\tracedraw.exe"; Flags: nowait shellexec runasoriginaluser; Check: RelaunchRequested
 
 [Code]
 var
@@ -261,6 +285,13 @@ begin
   if (LanguageCombo <> nil) and (LanguageCombo.ItemIndex >= 0) and
      (LanguageCombo.ItemIndex < LanguageCodes.Count) then
     Result := LanguageCodes[LanguageCombo.ItemIndex];
+end;
+
+// Help > Updates > Install runs this setup with /relaunch=1: the new
+// version then starts by itself (the [Run] entry that checks this).
+function RelaunchRequested: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
 end;
 
 function PathRegKey(Param: string): string;

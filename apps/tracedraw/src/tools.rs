@@ -479,6 +479,21 @@ impl Tool {
             )
     }
 
+    /// The shaping brushes, which work with a round nib: Smooth, Smear,
+    /// Twirl, Attract and Repel, Smudge and Roughen. Shift+drag and the
+    /// wheel size their nib (see `brushes.rs`).
+    pub fn is_shaping_brush(self) -> bool {
+        matches!(
+            self,
+            Tool::Smooth
+                | Tool::Smear
+                | Tool::Twirl
+                | Tool::AttractRepel
+                | Tool::Smudge
+                | Tool::Roughen
+        )
+    }
+
     /// Tools that draw by dragging a bounding box.
     pub fn is_box_tool(self) -> bool {
         matches!(

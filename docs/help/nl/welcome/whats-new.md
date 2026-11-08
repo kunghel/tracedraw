@@ -24,6 +24,7 @@ versies.
 
 ## Hoogtepunten van recente versies {#highlights}
 
+- **Tegenoverliggende pagina's en gekoppelde tekst.** [[menu.layout > menu.layout.facing_pages]] toont de pagina's naast elkaar als spreads; [[menu.text > menu.text.link_content]] koppelt teksten zodat typen in de ene de andere wijzigt; een PDF met meerdere pagina's vraagt welke pagina's te importeren; [[menu.edit > menu.edit.step_and_repeat]] kan een pagina met kopieën vullen.
 - **Aanraken en telefoons.** Shift-, Ctrl- en Alt-knoppen op de standaardbalk
   blijven ingedrukt voor een vinger; op Android blijft de interface vrij van
   de camera-uitsparing en de afgeronde hoeken; de Apple Pencil werkt in Safari

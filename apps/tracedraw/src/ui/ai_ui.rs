@@ -281,12 +281,14 @@ mod tests {
         app.ai.key = "k".into();
         app.ai.fake = Some(|_| {
             Ok(crate::ai::HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: r#"{"data":[{"id":"gemini-2.5-flash"}]}"#.into(),
             })
         });
         app.ai_image.fake = Some(|_| {
             Ok(crate::ai::HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: r#"{"models":[{"name":"models/gemini-2.5-flash-image"}]}"#.into(),
             })

@@ -5,6 +5,12 @@
 //! does nothing and a click selects (#271). Objects that are
 //! not curves are converted first. The settings come from the property bar
 //! (`ui::brush_bars`).
+//!
+//! The nib is sized on the drawing too: a drag that starts with Shift
+//! held sizes it instead of brushing (right grows it, left shrinks it,
+//! the circle showing where the press was), and the wheel over the
+//! drawing sizes it a notch at a time with Shift held (Alt held when the
+//! wheel scrolls instead of zooming, where Shift+wheel scrolls sideways).
 
 use crate::app::{App, Drag};
 use crate::tools::Tool;
@@ -16,7 +22,106 @@ use tracedraw_core::{effects, geometry::Point, Command, ShapeKind};
 /// held still, as a pointer move (mm).
 pub const HOLD_MM_PER_S: f64 = 10.0;
 
+/// The smallest and the largest nib radius (mm), as the property bar
+/// takes them.
+pub const MIN_RADIUS: f64 = 0.5;
+pub const MAX_RADIUS: f64 = 500.0;
+
+/// How much one wheel notch grows (or, turned the other way, shrinks)
+/// the nib.
+pub const WHEEL_STEP: f64 = 1.1;
+
+/// The nib being sized by a Shift+drag: the press was at `center` (page)
+/// and `start_x` (screen points across), with a nib of `start_radius`
+/// (mm). The edge of the circle follows the pointer across.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrushResize {
+    pub center: Point,
+    pub start_x: f32,
+    pub start_radius: f64,
+}
+
+/// Whether the wheel turned with `mods` sizes the nib: with Shift while
+/// the wheel zooms (Shift+wheel does nothing else then), with Alt while
+/// the wheel scrolls (Shift+wheel scrolls sideways then, Alt+wheel
+/// nothing else). Ctrl keeps its zoom or scroll.
+pub fn wheel_resizes(wheel_zooms: bool, mods: Modifiers) -> bool {
+    let ctrl = mods.ctrl || mods.command;
+    if wheel_zooms {
+        mods.shift && !ctrl && !mods.alt
+    } else {
+        mods.alt && !ctrl && !mods.shift
+    }
+}
+
+/// The circle of the nib being sized, at the press: drawn over the
+/// drawing while a Shift+drag sizes it, black on a white halo.
+pub fn draw_resize(app: &App, painter: &egui::Painter) {
+    let Some(r) = app.brush_resize else {
+        return;
+    };
+    let px = app.brush_radius as f32 * app.view.zoom;
+    if !px.is_finite() || px <= 0.0 {
+        return;
+    }
+    let c = app.view.to_screen(r.center);
+    painter.circle_stroke(c, px, egui::Stroke::new(3.0, egui::Color32::WHITE));
+    painter.circle_stroke(c, px, egui::Stroke::new(1.0, egui::Color32::BLACK));
+}
+
 impl App {
+    /// The nib's radius set to `mm` (kept between [`MIN_RADIUS`] and
+    /// [`MAX_RADIUS`]); the status bar says the new size.
+    pub fn set_brush_radius(&mut self, mm: f64) {
+        if !mm.is_finite() {
+            return;
+        }
+        self.brush_radius = mm.clamp(MIN_RADIUS, MAX_RADIUS);
+        let size = format!(
+            "{:.1} {}",
+            self.units.from_mm(self.brush_radius),
+            self.units.short()
+        );
+        self.status = crate::i18n::trf("status.brush_size", &[("size", &size)]);
+    }
+
+    /// The wheel turned `notches` (up positive) over the drawing with the
+    /// sizing modifier held: each notch up grows the nib by
+    /// [`WHEEL_STEP`], each notch down shrinks it as much.
+    pub fn brush_wheel(&mut self, notches: f32) {
+        if !notches.is_finite() || notches == 0.0 {
+            return;
+        }
+        let n = f64::from(notches).clamp(-20.0, 20.0);
+        self.set_brush_radius(self.brush_radius * WHEEL_STEP.powf(n));
+    }
+
+    /// A Shift+drag begins sizing the nib at `center` (page), the pointer
+    /// at `x` (screen points across). No stroke begins.
+    pub fn begin_brush_resize(&mut self, center: Point, x: f32) {
+        self.brush_resize = Some(BrushResize {
+            center,
+            start_x: x,
+            start_radius: self.brush_radius,
+        });
+        self.drag = Drag::None;
+    }
+
+    /// The sizing drag moved to `x` (screen points across): the circle's
+    /// edge follows the pointer, so the nib grows as far as the pointer
+    /// went right and shrinks as far as it went left.
+    pub fn brush_resize_to(&mut self, x: f32) {
+        let Some(r) = self.brush_resize else {
+            return;
+        };
+        let zoom = f64::from(self.view.zoom);
+        if !(zoom.is_finite() && zoom > 0.0) || !x.is_finite() {
+            return;
+        }
+        let px = r.start_radius * zoom + f64::from(x - r.start_x);
+        self.set_brush_radius(px / zoom);
+    }
+
     /// A stroke begins at `p`. Brushes change only what is selected:
     /// with nothing selected the stroke does nothing and the status bar
     /// says to select an object first (a click selects, see
@@ -137,13 +242,94 @@ impl App {
         }
     }
 
-    /// The brushes' pointer input.
+    /// The brushes' pointer input. A drag that starts with Shift held
+    /// when the button went down sizes the nib (see
+    /// [`App::begin_brush_resize`]); Shift pressed later in a stroke swaps
+    /// Attract and Repel and Twirl's turn.
     pub fn brush_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
-        if response.drag_started_by(PointerButton::Primary) {
-            self.brush_begin(p);
+        let held = matches!(self.tool, Tool::Twirl | Tool::AttractRepel);
+        // Whether Shift was held when the button went down: the drag
+        // starts a few points later.
+        let shift_id = egui::Id::new("brush_press_shift");
+        let press_shift = response.ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::PointerButton {
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some(modifiers.shift),
+                _ => None,
+            })
+        });
+        if let Some(shift) = press_shift {
+            response.ctx.data_mut(|d| d.insert_temp(shift_id, shift));
         }
-        if response.dragged_by(PointerButton::Primary) {
-            let held = matches!(self.tool, Tool::Twirl | Tool::AttractRepel);
+        let shift_at_press = response
+            .ctx
+            .data(|d| d.get_temp::<bool>(shift_id))
+            .unwrap_or(mods.shift);
+        let x = response
+            .interact_pointer_pos()
+            .map_or_else(|| self.view.to_screen(p).x, |s| s.x);
+        if response.drag_started_by(PointerButton::Primary)
+            && shift_at_press
+            && self.brush_resize.is_none()
+        {
+            // From where the button went down: the drag starts a few
+            // points further on.
+            self.drag = Drag::None;
+            let origin = response.ctx.input(|i| i.pointer.press_origin());
+            match origin {
+                Some(o) => self.begin_brush_resize(self.view.to_page(o), o.x),
+                None => self.begin_brush_resize(p, x),
+            }
+            self.brush_resize_to(x);
+        }
+        if self.brush_resize.is_some() {
+            if response.dragged_by(PointerButton::Primary) {
+                self.brush_resize_to(x);
+            } else {
+                self.brush_resize = None;
+            }
+            return;
+        }
+        // A press let go without a drag ends its stroke too.
+        if held
+            && matches!(self.drag, Drag::Node { .. })
+            && response.ctx.input(|i| i.pointer.primary_released())
+            && !response.drag_stopped()
+        {
+            self.drag = Drag::None;
+            return;
+        }
+        // Twirl and Attract and Repel work from the press, the button held
+        // still: they waited for the pointer to move far enough to count
+        // as a drag (live test of 0.41).
+        let pressed = held
+            && !shift_at_press
+            && response.is_pointer_button_down_on()
+            && response.ctx.input(|i| i.pointer.primary_pressed());
+        if response.drag_started_by(PointerButton::Primary) || pressed {
+            if !matches!(self.drag, Drag::Node { .. }) {
+                self.brush_begin(p);
+            }
+        }
+        let down_here = held
+            && response.is_pointer_button_down_on()
+            && response.ctx.input(|i| i.pointer.primary_down())
+            && matches!(self.drag, Drag::Node { .. });
+        if response.dragged_by(PointerButton::Primary) || down_here {
+            // Roughen adds its teeth once per spacing along the way, not
+            // at every frame over the same stretch, which piled up nodes
+            // in a tangle (live test of 0.41).
+            if self.tool == Tool::Roughen {
+                if let Drag::Node { last } = self.drag {
+                    if (p - last).hypot() < self.brush.roughen_spacing() * 0.5 {
+                        return;
+                    }
+                }
+            }
             let dt = if held {
                 // Keep going while the button is held still.
                 response.ctx.request_repaint();

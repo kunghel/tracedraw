@@ -75,6 +75,9 @@ içerir: çubuktan kaldırdığınız bir düğmeyi oradan geri sürükleyin.
 
 - [[options.palette_auto_update]] ve [[options.palette_show_document]]
   (ikisi de açık).
+- Varsayılan paletin [[options.palette_position]] (Üst, Alt, Sol, Sağ veya
+  Serbest), paletin kendi menüsündeki gibi; araç çubukları kilitliyken
+  değişmez.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (açık) ve
   [[options.palette_right_button]] öğesinin ne yaptığı:
   [[options.palette_set_outline]] (başlangıçta) veya

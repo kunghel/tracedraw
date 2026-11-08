@@ -14,6 +14,7 @@ pub mod pdf;
 pub mod pdf_crypt;
 pub(crate) mod pdf_glyphs;
 pub mod pdf_import;
+pub mod picture_crop;
 pub mod plt;
 pub mod psd;
 pub mod svg;
@@ -102,6 +103,24 @@ pub fn resolve_open_fills(doc: &Document) -> std::borrow::Cow<'_, Document> {
         layer.shapes.iter_mut().for_each(fix);
     }
     std::borrow::Cow::Owned(out)
+}
+
+/// The document as vector exports should see it: open curves' fills as
+/// the screen shows them ([`resolve_open_fills`]) and the pictures in
+/// clip frames without the pixels their frames hide
+/// ([`picture_crop::trim_framed_pictures`]), of page `page` (by index)
+/// alone or of every page.
+pub fn for_export(doc: &Document, page: Option<usize>) -> std::borrow::Cow<'_, Document> {
+    match resolve_open_fills(doc) {
+        std::borrow::Cow::Borrowed(d) => picture_crop::trim_framed_pictures(d, page),
+        std::borrow::Cow::Owned(d) => {
+            let trimmed = match picture_crop::trim_framed_pictures(&d, page) {
+                std::borrow::Cow::Owned(t) => Some(t),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            std::borrow::Cow::Owned(trimmed.unwrap_or(d))
+        }
+    }
 }
 
 /// Native format: pretty JSON with a `.tdraw` extension.

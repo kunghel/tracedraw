@@ -357,6 +357,12 @@ fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) {
                 ui.checkbox(&mut s.between, tr("tracecut.crossings_between"))
                     .rich_tip(crate::ui::tips::keyed("tracecut.crossings_between"));
             });
+            row(ui, &tr("tracecut.on_ok"), |ui| {
+                ui.radio_value(&mut s.fix, false, tr("tracecut.select_crossings"))
+                    .rich_tip(crate::ui::tips::keyed("tracecut.select_crossings"));
+                ui.radio_value(&mut s.fix, true, tr("tracecut.fix_crossings"))
+                    .rich_tip(crate::ui::tips::keyed("tracecut.fix_crossings"));
+            });
         }
         // The other Cut tools: ui/tracecut_cut.rs.
         _ => {}

@@ -11,7 +11,10 @@ where you drag over it, like a sculptor's tool: [[tool.smooth]],
    The brushes change only the selected objects: with nothing selected a drag
    does nothing, and the status bar says to select an object first.
 2. Choose the tool and set its **Nib size** (the radius of the brush, 10 mm
-   at first) and its other settings on the property bar.
+   at first) and its other settings on the property bar. The nib can also be
+   sized on the drawing: hold Shift, press and drag across (right grows the
+   circle, left shrinks it), or hold Shift and turn the mouse wheel (Alt and
+   the wheel when the wheel is set to scroll instead of zoom).
 3. Drag over the outline.
 
 The effect is strongest at the center of the nib and fades to nothing at its

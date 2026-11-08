@@ -113,6 +113,10 @@ winit = { version = "0.30", default-features = false }
 # same winit eframe uses.
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }
+# Whether the Wayland compositor draws title bars, for Options > General >
+# "Use the desktop's title bar" (#2070, title_bar.rs). The same Wayland
+# library winit uses.
+wayland-client = "0.31"
 
 # Files opened from Finder arrive as an event of the windowing layer
 # (#646). The same winit eframe uses.
@@ -156,6 +160,8 @@ assets = [
     ["target/release/tracedraw", "usr/bin/", "755"],
     ["target/release/tracedraw-cli", "usr/bin/", "755"],
     ["../../packaging/linux/tracedraw.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/tracedraw-mime.xml", "usr/share/mime/packages/tracedraw.xml", "644"],
+    ["../../packaging/linux/tracedraw.thumbnailer", "usr/share/thumbnailers/", "644"],
     ["../../assets/icon/tracedraw-256.png", "usr/share/icons/hicolor/256x256/apps/tracedraw.png", "644"],
     ["../../README.md", "usr/share/doc/tracedraw/README", "644"],
 ]

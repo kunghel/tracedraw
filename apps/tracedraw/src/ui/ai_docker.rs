@@ -260,11 +260,9 @@ fn image_model_field(prefs: &mut crate::ai::AiPrefs, listed: &[String], ui: &mut
         ),
         _ => (tr("ai.image_model_none"), &[]),
     };
-    let choices: Vec<String> = if listed.is_empty() {
-        usual.iter().map(|m| m.to_string()).collect()
-    } else {
-        listed.to_vec()
-    };
+    // The image model set up stays in the list once the service's own
+    // list came (it may name it otherwise, or not at all).
+    let choices = crate::ai::model_choices(&[prefs.image_model.clone()], listed, usual);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.add(

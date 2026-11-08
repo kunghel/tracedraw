@@ -386,6 +386,16 @@ impl App {
 
     pub fn shape_tool_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         if response.double_clicked_by(PointerButton::Primary) {
+            // A character's node: a second click there within the double
+            // click time and distance chooses it as a click does.
+            // Neighbouring characters' nodes lie a few pixels apart, so a
+            // quick Shift+click on the next one is a double click; it went
+            // on to select the text again below, which let go of the
+            // chosen characters (#1933).
+            if let Some(key) = self.text_node_at(p) {
+                self.click_node(key, mods);
+                return;
+            }
             // A B-spline: a double-click on a control point removes it,
             // one on the control polygon adds one there.
             if let Some((s, crate::kind_nodes::KindNode::Spline { index })) = self.kind_node_at(p) {
@@ -901,8 +911,14 @@ impl App {
             if self.ctrl_handle_at(p).is_some() {
                 return;
             }
-            // A click on a corner widget keeps the selection.
-            if self.corner_widget_at(p).is_some() {
+            // A plain click on a corner widget chooses its corner alone:
+            // the ring is drawn chosen and the property bar's corner
+            // radius sets it (#2057). With a key held it keeps the
+            // selection.
+            if let Some(w) = self.corner_widget_at(p) {
+                if !(mods.shift || mods.ctrl || mods.command || mods.alt) {
+                    self.choose_corner_widget(w);
+                }
                 return;
             }
             // A click on a segment chooses the segment: it is drawn
@@ -988,7 +1004,9 @@ impl App {
         out
     }
 
-    /// Nearest segment of a selected curve within a few pixels.
+    /// Nearest segment of a selected curve within a few pixels, or
+    /// anywhere on its outline as drawn: a thick outline takes a press
+    /// out to its edge, not only near the path down its middle (#1935).
     pub(crate) fn segment_at(&self, p: Point) -> Option<(ShapeId, usize, f64)> {
         let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
         let mut best: Option<(ShapeId, usize, f64, f64)> = None;
@@ -996,9 +1014,14 @@ impl App {
             let Some((path, _, t)) = self.path_of(*id) else {
                 continue;
             };
+            let reach = self
+                .doc()
+                .find_shape(*id)
+                .map(|s| crate::interaction::outline_reach(s, t))
+                .unwrap_or(0.0);
             // Measured on the page, as the nodes are.
             if let Some((i, tt, d)) = nodes::nearest_segment(&(t * path), p) {
-                if d <= tol && best.map(|b| d < b.3).unwrap_or(true) {
+                if d <= tol + reach && best.map(|b| d < b.3).unwrap_or(true) {
                     best = Some((*id, i, tt, d));
                 }
             }

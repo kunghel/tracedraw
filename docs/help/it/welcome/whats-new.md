@@ -23,6 +23,7 @@ come scoprire cosa è cambiato ed elenca i punti salienti delle ultime versioni.
 
 ## Punti salienti delle ultime versioni {#highlights}
 
+- **Pagine affiancate e testo collegato.** [[menu.layout > menu.layout.facing_pages]] mostra le pagine affiancate in doppie pagine; [[menu.text > menu.text.link_content]] collega i testi così che scrivere in uno cambi gli altri; un PDF di più pagine chiede quali pagine importare; [[menu.edit > menu.edit.step_and_repeat]] può riempire una pagina di copie.
 - **Touch e telefoni.** I pulsanti Maiusc, Ctrl e Alt della barra standard
   restano premuti per un dito; su Android l'interfaccia evita il foro della
   fotocamera e gli angoli arrotondati; l'Apple Pencil funziona in Safari su

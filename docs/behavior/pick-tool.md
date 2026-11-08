@@ -2,7 +2,7 @@
 
 | Action | Behaviour |
 |---|---|
-| Click | select the topmost object under the pointer (its fill counts only when filled; otherwise its outline within 3 px, and a thick outline anywhere it shows, out to 3 px beyond its visible edge, at the width it is drawn (scaled with the object when the outline scales with it; #1678, `pick_drag_tests::a_click_on_a_thick_outline_picks_the_object_away_from_its_centre_line`); text, groups, tables, bitmaps, clip frames and symbols count anywhere inside their bounds); an object with live effects counts where it is drawn: its warped outline and the objects its effects add, and its selection box encloses them |
+| Click | select the topmost object under the pointer (its fill counts only when filled; otherwise its outline within 3 px, and a thick outline anywhere it shows, out to 3 px beyond its visible edge, at the width it is drawn (scaled with the object when the outline scales with it, all of the width on the outer or inner side of a closed object whose outline lies outside or inside it, the widest part of a variable-width outline; #1678, #1935, `pick_drag_tests::an_outline_reaches_as_far_as_it_is_drawn`, `pick_drag_tests::a_click_on_a_thick_outline_picks_the_object_away_from_its_centre_line`); text, groups, tables, bitmaps, clip frames and symbols count anywhere inside their bounds); an object with live effects counts where it is drawn: its warped outline and the objects its effects add, and its selection box encloses them |
 | Shift+click | add or remove from the selection |
 | Ctrl+click | on a clip frame lying on a layer: Edit Contents, the contents taken out of the frame and the one under the pointer selected (all of them off the contents), see `clip-frame.md` (#982); otherwise the object inside a group, one level further in at each click (the first level inside the topmost group, then the group or object inside that, down to the innermost object); its handles are round, and moving, scaling, colouring or deleting it changes that object only (a group left empty goes); once chosen it is dragged on its own from anywhere on it without Ctrl, while a press on another part of the group takes the whole group (#849, `pick_drag_tests::object_chosen_in_a_group_drags_alone_from_anywhere_on_it`); Ctrl+Shift+click adds one more; a group and an object inside it are never selected together |
 | Alt+click | the object beneath the selected one under the pointer, round to the top again after the bottom one (dig); with nothing there selected, the object beneath the topmost one, so one Alt+click on the object in front takes the one hidden behind it (the topmost itself when it is alone there; #1350, `pick_drag_tests::alt_click_takes_the_object_behind_the_front_one_at_once`); Ctrl+Alt digs through the objects inside groups and clip frames (a clip frame comes after its contents); Shift+Alt adds it |
@@ -214,6 +214,18 @@ Alt+click or a marquee behind a larger one): the menu and the move are
 for what is selected, not for the object in front; with no selected
 object under the pointer, the topmost object there is selected first
 (#1684, `pick_drag_tests::a_right_click_on_a_covered_selected_object_keeps_the_selection`).
+
+The same copies without the menu, with the left button: start moving
+the selection without a key (Alt as the drag starts makes a selection
+box, #1341), then hold Alt and let go over another object, and that object
+takes the fill of the first selected object (Copy Fill Here); hold
+Alt+Shift, and it takes its outline (Copy Outline Here). The object that
+would take it is outlined in the selection colour and the pointer's note
+names what the drop does; the selection stays where it was, and each
+copy is one undo step. Over a clip frame, Alt alone keeps its meaning of
+putting the selection into the frame (#1337); Alt+Shift copies the
+outline onto the frame (discussion #2066,
+`pick_drag_tests::a_move_let_go_with_alt_copies_the_fill_or_the_outline`).
 
 ## Property bar
 

@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SignPath artifact configuration "installer": the setup program, uploaded
-     by the build as the GitHub artifact "unsigned-installer". -->
+     by each Windows build as the GitHub artifact
+     "unsigned-installer-<build>" (windows-x86_64, windows-x86). -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <zip-file>
-    <pe-file path="tracedraw-*-windows-x86_64-setup.exe">
+    <pe-file path="tracedraw-*-windows-*-setup.exe">
       <authenticode-sign />
     </pe-file>
   </zip-file>

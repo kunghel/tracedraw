@@ -15,7 +15,8 @@
 use crate::app::{App, Drag};
 use crate::tools::Tool;
 use tracedraw_core::corner_cut::{
-    corners_and_fillets, cut_corners, fillets, max_fillet, unround, Corner, CornerCut,
+    corners, corners_and_fillets, cut_corners, fillets, max_fillet, unround, Corner, CornerCut,
+    Fillet,
 };
 use tracedraw_core::geometry::{Affine, BezPath, Point};
 use tracedraw_core::{Command, ShapeId, ShapeKind};
@@ -91,6 +92,21 @@ pub struct CornerDrag {
     pub begun: bool,
 }
 
+/// A selected curve's corners on the page, for the property bar's corner
+/// radius (#2057): its sharp corners and its rounded ones.
+struct PageCorners {
+    shape: ShapeId,
+    /// From the curve's own space to the page.
+    to_page: Affine,
+    page: BezPath,
+    closed: bool,
+    sharp: Vec<Corner>,
+    rounded: Vec<Fillet>,
+}
+
+/// How close two corner points on the page are taken to be one, mm.
+const SAME_CORNER_MM: f64 = 1e-5;
+
 /// The fillet radius whose arc's middle is `d` further into a corner of
 /// angle `theta` than the corner was: the arc's middle lies
 /// `r (1 / sin(theta / 2) - 1)` from the corner.
@@ -114,6 +130,58 @@ impl App {
         {
             return Vec::new();
         }
+        self.refresh_corner_cache();
+        let cache = self.corner_cache.borrow();
+        let mut out = Vec::new();
+        for (id, t, list) in &cache.curves {
+            let chosen: Vec<usize> = self
+                .node_selection
+                .iter()
+                .filter(|(s, _)| s == id)
+                .map(|(_, i)| *i)
+                .collect();
+            // A curve with many corners shows only the chosen ones'
+            // widgets; otherwise every corner has one.
+            // With one corner at a time off, chosen nodes show only their
+            // corners' widgets, as before.
+            let many = list.len() > MAX_WIDGETS;
+            if chosen.is_empty() && many {
+                continue;
+            }
+            let only_chosen =
+                many || (!chosen.is_empty() && !self.settings.nodes.corner_one_at_a_time);
+            for spot in list {
+                let is_chosen = spot.nodes.iter().any(|n| chosen.contains(n));
+                if only_chosen && !is_chosen {
+                    continue;
+                }
+                let c = &spot.corner;
+                let to_page = *t * spot.space.inverse();
+                // A rounded corner's widget sits off the middle of its arc.
+                let mid = c.at + c.inside * spot.depth;
+                let node = self.view.to_screen(to_page * mid);
+                let toward = self.view.to_screen(to_page * (mid + c.inside));
+                let d = toward - node;
+                if d.length() < 1e-6 || !d.x.is_finite() || !d.y.is_finite() {
+                    continue;
+                }
+                out.push(Widget {
+                    shape: *id,
+                    space: spot.space,
+                    stretched: spot.stretched,
+                    corner: *c,
+                    depth: spot.depth,
+                    at: node + d.normalized() * WIDGET_OFFSET_PX,
+                    chosen: is_chosen,
+                });
+            }
+        }
+        out
+    }
+
+    /// Work the corners of the selected curves out again when the drawing
+    /// or the selection changed since the last time.
+    fn refresh_corner_cache(&self) {
         let targets: Vec<ShapeId> = self
             .selection
             .iter()
@@ -176,51 +244,6 @@ impl App {
                 .collect();
             cache.key = Some(key);
         }
-        let mut out = Vec::new();
-        for (id, t, list) in &cache.curves {
-            let chosen: Vec<usize> = self
-                .node_selection
-                .iter()
-                .filter(|(s, _)| s == id)
-                .map(|(_, i)| *i)
-                .collect();
-            // A curve with many corners shows only the chosen ones'
-            // widgets; otherwise every corner has one.
-            // With one corner at a time off, chosen nodes show only their
-            // corners' widgets, as before.
-            let many = list.len() > MAX_WIDGETS;
-            if chosen.is_empty() && many {
-                continue;
-            }
-            let only_chosen =
-                many || (!chosen.is_empty() && !self.settings.nodes.corner_one_at_a_time);
-            for spot in list {
-                let is_chosen = spot.nodes.iter().any(|n| chosen.contains(n));
-                if only_chosen && !is_chosen {
-                    continue;
-                }
-                let c = &spot.corner;
-                let to_page = *t * spot.space.inverse();
-                // A rounded corner's widget sits off the middle of its arc.
-                let mid = c.at + c.inside * spot.depth;
-                let node = self.view.to_screen(to_page * mid);
-                let toward = self.view.to_screen(to_page * (mid + c.inside));
-                let d = toward - node;
-                if d.length() < 1e-6 || !d.x.is_finite() || !d.y.is_finite() {
-                    continue;
-                }
-                out.push(Widget {
-                    shape: *id,
-                    space: spot.space,
-                    stretched: spot.stretched,
-                    corner: *c,
-                    depth: spot.depth,
-                    at: node + d.normalized() * WIDGET_OFFSET_PX,
-                    chosen: is_chosen,
-                });
-            }
-        }
-        out
     }
 
     /// The corner widget under the page point `p`.
@@ -414,6 +437,259 @@ impl App {
         );
         d.begun = true;
         self.drag = Drag::CornerWidget(Box::new(d));
+    }
+
+    /// The selected curves whose corners the property bar's corner radius
+    /// sets (#2057): curves (not B-splines) with a sharp or a rounded
+    /// corner, on the page. Only with the corner widgets on, as the
+    /// widgets are the rounding the field stands for.
+    fn page_corners(&self) -> Vec<PageCorners> {
+        if !self.settings.nodes.corner_widgets || self.tool != Tool::Shape {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for id in self.selection.iter().map(|id| self.node_target(*id)) {
+            let Some(s) = self.doc().find_shape(id) else {
+                continue;
+            };
+            let ShapeKind::Path { path, closed } = &s.kind else {
+                continue;
+            };
+            if s.spline.is_some() {
+                continue;
+            }
+            let Some(t) = self.doc().parent_transform(id).map(|pt| pt * s.transform) else {
+                continue;
+            };
+            if t.determinant().abs() < 1e-12 {
+                continue;
+            }
+            let page = t * path.clone();
+            let (sharp, rounded) = corners_and_fillets(&page);
+            if sharp.is_empty() && rounded.is_empty() {
+                continue;
+            }
+            out.push(PageCorners {
+                shape: id,
+                to_page: t,
+                page,
+                closed: *closed,
+                sharp,
+                rounded,
+            });
+        }
+        out
+    }
+
+    /// The chosen nodes of curve `id`.
+    fn chosen_of(&self, id: ShapeId) -> Vec<usize> {
+        self.node_selection
+            .iter()
+            .filter(|(s, _)| *s == id)
+            .map(|(_, i)| *i)
+            .collect()
+    }
+
+    /// The corners of `c` the field acts on, as (sharp corner on the
+    /// page, radius: 0 when sharp), in path order: the chosen ones (a
+    /// chosen ring, or a node of its arc chosen) when `chosen_only`,
+    /// else every one.
+    fn field_corners(&self, c: &PageCorners, chosen_only: bool) -> Vec<(usize, Point, f64)> {
+        let chosen = self.chosen_of(c.shape);
+        let mut out: Vec<(usize, Point, f64)> = c
+            .sharp
+            .iter()
+            .filter(|k| !chosen_only || chosen.contains(&k.node))
+            .map(|k| (k.node, k.at, 0.0))
+            .collect();
+        out.extend(
+            c.rounded
+                .iter()
+                .filter(|f| !chosen_only || f.nodes.iter().any(|n| chosen.contains(n)))
+                .filter_map(|f| Some((*f.nodes.first()?, f.corner, f.radius))),
+        );
+        out.sort_by_key(|k| k.0);
+        out
+    }
+
+    /// Whether a corner of the selected curves is chosen: then the field
+    /// shows and sets the chosen corners only.
+    fn corner_chosen(&self, curves: &[PageCorners]) -> bool {
+        curves
+            .iter()
+            .any(|c| !self.field_corners(c, true).is_empty())
+    }
+
+    /// What the Shape tool's corner radius field shows (#2057): the
+    /// radius of the chosen corners, or of every corner of the selected
+    /// curves with none chosen (0 for a sharp one), on the page in mm,
+    /// and whether they differ (the field is then empty). `None` when no
+    /// selected curve has a corner to round.
+    /// Read from the corners worked out for the widgets, once per change
+    /// of the drawing or the selection, as the bar asks every frame.
+    pub fn corner_rounding(&self) -> Option<(f64, bool)> {
+        if !self.settings.nodes.corner_widgets || self.tool != Tool::Shape {
+            return None;
+        }
+        self.refresh_corner_cache();
+        let cache = self.corner_cache.borrow();
+        // The corners rounded on the page (a rounding made before a
+        // stretch is not one the field sets), in path order per curve.
+        let spots = |chosen_only: bool| {
+            let mut out: Vec<f64> = Vec::new();
+            for (id, _, list) in &cache.curves {
+                let chosen = self.chosen_of(*id);
+                let mut here: Vec<(usize, f64)> = list
+                    .iter()
+                    .filter(|s| !s.stretched)
+                    .filter(|s| !chosen_only || s.nodes.iter().any(|n| chosen.contains(n)))
+                    .map(|s| (s.corner.node, radius_for(s.depth, s.corner.theta)))
+                    .collect();
+                here.sort_by_key(|k| k.0);
+                out.extend(here.into_iter().map(|k| k.1));
+            }
+            out
+        };
+        let chosen = spots(true);
+        let radii = if chosen.is_empty() {
+            spots(false)
+        } else {
+            chosen
+        };
+        let first = *radii.first()?;
+        let mixed = radii.iter().any(|r| (r - first).abs() > 1e-6);
+        Some((first, mixed))
+    }
+
+    /// Round the corners the corner radius field stands for to `r` mm on
+    /// the page (#2057): the chosen corners, or every corner of the
+    /// selected curves with none chosen; 0 takes the rounding off. A
+    /// radius larger than a corner takes is cut to the largest every one
+    /// of them fits, as a drag of a widget is. One undo step; the chosen
+    /// corners stay chosen. False when nothing changed.
+    pub fn set_corner_rounding(&mut self, r: f64) -> bool {
+        if !r.is_finite() {
+            return false;
+        }
+        let r = r.max(0.0);
+        let curves = self.page_corners();
+        let chosen_only = self.corner_chosen(&curves);
+        let mut cmds = Vec::new();
+        let mut kept: Vec<(ShapeId, Vec<Point>)> = Vec::new();
+        let mut used: Option<f64> = None;
+        for c in &curves {
+            let targets = self.field_corners(c, chosen_only);
+            if targets.is_empty() {
+                continue;
+            }
+            let points: Vec<Point> = targets.iter().map(|k| k.1).collect();
+            let near = |q: Point| points.iter().any(|p| (q - *p).hypot() < SAME_CORNER_MM);
+            // The rounded corners taken first go back to their sharp
+            // corners, then the corners round again at the new radius.
+            let which: Vec<usize> = c
+                .rounded
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| near(f.corner))
+                .map(|(i, _)| i)
+                .collect();
+            let base = if which.is_empty() {
+                c.page.clone()
+            } else {
+                unround(&c.page, Some(&which)).0
+            };
+            let only: Vec<usize> = corners(&base)
+                .into_iter()
+                .filter(|k| near(k.at))
+                .map(|k| k.node)
+                .collect();
+            let rounded = match max_fillet(&base, Some(&only)) {
+                Some(max) if r > 1e-9 && !only.is_empty() => {
+                    let rr = r.min(max * 0.999);
+                    used = Some(used.map_or(rr, |u: f64| u.min(rr)));
+                    if rr > 1e-9 {
+                        cut_corners(&base, CornerCut::Fillet(rr), Some(&only)).0
+                    } else {
+                        base
+                    }
+                }
+                _ => base,
+            };
+            if rounded == c.page {
+                continue;
+            }
+            let path = c.to_page.inverse() * rounded;
+            cmds.push(Command::SetShapeKind {
+                shape: c.shape,
+                kind: ShapeKind::Path {
+                    path,
+                    closed: c.closed,
+                },
+            });
+            if chosen_only {
+                kept.push((c.shape, points));
+            }
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        let label = if r > 1e-9 { "Fillet" } else { "Clear Rounding" };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
+        // The rounding renumbers the nodes: the corners chosen before are
+        // found again by their sharp corners, which stay where they were.
+        self.segment_spot = None;
+        if chosen_only {
+            self.node_selection.clear();
+            for c in self.page_corners() {
+                let Some((_, points)) = kept.iter().find(|(id, _)| *id == c.shape) else {
+                    continue;
+                };
+                for (node, at, _) in self.field_corners(&c, false) {
+                    if points
+                        .iter()
+                        .any(|p| (at - *p).hypot() < SAME_CORNER_MM * 10.0)
+                    {
+                        self.node_selection.push((c.shape, node));
+                    }
+                }
+            }
+        } else {
+            self.node_selection.clear();
+        }
+        if let Some(u) = used {
+            let units = self.units;
+            let digits = self.settings.precision.min(10) as usize;
+            self.status = crate::i18n::trf(
+                "status.corner_radius",
+                &[(
+                    "r",
+                    &format!(
+                        "{:.*} {}",
+                        digits,
+                        units.world_from_mm(u.max(0.0)),
+                        units.label()
+                    ),
+                )],
+            );
+        }
+        true
+    }
+
+    /// A plain click on a corner widget chooses its corner alone, so its
+    /// ring is drawn chosen and the property bar's corner radius sets it
+    /// (#2057); Ctrl+click adds it or takes it out
+    /// ([`toggle_corner_widget`](Self::toggle_corner_widget)).
+    pub fn choose_corner_widget(&mut self, w: Widget) {
+        let nodes = self.widget_nodes(&w);
+        self.node_selection = nodes
+            .first()
+            .map(|n| vec![(w.shape, *n)])
+            .unwrap_or_default();
+        self.node_run = None;
+        self.segment_spot = None;
     }
 }
 

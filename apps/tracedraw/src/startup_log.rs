@@ -138,7 +138,13 @@ fn windows_version() -> Option<String> {
         platform: u32,
         service_pack: [u16; 128],
     }
-    #[link(name = "ntdll", kind = "raw-dylib")]
+    // 32-bit Windows: the DLL exports the plain name, not the stdcall
+    // decorated one raw-dylib imports by default (#1975).
+    #[cfg_attr(
+        target_arch = "x86",
+        link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")
+    )]
+    #[cfg_attr(not(target_arch = "x86"), link(name = "ntdll", kind = "raw-dylib"))]
     unsafe extern "system" {
         fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
     }

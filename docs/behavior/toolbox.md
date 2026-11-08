@@ -103,6 +103,14 @@ toolbox does not slide with it and the drawing does not zoom
 `ui::bars::tests::the_floating_toolbox_resizes_by_its_edges_and_by_ctrl_wheel`,
 `settings::tests::the_wheel_steps_the_button_and_swatch_sizes_within_their_ranges`).
 
+A toolbox taller (or, along the top or the bottom, longer) than its room
+slides with its arrows and the wheel (`toolbars.md`, "Bars longer than
+the window"), and on a touch screen with a finger dragged along it: the
+column follows the finger once it has moved past a tap's distance, a tap
+still picks the tool, and the button the finger passes over opens no
+flyout; a finger dragged sideways off a button opens the flyout as before
+(#1997, `ui::toolbox::tests::a_finger_dragged_along_the_toolbox_column_slides_it`).
+
 Docked on a side, the toolbox fits the window's height: when its buttons
 do not fit, they get shorter (their icons smaller) down to 22 px, and
 only below that do the overflow arrows take over; with room they keep

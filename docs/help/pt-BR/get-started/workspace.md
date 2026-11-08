@@ -47,8 +47,7 @@ A barra de ferramentas padrão contém, em grupos:
    pressionados quando ativos.
 7. Desativar o encaixe (<kbd>Alt+Q</kbd>) e a lista do que encaixar.
 8. Opções, que abre a lista de páginas de opções.
-9. Iniciar: Gerenciador de fontes, Tela de boas-vindas e Gerenciamento de
-   cores.
+9. Iniciar: Gerenciador de fontes, TraceCut e Tela de boas-vindas.
 
 Passe o ponteiro sobre um botão para ver o nome, o atalho e o que ele faz.
 
