@@ -11,9 +11,11 @@ on:
         description: "Branch, tag ou commit para compilar (vazio: main)"
         required: false
         default: ""
-  # Para compilar toda segunda às 06:00 UTC, descomente:
-   schedule:
-     - cron: "0 6 * * 1"
+    # Roda todos os dias às 4h, 12h e 18h (horário de Brasília)
+  schedule:
+    - cron: "0 7 * * *"
+    - cron: "0 15 * * *"
+    - cron: "0 21 * * *"
 
 permissions:
   contents: write
