@@ -18550,6 +18550,52 @@ fn step_and_repeat_previews_its_copies_while_the_panel_is_worked_in() {
     assert!(!app.step_preview_shown);
 }
 
+/// #1255: in the Repeat Copies panel, Fill page is chosen with a
+/// click; the panel then shows the count of copies that fit ("4 x 6 =
+/// 24 copies") for each orientation, and Apply fills the page as one
+/// undo step.
+#[test]
+fn repeat_copies_fills_the_page_from_the_panel() {
+    let (ctx, mut app, _id) = setup();
+    app.show_dockers = true;
+    app.open_docker(crate::app::DockerTab::StepAndRepeat);
+    app.docker_tab = crate::app::DockerTab::StepAndRepeat;
+    let mut texts = Vec::new();
+    for _ in 0..3 {
+        texts = texts_drawn(&ctx, &mut app, Vec::new());
+    }
+    let at = text_at(&texts, &crate::i18n::tr("docker.sr_mode_fill")).expect("Fill page shown");
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert!(app.step_repeat.fill, "Fill page chosen");
+    for _ in 0..2 {
+        texts = texts_drawn(&ctx, &mut app, Vec::new());
+    }
+    let (as_is, turned, chosen) = app.fill_page_layout().expect("a layout");
+    for g in [&as_is, &turned] {
+        let line = App::fill_count_text(g);
+        assert!(text_at(&texts, &line).is_some(), "{line} shown");
+    }
+    let n = crate::fill_page::count(&chosen);
+    assert!(n > 1);
+    let shapes = |app: &App| -> usize {
+        app.doc().pages[0]
+            .layers
+            .iter()
+            .map(|l| l.shapes.len())
+            .sum()
+    };
+    let before = shapes(&app);
+    let steps = app.engine.history_labels().0.len();
+    let apply = text_at(&texts, &crate::i18n::tr("docker.apply")).expect("Apply shown");
+    click_at(&ctx, &mut app, apply, Modifiers::NONE);
+    assert_eq!(shapes(&app), before + n - 1);
+    assert_eq!(
+        app.engine.history_labels().0.len(),
+        steps + 1,
+        "one undo step"
+    );
+}
+
 /// #1385: guidelines locked from the Objects panel's Guides row (every
 /// guideline of the page) cannot be rotated, moved, nudged or deleted
 /// from the canvas: a double click shows no rotation handles, a drag

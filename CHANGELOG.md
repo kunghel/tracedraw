@@ -8,6 +8,16 @@ full, row-by-row status.
 
 - Linked text content: Text > Link Text Content (also on the right-click menu) links the characters of two texts or more, so whatever is typed in any of them appears in the others at once, both ways, while each keeps its own font, size, colours and effects. Change the word of a 3D blend, an extrusion or a shadow text once. The Blend panel can link the two texts of a blend; a linked text shows the others of its link with dashed outlines and a chain mark, Undo takes a change back in all of them in one step, copies stay linked, and Unlink Text Content lets a text go its own way. This is not the frame flow of Paragraph Text Frame > Link; `.tdraw` files keep the link, `.cdr` files get plain texts (#1568, #1364, #1194).
 
+- Tools > TraceCut... has a picture of its own in the menus: a dashed cut line with the knife on it.
+- TraceCut: the preview zooms and pans as the drawing does. The wheel zooms at the pointer (Ctrl+wheel too, and a pinch on touch screens and touchpads), a drag with the left or middle button pans, a double click fits again, and buttons in its corner zoom in and out, fit the whole result, zoom to the selected objects and show real size (1:1); + and - zoom and 0 fits with the pointer over it. The outlines are drawn again at each zoom, so they stay sharp, and what is outside the box is skipped. Each tool keeps its zoom while the window is open. With nothing selected the preview says "Select the objects to cut, nest or measure" instead of showing an empty box, and Apply and OK, greyed out, say why. The Measure tools show perimeter, area, cutting time and cost beside the preview at once and as the selection or settings change, without Apply.
+- Repeat Copies: Fill page tiles the selection over the page, or an area of it, as many copies as fit: margins (one for all sides or each side apart), a gap across and down, every second row shifted if asked, the copies as they stand, turned 90 degrees or whichever fits more, with the count of each way shown ("4 x 6 = 24 copies") and trim marks at every cut line. The places are outlined while the panel is worked in, and Apply is one undo step (#1255).
+
+- Print and Print Preview: the gap between pages is set across and down apart, for several pages per sheet and repeat on the sheet (#1795).
+
+- Print and Print Preview: several pages per sheet can run down the columns, either on each sheet (1 2 3 down the first column, 4 5 6 down the second) or through all sheets, so the columns cut from the stack run in one series, for serial numbers on ID cards (#1658).
+
+- Print and Print Preview: the layout (imposition, sheet, gaps, margins, booklet settings, bleed and marks) can be kept as a named preset and chosen again, and saved to a `.tdlayout` file and loaded from one (#1796).
+
 ## 0.41.0 (2026-11-06)
 
 - Text in older fonts made for the symbol encoding (Tamil fonts among them): a letter the font keeps at codes 0x80 to 0x9F now draws when it is typed on Windows, which delivers it as the character code page 1252 has there ("„" for 0x84), and when pasted text holds it at U+F080 to U+F09F. Such letters went to another font and showed as a box or not at all (#1937).

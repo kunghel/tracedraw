@@ -487,6 +487,19 @@ pub struct TraceCutState {
     /// The preset row's name field and whether it is shown.
     pub preset_name: String,
     pub preset_edit: bool,
+    /// The preview's zoom and place for each tool zoomed or panned since
+    /// the window opened (a tool missing here shows the whole result).
+    pub views: Vec<(ToolId, PreviewView)>,
+    /// The targets the views were set on: another selection fits again.
+    pub view_targets: Vec<ShapeId>,
+}
+
+/// A zoomed or panned preview: interface points per millimetre and the
+/// page point at the middle of the box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewView {
+    pub zoom: f64,
+    pub centre: Point,
 }
 
 impl TraceCutState {
@@ -495,6 +508,32 @@ impl TraceCutState {
         TraceCutState {
             tool,
             ..Default::default()
+        }
+    }
+
+    /// The preview's view for the current tool; None shows the whole
+    /// result.
+    pub fn view(&self) -> Option<PreviewView> {
+        self.views
+            .iter()
+            .find(|(t, _)| *t == self.tool)
+            .map(|(_, v)| *v)
+    }
+
+    /// Set (Some) or fit again (None) the current tool's preview.
+    pub fn set_view(&mut self, v: Option<PreviewView>) {
+        let tool = self.tool;
+        self.views.retain(|(t, _)| *t != tool);
+        if let Some(v) = v {
+            self.views.push((tool, v));
+        }
+    }
+
+    /// Forget every tool's zoom when the objects worked on change.
+    pub fn track_targets(&mut self, targets: &[ShapeId]) {
+        if self.view_targets != targets {
+            self.views.clear();
+            self.view_targets = targets.to_vec();
         }
     }
 }

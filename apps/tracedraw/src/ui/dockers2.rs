@@ -79,18 +79,50 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
     if ui.input(|i| i.pointer.any_pressed()) {
         app.step_repeat_working = over;
     }
-    // With nothing selected the fields wait, keeping their values (#1198).
-    let focused = ui
-        .add_enabled_ui(has, |ui| {
-            step_and_repeat_fields(&mut app.step_repeat, u, ui)
-        })
-        .inner;
-    if ui
-        .add_enabled(has, egui::Button::new(tr("docker.apply")))
+    // Copies one after another, or the page filled with them (#1255).
+    ui.horizontal(|ui| {
+        ui.radio_value(
+            &mut app.step_repeat.fill,
+            false,
+            tr("docker.sr_mode_copies"),
+        )
         .rich_tip(crate::ui::tips::pair(
-            "docker.apply",
-            "docker.sr_apply_desc",
-        ))
+            "docker.sr_mode_copies",
+            "docker.sr_mode_copies_desc",
+        ));
+        ui.radio_value(&mut app.step_repeat.fill, true, tr("docker.sr_mode_fill"))
+            .rich_tip(crate::ui::tips::pair(
+                "docker.sr_mode_fill",
+                "docker.sr_mode_fill_desc",
+            ));
+    });
+    // With nothing selected the fields wait, keeping their values (#1198).
+    let (focused, can_apply) = if app.step_repeat.fill {
+        let page = app.page_rect();
+        let layout = app.fill_page_layout();
+        let focused = ui
+            .add_enabled_ui(has, |ui| {
+                fill_page_fields(&mut app.step_repeat, u, page, layout.as_ref(), ui)
+            })
+            .inner;
+        let ok = layout.as_ref().is_some_and(|(_, _, g)| !g.cells.is_empty());
+        (focused, ok)
+    } else {
+        let focused = ui
+            .add_enabled_ui(has, |ui| {
+                step_and_repeat_fields(&mut app.step_repeat, u, ui)
+            })
+            .inner;
+        (focused, true)
+    };
+    let desc = if app.step_repeat.fill {
+        "docker.sr_fill_apply_desc"
+    } else {
+        "docker.sr_apply_desc"
+    };
+    if ui
+        .add_enabled(has && can_apply, egui::Button::new(tr("docker.apply")))
+        .rich_tip(crate::ui::tips::pair("docker.apply", desc))
         .clicked()
     {
         app.step_and_repeat_apply();
@@ -164,6 +196,208 @@ fn step_and_repeat_fields(
     focused |= r.has_focus();
     if r.changed() {
         sr.dy = u.world_to_mm(dy);
+    }
+    focused
+}
+
+/// A length field in the document's unit holding millimetres, at least
+/// `min`; true when it has the keyboard focus.
+fn fill_length(ui: &mut Ui, u: crate::app::Units, mm: &mut f64, min: f64, key: &str) -> bool {
+    let mut v = u.world_from_mm(*mm);
+    let r = ui
+        .add(
+            crate::ui::field::NumField::new(&mut v)
+                .speed(0.5)
+                .suffix(format!(" {}", u.short())),
+        )
+        .rich_tip(crate::ui::tips::keyed(key));
+    if r.changed() {
+        let x = u.world_to_mm(v);
+        *mm = if x.is_finite() { x.max(min) } else { min };
+    }
+    r.has_focus()
+}
+
+/// Fill page's fields (#1255): the page size, the area, the margins, the
+/// gaps, the shift of every second row, which way the copies stand with
+/// the count of each way, the trim marks and the count of the copies
+/// Apply makes; true when one of them has the keyboard focus.
+fn fill_page_fields(
+    sr: &mut crate::ops2::StepRepeat,
+    u: crate::app::Units,
+    page: tracedraw_core::geometry::Rect,
+    layout: Option<&(
+        crate::fill_page::FillGrid,
+        crate::fill_page::FillGrid,
+        crate::fill_page::FillGrid,
+    )>,
+    ui: &mut Ui,
+) -> bool {
+    let mut focused = false;
+    let size = |v: f64| {
+        format!("{:.2}", u.world_from_mm(v))
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    ui.label(
+        egui::RichText::new(trf(
+            "docker.fillpage_page_size",
+            &[
+                ("w", &size(page.width())),
+                ("h", &size(page.height())),
+                ("unit", u.short()),
+            ],
+        ))
+        .color(crate::theme::Tokens::text_dim()),
+    );
+    ui.horizontal(|ui| {
+        ui.label(tr("docker.fillpage_area"));
+        ui.radio_value(&mut sr.area_custom, false, tr("docker.fillpage_area_page"))
+            .rich_tip(crate::ui::tips::keyed("docker.fillpage_area_page"));
+        if ui
+            .radio(sr.area_custom, tr("docker.fillpage_area_custom"))
+            .rich_tip(crate::ui::tips::keyed("docker.fillpage_area_custom"))
+            .clicked()
+            && !sr.area_custom
+        {
+            sr.area_custom = true;
+            sr.area = page;
+        }
+    });
+    egui::Grid::new("fill_page_grid")
+        .num_columns(2)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            if sr.area_custom {
+                let a = sr.area;
+                let (mut x, mut y, mut w, mut h) = (a.x0, a.y0, a.width(), a.height());
+                ui.label(tr("docker.fillpage_area_x"));
+                focused |= fill_length(ui, u, &mut x, f64::MIN, "docker.fillpage_area_x");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_y"));
+                focused |= fill_length(ui, u, &mut y, f64::MIN, "docker.fillpage_area_y");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_w"));
+                focused |= fill_length(ui, u, &mut w, 1.0, "docker.fillpage_area_w");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_h"));
+                focused |= fill_length(ui, u, &mut h, 1.0, "docker.fillpage_area_h");
+                ui.end_row();
+                sr.area = tracedraw_core::geometry::Rect::new(x, y, x + w, y + h);
+            }
+            ui.label(tr("docker.fillpage_margins"));
+            ui.checkbox(&mut sr.margins_same, tr("docker.fillpage_same"))
+                .rich_tip(crate::ui::tips::keyed("docker.fillpage_margins_same"));
+            ui.end_row();
+            if sr.margins_same {
+                ui.label("");
+                focused |= fill_length(ui, u, &mut sr.margins[0], 0.0, "docker.fillpage_margins");
+                ui.end_row();
+            } else {
+                for (i, key) in [
+                    "print.margin_left",
+                    "print.margin_right",
+                    "print.margin_top",
+                    "print.margin_bottom",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    ui.label(tr(key));
+                    focused |=
+                        fill_length(ui, u, &mut sr.margins[i], 0.0, "docker.fillpage_margins");
+                    ui.end_row();
+                }
+            }
+            ui.label(tr("docker.fillpage_gap"));
+            ui.checkbox(&mut sr.gap_same, tr("docker.fillpage_same"))
+                .rich_tip(crate::ui::tips::keyed("docker.fillpage_gap_same"));
+            ui.end_row();
+            if sr.gap_same {
+                ui.label("");
+                focused |= fill_length(ui, u, &mut sr.gap.0, 0.0, "docker.fillpage_gap");
+                ui.end_row();
+            } else {
+                ui.label(tr("docker.fillpage_gap_x"));
+                focused |= fill_length(ui, u, &mut sr.gap.0, 0.0, "docker.fillpage_gap_x");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_gap_y"));
+                focused |= fill_length(ui, u, &mut sr.gap.1, 0.0, "docker.fillpage_gap_y");
+                ui.end_row();
+            }
+            ui.label(tr("docker.fillpage_row_shift"));
+            focused |= fill_length(ui, u, &mut sr.row_shift, 0.0, "docker.fillpage_row_shift");
+            ui.end_row();
+        });
+    // Which way the copies stand, with how many fit each way.
+    ui.strong(tr("docker.fillpage_turn"));
+    let count = |g: Option<&crate::fill_page::FillGrid>| {
+        g.map(|g| {
+            if crate::fill_page::count(g) == 0 {
+                tr("docker.fillpage_none")
+            } else {
+                App::fill_count_text(g)
+            }
+        })
+        .unwrap_or_default()
+    };
+    for (i, key, grid) in [
+        (0u8, "docker.fillpage_as_is", layout.map(|l| &l.0)),
+        (1, "docker.fillpage_turned", layout.map(|l| &l.1)),
+        (2, "docker.fillpage_best", None),
+    ] {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut sr.turn, i, tr(key))
+                .rich_tip(crate::ui::tips::keyed(key));
+            if grid.is_some() {
+                ui.label(egui::RichText::new(count(grid)).color(crate::theme::Tokens::text_dim()));
+            }
+        });
+    }
+    ui.checkbox(&mut sr.marks, tr("docker.fillpage_marks"))
+        .rich_tip(crate::ui::tips::keyed("docker.fillpage_marks"));
+    if sr.marks {
+        egui::Grid::new("fill_page_marks")
+            .num_columns(2)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(tr("docker.fillpage_mark_length"));
+                focused |= fill_length(
+                    ui,
+                    u,
+                    &mut sr.mark_length,
+                    0.0,
+                    "docker.fillpage_mark_length",
+                );
+                ui.end_row();
+                ui.label(tr("docker.fillpage_mark_offset"));
+                focused |= fill_length(
+                    ui,
+                    u,
+                    &mut sr.mark_offset,
+                    0.0,
+                    "docker.fillpage_mark_offset",
+                );
+                ui.end_row();
+            });
+    }
+    // The copies Apply makes.
+    if let Some((_, _, g)) = layout {
+        let n = crate::fill_page::count(g);
+        if n == 0 {
+            ui.colored_label(ui.visuals().warn_fg_color, tr("docker.fillpage_none"));
+        } else if g.cells.is_empty() {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                trf(
+                    "status.fill_page_too_many",
+                    &[("max", &crate::fill_page::MAX_COPIES.to_string())],
+                ),
+            );
+        } else {
+            ui.strong(App::fill_count_text(g));
+        }
     }
     focused
 }

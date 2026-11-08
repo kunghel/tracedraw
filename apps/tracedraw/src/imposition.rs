@@ -3,7 +3,7 @@
 //! builds the sheets with [`impose`] and writes them as one PDF.
 //!
 //! Layouts: as in the document (one page per sheet), n-up (several pages
-//! per sheet in reading order), booklet (two pages per sheet side, bound
+//! per sheet, across or down, see [`PageOrder`]), booklet (two pages per sheet side, bound
 //! by saddle stitch or perfect binding, see [`Booklet`]) and step and
 //! repeat (one page repeated over the sheet). On a fixed sheet the pages are scaled down to fit their cells;
 //! on a fitted sheet they keep their size and the sheet grows. Marks sit
@@ -43,6 +43,59 @@ impl Layout {
             }
             Layout::Booklet => (2, 1),
         }
+    }
+}
+
+/// The order of the pages in the cells of an n-up sheet (#1658).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageOrder {
+    /// Left to right, then the next row down; the next sheet goes on
+    /// from the last page of this one.
+    #[default]
+    Across,
+    /// Top to bottom, then the next column to the right; the next sheet
+    /// goes on from the last page of this one (2 x 3: 1 2 3 down the
+    /// first column, 4 5 6 down the second, 7 on the next sheet).
+    Down,
+    /// Top to bottom, each column going on through the same column of
+    /// every sheet before the next column starts, so the columns cut
+    /// from the stack of sheets run in one series (2 x 3 on two sheets:
+    /// 1 2 3 and 7 8 9 on the first sheet, 4 5 6 and 10 11 12 on the
+    /// second).
+    DownThroughSheets,
+}
+
+impl PageOrder {
+    /// The order a Print dialog index stands for (0 across).
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            1 => PageOrder::Down,
+            2 => PageOrder::DownThroughSheets,
+            _ => PageOrder::Across,
+        }
+    }
+
+    /// The page in cell `n` (left to right, top to bottom) of sheet
+    /// `sheet` of a grid of `cols` x `rows` holding `pages` pages over
+    /// `sheets` sheets; `None` past the last page.
+    pub fn page_at(
+        self,
+        n: usize,
+        sheet: usize,
+        cols: usize,
+        rows: usize,
+        sheets: usize,
+        pages: usize,
+    ) -> Option<usize> {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        let (col, row) = (n % cols, n / cols);
+        let per = cols * rows;
+        let i = match self {
+            PageOrder::Across => sheet * per + n,
+            PageOrder::Down => sheet * per + col * rows + row,
+            PageOrder::DownThroughSheets => col * rows * sheets + sheet * rows + row,
+        };
+        (i < pages).then_some(i)
     }
 }
 
@@ -219,8 +272,13 @@ pub struct Options {
     pub layout: Layout,
     /// The sheet size; `None` fits the sheet to the pages.
     pub sheet: Option<Size>,
-    /// Space between the cells, in mm.
+    /// Space between the cells side by side (the columns), in mm.
     pub gutter: f64,
+    /// Space between the rows of cells, in mm (#1795); `None` takes
+    /// [`Self::gutter`].
+    pub gutter_y: Option<f64>,
+    /// The order of the pages of an n-up layout (#1658).
+    pub order: PageOrder,
     /// Bleed kept around every page, in mm (0 for none).
     pub bleed: f64,
     /// Scale of the pages on a fitted sheet (1 = 100 %).
@@ -261,6 +319,8 @@ impl Default for Options {
             layout: Layout::AsIs,
             sheet: None,
             gutter: 0.0,
+            gutter_y: None,
+            order: PageOrder::Across,
             bleed: 0.0,
             scale: 1.0,
             back_side: false,
@@ -335,14 +395,15 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
     let sheets: Vec<Vec<Option<usize>>> = match o.layout {
         Layout::AsIs => (0..sizes.len()).map(|i| vec![Some(i)]).collect(),
         Layout::NUp { .. } => {
-            let per = (cols * rows) as usize;
-            (0..sizes.len())
-                .collect::<Vec<_>>()
-                .chunks(per)
-                .map(|c| {
-                    let mut v: Vec<Option<usize>> = c.iter().map(|&i| Some(i)).collect();
-                    v.resize(per, None);
-                    v
+            let (c, r) = (cols as usize, rows as usize);
+            let per = c * r;
+            let n = sizes.len();
+            let count = n.div_ceil(per);
+            (0..count)
+                .map(|sheet| {
+                    (0..per)
+                        .map(|cell| o.order.page_at(cell, sheet, c, r, count, n))
+                        .collect()
                 })
                 .collect()
         }
@@ -358,9 +419,14 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
     let [ml, mr, mt, mb] = pm;
     // Booklet pages share the spine: no bleed between them, only the
     // booklet's gap.
-    let (gutter, inner_bleed) = match o.layout {
-        Layout::Booklet => (o.booklet.gap_mm(), 0.0),
-        _ => (o.gutter.max(0.0), o.bleed.max(0.0)),
+    let gap = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let (gutter, gutter_y, inner_bleed) = match o.layout {
+        Layout::Booklet => (o.booklet.gap_mm(), o.booklet.gap_mm(), 0.0),
+        _ => (
+            gap(o.gutter),
+            gap(o.gutter_y.unwrap_or(o.gutter)),
+            o.bleed.max(0.0),
+        ),
     };
     sheets
         .iter()
@@ -382,9 +448,9 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             };
             // Pages with their bleed, and the gaps between them.
             let step_x = cell.width + 2.0 * inner_bleed + gutter;
-            let step_y = cell.height + 2.0 * inner_bleed + gutter;
+            let step_y = cell.height + 2.0 * inner_bleed + gutter_y;
             let grid_w = cols as f64 * step_x - gutter;
-            let grid_h = rows as f64 * step_y - gutter;
+            let grid_h = rows as f64 * step_y - gutter_y;
             let (size, (sx, sy)) = match o.sheet {
                 Some(sheet) => {
                     // Kept size: the pages as they are; stretched: they
@@ -1416,5 +1482,112 @@ mod tests {
             },
         );
         assert!(!overflows(&fits));
+    }
+
+    /// #1795: the gap between the columns and the gap between the rows
+    /// are set apart; without a row gap the column gap serves both, as
+    /// before.
+    #[test]
+    fn the_column_and_row_gaps_are_set_apart() {
+        let card = Size::new(85.0, 55.0);
+        let o = Options {
+            layout: Layout::Repeat { cols: 2, rows: 2 },
+            gutter: 4.0,
+            gutter_y: Some(10.0),
+            ..Default::default()
+        };
+        let s = &plan(&[card], &o)[0];
+        assert!((s.size.width - (2.0 * 85.0 + 4.0)).abs() < 1e-9, "{s:?}");
+        assert!((s.size.height - (2.0 * 55.0 + 10.0)).abs() < 1e-9, "{s:?}");
+        let (a, b, c) = (s.cells[0].trim, s.cells[1].trim, s.cells[2].trim);
+        assert!((b.x0 - a.x1 - 4.0).abs() < 1e-9, "column gap {a:?} {b:?}");
+        assert!((a.y0 - c.y1 - 10.0).abs() < 1e-9, "row gap {a:?} {c:?}");
+        let same = &plan(
+            &[card],
+            &Options {
+                gutter_y: None,
+                ..o.clone()
+            },
+        )[0];
+        assert!((same.size.height - (2.0 * 55.0 + 4.0)).abs() < 1e-9);
+        // n-up on a fixed sheet keeps the two gaps too.
+        let n = &plan(
+            &[card; 4],
+            &Options {
+                layout: Layout::NUp { cols: 2, rows: 2 },
+                sheet: Some(Size::new(297.0, 210.0)),
+                ..o
+            },
+        )[0];
+        let (a, b, c) = (n.cells[0].trim, n.cells[1].trim, n.cells[2].trim);
+        assert!((b.x0 - a.x1 - 4.0).abs() < 1e-9);
+        assert!((a.y0 - c.y1 - 10.0).abs() < 1e-9);
+    }
+
+    /// #1658: several pages per sheet run down the columns: on the same
+    /// sheet first (1 2 3 down the first column, 4 5 6 down the second),
+    /// or each column through the stack of sheets before the next one
+    /// starts.
+    #[test]
+    fn n_up_pages_can_run_down_the_columns() {
+        let pages = |order: PageOrder, n: usize| -> Vec<Vec<Option<usize>>> {
+            let o = Options {
+                layout: Layout::NUp { cols: 2, rows: 3 },
+                order,
+                ..Default::default()
+            };
+            plan(&vec![A5; n], &o)
+                .iter()
+                .map(|s| s.cells.iter().map(|c| c.page.map(|p| p + 1)).collect())
+                .collect()
+        };
+        // Cells are listed left to right, top to bottom.
+        assert_eq!(
+            pages(PageOrder::Across, 7),
+            vec![
+                vec![Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)],
+                vec![Some(7), None, None, None, None, None],
+            ]
+        );
+        assert_eq!(
+            pages(PageOrder::Down, 8),
+            vec![
+                vec![Some(1), Some(4), Some(2), Some(5), Some(3), Some(6)],
+                vec![Some(7), None, Some(8), None, None, None],
+            ]
+        );
+        assert_eq!(
+            pages(PageOrder::DownThroughSheets, 12),
+            vec![
+                vec![Some(1), Some(7), Some(2), Some(8), Some(3), Some(9)],
+                vec![Some(4), Some(10), Some(5), Some(11), Some(6), Some(12)],
+            ]
+        );
+        // Ten pages over two sheets: the second column of the second
+        // sheet ends early.
+        assert_eq!(
+            pages(PageOrder::DownThroughSheets, 10),
+            vec![
+                vec![Some(1), Some(7), Some(2), Some(8), Some(3), Some(9)],
+                vec![Some(4), Some(10), Some(5), None, Some(6), None],
+            ]
+        );
+        // The page in the top left cell is placed top left.
+        let o = Options {
+            layout: Layout::NUp { cols: 2, rows: 3 },
+            order: PageOrder::Down,
+            ..Default::default()
+        };
+        let s = &plan(&[A5; 6], &o)[0];
+        let at = |p: usize| s.cells.iter().find(|c| c.page == Some(p)).map(|c| c.trim);
+        let (p1, p2, p4) = (at(0).unwrap(), at(1).unwrap(), at(3).unwrap());
+        assert!(
+            (p1.x0 - p2.x0).abs() < 1e-9 && p2.y1 <= p1.y0 + 1e-9,
+            "2 under 1"
+        );
+        assert!(
+            (p1.y0 - p4.y0).abs() < 1e-9 && p4.x0 >= p1.x1 - 1e-9,
+            "4 beside 1"
+        );
     }
 }

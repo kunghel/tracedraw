@@ -24,7 +24,30 @@ commands. Contributed by LaMka21 (#170).
   **Apply**, **OK** and **Cancel**.
 - **Preview**: the outlines of the selected objects fitted in a white
   box, y up, in dark grey; what the tool found in red (outlines drawn
-  thicker, places as rings 6 px wide).
+  thicker, places as rings 6 px wide). With nothing selected the box
+  shows "Select the objects to cut, nest or measure" in its middle
+  instead.
+- **Zoom and pan in the preview**, as on the drawing:
+  - the wheel over the preview zooms at the pointer, 1.15 times a
+    notch, with or without Ctrl; a pinch (touch screen or touchpad)
+    zooms at the fingers;
+  - buttons in its top right corner: **Zoom in** and **Zoom out** (1.25
+    times about the middle), **Zoom to fit** (the whole result: the
+    objects, what was found, the moves), **Zoom to selection** (the
+    selected objects as large as they fit) and **Real size (1:1)** (the
+    screen's calibrated resolution, Options > Display > Ruler
+    calibration, 96 per inch until calibrated);
+  - with the pointer over the preview: **+** (or **=**) zooms in and
+    **-** out, 1.25 times at the pointer, **0** fits;
+  - a drag with the left or middle button pans (Space held changes
+    nothing, so Space+drag pans too); two fingers pan on a touch screen;
+  - a double click fits again.
+  The zoom goes from a tenth of the fit to 2000 points a millimetre (or
+  four times the fit when that is more). The outlines are drawn again
+  at every zoom, so they stay sharp; zoomed in, objects whose box lies
+  outside the preview are skipped. Each tool keeps its own zoom and
+  place while the window is open; a change of the selection fits every
+  tool again.
 - **Status line** (pale yellow): what was found, or "Select the objects
   to work on." with nothing selected, or "Apply shows the result here
   without changing the drawing; OK applies it." before Apply, or that
@@ -39,7 +62,8 @@ commands. Contributed by LaMka21 (#170).
   or the drawing, the selection, the tool or a setting changed since,
   OK works the result out again first.
 - **Cancel** (Esc, the close button) closes without a change.
-- With nothing selected Apply and OK are greyed out.
+- With nothing selected Apply and OK are greyed out; their tips say to
+  select the objects to work on first.
 
 ## Presets
 
@@ -241,9 +265,11 @@ rectangular.
 
 ## Measure tools
 
-They change nothing: Apply (or OK) shows the result in a box over the
-preview and the first line on the status line. Lengths and areas are in
-the document's units.
+They change nothing. Their results show at once in a box beside the
+preview (230 wide), the first line also on the status line, without
+Apply, and follow the drawing, the selection and the settings as they
+change (worked out again only then). OK closes the window. Lengths and
+areas are in the document's units.
 
 ### Perimeter and Area
 

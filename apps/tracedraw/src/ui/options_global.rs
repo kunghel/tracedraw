@@ -98,15 +98,42 @@ pub fn printing_page(app: &mut App, ui: &mut Ui) {
             ui,
             crate::ui::tips::pair("print.gutter", "print.gutter_tip"),
             |ui| {
-                ui.add(
-                    crate::ui::field::NumField::new(&mut p.gutter)
-                        .range(0.0..=50.0)
-                        .speed(0.5)
-                        .suffix(" mm"),
-                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        crate::ui::field::NumField::new(&mut p.gutter)
+                            .range(0.0..=50.0)
+                            .speed(0.5)
+                            .suffix(" mm"),
+                    );
+                    ui.label(tr("print.gap_across"));
+                });
             },
         );
 
+        ui.end_row();
+        // The gap between the rows, set apart (#1795).
+        ui.label("");
+        let mut gy = p.gutter_y.unwrap_or(p.gutter);
+        crate::ui::tips::tip_over(
+            ui,
+            crate::ui::tips::pair("print.gap_down", "print.gap_down_tip"),
+            |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            crate::ui::field::NumField::new(&mut gy)
+                                .range(0.0..=50.0)
+                                .speed(0.5)
+                                .suffix(" mm"),
+                        )
+                        .changed()
+                    {
+                        p.gutter_y = Some(gy);
+                    }
+                    ui.label(tr("print.gap_down"));
+                });
+            },
+        );
         ui.end_row();
     });
     ui.add_space(6.0);

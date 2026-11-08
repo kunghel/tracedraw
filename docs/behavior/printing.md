@@ -286,6 +286,50 @@ same function (`export::print_sheets`).
 
 - Pages keep their aspect ratio; each cell is as large as the largest
   page on its sheet and a smaller page sits in its middle.
+- Gap between pages (several pages per sheet and repeat on the sheet,
+  0 to 50 mm, 5 mm at first): two fields, the gap across (between pages
+  side by side) and the gap down (between rows), each on its own
+  (#1795, `imposition::Options::gutter` and `gutter_y`,
+  `imposition::tests::the_column_and_row_gaps_are_set_apart`). Options >
+  Global > Printing starts every print with both; preferences saved
+  before the gap down existed take the gap across for it
+  (`prefs::tests::the_row_gap_is_remembered_and_old_preferences_take_the_column_gap`).
+  A booklet's spread keeps its own Gap (below).
+- Page order (several pages per sheet, #1658, `imposition::PageOrder`,
+  `imposition::tests::n_up_pages_can_run_down_the_columns`):
+  - Across, then down (default): left to right along each row, then the
+    next row; the next sheet goes on from the last page of this one.
+  - Down, then across: top to bottom down each column, then the next
+    column to the right; the next sheet goes on from the last page of
+    this one. 2 x 3: 1 2 3 down the first column, 4 5 6 down the
+    second, 7 on the next sheet.
+  - Down, through all sheets: top to bottom down each column, the
+    column going on in the same column of the next sheet, and only
+    after the last sheet does the next column start. Once the sheets are
+    stacked and cut into columns, each column is one series. 2 x 3 on
+    two sheets: 1 2 3 and 7 8 9 on the first sheet, 4 5 6 and 10 11 12
+    on the second. Cells past the last page stay empty.
+- Layout presets (#1796): the Preset row at the top of the layout fields
+  (Print dialog's Layout tab and Print Preview) lists the layouts saved
+  under a name; choosing one sets the imposition, columns and rows, page
+  order, sheet (by its name, or the Custom size) and orientation,
+  Stretch to fill, Keep page size, Back side, both gaps, the paper
+  margins, the booklet's binding, signature sheets, creep and gap, Bleed
+  with its limit and every printers' mark. "+" asks for a name and OK
+  (or Enter) keeps the layout under it, replacing a preset of that name;
+  "-" deletes the chosen preset after a Yes. A preset whose settings are
+  changed afterwards is shown unchosen. Presets are kept in the
+  preferences (`prefs::PrintPrefs::layout_presets`). Save to file...
+  writes the layout as a `.tdlayout` file (JSON: `format`
+  `"tracedraw-print-layout"`, `version` 1 and the `layout`, the fields
+  of `prefs::LayoutPreset`); Load from file... reads one (or a `.json`
+  file holding one) into the open Print Preview or Print dialog and keeps
+  it as a preset of its name. Another file is refused with a message;
+  values out of range are brought into range
+  (`prefs::tests::layout_presets_round_trip_through_a_file`,
+  `ui::dialogs::layout_preset_tests`). File access goes through the
+  app's file dialogs, so it works on the desktop, in the browser and on
+  Android.
 - A booklet's page count is rounded up to a multiple of four with blank
   pages at the back. The Layout fields (Print dialog and Print Preview)
   choose its binding by two pictures (#788, #947,

@@ -39,6 +39,36 @@ number of copies, distances and modes until you change them. With nothing
 selected the fields wait, keeping their values. A new session starts from
 one copy, 6.35 mm across and 0 down.
 
+## To fill the page {#fill-page}
+
+[[docker.sr_mode_fill]] tiles the selection over the page in a grid, as
+many copies as fit: labels, stickers, business cards and tags printed
+together on one sheet.
+
+1. Select the object (or objects) to repeat.
+2. At the top of the panel choose [[docker.sr_mode_fill]]. The panel shows
+   the page size.
+3. Choose to fill the [[docker.fillpage_area_page]], or an
+   [[docker.fillpage_area_custom]] of it set by its left and bottom edge,
+   width and height.
+4. Set the [[docker.fillpage_margins]] kept clear inside the edges (one
+   value for all sides, or clear [[docker.fillpage_same]] to set each
+   side), and the [[docker.fillpage_gap]] between the copies (one value,
+   or [[docker.fillpage_gap_x]] and [[docker.fillpage_gap_y]]).
+5. For staggered rows, set [[docker.fillpage_row_shift]].
+6. Under [[docker.fillpage_turn]], each choice shows how many copies fit,
+   for example "4 x 6 = 24 copies". Choose
+   [[docker.fillpage_as_is]], [[docker.fillpage_turned]], or
+   [[docker.fillpage_best]].
+7. Tick [[docker.fillpage_marks]] for marks at every cut line outside the
+   copies, and set their length and distance.
+8. Click [[docker.apply]].
+
+The selection moves to the first place of the grid and copies fill the
+others, centred in the room inside the margins; one [[menu.edit.undo]]
+puts everything back. While you work in the panel, every place is
+outlined on the page.
+
 To copy with a rotation or a scale at each step, use the [[dialog.copies]]
 field of the [[docker.transformations]] panel; see
 [Moving, scaling, rotating and skewing](transforming.md#transformations-docker).

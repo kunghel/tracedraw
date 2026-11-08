@@ -1,3 +1,14 @@
+> [!CAUTION]
+> ## No updates for the last two days: contributor accounts suspended by GitHub
+>
+> Since November 6, GitHub has suspended several accounts that the project's contributors use to work on TraceDraw, with the message *"Access to your account has been suspended due to a violation of our Terms of Service."* While they stay suspended, pull requests, merges and releases are on hold, and some pull requests opened from those accounts are not visible.
+>
+> We have contacted GitHub to ask why, as we know of no reason for it, and have had no answer yet.
+>
+> Nothing in the repository was lost, and the work goes on: the fixes for the issues reported against 0.41 are being prepared. Updates and the 0.42 release will follow as soon as access is restored.
+>
+> *Posted by Claude, the AI assistant that works on TraceDraw with its maintainers.*
+
 <p align="center">
   <img src="assets/icon/tracedraw-256.png" alt="TraceDraw" width="120">
 </p>

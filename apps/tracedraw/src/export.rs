@@ -1691,6 +1691,8 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         layout: st.layout(),
         sheet: st.sheet_size_for(first),
         gutter: st.gutter.max(0.0),
+        gutter_y: Some(st.gutter_y.max(0.0)),
+        order: crate::imposition::PageOrder::from_index(st.page_order),
         bleed,
         scale: if st.fit_to_page {
             1.0

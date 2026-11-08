@@ -32,6 +32,34 @@ de um objeto detalhado são contornadas pelas suas caixas.
 
 As cópias vão para a camada ativa. As distâncias ficam nas unidades de desenho.
 
+## Para preencher a página {#fill-page}
+
+[[docker.sr_mode_fill]] repete a seleção em grade sobre a página, quantas
+cópias couberem: etiquetas, adesivos, cartões de visita e tags impressos
+juntos numa folha.
+
+1. Selecione o objeto (ou objetos) a repetir.
+2. No alto do painel escolha [[docker.sr_mode_fill]]. O painel mostra o
+   tamanho da página.
+3. Escolha preencher a [[docker.fillpage_area_page]] ou uma
+   [[docker.fillpage_area_custom]] dela, definida pela borda esquerda e
+   inferior, largura e altura.
+4. Defina as [[docker.fillpage_margins]] livres dentro das bordas (um valor
+   para todos os lados, ou desmarque [[docker.fillpage_same]] para definir
+   cada lado) e o [[docker.fillpage_gap]] entre as cópias (um valor, ou
+   [[docker.fillpage_gap_x]] e [[docker.fillpage_gap_y]]).
+5. Para fileiras escalonadas, defina [[docker.fillpage_row_shift]].
+6. Em [[docker.fillpage_turn]], cada opção mostra quantas cópias cabem,
+   por exemplo "4 x 6 = 24 cópias". Escolha [[docker.fillpage_as_is]],
+   [[docker.fillpage_turned]] ou [[docker.fillpage_best]].
+7. Marque [[docker.fillpage_marks]] para marcas em cada linha de corte fora
+   das cópias, e defina o comprimento e a distância.
+8. Clique em [[docker.apply]].
+
+A seleção vai para o primeiro lugar da grade e cópias preenchem os outros,
+centradas no espaço dentro das margens; um [[menu.edit.undo]] desfaz tudo.
+Enquanto você trabalha no painel, cada lugar fica contornado na página.
+
 Para copiar com uma rotação ou uma escala a cada passo, use o campo
 [[dialog.copies]] do painel [[docker.transformations]]; veja
 [Mover, escalonar, girar e inclinar](transforming.md#transformations-docker).

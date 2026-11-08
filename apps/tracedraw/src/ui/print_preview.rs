@@ -71,6 +71,11 @@ fn settings_key(st: &PrintState) -> String {
     let mut st = st.clone();
     st.preflight = None;
     st.copies = 1;
+    // Naming, deleting or choosing a layout preset changes no sheet.
+    st.layout_preset.clear();
+    st.layout_preset_typed = None;
+    st.layout_preset_delete = None;
+    st.layout_preset_request = None;
     format!("{st:?}")
 }
 

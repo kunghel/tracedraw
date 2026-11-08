@@ -51,6 +51,31 @@ pub struct StepRepeat {
     /// 0 = offset, 1 = spacing between copies (uses object size).
     pub mode_x: u8,
     pub mode_y: u8,
+    /// Fill page (#1255): the selection tiled over the page instead of
+    /// `copies` copies one after another (see [`crate::fill_page`]).
+    pub fill: bool,
+    /// Fill an area of the page (`area`, mm in page space) rather than
+    /// the whole page.
+    pub area_custom: bool,
+    pub area: Rect,
+    /// Room kept clear inside the page or area: left, right, top,
+    /// bottom (mm); one value for all four while `margins_same`.
+    pub margins: [f64; 4],
+    pub margins_same: bool,
+    /// The gap between copies across and down (mm); one value for both
+    /// while `gap_same`.
+    pub gap: (f64, f64),
+    pub gap_same: bool,
+    /// How far every second row moves right (mm, 0 for none).
+    pub row_shift: f64,
+    /// 0 as the selection stands, 1 turned a quarter turn, 2 whichever
+    /// fits more.
+    pub turn: u8,
+    /// Trim marks at every cut line outside the copies, `mark_length`
+    /// long, starting `mark_offset` from them (mm).
+    pub marks: bool,
+    pub mark_length: f64,
+    pub mark_offset: f64,
 }
 
 impl Default for StepRepeat {
@@ -61,6 +86,18 @@ impl Default for StepRepeat {
             dy: 0.0,
             mode_x: 0,
             mode_y: 0,
+            fill: false,
+            area_custom: false,
+            area: Rect::new(0.0, 0.0, 210.0, 297.0),
+            margins: [0.0; 4],
+            margins_same: true,
+            gap: (0.0, 0.0),
+            gap_same: true,
+            row_shift: 0.0,
+            turn: 0,
+            marks: false,
+            mark_length: 3.0,
+            mark_offset: 0.0,
         }
     }
 }
@@ -3967,6 +4004,10 @@ impl App {
     /// distance typed came back as 6.35 mm after each Apply or click,
     /// #1032).
     pub fn step_and_repeat_apply(&mut self) {
+        if self.step_repeat.fill {
+            self.fill_page_apply();
+            return;
+        }
         let shapes = self.selected_shapes();
         if shapes.is_empty() {
             return;

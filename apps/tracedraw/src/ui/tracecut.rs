@@ -11,12 +11,12 @@
 use crate::app::{App, Units};
 use crate::i18n::tr;
 use crate::theme::Tokens;
-use crate::tracecut::{Group, Scene, ToolId, TraceCutState, TOLERANCE_RANGE};
+use crate::tracecut::{Group, PreviewView, Scene, ToolId, TraceCutState, TOLERANCE_RANGE};
 use crate::ui::tips::RichTip;
 use egui::{
     Align2, Color32, Context, CornerRadius, FontId, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
-use tracedraw_core::geometry::{PathEl, Point};
+use tracedraw_core::geometry::{PathEl, Point, Shape as _};
 
 /// Width of the tool list.
 const LIST_W: f32 = 210.0;
@@ -154,38 +154,55 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
         // A setting changed: the result shown is not this one's.
         st.worked = None;
     }
+    let targets = app.tracecut_targets();
+    st.track_targets(&targets);
+    // The Measure tools show their results live, worked out again only
+    // when the drawing, the selection or a setting changes.
+    if st.tool.group() == Group::Measure
+        && !targets.is_empty()
+        && !st
+            .worked
+            .as_ref()
+            .is_some_and(|w| app.tracecut_current(w, st.tool, &st.settings))
+    {
+        st.worked = Some(app.tracecut_work_out(st.tool, &st.settings));
+    }
     let current = st
         .worked
         .as_ref()
         .filter(|w| app.tracecut_current(w, st.tool, &st.settings));
     let scene = app.tracecut_scene(current);
-    // A calculation's result, to read.
-    if let Some(crate::tracecut::Outcome::Report(r)) = current.map(|w| &w.outcome) {
-        egui::Frame::new()
-            .fill(Tokens::field())
-            .stroke(Stroke::new(1.0, Tokens::border()))
-            .inner_margin(egui::Margin::same(6))
-            .show(ui, |ui| {
-                ui.set_width(width - 18.0);
-                for (i, line) in r.lines.iter().enumerate() {
-                    let text = egui::RichText::new(line);
-                    ui.label(if i == 0 {
-                        text.strong().size(14.0)
-                    } else {
-                        text
-                    });
-                }
-            });
-    }
-    let h = (ui.available_height() - BELOW_PREVIEW).max(120.0);
-    preview(ui, Vec2::new(width - 4.0, h), &scene);
     let has_targets = !scene.objects.is_empty() || !app.selection.is_empty();
+    let input = PreviewInput {
+        scene: &scene,
+        actual: f64::from(crate::settings::screen_points_per_inch(&app.settings)) / 25.4,
+        hint: (!has_targets).then(|| tr("tracecut.empty_hint")),
+    };
+    let h = (ui.available_height() - BELOW_PREVIEW).max(120.0);
+    let view = st.view();
+    let report = match current.map(|w| &w.outcome) {
+        Some(crate::tracecut::Outcome::Report(r)) if has_targets => Some(r),
+        _ => None,
+    };
+    let view = if let Some(r) = report {
+        ui.horizontal_top(|ui| {
+            let gap = ui.spacing().item_spacing.x;
+            let w = width - 4.0 - REPORT_W - gap;
+            let v = preview(ui, Vec2::new(w, h), &input, view);
+            report_box(ui, Vec2::new(REPORT_W, h), r);
+            v
+        })
+        .inner
+    } else {
+        preview(ui, Vec2::new(width - 4.0, h), &input, view)
+    };
     let line = match (current, &st.worked) {
         _ if !has_targets => tr("tracecut.select_first"),
         (Some(w), _) => w.outcome.summary(),
         (None, Some(_)) => tr("tracecut.out_of_date"),
         (None, None) => tr("tracecut.press_apply"),
     };
+    st.set_view(view);
     status_strip(ui, width - 4.0, &line);
     ui.add_space(8.0);
     buttons(ui, has_targets)
@@ -346,9 +363,140 @@ fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) {
     }
 }
 
-/// The preview: the scene fitted in a white box, y up.
-fn preview(ui: &mut Ui, size: Vec2, scene: &Scene) {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+/// One notch of the wheel zooms by this much, as on the drawing.
+const WHEEL_NOTCH: f64 = 1.15;
+/// The zoom buttons' and keys' step.
+const ZOOM_STEP: f64 = 1.25;
+/// The corner buttons over the preview, points square.
+const CORNER_BUTTON: f32 = 24.0;
+/// Room kept round the result when it is fitted.
+const FIT_MARGIN: f32 = 16.0;
+/// Width of the measurements beside the preview.
+const REPORT_W: f32 = 230.0;
+
+/// What a corner button over the preview does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoomButton {
+    In,
+    Out,
+    Fit,
+    Selection,
+    Actual,
+}
+
+impl ZoomButton {
+    const ALL: [ZoomButton; 5] = [
+        ZoomButton::In,
+        ZoomButton::Out,
+        ZoomButton::Fit,
+        ZoomButton::Selection,
+        ZoomButton::Actual,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            ZoomButton::In => "tracecut.zoom_in",
+            ZoomButton::Out => "tracecut.zoom_out",
+            ZoomButton::Fit => "tracecut.zoom_fit",
+            ZoomButton::Selection => "tracecut.zoom_selection",
+            ZoomButton::Actual => "tracecut.zoom_actual",
+        }
+    }
+
+    #[cfg(test)]
+    fn mark(self) -> &'static str {
+        match self {
+            ZoomButton::In => "tracecut_zoom_in",
+            ZoomButton::Out => "tracecut_zoom_out",
+            ZoomButton::Fit => "tracecut_zoom_fit",
+            ZoomButton::Selection => "tracecut_zoom_selection",
+            ZoomButton::Actual => "tracecut_zoom_actual",
+        }
+    }
+
+    fn draw(self, p: &egui::Painter, r: egui::Rect, c: Color32) {
+        use crate::ui::before_after::{draw_fit, draw_zoom};
+        match self {
+            ZoomButton::In => draw_zoom(p, r, c, true),
+            ZoomButton::Out => draw_zoom(p, r, c, false),
+            ZoomButton::Fit => draw_fit(p, r, c),
+            ZoomButton::Selection => {
+                // The fit frame round a selected square.
+                draw_fit(p, r, c);
+                let k = r.width() / 16.0;
+                p.rect_filled(
+                    egui::Rect::from_center_size(r.center(), Vec2::splat(4.0 * k)),
+                    0.0,
+                    c,
+                );
+            }
+            ZoomButton::Actual => {
+                p.text(
+                    r.center(),
+                    Align2::CENTER_CENTER,
+                    "1:1",
+                    FontId::proportional(11.0),
+                    c,
+                );
+            }
+        }
+    }
+}
+
+/// What the preview draws and how it may be zoomed.
+struct PreviewInput<'a> {
+    scene: &'a Scene,
+    /// Interface points per millimetre at real size (1:1).
+    actual: f64,
+    /// The hint shown in place of an empty box.
+    hint: Option<String>,
+}
+
+/// The whole result: the objects, what was found and the moves.
+fn full_extent(scene: &Scene) -> Option<tracedraw_core::geometry::Rect> {
+    let mut e = scene.extent;
+    let mut add = |q: Point| {
+        if q.x.is_finite() && q.y.is_finite() {
+            let r = tracedraw_core::geometry::Rect::from_points(q, q);
+            e = Some(e.map_or(r, |e| e.union(r)));
+        }
+    };
+    for q in &scene.points {
+        add(*q);
+    }
+    for (a, b) in &scene.moves {
+        add(*a);
+        add(*b);
+    }
+    e
+}
+
+/// The zoom that fits `r` in `area`.
+fn fit_zoom(r: tracedraw_core::geometry::Rect, area: egui::Rect) -> f64 {
+    let (w, h) = (r.width().max(1e-6), r.height().max(1e-6));
+    let z = (f64::from(area.width()) / w).min(f64::from(area.height()) / h);
+    if z.is_finite() && z > 0.0 {
+        z
+    } else {
+        1.0
+    }
+}
+
+/// The preview: the scene in a white box, y up, fitted until it is
+/// zoomed (the wheel at the pointer, pinch, the corner buttons, +, -
+/// and 0 with the pointer over it) or panned (a drag with the left or
+/// middle button); a double click fits it again. The outlines are drawn
+/// again at every zoom, and what lies outside the box is skipped.
+/// Returns the view after this frame's zooming and panning.
+fn preview(
+    ui: &mut Ui,
+    size: Vec2,
+    input: &PreviewInput,
+    view: Option<PreviewView>,
+) -> Option<PreviewView> {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    #[cfg(test)]
+    crate::ui::before_after::mark(ui, "tracecut_preview", rect);
     let p = ui.painter_at(rect);
     p.rect(
         rect,
@@ -357,20 +505,260 @@ fn preview(ui: &mut Ui, size: Vec2, scene: &Scene) {
         Stroke::new(1.0, Tokens::border()),
         StrokeKind::Inside,
     );
-    let area = rect.shrink(16.0);
-    let Some(e) = scene.extent else {
-        return;
-    };
-    let (ew, eh) = (e.width().max(1e-6), e.height().max(1e-6));
-    let s = (f64::from(area.width()) / ew).min(f64::from(area.height()) / eh);
-    if !(s.is_finite() && s > 0.0) {
-        return;
+    if let Some(hint) = &input.hint {
+        let galley = ui.painter().layout(
+            hint.clone(),
+            FontId::proportional(15.0),
+            Color32::from_gray(110),
+            (rect.width() - 40.0).max(40.0),
+        );
+        let at = rect.center() - galley.size() / 2.0;
+        #[cfg(test)]
+        crate::ui::before_after::mark(
+            ui,
+            "tracecut_hint",
+            egui::Rect::from_min_size(at, galley.size()),
+        );
+        p.galley(at, galley, Color32::from_gray(110));
+        return view;
     }
-    let ox = f64::from(area.center().x) - (e.x0 + ew / 2.0) * s;
-    let oy = f64::from(area.center().y) + (e.y0 + eh / 2.0) * s;
-    let to = |q: Point| Pos2::new((ox + q.x * s) as f32, (oy - q.y * s) as f32);
-    let tol = (0.5 / s).max(1e-4);
+    let scene = input.scene;
+    let Some(extent) = full_extent(scene) else {
+        return view;
+    };
+    let area = rect.shrink(FIT_MARGIN);
+    let fit = fit_zoom(extent, area);
+    let fitted = PreviewView {
+        zoom: fit,
+        centre: extent.center(),
+    };
+    let lo = fit * 0.1;
+    let hi = (fit * 4.0).max(2000.0);
+    let mut view = view;
+    let mut v = view.unwrap_or(fitted);
+    let middle = rect.center();
+    let to_page = |v: &PreviewView, s: Pos2| {
+        Point::new(
+            v.centre.x + f64::from(s.x - middle.x) / v.zoom,
+            v.centre.y - f64::from(s.y - middle.y) / v.zoom,
+        )
+    };
+    // Zoom by `f` keeping the page point under `at` where it is.
+    let zoom_at = |v: &mut PreviewView, at: Pos2, f: f64| {
+        let q = to_page(v, at);
+        v.zoom = (v.zoom * f).clamp(lo, hi);
+        v.centre = Point::new(
+            q.x - f64::from(at.x - middle.x) / v.zoom,
+            q.y + f64::from(at.y - middle.y) / v.zoom,
+        );
+    };
+    let mut changed = false;
+
+    // The corner buttons, over the box (drawn after it, so they take
+    // the pointer before it).
+    let mut corner = None;
+    let mut corners = Vec::with_capacity(ZoomButton::ALL.len());
+    let mut x = rect.right() - 4.0;
+    for b in ZoomButton::ALL.iter().rev() {
+        let r = egui::Rect::from_min_size(
+            Pos2::new(x - CORNER_BUTTON, rect.top() + 4.0),
+            Vec2::splat(CORNER_BUTTON),
+        );
+        x -= CORNER_BUTTON + 2.0;
+        #[cfg(test)]
+        crate::ui::before_after::mark(ui, b.mark(), r);
+        let id = ui.id().with(("tracecut_zoom", b.key()));
+        let br = ui
+            .interact(r, id, Sense::click())
+            .rich_tip(crate::ui::tips::keyed(b.key()));
+        if br.clicked() {
+            corner = Some(*b);
+        }
+        corners.push((*b, r, br.hovered()));
+    }
+    match corner {
+        Some(ZoomButton::In) => {
+            zoom_at(&mut v, middle, ZOOM_STEP);
+            changed = true;
+        }
+        Some(ZoomButton::Out) => {
+            zoom_at(&mut v, middle, 1.0 / ZOOM_STEP);
+            changed = true;
+        }
+        Some(ZoomButton::Fit) => view = None,
+        Some(ZoomButton::Selection) => {
+            let sel = scene
+                .objects
+                .iter()
+                .map(|p| p.bounding_box())
+                .filter(|b| b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite())
+                .reduce(|a, b| a.union(b))
+                .unwrap_or(extent);
+            v = PreviewView {
+                zoom: fit_zoom(sel, area).clamp(lo, hi),
+                centre: sel.center(),
+            };
+            changed = true;
+        }
+        Some(ZoomButton::Actual) => {
+            v.zoom = input.actual.clamp(lo, hi);
+            changed = true;
+        }
+        None => {}
+    }
+
+    let over = resp.hovered() || resp.dragged();
+    if corner.is_none() && resp.double_clicked() {
+        view = None;
+        changed = false;
+        v = fitted;
+    } else if resp.dragged_by(egui::PointerButton::Primary)
+        || resp.dragged_by(egui::PointerButton::Middle)
+    {
+        let d = resp.drag_delta();
+        if d != Vec2::ZERO {
+            v.centre = Point::new(
+                v.centre.x - f64::from(d.x) / v.zoom,
+                v.centre.y + f64::from(d.y) / v.zoom,
+            );
+            changed = true;
+        }
+    }
+    if resp.hovered() {
+        let web = crate::ui::field::web_wheel();
+        let (notches, zoom_delta, touch, pointer) = ui.input(|i| {
+            let notches: f32 = i
+                .raw
+                .events
+                .iter()
+                .map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => {
+                        delta.y / crate::ui::field::wheel_notch(*unit, web)
+                    }
+                    _ => 0.0,
+                })
+                .sum();
+            // A pinch: two fingers on a touch screen, or a touchpad's
+            // pinch (egui's zoom delta also holds Ctrl+wheel, spread over
+            // frames, which the notches above already count).
+            let touchpad: f32 = i
+                .raw
+                .events
+                .iter()
+                .map(|e| match e {
+                    egui::Event::Zoom(f) => *f,
+                    _ => 1.0,
+                })
+                .product();
+            let fingers = i.multi_touch().map_or(1.0, |t| t.zoom_delta);
+            (
+                notches,
+                touchpad * fingers,
+                i.multi_touch().map(|t| t.translation_delta),
+                i.pointer.hover_pos(),
+            )
+        });
+        let at = pointer.unwrap_or(middle);
+        if notches != 0.0 {
+            // A notch (Ctrl or not) zooms as on the drawing.
+            zoom_at(&mut v, at, WHEEL_NOTCH.powf(f64::from(notches)));
+            changed = true;
+        } else if zoom_delta != 1.0 {
+            // A pinch.
+            zoom_at(&mut v, at, f64::from(zoom_delta));
+            changed = true;
+        }
+        if let Some(t) = touch.filter(|t| *t != Vec2::ZERO) {
+            v.centre = Point::new(
+                v.centre.x - f64::from(t.x) / v.zoom,
+                v.centre.y + f64::from(t.y) / v.zoom,
+            );
+            changed = true;
+        }
+        if notches != 0.0 || zoom_delta != 1.0 {
+            crate::ui::field::take_wheel(ui);
+        }
+        if !ui.ctx().text_edit_focused() {
+            let key = ui.input_mut(|i| {
+                let mut got = None;
+                i.events.retain(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } if !(modifiers.ctrl || modifiers.alt || modifiers.command) => {
+                        let k = match key {
+                            egui::Key::Plus | egui::Key::Equals => Some(ZoomButton::In),
+                            egui::Key::Minus => Some(ZoomButton::Out),
+                            egui::Key::Num0 => Some(ZoomButton::Fit),
+                            // Space held for a pan presses no button.
+                            egui::Key::Space => None,
+                            _ => return true,
+                        };
+                        if *pressed && k.is_some() {
+                            got = k;
+                        }
+                        false
+                    }
+                    _ => true,
+                });
+                got
+            });
+            match key {
+                Some(ZoomButton::In) => {
+                    zoom_at(&mut v, at, ZOOM_STEP);
+                    changed = true;
+                }
+                Some(ZoomButton::Out) => {
+                    zoom_at(&mut v, at, 1.0 / ZOOM_STEP);
+                    changed = true;
+                }
+                Some(_) => {
+                    view = None;
+                    changed = false;
+                    v = fitted;
+                }
+                None => {}
+            }
+        }
+    }
+    if over {
+        ui.ctx().set_cursor_icon(if resp.dragged() {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
+    if changed {
+        view = Some(v);
+    }
+    let zoomed = view.is_some();
+    let v = view.unwrap_or(fitted);
+
+    // Draw, at this zoom.
+    let (s, c) = (v.zoom, v.centre);
+    let to = |q: Point| {
+        Pos2::new(
+            (f64::from(middle.x) + (q.x - c.x) * s) as f32,
+            (f64::from(middle.y) - (q.y - c.y) * s) as f32,
+        )
+    };
+    // The page area in view, a little wider for the strokes.
+    let seen = {
+        let a = to_page(&v, rect.min - Vec2::splat(8.0));
+        let b = to_page(&v, rect.max + Vec2::splat(8.0));
+        tracedraw_core::geometry::Rect::from_points(a, b)
+    };
+    let visible = |b: tracedraw_core::geometry::Rect| {
+        b.x1 >= seen.x0 && b.x0 <= seen.x1 && b.y1 >= seen.y0 && b.y0 <= seen.y1
+    };
+    let tol = (0.5 / s).max(1e-6);
     let draw = |path: &tracedraw_core::geometry::BezPath, stroke: Stroke| {
+        // Fitted, everything is in view; zoomed, what is not is skipped.
+        if zoomed && !visible(path.bounding_box()) {
+            return;
+        }
         let mut pts: Vec<Pos2> = Vec::new();
         let mut start: Option<Pos2> = None;
         let flush = |pts: &mut Vec<Pos2>| {
@@ -403,12 +791,65 @@ fn preview(ui: &mut Ui, size: Vec2, scene: &Scene) {
     for path in &scene.marked {
         draw(path, Stroke::new(2.5, MARKED));
     }
+    let shown = rect.expand(8.0);
     for q in &scene.points {
-        p.circle_stroke(to(*q), 6.0, Stroke::new(2.0, MARKED));
+        let a = to(*q);
+        if shown.contains(a) {
+            p.circle_stroke(a, 6.0, Stroke::new(2.0, MARKED));
+        }
     }
     for (a, b) in &scene.moves {
-        p.line_segment([to(*a), to(*b)], Stroke::new(1.0, MOVE));
+        let (a, b) = (to(*a), to(*b));
+        if shown.intersects(egui::Rect::from_two_pos(a, b)) {
+            p.line_segment([a, b], Stroke::new(1.0, MOVE));
+        }
     }
+    // The buttons on top of the drawing.
+    for (b, r, hovered) in corners {
+        // The box stays white in every theme, and so do its buttons.
+        let (fill, edge) = if hovered {
+            (
+                Color32::from_rgb(0xDD, 0xEB, 0xF7),
+                Color32::from_rgb(0x60, 0x90, 0xC8),
+            )
+        } else {
+            (Color32::from_white_alpha(230), Color32::from_gray(200))
+        };
+        p.rect(r, 3.0, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+        b.draw(
+            &p,
+            egui::Rect::from_center_size(r.center(), Vec2::splat(16.0)),
+            Color32::from_gray(50),
+        );
+    }
+    view
+}
+
+/// A calculation's result, to read beside the preview.
+fn report_box(ui: &mut Ui, size: Vec2, r: &crate::tracecut_nest::Report) {
+    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+        egui::Frame::new()
+            .fill(Tokens::field())
+            .stroke(Stroke::new(1.0, Tokens::border()))
+            .inner_margin(egui::Margin::same(6))
+            .show(ui, |ui| {
+                ui.set_width(size.x - 14.0);
+                ui.set_min_height(size.y - 14.0);
+                #[cfg(test)]
+                crate::ui::before_after::mark(ui, "tracecut_report", ui.max_rect());
+                for (i, line) in r.lines.iter().enumerate() {
+                    let text = egui::RichText::new(line);
+                    ui.add(
+                        egui::Label::new(if i == 0 {
+                            text.strong().size(14.0)
+                        } else {
+                            text
+                        })
+                        .wrap(),
+                    );
+                }
+            });
+    });
 }
 
 /// The status line under the preview.
@@ -439,11 +880,16 @@ fn buttons(ui: &mut Ui, enabled: bool) -> Option<Button> {
                 1 => crate::ui::tips::pair("dialog.ok", "tracecut.ok_desc"),
                 _ => crate::ui::tips::pair("dialog.cancel", "tracecut.cancel_desc"),
             };
-            if ui
+            // Greyed out, Apply and OK say why.
+            let why = match i {
+                0 => crate::ui::tips::pair("tracecut.apply", "tracecut.needs_selection"),
+                _ => crate::ui::tips::pair("dialog.ok", "tracecut.needs_selection"),
+            };
+            let r = ui
                 .add_enabled(on, egui::Button::new(l).min_size(Vec2::new(w, 27.0)))
-                .rich_tip(tip)
-                .clicked()
-            {
+                .rich_tip(tip);
+            let r = if on { r } else { r.rich_disabled_tip(why) };
+            if r.clicked() {
                 pressed = Some(match i {
                     0 => Button::Apply,
                     1 => Button::Ok,
@@ -463,6 +909,7 @@ pub fn shown(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::trf;
     use crate::tracecut::Outcome;
     use crate::ui::dialogs::Dialog;
     use tracedraw_core::ShapeKind;
@@ -620,5 +1067,275 @@ mod tests {
         app.dialog = Dialog::None;
         app.settings.tracecut.show = false;
         assert!(!listed(&mut app));
+    }
+
+    /// A frame with `events`, the keys `mods` held.
+    fn run(ctx: &Context, app: &mut App, events: Vec<egui::Event>, mods: egui::Modifiers) {
+        let mut all = vec![egui::Event::ModifiersChanged(mods)];
+        all.extend(events);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(1400.0, 900.0),
+            )),
+            events: all,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(app, &ui.ctx().clone()));
+        out.textures_delta.clear();
+    }
+
+    fn press(at: Pos2, pressed: bool, button: egui::PointerButton) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: at,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn wheel(notches: f32, mods: egui::Modifiers) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, notches),
+            phase: egui::TouchPhase::Move,
+            modifiers: mods,
+        }
+    }
+
+    fn mark(ctx: &Context, name: &str) -> Option<egui::Rect> {
+        crate::ui::before_after::rects(ctx).0.get(name).copied()
+    }
+
+    fn state(app: &App) -> &TraceCutState {
+        match &app.dialog {
+            Dialog::TraceCut(s) => s,
+            _ => panic!("the TraceCut window is open"),
+        }
+    }
+
+    /// The page point under `s` in the preview `rect` with view `v`.
+    fn page_at(v: PreviewView, rect: egui::Rect, s: Pos2) -> Point {
+        Point::new(
+            v.centre.x + f64::from(s.x - rect.center().x) / v.zoom,
+            v.centre.y - f64::from(s.y - rect.center().y) / v.zoom,
+        )
+    }
+
+    /// Two squares apart, selected, and the window open on `tool`.
+    fn opened(tool: ToolId) -> (Context, App) {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut ids = Vec::new();
+        for (x, y) in [(10.0, 10.0), (80.0, 40.0)] {
+            let kind = ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(x, y, x + 30.0, y + 30.0),
+                radius: 0.0,
+                corners: None,
+            };
+            ids.push(app.new_shape(kind).expect("square"));
+        }
+        app.select(ids);
+        app.dialog = Dialog::TraceCut(Box::new(TraceCutState::new(tool)));
+        for _ in 0..3 {
+            run(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        (ctx, app)
+    }
+
+    /// Frames past the double-click time.
+    fn settle(ctx: &Context, app: &mut App) {
+        for _ in 0..40 {
+            run(ctx, app, Vec::new(), egui::Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn the_wheel_zooms_the_preview_at_the_pointer() {
+        let (ctx, mut app) = opened(ToolId::FindDuplicates);
+        let rect = mark(&ctx, "tracecut_preview").expect("the preview is drawn");
+        assert_eq!(state(&app).view(), None, "fitted at first");
+        let at = rect.center() + Vec2::new(90.0, 40.0);
+        let none = egui::Modifiers::NONE;
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], none);
+        run(&ctx, &mut app, vec![wheel(1.0, none)], none);
+        let first = state(&app).view().expect("zoomed in");
+        // Another notch: 1.15 times, the point under the pointer stays.
+        let under = page_at(first, rect, at);
+        run(&ctx, &mut app, vec![wheel(1.0, none)], none);
+        let second = state(&app).view().expect("zoomed in");
+        assert!(
+            (second.zoom / first.zoom - 1.15).abs() < 1e-6,
+            "{first:?} {second:?}"
+        );
+        let now = page_at(second, rect, at);
+        assert!((now - under).hypot() < 1e-6, "{under:?} {now:?}");
+        // Ctrl+wheel zooms the same, and back out.
+        let ctrl = egui::Modifiers::CTRL;
+        run(&ctx, &mut app, vec![wheel(-1.0, ctrl)], ctrl);
+        let third = state(&app).view().expect("zoomed");
+        assert!((second.zoom / third.zoom - 1.15).abs() < 1e-6, "{third:?}");
+        assert!((page_at(third, rect, at) - under).hypot() < 1e-6);
+        // The keys while the pointer is over it: + zooms in, 0 fits.
+        let key = |k: egui::Key| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: none,
+        };
+        run(&ctx, &mut app, vec![key(egui::Key::Plus)], none);
+        let fourth = state(&app).view().expect("zoomed");
+        assert!(
+            (fourth.zoom / third.zoom - ZOOM_STEP).abs() < 1e-6,
+            "{third:?} {fourth:?}"
+        );
+        run(&ctx, &mut app, vec![key(egui::Key::Num0)], none);
+        assert_eq!(state(&app).view(), None, "0 fits");
+    }
+
+    #[test]
+    fn a_drag_pans_the_preview_and_a_double_click_fits_it() {
+        let (ctx, mut app) = opened(ToolId::FindDuplicates);
+        let rect = mark(&ctx, "tracecut_preview").expect("the preview is drawn");
+        let none = egui::Modifiers::NONE;
+        let start = rect.center() + Vec2::new(-60.0, 30.0);
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(start)], none);
+        let primary = egui::PointerButton::Primary;
+        run(&ctx, &mut app, vec![press(start, true, primary)], none);
+        let mut at = start;
+        for _ in 0..4 {
+            at += Vec2::new(10.0, 5.0);
+            run(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], none);
+        }
+        run(&ctx, &mut app, vec![press(at, false, primary)], none);
+        let v = state(&app).view().expect("panned");
+        // The page point that was under the pointer went with it.
+        let fitted_centre = {
+            let s = app.tracecut_scene(None);
+            full_extent(&s).expect("extent").center()
+        };
+        let moved = page_at(v, rect, rect.center()) - fitted_centre;
+        assert!((moved.x + 40.0 / v.zoom).abs() < 1e-6, "{moved:?} {v:?}");
+        assert!((moved.y - 20.0 / v.zoom).abs() < 1e-6, "{moved:?} {v:?}");
+        settle(&ctx, &mut app);
+        // A double click fits again.
+        for _ in 0..2 {
+            run(&ctx, &mut app, vec![press(at, true, primary)], none);
+            run(&ctx, &mut app, vec![press(at, false, primary)], none);
+        }
+        assert_eq!(state(&app).view(), None, "the double click fits");
+        // The middle button pans too.
+        settle(&ctx, &mut app);
+        let middle = egui::PointerButton::Middle;
+        run(&ctx, &mut app, vec![press(at, true, middle)], none);
+        for _ in 0..3 {
+            at += Vec2::new(-8.0, 0.0);
+            run(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], none);
+        }
+        run(&ctx, &mut app, vec![press(at, false, middle)], none);
+        assert!(state(&app).view().is_some(), "the middle button pans");
+    }
+
+    #[test]
+    fn the_corner_buttons_zoom_and_fit_and_each_tool_keeps_its_zoom() {
+        let (ctx, mut app) = opened(ToolId::FindDuplicates);
+        let none = egui::Modifiers::NONE;
+        let click = |ctx: &Context, app: &mut App, name: &str| {
+            let r = mark(ctx, name).expect(name);
+            settle(ctx, app);
+            run(ctx, app, vec![egui::Event::PointerMoved(r.center())], none);
+            let p = egui::PointerButton::Primary;
+            run(ctx, app, vec![press(r.center(), true, p)], none);
+            run(ctx, app, vec![press(r.center(), false, p)], none);
+        };
+        click(&ctx, &mut app, ZoomButton::In.mark());
+        let zoomed = state(&app).view().expect("zoom in");
+        click(&ctx, &mut app, ZoomButton::Out.mark());
+        let out = state(&app).view().expect("zoom out");
+        assert!((zoomed.zoom / out.zoom - ZOOM_STEP).abs() < 1e-6);
+        click(&ctx, &mut app, ZoomButton::Actual.mark());
+        let actual = state(&app).view().expect("1:1");
+        let per_mm = f64::from(crate::settings::screen_points_per_inch(&app.settings)) / 25.4;
+        assert!((actual.zoom - per_mm).abs() < 1e-6, "{actual:?} {per_mm}");
+        click(&ctx, &mut app, ZoomButton::Selection.mark());
+        assert!(state(&app).view().is_some(), "zoom to selection");
+        click(&ctx, &mut app, ZoomButton::In.mark());
+        let kept = state(&app).view();
+        // Another tool fits; coming back finds the zoom kept.
+        if let Dialog::TraceCut(s) = &mut app.dialog {
+            s.tool = ToolId::FindCrossings;
+        }
+        run(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(state(&app).view(), None);
+        if let Dialog::TraceCut(s) = &mut app.dialog {
+            s.tool = ToolId::FindDuplicates;
+        }
+        run(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(state(&app).view(), kept);
+        click(&ctx, &mut app, ZoomButton::Fit.mark());
+        assert_eq!(state(&app).view(), None, "the fit button");
+        // A new selection fits again.
+        click(&ctx, &mut app, ZoomButton::In.mark());
+        assert!(state(&app).view().is_some());
+        let first = app.selection.first().copied();
+        app.select(first.into_iter().collect());
+        run(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(state(&app).view(), None, "another selection fits");
+    }
+
+    #[test]
+    fn without_a_selection_the_preview_says_so_and_ok_is_greyed_out() {
+        let (ctx, mut app) = opened(ToolId::FindDuplicates);
+        assert!(mark(&ctx, "tracecut_hint").is_none());
+        crate::ui::tips::start_recording();
+        run(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let why = crate::ui::tips::pair("dialog.ok", "tracecut.needs_selection");
+        assert!(!crate::ui::tips::recorded().contains(&why));
+        app.select(Vec::new());
+        ctx.data_mut(|d| {
+            d.remove::<crate::ui::before_after::Rects>(egui::Id::new("preview_rects"))
+        });
+        crate::ui::tips::start_recording();
+        run(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let hint = mark(&ctx, "tracecut_hint").expect("the hint is shown");
+        let rect = mark(&ctx, "tracecut_preview").expect("the preview");
+        assert!(rect.contains_rect(hint));
+        assert!((hint.center() - rect.center()).length() < 1.0, "centred");
+        assert!(
+            crate::ui::tips::recorded().contains(&why),
+            "OK says why it is grey"
+        );
+        assert_eq!(
+            tr("tracecut.empty_hint"),
+            "Select the objects to cut, nest or measure"
+        );
+    }
+
+    #[test]
+    fn the_measure_tools_show_their_results_without_apply() {
+        for tool in [ToolId::Measure, ToolId::CuttingTime, ToolId::Cost] {
+            let (ctx, app) = opened(tool);
+            let st = state(&app);
+            let report = match st.worked.as_ref().map(|w| &w.outcome) {
+                Some(Outcome::Report(r)) => r.clone(),
+                other => panic!("{tool:?}: {other:?}"),
+            };
+            assert!(app.tracecut_current(st.worked.as_ref().expect("w"), tool, &st.settings));
+            assert!(mark(&ctx, "tracecut_report").is_some(), "{tool:?} shows it");
+            if tool == ToolId::Measure {
+                // Two 30 mm squares: 240 mm round, 1800 mm².
+                let all = report.lines.join("\n");
+                let u = app.units;
+                let len = trf(
+                    "tracecut.measure_length",
+                    &[("v", &crate::tracecut_cut::fmt_len(u, 240.0))],
+                );
+                let k = u.world_from_mm(1.0);
+                let area = format!("{:.2} {}²", 1800.0 * k * k, u.short());
+                assert_eq!(report.lines.first(), Some(&len), "{all}");
+                assert!(all.contains(&area), "{area} in {all}");
+            }
+        }
     }
 }

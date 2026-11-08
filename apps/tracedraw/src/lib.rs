@@ -77,6 +77,7 @@ mod extrude_tool;
 mod eyedropper;
 mod file_presence;
 mod files;
+mod fill_page;
 mod fill_tool;
 mod fit_path;
 mod focus;

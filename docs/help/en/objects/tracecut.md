@@ -13,7 +13,28 @@ the buttons:
   one step;
 - **Cancel** closes the window without a change.
 
+With nothing selected the preview asks you to select the objects to cut,
+nest or measure, and Apply and OK are greyed out.
+
+The Measure tools (Perimeter and Area, Cutting Time, Cost) show their
+results beside the preview at once, and update as you change the selection
+or the settings; there is no need to press Apply.
+
 To hide TraceCut, clear [[options.show_tracecut]] in Options, General.
+
+## Zoom in the preview {#preview-zoom}
+
+- Turn the **mouse wheel** over the preview to zoom at the pointer (with or
+  without Ctrl), or **pinch** on a touch screen or touchpad.
+- **Drag** with the left or middle button (or hold Space and drag) to move
+  the view.
+- The buttons in the preview's corner zoom in, zoom out, fit the whole
+  result, zoom to the selected objects and show them at real size (1:1).
+- With the pointer over the preview, **+** and **-** zoom and **0** fits.
+- **Double-click** the preview to fit the whole result again.
+
+Each tool keeps its zoom while the window is open; selecting other objects
+fits the preview again.
 
 ## Presets {#presets}
 

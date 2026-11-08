@@ -384,6 +384,19 @@ pub fn export_keeps_properties(ext: &str) -> bool {
     matches!(ext, "pdf" | "ai")
 }
 
+/// What Print's layout fields ask for besides the settings (#1796).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutPresetRequest {
+    /// Keep the layout as a preset of this name (replacing one).
+    Save(String),
+    /// Forget the preset of this name.
+    Delete(String),
+    /// Write the layout to a file the user names.
+    SaveFile,
+    /// Read a layout from a file the user picks.
+    OpenFile,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrintState {
     /// With Print separations: the plates (in `export::plates` order)
@@ -434,8 +447,23 @@ pub struct PrintState {
     /// The sheet: an index into [`SHEETS`] (0 fits the sheet to the pages).
     pub sheet: usize,
     pub landscape: bool,
-    /// Space between pages on the sheet, mm.
+    /// Space between pages side by side on the sheet, mm.
     pub gutter: f64,
+    /// Space between the rows of pages on the sheet, mm (#1795).
+    pub gutter_y: f64,
+    /// The order of several pages per sheet: 0 across, 1 down the
+    /// columns of each sheet, 2 down each column through every sheet
+    /// (#1658, [`crate::imposition::PageOrder`]).
+    pub page_order: usize,
+    /// The layout preset chosen (#1796), empty for none.
+    pub layout_preset: String,
+    /// The name being typed for a preset to save, while "+" is open.
+    pub layout_preset_typed: Option<String>,
+    /// A preset whose deletion is being asked.
+    pub layout_preset_delete: Option<String>,
+    /// What the layout fields asked of the preferences or the files,
+    /// done by [`take_saved_sheet`] (the fields only read the app).
+    pub layout_preset_request: Option<LayoutPresetRequest>,
     /// Booklet binding: 0 saddle stitch, 1 perfect bound (#788).
     pub booklet_binding: usize,
     /// Sheets in each signature of a perfect-bound booklet.
@@ -736,6 +764,12 @@ impl Default for PrintState {
             sheet: 0,
             landscape: false,
             gutter: 5.0,
+            gutter_y: 5.0,
+            page_order: 0,
+            layout_preset: String::new(),
+            layout_preset_typed: None,
+            layout_preset_delete: None,
+            layout_preset_request: None,
             booklet_binding: 0,
             signature_sheets: 4,
             creep: 0.0,
@@ -4520,12 +4554,224 @@ pub(crate) fn delete_page_range(from: usize, to: usize, through: bool, n: usize)
 /// with a sketch of the first sheet.
 /// A Custom sheet size saved in the layout fields goes into the
 /// preferences (replacing one of that name, #591).
+/// A layout preset saved, deleted, written to or read from a file in
+/// the layout fields is done here (#1796).
 pub(crate) fn take_saved_sheet(app: &mut App, st: &mut PrintState) {
     if let Some((name, size)) = st.sheet_to_save.take() {
         let list = &mut app.settings.printing.sheet_presets;
         list.retain(|(n, _)| *n != name);
         list.push((name, size));
     }
+    use crate::prefs::LayoutPreset;
+    match st.layout_preset_request.take() {
+        Some(LayoutPresetRequest::Save(name)) => {
+            let list = &mut app.settings.printing.layout_presets;
+            list.retain(|p| p.name != name);
+            list.push(LayoutPreset::from_state(&name, st));
+            st.layout_preset = name;
+        }
+        Some(LayoutPresetRequest::Delete(name)) => {
+            app.settings
+                .printing
+                .layout_presets
+                .retain(|p| p.name != name);
+            if st.layout_preset == name {
+                st.layout_preset.clear();
+            }
+        }
+        Some(LayoutPresetRequest::SaveFile) => {
+            let name = if st.layout_preset.trim().is_empty() {
+                tr("print.layout_file_default")
+            } else {
+                st.layout_preset.trim().to_string()
+            };
+            let text = LayoutPreset::from_state(&name, st).to_file();
+            crate::files::Dialog::new()
+                .add_filter(tr("print.layout_file"), &[LAYOUT_EXTENSION])
+                .set_file_name(format!(
+                    "{}.{LAYOUT_EXTENSION}",
+                    crate::files::safe_file_name(&name)
+                ))
+                .save_bytes(app, text.into_bytes());
+        }
+        Some(LayoutPresetRequest::OpenFile) => {
+            crate::files::Dialog::new()
+                .add_filter(tr("print.layout_file"), &[LAYOUT_EXTENSION, "json"])
+                .pick_file(app, |app, path| match crate::files::read(&path) {
+                    Ok(bytes) => match LayoutPreset::from_file(&String::from_utf8_lossy(&bytes)) {
+                        Some(p) => load_layout(app, &p),
+                        None => app.status = tr("print.layout_file_bad"),
+                    },
+                    Err(e) => app.status = e.to_string(),
+                });
+        }
+        None => {}
+    }
+}
+
+/// The extension of print layout files (#1796).
+pub const LAYOUT_EXTENSION: &str = "tdlayout";
+
+/// A layout read from a file goes into the open Print Preview, else the
+/// open Print dialog, and is kept as a preset of its name (#1796).
+pub(crate) fn load_layout(app: &mut App, p: &crate::prefs::LayoutPreset) {
+    let mut p = p.clone();
+    if p.name.trim().is_empty() {
+        p.name = tr("print.layout_file_default");
+    }
+    let list = &mut app.settings.printing.layout_presets;
+    list.retain(|x| x.name != p.name);
+    list.push(p.clone());
+    if let Some(pv) = app.print_preview.as_mut() {
+        p.apply(&mut pv.st);
+    } else if let Dialog::Print(st) = &mut app.dialog {
+        p.apply(st);
+    }
+    app.status = trf("print.layout_loaded", &[("name", &p.name)]);
+}
+
+/// The layout presets' rows at the top of the layout fields (#1796): the
+/// list, "+" to keep the layout under a name, "-" to delete the chosen
+/// preset (asked first), and the layout written to or read from a file.
+fn layout_preset_rows(app: &App, ui: &mut Ui, st: &mut PrintState) {
+    let presets = &app.settings.printing.layout_presets;
+    // A preset whose settings were changed since is no longer chosen.
+    let current = crate::prefs::LayoutPreset::from_state("", st);
+    if !st.layout_preset.is_empty()
+        && !presets
+            .iter()
+            .any(|p| p.name == st.layout_preset && p.same_layout(&current))
+    {
+        st.layout_preset.clear();
+    }
+    ui.label(tr("print.layout_preset"))
+        .rich_tip(crate::ui::tips::keyed("print.layout_preset"));
+    ui.horizontal(|ui| {
+        let shown = if st.layout_preset.is_empty() {
+            tr("print.layout_preset_none")
+        } else {
+            st.layout_preset.clone()
+        };
+        crate::ui::keynav::ComboBox::from_id_salt("print_layout_preset")
+            .selected_text(shown)
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                if presets.is_empty() {
+                    ui.label(tr("print.layout_preset_empty"));
+                }
+                for p in presets {
+                    if ui
+                        .selectable_label(p.name == st.layout_preset, &p.name)
+                        .clicked()
+                    {
+                        p.apply(st);
+                    }
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::keyed("print.layout_preset"));
+        if ui
+            .add(egui::Button::new("+").small())
+            .rich_tip(crate::ui::tips::keyed("print.layout_preset_add"))
+            .clicked()
+        {
+            st.layout_preset_typed = Some(st.layout_preset.clone());
+            st.layout_preset_delete = None;
+        }
+        if ui
+            .add_enabled(
+                !st.layout_preset.is_empty(),
+                egui::Button::new("\u{2212}").small(),
+            )
+            .rich_tip(crate::ui::tips::keyed("print.layout_preset_delete"))
+            .clicked()
+        {
+            st.layout_preset_delete = Some(st.layout_preset.clone());
+            st.layout_preset_typed = None;
+        }
+    });
+    ui.end_row();
+    // Naming the preset to save, in a row of its own.
+    if let Some(mut name) = st.layout_preset_typed.take() {
+        let mut keep = true;
+        ui.label("");
+        ui.horizontal(|ui| {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .desired_width(120.0)
+                    .hint_text(tr("print.sheet_name")),
+            );
+            let typed = name.trim().to_string();
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui
+                .add_enabled(
+                    !typed.is_empty(),
+                    egui::Button::new(tr("dialog.ok")).small(),
+                )
+                .rich_tip(crate::ui::tips::keyed("print.layout_preset_add"))
+                .clicked()
+                || enter)
+                && !typed.is_empty()
+            {
+                st.layout_preset_request = Some(LayoutPresetRequest::Save(typed));
+                keep = false;
+            }
+            if ui
+                .small_button(tr("dialog.cancel"))
+                .rich_tip(tr("dialog.cancel"))
+                .clicked()
+            {
+                keep = false;
+            }
+        });
+        ui.end_row();
+        if keep {
+            st.layout_preset_typed = Some(name);
+        }
+    }
+    if let Some(name) = st.layout_preset_delete.clone() {
+        ui.label("");
+        ui.horizontal(|ui| {
+            ui.label(trf(
+                "print.layout_preset_delete_question",
+                &[("name", &name)],
+            ));
+            if ui
+                .small_button(tr("dialog.yes"))
+                .rich_tip(crate::ui::tips::keyed("dialog.yes"))
+                .clicked()
+            {
+                st.layout_preset_request = Some(LayoutPresetRequest::Delete(name.clone()));
+                st.layout_preset_delete = None;
+            }
+            if ui
+                .small_button(tr("dialog.no"))
+                .rich_tip(crate::ui::tips::keyed("dialog.no"))
+                .clicked()
+            {
+                st.layout_preset_delete = None;
+            }
+        });
+        ui.end_row();
+    }
+    ui.label("");
+    ui.horizontal(|ui| {
+        if ui
+            .small_button(tr("print.layout_save_file"))
+            .rich_tip(crate::ui::tips::keyed("print.layout_save_file"))
+            .clicked()
+        {
+            st.layout_preset_request = Some(LayoutPresetRequest::SaveFile);
+        }
+        if ui
+            .small_button(tr("print.layout_open_file"))
+            .rich_tip(crate::ui::tips::keyed("print.layout_open_file"))
+            .clicked()
+        {
+            st.layout_preset_request = Some(LayoutPresetRequest::OpenFile);
+        }
+    });
+    ui.end_row();
 }
 
 /// The paper's margins kept clear (left, right, top, bottom, mm), in a
@@ -4558,6 +4804,7 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 .num_columns(2)
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
+                    layout_preset_rows(app, ui, st);
                     ui.label(tr("print.imposition"));
                     let kinds = [
                         "print.layout_as_is",
@@ -4581,6 +4828,32 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                             ui.label("x");
                             ui.add(crate::ui::field::NumField::new(&mut st.rows).range(1..=99));
                         });
+                        ui.end_row();
+                    }
+                    // Several pages per sheet: across, or down the
+                    // columns (#1658).
+                    if st.layout_kind == 1 {
+                        let orders = [
+                            "print.order_across",
+                            "print.order_down",
+                            "print.order_down_sheets",
+                        ];
+                        ui.label(tr("print.page_order"))
+                            .rich_tip(crate::ui::tips::keyed("print.page_order"));
+                        crate::ui::keynav::ComboBox::from_id_salt("print_page_order")
+                            .selected_text(tr(orders[st.page_order.min(2)]))
+                            .width(170.0)
+                            .show_ui(ui, |ui| {
+                                for (i, k) in orders.iter().enumerate() {
+                                    ui.selectable_value(&mut st.page_order, i, tr(k))
+                                        .rich_tip(crate::ui::tips::pair(k, &format!("{k}_desc")));
+                                }
+                            })
+                            .response
+                            .rich_tip(crate::ui::tips::pair(
+                                orders[st.page_order.min(2)],
+                                &format!("{}_desc", orders[st.page_order.min(2)]),
+                            ));
                         ui.end_row();
                     }
                     ui.label(tr("print.sheet"));
@@ -4661,13 +4934,36 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                         ui.end_row();
                     }
                     if matches!(st.layout_kind, 1 | 3) {
+                        // Across and down, each its own (#1795).
                         ui.label(tr("print.gutter"));
-                        ui.add(
-                            crate::ui::field::NumField::new(&mut st.gutter)
-                                .range(0.0..=50.0)
-                                .speed(0.5)
-                                .suffix(" mm"),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                crate::ui::field::NumField::new(&mut st.gutter)
+                                    .range(0.0..=50.0)
+                                    .speed(0.5)
+                                    .suffix(" mm"),
+                            )
+                            .rich_tip(crate::ui::tips::pair(
+                                "print.gap_across",
+                                "print.gap_across_tip",
+                            ));
+                            ui.label(tr("print.gap_across"));
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                crate::ui::field::NumField::new(&mut st.gutter_y)
+                                    .range(0.0..=50.0)
+                                    .speed(0.5)
+                                    .suffix(" mm"),
+                            )
+                            .rich_tip(crate::ui::tips::pair(
+                                "print.gap_down",
+                                "print.gap_down_tip",
+                            ));
+                            ui.label(tr("print.gap_down"));
+                        });
                         ui.end_row();
                         ui.label("");
                         ui.checkbox(&mut st.back_side, tr("print.back_side"))
@@ -7942,5 +8238,153 @@ mod desktop_message_tests {
         });
         out.textures_delta.clear();
         assert_eq!(picked, Some(0));
+    }
+}
+
+#[cfg(test)]
+mod layout_preset_tests {
+    use super::*;
+
+    fn run(
+        ctx: &egui::Context,
+        app: &App,
+        st: &mut PrintState,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, egui::Rect)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(480.0, 1000.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| print_layout_fields(app, ui, st));
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn click(ctx: &egui::Context, app: &App, st: &mut PrintState, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(ctx, app, st, vec![egui::Event::PointerMoved(at)]);
+        run(ctx, app, st, vec![button(true)]);
+        run(ctx, app, st, vec![button(false)]);
+    }
+
+    fn at(texts: &[(String, egui::Rect)], label: &str) -> egui::Pos2 {
+        texts
+            .iter()
+            .find(|(t, _)| t == label)
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| panic!("{label} shown"))
+    }
+
+    /// #1796, #1795, #1658: the layout fields of several pages per sheet
+    /// show the page order and the two gaps; "+" names a preset and OK
+    /// keeps it in the preferences, chosen; changing a setting leaves it
+    /// unchosen, choosing it again puts its settings back; "-" asks
+    /// before deleting it.
+    #[test]
+    fn a_layout_is_kept_as_a_preset_and_chosen_again() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut st = PrintState {
+            layout_kind: 1,
+            gutter: 4.0,
+            gutter_y: 7.0,
+            page_order: 1,
+            ..Default::default()
+        };
+        run(&ctx, &app, &mut st, Vec::new());
+        let texts = run(&ctx, &app, &mut st, Vec::new());
+        for key in [
+            "print.page_order",
+            "print.order_down",
+            "print.gap_across",
+            "print.gap_down",
+            "print.layout_preset",
+            "print.layout_save_file",
+            "print.layout_open_file",
+        ] {
+            at(&texts, &tr(key));
+        }
+        let o = crate::export::print_layout(&app, &st, app.doc());
+        assert_eq!(o.gutter, 4.0);
+        assert_eq!(o.gutter_y, Some(7.0));
+        assert_eq!(o.order, crate::imposition::PageOrder::Down);
+        // "+" opens the name field; OK keeps the preset.
+        click(&ctx, &app, &mut st, at(&texts, "+"));
+        assert!(st.layout_preset_typed.is_some());
+        st.layout_preset_typed = Some("Cards".into());
+        let texts = run(&ctx, &app, &mut st, Vec::new());
+        click(&ctx, &app, &mut st, at(&texts, &tr("dialog.ok")));
+        assert_eq!(
+            st.layout_preset_request,
+            Some(LayoutPresetRequest::Save("Cards".into()))
+        );
+        take_saved_sheet(&mut app, &mut st);
+        assert_eq!(app.settings.printing.layout_presets.len(), 1);
+        assert_eq!(st.layout_preset, "Cards");
+        let texts = run(&ctx, &app, &mut st, Vec::new());
+        at(&texts, "Cards");
+        // Changed, the preset is no longer the chosen one; chosen again
+        // it puts its settings back.
+        st.gutter_y = 12.0;
+        run(&ctx, &app, &mut st, Vec::new());
+        assert!(st.layout_preset.is_empty());
+        app.settings.printing.layout_presets[0]
+            .clone()
+            .apply(&mut st);
+        assert_eq!((st.gutter, st.gutter_y, st.page_order), (4.0, 7.0, 1));
+        assert_eq!(st.layout_preset, "Cards");
+        // "-" asks first; Yes deletes.
+        let texts = run(&ctx, &app, &mut st, Vec::new());
+        click(&ctx, &app, &mut st, at(&texts, "\u{2212}"));
+        assert_eq!(st.layout_preset_delete.as_deref(), Some("Cards"));
+        assert!(st.layout_preset_request.is_none(), "not before the answer");
+        let texts = run(&ctx, &app, &mut st, Vec::new());
+        click(&ctx, &app, &mut st, at(&texts, &tr("dialog.yes")));
+        take_saved_sheet(&mut app, &mut st);
+        assert!(app.settings.printing.layout_presets.is_empty());
+        assert!(st.layout_preset.is_empty());
+    }
+
+    /// A layout file read in goes into the open Print Preview and is kept
+    /// as a preset.
+    #[test]
+    fn a_layout_file_loads_into_print_preview() {
+        let mut app = App::headless();
+        app.print_preview(None);
+        let st = PrintState {
+            layout_kind: 3,
+            cols: 4,
+            rows: 6,
+            gutter: 2.0,
+            gutter_y: 3.0,
+            ..Default::default()
+        };
+        let text = crate::prefs::LayoutPreset::from_state("Labels", &st).to_file();
+        let p = crate::prefs::LayoutPreset::from_file(&text).expect("a layout");
+        load_layout(&mut app, &p);
+        let pv = app.print_preview.as_ref().expect("the preview");
+        assert_eq!(
+            (pv.st.layout_kind, pv.st.cols, pv.st.rows, pv.st.gutter_y),
+            (3, 4, 6, 3.0)
+        );
+        assert_eq!(pv.st.layout_preset, "Labels");
+        assert_eq!(app.settings.printing.layout_presets.len(), 1);
     }
 }
