@@ -79,6 +79,13 @@ Names help you find objects in the panel and in
 [[menu.object.in_front_of]], [[menu.object.behind]] (click the object to go
 in front of or behind) and [[menu.object.reverse_order]].
 
+In the Objects panel, drag an object's row up or down the list: a line
+shows where it will go. Let go on the upper half of another object's row
+to put it in front of that object, on the lower half to put it behind; an
+object of another layer moves to that layer. Let go on a layer's row to
+put it on top of that layer. When the row is selected, the other selected
+objects come along. Undo puts everything back in one step.
+
 ## Grouping and combining {#combine}
 
 - [[menu.object > menu.object.group > menu.object.group_group]]

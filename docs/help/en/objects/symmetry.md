@@ -2,7 +2,9 @@
 
 Symmetry draws live mirrored copies of an object across one or more mirror
 lines. The copies follow every change you make to the original, so you draw
-one half (or one slice) and see the whole. The commands are in
+one half (or one slice) and see the whole. Each copy looks like the
+original: its fill, outline and transparency, and what its other effects
+draw (a contour, a blend, an extrusion), are mirrored with it. The commands are in
 [[menu.object > menu.object.symmetry]].
 
 ## To create a symmetry {#create}

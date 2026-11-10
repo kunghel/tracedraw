@@ -111,7 +111,9 @@ Checks: `app::tests::a_closed_docker_stays_closed_the_next_time`.
 With objects selected: the first one's kind and box, a row of buttons,
 then its sections, in this order: Outline, Fill, Transparency, then
 what the kind has (Rectangle: its corners; a bitmap: its effects; text:
-its character settings), then Summary. Each section has a header bar
+its character settings), then Summary (the selection in figures, Wrap
+paragraph text and Lock Object, see `properties-docker.md`). Each
+section has a header bar
 with a triangle; the buttons (the outline pen, the fill bucket, the
 transparency checker, a rectangle, "fx", "A", "i") show which sections
 are open and open or close them, as a click on a header does. Sections

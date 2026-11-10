@@ -21,7 +21,9 @@ pressure 0.5, sprayer spacing 8 mm.
   fill, no outline) where the stroke was, and the path right above it,
   the same object, with a plain hairline outline in the stroke's colour.
   The stroke stayed one object (a live test of 0.41,
-  `command::tests::break_apart_sets_a_brush_stroke_apart_from_its_path`).
+  `command::tests::break_apart_sets_a_brush_stroke_apart_from_its_path`;
+  Ctrl+K pressed in the window after drawing a stroke:
+  `pick_drag_tests::ctrl_k_breaks_a_brush_stroke_into_its_band_and_path`).
 
 ## Property bar
 

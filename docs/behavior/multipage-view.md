@@ -17,8 +17,12 @@ off too and is lit while it is on (#1019).
   (`multipage::tests::the_cells_are_as_far_apart_as_the_spacing`).
 - Every page shows its number and name below it; the current page's in
   the normal text colour, the others dimmed.
-- Objects outside a page's edges are not shown on the other pages; the
-  current page shows them as always.
+- Objects outside a page's edges show for every page, where they lie
+  beside it on the desktop: each other page's picture covers its paper
+  and what its visible objects cover, measured once a change of the
+  drawing (#2055, `multipage::tests::objects_off_another_page_are_drawn`).
+  They showed only while their page was current, so they seemed to
+  vanish when another page became current.
 - Every page shows its own guidelines: the current page's across the
   whole window, as always, and each other page's within that page,
   where it sits in the grid (#1448,
@@ -49,12 +53,50 @@ off too and is lit while it is on (#1019).
 - Printing and export work on pages, not on this view, so the spacing
   does not change them.
 
+## Choosing the pages
+
+- View > Pages in Multipage View and the page bar's button right after
+  the Multipage View button (two pages with a tick, lit while a range is
+  chosen) open a dialog: All pages, or Pages: with a range of page
+  numbers such as `1-3, 7` (single pages and ranges, either way round,
+  commas or semicolons between; pages past the end are left out). It
+  tells how many pages the range shows; a range naming no page of the
+  drawing keeps the dialog open. OK keeps the range and turns the view
+  on (#1440).
+- The range is a document property (`Metadata::multipage_pages`, the
+  text as typed, empty for every page), saved in `.tdraw` files only
+  once set, one undo step, like the page spacing. A range that names no
+  page left (pages deleted since) shows every page
+  (`tracedraw_core` `the_multipage_pages_are_kept_and_default_to_all`,
+  `page_ranges_read_numbers_and_ranges_in_page_order`).
+- The pages shown are packed into the grid in page order, as if the
+  others were not there; with facing pages each page keeps its side of
+  the spine and the spreads shown follow each other
+  (`multipage::tests::the_multipage_view_shows_the_chosen_pages_only`,
+  `multipage::tests::a_range_of_facing_pages_keeps_their_sides_and_packs_the_spreads`).
+- The current page always shows. Choosing a range that leaves it out
+  makes the first chosen page current; going to a page outside the range
+  (page tabs, navigator, Page > Go To Page) shows it in its place in page
+  order while it is current, the page that was current staying where it
+  is on screen.
+- The normal view and a spread of facing pages outside this view are not
+  changed by the range.
+- Checks: `ui::dialogs::tests::the_multipage_pages_dialog_keeps_the_range_and_shows_the_view`,
+  `pick_drag_tests::the_page_bar_chooses_the_multipage_view_s_pages`.
+
 ## Working
 
 - The current page is edited as in the normal view: rulers, guides,
   grids and the status bar refer to it.
-- A press on another page makes it current before the tool acts, so a
-  click selects there and a drag draws there. Nothing moves on screen.
+- A press picks the object that shows there, whatever page holds it
+  (#2055): an object of the current page (drawn over the other pages'
+  objects) keeps the page, even over another page's paper or on the
+  desktop; else an object of another page under the pointer (the object
+  itself, not its box, as for the current page), on its page or off it,
+  makes that page current before the tool acts, so the same click
+  selects it; else a press on another page's paper makes it current, so
+  a click selects there and a drag draws there. Nothing moves on screen
+  (`multipage::tests::a_press_picks_the_object_shown_whatever_page_holds_it`).
 - The page tabs and the navigator change the current page the same way.
 - Zoom to Fit (F4) and turning the view on fit every page in the window.
 - Page Overview and Multipage View exclude each other.

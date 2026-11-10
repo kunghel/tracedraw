@@ -2,6 +2,38 @@
 
 use crate::app::{App, CurveInProgress, Drag, Handle};
 
+/// How near the drawing window's edge (interface points) a drag starts
+/// scrolling the view (#2051).
+pub const EDGE_SCROLL_BAND: f32 = 24.0;
+/// The fastest the view scrolls during a drag, interface points a
+/// second, with the pointer at the edge or past it.
+pub const EDGE_SCROLL_SPEED: f32 = 900.0;
+
+/// How far the view scrolls this frame (`dt` seconds) for a drag with the
+/// pointer at `p` in the drawing window `rect`: toward each edge the
+/// pointer is within [`EDGE_SCROLL_BAND`] of, faster the nearer, at most
+/// [`EDGE_SCROLL_SPEED`]. Nothing in a window too small to have room for
+/// the bands.
+pub fn edge_scroll_step(rect: egui::Rect, p: egui::Pos2, dt: f32) -> egui::Vec2 {
+    if !rect.is_positive()
+        || rect.width() < 4.0 * EDGE_SCROLL_BAND
+        || rect.height() < 4.0 * EDGE_SCROLL_BAND
+    {
+        return egui::Vec2::ZERO;
+    }
+    let axis = |lo: f32, hi: f32, v: f32| -> f32 {
+        let toward_lo = ((lo + EDGE_SCROLL_BAND - v) / EDGE_SCROLL_BAND).clamp(0.0, 1.0);
+        let toward_hi = ((v - (hi - EDGE_SCROLL_BAND)) / EDGE_SCROLL_BAND).clamp(0.0, 1.0);
+        // Near the left (top) edge the drawing moves right (down) to show
+        // what lies beyond it.
+        (toward_lo - toward_hi) * EDGE_SCROLL_SPEED * dt
+    };
+    egui::Vec2::new(
+        axis(rect.left(), rect.right(), p.x),
+        axis(rect.top(), rect.bottom(), p.y),
+    )
+}
+
 /// What a Pen or Bezier press would edit on the selected curve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PenEdit {
@@ -482,11 +514,23 @@ impl App {
     /// What a click at `p` picks: the topmost object there, or an object
     /// whose drop shadow lies at `p` over whatever is beneath it (a
     /// shadow draws above the objects under its own), so a shadow is
-    /// picked for editing with its object (#935). In focus mode and
-    /// while a symmetry is edited, as [`Self::hit_test`].
+    /// picked for editing with its object (#935). An object that casts a
+    /// drop shadow of its own is never lost to another one's shadow over
+    /// it: a click on it picks it, so picking one shadowed object after
+    /// another never jumps to a neighbour. In focus mode and while a
+    /// symmetry is edited, as [`Self::hit_test`].
     pub fn pick_at(&self, p: Point) -> Option<ShapeId> {
         let hit = self.hit_test(p);
         if self.focus_shape_on_page().is_some() || self.symmetry_edit.is_some() {
+            return hit;
+        }
+        let shadowed = |id: ShapeId| {
+            let top = self.doc().top_level_of(id).unwrap_or(id);
+            self.doc()
+                .find_shape(top)
+                .is_some_and(|s| s.shadow.is_some_and(|sh| sh.opacity > 0.0))
+        };
+        if hit.is_some_and(shadowed) {
             return hit;
         }
         self.page_layers()
@@ -510,7 +554,7 @@ impl App {
     /// box; filled objects inside their shape (an open curve only when the
     /// document fills open curves, unfilled ones too with "Treat all
     /// objects as filled"); otherwise near the outline.
-    fn shape_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64) -> bool {
+    pub(crate) fn shape_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64) -> bool {
         if let Some(own) = self.without_edited_symmetry(s) {
             return self.shape_hit(&own, p, tol);
         }
@@ -556,10 +600,19 @@ impl App {
             return true;
         }
         let path = s.page_path();
-        let open = matches!(s.kind, ShapeKind::Path { closed: false, .. });
+        // A curve left open, or an ellipse made an arc.
+        let open = s.kind.is_open_curve();
         let filled =
             !matches!(s.fill, Fill::None) && (!open || self.doc().metadata.fill_open_curves);
-        if (filled || self.settings.treat_all_filled) && path.contains(p) {
+        // The fill of an open curve shown runs across its open ends, as
+        // drawn.
+        let in_fill = filled
+            && if open {
+                tracedraw_core::command::close_subpaths(&path).contains(p)
+            } else {
+                path.contains(p)
+            };
+        if in_fill || (self.settings.treat_all_filled && path.contains(p)) {
             return true;
         }
         crate::canvas::distance_to_path(&path, p) <= (tol * 1.5).max(half + tol)
@@ -839,9 +892,7 @@ impl App {
         let fill_open = doc.metadata.fill_open_curves;
         let all_filled = self.settings.treat_all_filled;
         let fill_counts = |s: &tracedraw_core::Shape| {
-            all_filled
-                || (!matches!(s.fill, Fill::None)
-                    && (fill_open || !matches!(s.kind, ShapeKind::Path { closed: false, .. })))
+            all_filled || (!matches!(s.fill, Fill::None) && (fill_open || !s.kind.is_open_curve()))
         };
         let before = self.selection.clone();
         let mut ids = before.clone();
@@ -1233,18 +1284,37 @@ impl App {
     /// freehand selection over nodes go the same way: the right press
     /// opened the node menu during the drag and left the box on the
     /// canvas (#1848).
+    /// While the right button is held as well, a selection box (of
+    /// objects or of nodes) moves with the pointer instead of changing
+    /// its size, and takes up its sizing again when the right button
+    /// goes up (#2050).
     fn selection_drag_input(
         &mut self,
         response: &Response,
         hover: Option<egui::Pos2>,
         mods: Modifiers,
     ) {
-        let held = response.ctx.input(|i| i.pointer.primary_down());
+        let (held, right) = response
+            .ctx
+            .input(|i| (i.pointer.primary_down(), i.pointer.secondary_down()));
         let at = hover.or(if held { self.pointer_screen } else { None });
         if let Some(s) = at {
             let p = self.view.to_page(s);
             self.pointer_page = Some(p);
-            if held {
+            let boxed = matches!(self.drag, Drag::Marquee { .. } | Drag::NodeMarquee { .. });
+            if held && right && boxed {
+                if let Some(last) = self.marquee_moved_from {
+                    let d = p - last;
+                    if let Drag::Marquee { start, current, .. }
+                    | Drag::NodeMarquee { start, current } = &mut self.drag
+                    {
+                        *start += d;
+                        *current += d;
+                    }
+                }
+                self.marquee_moved_from = Some(p);
+            } else if held {
+                self.marquee_moved_from = None;
                 let step = 0.2 / self.view.zoom as f64;
                 match &mut self.drag {
                     Drag::NodeMarquee { current, .. } => *current = p,
@@ -1258,7 +1328,56 @@ impl App {
             }
         }
         if !held {
+            self.marquee_moved_from = None;
             self.end_drag();
+        }
+    }
+
+    /// Whether the drag running scrolls the view when the pointer nears
+    /// the window's edge (#2051): moving and sizing objects, drawing,
+    /// selecting, dragging nodes and handles, connectors and text frames.
+    pub(crate) fn scrolls_at_edge(&self) -> bool {
+        matches!(
+            self.drag,
+            Drag::Box { .. }
+                | Drag::ThreePointBase { .. }
+                | Drag::Move { .. }
+                | Drag::Scale { .. }
+                | Drag::Marquee { .. }
+                | Drag::Lasso { .. }
+                | Drag::Freehand { .. }
+                | Drag::Node { .. }
+                | Drag::Handle { .. }
+                | Drag::KindNode { .. }
+                | Drag::NodeMove { .. }
+                | Drag::SegmentBend { .. }
+                | Drag::NodeLasso { .. }
+                | Drag::NodeMarquee { .. }
+                | Drag::Connector { .. }
+                | Drag::TextFrame { .. }
+        )
+    }
+
+    /// Auto-scroll (#2051): while a drag that [`App::scrolls_at_edge`]
+    /// has the left button held within [`EDGE_SCROLL_BAND`] of the
+    /// drawing window's edge, or past it, the view scrolls toward that
+    /// edge, faster the nearer it is, and the frame after is asked for so
+    /// it goes on while the pointer rests. A few comparisons a frame; the
+    /// drag then follows the pointer in the scrolled view.
+    fn edge_scroll(&mut self, response: &Response) {
+        if !self.scrolls_at_edge() {
+            return;
+        }
+        let (held, dt) = response
+            .ctx
+            .input(|i| (i.pointer.primary_down(), i.stable_dt));
+        let Some(p) = self.pointer_screen.filter(|_| held) else {
+            return;
+        };
+        let step = edge_scroll_step(response.rect, p, dt.clamp(0.0, 0.05));
+        if step != egui::Vec2::ZERO {
+            self.view.pan(step);
+            response.ctx.request_repaint();
         }
     }
 
@@ -1279,6 +1398,7 @@ impl App {
         self.snap_mark.set(None);
         self.clear_live_guides();
         self.pointer_screen = response.ctx.pointer_latest_pos();
+        self.edge_scroll(response);
         // egui ends a drag when the right button of a right click goes up
         // and then hovers nothing while the left one is held: the
         // transform goes on with the latest pointer position.
@@ -1286,9 +1406,11 @@ impl App {
         // following the pointer, and its release ends it there (#1014).
         // A shape being drawn after a middle-button pan: egui counts no
         // drag of the held left button any more and hovers nothing (#1923).
+        // A drag taken past the window's edge goes on with the pointer
+        // while the view scrolls (#2051).
         let hover = response.hover_pos().or_else(|| {
             let held = response.ctx.input(|i| i.pointer.primary_down());
-            let boxing = matches!(self.drag, Drag::Box { .. });
+            let boxing = matches!(self.drag, Drag::Box { .. }) || self.scrolls_at_edge();
             if ((self.transforming() || boxing) && held) || self.curve_drag_running(response) {
                 self.pointer_screen
             } else {
@@ -1353,7 +1475,7 @@ impl App {
         // Middle button always pans. A shape being drawn with the left
         // button held follows the pointer over the moving page (#1923).
         if response.dragged_by(PointerButton::Middle) {
-            self.view.pan(response.drag_delta());
+            self.pan_drag(response.drag_delta(), &response.ctx);
             if matches!(self.drag, Drag::Box { .. })
                 && response.ctx.input(|i| i.pointer.primary_down())
             {
@@ -1547,7 +1669,7 @@ impl App {
             Tool::Zoom => self.zoom_input(response, p, screen, mods),
             Tool::Pan => {
                 if response.dragged() {
-                    self.view.pan(response.drag_delta());
+                    self.pan_drag(response.drag_delta(), &response.ctx);
                 }
             }
             t if t.is_box_tool() => self.box_input(response, p, mods),
@@ -1562,7 +1684,8 @@ impl App {
             Tool::ColorEyedropper | Tool::AttributesEyedropper => {
                 if response.clicked() {
                     let attrs = self.tool == Tool::AttributesEyedropper;
-                    self.eyedropper_click(p, attrs, mods.shift);
+                    // Ctrl samples again in Apply mode (#1302).
+                    self.eyedropper_click(p, attrs, mods.shift, mods.ctrl);
                 }
             }
             Tool::InteractiveFill => self.fill_input(response, p, mods),
@@ -2024,6 +2147,13 @@ impl App {
             // The centre of rotation goes back to the middle.
             if self.pivot_at(screen) {
                 self.reset_pivot();
+                return;
+            }
+            // A drop shadow (away from its object, or over one it draws
+            // above): the Drop Shadow tool on its object.
+            if let Some(id) = self.pick_at(p).filter(|id| Some(*id) != self.hit_test(p)) {
+                self.select(vec![id]);
+                self.edit_shadow();
                 return;
             }
             // The page border or its shadow: the page size options.
@@ -2743,6 +2873,26 @@ impl App {
             let again = bspline && c.on_last_control(p);
             if (drag || !c.dragging_handle) && !again {
                 c.nodes.push((p, None));
+                // C or V held: a fixed point, which the curve passes
+                // through with a corner (#2060).
+                if bspline {
+                    let fixed = response
+                        .ctx
+                        .input(|i| i.key_down(egui::Key::C) || i.key_down(egui::Key::V));
+                    c.spline_fixed.resize(c.nodes.len() - 1, false);
+                    c.spline_fixed.push(fixed);
+                }
+            } else if again && bspline {
+                // C or V on the last point again makes it fixed.
+                if response
+                    .ctx
+                    .input(|i| i.key_down(egui::Key::C) || i.key_down(egui::Key::V))
+                {
+                    c.spline_fixed.resize(c.nodes.len(), false);
+                    if let Some(f) = c.spline_fixed.last_mut() {
+                        *f = true;
+                    }
+                }
             }
             c.dragging_handle = drag;
             c.alt_from = None;
@@ -2866,7 +3016,8 @@ impl App {
             },
         ) {
             if c.bspline {
-                self.keep_spline(id, &path, c.nodes.iter().map(|n| n.0).collect());
+                let points = c.nodes.iter().map(|n| n.0).collect();
+                self.keep_spline(id, &path, points, c.spline_fixed_flags());
             }
             self.select(vec![id]);
         }
@@ -3212,6 +3363,17 @@ impl App {
                         Some(tracedraw_core::geometry::Size::new(r.width(), r.height())),
                     );
                 }
+            }
+            // A picture let go on a palette bar: a window offers its
+            // colours to that palette, and the picture stays where it was
+            // (#2137).
+            Drag::Move { .. } if self.picture_drop_target().is_some() => {
+                self.drag_copy = false;
+                self.drop_frame = None;
+                if let Some(target) = self.picture_drop_target() {
+                    self.open_picture_colors(target);
+                }
+                self.end_page_drag_group();
             }
             // Dropped on a page tab: the selection goes to that page, at
             // its place there (#1346).
@@ -3804,6 +3966,10 @@ impl App {
             else {
                 continue;
             };
+            // The Navigator's key works while held (`ui::view_navigator`).
+            if id == crate::ui::NAVIGATOR_KEY {
+                return;
+            }
             if id.starts_with("menu.") {
                 self.pending_command = Some(id);
                 return;
@@ -3947,6 +4113,10 @@ impl App {
         }
         if pressed(Key::E, cmd) {
             self.export();
+        }
+        // File > Export with Options: the options whatever the setting.
+        if pressed(Key::E, cmd | Modifiers::SHIFT) {
+            self.export_with_options();
         }
         if pressed(Key::I, cmd) {
             self.import();
@@ -4156,6 +4326,10 @@ impl App {
                 .any(|s| matches!(s.kind, ShapeKind::Text { .. }))
         {
             self.dialog = crate::ui::dialogs::Dialog::ChangeCase(crate::ops2::CaseMode::Sentence);
+        }
+        // Into the selected clip frame's contents, and out again.
+        if pressed(Key::F3, cmd | Modifiers::SHIFT) {
+            self.toggle_clip_frame_edit();
         }
         if pressed(Key::T, cmd | Modifiers::SHIFT) {
             self.open_edit_text_dialog();
@@ -4444,6 +4618,12 @@ impl App {
                         let drop_key = matches!(self.drag, Drag::Move { .. })
                             && mods.is_none()
                             && matches!(k, Key::W | Key::K);
+                        // C and V while a B-spline is drawn make the next
+                        // point fixed (#2060); they pick no tool then.
+                        let drop_key = drop_key
+                            || (self.curve.as_ref().is_some_and(|c| c.bspline)
+                                && mods.is_none()
+                                && matches!(k, Key::C | Key::V));
                         // A key held picks its tool once: the presses it
                         // repeats would send Space back and forth between
                         // the Pick tool and the tool before it (#1502).

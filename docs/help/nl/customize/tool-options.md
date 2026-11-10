@@ -35,7 +35,16 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
   gekalibreerde schermresolutie; uit is het 96 pixels per inch.
 - [[options.wheel_center_mouse]] (uit): zoomen met het wiel brengt de plek onder de
   aanwijzer naar het midden van de weergave, en de aanwijzer mee.
+- [[options.smooth_zoom]] (aan): een klik van het wiel zoomt in een korte
+  glijbeweging in plaats van een sprong; hoe sneller het wiel draait, hoe
+  korter. Uit: elke klik zoomt meteen.
+- [[options.wheel_zoom_step]] hoeveel één klik in- of uitzoomt, van 1 tot 100
+  procent (eerst 15 %).
 - [[options.pan_right_button]] [[options.zoom_out]] of het [[options.context_menu]] (eerst).
+- [[options.pan_inertia]] (uit): een pan die u loslaat terwijl de aanwijzer nog
+  beweegt, laat de weergave dezelfde kant op doorglijden en uitlopen. Een klik
+  of het wiel stopt hem. Geldt voor het pangereedschap, de middelste knop en
+  twee vingers.
 
 ## Vrije hand/Bézier {#curves}
 

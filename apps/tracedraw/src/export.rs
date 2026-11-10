@@ -24,6 +24,11 @@ pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
             Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
         );
         tmp.symbols = doc.symbols.clone();
+        // The drawing's spot inks and colour profile go along: without
+        // its ink, a spot colour exports as its process stand-in.
+        tmp.inks = doc.inks.clone();
+        tmp.cmyk_profile = doc.cmyk_profile.clone();
+        tmp.color_styles = doc.color_styles.clone();
         let l = tmp.pages[0].layers[0].id;
         for s in app.selected_shapes() {
             let mut c = s.clone();
@@ -819,7 +824,7 @@ fn print_on(
     let pdf = tracedraw_io::pdf::document_to_pdf(doc);
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(name);
+    let path = dir.join(shared_file_name(name));
     crate::files::write(&path, pdf).map_err(|e| e.to_string())?;
     crate::printers::print_pdf(printer, &path, copies, collate, title)?;
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
@@ -1642,7 +1647,10 @@ pub fn plate_page(
         for s in layer.shapes.iter_mut() {
             // Fills the separations cannot split show as their average
             // colour.
-            if matches!(s.fill, Fill::Texture(_) | Fill::Pattern(_)) {
+            if matches!(
+                s.fill,
+                Fill::Texture(_) | Fill::Pattern(_) | Fill::Procedural(_)
+            ) {
                 if let Some(c) = s.fill.preview_color() {
                     s.fill = Fill::Solid(c);
                 }
@@ -1699,7 +1707,10 @@ pub fn inks_page(
     let mut p = page.clone();
     for layer in p.layers.iter_mut() {
         for s in layer.shapes.iter_mut() {
-            if matches!(s.fill, Fill::Texture(_) | Fill::Pattern(_)) {
+            if matches!(
+                s.fill,
+                Fill::Texture(_) | Fill::Pattern(_) | Fill::Procedural(_)
+            ) {
                 if let Some(c) = s.fill.preview_color() {
                     s.fill = Fill::Solid(c);
                 }
@@ -1868,6 +1879,7 @@ fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
 pub fn shared_file_name(name: &str) -> String {
     let clean: String = name
         .chars()
+        .filter(|&c| !crate::files::is_direction_mark(c))
         .map(|c| {
             if matches!(c, '/' | '\\' | '\0') {
                 '_'
@@ -1980,18 +1992,9 @@ impl App {
     /// File name for a PDF sent somewhere: the document title, cleaned.
     fn send_to_file_name(&self) -> String {
         let title = self.document_title();
-        let stem: String = title
-            .trim_end_matches('*')
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let stem = stem.trim();
+        // The name in its own script, accents and vowel marks included.
+        let stem = crate::files::clean_file_name_for(title.trim_end_matches('*'), true);
+        let stem = stem.trim_start_matches('.').trim();
         let stem = if stem.is_empty() { "Graphic1" } else { stem };
         format!("{stem}.pdf")
     }
@@ -2575,6 +2578,14 @@ mod tests {
         assert_eq!(shared_file_name("a/b\\c.pdf"), "a_b_c.pdf");
         assert_eq!(shared_file_name("../x.pdf"), "_x.pdf");
         assert_eq!(shared_file_name(" .. "), "document");
+        assert_eq!(shared_file_name("\u{200F}שלום.pdf"), "שלום.pdf");
+        // Send To names the PDF after the drawing in its own script.
+        let mut app = App::headless();
+        for name in ["שָׁלוֹם", "café", "文件", "a: b?"] {
+            app.file = Some(std::path::PathBuf::from(format!("/x/{name}.tdraw")));
+            let want = name.replace([':', '?'], "_");
+            assert_eq!(app.send_to_file_name(), format!("{want}.pdf"));
+        }
         for a in [
             "https://tracedraw.dev/help",
             "mailto:someone@example.com",
@@ -4647,6 +4658,47 @@ mod tests {
         // from the start's centre (30, 110) to the end's (220, 140).
         let want = tracedraw_core::geometry::Point::new(172.5 - bounds.x0, 132.5 - bounds.y0);
         assert!((last - want).hypot() < 1e-6, "{last:?}, not {want:?}");
+    }
+
+    /// Selected objects exported alone keep their spot inks: a PDF of the
+    /// selection prints each on its own separation, not as its process
+    /// stand-in.
+    #[test]
+    fn a_selection_exported_alone_keeps_its_spot_inks() {
+        use tracedraw_core::{document::Ink, Command, Fill};
+        let mut app = App::headless();
+        let ink = Ink {
+            id: 9,
+            name: "Spot_1_W".into(),
+            cmyk: [0.0, 0.0, 0.0, 0.1],
+        };
+        app.run(Command::SetInks {
+            inks: vec![ink.clone()],
+        });
+        let layer = app.active_layer().expect("layer");
+        let id = app.engine.new_shape_id();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(ink.color(1.0));
+        s.stroke = None;
+        app.run(Command::AddShape { layer, shape: s });
+        app.selection = vec![id];
+        let (doc, _) = export_document(
+            &app,
+            &ExportState {
+                selection_only: true,
+                ..ExportState::default()
+            },
+        );
+        assert_eq!(doc.inks, vec![ink]);
+        let text = String::from_utf8_lossy(&tracedraw_io::pdf::document_to_pdf(&doc)).to_string();
+        assert!(text.contains("/Separation /Spot_1_W "), "no separation");
     }
 }
 

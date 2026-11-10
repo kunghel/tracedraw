@@ -159,9 +159,9 @@ impl App {
     }
 
     /// Does the Colour Eyedropper wait to sample (Select mode)?
-    pub fn eyedropper_sampling(&self) -> bool {
+    pub fn eyedropper_sampling(&self, resample: bool) -> bool {
         self.tool == crate::tools::Tool::ColorEyedropper
-            && !(self.eyedropper_apply && self.eyedropper_color.is_some())
+            && (resample || !(self.eyedropper_apply && self.eyedropper_color.is_some()))
     }
 }
 
@@ -503,10 +503,14 @@ impl App {
     /// Clicks of both eyedropper tools. In Select mode a click samples and
     /// switches to Apply mode; in Apply mode a click applies. For the
     /// colour eyedropper Shift reads or writes the outline colour; for the
-    /// attributes eyedropper Shift samples again for this click.
-    pub fn eyedropper_click(&mut self, p: Point, attributes: bool, shift: bool) {
+    /// attributes eyedropper Shift samples again for this click. With
+    /// `resample` (Ctrl held, #1302) either tool samples again in Apply
+    /// mode; the colour eyedropper's Ctrl+Shift+click reads the outline
+    /// first.
+    pub fn eyedropper_click(&mut self, p: Point, attributes: bool, shift: bool, resample: bool) {
         if attributes {
-            let apply = self.eyedropper_apply && self.eyedropper_attrs.is_some() && !shift;
+            let apply =
+                self.eyedropper_apply && self.eyedropper_attrs.is_some() && !shift && !resample;
             if apply {
                 if let Some(a) = self.eyedropper_attrs.clone() {
                     let g = self.eyedropper_groups;
@@ -518,7 +522,7 @@ impl App {
                 self.status = crate::i18n::tr("status.sampled_attrs");
             }
         } else {
-            let apply = self.eyedropper_apply && self.eyedropper_color.is_some();
+            let apply = self.eyedropper_apply && self.eyedropper_color.is_some() && !resample;
             if apply {
                 if let Some(c) = self.eyedropper_color {
                     self.apply_color_at(p, c, shift);
@@ -566,19 +570,73 @@ mod tests {
             fill: Fill::Solid(Color::rgb8(200, 10, 10)),
         });
         app.select(Vec::new());
-        app.eyedropper_click(Point::new(5.0, 5.0), false, false);
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
         assert_eq!(app.eyedropper_color, Some(Color::rgb8(200, 10, 10)));
         // An unfilled object is hit inside too when applying.
-        app.eyedropper_click(Point::new(25.0, 5.0), false, false);
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(sb.fill, Fill::Solid(Color::rgb8(200, 10, 10)));
         // Shift+click in the apply phase colours the outline.
-        app.eyedropper_click(Point::new(25.0, 5.0), false, true);
+        app.eyedropper_click(Point::new(25.0, 5.0), false, true, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(
             sb.stroke.as_ref().map(|s| s.color),
             Some(Color::rgb8(200, 10, 10))
         );
+    }
+
+    /// Ctrl+click in Apply mode samples again, with either eyedropper,
+    /// and changes nothing on the drawing; the colour eyedropper's
+    /// Ctrl+Shift+click reads the outline first (#1302).
+    #[test]
+    fn ctrl_click_samples_again_in_apply_mode() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let target = rect(&mut app, Rect::new(40.0, 0.0, 50.0, 10.0));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(Color::rgb8(200, 10, 10)),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![b],
+            fill: Fill::Solid(Color::rgb8(10, 200, 10)),
+        });
+        app.select(Vec::new());
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
+        assert!(app.eyedropper_apply);
+        let steps = app.engine.history_labels().0.len();
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false, true);
+        assert_eq!(app.eyedropper_color, Some(Color::rgb8(10, 200, 10)));
+        assert!(app.eyedropper_apply, "still in Apply mode");
+        assert_eq!(
+            app.engine.history_labels().0.len(),
+            steps,
+            "nothing changed"
+        );
+        app.eyedropper_click(Point::new(45.0, 5.0), false, false, false);
+        let t = app.doc().find_shape(target).expect("target");
+        assert_eq!(t.fill, Fill::Solid(Color::rgb8(10, 200, 10)));
+        // Ctrl+Shift reads the outline first.
+        app.run(Command::SetStroke {
+            shapes: vec![a],
+            stroke: Some(Stroke::new(Color::rgb8(10, 10, 200), 0.5)),
+        });
+        app.eyedropper_click(Point::new(5.0, 5.0), false, true, true);
+        assert_eq!(app.eyedropper_color, Some(Color::rgb8(10, 10, 200)));
+        // The colour eyedropper shows the readout while Ctrl is held.
+        app.tool = crate::tools::Tool::ColorEyedropper;
+        assert!(!app.eyedropper_sampling(false));
+        assert!(app.eyedropper_sampling(true));
+        // The attributes eyedropper: Ctrl samples again as Shift does.
+        app.eyedropper_reset();
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false, false);
+        app.eyedropper_click(Point::new(25.0, 5.0), true, false, true);
+        assert_eq!(
+            app.eyedropper_attrs.as_ref().map(|a| a.fill.clone()),
+            Some(Fill::Solid(Color::rgb8(10, 200, 10)))
+        );
+        assert!(app.eyedropper_apply);
     }
 
     /// Both eyedroppers read from a locked object (and from an object on
@@ -598,7 +656,7 @@ mod tests {
         });
         app.select(Vec::new());
         // The colour eyedropper.
-        app.eyedropper_click(Point::new(5.0, 5.0), false, false);
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
         assert_eq!(app.eyedropper_color, Some(Color::rgb8(10, 120, 200)));
         // The document palette's eyedropper reads the same.
         assert_eq!(
@@ -612,7 +670,7 @@ mod tests {
         assert_eq!(attrs.fill, Fill::Solid(Color::rgb8(10, 120, 200)));
         // Applying to the locked object does nothing.
         let before = app.doc().find_shape(b).expect("b").fill.clone();
-        app.eyedropper_click(Point::new(25.0, 5.0), false, false);
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false, false);
         assert_eq!(app.doc().find_shape(b).expect("b").fill, before);
         // An object on a locked layer is read as well.
         app.run(Command::SetLocked {
@@ -646,11 +704,11 @@ mod tests {
             opacity: 0.5,
         });
         app.select(Vec::new());
-        app.eyedropper_click(Point::new(5.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false, false);
         assert!(app.eyedropper_attrs.is_some());
         // Defaults: fill, outline and transparency, no transformations,
         // no effects.
-        app.eyedropper_click(Point::new(45.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(45.0, 5.0), true, false, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(sb.fill, Fill::Solid(Color::rgb8(0, 0, 250)));
         assert!(
@@ -661,14 +719,14 @@ mod tests {
         // Tick size and effects: b takes a's size about its own centre.
         app.eyedropper_groups.size = true;
         app.eyedropper_groups.effects = true;
-        app.eyedropper_click(Point::new(45.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(45.0, 5.0), true, false, false);
         let sb = app.doc().find_shape(b).expect("b");
         let bb = sb.bounds();
         assert!((bb.height() - 20.0).abs() < 1e-6, "{bb:?}");
         assert!((bb.center().x - 45.0).abs() < 1e-6, "{bb:?}");
         assert!((sb.opacity - 0.5).abs() < 1e-9);
         // Shift+click samples again instead of applying.
-        app.eyedropper_click(Point::new(45.0, 5.0), true, true);
+        app.eyedropper_click(Point::new(45.0, 5.0), true, true, false);
         let s = app.eyedropper_attrs.as_ref().expect("sample");
         assert!((s.height - 20.0).abs() < 1e-6);
     }
@@ -706,19 +764,19 @@ mod tests {
             effects: vec![warp.clone()],
         });
         app.select(Vec::new());
-        app.eyedropper_click(Point::new(5.0, 5.0), true, false);
-        app.eyedropper_click(Point::new(45.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false, false);
+        app.eyedropper_click(Point::new(45.0, 5.0), true, false, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(sb.effects, vec![warp, mask.clone()]);
         // Unticked: c keeps having none.
         app.eyedropper_groups.transparency = false;
-        app.eyedropper_click(Point::new(85.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(85.0, 5.0), true, false, false);
         let sc = app.doc().find_shape(c).expect("c");
         assert!(sc.effects.is_empty(), "{:?}", sc.effects);
         // A sample without transparency clears the target's.
         app.eyedropper_groups.transparency = true;
-        app.eyedropper_click(Point::new(85.0, 5.0), true, true);
-        app.eyedropper_click(Point::new(5.0, 5.0), true, false);
+        app.eyedropper_click(Point::new(85.0, 5.0), true, true, false);
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false, false);
         assert!(app.doc().find_shape(a).expect("a").effects.is_empty());
     }
 

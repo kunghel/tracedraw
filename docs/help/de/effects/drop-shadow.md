@@ -19,6 +19,15 @@ zeigt er die Griffe des Schattens, und Ziehen am Schatten verschiebt ihn.
 Schatten erscheinen in exportierten und gedruckten PDF-Dateien, mit Farbe,
 Deckkraft und weicher Kante.
 
+Ein Doppelklick auf einen Schatten mit dem Werkzeug [[tool.pick]] wählt das
+Werkzeug [[tool.drop_shadow]] für sein Objekt, mit den Griffen des Schattens
+auf der Seite und seinen Einstellungen in der Eigenschaftsleiste. Dasselbe
+erreichen Sie mit einem Rechtsklick auf ein Objekt mit Schatten und
+[[context.edit_shadow]] oder mit derselben Schaltfläche im Schattenbereich des
+Eigenschaften-Bedienfelds. Ein Objekt mit eigenem Schatten wird mit einem Klick
+darauf immer ausgewählt, auch wo der Schatten eines anderen Objekts darüber
+fällt.
+
 ## Einstellungen {#settings}
 
 In der Eigenschaftsleiste:

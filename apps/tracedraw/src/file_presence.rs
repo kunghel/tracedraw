@@ -7,6 +7,9 @@
 //! question goes to a worker thread, at most one at a time for a file and
 //! again a little later, and the window takes the last answer: a file not
 //! looked at yet counts as there.
+//!
+//! The same question can bring back the file's size and when it was last
+//! changed, for the Welcome Screen's list (#1675).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,10 +20,21 @@ use web_time::{Duration, Instant};
 /// deleted or put back while the Welcome Screen is up).
 pub const RECHECK: Duration = Duration::from_secs(2);
 
+/// What the disk says of a file besides its being there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileInfo {
+    /// Its size in bytes.
+    pub size: Option<u64>,
+    /// When it was last changed, seconds since 1970.
+    pub modified: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     /// The last answer; `None` before the first.
     exists: Option<bool>,
+    /// The size and date of a file that is there, when asked for.
+    info: Option<FileInfo>,
     /// When the last question was asked.
     asked: Instant,
     /// A question is under way.
@@ -32,6 +46,8 @@ struct Entry {
 pub struct Presence {
     entries: Arc<Mutex<HashMap<PathBuf, Entry>>>,
     check: fn(&Path) -> bool,
+    /// Reads a present file's size and date along with the question.
+    inspect: Option<fn(&Path) -> FileInfo>,
 }
 
 impl Presence {
@@ -39,7 +55,22 @@ impl Presence {
         Presence {
             entries: Arc::new(Mutex::new(HashMap::new())),
             check,
+            inspect: None,
         }
+    }
+
+    /// The same, also reading a present file's size and date with
+    /// `inspect` on the worker thread.
+    pub fn with_info(mut self, inspect: fn(&Path) -> FileInfo) -> Self {
+        self.inspect = Some(inspect);
+        self
+    }
+
+    /// The size and date of `path` as last read; `None` before the first
+    /// answer, for a file that is not there, or without `with_info`.
+    /// Never asks the disk: [`exists`](Self::exists) does.
+    pub fn info(&self, path: &Path) -> Option<FileInfo> {
+        self.entries.lock().ok()?.get(path)?.info
     }
 
     /// Whether `path` is there, as last found; never waits for the disk.
@@ -52,6 +83,7 @@ impl Presence {
         };
         let entry = entries.entry(path.to_path_buf()).or_insert(Entry {
             exists: None,
+            info: None,
             asked: now,
             pending: false,
         });
@@ -71,17 +103,21 @@ impl Presence {
     fn ask(&self, path: PathBuf, wake: Option<egui::Context>) {
         let entries = Arc::clone(&self.entries);
         let check = self.check;
+        let inspect = self.inspect;
         let key = path.clone();
         let answer = move || {
             let exists = check(&path);
+            let info = inspect.filter(|_| exists).map(|f| f(&path));
             let changed = entries.lock().is_ok_and(|mut e| {
                 let entry = e.entry(path).or_insert(Entry {
                     exists: None,
+                    info: None,
                     asked: Instant::now(),
                     pending: true,
                 });
-                let changed = entry.exists != Some(exists);
+                let changed = entry.exists != Some(exists) || entry.info != info;
                 entry.exists = Some(exists);
+                entry.info = info;
                 entry.pending = false;
                 changed
             });
@@ -114,12 +150,36 @@ impl Presence {
     }
 }
 
+/// The answers the window shares.
+fn shared() -> &'static Presence {
+    static SHARED: OnceLock<Presence> = OnceLock::new();
+    SHARED.get_or_init(|| Presence::new(|p| crate::files::exists(p)).with_info(disk_info))
+}
+
 /// Whether `path` is there (see [`Presence::exists`]), for the window.
 pub fn exists(path: &Path, wake: Option<&egui::Context>) -> bool {
-    static SHARED: OnceLock<Presence> = OnceLock::new();
-    SHARED
-        .get_or_init(|| Presence::new(|p| crate::files::exists(p)))
-        .exists(path, wake)
+    shared().exists(path, wake)
+}
+
+/// The size and date of `path` as last read (see [`Presence::info`]).
+pub fn info(path: &Path) -> Option<FileInfo> {
+    shared().info(path)
+}
+
+/// A file's size and date from the disk (nothing for a document the
+/// system's picker handed over, which has no path to read).
+pub fn disk_info(path: &Path) -> FileInfo {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return FileInfo::default();
+    };
+    FileInfo {
+        size: Some(meta.len()),
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_secs()).ok()),
+    }
 }
 
 #[cfg(test)]

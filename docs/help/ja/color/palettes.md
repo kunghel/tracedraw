@@ -45,7 +45,8 @@
 1. 編集する [[dialog.palette]] を選ぶか、[[dialog.new_palette]] をクリックして新しく始めます。
 2. [[dialog.name]] を入力します。
 3. 色をクリックして選択します。[[dialog.add_color]] は現在の色を追加し、[[dialog.remove_color]] は選択した色を削除します。
-4. [[dialog.save_palette]] をクリックしてファイルとして保存します。
-5. [[dialog.close]] をクリックします。
+4. [[dialog.spot_color]] をオンにすると、選択した色が特色になります。色の名前で専用の版に印刷される名前付きインキです。PDF 書き出しでは別インキとして保持されます。
+5. [[dialog.save_palette]] をクリックしてファイルとして保存します。
+6. [[dialog.ok]] をクリックします。
 
 組み込みのパレットは編集できません。新しいパレットを作るか、コピーを編集してください。

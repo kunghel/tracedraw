@@ -327,7 +327,11 @@ fn outline_text(app: &App, stroke: &Option<tracedraw_core::Stroke>) -> String {
                 let decimals = if u == crate::app::Units::Pixels { 2 } else { 3 };
                 format!("{:.*} {}", decimals, u.from_mm(s.width), u.short())
             };
-            format!("{}  {}", crate::app::color_description(s.color), width)
+            format!(
+                "{}  {}",
+                crate::app::color_description_in(app.doc(), s.color),
+                width
+            )
         }
     }
 }
@@ -420,7 +424,7 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
             if fill_mixed {
                 tr("docker.mixed")
             } else {
-                crate::app::fill_description(&fill)
+                crate::app::fill_description_in(app.doc(), &fill)
             },
             if fill_mixed {
                 None

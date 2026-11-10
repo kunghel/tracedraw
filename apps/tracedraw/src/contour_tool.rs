@@ -7,12 +7,99 @@
 //! bar's steps kept, the offset following). One undo step per drag. The
 //! bar and the panel show the selected contour and edit the selected
 //! contours live.
+//!
+//! An object with a contour shows two handles on the canvas while the
+//! tool is active (#1265): from the middle of its right edge a line runs
+//! out (Outside) or in (Inside, To centre) to the offset handle at the
+//! last step, which sets the distance; the steps handle on that line at
+//! the first step's distance sets the number of steps, the last step
+//! staying where it is. Each drag is drawn live and is one undo step.
 
 use crate::app::App;
 use serde::{Deserialize, Serialize};
 use tracedraw_core::{
     geometry::Point, live::Effect, shaping::Join, Color, Command, ShapeId, ShapeKind,
 };
+
+/// How near (screen pixels) a press takes a contour handle.
+pub const HANDLE_PX: f64 = 9.0;
+
+/// A handle of the selected contour on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContourHandle {
+    /// At the last step: the distance (`steps * offset`, or the offset
+    /// to centre).
+    Offset,
+    /// At the first step's distance: the number of steps.
+    Steps,
+}
+
+/// Where the selected contour's handles are, in page millimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContourHandles {
+    pub id: ShapeId,
+    /// The middle of the object's right edge, where the line starts.
+    pub anchor: Point,
+    /// The offset handle.
+    pub end: Point,
+    /// The steps handle (none to centre, where the steps are as many as
+    /// fit).
+    pub steps: Option<Point>,
+    /// 1 when the steps go out (right), -1 when they go in (left).
+    pub dir: f64,
+}
+
+impl ContourHandles {
+    /// The handles of contour settings `s` on an object with page bounds
+    /// `b`.
+    pub fn of(id: ShapeId, s: &ContourSettings, b: tracedraw_core::geometry::Rect) -> Self {
+        let s = s.clamped();
+        let anchor = Point::new(b.x1, (b.y0 + b.y1) / 2.0);
+        let dir = if s.direction == ContourDirection::Outside {
+            1.0
+        } else {
+            -1.0
+        };
+        let n = f64::from(s.steps.max(1));
+        let (total, steps) = match s.direction {
+            ContourDirection::ToCenter => (s.offset, None),
+            _ => (
+                n * s.offset,
+                Some(Point::new(anchor.x + dir * s.offset, anchor.y)),
+            ),
+        };
+        ContourHandles {
+            id,
+            anchor,
+            end: Point::new(anchor.x + dir * total, anchor.y),
+            steps,
+            dir,
+        }
+    }
+
+    /// The settings `s` with handle `h` dragged to `p`: the offset handle
+    /// sets the distance from the edge (the steps kept), the steps handle
+    /// the number of steps that fit in that distance (the last step kept).
+    pub fn dragged(&self, s: &ContourSettings, h: ContourHandle, p: Point) -> ContourSettings {
+        let mut s = s.clamped();
+        // Along the line, from the edge, at least a hundredth of a
+        // millimetre a step.
+        let t = (p.x - self.anchor.x) * self.dir;
+        let n = f64::from(s.steps.max(1));
+        match (h, s.direction) {
+            (ContourHandle::Offset, ContourDirection::ToCenter) => s.offset = t.max(0.01),
+            (ContourHandle::Offset, _) => s.offset = (t / n).max(0.01),
+            (ContourHandle::Steps, ContourDirection::ToCenter) => {}
+            (ContourHandle::Steps, _) => {
+                let total = n * s.offset;
+                let steps = (total / t.max(1e-6)).round().clamp(1.0, 999.0) as u32;
+                s.steps = steps;
+                s.offset = total / f64::from(steps);
+            }
+        }
+        s.clamped()
+    }
+}
 
 /// Where the steps go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -202,6 +289,67 @@ impl App {
             .find_map(|s| s.effects.iter().find(|e| is_contour(e)).cloned())
     }
 
+    /// The handles of the selected object's contour, with the Contour
+    /// tool and one object selected that has a contour.
+    pub fn contour_handles(&self) -> Option<ContourHandles> {
+        if self.tool != crate::tools::Tool::Contour || self.selection.len() != 1 {
+            return None;
+        }
+        let id = *self.selection.first()?;
+        let s = self.doc().shape_on_page(id)?;
+        let e = s.effects.iter().find(|e| is_contour(e))?;
+        let mut st = self.contour;
+        st.take(e);
+        let b = s.bounds();
+        if ![b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        Some(ContourHandles::of(id, &st, b))
+    }
+
+    /// The contour handle under page point `p` (the steps handle wins
+    /// over the offset handle when they meet).
+    pub fn contour_handle_at(&self, p: Point) -> Option<ContourHandle> {
+        let h = self.contour_handles()?;
+        let tol = HANDLE_PX / f64::from(self.view.zoom.max(1e-6));
+        if h.steps.is_some_and(|q| (q - p).hypot() <= tol) {
+            return Some(ContourHandle::Steps);
+        }
+        ((h.end - p).hypot() <= tol).then_some(ContourHandle::Offset)
+    }
+
+    /// Handle `handle` dragged to `p`: the contour follows live. The first
+    /// move of a drag (`begun` false) is a new undo step, the next ones
+    /// change it, so a drag is one step.
+    pub fn drag_contour_handle(&mut self, handle: ContourHandle, p: Point, begun: bool) {
+        let Some(h) = self.contour_handles() else {
+            return;
+        };
+        let s = self.contour_handles_settings(h.id);
+        let next = h.dragged(&s, handle, p);
+        if next == s && begun {
+            return;
+        }
+        if !begun {
+            self.effect_edit_step = None;
+        }
+        self.contour = next;
+        self.apply_contour_settings();
+    }
+
+    /// The settings of object `id`'s contour.
+    fn contour_handles_settings(&self, id: ShapeId) -> ContourSettings {
+        let mut st = self.contour;
+        if let Some(e) = self
+            .doc()
+            .find_shape(id)
+            .and_then(|s| s.effects.iter().find(|e| is_contour(e)).cloned())
+        {
+            st.take(&e);
+        }
+        st
+    }
+
     /// The bar and the panel show the selected contour.
     pub fn sync_contour_settings(&mut self) {
         if let Some(e) = self.selected_contour() {
@@ -327,13 +475,25 @@ impl App {
                 .input(|i| i.pointer.press_origin())
                 .map(|o| self.view.to_page(o))
                 .unwrap_or(p);
-            self.begin_contour(origin);
+            // A handle of the selected contour, else a new contour.
+            match self.contour_handle_at(origin) {
+                Some(h) => self.contour_handle_drag = Some((h, false)),
+                None => {
+                    self.begin_contour(origin);
+                }
+            }
         }
-        if response.dragged_by(PointerButton::Primary) && self.contour_drag.is_some() {
-            self.drag_contour(p);
+        if response.dragged_by(PointerButton::Primary) {
+            if let Some((h, begun)) = self.contour_handle_drag {
+                self.drag_contour_handle(h, p, begun);
+                self.contour_handle_drag = Some((h, true));
+            } else if self.contour_drag.is_some() {
+                self.drag_contour(p);
+            }
         }
         if response.drag_stopped() {
             self.contour_drag = None;
+            self.contour_handle_drag = None;
         }
         if response.clicked_by(PointerButton::Primary) {
             match self.hit_test_inside(p) {
@@ -438,6 +598,98 @@ mod tests {
             }
             assert_eq!(app.break_apart_label(), "menu.object.break_apart");
         }
+    }
+
+    /// The offset handle sets the distance, the steps handle the number
+    /// of steps with the last step kept; each drag is one undo step and
+    /// the contour follows every move (#1265).
+    #[test]
+    fn handles_drag_the_offset_and_the_steps() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.tool = crate::tools::Tool::Contour;
+        app.select(vec![id]);
+        app.add_contour();
+        // Outside, 3 steps of 2 mm: from (20, 10) to (26, 10), the steps
+        // handle at (22, 10).
+        let h = app.contour_handles().expect("handles");
+        assert_eq!((h.anchor.x, h.anchor.y), (20.0, 10.0));
+        assert_eq!((h.end.x, h.end.y), (26.0, 10.0));
+        assert_eq!(h.steps.map(|q| (q.x, q.y)), Some((22.0, 10.0)));
+        assert_eq!(
+            app.contour_handle_at(Point::new(26.0, 10.2)),
+            Some(ContourHandle::Offset)
+        );
+        assert_eq!(
+            app.contour_handle_at(Point::new(22.0, 10.0)),
+            Some(ContourHandle::Steps)
+        );
+        assert_eq!(app.contour_handle_at(Point::new(40.0, 40.0)), None);
+        let steps = app.engine.history_labels().0.len();
+        // The offset handle to 32 mm: 3 steps of 4 mm, live at each move.
+        app.drag_contour_handle(ContourHandle::Offset, Point::new(29.0, 10.0), false);
+        let Some(Effect::Contour { offset, .. }) = contour_of(&app, id) else {
+            panic!("a contour");
+        };
+        assert!((offset - 3.0).abs() < 1e-9);
+        app.drag_contour_handle(ContourHandle::Offset, Point::new(32.0, 9.0), true);
+        let Some(Effect::Contour {
+            offset, steps: n, ..
+        }) = contour_of(&app, id)
+        else {
+            panic!("a contour");
+        };
+        assert!((offset - 4.0).abs() < 1e-9);
+        assert_eq!(n, 3);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        // The steps handle 2 mm from the edge: 6 steps of 2 mm, the last
+        // one still at 12 mm.
+        app.drag_contour_handle(ContourHandle::Steps, Point::new(22.0, 10.0), false);
+        let Some(Effect::Contour {
+            offset, steps: n, ..
+        }) = contour_of(&app, id)
+        else {
+            panic!("a contour");
+        };
+        assert_eq!(n, 6);
+        assert!((offset - 2.0).abs() < 1e-9);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 2);
+        // One undo takes the whole steps drag back.
+        let _ = app.engine.undo();
+        let Some(Effect::Contour {
+            offset, steps: n, ..
+        }) = contour_of(&app, id)
+        else {
+            panic!("a contour");
+        };
+        assert_eq!((n, offset), (3, 4.0));
+        // Inside: the line runs into the object.
+        app.sync_contour_settings();
+        app.contour.direction = ContourDirection::Inside;
+        app.apply_contour_settings();
+        let h = app.contour_handles().expect("handles");
+        assert_eq!((h.end.x, h.dir), (8.0, -1.0));
+        app.drag_contour_handle(ContourHandle::Offset, Point::new(14.0, 10.0), false);
+        let Some(Effect::Contour {
+            offset, outside, ..
+        }) = contour_of(&app, id)
+        else {
+            panic!("a contour");
+        };
+        assert!(!outside);
+        assert!((offset - 2.0).abs() < 1e-9);
+        // To centre: one handle, the offset itself.
+        app.contour.direction = ContourDirection::ToCenter;
+        app.apply_contour_settings();
+        let h = app.contour_handles().expect("handles");
+        assert!(h.steps.is_none());
+        assert_eq!(h.end.x, 18.0);
+        // No handles with another tool or without a contour.
+        app.tool = crate::tools::Tool::Pick;
+        assert!(app.contour_handles().is_none());
+        app.tool = crate::tools::Tool::Contour;
+        app.clear_contour();
+        assert!(app.contour_handles().is_none());
     }
 
     #[test]

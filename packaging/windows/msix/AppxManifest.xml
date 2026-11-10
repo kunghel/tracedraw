@@ -4,8 +4,10 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 desktop rescap">
+  IgnorableNamespaces="uap uap3 desktop desktop2 com rescap">
 
   <Identity Name="{IDENTITY}" Publisher="{PUBLISHER}" Version="{VERSION}" ProcessorArchitecture="x64" />
 
@@ -32,6 +34,7 @@
     <Resource Language="hi-in" />
     <Resource Language="bn-bd" />
     <Resource Language="id-id" />
+    <Resource Language="lo" />
   </Resources>
 
   <Applications>
@@ -51,6 +54,10 @@
             <uap:SupportedFileTypes>
               <uap:FileType>.tdraw</uap:FileType>
             </uap:SupportedFileTypes>
+            <!-- Explorer shows a .tdraw file as a picture of its first
+                 page: the thumbnail provider below (the same class id as
+                 the setup registers, packaging/windows/tracedraw.iss). -->
+            <desktop2:ThumbnailHandler Clsid="6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60" />
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
@@ -61,6 +68,16 @@
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <!-- The thumbnail provider of .tdraw files
+             (apps/tracedraw-thumbnailer), run by Windows in a surrogate
+             process as for the setup's install. -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="TraceDraw thumbnails">
+              <com:Class Id="6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60" Path="tracedraw_thumbnailer.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
         <!-- The command-line alias runs tracedraw-cli.exe, a console program,
              so it keeps its terminal input and output. It hangs on the main
              app because the Store refuses a second application hidden from

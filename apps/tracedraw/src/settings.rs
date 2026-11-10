@@ -193,6 +193,10 @@ pub struct Settings {
     /// The view a drawing opens in (#1134).
     #[serde(default)]
     pub open_view: OpenView,
+    /// The zoom, in percent, of the Zoom level choice of `open_view`
+    /// (#1266).
+    #[serde(default = "default_open_zoom_percent")]
+    pub open_zoom_percent: f32,
     /// Arrowheads created with Object > Create > Arrowhead.
     #[serde(default)]
     pub custom_arrowheads: Vec<tracedraw_core::Arrowhead>,
@@ -351,6 +355,10 @@ pub struct Settings {
     /// selected curve (node tracking).
     #[serde(default)]
     pub node_tracking: bool,
+    /// Options > Display: Shift, Ctrl, Alt and Delete on the drawing,
+    /// where there is a touch screen (#1996).
+    #[serde(default = "default_true")]
+    pub touch_keys: bool,
     #[serde(default = "default_true")]
     pub preview_page_border: bool,
     /// Options > Edit: Ctrl constrains rotation and line angles to
@@ -441,10 +449,23 @@ pub struct Settings {
     /// (off by default: the point stays under the pointer).
     #[serde(default)]
     pub wheel_zoom_centers: bool,
+    /// Options > Tools > Zoom/Pan > Smooth zoom: a wheel notch zooms in
+    /// a short glide, shorter for faster wheel turns (on by default);
+    /// off, each notch zooms at once (#1648, #895).
+    #[serde(default = "default_true")]
+    pub smooth_zoom: bool,
+    /// Options > Tools > Zoom/Pan: how much one wheel notch zooms, in
+    /// percent (15 by default); see [`Settings::wheel_zoom_factor`].
+    #[serde(default = "default_wheel_zoom_step")]
+    pub wheel_zoom_step: f32,
     /// Options > Tools > Zoom/Pan: a right click with the Pan tool zooms
     /// out (off, the default: it opens the context menu).
     #[serde(default)]
     pub pan_right_click_out: bool,
+    /// Options > Tools > Zoom/Pan > Pan inertia: a pan let go while
+    /// moving slides on and eases out (off by default, #831).
+    #[serde(default)]
+    pub pan_inertia: bool,
     /// Options > Customization > Color Palette.
     #[serde(default)]
     pub palette: PalettePrefs,
@@ -714,7 +735,7 @@ fn default_desktop() -> [u8; 3] {
 }
 
 /// How many one-time upgrades `Settings::upgrade` knows.
-const UPGRADES: u32 = 6;
+const UPGRADES: u32 = 7;
 
 fn default_outline_units() -> String {
     "pt".into()
@@ -726,6 +747,27 @@ fn default_true() -> bool {
 
 fn default_screen_ppi() -> f32 {
     96.0
+}
+
+/// The zoom of one wheel notch, percent: 15 % (a factor of 1.15).
+pub const DEFAULT_WHEEL_ZOOM_STEP: f32 = 15.0;
+
+fn default_wheel_zoom_step() -> f32 {
+    DEFAULT_WHEEL_ZOOM_STEP
+}
+
+impl Settings {
+    /// The factor one wheel notch zooms by: 1 plus the wheel zoom step,
+    /// kept between 1 and 100 percent (the default for a value that is
+    /// not a number).
+    pub fn wheel_zoom_factor(&self) -> f32 {
+        let step = if self.wheel_zoom_step.is_finite() {
+            self.wheel_zoom_step.clamp(1.0, 100.0)
+        } else {
+            DEFAULT_WHEEL_ZOOM_STEP
+        };
+        1.0 + step / 100.0
+    }
 }
 
 /// The calibrated screen resolution, kept within 48 to 400 per inch. It
@@ -833,18 +875,22 @@ pub enum OpenView {
     PageHeight,
     /// Real size, the page in the middle.
     Actual,
+    /// The zoom set in `Settings::open_zoom_percent`, the page in the
+    /// middle (#1266).
+    Percent,
     /// The page, place and zoom it was saved with (TraceDraw files), else
     /// the whole page.
     AsSaved,
 }
 
 impl OpenView {
-    pub const ALL: [OpenView; 6] = [
+    pub const ALL: [OpenView; 7] = [
         OpenView::FitPage,
         OpenView::FitObjects,
         OpenView::PageWidth,
         OpenView::PageHeight,
         OpenView::Actual,
+        OpenView::Percent,
         OpenView::AsSaved,
     ];
 
@@ -855,6 +901,7 @@ impl OpenView {
             OpenView::PageWidth => "options.open_view_width",
             OpenView::PageHeight => "options.open_view_height",
             OpenView::Actual => "options.open_view_actual",
+            OpenView::Percent => "options.open_view_percent",
             OpenView::AsSaved => "options.open_view_saved",
         }
     }
@@ -1190,6 +1237,37 @@ pub struct UserPalette {
 /// [`PaletteBarPrefs::palette`] of a bar showing the document palette.
 pub const DOCUMENT_PALETTE: &str = "document";
 
+/// Where a docked palette bar lies among the other bars of its side of
+/// the window, from the edge inwards (live test of 0.41: a palette bar
+/// docked only at the window's edges). Along the left or the right: at
+/// the very edge, after the default palette's column there, after the
+/// toolbox, after the docker columns, or beside the drawing. Along the
+/// top or the bottom: under the toolbars (over the status bar), after
+/// the default palette's row there, after the toolbox, after the
+/// document palette row, or beside the drawing. Bars of one place lie
+/// side by side in their order (`palette_bars::docked`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BarSlot {
+    Outer,
+    AfterPalette,
+    AfterToolbox,
+    Inner,
+    Drawing,
+}
+
+impl BarSlot {
+    /// Where a bar docked at `dock` lies when no place was chosen (as
+    /// before places could be): outside the toolbox at the left and the
+    /// right, beside the drawing along the top and the bottom.
+    pub fn default_for(dock: crate::ui::bars::Dock) -> BarSlot {
+        if dock.horizontal() {
+            BarSlot::Drawing
+        } else {
+            BarSlot::AfterPalette
+        }
+    }
+}
+
 /// A palette bar besides the default one: which palette it shows, where
 /// it is, and its own rows and swatch size.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1211,6 +1289,10 @@ pub struct PaletteBarPrefs {
     /// one, under every toolbar). None: beside the drawing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolbar_row: Option<u32>,
+    /// Docked at a side: its place among that side's bars (None: the
+    /// side's usual place, [`BarSlot::default_for`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<BarSlot>,
 }
 
 impl Default for PaletteBarPrefs {
@@ -1223,6 +1305,7 @@ impl Default for PaletteBarPrefs {
             rows: 1,
             swatch_size: SWATCH_DEFAULT,
             toolbar_row: None,
+            slot: None,
         }
     }
 }
@@ -1249,6 +1332,15 @@ impl PaletteBarPrefs {
             self.toolbar_row = None;
         }
         self.toolbar_row = self.toolbar_row.map(|r| r.min(MAX_TOOLBAR_ROW));
+        // A place among the bars of a side only while docked at one.
+        if self.dock == crate::ui::bars::Dock::Floating {
+            self.slot = None;
+        }
+    }
+
+    /// Its place among the bars of its side.
+    pub fn slot_or_default(&self) -> BarSlot {
+        self.slot.unwrap_or_else(|| BarSlot::default_for(self.dock))
     }
 
     /// Whether the bar lies among the toolbars along the top.
@@ -1819,6 +1911,7 @@ impl Default for Settings {
             show_outline_flyout: false,
             wheel_zooms: true,
             open_view: OpenView::default(),
+            open_zoom_percent: default_open_zoom_percent(),
             toolbox: Vec::new(),
             custom_arrowheads: Vec::new(),
             custom_dashes: Vec::new(),
@@ -1833,6 +1926,7 @@ impl Default for Settings {
             tracecut: Default::default(),
             hide_bbox_curve_tools: false,
             node_tracking: false,
+            touch_keys: true,
             preview_page_border: true,
             constrain_angle: default_constrain_angle(),
             symmetry_show_lines: true,
@@ -1857,7 +1951,10 @@ impl Default for Settings {
             zoom_right_click_out: true,
             zoom_relative_1to1: true,
             wheel_zoom_centers: false,
+            smooth_zoom: true,
+            wheel_zoom_step: default_wheel_zoom_step(),
             pan_right_click_out: false,
+            pan_inertia: false,
             palette: PalettePrefs::default(),
             palette_bars: Vec::new(),
             main_palette: String::new(),
@@ -2010,7 +2107,8 @@ impl Settings {
     /// 2. new rectangles keep their corners; 3. the alignment and dynamic
     ///    guides start off; 4. the last export's settings are remembered;
     /// 5. Duplicate's old default offset (6.35 mm) becomes none; 6. the
-    /// Crop tool cuts a picture's pixels.
+    ///    Crop tool cuts a picture's pixels; 7. File > Export shows its
+    ///    options again.
     pub fn upgrade(mut self) -> Settings {
         self.autocorrect.upgrade();
         if self.upgrades < 1 {
@@ -2050,6 +2148,16 @@ impl Settings {
         // pixels. On once; switched off afterwards it stays off.
         if self.upgrades < 6 {
             self.crop_picture_pixels = true;
+        }
+        // "Do not show filter dialog" was the preference itself, ticked
+        // in the Export dialog and kept even when the dialog was then
+        // cancelled, with nothing in Options to turn it back: File >
+        // Export went straight to the Save dialog for good, with no
+        // options (report on 0.42.1). The options show again once; the
+        // setting chosen afterwards (in the dialog on OK, or in Options >
+        // Global > File Formats) stays.
+        if self.upgrades < 7 {
+            self.formats.skip_export_dialog = false;
         }
         self.upgrades = self.upgrades.max(UPGRADES);
         self.migrate_ai();
@@ -2275,6 +2383,13 @@ pub fn migrate_ai(
 fn ai_enabled_default() -> bool {
     true
 }
+
+fn default_open_zoom_percent() -> f32 {
+    100.0
+}
+
+/// The zooms Options offers for a drawing to open at, in percent.
+pub const OPEN_ZOOM_RANGE: std::ops::RangeInclusive<f32> = 1.0..=10000.0;
 
 fn default_focus_visibility() -> u8 {
     20
@@ -2551,6 +2666,29 @@ mod tests {
         assert!(Settings::default().formats.remember_last);
     }
 
+    /// "Do not show filter dialog" could be left on by a tick in the
+    /// Export dialog that was then cancelled, with no way back in Options:
+    /// preferences of older versions show the export options again, once;
+    /// set again afterwards, the setting stays (report on 0.42.1).
+    #[test]
+    fn older_preferences_show_the_export_options_again_once() {
+        let old: Settings = serde_json::from_str(
+            r#"{"upgrades": 6, "formats": {"skip_export_dialog": true, "export_format": 2}}"#,
+        )
+        .expect("old preferences");
+        assert!(old.formats.skip_export_dialog);
+        let s = old.upgrade();
+        assert!(!s.formats.skip_export_dialog);
+        assert_eq!(s.formats.export_format, 2, "the other choices stay");
+        assert_eq!(s.upgrades, UPGRADES);
+        let mut s = s;
+        s.formats.skip_export_dialog = true;
+        let saved = serde_json::to_string(&s).expect("saved");
+        let again: Settings = serde_json::from_str(&saved).expect("read back");
+        assert!(again.upgrade().formats.skip_export_dialog);
+        assert!(!Settings::default().formats.skip_export_dialog);
+    }
+
     #[test]
     fn rectangle_corners_keep_their_size_by_default_and_after_upgrading() {
         // A first start: new rectangles keep their corners when resized.
@@ -2785,7 +2923,17 @@ mod tests {
             "old settings files keep the zoom default"
         );
         assert!(partial.zoom_relative_1to1 && !partial.wheel_zoom_centers);
+        // Smooth zoom on, 15 % a notch, for settings from before (#1648).
+        assert!(partial.smooth_zoom);
+        assert_eq!(partial.wheel_zoom_step, 15.0);
+        assert!((partial.wheel_zoom_factor() - 1.15).abs() < 1e-6);
+        let mut odd = Settings::default();
+        odd.wheel_zoom_step = 500.0;
+        assert_eq!(odd.wheel_zoom_factor(), 2.0);
+        odd.wheel_zoom_step = f32::NAN;
+        assert!((odd.wheel_zoom_factor() - 1.15).abs() < 1e-6);
         assert!(!partial.pan_right_click_out);
+        assert!(!partial.pan_inertia, "pan inertia is off at first (#831)");
         assert!(partial.snap.guides);
     }
 

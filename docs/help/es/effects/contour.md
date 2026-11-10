@@ -24,6 +24,22 @@ Con el panel:
 
 Los grupos y los mapas de bits no admiten silueta.
 
+## Tiradores en el dibujo {#handles}
+
+Con la herramienta de silueta, un objeto con silueta muestra una línea desde
+el centro de su borde derecho: hacia fuera en una silueta exterior, hacia
+dentro en una interior o hacia el centro.
+
+- Arrastra el **cuadrado** del extremo de la línea para cambiar hasta dónde
+  llega la silueta. Los pasos siguen siendo los mismos, más separados o más
+  juntos.
+- Arrastra la **barra** de la línea, en el primer paso, para cambiar el número
+  de pasos: hacia el objeto para más pasos, alejándola para menos. El último
+  paso se queda donde está. Una silueta hacia el centro no tiene barra, porque
+  toma tantos pasos como caben.
+
+La silueta sigue al arrastrar, y cada arrastre se deshace en un solo paso.
+
 ## Ajustes de la silueta {#settings}
 
 La barra de propiedades y el panel muestran los ajustes de la silueta

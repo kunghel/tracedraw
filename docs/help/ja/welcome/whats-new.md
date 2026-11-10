@@ -22,6 +22,7 @@ TraceDraw の各バージョンでは機能と修正が加わります。この�
 
 ## 最近のバージョンの主な新機能 {#highlights}
 
+- **CNC ツールパス、エクスポート、選択。** [[menu.tools > menu.tools.tracecut]] は CNC ルーター用の G コードを作成し、ハトメ、指継ぎの箱、折り曲げトレイを描きます。[[menu.file > menu.file.export]] は先にファイルを尋ね、その後で形式のオプションを表示し、[[menu.file > menu.file.export_with_options]] は常にオプションを表示します。[[menu.edit > menu.edit.select_similar]] と [[menu.edit > menu.edit.invert_selection]] で選択を変えられ、[[menu.object > menu.object.insert > menu.object.add_dimensions]] で選択範囲に寸法を付けられます。プロシージャル塗りつぶし、OpenType ボタン、ラオス語のインターフェースも加わりました。
 - **見開きページとリンクされたテキスト。** [[menu.layout > menu.layout.facing_pages]] でページを見開きで並べて表示し、[[menu.text > menu.text.link_content]] でテキストをリンクして 1 つへの入力をほかにも反映します。複数ページの PDF は読み込むページを尋ね、[[menu.edit > menu.edit.step_and_repeat]] でページをコピーで埋められます。
 - **タッチとスマートフォン。** 標準ツールバーの Shift、Ctrl、Alt ボタンは指のために押されたままになります。Android ではインターフェースがカメラの切り欠きや角の丸みを避けます。iPad の Safari で Apple Pencil が使えます。
 - **ファイル。** .cdr ファイルは重なった曲線の塗りつぶし規則を保ち、タブ位置、段組みのテキスト、全ページ共通のガイドライン、マスターページのオブジェクトを保って開きます。

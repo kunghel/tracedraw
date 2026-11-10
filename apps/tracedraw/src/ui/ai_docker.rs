@@ -210,6 +210,22 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
             prefs.key = app.ai.key.clone();
         }
         ui.end_row();
+        // The longest reply, which the Messages API asks for (#1011).
+        if prefs.provider == Provider::Anthropic {
+            row_label(ui, &tr("ai.max_tokens"));
+            let mut tokens = prefs.max_tokens();
+            if ui
+                .add(
+                    crate::ui::field::NumField::new(&mut tokens)
+                        .range(crate::ai::MIN_MAX_TOKENS..=crate::ai::MAX_MAX_TOKENS),
+                )
+                .rich_tip(crate::ui::tips::pair("ai.max_tokens", "ai.max_tokens_tip"))
+                .changed()
+            {
+                prefs.max_tokens = tokens;
+            }
+            ui.end_row();
+        }
         // Pictures: only for a service that can make them.
         if prefs.can_make_pictures() {
             row_label(ui, &tr("ai.image_model"));

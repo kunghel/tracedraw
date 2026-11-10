@@ -86,7 +86,9 @@ a bar on the line at the opacity (start = 0 %, end = 100 %).
 - Dragging the end moves the offset, or the angle and stretch.
 - Dragging the bar sets the opacity (whole per cent).
 - Dragging the start to another edge stands the shadow on that edge;
-  to the middle makes it flat. The end stays where it was.
+  to the middle makes it flat. The end stays where it was. The start
+  handle follows the pointer while it is held, flat or standing on any
+  edge, and goes back to where the shadow starts when let go.
 - Dragging the dashed line (within the pick distance of Options > Nodes
   and Handles, away from the squares and the bar) moves the whole
   shadow: its end goes as far as the pointer, as a drag on the shadow
@@ -99,7 +101,13 @@ a bar on the line at the opacity (start = 0 %, end = 100 %).
 - Each drag of a handle or the line is one undo step of its own.
 
 The squares are 12 pixels wide and a press within 11 pixels of one
-takes it, whatever the zoom (#1323).
+takes it, whatever the zoom (#1323). Where handles lie closer than that
+(a short offset, a short perspective shadow, a low opacity), a press
+takes the nearest one, the end first where two lie on one spot: the end
+used to take every press within its reach, so the start under it could
+not be grabbed. Every handle is grabbed and dragged in every mode, flat
+and on each edge
+(`pick_drag_tests::shadow_handles_are_grabbed_and_dragged_in_every_mode`).
 
 ## Property bar applies at once
 
@@ -117,6 +125,14 @@ own outline, the same as after Convert to Curves, on every platform
 (`shadow_tool::tests::native_shapes_pick_their_shadow_by_the_outline`,
 `tracedraw_render` `tests::native_shapes_cast_the_shadow_of_their_outline`).
 
+The silhouette is filled by the object's own fill rule, so a hole of the
+object (a ring of two circles combined, the middle of a crossing star) is
+a hole of its shadow, on the page, in a group's shadow and in the
+shadow's picture; text, and a curve set to the nonzero rule, stay solid
+where their contours overlap (#2216,
+`tracedraw_render` `tests::a_drop_shadow_keeps_the_holes_of_its_object`,
+`tracedraw_cdr` `shadow_image::tests::the_shadow_of_a_ring_has_its_hole`).
+
 ## Picking a shadow
 
 A shadow is picked with its object, where it lies above what is beneath
@@ -133,6 +149,31 @@ With the Drop Shadow tool a click on a shadow selects its object and
 shows the shadow's handles; a drag that starts on the shadow (not on a
 handle or on the object) moves the whole shadow: its end goes as far as
 the pointer does.
+
+An object that casts a drop shadow of its own is never lost to another
+object's shadow lying over it: a click on it picks it (Shift adds it),
+with the Pick tool and with the Drop Shadow tool, so picking one
+shadowed object after another never jumps to the neighbour whose shadow
+falls there. A shadow still wins over an object of no shadow beneath it
+(a background), as above
+(`pick_drag_tests::a_click_on_an_object_with_a_shadow_never_picks_another_ones_shadow`).
+
+## Editing a shadow
+
+- A double click on a shadow with the Pick tool (away from its object,
+  or where it lies over an object it is picked above) chooses the Drop
+  Shadow tool with that object alone selected: its handles show and the
+  property bar shows its settings. With the Drop Shadow tool chosen, a
+  click or double click on an object with a shadow picks it.
+- The handles and the property bar follow the first selected object that
+  has a shadow, also with an object of no shadow picked before it; the
+  bar shows the settings new shadows get only when no selected object has
+  one.
+- Edit Shadow, in the right-click menu of a selection with a shadowed
+  object and as a button in the Drop Shadow section of the Properties
+  docker (shown for such an object, with a line telling Flat or the edge
+  and the opacity), does the same as the double click
+  (`pick_drag_tests::a_double_click_on_a_shadow_edits_it_with_the_shadow_tool`).
 
 ## Drawing speed
 
@@ -160,9 +201,11 @@ PDF) draw each shadow beneath its object as a picture of the blurred
 silhouette at 300 dpi (fewer when the shadow is so large it would pass
 40 million pixels), in the shadow's colour, with its feathering, fade
 and opacity in a soft mask; PDF has no blur of its own. The merge mode
-goes in as the PDF blend mode nearest to it (Multiply, Difference,
-Screen for Divide, Lighten, Darken, Hue, Saturation, Color, Exclusion
-for Invert; the others draw normally). The object stays vector on top.
+goes in as the PDF blend mode nearest to it (the table of
+`transparency.md`, Merge modes: Multiply, Difference, Screen for Divide,
+Lighten, Darken, Hue, Saturation, Color, Luminosity for Lightness,
+Exclusion for Invert, Overlay, SoftLight, HardLight, ColorDodge,
+ColorBurn; the others draw normally). The object stays vector on top.
 The colour image downsampling asked for applies to the shadow's picture
 too. PDF/X-1a and X-3 keep no transparency: an object with a shadow is
 flattened with what lies beneath it, over the shadow's area (#1029).

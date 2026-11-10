@@ -1547,7 +1547,14 @@ B.dateserial = (y, m, d) => {
 };
 B.datevalue = (s) => new VDate(Math.floor(V.cdate(s).v));
 B.day = (d) => partsOf(V.cdate(d).v).d;
-B.dir = () => V.unsupported("Dir");
+// Dir(PathName): a file's name when it exists, else "" (the host looks;
+// without one it is not available). Calls without a path, which go on
+// through a folder listing, are not.
+B.dir = (path) => {
+  if (miss(path)) V.unsupported("Dir without a path");
+  if (typeof G.__host_dir !== "function") V.unsupported("Dir");
+  return String(G.__host_dir(V.cstr(path)));
+};
 B.doevents = () => 0;
 B.environ = () => "";
 B.eof = () => V.unsupported("EOF");

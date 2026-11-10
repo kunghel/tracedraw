@@ -861,6 +861,8 @@ fn hides_below(s: &Shape) -> bool {
         Fill::Solid(_) | Fill::Pattern(_) | Fill::Texture(_) => true,
         Fill::Fountain(f) => f.stops.iter().all(|st| st.opacity >= 1.0),
         Fill::Mesh(m) => m.nodes.iter().all(|n| n.alpha >= 1.0),
+        // Without a background what is beneath shows between the paths.
+        Fill::Procedural(p) => p.background.is_some(),
     }
 }
 

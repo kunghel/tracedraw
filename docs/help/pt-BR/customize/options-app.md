@@ -28,7 +28,7 @@ define como o programa funciona. Escolha uma página na lista à esquerda.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (de início),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] ou
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] ou
   [[options.open_view_saved]] (a página, o lugar e o zoom guardados a cada
   vez que um arquivo do TraceDraw é salvo).
 - [[options.ruler_calibration]]: segure uma régua contra a tela e mude a

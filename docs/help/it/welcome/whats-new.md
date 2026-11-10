@@ -23,6 +23,7 @@ come scoprire cosa è cambiato ed elenca i punti salienti delle ultime versioni.
 
 ## Punti salienti delle ultime versioni {#highlights}
 
+- **Percorsi CNC, esportazione e selezione.** [[menu.tools > menu.tools.tracecut]] genera G-code per una fresatrice CNC e disegna occhielli, scatole a incastro e vassoi piegati; [[menu.file > menu.file.export]] chiede prima il file e poi mostra le opzioni del formato, e [[menu.file > menu.file.export_with_options]] le mostra sempre; [[menu.edit > menu.edit.select_similar]] e [[menu.edit > menu.edit.invert_selection]] cambiano la selezione; [[menu.object > menu.object.insert > menu.object.add_dimensions]] quota la selezione; i riempimenti procedurali, i pulsanti OpenType e l'interfaccia in lao sono nuovi.
 - **Pagine affiancate e testo collegato.** [[menu.layout > menu.layout.facing_pages]] mostra le pagine affiancate in doppie pagine; [[menu.text > menu.text.link_content]] collega i testi così che scrivere in uno cambi gli altri; un PDF di più pagine chiede quali pagine importare; [[menu.edit > menu.edit.step_and_repeat]] può riempire una pagina di copie.
 - **Touch e telefoni.** I pulsanti Maiusc, Ctrl e Alt della barra standard
   restano premuti per un dito; su Android l'interfaccia evita il foro della

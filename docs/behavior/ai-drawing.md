@@ -47,8 +47,9 @@ needs one.
 | Field | Default | Notes |
 |---|---|---|
 | Service | Anthropic (Messages API) | or OpenAI-compatible (chat completions), the API many services and local model servers offer |
-| Address | `https://api.anthropic.com/v1/messages`, or `https://api.openai.com/v1/chat/completions` | empty uses the default shown in grey; local servers: their own address, such as `http://localhost:11434/v1/chat/completions` |
+| Address | `https://api.anthropic.com/v1/messages`, or `https://api.openai.com/v1/chat/completions` | empty uses the default shown in grey; local servers: their own address, such as `http://localhost:11434/v1/chat/completions`. An address of the server alone (`http://localhost:8787`) gets `/v1/messages` or `/v1/chat/completions`, one ending in `/v1` gets `/messages` or `/chat/completions`; any other path is used as typed (#1011, `ai::tests::an_address_without_its_path_gets_the_api_path`) |
 | Model | `claude-sonnet-5-5` for the Messages API; none for chat completions | the model name as the service lists it |
+| Longest reply | 32000 tokens | Messages API only (the row shows for it): `max_tokens` of each request, 1000 to 128000; a reply cut short at it says so. 8000 before #1011 cut long drawings short (`ai::tests::the_longest_reply_is_a_preference`) |
 | API key | empty | a password field; needed by the Messages API, optional for chat completions (sent as `Authorization: Bearer`) |
 | Remember the key on this computer | off | on: the key is kept in the preferences file (in the browser: the page's local storage), in plain text; off: it lives only until TraceDraw closes |
 
@@ -71,7 +72,7 @@ apply).
   the number of objects left out), and the selection. File names,
   pictures and the other pages are not sent.
 - Messages API requests carry `x-api-key`, `anthropic-version:
-  2023-06-01`, `max_tokens` 8000 and the instructions as `system`; chat
+  2023-06-01`, `max_tokens` (Longest reply, 32000 at first) and the instructions as `system`; chat
   completions requests put the instructions first as a `system` message.
 - The reply's program is its JavaScript code block (else its first code
   block, else the reply itself when it reads as code). It runs as an

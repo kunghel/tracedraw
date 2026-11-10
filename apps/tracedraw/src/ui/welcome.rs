@@ -27,6 +27,18 @@ pub(crate) const HISTORY_LEN: usize = 10;
 /// version being built.
 pub(crate) const RELEASES: &[Release] = &[
     Release {
+        version: "0.43.0",
+        date: "2026-11-08",
+        title: "welcome.news.v0_43_title",
+        body: "welcome.news.v0_43_body",
+    },
+    Release {
+        version: "0.42.1",
+        date: "2026-11-08",
+        title: "welcome.news.v0_42_1_title",
+        body: "welcome.news.v0_42_1_body",
+    },
+    Release {
         version: "0.42.0",
         date: "2026-11-08",
         title: "welcome.news.v0_42_title",
@@ -73,18 +85,6 @@ pub(crate) const RELEASES: &[Release] = &[
         date: "2026-11-01",
         title: "welcome.news.v0_35_title",
         body: "welcome.news.v0_35_body",
-    },
-    Release {
-        version: "0.34.0",
-        date: "2026-11-01",
-        title: "welcome.news.v0_34_title",
-        body: "welcome.news.v0_34_body",
-    },
-    Release {
-        version: "0.33.0",
-        date: "2026-10-31",
-        title: "welcome.news.v0_33_title",
-        body: "welcome.news.v0_33_body",
     },
 ];
 
@@ -298,19 +298,29 @@ fn recent_documents(app: &mut App, ui: &mut Ui, phone: bool) {
         ui.spacing().interact_size.y + ui.spacing().item_spacing.y
     };
     let mut actions = Vec::new();
+    // With room, a table across the window: name, location, size and
+    // the last edit (#1675); else (a phone, a narrow window) the name
+    // over the folder.
+    let table = !phone && ui.available_width() >= TABLE_MIN_WIDTH && !recent.is_empty();
+    let tz = jiff::tz::TimeZone::system();
+    let look = RowLook { table, tz: &tz };
     if phone {
         for p in &recent {
-            actions.push((recent_row(app, ui, p), p));
+            actions.push((recent_row(app, ui, p, &look), p));
         }
     } else {
-        let height = (ui.available_height() - clear - 12.0).max(RECENT_ROW.y);
+        if table {
+            table_header(ui);
+        }
+        let header = if table { TABLE_HEADER_H } else { 0.0 };
+        let height = (ui.available_height() - clear - 12.0 - header).max(RECENT_ROW.y);
         egui::ScrollArea::vertical()
             .id_salt("welcome_recent_list")
             .max_height(height)
-            .auto_shrink([true, true])
+            .auto_shrink([!table, true])
             .show(ui, |ui| {
                 for p in &recent {
-                    actions.push((recent_row(app, ui, p), p));
+                    actions.push((recent_row(app, ui, p, &look), p));
                 }
             });
     }
@@ -354,17 +364,84 @@ pub(crate) fn remove_recent_id(path: &std::path::Path) -> egui::Id {
     egui::Id::new(("welcome_recent_remove", path))
 }
 
-/// One recent drawing: its thumbnail (a blank page when it has none), its
-/// name and folder; a missing file is greyed out. While the pointer is on
-/// the row an x at its right takes it off the list, as does Remove from
-/// List in its right-click menu (#1152).
-/// The size of a recent document's row.
+/// The size of a recent document's row (the narrow list's).
 const RECENT_ROW: egui::Vec2 = egui::vec2(380.0, 56.0);
+/// The recent documents' thumbnail.
+const RECENT_THUMB: egui::Vec2 = egui::vec2(64.0, 48.0);
+/// The room the remove button takes at a row's right.
+const RECENT_X: f32 = 20.0;
+/// The width from which the recent documents show as a table (#1675).
+const TABLE_MIN_WIDTH: f32 = 560.0;
+/// The table's header row.
+const TABLE_HEADER_H: f32 = 20.0;
+/// The table's columns after the thumbnail: their keys and shares of the
+/// width.
+const TABLE_COLUMNS: [(&str, f32); 4] = [
+    ("welcome.col_name", 0.32),
+    ("welcome.col_location", 0.38),
+    ("welcome.col_size", 0.12),
+    ("welcome.col_modified", 0.18),
+];
 
-fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> RecentAction {
+/// How the recent rows are laid out this frame.
+struct RowLook<'a> {
+    table: bool,
+    /// The time zone the last edits are shown in.
+    tz: &'a jiff::tz::TimeZone,
+}
+
+/// The left edges and widths of the table's columns in a row spanning
+/// `left..right`.
+fn table_columns(left: f32, right: f32) -> [(f32, f32); 4] {
+    let x0 = left + 4.0 + RECENT_THUMB.x + 10.0;
+    let w = (right - RECENT_X - 8.0 - x0).max(0.0);
+    let mut x = x0;
+    TABLE_COLUMNS.map(|(_, share)| {
+        let col = (x, w * share);
+        x += w * share;
+        col
+    })
+}
+
+/// The table's header: the columns' names over them.
+fn table_header(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), TABLE_HEADER_H),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter();
+    for ((key, _), (x, w)) in TABLE_COLUMNS
+        .iter()
+        .zip(table_columns(rect.left(), rect.right()))
+    {
+        let clip = egui::Rect::from_min_max(
+            egui::pos2(x, rect.top()),
+            egui::pos2(x + w - 6.0, rect.bottom()),
+        );
+        painter.with_clip_rect(clip).text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            tr(key),
+            egui::FontId::proportional(11.0),
+            Tokens::text_dim(),
+        );
+    }
+    painter.hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, Tokens::border()),
+    );
+}
+
+/// One recent drawing: its thumbnail (a blank page when it has none), its
+/// name and folder, in a table also its size and last edit; a missing
+/// file is greyed out. While the pointer is on the row an x at its right
+/// takes it off the list, as does Remove from List in its right-click
+/// menu (#1152).
+fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path, look: &RowLook) -> RecentAction {
     const ROW: egui::Vec2 = RECENT_ROW;
-    const THUMB: egui::Vec2 = egui::vec2(64.0, 48.0);
-    const X: f32 = 20.0;
+    const THUMB: egui::Vec2 = RECENT_THUMB;
+    const X: f32 = RECENT_X;
     // Asked of the disk on a worker thread: a drawing on a share that does
     // not answer never holds the window (#1388).
     let exists = crate::file_presence::exists(path, Some(ui.ctx()));
@@ -373,8 +450,12 @@ fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> RecentActio
     } else {
         None
     };
-    // No wider than the room (a phone's page).
-    let row = egui::vec2(ROW.x.min(ui.available_width().max(THUMB.x + 40.0)), ROW.y);
+    // No wider than the room (a phone's page); a table takes it all.
+    let row = if look.table {
+        egui::vec2(ui.available_width().max(ROW.x), ROW.y)
+    } else {
+        egui::vec2(ROW.x.min(ui.available_width().max(THUMB.x + 40.0)), ROW.y)
+    };
     let (rect, _) = ui.allocate_exact_size(row, egui::Sense::hover());
     let resp = ui.interact(rect, recent_row_id(path), egui::Sense::click());
     let on_row = ui.rect_contains_pointer(rect);
@@ -417,24 +498,64 @@ fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> RecentActio
     } else {
         Tokens::text_dim()
     };
-    // The texts stop short of the x.
-    let clip =
-        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right() - X - 8.0, rect.bottom()));
-    let texts = painter.with_clip_rect(clip);
-    texts.text(
-        egui::pos2(text_x, frame.top() + 6.0),
-        egui::Align2::LEFT_TOP,
-        name,
-        egui::FontId::proportional(13.0),
-        color,
-    );
-    texts.text(
-        egui::pos2(text_x, frame.top() + 26.0),
-        egui::Align2::LEFT_TOP,
-        folder,
-        egui::FontId::proportional(11.0),
-        Tokens::text_dim(),
-    );
+    if look.table {
+        // Each text kept to its column; size and date as the disk last
+        // said (read on the worker thread that checks the file is
+        // there), empty for a missing file.
+        let info = exists
+            .then(|| crate::file_presence::info(path))
+            .flatten()
+            .unwrap_or_default();
+        let size = info
+            .size
+            .map(|b| crate::export::human_size(usize::try_from(b).unwrap_or(usize::MAX)))
+            .unwrap_or_default();
+        let date = info
+            .modified
+            .map(|t| crate::time_tracker::date_time(t, look.tz))
+            .unwrap_or_default();
+        let cells = [
+            (name, 13.0, color),
+            (folder, 11.0, Tokens::text_dim()),
+            (size, 11.0, Tokens::text_dim()),
+            (date, 11.0, Tokens::text_dim()),
+        ];
+        for ((text, size, c), (x, w)) in cells
+            .into_iter()
+            .zip(table_columns(rect.left(), rect.right()))
+        {
+            let clip = egui::Rect::from_min_max(
+                egui::pos2(x, rect.top()),
+                egui::pos2(x + w - 6.0, rect.bottom()),
+            );
+            painter.with_clip_rect(clip).text(
+                egui::pos2(x, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                text,
+                egui::FontId::proportional(size),
+                c,
+            );
+        }
+    } else {
+        // The texts stop short of the x.
+        let clip =
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.right() - X - 8.0, rect.bottom()));
+        let texts = painter.with_clip_rect(clip);
+        texts.text(
+            egui::pos2(text_x, frame.top() + 6.0),
+            egui::Align2::LEFT_TOP,
+            name,
+            egui::FontId::proportional(13.0),
+            color,
+        );
+        texts.text(
+            egui::pos2(text_x, frame.top() + 26.0),
+            egui::Align2::LEFT_TOP,
+            folder,
+            egui::FontId::proportional(11.0),
+            Tokens::text_dim(),
+        );
+    }
     let mut action = RecentAction::None;
     // The x shows only while the pointer is on the row; added after the
     // row, it takes the click before the row does.
@@ -684,6 +805,83 @@ mod tests {
             egui::Shape::Text(t) if t.galley.text() == title => Some(t.pos.y),
             _ => None,
         })
+    }
+
+    /// #1675: with room, the recent documents are a table across the
+    /// window under a header (name, location, size, last edit), the size
+    /// and date read from the disk off the window's thread; a missing
+    /// file shows neither.
+    #[test]
+    fn the_recent_documents_are_a_table_with_size_and_date() {
+        if crate::files::WEB {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("td-recent-table-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let here = dir.join("here.tdraw");
+        std::fs::write(&here, vec![0u8; 3000]).expect("write");
+        let gone = dir.join("gone.tdraw");
+        let mut app = App::headless();
+        app.show_welcome = true;
+        app.welcome_tab = WelcomeTab::GetStarted;
+        app.settings.recent_files = vec![here.clone(), gone.clone()];
+        let ctx = crate::theme::ui_context();
+        let texts = |ctx: &egui::Context, app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| welcome_screen(app, ui));
+            });
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+        };
+        let size = crate::export::human_size(3000);
+        let mut shown = Vec::new();
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            shown = texts(&ctx, &mut app);
+            if shown.contains(&size) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for key in [
+            "welcome.col_name",
+            "welcome.col_location",
+            "welcome.col_size",
+            "welcome.col_modified",
+        ] {
+            assert!(shown.contains(&tr(key)), "{key} heads a column");
+        }
+        assert!(shown.contains(&size), "the size: {shown:?}");
+        let info = crate::file_presence::info(&here).expect("read");
+        let date = crate::time_tracker::date_time(
+            info.modified.expect("a date"),
+            &jiff::tz::TimeZone::system(),
+        );
+        assert!(shown.contains(&date), "the last edit {date}: {shown:?}");
+        assert_eq!(crate::file_presence::info(&gone), None);
+        // The rows take the window's width, past the narrow list's.
+        let row = ctx
+            .read_response(recent_row_id(&here))
+            .expect("the row")
+            .rect;
+        assert!(row.width() > 600.0, "{row:?}");
+        // The size and date stand in their columns, right of the name.
+        let cols = table_columns(row.left(), row.right());
+        assert!(cols[2].0 > cols[1].0 && cols[3].0 > cols[2].0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #1288: recent documents below the window are reached with the

@@ -23,6 +23,7 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
 
 ## Lo más destacado de las últimas versiones {#highlights}
 
+- **Trayectorias CNC, exportación y selección.** [[menu.tools > menu.tools.tracecut]] genera G-code para una fresadora CNC y dibuja ojales, cajas con uniones de dedos y bandejas plegadas; [[menu.file > menu.file.export]] pide primero el archivo y luego muestra las opciones del formato, y [[menu.file > menu.file.export_with_options]] las muestra siempre; [[menu.edit > menu.edit.select_similar]] e [[menu.edit > menu.edit.invert_selection]] cambian la selección; [[menu.object > menu.object.insert > menu.object.add_dimensions]] acota la selección; los rellenos procedurales, los botones OpenType y la interfaz en lao son nuevos.
 - **Páginas enfrentadas y texto vinculado.** [[menu.layout > menu.layout.facing_pages]] muestra las páginas una junto a otra en pliegos; [[menu.text > menu.text.link_content]] vincula textos para que escribir en uno cambie los demás; un PDF de varias páginas pregunta qué páginas importar; [[menu.edit > menu.edit.step_and_repeat]] puede llenar una página de copias.
 - **Táctil y teléfonos.** Los botones Mayús, Ctrl y Alt de la barra estándar
   quedan pulsados para un dedo; en Android la interfaz se aparta de la muesca

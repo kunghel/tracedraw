@@ -17,7 +17,8 @@ páginas para novos desenhos.
 - [[options.rendering_resolution]]: a resolução dos efeitos que viram pixels,
   como sombras e efeitos de bitmap.
 - [[options.fill_open_curves]] (desativado de início): ativado, as curvas
-  abertas mostram o preenchimento como se fossem fechadas.
+  abertas mostram o preenchimento como se fossem fechadas. Uma elipse
+  transformada em arco também é uma curva aberta.
 - [[options.auto_inflate_bitmaps]] (ativado de início): os bitmaps crescem para
   dar espaço a efeitos que passam das bordas.
 - [[options.duplicate_offset]]: a que distância [[menu.edit.duplicate]] coloca a

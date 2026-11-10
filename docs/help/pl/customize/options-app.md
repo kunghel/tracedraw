@@ -28,7 +28,7 @@ określa sposób działania programu. Wybierz stronę z listy po lewej stronie.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (domyślnie),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] lub
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] lub
   [[options.open_view_saved]] (strona, miejsce i powiększenie zapamiętane
   przy każdym zapisie pliku TraceDraw).
 - [[options.ruler_calibration]]: przyłóż linijkę do ekranu i zmieniaj wartość

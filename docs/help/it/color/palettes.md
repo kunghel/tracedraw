@@ -68,8 +68,9 @@ l'editor delle tavolozze.
 2. Digita il suo [[dialog.name]].
 3. Fai clic su un colore per selezionarlo; [[dialog.add_color]] aggiunge il
    colore corrente e [[dialog.remove_color]] rimuove quello selezionato.
-4. Fai clic su [[dialog.save_palette]] per salvarla come file.
-5. Fai clic su [[dialog.close]].
+4. Spunta [[dialog.spot_color]] per rendere il colore selezionato un colore spot: un inchiostro con nome stampato su una lastra propria. Le esportazioni PDF lo mantengono come inchiostro separato.
+5. Fai clic su [[dialog.save_palette]] per salvarla come file.
+6. Fai clic su [[dialog.ok]].
 
 Le tavolozze integrate non possono essere modificate; crea una nuova
 tavolozza o modificane una copia.

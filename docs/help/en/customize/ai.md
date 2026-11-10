@@ -18,7 +18,9 @@ On the **Service** page, set up one AI service for every AI feature:
    OpenCode Go, or a model server on your computer (Ollama, LM Studio,
    llama.cpp server, vLLM). A preset fills in
    the kind of service and the address; **Custom** takes any address that
-   speaks the same language as OpenAI's chat completions.
+   speaks the same language as OpenAI's chat completions. An address of the
+   server alone, such as `http://localhost:8787`, or one ending in `/v1`, gets
+   the rest of the service's path by itself.
 2. Type the **API key** of your account with that service (local servers need
    none). Tick **Remember the key on this computer** to keep it; it is then
    stored in plain text in your preferences.
@@ -26,6 +28,10 @@ On the **Service** page, set up one AI service for every AI feature:
    pictures (OpenAI, Google Gemini, or a custom address with an image model).
 4. Click [[aiui.test]]. It asks the service for its models and says how many it
    has, or shows its error.
+
+For the Anthropic service, **Longest reply** (32000 tokens at first) is the
+most a reply may have. A detailed drawing needs a long reply; when one is cut
+short, raise it, up to what the model allows.
 
 **Show the prompt bar** puts the AI prompt bar above the color palette.
 

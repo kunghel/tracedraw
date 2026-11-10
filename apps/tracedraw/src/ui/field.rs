@@ -544,16 +544,6 @@ pub fn scale_web_scroll(ctx: &egui::Context) {
     }
 }
 
-/// The scale [`scale_web_scroll`] gave this frame's smoothed scroll: 1
-/// on the desktop.
-pub fn web_scroll_factor(ctx: &egui::Context) -> f32 {
-    if !web_wheel() {
-        return 1.0;
-    }
-    ctx.data(|d| d.get_temp::<f32>(web_scroll_scale_id()))
-        .unwrap_or(1.0)
-}
-
 /// The notches one wheel event of `delta` raw units turns, up positive,
 /// in the units the desktop (`web` false) or the browser reports: an
 /// event of a notch or more is one notch whatever its size, a smaller one

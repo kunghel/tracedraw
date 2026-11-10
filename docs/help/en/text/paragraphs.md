@@ -20,6 +20,16 @@ an inch); [[options.default_tab_spacing]] in the Options changes that.
 A right stop ends the text after the tab at the stop, so prices line up
 on their right; a decimal stop lines up their decimal points.
 
+The Paragraph section of the [[docker.text]] panel shows the paragraph's tab
+stops too, and its **Tabs...** button opens this dialog box.
+
+While you type in a paragraph frame, a ruler runs along its top edge. Click
+it to add a left stop, drag a stop to move it, drag it off the ruler to
+remove it, or right-click to choose its alignment. The two small triangles
+along the ruler's upper edge are the left and right indents of the
+paragraph: drag them to move where its lines start and end. Each change
+undoes in one step.
+
 ![The Tabs dialog box](../../img/text-paragraphs-tabs.png)
 
 ## Columns {#columns}

@@ -74,3 +74,12 @@ mover. No espaço de trabalho [[menu.window.workspace_touch]], dois dedos
 movem a vista e a pinça aproxima. Para a pressão da caneta em sistemas de
 computador, veja
 [Desenhar com uma mesa digitalizadora](../lines-shapes/pen-pressure.md).
+Toque o desenho com dois dedos juntos para desfazer, com três para refazer;
+uma pinça ou um arrasto da vista, que se movem, não fazem nenhum dos dois.
+
+Shift, Ctrl, Alt e Delete flutuam sobre o canto inferior esquerdo do desenho:
+um toque em Shift, Ctrl ou Alt mantém essa tecla pressionada até você tocar
+nela de novo (ela aparece pressionada enquanto isso), assim um toque
+acrescenta à seleção com Shift, e Delete exclui o que está selecionado.
+[[options.touch_keys]] na página Exibição das opções mostra ou esconde as
+teclas.

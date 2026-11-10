@@ -585,13 +585,27 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
         }
 
         Tool::Transparency => {
-            // A circle filled with a fade from ink at the left to nothing
-            // at the right, the node to handle gradient bar across it.
-            pen.fade_circle(12.0, 12.0, 8.0, ink, Color32::TRANSPARENT);
-            pen.circle(12.0, 12.0, 8.0, Color32::TRANSPARENT, LINE, ink);
-            pen.thin("M6 18L18 6", acc);
-            pen.node(6.0, 18.0, true);
-            pen.handle(18.0, 6.0, 1.75);
+            // The see-through checkerboard: a square of four by four
+            // cells on whole units, its dark cells fading in steps from
+            // solid ink at the top left to faint at the bottom right, the
+            // live node on that corner. No smooth fade and no handle bar,
+            // so it is not taken for the fill tools (#1682).
+            for (row, col) in transparency_cells() {
+                let x = 4.0 + 4.0 * col as f32;
+                let y = 4.0 + 4.0 * row as f32;
+                pen.rect(
+                    x,
+                    y,
+                    4.0,
+                    4.0,
+                    0.0,
+                    a(transparency_alpha(row, col)),
+                    0.0,
+                    ink,
+                );
+            }
+            pen.rect(4.0, 4.0, 16.0, 16.0, 1.0, Color32::TRANSPARENT, LINE, ink);
+            pen.node(20.0, 20.0, true);
         }
 
         // Eyedropper group: the diagonal pipette with the drop drawn
@@ -1157,6 +1171,20 @@ pub fn draw_action(painter: &Painter, r: Rect, a: Action, color: Color32) {
     }
 }
 
+/// The dark cells of the Transparency icon's checkerboard (row, column),
+/// four by four, the top left one dark.
+fn transparency_cells() -> impl Iterator<Item = (usize, usize)> {
+    (0..4usize)
+        .flat_map(|r| (0..4usize).map(move |c| (r, c)))
+        .filter(|(r, c)| (r + c) % 2 == 0)
+}
+
+/// How much ink a dark cell of the Transparency icon takes: solid at
+/// the top left, fading by diagonal steps to 15 % at the bottom right.
+fn transparency_alpha(row: usize, col: usize) -> f32 {
+    1.0 - (row + col) as f32 / 6.0 * 0.85
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,6 +1264,84 @@ mod tests {
             egui::Shape::Mesh(m) => out.extend(m.vertices.iter().map(|v| v.color)),
             egui::Shape::Vec(v) => v.iter().for_each(|s| colors(s, out)),
             _ => {}
+        }
+    }
+
+    /// The shapes `draw` adds for `tool` in a box `size` points wide at
+    /// `ppp` pixels per point.
+    fn shapes_at(tool: Tool, color: Color32, size: f32, ppp: f32) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(ppp);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(size + 20.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let r = Rect::from_min_size(Pos2::new(4.0, 4.0), Vec2::splat(size));
+            draw(ui.painter(), r, tool, color);
+        });
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    /// The Transparency tool's icon was a disc fading like a gradient
+    /// with a node-to-handle bar, and was taken for the fill tools
+    /// (#1682). At every icon size it is now a checkerboard of filled
+    /// cells fading in steps, with no gradient mesh, unlike the
+    /// Interactive Fill icon.
+    #[test]
+    fn the_transparency_icon_is_a_fading_checkerboard_unlike_the_fill_icon() {
+        crate::theme::set_theme(crate::theme::Theme::Light);
+        let ink = Tokens::icon();
+        let signature = |shapes: &[egui::Shape]| -> Vec<String> {
+            shapes
+                .iter()
+                .map(|s| format!("{:?}", s.visual_bounding_rect()))
+                .collect()
+        };
+        for ppp in [1.0, 2.0] {
+            for size in [15.0, 16.0, 20.0, 22.0, 24.0, 32.0, 40.0] {
+                let t = shapes_at(Tool::Transparency, ink, size, ppp);
+                let f = shapes_at(Tool::InteractiveFill, ink, size, ppp);
+                assert_ne!(signature(&t), signature(&f), "{size} px at {ppp}x");
+                assert!(
+                    !t.iter().any(|s| matches!(s, egui::Shape::Mesh(_))),
+                    "no gradient fan at {size} px"
+                );
+                // The dark cells: ink rectangles, each at least two
+                // physical pixels wide, in at least four steps of ink.
+                let cells: Vec<&epaint::RectShape> = t
+                    .iter()
+                    .filter_map(|s| match s {
+                        egui::Shape::Rect(r)
+                            if r.fill.a() > 0
+                                && r.fill != accent()
+                                && r.rect.width() > size * 3.5 / 24.0
+                                && r.rect.width() < size / 3.0 =>
+                        {
+                            Some(r)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(cells.len() >= 8, "{} cells at {size} px", cells.len());
+                for c in &cells {
+                    assert!(
+                        c.rect.width() * ppp >= 2.0 && c.rect.height() * ppp >= 2.0,
+                        "a cell under two pixels at {size} px: {:?}",
+                        c.rect
+                    );
+                }
+                let mut alphas: Vec<u8> = cells.iter().map(|c| c.fill.a()).collect();
+                alphas.sort_unstable();
+                alphas.dedup();
+                assert!(alphas.len() >= 4, "fading in steps: {alphas:?}");
+                // The cells sit inside the frame, top left the darkest.
+                let darkest = cells.iter().max_by_key(|c| c.fill.a()).expect("cells");
+                let faintest = cells.iter().min_by_key(|c| c.fill.a()).expect("cells");
+                assert!(darkest.rect.center().x < faintest.rect.center().x);
+                assert!(darkest.rect.center().y < faintest.rect.center().y);
+            }
         }
     }
 

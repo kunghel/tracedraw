@@ -131,6 +131,8 @@ impl App {
         std::mem::swap(self.raster.get_mut(), &mut slot.raster);
         std::mem::swap(self.page_rasters.get_mut(), &mut slot.page_rasters);
         std::mem::swap(&mut self.view_anchor, &mut slot.view_anchor);
+        // Selection steps belong to the window they were made in.
+        self.selection_steps.clear();
         // Measured in another window.
         *self.visual_cache.get_mut() = (u64::MAX, Default::default());
     }
@@ -549,6 +551,19 @@ impl App {
         } else {
             name
         }
+    }
+
+    /// The engine of the drawing tab `i` shows (the active one's is
+    /// [`App::engine`], a parked one's sits in its slot or in the slot of
+    /// the window holding its drawing).
+    pub fn tab_engine(&self, i: usize) -> Option<&Engine> {
+        let drawing = self.docs.get(i)?.drawing;
+        let active = self.docs.get(self.active_doc).map(|d| d.drawing);
+        Some(match self.holder(i) {
+            Some(h) => &self.docs[h].engine,
+            None if active == Some(drawing) => &self.engine,
+            None => &self.docs[i].engine,
+        })
     }
 
     /// Indices of the open drawings with unsaved changes.

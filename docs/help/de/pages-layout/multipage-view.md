@@ -27,6 +27,24 @@ units. [[options.page_spacing]] on the Layout page of
 saved with the drawing, [[menu.edit.undo]] puts the previous one back, and
 **Save as default** in the document options keeps it for new drawings.
 
+## Die Seiten wählen {#choose-pages}
+
+Bei vielen Seiten, oder um nur einige zu vergleichen, wählen Sie, welche
+Seiten die Ansicht zeigt: [[menu.view > menu.view.multipage_pages]] oder die
+Schaltfläche mit zwei Seiten und einem Häkchen in der Seitenleiste, gleich nach
+der Schaltfläche der Mehrseitenansicht (hervorgehoben, solange ein
+Seitenbereich gewählt ist). Wählen Sie im Dialogfeld
+[[dialog.multipage_all_pages]] oder [[dialog.multipage_some_pages]] und geben
+Sie Seitennummern und Bereiche durch Kommas getrennt ein, etwa `1-3, 7`. Das
+Dialogfeld zeigt, wie viele Seiten das sind; ein Bereich ohne Seite der
+Zeichnung wird nicht übernommen. **OK** schaltet die Ansicht mit diesen Seiten
+ein, in Seitenreihenfolge im Raster zusammengerückt.
+
+Die aktuelle Seite wird immer gezeigt: Eine Seite, zu der Sie mit den
+Seitenregistern oder dem Navigator wechseln, kommt hinzu, solange sie aktuell
+ist. Die gewählten Seiten werden wie der Seitenabstand mit der Zeichnung
+gespeichert, und [[menu.edit.undo]] stellt die vorige Wahl wieder her.
+
 ## In der Mehrseitenansicht arbeiten {#working}
 
 - Die aktuelle Seite wird wie gewohnt bearbeitet: Lineale, Hilfslinien, Gitter

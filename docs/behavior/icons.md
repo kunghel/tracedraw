@@ -85,7 +85,7 @@ tool is drawn from, by group:
 | Dimension | the measured edge in ink and the dimension line with ticks in blue (parallel, horizontal and vertical, the angle's arc, one segment of a path); a callout box with its tail ending in a node |
 | Connector | two boxes joined by a blue link with round anchors (curved, right-angled, rounded); a box with its anchors, the live one under the pointer |
 | Effects | an opaque box with a solid blue shadow offset behind it; a triangle with two offset outlines fading outward; a square morphing into a blue circle; a square with bowed sides and the corner pulled; a wavy box with four live corners; the extrusion's blue depth faces; a circle with a solid blue block behind it |
-| Transparency | a circle filled with ink fading to nothing, the blue node-to-handle bar across it |
+| Transparency | the see-through checkerboard: a square of four by four cells, its ink cells fading in steps from solid at the top left to faint at the bottom right, the node on that corner; no smooth fade and no handle bar, so it is not taken for the fill tools (#1682) |
 | Eyedropper | the diagonal pipette with the drop drawn into its tip, over a swatch or with a property card |
 | Fill | a tilted pail holding blue paint, a drop at its lip; two rings with the lens filled; a curved mesh with four handles and the live node |
 | Outline | a ring with a thick blue outline segment ending in a node (Outline Pen); the ring with a colour swatch (Outline Colour) |
@@ -96,6 +96,10 @@ tool is drawn from, by group:
   draws shapes that stay inside its box and fill most of it.
 - `ui::icons::tests::the_accent_marks_the_live_point_and_dimmed_icons_stay_plain`.
 - `ui::icons::tests::coloured_icons_follow_the_toolbox_groups_and_can_be_off`.
+- `ui::icons::tests::the_transparency_icon_is_a_fading_checkerboard_unlike_the_fill_icon`:
+  at every icon size (15 to 40 px, 1x and 2x) the Transparency icon is
+  a checkerboard of cells two pixels or more, fading in steps, with no
+  gradient, and differs from the Interactive Fill icon.
 - `ui::icon_paint::tests`: the path syntax (numbers, relative and
   implicit commands, arcs), the triangulation of concave shapes, the
   ribbons.

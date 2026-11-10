@@ -90,26 +90,55 @@ pub fn facing_layout(
     gap: f64,
     start: PageSide,
 ) -> Vec<(PageId, Rect)> {
+    let all: Vec<usize> = (0..pages.len()).collect();
+    facing_layout_of(pages, &all, active, gap, start)
+}
+
+/// [`facing_layout`] of the pages at `keep` (indices into `pages`, in
+/// order) only, as the Multipage View shows a range of pages (#1440):
+/// each page keeps its side of the spine, and the spreads they are in
+/// follow each other with no room left for the spreads not shown.
+pub fn facing_layout_of(
+    pages: &[(PageId, Size)],
+    keep: &[usize],
+    active: PageId,
+    gap: f64,
+    start: PageSide,
+) -> Vec<(PageId, Rect)> {
     let gap = if gap.is_finite() { gap.max(0.0) } else { 0.0 };
-    let n = pages.len();
+    let kept: Vec<(usize, PageId, Size)> = keep
+        .iter()
+        .filter_map(|&i| pages.get(i).map(|(id, size)| (i, *id, *size)))
+        .collect();
+    let n = kept.len();
     if n == 0 {
         return Vec::new();
     }
-    let slot = pages
+    let slot = kept
         .iter()
-        .map(|(_, s)| s.width.max(0.0))
+        .map(|(_, _, s)| s.width.max(0.0))
         .fold(0.0f64, f64::max);
-    let row_of = |i: usize| spreads::spread_number(i, start) / SPREAD_COLUMNS;
-    let rows = row_of(n - 1) + 1;
+    // The spreads shown, numbered from 0 in order.
+    let mut shown: Vec<usize> = kept
+        .iter()
+        .map(|(i, _, _)| spreads::spread_number(*i, start))
+        .collect();
+    shown.dedup();
+    let spread_of = |i: usize| {
+        let k = spreads::spread_number(i, start);
+        shown.iter().position(|s| *s == k).unwrap_or(0)
+    };
+    let row_of = |i: usize| spread_of(i) / SPREAD_COLUMNS;
+    let rows = kept.last().map(|(i, _, _)| row_of(*i)).unwrap_or(0) + 1;
     let mut row_h = vec![0.0f64; rows];
-    for (i, (_, size)) in pages.iter().enumerate() {
-        if let Some(h) = row_h.get_mut(row_of(i)) {
+    for (i, _, size) in &kept {
+        if let Some(h) = row_h.get_mut(row_of(*i)) {
             *h = h.max(size.height.max(0.0));
         }
     }
     let mut placed: Vec<(PageId, Rect)> = Vec::with_capacity(n);
-    for (i, (id, size)) in pages.iter().enumerate() {
-        let k = spreads::spread_number(i, start);
+    for &(i, id, size) in &kept {
+        let k = spread_of(i);
         let (r, c) = (k / SPREAD_COLUMNS, k % SPREAD_COLUMNS);
         let spine = c as f64 * (2.0 * slot + gap) + slot;
         let top: f64 = -(row_h.iter().take(r).sum::<f64>() + r as f64 * gap);
@@ -119,7 +148,7 @@ pub fn facing_layout(
             PageSide::Left => spine - w,
             PageSide::Right => spine,
         };
-        placed.push((*id, Rect::new(x0, top - h, x0 + w, top)));
+        placed.push((id, Rect::new(x0, top - h, x0 + w, top)));
     }
     let (dx, dy) = placed
         .iter()
@@ -149,14 +178,43 @@ pub fn bounds(placed: &[(PageId, Rect)]) -> Option<Rect> {
 }
 
 impl App {
+    /// The pages the Multipage View shows (indices, in page order): the
+    /// drawing's range of pages (#1440), or every page, and the current
+    /// page always, so it can be edited.
+    pub fn multipage_page_indices(&self) -> Vec<usize> {
+        let doc = self.doc();
+        let n = doc.pages.len();
+        match doc.metadata.multipage_page_indices(n) {
+            Some(mut keep) => {
+                let current = self.page_index();
+                if current < n && !keep.contains(&current) {
+                    keep.push(current);
+                    keep.sort_unstable();
+                }
+                keep
+            }
+            None => (0..n).collect(),
+        }
+    }
+
     /// The grid of pages around the current one (in spreads with facing
-    /// pages).
+    /// pages): the pages the Multipage View shows.
     pub fn multipage_layout(&self) -> Vec<(PageId, Rect)> {
+        self.pages_layout(&self.multipage_page_indices())
+    }
+
+    /// The grid of the pages at `keep` (indices in page order).
+    fn pages_layout(&self, keep: &[usize]) -> Vec<(PageId, Rect)> {
         let doc = self.doc();
         let pages: Vec<(PageId, Size)> = doc.pages.iter().map(|p| (p.id, p.size)).collect();
+        let gap = doc.metadata.page_spacing();
         match doc.facing() {
-            Some(start) => facing_layout(&pages, self.page, doc.metadata.page_spacing(), start),
-            None => layout(&pages, self.page, doc.metadata.page_spacing()),
+            Some(start) => facing_layout_of(&pages, keep, self.page, gap, start),
+            None => {
+                let kept: Vec<(PageId, Size)> =
+                    keep.iter().filter_map(|&i| pages.get(i).copied()).collect();
+                layout(&kept, self.page, gap)
+            }
         }
     }
 
@@ -175,8 +233,9 @@ impl App {
                 .filter_map(|i| doc.pages.get(i).map(|p| p.id))
                 .collect();
             if ids.len() > 1 {
+                let all: Vec<usize> = (0..doc.pages.len()).collect();
                 return self
-                    .multipage_layout()
+                    .pages_layout(&all)
                     .into_iter()
                     .filter(|(id, _)| ids.contains(id))
                     .collect();
@@ -255,7 +314,60 @@ impl App {
         true
     }
 
-    /// Turn the Multipage View on or off; turning it on shows every page.
+    /// View > Pages in Multipage View and the page bar's button next to
+    /// the Multipage View's (#1440): the pages the view shows, as a range
+    /// of page numbers ("1-3, 7"), empty for every page. Saved with the
+    /// drawing like the page spacing, one undo step; the view fits the
+    /// pages anew. False when nothing changed or the range names no page
+    /// of the drawing.
+    pub fn set_multipage_pages(&mut self, range: &str) -> bool {
+        if !self.has_document() {
+            return false;
+        }
+        let range = range.trim();
+        let count = self.doc().pages.len();
+        if !range.is_empty() && tracedraw_core::document::parse_page_range(range, count).is_empty()
+        {
+            return false;
+        }
+        if self.doc().metadata.multipage_pages == range {
+            return false;
+        }
+        let mut metadata = self.doc().metadata.clone();
+        metadata.multipage_pages = range.to_string();
+        self.run(tracedraw_core::Command::SetMetadata { metadata });
+        // The current page among the chosen ones, so they show together.
+        if let Some(chosen) = self.doc().metadata.multipage_page_indices(count) {
+            if !chosen.contains(&self.page_index()) {
+                if let Some(id) = chosen
+                    .first()
+                    .and_then(|i| self.doc().pages.get(*i))
+                    .map(|p| p.id)
+                {
+                    self.page = id;
+                    self.selection.clear();
+                }
+            }
+        }
+        self.page_rasters.borrow_mut().clear();
+        if self.multipage {
+            self.fit_pending = true;
+        }
+        true
+    }
+
+    /// The dialog choosing the Multipage View's pages, filled in with the
+    /// drawing's range.
+    pub fn multipage_pages_dialog(&self) -> crate::ui::dialogs::Dialog {
+        let range = self.doc().metadata.multipage_pages.clone();
+        crate::ui::dialogs::Dialog::MultipagePages {
+            all: range.is_empty(),
+            range,
+        }
+    }
+
+    /// Turn the Multipage View on or off; turning it on shows the pages
+    /// chosen for it (every page at first).
     pub fn set_multipage(&mut self, on: bool) {
         self.multipage = on;
         if !on {
@@ -280,6 +392,23 @@ impl App {
             .find(|(id, _)| *id == page)
             .map(|(_, r)| r)
         else {
+            // A page left out of the Multipage View's range (#1440): it
+            // shows while it is current; the page that was current stays
+            // where it is on screen if it still shows, else the view fits.
+            if self.multipage && self.doc().pages.iter().any(|p| p.id == page) {
+                let before = self.page;
+                self.page = page;
+                match self.shown_pages().into_iter().find(|(id, _)| *id == before) {
+                    Some((_, old)) => {
+                        let z = self.view.zoom;
+                        self.view.origin -= egui::vec2(old.x0 as f32 * z, -(old.y0 as f32) * z);
+                    }
+                    None => self.fit_pending = true,
+                }
+                self.selection.clear();
+                self.focus.clear();
+                self.picked_layer = None;
+            }
             return;
         };
         self.view.origin = self
@@ -309,17 +438,29 @@ impl App {
         if facing && self.hit_test(p).is_some() {
             return false;
         }
-        let target = match under {
-            Some(id) if id != self.page => Some(id),
-            _ if facing => self.spread_object_page_at(&shown, p),
-            // Off every page, or on the current page where it has no
-            // object: an object of another page lying there (one left on
-            // the desktop beside its page) makes its page current, so the
-            // press then picks it instead of doing nothing (#2055).
-            _ if self.multipage && self.hit_test(p).is_none() => {
-                self.shown_object_page_at(&shown, p)
+        let target = if facing {
+            match under {
+                Some(id) if id != self.page => Some(id),
+                _ => self.spread_object_page_at(&shown, p).or_else(|| {
+                    self.multipage
+                        .then(|| self.shown_object_page_at(&shown, p))
+                        .flatten()
+                }),
             }
-            _ => None,
+        } else {
+            // What shows at the press is picked where it is, whatever
+            // page holds it (#2055). The current page's objects are drawn
+            // over the other pages', so one of them there keeps the page,
+            // even over another page's paper or off every page; else an
+            // object of another page there (one left on the desktop
+            // beside its page, or reaching over the current page) makes
+            // its page current, so the press then picks it; else another
+            // page's paper makes that page current.
+            if self.hit_test(p).is_some() {
+                return false;
+            }
+            self.shown_object_page_at(&shown, p)
+                .or(under.filter(|id| *id != self.page))
         };
         match target {
             Some(id) => {
@@ -330,15 +471,19 @@ impl App {
         }
     }
 
-    /// Another shown page whose visible object lies at `p` (the current
-    /// page's coordinates), going by the objects' boxes; the pages in
-    /// their drawing order, so the frontmost page's object wins (#2055).
+    /// Another shown page with a visible object that the press at `p`
+    /// (the current page's coordinates) picks, on its page or off it: the
+    /// object itself is hit, as the current page's objects are, not its
+    /// box, so a press in the empty part of a wide object's box over
+    /// another page goes to that page (#2055). The pages in reverse
+    /// drawing order, so the frontmost page's object wins.
     fn shown_object_page_at(
         &self,
         shown: &[(PageId, Rect)],
         p: tracedraw_core::geometry::Point,
     ) -> Option<PageId> {
         let doc = self.doc();
+        let tol = self.object_pick_tol();
         shown
             .iter()
             .rev()
@@ -350,13 +495,35 @@ impl App {
                     .iter()
                     .filter(|l| l.visible && !l.locked)
                     .flat_map(|l| l.shapes.iter())
-                    .filter(|sh| sh.visible)
+                    .filter(|sh| sh.visible && !sh.locked)
                     .any(|sh| {
-                        let b = sh.visual_bounds();
-                        q.x >= b.x0 && q.x <= b.x1 && q.y >= b.y0 && q.y <= b.y1
+                        let b = sh.visual_bounds().inflate(tol, tol);
+                        q.x >= b.x0
+                            && q.x <= b.x1
+                            && q.y >= b.y0
+                            && q.y <= b.y1
+                            && self.shape_hit(sh, q, tol)
                     })
             })
             .map(|(page, _)| page.id)
+    }
+
+    /// What the visible objects on the visible layers of `page` cover, in
+    /// the page's own coordinates, with their outlines and effects; `None`
+    /// for a page with nothing to show. The Multipage View draws another
+    /// page's objects over this and the paper, so the ones it holds off
+    /// its page show too (#2055).
+    pub fn page_content_bounds(&self, page: PageId) -> Option<Rect> {
+        let doc = self.doc();
+        let page = doc.page(page).ok()?;
+        page.layers
+            .iter()
+            .filter(|l| l.visible)
+            .flat_map(|l| l.shapes.iter())
+            .filter(|s| s.visible)
+            .map(|s| s.visual_bounds())
+            .filter(|b| b.is_finite() && b.width() >= 0.0 && b.height() >= 0.0)
+            .reduce(|a, b| a.union(b))
     }
 
     /// Another page of the current spread whose visible object lies at
@@ -463,9 +630,10 @@ pub fn render_rect(paper: ERect, canvas: ERect) -> ERect {
     }
 }
 
-/// The pages other than the current one on the desktop, on screen
-/// (rounded to pixels), with their index in the drawing.
-fn other_papers(app: &App, rect: ERect) -> Vec<(usize, PageId, Rect, ERect)> {
+/// The pages on the desktop, on screen (rounded to pixels), with their
+/// index in the drawing: those whose paper shows in `rect`, or all of
+/// them (`rect` `None`).
+fn other_papers(app: &App, rect: Option<ERect>) -> Vec<(usize, PageId, Rect, ERect)> {
     let doc = app.doc();
     app.shown_pages()
         .into_iter()
@@ -473,9 +641,7 @@ fn other_papers(app: &App, rect: ERect) -> Vec<(usize, PageId, Rect, ERect)> {
             let index = doc.pages.iter().position(|p| p.id == id)?;
             let paper = app.view.rect_to_screen(r);
             let paper = ERect::from_min_max(paper.min.round(), paper.max.round());
-            paper
-                .expand(30.0)
-                .intersects(rect)
+            rect.is_none_or(|rect| paper.expand(30.0).intersects(rect))
                 .then_some((index, id, r, paper))
         })
         .collect()
@@ -488,7 +654,7 @@ fn other_papers(app: &App, rect: ERect) -> Vec<(usize, PageId, Rect, ERect)> {
 /// [`draw_other_pages`]), so an object of theirs that reaches over the
 /// spine shows on the current page too (#1972).
 pub fn draw_other_papers(app: &App, painter: &Painter, rect: ERect) {
-    let papers: Vec<ERect> = other_papers(app, rect)
+    let papers: Vec<ERect> = other_papers(app, Some(rect))
         .into_iter()
         .filter(|(_, id, _, _)| *id != app.page)
         .map(|(_, _, _, paper)| paper)
@@ -524,7 +690,9 @@ pub fn draw_other_pages(
     started: web_time::Instant,
     rendered: bool,
 ) {
-    let placed = other_papers(app, rect);
+    // Every page: one whose paper is off the screen may hold objects off
+    // it that show (#2055).
+    let placed = other_papers(app, None);
     let doc = app.doc();
     let ctx = painter.ctx();
     let facing = doc.facing().is_some();
@@ -545,13 +713,33 @@ pub fn draw_other_pages(
             } else {
                 paper
             };
+            let view = View {
+                zoom: app.view.zoom,
+                origin: paper.left_bottom(),
+            };
+            let raster = rasters.entry(id).or_default();
+            // With the objects the page holds off its paper, which showed
+            // only while the page was current, so they seemed to vanish
+            // when another page became current (#2055). Measured once a
+            // change of the drawing.
+            let revision = app.engine.revision();
+            let content = match raster.content {
+                Some((r, c)) if r == revision => c,
+                _ => {
+                    let c = app.page_content_bounds(id);
+                    raster.content = Some((revision, c));
+                    c
+                }
+            };
+            let area = match content {
+                Some(b) => {
+                    let r = view.rect_to_screen(b);
+                    area.union(ERect::from_min_max(r.min.floor(), r.max.ceil()).expand(1.0))
+                }
+                None => area,
+            };
             let clip = area.intersect(rect);
             if clip.width() >= 1.0 && clip.height() >= 1.0 {
-                let view = View {
-                    zoom: app.view.zoom,
-                    origin: paper.left_bottom(),
-                };
-                let raster = rasters.entry(id).or_default();
                 raster.follows_zoom = true;
                 raster.defer = rendered && started.elapsed().as_secs_f64() > RENDER_BUDGET;
                 // A render on its thread takes the drawing shared by all
@@ -889,6 +1077,103 @@ mod tests {
         app
     }
 
+    /// A range of pages chosen for the Multipage View (#1440): only those
+    /// pages and the current one are laid out, in page order and packed
+    /// into the grid; the range is one undo step kept in the drawing, and
+    /// choosing it makes a chosen page current.
+    #[test]
+    fn the_multipage_view_shows_the_chosen_pages_only() {
+        let mut app = App::headless();
+        for _ in 0..6 {
+            app.add_page();
+        }
+        let ids: Vec<PageId> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 7);
+        app.set_multipage(true);
+        assert_eq!(app.multipage_layout().len(), 7);
+        app.goto_page(0);
+        assert!(!app.set_multipage_pages("9-12"), "no page of the drawing");
+        assert!(!app.set_multipage_pages("x"));
+        assert!(app.set_multipage_pages(" 3-5, 7 "));
+        assert!(!app.set_multipage_pages("3-5, 7"), "no change");
+        assert_eq!(app.doc().metadata.multipage_pages, "3-5, 7");
+        assert_eq!(app.page, ids[2], "the first chosen page is current");
+        let placed = app.multipage_layout();
+        let shown: Vec<PageId> = placed.iter().map(|(id, _)| *id).collect();
+        assert_eq!(shown, vec![ids[2], ids[3], ids[4], ids[6]]);
+        // Packed: page 7 takes the fourth cell, next to page 5.
+        assert!(placed[3].1.x0 > placed[2].1.x0);
+        assert_eq!(placed[3].1.y1, placed[0].1.y1);
+        assert_eq!(app.shown_pages(), placed);
+        // The current page always shows, in its place in page order; the
+        // page that was current stays where it was on screen.
+        let page3 = app.view.rect_to_screen(app.page_rect());
+        app.goto_page(1);
+        assert_eq!(app.page, ids[1]);
+        let still = app
+            .multipage_layout()
+            .into_iter()
+            .find(|(id, _)| *id == ids[2])
+            .map(|(_, r)| app.view.rect_to_screen(r))
+            .expect("page 3 shown");
+        assert!(
+            (still.min - page3.min).length() < 0.01,
+            "{still:?} {page3:?}"
+        );
+        let shown: Vec<PageId> = app.multipage_layout().iter().map(|(id, _)| *id).collect();
+        assert_eq!(shown, vec![ids[1], ids[2], ids[3], ids[4], ids[6]]);
+        // Back to every page, and the range again with Undo.
+        assert!(app.set_multipage_pages(""));
+        assert_eq!(app.multipage_layout().len(), 7);
+        app.undo();
+        assert_eq!(app.doc().metadata.multipage_pages, "3-5, 7");
+        // Out of the Multipage View the range changes nothing.
+        app.set_multipage(false);
+        assert_eq!(app.shown_pages().len(), 1);
+    }
+
+    /// With facing pages a range keeps each page on its side of the
+    /// spine; the spreads shown follow each other (#1440).
+    #[test]
+    fn a_range_of_facing_pages_keeps_their_sides_and_packs_the_spreads() {
+        let p = pages(7);
+        // Right start: spreads [1], [2 3], [4 5], [6 7]; show 2 and 6-7.
+        let all = facing_layout(&p, p[0].0, 10.0, PageSide::Right);
+        let some = facing_layout_of(&p, &[1, 5, 6], p[1].0, 10.0, PageSide::Right);
+        assert_eq!(some.len(), 3);
+        let x0 = |placed: &[(PageId, Rect)], id: PageId| {
+            placed
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, r)| r.x0)
+                .expect("placed")
+        };
+        // Page 2 is a left page: it ends at the first spine, at the
+        // origin as the current page.
+        assert_eq!(some[0], (p[1].0, Rect::new(0.0, 0.0, 100.0, 50.0)));
+        // Pages 6 and 7 form the next spread, beside it in the first row
+        // (in the full layout their spread is in the second row).
+        assert_eq!(x0(&some, p[5].0), 210.0);
+        assert_eq!(x0(&some, p[6].0), 310.0);
+        let y1 = |placed: &[(PageId, Rect)], id: PageId| {
+            placed
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, r)| r.y1)
+                .expect("placed")
+        };
+        assert!(y1(&all, p[5].0) < y1(&all, p[1].0));
+        assert_eq!(some[1].1.y1, some[0].1.y1, "one row");
+        // Every page kept: the same as the full layout.
+        let every: Vec<usize> = (0..7).collect();
+        assert_eq!(
+            facing_layout_of(&p, &every, p[0].0, 10.0, PageSide::Right),
+            all
+        );
+        assert!(facing_layout_of(&p, &[], p[0].0, 10.0, PageSide::Right).is_empty());
+        assert!(facing_layout_of(&p, &[99], p[0].0, 10.0, PageSide::Right).is_empty());
+    }
+
     /// Facing pages on: the desktop shows the current page's spread, the
     /// facing page beside it at the spine; Zoom to Fit takes the spread;
     /// switching it is one undo step, saved with the drawing (#1972).
@@ -1103,6 +1388,125 @@ mod tests {
         app.set_multipage(false);
         assert!(!app.multipage_press(on_first));
         assert_eq!(app.fit_rect(), app.page_rect());
+    }
+
+    /// Two pages, the first current, each with an object off its paper,
+    /// in the gap between the two: the first page's reaching over the
+    /// second page's paper, the second's on the desktop left of its
+    /// paper. Returns the app, the pages and the objects.
+    fn objects_off_their_pages() -> (
+        App,
+        PageId,
+        PageId,
+        tracedraw_core::ShapeId,
+        tracedraw_core::ShapeId,
+    ) {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.add_page();
+        let first = app.doc().pages[0].id;
+        let second = app.doc().pages[1].id;
+        app.page = first;
+        app.set_multipage(true);
+        app.fit_pending = false;
+        let r2 = app.multipage_layout()[1].1;
+        let w = app.page_rect().width();
+        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| tracedraw_core::ShapeKind::Rect {
+            rect: Rect::new(x0, y0, x1, y1),
+            radius: 0.0,
+            corners: None,
+        };
+        // From the first page's right edge onto the second page's paper.
+        let reaching = app
+            .new_shape(rect(w - 10.0, 50.0, r2.x0 + 20.0, 70.0))
+            .expect("rect");
+        // The second page's, on the desktop between the pages, 20 mm
+        // below the first's.
+        app.page = second;
+        let gap = r2.x0 - w;
+        let off = app
+            .new_shape(rect(-gap + 5.0, 20.0, -5.0, 40.0))
+            .expect("rect");
+        app.page = first;
+        app.selection.clear();
+        (app, first, second, reaching, off)
+    }
+
+    /// In the Multipage View every visible object is picked where it
+    /// shows, whatever page holds it (#2055): an object of the current
+    /// page over another page's paper is picked, not that page made
+    /// current; an object another page holds off its paper makes that
+    /// page current and is picked by the same press; another page's
+    /// paper where nothing lies makes it current.
+    #[test]
+    fn a_press_picks_the_object_shown_whatever_page_holds_it() {
+        let (mut app, first, second, reaching, off) = objects_off_their_pages();
+        let r2 = app.multipage_layout()[1].1;
+        // The first page's object, over the second page's paper.
+        let on_reaching = app.view.to_screen(Point::new(r2.x0 + 10.0, 60.0));
+        assert!(!app.multipage_press(on_reaching));
+        assert_eq!(app.page, first);
+        assert_eq!(app.hit_test(app.view.to_page(on_reaching)), Some(reaching));
+        // The second page's object on the desktop.
+        let on_off = app.view.to_screen(Point::new(r2.x0 - 10.0, 30.0));
+        assert!(app.multipage_press(on_off));
+        assert_eq!(app.page, second);
+        assert_eq!(app.hit_test(app.view.to_page(on_off)), Some(off));
+        // Back on the first page's object, now drawn as another page's:
+        // the first page is current again and the object picked.
+        assert!(app.multipage_press(on_reaching));
+        assert_eq!(app.page, first);
+        assert_eq!(app.hit_test(app.view.to_page(on_reaching)), Some(reaching));
+        // The second page's paper where nothing lies.
+        let on_paper = app.view.to_screen(Point::new(r2.x0 + 50.0, 150.0));
+        assert!(app.multipage_press(on_paper));
+        assert_eq!(app.page, second);
+        // The desktop where nothing lies: nothing changes.
+        let nowhere = app.view.to_screen(Point::new(-5.0, -40.0));
+        assert!(!app.multipage_press(nowhere));
+        assert_eq!(app.page, second);
+    }
+
+    /// The objects a page holds off its paper are drawn while another page
+    /// is current: its picture covers them, measured once a change of the
+    /// drawing; they showed only while their page was current, so they
+    /// seemed to vanish (#2055).
+    #[test]
+    fn objects_off_another_page_are_drawn() {
+        let ctx = crate::theme::ui_context();
+        let (mut app, first, second, _, off) = objects_off_their_pages();
+        let b = app.doc().find_shape(off).expect("off").visual_bounds();
+        let content = app.page_content_bounds(second).expect("objects");
+        assert!(
+            content.contains(b.center()) && content.x0 <= b.x0,
+            "{content:?}"
+        );
+        assert!(app.page_content_bounds(first).is_some());
+        // Both pages fitted in the window.
+        app.fit_pending = true;
+        let mut t = 0.0;
+        for _ in 0..20 {
+            t += 0.02;
+            frame_at(&ctx, &mut app, t);
+        }
+        let shown = app
+            .page_rasters
+            .borrow()
+            .get(&second)
+            .and_then(|r| r.shown_part())
+            .expect("the second page drawn");
+        assert!(
+            shown.x0 <= b.x0 + 1e-6 && shown.y0 <= b.y0 + 1e-6 && shown.y1 >= b.y1 - 1e-6,
+            "{shown:?} misses {b:?}"
+        );
+        // Measured at the drawing's revision, again after a change.
+        let rev = app.engine.revision();
+        let kept = app
+            .page_rasters
+            .borrow()
+            .get(&second)
+            .and_then(|r| r.content);
+        assert_eq!(kept.map(|(r, _)| r), Some(rev));
     }
 
     /// Each open drawing keeps its own pictures of its other pages: the

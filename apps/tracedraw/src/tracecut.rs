@@ -19,7 +19,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracedraw_core::geometry::{BezPath, Point, Rect, Shape as _};
 use tracedraw_core::{Command, ShapeId, ShapeKind};
+use tracedraw_tracecut::boxes::BoxSpec;
+use tracedraw_tracecut::cnc::{CncSpec, Program};
 use tracedraw_tracecut::cut::weed::WeedSpec;
+use tracedraw_tracecut::eyelets::EyeletSpec;
+use tracedraw_tracecut::tray::TraySpec;
 use tracedraw_tracecut::{cleanup, crossings};
 
 /// The groups of the tool list, in the order they are shown.
@@ -28,10 +32,12 @@ pub enum Group {
     Cut,
     Nesting,
     Measure,
+    /// New objects for sign and sheet work: eyelets, boxes, folded trays.
+    Make,
 }
 
 impl Group {
-    pub const ALL: [Group; 3] = [Group::Cut, Group::Nesting, Group::Measure];
+    pub const ALL: [Group; 4] = [Group::Cut, Group::Nesting, Group::Measure, Group::Make];
 
     /// The i18n key of the group's name.
     pub fn key(self) -> &'static str {
@@ -39,6 +45,7 @@ impl Group {
             Group::Cut => "tracecut.group_cut",
             Group::Nesting => "tracecut.group_nesting",
             Group::Measure => "tracecut.group_measure",
+            Group::Make => "tracecut.group_make",
         }
     }
 
@@ -57,6 +64,7 @@ impl Group {
 pub enum ToolId {
     #[default]
     PlotterOutput,
+    CncToolpath,
     Weeding,
     Bridges,
     CutOrder,
@@ -69,11 +77,15 @@ pub enum ToolId {
     Measure,
     CuttingTime,
     Cost,
+    Eyelets,
+    BoxMaker,
+    FoldedTray,
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 13] = [
+    pub const ALL: [ToolId; 17] = [
         ToolId::PlotterOutput,
+        ToolId::CncToolpath,
         ToolId::Weeding,
         ToolId::Bridges,
         ToolId::CutOrder,
@@ -86,12 +98,16 @@ impl ToolId {
         ToolId::Measure,
         ToolId::CuttingTime,
         ToolId::Cost,
+        ToolId::Eyelets,
+        ToolId::BoxMaker,
+        ToolId::FoldedTray,
     ];
 
     pub fn group(self) -> Group {
         match self {
             ToolId::ShapeNesting | ToolId::RectNesting => Group::Nesting,
             ToolId::Measure | ToolId::CuttingTime | ToolId::Cost => Group::Measure,
+            ToolId::Eyelets | ToolId::BoxMaker | ToolId::FoldedTray => Group::Make,
             _ => Group::Cut,
         }
     }
@@ -100,6 +116,7 @@ impl ToolId {
     pub fn id(self) -> &'static str {
         match self {
             ToolId::PlotterOutput => "plotter_output",
+            ToolId::CncToolpath => "cnc_toolpath",
             ToolId::Weeding => "weeding",
             ToolId::Bridges => "bridges",
             ToolId::CutOrder => "cut_order",
@@ -112,13 +129,29 @@ impl ToolId {
             ToolId::Measure => "measure",
             ToolId::CuttingTime => "cutting_time",
             ToolId::Cost => "cost",
+            ToolId::Eyelets => "eyelets",
+            ToolId::BoxMaker => "box_maker",
+            ToolId::FoldedTray => "folded_tray",
         }
+    }
+
+    /// Whether the tool works on the selection (Box Maker and Folded
+    /// Tray make their objects from their settings alone).
+    pub fn needs_selection(self) -> bool {
+        !matches!(self, ToolId::BoxMaker | ToolId::FoldedTray)
+    }
+
+    /// Whether the window works the result out as the settings change,
+    /// without Apply (the Measure tools and Folded Tray, all cheap).
+    pub fn live(self) -> bool {
+        self.group() == Group::Measure || self == ToolId::FoldedTray
     }
 
     /// The i18n key of the tool's name; `<key>_desc` describes it.
     pub fn key(self) -> &'static str {
         match self {
             ToolId::PlotterOutput => "tracecut.plotter_output",
+            ToolId::CncToolpath => "tracecut.cnc_toolpath",
             ToolId::Weeding => "tracecut.weeding",
             ToolId::Bridges => "tracecut.bridges",
             ToolId::CutOrder => "tracecut.cut_order",
@@ -131,6 +164,9 @@ impl ToolId {
             ToolId::Measure => "tracecut.measure",
             ToolId::CuttingTime => "tracecut.cutting_time",
             ToolId::Cost => "tracecut.cost",
+            ToolId::Eyelets => "tracecut.eyelets",
+            ToolId::BoxMaker => "tracecut.box_maker",
+            ToolId::FoldedTray => "tracecut.tray",
         }
     }
 }
@@ -144,6 +180,8 @@ pub struct TraceCutPrefs {
     /// menu.
     pub show: bool,
     pub tool: ToolId,
+    /// Folded Tray's settings as last used.
+    pub tray: TraySpec,
 }
 
 impl Default for TraceCutPrefs {
@@ -151,6 +189,7 @@ impl Default for TraceCutPrefs {
         TraceCutPrefs {
             show: true,
             tool: ToolId::default(),
+            tray: TraySpec::default(),
         }
     }
 }
@@ -184,6 +223,10 @@ pub struct CrossingsSettings {
     pub between: bool,
     /// OK fixes the crossings (else it selects the objects that have them).
     pub fix: bool,
+    /// OK moves objects that cross each other apart (before `fix`).
+    pub separate: bool,
+    /// How far apart Move them apart leaves the objects (mm).
+    pub spacing: f64,
 }
 
 impl Default for CrossingsSettings {
@@ -192,6 +235,8 @@ impl Default for CrossingsSettings {
             tolerance: 0.05,
             between: false,
             fix: false,
+            separate: false,
+            spacing: 2.0,
         }
     }
 }
@@ -203,6 +248,7 @@ pub const TOLERANCE_RANGE: (f64, f64) = (0.001, 10.0);
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToolSettings {
     pub plotter: PlotterSettings,
+    pub cnc: CncSpec,
     pub weeding: WeedSpec,
     pub bridges: BridgeSettings,
     pub order: OrderSettings,
@@ -215,6 +261,9 @@ pub struct ToolSettings {
     pub measure: MeasureSettings,
     pub time: TimeSettings,
     pub cost: CostSettings,
+    pub eyelets: EyeletSpec,
+    pub boxes: BoxSpec,
+    pub tray: TraySpec,
 }
 
 /// Perimeter and Area has nothing to set; its presets are empty.
@@ -227,6 +276,10 @@ macro_rules! with_settings {
         match $tool {
             ToolId::PlotterOutput => {
                 let $v = &mut $s.plotter;
+                $body
+            }
+            ToolId::CncToolpath => {
+                let $v = &mut $s.cnc;
                 $body
             }
             ToolId::Weeding => {
@@ -275,6 +328,18 @@ macro_rules! with_settings {
             }
             ToolId::Cost => {
                 let $v = &mut $s.cost;
+                $body
+            }
+            ToolId::Eyelets => {
+                let $v = &mut $s.eyelets;
+                $body
+            }
+            ToolId::BoxMaker => {
+                let $v = &mut $s.boxes;
+                $body
+            }
+            ToolId::FoldedTray => {
+                let $v = &mut $s.tray;
                 $body
             }
         }
@@ -431,6 +496,11 @@ impl PresetStore {
 pub enum Outcome {
     /// A plotter job and its line for the status strip.
     Job { job: Box<Job>, summary: String },
+    /// A CNC program and its line for the status strip.
+    Gcode {
+        program: Box<Program>,
+        summary: String,
+    },
     /// Changes of the drawing a Cut tool worked out.
     Changes(Box<Changes>),
     /// A result to read; OK changes nothing.
@@ -448,7 +518,7 @@ impl Outcome {
     /// The line under the preview that says what was found.
     pub fn summary(&self) -> String {
         match self {
-            Outcome::Job { summary, .. } => summary.clone(),
+            Outcome::Job { summary, .. } | Outcome::Gcode { summary, .. } => summary.clone(),
             Outcome::Changes(c) => c.summary.clone(),
             Outcome::Report(r) => r.lines.first().cloned().unwrap_or_default(),
             Outcome::Duplicates(d) if d.is_empty() => tr("tracecut.no_duplicates"),
@@ -552,15 +622,17 @@ pub struct Scene {
     pub points: Vec<Point>,
     /// Moves with the knife up (drawn as thin lines).
     pub moves: Vec<(Point, Point)>,
+    /// Lines grooved or scored, not cut through.
+    pub scored: Vec<BezPath>,
     pub extent: Option<Rect>,
 }
 
 impl App {
     /// Open the TraceCut window on the tool picked last.
     pub fn open_tracecut(&mut self) {
-        self.dialog = crate::ui::dialogs::Dialog::TraceCut(Box::new(TraceCutState::new(
-            self.settings.tracecut.tool,
-        )));
+        let mut st = TraceCutState::new(self.settings.tracecut.tool);
+        st.settings.tray = self.settings.tracecut.tray.clone();
+        self.dialog = crate::ui::dialogs::Dialog::TraceCut(Box::new(st));
     }
 
     /// The objects the tools work on: the selection, in stacking order
@@ -616,6 +688,14 @@ impl App {
                     summary,
                 }
             }
+            ToolId::CncToolpath => {
+                let program = self.tracecut_cnc(&settings.cnc);
+                let summary = self.tracecut_cnc_summary(&program);
+                Outcome::Gcode {
+                    program: Box::new(program),
+                    summary,
+                }
+            }
             ToolId::Weeding => Outcome::Changes(Box::new(self.tracecut_weeding(&settings.weeding))),
             ToolId::Bridges => Outcome::Changes(Box::new(self.tracecut_bridges(&settings.bridges))),
             ToolId::CutOrder => {
@@ -633,6 +713,9 @@ impl App {
             ToolId::RectNesting => {
                 Outcome::Changes(Box::new(self.tracecut_rect_nest(&settings.rect_nest)))
             }
+            ToolId::Eyelets => Outcome::Changes(Box::new(self.tracecut_eyelets(&settings.eyelets))),
+            ToolId::BoxMaker => Outcome::Changes(Box::new(self.tracecut_box(&settings.boxes))),
+            ToolId::FoldedTray => Outcome::Changes(Box::new(self.tracecut_tray(&settings.tray))),
             ToolId::Measure => Outcome::Report(Box::new(self.tracecut_measure())),
             ToolId::CuttingTime => Outcome::Report(Box::new(self.tracecut_time(&settings.time).0)),
             ToolId::Cost => {
@@ -649,9 +732,10 @@ impl App {
                 )
             }
             ToolId::FindCrossings => {
+                // Moving apart is for objects crossing each other.
                 let found = crossings::find_crossings(
                     &outlines,
-                    settings.crossings.between,
+                    settings.crossings.between || settings.crossings.separate,
                     clamp(settings.crossings.tolerance),
                 );
                 let mut objects: Vec<ShapeId> = Vec::new();
@@ -782,6 +866,58 @@ impl App {
         true
     }
 
+    /// Move objects that cross each other apart in one undo step
+    /// ("Separate Crossings"): in each set of objects crossing one
+    /// another the lowest stays (or the locked ones), and the others each
+    /// move the shortest way that leaves the spacing to every object
+    /// staying or moved before (`crossings::separate_crossing`). Any kind
+    /// of object moves; locked ones stay. Returns whether anything moved;
+    /// the status line says what.
+    pub fn tracecut_separate_crossings(&mut self, s: &CrossingsSettings) -> bool {
+        let targets = self.tracecut_targets();
+        let outlines = self.tracecut_outlines(&targets);
+        let tol = if s.tolerance.is_finite() {
+            s.tolerance.clamp(TOLERANCE_RANGE.0, TOLERANCE_RANGE.1)
+        } else {
+            CrossingsSettings::default().tolerance
+        };
+        let spacing = if s.spacing.is_finite() {
+            s.spacing.clamp(0.0, 1000.0)
+        } else {
+            CrossingsSettings::default().spacing
+        };
+        let found = crossings::find_crossings(&outlines, true, tol);
+        let doc = self.doc();
+        let movable: Vec<bool> = targets
+            .iter()
+            .map(|id| doc.find_shape(*id).is_some_and(|sh| !sh.locked))
+            .collect();
+        let moves = crossings::separate_crossing(&outlines, &movable, &found, spacing, tol);
+        let mut cmds = Vec::new();
+        let mut moved = Vec::new();
+        for (id, d) in targets.iter().zip(&moves) {
+            if d.hypot() > 1e-9 && d.x.is_finite() && d.y.is_finite() {
+                cmds.push(Command::TransformShapes {
+                    shapes: vec![*id],
+                    transform: tracedraw_core::geometry::Affine::translate(*d),
+                });
+                moved.push(*id);
+            }
+        }
+        if cmds.is_empty() {
+            self.status = tr("tracecut.crossings_not_separated");
+            return false;
+        }
+        if let Err(e) = self.engine.run_batch("Separate Crossings", &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
+        let n = moved.len();
+        self.select(moved);
+        self.status = trf("tracecut.crossings_separated", &[("n", &n.to_string())]);
+        true
+    }
+
     /// Whether `w` still matches the drawing, the selection and the
     /// window's tool and settings.
     pub fn tracecut_current(&self, w: &Worked, tool: ToolId, settings: &ToolSettings) -> bool {
@@ -813,12 +949,17 @@ impl App {
                 }
                 Outcome::Crossings { points, .. } => scene.points = points.clone(),
                 Outcome::Job { job, .. } => scene.moves = job.moves.clone(),
+                Outcome::Gcode { program, .. } => {
+                    scene.marked = program.toolpaths.iter().map(|t| t.path()).collect();
+                    scene.moves = program.rapids.clone();
+                }
                 Outcome::Report(_) => {}
                 Outcome::Changes(c) => {
                     if c.hide_objects {
                         scene.objects.clear();
                     }
                     scene.marked = c.preview.clone();
+                    scene.scored = c.scored.clone();
                     scene.points = c.points.clone();
                     scene.moves = c.moves.clone();
                 }
@@ -828,6 +969,7 @@ impl App {
             .objects
             .iter()
             .chain(scene.marked.iter())
+            .chain(scene.scored.iter())
             .map(|p| p.bounding_box())
             .filter(|b| {
                 b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()
@@ -838,7 +980,7 @@ impl App {
 
     /// Apply `w` to the drawing (OK): Find Duplicates deletes the repeats
     /// in one undo step (or selects them), Find Crossings selects the
-    /// objects that have crossings. Returns whether anything was done;
+    /// objects that have crossings, fixes them or moves them apart. Returns whether anything was done;
     /// the status line says what.
     pub fn tracecut_commit(
         &mut self,
@@ -853,6 +995,14 @@ impl App {
                     return false;
                 }
                 self.tracecut_output(&settings.plotter, &job.plot, ctx);
+                true
+            }
+            Outcome::Gcode { program, summary } => {
+                if program.toolpaths.is_empty() {
+                    self.status = summary.clone();
+                    return false;
+                }
+                self.tracecut_save_gcode(program);
                 true
             }
             Outcome::Changes(c) => self.tracecut_apply_changes(c),
@@ -894,6 +1044,9 @@ impl App {
                 if points.is_empty() {
                     self.status = tr("tracecut.no_crossings");
                     return false;
+                }
+                if settings.crossings.separate {
+                    return self.tracecut_separate_crossings(&settings.crossings);
                 }
                 if settings.crossings.fix {
                     return self.tracecut_fix_crossings(&settings.crossings);
@@ -1016,6 +1169,85 @@ mod tests {
         app.select(vec![e, a, b]);
         let back = app.tracecut_work_out(ToolId::FindCrossings, &settings);
         assert_eq!(back.outcome, w.outcome);
+    }
+
+    /// The live test of 0.41: Find Crossings found crossings but offered
+    /// no way to resolve them by moving the objects. With Move them
+    /// apart, OK moves each object crossing a lower one the shortest way
+    /// that leaves the spacing (here 6 mm right: 4 of overlap and 2 of
+    /// spacing), the lowest stays, an ellipse crossing the moved square
+    /// moves too, and all is one undo step; afterwards nothing crosses.
+    /// It finds crossings between objects without Also between objects;
+    /// a locked object stays and the other moves instead.
+    #[test]
+    fn ok_moves_crossing_objects_apart_in_one_undo_step() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 20.0, 20.0);
+        let b = rect(&mut app, 16.0, 3.0, 20.0, 20.0);
+        let c = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(30.0, 5.0, 50.0, 15.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let far = rect(&mut app, 0.0, 60.0, 10.0, 10.0);
+        app.select(vec![a, b, c, far]);
+        let mut settings = ToolSettings::default();
+        settings.crossings.separate = true;
+        assert!(!settings.crossings.between);
+        let w = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert!(matches!(&w.outcome, Outcome::Crossings { points, .. } if points.len() == 4));
+        let page_box = |app: &App, id: ShapeId| {
+            app.doc()
+                .shape_on_page(id)
+                .expect("shape")
+                .page_path()
+                .bounding_box()
+        };
+        let before: Vec<Rect> = [a, b, c, far]
+            .iter()
+            .map(|id| page_box(&app, *id))
+            .collect();
+        let undo_before = app.engine.history_labels().0.len();
+        assert!(app.tracecut_commit(&w, &settings, None));
+        let (undo, _) = app.engine.history_labels();
+        assert_eq!(undo.len(), undo_before + 1);
+        assert_eq!(undo.last().copied(), Some("Separate Crossings"));
+        assert_eq!(page_box(&app, a), before[0], "the lowest stays");
+        assert_eq!(page_box(&app, far), before[3], "crossed nothing: stays");
+        let moved_b = page_box(&app, b).x0 - before[1].x0;
+        assert!((moved_b - 6.0).abs() < 0.01, "moved {moved_b}");
+        assert_ne!(page_box(&app, c), before[2]);
+        assert_eq!(app.selection, vec![b, c]);
+        settings.crossings.separate = false;
+        settings.crossings.between = true;
+        let again = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert!(
+            matches!(&again.outcome, Outcome::Crossings { points, .. } if points.is_empty()),
+            "{:?}",
+            again.outcome
+        );
+        app.undo();
+        assert_eq!(page_box(&app, b), before[1]);
+        // The lower one locked: the upper one stays, the lower moves.
+        app.select(vec![b]);
+        app.set_locked(true);
+        app.select(vec![a, b]);
+        settings.crossings.separate = true;
+        let w = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        assert!(app.tracecut_commit(&w, &settings, None));
+        assert_eq!(page_box(&app, b), before[1]);
+        assert!((page_box(&app, a).x0 + 6.0).abs() < 0.01);
+        // Both locked: nothing to move, and the status line says so.
+        app.undo();
+        app.select(vec![a]);
+        app.set_locked(true);
+        app.select(vec![a, b]);
+        let w = app.tracecut_work_out(ToolId::FindCrossings, &settings);
+        let rev = app.engine.revision();
+        assert!(!app.tracecut_commit(&w, &settings, None));
+        assert_eq!(app.engine.revision(), rev);
+        assert_eq!(app.status, tr("tracecut.crossings_not_separated"));
     }
 
     #[test]

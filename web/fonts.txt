@@ -136,6 +136,7 @@ Noto Sans Mono | gf | ofl/notosansmono/NotoSansMono[wdth,wght].ttf
 Noto Sans Arabic | gf | ofl/notosansarabic/NotoSansArabic[wdth,wght].ttf
 Noto Sans Hebrew | gf | ofl/notosanshebrew/NotoSansHebrew[wdth,wght].ttf
 Noto Sans Thai | gf | ofl/notosansthai/NotoSansThai[wdth,wght].ttf
+Noto Sans Lao | gf | ofl/notosanslao/NotoSansLao[wdth,wght].ttf
 Noto Sans SC | gf | ofl/notosanssc/NotoSansSC[wght].ttf
 Noto Sans TC | gf | ofl/notosanstc/NotoSansTC[wght].ttf
 Noto Sans JP | gf | ofl/notosansjp/NotoSansJP[wght].ttf

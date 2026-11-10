@@ -248,6 +248,13 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
             "options.export_remember",
             "options.export_remember_tip",
         ));
+    // The Export dialog's "Do not show this dialog again", where it can
+    // be found again once the dialog no longer shows.
+    ui.checkbox(&mut f.skip_export_dialog, tr("options.skip_export_dialog"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.skip_export_dialog",
+            "options.skip_export_dialog_tip",
+        ));
     hint(ui, "options.export_presets_hint");
     chrome::section(ui, &tr("options.import_section"));
     ui.checkbox(&mut f.import_with_cursor, tr("options.import_with_cursor"))
@@ -278,18 +285,13 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
             "options.import_view_center_tip",
         ));
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(tr("pdf_import.text_as"));
-        ui.radio_value(&mut f.pdf_text_as_curves, false, tr("pdf_import.text"))
-            .rich_tip(crate::ui::tips::pair(
-                "pdf_import.text",
-                "pdf_import.text_tip",
-            ));
-        ui.radio_value(&mut f.pdf_text_as_curves, true, tr("pdf_import.curves"))
-            .rich_tip(crate::ui::tips::pair(
-                "pdf_import.curves",
-                "pdf_import.curves_tip",
-            ));
+        crate::ui::pdf_import_dialog::read_as_choices(
+            ui,
+            &mut f.pdf_text_as_curves,
+            Some((&mut f.pdf_as_picture, &mut f.pdf_picture_dpi)),
+        );
     });
     ui.checkbox(&mut f.pdf_ask_text, tr("pdf_import.ask"))
         .rich_tip(crate::ui::tips::pair(

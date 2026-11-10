@@ -65,7 +65,8 @@ otevře editor palet.
 2. Zadejte její [[dialog.name]].
 3. Kliknutím na barvu ji vyberete; [[dialog.add_color]] přidá aktuální barvu
    a [[dialog.remove_color]] odebere vybranou.
-4. Kliknutím na [[dialog.save_palette]] ji uložíte jako soubor.
-5. Klikněte na [[dialog.close]].
+4. Zaškrtnutím [[dialog.spot_color]] uděláte z vybrané barvy přímou barvu: pojmenovanou barvu tištěnou na vlastní desce pod názvem barvy. Export do PDF ji zachová jako samostatnou barvu.
+5. Kliknutím na [[dialog.save_palette]] ji uložíte jako soubor.
+6. Klikněte na [[dialog.ok]].
 
 Vestavěné palety nelze upravovat; vytvořte novou paletu nebo upravte kopii.

@@ -557,6 +557,134 @@ impl crate::app::App {
         }
     }
 
+    /// A picture (bitmap object) is selected.
+    pub fn selection_has_picture(&self) -> bool {
+        self.selection.iter().any(|id| {
+            self.doc().find_shape(*id).is_some_and(|s| {
+                matches!(s.kind, tracedraw_core::document::ShapeKind::Bitmap { .. })
+            })
+        })
+    }
+
+    /// The pictures (bitmap objects) on every page and master layer, in
+    /// groups and clip frames too, leaving out `skip`, locked objects and
+    /// objects on locked layers, in the drawing's order.
+    pub fn pictures_on_all_pages(
+        &self,
+        skip: &[tracedraw_core::ShapeId],
+    ) -> Vec<tracedraw_core::ShapeId> {
+        use tracedraw_core::document::ShapeKind;
+        fn walk(
+            s: &tracedraw_core::Shape,
+            skip: &[tracedraw_core::ShapeId],
+            out: &mut Vec<tracedraw_core::ShapeId>,
+        ) {
+            if s.locked {
+                return;
+            }
+            match &s.kind {
+                ShapeKind::Bitmap { .. } if !skip.contains(&s.id) => out.push(s.id),
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        walk(c, skip, out);
+                    }
+                }
+                ShapeKind::ClipFrame { contents, .. } => {
+                    for c in contents {
+                        walk(c, skip, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for layer in self.doc().all_layers().filter(|l| !l.locked) {
+            for s in &layer.shapes {
+                walk(s, skip, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The effect `e` added to the pictures on every page that the
+    /// selection left out (the effect dialogs' All pages, #1551): joined to
+    /// the step just recorded for the selection when `join`, otherwise a
+    /// step of its own ("Add Effect").
+    pub fn add_bitmap_effect_on_all_pages(&mut self, e: BitmapEffect, join: bool) {
+        let skip = self.selection.clone();
+        let cmds: Vec<_> = self
+            .pictures_on_all_pages(&skip)
+            .into_iter()
+            .filter_map(|id| self.bitmap_fx_command(id, |list| list.push(e.clone())))
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        let done = if join {
+            self.engine.amend_batch("Add Effect", &cmds)
+        } else {
+            self.engine.run_batch("Add Effect", &cmds)
+        };
+        match done {
+            Ok(()) => {
+                self.status =
+                    crate::i18n::trf("status.fx_all_pages", &[("n", &cmds.len().to_string())]);
+            }
+            Err(err) => self.status = err.to_string(),
+        }
+    }
+
+    /// The selected picture's effects can go to the other pictures:
+    /// a selected picture has effects.
+    pub fn can_apply_effects_to_all_pages(&self) -> bool {
+        self.first_picture_with_effects().is_some()
+    }
+
+    fn first_picture_with_effects(&self) -> Option<tracedraw_core::ShapeId> {
+        self.selection.iter().copied().find(|id| {
+            self.doc().find_shape(*id).is_some_and(|s| {
+                matches!(
+                    &s.kind,
+                    tracedraw_core::document::ShapeKind::Bitmap { fx: Some(st), .. }
+                        if !st.effects.is_empty()
+                )
+            })
+        })
+    }
+
+    /// Effects > Apply to Pictures on All Pages: every other picture on
+    /// every page takes the effects of the first selected picture that has
+    /// some (its own list replaced by them, the original pixels kept), as
+    /// one undo step (#1551).
+    pub fn apply_effects_to_all_pages(&mut self) {
+        let Some(from) = self.first_picture_with_effects() else {
+            return;
+        };
+        let effects = self.bitmap_effects(from);
+        let cmds: Vec<_> = self
+            .pictures_on_all_pages(&[from])
+            .into_iter()
+            .filter_map(|id| {
+                if self.bitmap_effects(id) == effects {
+                    return None;
+                }
+                let list = effects.clone();
+                self.bitmap_fx_command(id, move |l| *l = list)
+            })
+            .collect();
+        if cmds.is_empty() {
+            self.status = crate::i18n::trf("status.fx_all_pages", &[("n", "0")]);
+            return;
+        }
+        match self.engine.run_batch("Effects on All Pages", &cmds) {
+            Ok(()) => {
+                self.status =
+                    crate::i18n::trf("status.fx_all_pages", &[("n", &cmds.len().to_string())]);
+            }
+            Err(err) => self.status = err.to_string(),
+        }
+    }
+
     /// Change the effect list of one bitmap, in one undo step.
     pub fn edit_bitmap_effects(
         &mut self,

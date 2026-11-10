@@ -100,7 +100,9 @@ handles.
 
 1. Click to place each control point. The curve follows the points, starting
    at the first and ending at the last, and always stays inside them. While
-   you draw, the control points show as a dashed line.
+   you draw, the control points show as a dashed line. Hold <kbd>C</kbd> or
+   <kbd>V</kbd> while you click to place a fixed point: the curve passes
+   through it, with a corner there.
 2. Double-click or press <kbd>Enter</kbd> to finish. Click the first point
    (once there are three) to close the curve into a smooth loop.
 

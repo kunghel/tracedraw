@@ -18,11 +18,14 @@ refuse to load modules from `file://`).
 | Print | PDF opened in the system viewer | PDF downloaded; print it from the browser's viewer |
 | Send To | PDF written to Desktop, Documents or a mail folder | PDF downloaded |
 | Edit Bitmap (external editor) | system image editor | not available (a browser cannot hand files to programs) |
+| File > Package | a folder with the drawing, its pictures, fonts and a report (`package.md`) | greyed, its tip says it needs the desktop version: a package is a folder of files (#1416) |
+| Scripts docker | JavaScript and VBA snippets, Debug with breakpoints | JavaScript only: the VBA tab and Debug are greyed, their tips say why (macros and the debugger run on a thread of their own, #1416) |
 | Settings | `settings.json` in the configuration folder, saved as they change | browser local storage (key `tracedraw.settings`), saved as they change: they stay in that browser on that computer, until its site data is cleared (see Storage below) |
 | Shelf | `shelf.json` in the configuration folder | the page's IndexedDB database `tracedraw-kept` (see Storage below) |
 | Auto-backup and session recovery | backups and session markers in the auto-backup folder (`recovery.md`) | backups in the page's IndexedDB database and markers in its local storage; leaving the page with unsaved drawings asks first (`recovery.md`, "In the browser") |
 | Recent documents | listed on the Welcome screen | not recorded (uploads have no path to reopen) |
-| Fonts | installed system fonts | bundled at build time: Liberation Sans, Serif and Mono, DejaVu Sans, Noto Sans Devanagari and Bengali; the published page's font folder adds about a hundred free families (stand-ins of the same widths for common office faces, popular families, Chinese, Japanese, Korean, Arabic, Hebrew and Thai) and its font catalog every other family of the google/fonts collection (about 2,000), each fetched the first time a drawing's text needs it or a font list's pointer rests on it (see `web/FONTS.md`); Chinese and Japanese UI text needs a font the build machine had. A font added with Font Manager > Add Font is kept in the page's IndexedDB (`tracedraw-fonts`) and installed again at the next visit (#1400) |
+| Interface languages | all nineteen built into the program | English built in; another language's file (`lang/<code>.toml` next to the page, about 430 to 850 KB) is fetched when the editor starts in it or it is chosen, English shows until it arrives and then the interface switches without a reload; the service worker keeps a fetched file with the deploy's other files, so the language is there without a network until the next deploy; when the fetch fails English stays (logged in the browser console) and choosing the language again or the next start tries again (`i18n::tests::a_fetched_language_shows_english_until_it_arrives`, `i18n::tests::a_missing_language_falls_back_to_english`). The start language is the browser's preferred one TraceDraw has (`navigator.languages`, see `language.md`) |
+| Fonts | installed system fonts | bundled at build time: Liberation Sans, Serif and Mono, DejaVu Sans, Noto Sans Devanagari and Bengali; the published page's font folder adds about a hundred free families (stand-ins of the same widths for common office faces, popular families, Chinese, Japanese, Korean, Arabic, Hebrew, Thai and Lao) and its font catalog every other family of the google/fonts collection (about 2,000), each fetched the first time a drawing's text needs it or a font list's pointer rests on it (see `web/FONTS.md`); Chinese and Japanese UI text needs a font the build machine had. A font added with Font Manager > Add Font is kept in the page's IndexedDB (`tracedraw-fonts`) and installed again at the next visit (#1400) |
 | System clipboard | text, images and copied files (arboard) | Ctrl+V takes text, pictures and files copied in other programs from the browser's paste event; Edit > Paste reads the clipboard with the browser's clipboard API, which asks once for permission, and pastes the copy made here when the browser refuses (see `clipboard.md`) |
 | Help links | system browser | a new tab |
 | Folder buttons | the system's folder dialog | see "Folder buttons" below (#1399) |
@@ -111,10 +114,16 @@ its bar turns red and the reason shows under it, with the links.
 Once the editor is up, each time the page opens, a message says that
 this is the same Rust program as the desktop app compiled to
 WebAssembly, that a browser is slower (large drawings, heavy effects,
-big files), has only the bundled fonts and opens and saves files by
-upload and download, and that the desktop app runs natively at full
-speed. OK closes it (Enter too, and its close button); Download the
-desktop app opens the latest release
+big files), cannot use the fonts installed on the computer (the page
+has no access to them: free fonts are downloaded from its font folder
+and catalog the first time text uses them, and a font added with Font
+Manager > Add Font is kept in that browser, see Fonts above; #1417, the
+notice said only the bundled fonts were there,
+`app::tests::the_browser_notice_tells_what_fonts_there_are`,
+`ui::chrome::tests::the_browser_notice_tells_where_fonts_come_from`)
+and opens and saves files by upload and download, and that the desktop
+app runs natively at full speed. OK closes it (Enter too, and its close
+button); Download the desktop app opens the latest release
 (`app::tests::the_browser_notice_shows_at_every_visit`). When the
 browser runs on Windows (the navigator's platform or user agent,
 `web_page::windows_platform`), a third button, Get it from the Microsoft
@@ -369,13 +378,17 @@ size=$(wc -c < site/tracedraw_bg.wasm | tr -d ' ')
 sed -e "s/data-wasm-size=\"0\"/data-wasm-size=\"$size\"/" -e "s/@VERSION@/0.4.0/" \
     web/index.html > site/index.html
 cp assets/icon/tracedraw-256.png site/icon-256.png
+mkdir -p site/lang   # every language file but en.toml (built in)
+for f in apps/tracedraw/lang/*.toml; do
+    [ "$(basename "$f")" = en.toml ] || cp "$f" site/lang/
+done
 # The installable app: manifest, icons and the service worker, whose
-# cache is named after the version and a digest of the page, script and
-# module (see "Installing on a tablet").
+# cache is named after the version and a digest of the page, script,
+# module and language files (see "Installing on a tablet").
 cp web/manifest.webmanifest site/
 cp assets/icon/tracedraw-192.png site/icon-192.png
 cp assets/icon/tracedraw-512.png site/icon-512.png
-build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest | sha256sum | cut -c1-16)
+build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest site/lang/*.toml | sha256sum | cut -c1-16)
 sed -e "s/@VERSION@/0.4.0/" -e "s/@BUILD@/$build/" web/sw.js > site/sw.js
 node scripts/web/check_pwa.mjs site   # optional: Node, no packages
 python3 -m http.server -d site 8080   # then open http://localhost:8080
@@ -389,7 +402,10 @@ both builds fill in the module's size and the version
 binaryen's `wasm-opt` has optimised the module for size and dropped its
 name, debug and producer sections (version 133 in CI, from the release
 checked against its SHA-256;
-`web_page::tests::the_builds_shrink_the_module_before_measuring_it`).
+`web_page::tests::the_builds_shrink_the_module_before_measuring_it`);
+both ship the language files the module fetches, counted in the
+worker's digest
+(`web_page::tests::the_builds_ship_the_languages_the_module_fetches`).
 Checked in a browser with a stand-in module: the progress, the start, an
 error with the links kept, on a desktop and a phone-sized window.
 

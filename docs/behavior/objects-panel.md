@@ -67,6 +67,19 @@ the right.
   step, and stays selected; a layer of another page makes that page the
   current one. So an object of a master layer is moved onto one page's
   layer, or a page's object onto the master page (#1477). Delete.
+- A layer's object row dragged along the list (live test of 0.41): while
+  the button is held a line marks where it goes; let go on the upper
+  half of another object's row it goes in front of that object, on the
+  lower half behind it, in that object's layer (of any page or of the
+  master page, keeping its place on the page); let go on a layer's row
+  it goes on the top of that layer. A selected row carries the rest of
+  the selection's layer objects along, keeping their order. One undo
+  step; the objects stay selected and their layer becomes the active
+  one, on its page. Locked objects stay, a locked layer takes nothing,
+  rows inside groups do not drag, and a row let go on itself or away
+  from the rows changes nothing. Checks:
+  `ui::objects_docker::drag_tests::a_row_dragged_along_the_list_changes_the_stacking_order`,
+  `ui::objects_docker::drag_tests::a_row_dragged_onto_another_layer_moves_the_object_there`.
 - The bottom bar:
   - New Layer adds "Layer n" on top of the page's layers (n is the
     number of layers plus one, or the next number not in use) and makes

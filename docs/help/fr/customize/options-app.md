@@ -31,7 +31,7 @@ page dans la liste de gauche.
   [[options.wheel_scroll]].
 - [[options.open_view]] : [[options.open_view_page]] (au départ),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] ou
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] ou
   [[options.open_view_saved]] (la page, l'endroit et le zoom gardés à chaque
   enregistrement d'un fichier TraceDraw).
 - [[options.ruler_calibration]] : tenez une règle contre l'écran et changez

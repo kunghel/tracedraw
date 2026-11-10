@@ -260,6 +260,43 @@ fn corners_of(subs: &[Sub]) -> Vec<Corner> {
     out
 }
 
+/// How far each corner of `path`, in the order [`corners`] gives them,
+/// can be rounded on its own: the depth (mm) of the arc's middle into the
+/// corner at the largest fillet radius it takes alone (the shorter of its
+/// sides times `tan(theta / 2)`, as [`max_fillet`] finds for that corner
+/// alone). A corner whose sides barely turn, or are very short, has
+/// next to none: rounding it changes nothing that shows.
+pub fn corner_reach(path: &BezPath) -> Vec<f64> {
+    // Lengths to within a thousandth: enough to tell what shows.
+    const ROUGH: f64 = 1e-3;
+    let mut out = Vec::new();
+    for sub in subpaths(path) {
+        let n = sub.segs.len();
+        if n == 0 {
+            continue;
+        }
+        let count = if sub.closed { n } else { n - 1 };
+        for k in 0..count {
+            let (seg_in, _) = &sub.segs[k];
+            let (seg_out, _) = &sub.segs[(k + 1) % n];
+            let (Some(u_in), Some(u_out)) = (end_dir(seg_in), start_dir(seg_out)) else {
+                continue;
+            };
+            let theta = (-u_in).dot(u_out).clamp(-1.0, 1.0).acos();
+            if !(1e-3..=std::f64::consts::PI - 1e-3).contains(&theta) {
+                continue;
+            }
+            if unit(u_out - u_in).is_none() {
+                continue;
+            }
+            let room = seg_in.arclen(ROUGH).min(seg_out.arclen(ROUGH));
+            let half = theta / 2.0;
+            out.push(room * half.tan() * (1.0 / half.sin() - 1.0));
+        }
+    }
+    out
+}
+
 /// The largest fillet radius every chosen corner of `path` takes (every
 /// corner without `only`), the sides two chosen corners share split
 /// between them; `None` when no corner is chosen.
@@ -827,6 +864,37 @@ mod tests {
         assert_eq!(n, 2);
         let (_, n) = cut_corners(&p, CornerCut::Fillet(50.0), None);
         assert_eq!(n, 0);
+    }
+
+    /// How far each corner rounds on its own: a square's corner with
+    /// 10 mm sides takes a 10 mm fillet, whose middle lies
+    /// `10 (sqrt 2 - 1)` into it; a corner that barely turns, or whose
+    /// sides are very short, rounds next to nothing.
+    #[test]
+    fn corner_reach_tells_how_far_a_corner_rounds() {
+        let sq = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1);
+        let reach = corner_reach(&sq);
+        assert_eq!(reach.len(), corners(&sq).len());
+        for r in &reach {
+            assert!((r - 10.0 * (2f64.sqrt() - 1.0)).abs() < 1e-6, "{r}");
+        }
+        // A turn of half a degree between two 10 mm lines.
+        let mut kink = BezPath::new();
+        kink.move_to((0.0, 0.0));
+        kink.line_to((10.0, 0.0));
+        let a = 0.5f64.to_radians();
+        kink.line_to((10.0 + 10.0 * a.cos(), 10.0 * a.sin()));
+        let reach = corner_reach(&kink);
+        assert_eq!((reach.len(), corners(&kink).len()), (1, 1));
+        // About the side times the turn over four: a fiftieth of a mm.
+        let quarter = 10.0 * a / 4.0;
+        assert!((reach[0] - quarter).abs() < quarter * 0.01, "{}", reach[0]);
+        // A right angle with a side a hundredth of a millimetre long.
+        let mut short = BezPath::new();
+        short.move_to((0.0, 0.0));
+        short.line_to((10.0, 0.0));
+        short.line_to((10.0, 0.01));
+        assert!(corner_reach(&short)[0] < 0.01);
     }
 
     #[test]

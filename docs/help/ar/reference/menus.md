@@ -26,6 +26,7 @@
 | [[menu.file.acquire_image]] | [Importing files](../file-formats/import.md) |
 | [[menu.file.import]] | [Importing files](../file-formats/import.md) |
 | [[menu.file.export]] | [Exporting](../file-formats/export.md) |
+| [[menu.file.export_with_options]] | [Exporting](../file-formats/export.md) |
 | [[menu.file.export_for]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_web]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_office]] | [Exporting for the web](../web-graphics/export-for-web.md) |
@@ -66,6 +67,12 @@
 | [[menu.edit.select_all_text]] | [Selecting objects](../objects/selecting.md) |
 | [[menu.edit.select_all_guidelines]] | [Selecting objects](../objects/selecting.md) |
 | [[menu.edit.select_all_nodes]] | [Selecting objects](../objects/selecting.md) |
+| [[menu.edit.invert_selection]] | [Selecting objects](../objects/selecting.md#select-similar) |
+| [[menu.edit.select_similar]] | [Selecting objects](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_fill]] | [Selecting objects](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_outline]] | [Selecting objects](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_text_format]] | [Selecting objects](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_kind]] | [Selecting objects](../objects/selecting.md#select-similar) |
 | [[menu.edit.find_and_replace]] | [Finding and replacing](../objects/find-replace.md) |
 | [[menu.edit.step_and_repeat]] | [Making copies with Repeat Copies](../objects/step-and-repeat.md) |
 
@@ -81,10 +88,12 @@
 | [[menu.view.preview_selected_only]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.page_sorter]] | [Multipage view](../pages-layout/multipage-view.md) |
 | [[menu.view.multipage]] | [Multipage view](../pages-layout/multipage-view.md) |
+| [[menu.view.multipage_pages]] | [Multipage view](../pages-layout/multipage-view.md#choose-pages) |
 | [[menu.view.draw_in_perspective]] | [Perspective](../effects/perspective.md#draw) |
 | [[menu.view.zoom_in]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
+| [[menu.view.navigator]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
@@ -123,16 +132,23 @@
 | [[menu.object.create]] | [الكائنات والرموز والطبقات](../objects/index.md) |
 | [[menu.object.create_arrowhead]] | [Setting outlines](../lines-shapes/outlines.md#outline-pen) |
 | [[menu.object.create_pattern]] | [Pattern fills](../color/patterns.md) |
+| [[menu.object.add_common_shape]] | [Common Shapes](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[menu.object.insert]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_barcode]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_qr]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_page_number]] | [Working with pages](../pages-layout/pages.md#page-numbers) |
+| [[menu.object.add_dimensions]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
+| [[menu.object.add_dimensions_each]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
 | [[menu.object.clip_frame]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_place_inside]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_extract]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_finish]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_edit]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_lock]] | [Placing objects inside a frame](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_center]] | [Placing objects inside a frame](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_proportional]] | [Placing objects inside a frame](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fill_proportional]] | [Placing objects inside a frame](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_stretch]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_opacity_mask]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_invert_mask]] | [Placing objects inside a frame](../objects/clip-frames.md) |
 | [[menu.object.symmetry]] | [Drawing with symmetry](../objects/symmetry.md) |
@@ -341,6 +357,7 @@
 | الأمر | انظر |
 |---|---|
 | [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
+| [[menu.effects.all_pages]] | [Bitmap effects](../effects/bitmap-effects.md) |
 | [[menu.effects.brush_strokes]] | [Brush strokes and painterly brushes](../lines-shapes/artistic-media.md) |
 | [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
 | [[menu.effects.blend]] | [Blends](../effects/blend.md) |

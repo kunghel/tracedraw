@@ -56,8 +56,14 @@ Double-click the tool's button to zoom to fit all objects.
 - Choose the [[tool.pan]] tool (<kbd>H</kbd>) and drag.
 - <kbd>Ctrl</kbd>+wheel scrolls up and down, <kbd>Alt</kbd>+wheel sideways.
 - Use the scroll bars, which cover the page and one page size around it.
-- Hold the Navigator button in the corner between the scroll bars and move
-  the pointer over the thumbnail of the page.
+- While you drag (moving objects, drawing, a selection frame, nodes), bring
+  the pointer to the edge of the drawing window: the view scrolls that way,
+  faster the nearer the edge, while you keep the button held.
+- Hold the Navigator button in the corner between the scroll bars, or hold
+  <kbd>N</kbd>, and move the pointer over the thumbnail of the page.
+  [[menu.view > menu.view.navigator]] opens the thumbnail until you click:
+  click on it to go there, anywhere else or <kbd>Esc</kbd> to close it. The
+  key can be changed like any other ([Keyboard shortcuts](../reference/keyboard-shortcuts.md)).
 - <kbd>PgUp</kbd> and <kbd>PgDn</kbd> go to the previous and next page.
 
 To make the wheel scroll instead of zoom, change the mouse wheel action on

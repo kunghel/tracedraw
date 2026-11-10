@@ -21,7 +21,7 @@ pub const SEP: &str = "sep";
 /// Prefix of a toolbox tool's button: "tool:" and the tool's id.
 pub const TOOL: &str = "tool:";
 
-const STANDARD: [&str; 38] = [
+const STANDARD: [&str; 35] = [
     "new",
     "open",
     "save",
@@ -33,11 +33,6 @@ const STANDARD: [&str; 38] = [
     "copy",
     "paste",
     "delete",
-    // Shift, Ctrl and Alt for a finger: drawn only with a touch screen
-    // (#1499, touch_modifiers.rs).
-    "shift",
-    "ctrl",
-    "alt",
     SEP,
     "undo",
     "redo",

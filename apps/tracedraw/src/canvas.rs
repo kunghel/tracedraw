@@ -130,6 +130,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
     draw_shadow_handles(app, painter);
+    draw_contour_handles(app, painter);
     draw_blend_controls(app, painter);
 
     // Fit Text to Path waiting for its path: the text on the one near.
@@ -1214,15 +1215,14 @@ fn draw_fountain_handles(app: &App, painter: &Painter) {
 /// handle (the shadow colour) and the dashed line between them with the
 /// opacity slider on it.
 fn draw_shadow_handles(app: &App, painter: &Painter) {
-    use crate::shadow_tool::{shadow_handles, ShadowHandle};
-    if app.tool != Tool::DropShadow {
+    use crate::shadow_tool::ShadowHandle;
+    let Some((_, sh, _)) = app.selected_shadow() else {
         return;
-    }
-    let Some((_, sh, b)) = app.selected_shadow() else {
+    };
+    let Some(hs) = app.shown_shadow_handles() else {
         return;
     };
     let view = &app.view;
-    let hs = shadow_handles(&sh, b);
     let pos = |h: ShadowHandle| {
         hs.iter()
             .find(|(k, _)| *k == h)
@@ -1264,6 +1264,49 @@ fn draw_shadow_handles(app: &App, painter: &Painter) {
             egui::StrokeKind::Outside,
         );
     }
+}
+
+/// Contour tool: the selected contour's line from the object's edge, the
+/// offset handle (a square) at its end and the steps handle (a bar across
+/// it) at the first step; plain segments and small shapes (#1265).
+fn draw_contour_handles(app: &App, painter: &Painter) {
+    let Some(h) = app.contour_handles() else {
+        return;
+    };
+    let view = &app.view;
+    let (a, z) = (view.to_screen(h.anchor), view.to_screen(h.end));
+    haloed_polyline(painter, &[a, z], false, Tokens::SELECTION);
+    let held =
+        |k: crate::contour_tool::ContourHandle| app.contour_handle_drag.map(|(d, _)| d) == Some(k);
+    if let Some(q) = h.steps {
+        let q = view.to_screen(q);
+        let fill = if held(crate::contour_tool::ContourHandle::Steps) {
+            Tokens::SELECTION
+        } else {
+            Color32::WHITE
+        };
+        let rect = ERect::from_center_size(q, egui::vec2(5.0, 13.0));
+        painter.rect_filled(rect, 1.0, fill);
+        painter.rect_stroke(
+            rect,
+            1.0,
+            EStroke::new(1.0, Tokens::SELECTION),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let fill = if held(crate::contour_tool::ContourHandle::Offset) {
+        Tokens::SELECTION
+    } else {
+        Color32::WHITE
+    };
+    let rect = ERect::from_center_size(z, egui::vec2(9.0, 9.0));
+    painter.rect_filled(rect, 0.0, fill);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        EStroke::new(1.0, Tokens::SELECTION),
+        egui::StrokeKind::Outside,
+    );
 }
 
 /// Blend tool: the selected blend's start and end squares, the line

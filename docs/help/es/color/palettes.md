@@ -68,8 +68,9 @@ el editor de paletas.
 2. Escriba su [[dialog.name]].
 3. Haga clic en un color para seleccionarlo; [[dialog.add_color]] añade el
    color actual y [[dialog.remove_color]] quita el seleccionado.
-4. Haga clic en [[dialog.save_palette]] para guardarla como archivo.
-5. Haga clic en [[dialog.close]].
+4. Marque [[dialog.spot_color]] para convertir el color seleccionado en un color directo: una tinta con nombre que se imprime en su propia plancha. Las exportaciones a PDF la conservan como tinta separada.
+5. Haga clic en [[dialog.save_palette]] para guardarla como archivo.
+6. Haga clic en [[dialog.ok]].
 
 Las paletas integradas no se pueden editar; cree una paleta nueva o edite una
 copia.

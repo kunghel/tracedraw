@@ -36,3 +36,7 @@ The [[docker.harmony_editor]] makes a set of styles that go together, from a
    [[harmony.tetradic]] or [[harmony.monochromatic]].
 
 The colors of the harmony are added as styles, named after it.
+
+The color picker that opens from a color swatch has the same harmonies
+under its sliders: choose one in the **Harmony** list and click one of the
+swatches beside it to use that color.

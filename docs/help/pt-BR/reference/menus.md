@@ -28,6 +28,7 @@ próprios atalhos; veja
 | [[menu.file.acquire_image]] | [Importar arquivos](../file-formats/import.md) |
 | [[menu.file.import]] | [Importar arquivos](../file-formats/import.md) |
 | [[menu.file.export]] | [Exportar](../file-formats/export.md) |
+| [[menu.file.export_with_options]] | [Exportar](../file-formats/export.md) |
 | [[menu.file.export_for]] | [Exportar para a web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_web]] | [Exportar para a web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_office]] | [Exportar para a web](../web-graphics/export-for-web.md) |
@@ -68,6 +69,12 @@ próprios atalhos; veja
 | [[menu.edit.select_all_text]] | [Selecionar objetos](../objects/selecting.md) |
 | [[menu.edit.select_all_guidelines]] | [Selecionar objetos](../objects/selecting.md) |
 | [[menu.edit.select_all_nodes]] | [Selecionar objetos](../objects/selecting.md) |
+| [[menu.edit.invert_selection]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
+| [[menu.edit.select_similar]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_fill]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_outline]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_text_format]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_kind]] | [Selecionar objetos](../objects/selecting.md#select-similar) |
 | [[menu.edit.find_and_replace]] | [Localizar e substituir](../objects/find-replace.md) |
 | [[menu.edit.step_and_repeat]] | [Fazer cópias com Duplicar e repetir](../objects/step-and-repeat.md) |
 
@@ -83,10 +90,12 @@ próprios atalhos; veja
 | [[menu.view.preview_selected_only]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.page_sorter]] | [Vista de várias páginas](../pages-layout/multipage-view.md) |
 | [[menu.view.multipage]] | [Vista de várias páginas](../pages-layout/multipage-view.md) |
+| [[menu.view.multipage_pages]] | [Vista de várias páginas](../pages-layout/multipage-view.md#choose-pages) |
 | [[menu.view.draw_in_perspective]] | [Perspectiva](../effects/perspective.md#draw) |
 | [[menu.view.zoom_in]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
+| [[menu.view.navigator]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Gerenciamento de cores](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Gerenciamento de cores](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
@@ -125,16 +134,23 @@ próprios atalhos; veja
 | [[menu.object.create]] | [Objetos, símbolos e camadas](../objects/index.md) |
 | [[menu.object.create_arrowhead]] | [Definir contornos](../lines-shapes/outlines.md#outline-pen) |
 | [[menu.object.create_pattern]] | [Preenchimentos de padrão](../color/patterns.md) |
+| [[menu.object.add_common_shape]] | [Formas comuns](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[menu.object.insert]] | [Códigos de barras e QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_barcode]] | [Códigos de barras e QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_qr]] | [Códigos de barras e QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_page_number]] | [Trabalhar com páginas](../pages-layout/pages.md#page-numbers) |
+| [[menu.object.add_dimensions]] | [Linhas de cota e balões](../lines-shapes/dimensions.md#add-dimensions) |
+| [[menu.object.add_dimensions_each]] | [Linhas de cota e balões](../lines-shapes/dimensions.md#add-dimensions) |
 | [[menu.object.clip_frame]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_place_inside]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_extract]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_finish]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_edit]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_lock]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_center]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_proportional]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fill_proportional]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_stretch]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_opacity_mask]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_invert_mask]] | [Colocar objetos dentro de uma moldura](../objects/clip-frames.md) |
 | [[menu.object.symmetry]] | [Desenhar com simetria](../objects/symmetry.md) |
@@ -343,6 +359,7 @@ próprios atalhos; veja
 | Comando | Veja |
 |---|---|
 | [[menu.effects.flatten]] | [Efeitos de bitmap](../effects/bitmap-effects.md) |
+| [[menu.effects.all_pages]] | [Efeitos de bitmap](../effects/bitmap-effects.md) |
 | [[menu.effects.brush_strokes]] | [Pinceladas e pincéis pictóricos](../lines-shapes/artistic-media.md) |
 | [[menu.effects.bevel]] | [Chanfros](../effects/bevel.md) |
 | [[menu.effects.blend]] | [Misturas](../effects/blend.md) |

@@ -189,6 +189,11 @@ pub struct Raster {
     /// take instead of a copy of its own (no threads in the browser).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub snapshot: Option<std::sync::Arc<Document>>,
+    /// What the page's objects cover (page mm), with the revision it was
+    /// measured at: a page beside the current one shows its objects off
+    /// the page too, and measuring them every frame would cost time
+    /// (#2055).
+    pub content: Option<(u64, Option<tracedraw_core::geometry::Rect>)>,
     /// The copy of the drawing the last render on a thread took, with
     /// its revision: the next renders of the same drawing (every step of
     /// a zoom) share it instead of copying the drawing again on the
@@ -398,6 +403,12 @@ impl Raster {
     }
 
     /// How many renders this picture has started.
+    /// The part of the page the picture shows, page mm.
+    #[cfg(test)]
+    pub fn shown_part(&self) -> Option<tracedraw_core::geometry::Rect> {
+        self.page_rect
+    }
+
     pub fn render_count(&self) -> u64 {
         self.renders
     }

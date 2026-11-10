@@ -25,6 +25,7 @@ der letzten Versionen.
 
 ## Highlights der letzten Versionen {#highlights}
 
+- **CNC-Werkzeugwege, Export und Auswahl.** [[menu.tools > menu.tools.tracecut]] erzeugt G-Code für eine CNC-Fräse und zeichnet Ösen, Schachteln mit Fingerzinken und gekantete Wannen; [[menu.file > menu.file.export]] fragt zuerst nach der Datei und zeigt dann die Optionen des Formats, [[menu.file > menu.file.export_with_options]] zeigt sie immer; [[menu.edit > menu.edit.select_similar]] und [[menu.edit > menu.edit.invert_selection]] ändern die Auswahl; [[menu.object > menu.object.insert > menu.object.add_dimensions]] bemaßt die Auswahl; prozedurale Füllungen, OpenType-Schaltflächen und eine laotische Oberfläche sind neu.
 - **Doppelseiten und verknüpfter Text.** [[menu.layout > menu.layout.facing_pages]] zeigt die Seiten nebeneinander als Druckbögen; [[menu.text > menu.text.link_content]] verknüpft Texte, sodass Tippen in einem die anderen ändert; ein mehrseitiges PDF fragt, welche Seiten importiert werden; [[menu.edit > menu.edit.step_and_repeat]] kann eine Seite mit Kopien füllen.
 - **Touch und Telefone.** Umschalt-, Strg- und Alt-Schaltflächen in der
   Standardleiste bleiben für einen Finger gedrückt; unter Android hält die

@@ -29,6 +29,12 @@ sample in the field, and the wizard says what the standard accepts:
 
 Data the standard cannot hold keeps you on this step with a message.
 
+With [data merge](../printing/print-merge.md#fields)
+records loaded, [[barcode.merge_field]] adds a field to the data as
+`<Name>`, so that each merged record gets its own barcode. Until you merge,
+the barcode shows the standard's sample when the standard cannot hold the
+field's name.
+
 ### Step 2: printer and sizes {#barcode-sizes}
 
 - [[barcode.printer]]: the resolution of the printer, 150 to 2400

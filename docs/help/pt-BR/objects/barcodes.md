@@ -30,6 +30,12 @@ no campo, e o assistente diz o que o padrão aceita:
 
 Dados que o padrão não aceita mantêm você nesta etapa, com uma mensagem.
 
+Com registros de [mala direta](../printing/print-merge.md#fields)
+carregados, [[barcode.merge_field]] acrescenta um campo aos dados como
+`<Nome>`, para que cada registro mesclado ganhe seu próprio código de barras.
+Até a mesclagem, o código mostra o exemplo do padrão quando o padrão não
+comporta o nome do campo.
+
 ### Etapa 2: impressora e tamanhos {#barcode-sizes}
 
 - [[barcode.printer]]: a resolução da impressora, de 150 a 2400

@@ -63,6 +63,23 @@ async function fromShell(path) {
   return hit || fetch(path);
 }
 
+// An interface language's file (lang/<code>.toml, fetched when the
+// editor starts in that language or it is chosen): kept in this deploy's
+// shell cache the first time, so the language is there without a
+// network; a new deploy, with a new cache, fetches it again.
+async function languageFile(request) {
+  const cache = await caches.open(SHELL_CACHE);
+  const hit = await cache.match(request);
+  if (hit) {
+    return hit;
+  }
+  const response = await fetch(request);
+  if (response.ok && response.status === 200) {
+    await cache.put(request, response.clone());
+  }
+  return response;
+}
+
 // A font file: from the font cache, else fetched and kept.
 async function fontFile(request) {
   const cache = await caches.open(FONT_CACHE);
@@ -113,6 +130,8 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(fromShell("./"));
   } else if (SHELL.includes(path)) {
     event.respondWith(fromShell(path));
+  } else if (path.startsWith("lang/") && path.endsWith(".toml")) {
+    event.respondWith(languageFile(request));
   } else if (path.startsWith("fonts/")) {
     event.respondWith(path.endsWith(".json") ? fontList(request) : fontFile(request));
   }

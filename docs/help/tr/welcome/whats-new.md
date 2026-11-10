@@ -24,6 +24,7 @@ listeler.
 
 ## Son sürümlerin öne çıkanları {#highlights}
 
+- **CNC takım yolları, dışa aktarma ve seçim.** [[menu.tools > menu.tools.tracecut]] bir CNC freze için G-kodu üretir ve kuşgözleri, parmak geçmeli kutular ve bükümlü kasetler çizer; [[menu.file > menu.file.export]] önce dosyayı sorar, sonra biçimin seçeneklerini gösterir, [[menu.file > menu.file.export_with_options]] ise bunları her zaman gösterir; [[menu.edit > menu.edit.select_similar]] ve [[menu.edit > menu.edit.invert_selection]] seçimi değiştirir; [[menu.object > menu.object.insert > menu.object.add_dimensions]] seçimin ölçülerini ekler; yordamsal dolgular, OpenType düğmeleri ve Laoca arayüz yenidir.
 - **Karşılıklı sayfalar ve bağlı metin.** [[menu.layout > menu.layout.facing_pages]] sayfaları yan yana çift sayfa olarak gösterir; [[menu.text > menu.text.link_content]] metinleri bağlar, böylece birine yazmak diğerlerini değiştirir; çok sayfalı bir PDF hangi sayfaların içe aktarılacağını sorar; [[menu.edit > menu.edit.step_and_repeat]] bir sayfayı kopyalarla doldurabilir.
 - **Dokunma ve telefonlar.** Standart çubuktaki Shift, Ctrl ve Alt düğmeleri
   parmak için basılı kalır; Android'de arayüz kamera çentiğinden ve yuvarlak

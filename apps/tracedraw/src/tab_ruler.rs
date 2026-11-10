@@ -5,6 +5,8 @@
 //! stop's kind. Each change is one undo step. While a stop is dragged
 //! the text flows to it as it moves (at most [`LIVE_EVERY`] apart, so a
 //! long text keeps the drag smooth), and the whole drag is one undo step.
+//! The paragraph's left and right indents show as triangles along the
+//! strip's outer edge; dragging one sets the indent the same way (#1993).
 //! See docs/behavior/text.md, Tab ruler.
 
 use crate::app::App;
@@ -48,6 +50,32 @@ pub struct TabRuler {
     pub handle: f32,
     /// The frame's height on screen, interface points.
     pub depth: f32,
+    /// The paragraph's left and right indents, mm (from the frame's left
+    /// and right edges).
+    pub left_indent: f64,
+    pub right_indent: f64,
+}
+
+/// Which indent of the paragraph a marker on the ruler sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentSide {
+    Left,
+    Right,
+}
+
+/// An indent marker being dragged along the ruler (#1993).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndentDrag {
+    pub shape: ShapeId,
+    pub side: IndentSide,
+    /// The indent as it will be, mm.
+    pub value: f64,
+    /// The undo step before the drag: the drag's live steps join into one
+    /// after it.
+    pub before: Option<u64>,
+    /// The indent the text was last laid out with during the drag, and
+    /// when (input time, seconds).
+    pub shown: Option<(f64, f64)>,
 }
 
 /// What a point of the strip is over: a position along it, mm, and the
@@ -166,6 +194,41 @@ impl TabRuler {
         })
     }
 
+    /// Where the marker of the indent on `side` stands along the strip,
+    /// mm from its left end.
+    pub fn indent_pos(&self, side: IndentSide) -> f64 {
+        match side {
+            IndentSide::Left => self.left_indent,
+            IndentSide::Right => self.width_mm - self.right_indent,
+        }
+    }
+
+    /// The indent marker under screen point `p`: in the outer half of
+    /// the strip (the stops' markers stand in the inner half), within
+    /// grabbing distance of the marker, the nearer one when both are.
+    pub fn indent_at(&self, p: Pos2) -> Option<IndentSide> {
+        let (pos, out) = self.locate(p);
+        let (near, far) = self.band();
+        if out < (near + far) / 2.0 || out > far + 3.0 {
+            return None;
+        }
+        let px = self.len() as f64 / self.width_mm.max(1e-6);
+        [IndentSide::Left, IndentSide::Right]
+            .into_iter()
+            .map(|side| (side, ((self.indent_pos(side) - pos) * px).abs()))
+            .filter(|(_, d)| *d <= GRAB as f64)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(side, _)| side)
+    }
+
+    /// A point in the outer half of the strip, where the indent markers
+    /// are, `along` mm from its left end.
+    #[cfg(test)]
+    pub fn on_indents(&self, along: f64) -> Pos2 {
+        let (near, far) = self.band();
+        self.at(along, far - (far - near) / 4.0)
+    }
+
     /// Whether screen point `p` is far enough from the strip for a
     /// dragged stop to go.
     pub fn is_off(&self, p: Pos2) -> bool {
@@ -213,6 +276,12 @@ impl App {
             _ if para.tabs.is_empty() => (default_stops(frame.width), true),
             _ => (para.tabs.clone(), false),
         };
+        let (mut left_indent, mut right_indent) = (para.left_indent, para.right_indent);
+        match &self.indent_drag {
+            Some(d) if d.shape == id && d.side == IndentSide::Left => left_indent = d.value,
+            Some(d) if d.shape == id => right_indent = d.value,
+            _ => {}
+        }
         Some(TabRuler {
             shape: id,
             a,
@@ -223,7 +292,59 @@ impl App {
             stops,
             defaults,
             handle: self.handle_size(),
+            left_indent,
+            right_indent,
         })
+    }
+
+    /// Give the paragraphs at the caret of text `id` the indent `value`
+    /// mm on `side`: one undo step.
+    pub fn set_indent(&mut self, id: ShapeId, side: IndentSide, value: f64) {
+        self.edit_paragraph_style(id, |p| match side {
+            IndentSide::Left => p.left_indent = value,
+            IndentSide::Right => p.right_indent = value,
+        });
+    }
+
+    /// An indent marker being dragged follows the pointer until the
+    /// release; the text flows to it as it moves, as for a stop.
+    fn indent_drag_input(&mut self, mut d: IndentDrag, response: &egui::Response, screen: Pos2) {
+        let Some(r) = self.tab_ruler().filter(|r| r.shape == d.shape) else {
+            return;
+        };
+        let now = response
+            .ctx
+            .pointer_latest_pos()
+            .or(response.hover_pos())
+            .unwrap_or(screen);
+        let held = response.ctx.input(|i| i.pointer.primary_down());
+        let (pos, _) = r.locate(now);
+        // The two indents keep a millimetre of line between them.
+        let room = |other: f64| (r.width_mm - other - 1.0).max(0.0);
+        let value = match d.side {
+            IndentSide::Left => pos.clamp(0.0, room(r.right_indent)),
+            IndentSide::Right => (r.width_mm - pos).clamp(0.0, room(r.left_indent)),
+        };
+        d.value = (value * 10.0).round() / 10.0;
+        let time = response.ctx.input(|i| i.time);
+        let ended = !(held && !response.drag_stopped());
+        let changed = d.shown.is_none_or(|(v, _)| v != d.value);
+        let due = d.shown.is_none_or(|(_, at)| time - at >= LIVE_EVERY);
+        if changed && (due || ended) {
+            self.set_indent(d.shape, d.side, d.value);
+            let label = self.engine.undo_label().unwrap_or("Indents");
+            self.engine.join_group(d.before, label);
+            d.shown = Some((d.value, time));
+        } else if changed {
+            let wait = d.shown.map_or(0.0, |(_, at)| LIVE_EVERY - (time - at));
+            response
+                .ctx
+                .request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.0)));
+        }
+        if !ended {
+            self.indent_drag = Some(d);
+        }
+        response.ctx.request_repaint();
     }
 
     /// Give the paragraphs at the caret of text `id` the stops `tabs`
@@ -237,6 +358,10 @@ impl App {
     /// ruler took it.
     pub fn tab_ruler_input(&mut self, response: &egui::Response, screen: Pos2) -> bool {
         use egui::PointerButton;
+        if let Some(d) = self.indent_drag.take() {
+            self.indent_drag_input(d, response, screen);
+            return true;
+        }
         // A stop being dragged follows the pointer until the release.
         if let Some(mut d) = self.tab_drag.take() {
             let Some(r) = self.tab_ruler().filter(|r| r.shape == d.shape) else {
@@ -298,6 +423,19 @@ impl App {
         }
         let press = response.ctx.input(|i| i.pointer.press_origin());
         if response.drag_started_by(PointerButton::Primary) {
+            if let Some(side) = r.indent_at(press.unwrap_or(screen)) {
+                self.indent_drag = Some(IndentDrag {
+                    shape: r.shape,
+                    side,
+                    value: match side {
+                        IndentSide::Left => r.left_indent,
+                        IndentSide::Right => r.right_indent,
+                    },
+                    before: self.engine.last_step_id(),
+                    shown: None,
+                });
+                return true;
+            }
             let Some(hit) = r.hit(press.unwrap_or(screen)) else {
                 return false;
             };
@@ -323,7 +461,8 @@ impl App {
             let Some(hit) = r.hit(screen) else {
                 return false;
             };
-            if hit.stop.is_none() {
+            // A click on an indent marker adds no stop.
+            if hit.stop.is_none() && r.indent_at(screen).is_none() {
                 let mut stops = r.stops.clone();
                 stops.push(TabStop::left((hit.pos * 10.0).round() / 10.0));
                 self.set_tab_stops(r.shape, stops);
@@ -422,6 +561,43 @@ pub fn draw(app: &App, painter: &Painter) {
             Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
         );
     }
+    // The indents: a triangle each along the outer edge, pointing at the
+    // frame; the one dragged with a line down the frame.
+    let moving = app
+        .indent_drag
+        .as_ref()
+        .filter(|d| d.shape == r.shape)
+        .map(|d| d.side);
+    for side in [IndentSide::Left, IndentSide::Right] {
+        let x = r.indent_pos(side);
+        let color = if moving == Some(side) {
+            Tokens::SELECTION
+        } else {
+            ink
+        };
+        indent_marker(painter, &r, x, color);
+        if moving == Some(side) {
+            let top = r.at(x, near);
+            painter.line_segment(
+                [top, top - r.up * (near + r.depth)],
+                Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
+            );
+        }
+    }
+}
+
+/// An indent's marker: a small triangle hanging from the strip's outer
+/// edge at `along` mm, its point toward the frame.
+fn indent_marker(painter: &Painter, r: &TabRuler, along: f64, color: Color32) {
+    let (near, far) = r.band();
+    let half = (far - near) / 2.0;
+    let dir = r.dir();
+    let top = r.at(along, far);
+    painter.add(egui::Shape::convex_polygon(
+        vec![top - dir * 4.0, top + dir * 4.0, top - r.up * (half - 1.0)],
+        color,
+        Stroke::NONE,
+    ));
 }
 
 /// One stop's marker: a corner opening to the right (left stop), to the

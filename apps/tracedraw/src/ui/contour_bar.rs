@@ -56,9 +56,15 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
     });
     ui.horizontal(|ui| {
         crate::ui::toolbar::dim_labelled_as(ui, "docker.steps", "contour.steps_desc", |ui| {
+            // A slider (with its number box), stepped on a logarithmic
+            // scale so the first steps are easy to pick (#1265).
             ui.add_enabled_ui(s.direction != ContourDirection::ToCenter, |ui| {
                 changed |= ui
-                    .add(NumField::new(&mut s.steps).range(1..=999).width(44.0))
+                    .add(
+                        crate::ui::Slider::new(&mut s.steps, 1..=999)
+                            .logarithmic(true)
+                            .width(120.0),
+                    )
                     .changed();
             });
         });

@@ -5,9 +5,10 @@
 //! [`build`] lays them out in millimetres with the human-readable text.
 //! See docs/behavior/barcode.md.
 
+use serde::{Deserialize, Serialize};
 use tracedraw_core::geometry::{Point, Rect};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Symbology {
     Codabar,
     Code39,
@@ -779,15 +780,18 @@ fn ean_addon(text: &str) -> Result<Vec<u8>, &'static str> {
 // ----- Layout ----------------------------------------------------------------
 
 /// Text alignment under (or over) the bars.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextAlignment {
     Left,
     Center,
     Right,
 }
 
-/// Everything the wizard asks, in millimetres and points.
-#[derive(Debug, Clone, PartialEq)]
+/// Everything the wizard asks, in millimetres and points. A barcode
+/// object keeps it in its object data (see [`DATA_KEY`]), so Print Merge
+/// can make it again for each record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BarcodeSpec {
     pub symbology: Symbology,
     pub data: String,
@@ -854,6 +858,59 @@ impl Default for BarcodeSpec {
 
 /// The nominal narrow module at 100 %.
 pub const NOMINAL_MODULE_MM: f64 = 0.33;
+
+/// The object data field of a barcode object holding its settings as
+/// JSON ([`BarcodeSpec`]): the data may name Print Merge fields as
+/// `<Field>`, filled for each record (#1084).
+pub const DATA_KEY: &str = "barcode";
+
+/// The longest data kept or made: more is never a barcode.
+const MAX_DATA: usize = 4096;
+
+impl BarcodeSpec {
+    /// The settings as an object data value.
+    pub fn to_data(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The settings an object data value holds, or `None` when it is not
+    /// one (too long, not JSON); missing settings take their defaults.
+    pub fn from_data(text: &str) -> Option<BarcodeSpec> {
+        if text.len() > MAX_DATA * 4 {
+            return None;
+        }
+        let spec: BarcodeSpec = serde_json::from_str(text).ok()?;
+        (spec.data.len() <= MAX_DATA).then_some(spec)
+    }
+
+    /// The settings a barcode object keeps, if it is one.
+    pub fn of_shape(s: &tracedraw_core::Shape) -> Option<BarcodeSpec> {
+        s.data
+            .iter()
+            .find(|(k, _)| k == DATA_KEY)
+            .and_then(|(_, v)| BarcodeSpec::from_data(v))
+    }
+
+    /// The data names a Print Merge field: some `<...>` in it.
+    pub fn has_fields(&self) -> bool {
+        self.data
+            .find('<')
+            .is_some_and(|i| self.data[i + 1..].contains('>'))
+    }
+
+    /// The settings drawn as long as the data names merge fields: the data
+    /// as it is when the symbology can hold it (Code 128 shows `<Field>`),
+    /// else the symbology's sample data in its place.
+    pub fn template(&self) -> BarcodeSpec {
+        if !self.has_fields() || build(self).is_ok() {
+            return self.clone();
+        }
+        BarcodeSpec {
+            data: self.symbology.sample().into(),
+            ..self.clone()
+        }
+    }
+}
 
 impl BarcodeSpec {
     /// The narrow module: the nominal one magnified, rounded to whole

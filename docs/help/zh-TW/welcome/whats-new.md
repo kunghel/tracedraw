@@ -18,6 +18,7 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
 
 ## 最近版本的重點 {#highlights}
 
+- **CNC 刀具路徑、匯出與選取。** [[menu.tools > menu.tools.tracecut]] 可為 CNC 雕刻機產生 G 代碼，並繪製雞眼、指接盒和折彎盒；[[menu.file > menu.file.export]] 先詢問檔案，再顯示該格式的選項，[[menu.file > menu.file.export_with_options]] 則一律顯示選項；[[menu.edit > menu.edit.select_similar]] 和 [[menu.edit > menu.edit.invert_selection]] 可變更選取範圍；[[menu.object > menu.object.insert > menu.object.add_dimensions]] 為所選物件標註尺寸；新增程序化填色、OpenType 按鈕和寮文介面。
 - **對頁與連結文字。** [[menu.layout > menu.layout.facing_pages]] 將頁面並排顯示為跨頁；[[menu.text > menu.text.link_content]] 連結文字，在一個中輸入會變更其他文字；多頁 PDF 會詢問要匯入哪些頁面；[[menu.edit > menu.edit.step_and_repeat]] 可用副本填滿頁面。
 - **觸控和手機。** 標準工具列上的 Shift、Ctrl 和 Alt 按鈕為手指保持按下；在 Android 上介面會避開相機挖孔和圓角；Apple Pencil 可在 iPad 的 Safari 中使用。
 - **檔案。** .cdr 檔案保留重疊曲線的填色規則，開啟時保留定位點、多欄文字、所有頁面共用的參考線和主頁面物件。

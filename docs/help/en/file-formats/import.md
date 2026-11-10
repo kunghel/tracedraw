@@ -16,7 +16,10 @@ global options; see [Global options](../customize/global-options.md#file-formats
 - **PDF and AI**: the [[pdf_import.title]] dialog box asks how to read the
   text: as editable text, which keeps its fonts when they are installed, or as
   curves, drawn from the fonts the file embeds so the text looks exactly as
-  it does in the file. Options > File Formats keeps the choice. A protected
+  it does in the file. When you import, a third choice, **Picture**, brings
+  each page in as one picture at the resolution you give (300 dpi at
+  first), exactly as the page looks but no longer editable as objects; one
+  Undo takes it away. Options > File Formats keeps the choice. A protected
   file asks for its password in the [[pdf_password.title]] dialog box.
 - **EPS and PostScript**: each printed page becomes a page.
 - **PSD**: each layer becomes a bitmap with its opacity, visibility and mask.

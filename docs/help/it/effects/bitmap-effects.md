@@ -77,6 +77,19 @@ finestra di dialogo), **Sposta su**, **Sposta giù** ed **Elimina**.
 [[menu.effects > menu.effects.flatten]] rende permanenti gli effetti: una
 bitmap mantiene ciò che mostra e un oggetto vettoriale diventa una bitmap.
 
+### Su tutte le pagine
+
+In un disegno di più pagine, la finestra di dialogo di un effetto mostra la
+casella [[dialog.fx_all_pages]] mentre è selezionata un'immagine. Se è
+spuntata, OK applica l'effetto anche a ogni immagine di ogni pagina, in un solo
+passo di annullamento. Le immagini bloccate e quelle su livelli bloccati
+restano come sono.
+
+[[menu.effects > menu.effects.all_pages]] fa lo stesso con gli effetti che
+l'immagine selezionata ha già, compresi quelli senza finestra di dialogo: ogni
+altra immagine riceve lo stesso elenco di effetti, in un solo passo di
+annullamento.
+
 ## Il selettore di effetti {#effect-picker}
 
 [[menu.effects > menu.effects.picker]] apre una finestra che resta aperta

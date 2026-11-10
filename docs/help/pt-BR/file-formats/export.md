@@ -10,21 +10,45 @@ esquerda e as configurações à direita.
 
 ## Para exportar {#export}
 
-1. Escolha [[menu.file > menu.file.export]].
-2. Escolha uma **Predefinição** para começar de escolhas salvas, ou escolha o
-   **formato**. Os formatos mais comuns (JPG, PDF, AI, PNG) vêm primeiro.
-   Escolher um formato traz de volta as configurações usadas nele da última
-   vez.
-3. Defina as opções do formato (abaixo).
-4. Marque **Somente selecionados** para exportar só a seleção, ou **Todas as
+1. Escolha [[menu.file > menu.file.export]] (<kbd>Ctrl+E</kbd>, ou o botão da
+   barra de ferramentas).
+2. Na caixa de diálogo **Salvar**, escolha a pasta, digite o nome e escolha o
+   formato em **Tipo**. Todos os formatos são oferecidos, o usado por último
+   primeiro; a extensão do nome decide o formato. A pasta da última
+   exportação é aberta.
+3. A caixa de diálogo Exportar abre com as opções desse formato, e o título
+   nomeia o arquivo (como "Exportar Cartaz.png"). Escolher um formato traz de
+   volta as configurações usadas nele da última vez. Escolha uma
+   **Predefinição** para começar de escolhas salvas, ou outro **formato**: a
+   extensão do arquivo muda junto. Os formatos mais comuns (JPG, PDF, AI, PNG)
+   vêm primeiro.
+4. Defina as opções do formato (abaixo).
+5. Marque **Somente selecionados** para exportar só a seleção, ou **Todas as
    páginas** para exportar cada página.
-5. Clique em [[dialog.ok]] e escolha onde salvar. No navegador, o arquivo é
-   baixado.
+6. Clique em [[dialog.ok]] para gravar o arquivo. [[dialog.cancel]] não grava
+   nada.
+
+No navegador, que não tem caixa de diálogo Salvar, a caixa de diálogo
+Exportar vem primeiro e [[dialog.ok]] baixa o arquivo; no Android,
+[[dialog.ok]] abre o seletor do sistema para escolher onde salvar.
 
 A caixa de diálogo estima o tamanho do arquivo e, para formatos de bitmap, diz
-o que sai, como "1240 x 1754 pixels, 150 dpi, sRGB". Com **Não mostrar a caixa de
-filtro** marcado, a próxima exportação vai direto para o arquivo com as mesmas
-escolhas.
+o que sai, como "1240 x 1754 pixels, 150 dpi, sRGB".
+
+## Pular as opções {#skip}
+
+Marque [[dialog.skip_export_dialog]] na parte de baixo da caixa de diálogo
+Exportar e clique em [[dialog.ok]]: as próximas exportações gravam o arquivo
+logo após a caixa de diálogo Salvar, com as opções da última exportação, e a
+barra de status diz "Exportado com as últimas opções". Para ver as opções de
+novo:
+
+- segure <kbd>Shift</kbd> ao escolher [[menu.file > menu.file.export]] ou ao
+  clicar no botão da barra de ferramentas, ou escolha
+  [[menu.file > menu.file.export_with_options]] (<kbd>Ctrl+Shift+E</kbd>), e
+  desmarque a caixa; ou
+- desmarque [[options.skip_export_dialog]] na página [[options.file_formats]]
+  das opções globais (clicar no aviso da barra de status a abre).
 
 ## Opções dos formatos {#options}
 

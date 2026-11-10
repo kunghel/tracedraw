@@ -30,15 +30,17 @@ drag is one undo step; the next drag is another.
   and 500 mm (`brushes::wheel_resizes`,
   `pick_drag_tests::shift_drag_and_the_wheel_size_the_brush_nib`).
 - The effect falls off from full at the centre to nothing at the edge of
-  the nib (`w = 1 - d / radius`).
+  the nib (`w = 1 - d / radius`; Attract and Repel ease it to nothing,
+  `s = w^2 (3 - 2 w)`, so the curve bends smoothly at the nib's edge).
 - Only the stretch of a curve within the nib's reach changes: the pieces
   of segments within the nib and a quarter of its radius beyond (the
   points there do not move, so the new stretch joins the old curve
   smoothly) are measured into points (a sixth of the nib apart for Smear
-  and Twirl, half a millimetre for Smooth, the spike spacing for
-  Roughen), moved and fitted back into curves (Roughen: straight lines,
-  so the spikes stay sharp), and the fitted curves are merged into as few
-  as keep the stretch within 0.1 mm (`fit::fit_path`, whose splitting is bounded, so a long stroke never
+  and Twirl, a twelfth for Attract and Repel, half a millimetre for
+  Smooth), moved and fitted back into curves, and the fitted curves are
+  merged into as few as keep the stretch within 0.1 mm (0.01 mm for
+  Attract and Repel, whose held steps move a few hundredths of a
+  millimetre; `fit::fit_path`, whose splitting is bounded, so a long stroke never
   hangs, #1133; Smooth merges
   within its own tolerance), so a stroke leaves a handful of nodes, not
   one every few millimetres (`effects::brush_runs`, `fewer_curves`). A
@@ -65,9 +67,9 @@ object". The settings are kept in the preferences (`tools.brush_radius`,
 | Smooth | Rate 1 to 100 % (20) | each point of the stretch in reach eased towards the average of the stretch around it (a quarter of the nib's radius each side, nearer points counting more) by three quarters of `w`, so jags and wobbles melt away a little with every step; then the points that matter within `0.05 + 1.45 (rate - 1) / 99` mm are kept (Ramer-Douglas-Peucker at half of it), a smooth curve fitted through them and merged into as few curves as stay within that tolerance |
 | Smear | Pressure 1 to 100 % (100) | points move by the pointer's move times pressure times `w^2` |
 | Twirl | Speed 1 to 100 % (50); Counterclockwise or Clockwise (Alt or Shift while dragging turns the other way) | points turn about the pointer by `speed / 1000` rad per mm the pointer moved, times `w`; held still, it goes on as if the pointer moved 10 mm a second |
-| Attract and Repel | Speed 1 to 100 % (50); Attract or Repel (Alt or Shift while dragging swaps them) | nodes and control points move towards (away from) the pointer by `speed x 0.006` of the pointer's move times `w`, never past the middle; held still, it goes on as if the pointer moved 10 mm a second |
+| Attract and Repel | Speed 1 to 100 % (50); Attract or Repel (Alt or Shift while dragging swaps them) | the points of the stretch move straight towards (away from) the pointer, the same in every direction, by a dose `f` (0 to 1) that grows by `2 x speed x 0.006 / radius` per mm the pointer moved: a point `d` from the centre goes to `d (1 - f s)` (Attract, never past the centre) or `d + f s (radius - d) / 2` (Repel, never past the nib's edge); both keep the points' order along each ray, so the outline never folds. Each move works on the outline as it is; held still, it works from the outline the hold found, the dose growing as if the pointer moved 10 mm a second, so it pulls or pushes at a steady pace and comes to rest at `f = 1` (a 10 mm nib at 50 % after 1.7 s) |
 | Smudge | Pressure 1 to 100 % (100) | a smooth (0.2 mm), then a smear at the pressure, so the outline is pulled without kinks |
-| Roughen | Frequency 1 to 10 spikes per 10 mm (5); Spike size (2 mm) | points `10 / frequency` mm apart within the nib pushed off the curve by up to the spike size times `w`, the push from the point's place |
+| Roughen | Frequency 1 to 10 spikes per 10 mm (5); Spike size (2 mm) | the whole stroke is worked out from the outline it began with and the places the nib went (a new place each half spacing the pointer moves): points `10 / frequency` mm apart along each subpath, counted from its start, are pushed off the curve along its normal by up to the spike size times `w` from the nearest place, the push from the point's place, and joined by straight lines so the spikes stay sharp; the nodes and the segments out of reach stay exactly. Going back over the same place or holding the button gives the same spikes, so a stroke adds at most one node per spacing of the stretch it covered (`effects::roughen_stroke`) |
 
 ## Checks
 
@@ -78,6 +80,12 @@ object". The settings are kept in the preferences (`tools.brush_radius`,
 - `tracedraw_core::effects::tests::long_smudge_and_twirl_strokes_stay_light`
 - `brushes::tests::a_stroke_is_one_step_and_follows_the_settings`
 - `brushes::tests::attract_repel_and_twirl_follow_their_modes`
+- `brushes::hold_tests::attract_and_repel_come_to_rest_while_held`
+- `tracedraw_core::effects::tests::attract_and_repel_are_the_same_in_every_direction`
+- `tracedraw_core::effects::tests::attract_and_repel_stay_within_the_nib`
+- `tracedraw_core::effects::tests::a_roughen_stroke_adds_spikes_once`
+- `pick_drag_tests::attract_works_from_the_press_and_settles_while_held`
+- `pick_drag_tests::roughen_adds_detail_up_to_a_cap_per_stroke`
 - `brushes::page_space_tests::the_nib_is_measured_on_the_page_whatever_the_object_scale`
 - `brushes::page_space_tests::smooth_leaves_the_outline_outside_the_nib_alone`
 - `ui::brush_bars::tests::brush_settings_scale_and_stay_in_range`

@@ -173,13 +173,31 @@ impl App {
 
     /// Link the two selected paragraph frames: the first selected flows into
     /// the second. The second frame's own text is appended to the chain.
+    /// An empty frame of no chain always takes the overflow of the other
+    /// one, whichever was picked first: the text stays in the frame it
+    /// starts in (picked first, the empty frame took all of it).
     pub fn link_text_frames(&mut self) {
         let [a, b] = self.selection.as_slice() else {
             self.status = tr("status.link_needs_two_frames");
             return;
         };
         let (a, b) = (*a, *b);
+        let (a, b) = if self.lone_empty_frame(a) && !self.lone_empty_frame(b) {
+            (b, a)
+        } else {
+            (a, b)
+        };
         self.link_frames(a, b);
+    }
+
+    /// `id` is a paragraph frame with no characters, in no chain.
+    fn lone_empty_frame(&self, id: ShapeId) -> bool {
+        let empty = matches!(
+            self.doc().find_shape(id).map(|s| &s.kind),
+            Some(ShapeKind::Text { spans, frame: Some(_), .. })
+                if tracedraw_core::spans_char_count(spans) == 0
+        );
+        empty && !self.is_linked_frame(id)
     }
 
     /// Link frame `a` to flow into `b` (on any page): false, with the
@@ -700,6 +718,50 @@ mod tests {
         app.unlink_text_frames();
         assert_eq!(app.next_frame(a), None);
         assert_eq!(text_of(&app, a), ta);
+    }
+
+    /// Linking a frame of text to an EMPTY frame flows the overflow into
+    /// the empty one, whichever of the two was picked first: the text
+    /// stays where it starts, in its own frame. Picked empty frame first,
+    /// the whole text went into it and its own frame was left empty.
+    #[test]
+    fn linking_to_an_empty_frame_keeps_the_source_text_whatever_the_order() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let a = frame(&mut app, long, 30.0, 8.0);
+        let fits = text_of(&app, a);
+        let b = frame(&mut app, "", 80.0, 80.0);
+        // The empty frame picked first, then the frame with the text.
+        app.select(vec![b, a]);
+        app.link_text_frames();
+        assert_eq!(app.next_frame(a), Some(b), "{}", app.status);
+        let (ta, tb) = (text_of(&app, a), text_of(&app, b));
+        assert!(long.starts_with(&ta) && !ta.is_empty(), "a={ta:?}");
+        assert!(!tb.is_empty(), "the overflow flows on: b={tb:?}");
+        assert_eq!(format!("{ta}{tb}"), long);
+        assert_eq!(fits, long, "the frame had all of the text");
+        // Back in the source frame: typing at its start keeps the text,
+        // which flows on into the second frame.
+        app.begin_text_edit(a);
+        app.text_set_caret_at(0, false);
+        app.text_insert("X");
+        assert_eq!(
+            format!("{}{}", text_of(&app, a), text_of(&app, b)),
+            format!("X{long}")
+        );
+        assert!(text_of(&app, a).starts_with("Xone"));
+        app.finish_text();
+        assert_eq!(
+            format!("{}{}", text_of(&app, a), text_of(&app, b)),
+            format!("X{long}")
+        );
+        // Two frames with text keep the order they were picked in.
+        let c = frame(&mut app, "first", 60.0, 60.0);
+        let d = frame(&mut app, "second", 60.0, 60.0);
+        app.select(vec![d, c]);
+        app.link_text_frames();
+        assert_eq!(app.next_frame(d), Some(c));
     }
 
     /// The flow tab (#371): a click on it, then a click on another page's

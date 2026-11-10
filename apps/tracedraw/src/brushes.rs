@@ -6,6 +6,14 @@
 //! not curves are converted first. The settings come from the property bar
 //! (`ui::brush_bars`).
 //!
+//! Twirl and Attract and Repel go on while the button is held still.
+//! Held in one place, Attract and Repel work from the outline as the
+//! hold found it ([`StrokeBase`]) with the dose held so far, so they
+//! pull or push at a steady rate and come to rest once the dose is full;
+//! a move starts afresh from the outline as it is. Roughen works out the
+//! whole stroke from the outline it started from and the way the nib
+//! went, so going over the same place again adds no nodes.
+//!
 //! The nib is sized on the drawing too: a drag that starts with Shift
 //! held sizes it instead of brushing (right grows it, left shrinks it,
 //! the circle showing where the press was), and the wheel over the
@@ -16,11 +24,35 @@ use crate::app::{App, Drag};
 use crate::tools::Tool;
 use crate::ui::brush_bars::BrushSettings;
 use egui::{Modifiers, PointerButton, Response};
-use tracedraw_core::{effects, geometry::Point, Command, ShapeKind};
+use tracedraw_core::{
+    effects,
+    geometry::{BezPath, Point},
+    Command, ShapeId, ShapeKind,
+};
 
 /// How far Twirl and Attract and Repel go per second while the button is
 /// held still, as a pointer move (mm).
 pub const HOLD_MM_PER_S: f64 = 10.0;
+
+/// Attract and Repel's dose for each millimetre the pointer moves (or,
+/// held still, [`HOLD_MM_PER_S`] a second), times the bar's rate, over
+/// the nib's radius: at 50 % speed (rate 0.3) a 10 mm nib reaches its
+/// whole effect after 17 mm of moves, or 1.7 s held still. Over the
+/// radius, so the pull or push goes as many millimetres a second
+/// whatever the nib's size.
+pub const ATTRACT_DOSE: f64 = 2.0;
+
+/// What a brush stroke works from (see the module notes).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StrokeBase {
+    /// The selected curves on the page as the hold (Attract and Repel)
+    /// or the stroke (Roughen) found them.
+    pub base: Vec<(ShapeId, BezPath)>,
+    /// Attract and Repel's dose (-1 to 1) held so far on `base`.
+    pub dose: f64,
+    /// Roughen: where the nib went in this stroke.
+    pub swath: Vec<Point>,
+}
 
 /// The smallest and the largest nib radius (mm), as the property bar
 /// takes them.
@@ -128,6 +160,7 @@ impl App {
     /// [`crate::tools::Tool::click_selects`]).
     pub fn brush_begin(&mut self, p: Point) {
         self.brush_stepped = false;
+        self.brush_stroke = StrokeBase::default();
         if self.selection.is_empty() {
             self.status = crate::i18n::tr("status.brush_select_first");
             self.drag = Drag::None;
@@ -153,7 +186,11 @@ impl App {
     /// The stroke moves on to `p`, `dt` seconds after the last step;
     /// `swap` (Alt or Shift held) swaps Attract and Repel and Twirl's
     /// turn. Twirl and Attract and Repel go on while the button is held
-    /// still, as if the pointer moved [`HOLD_MM_PER_S`].
+    /// still, as if the pointer moved [`HOLD_MM_PER_S`]. Held in one
+    /// place, Attract and Repel work from the outline the hold found with
+    /// the dose held so far, so they stop once the dose is full. Roughen
+    /// works the whole stroke out from the outline it began with and the
+    /// nib's way.
     pub fn brush_step(&mut self, p: Point, swap: bool, dt: f64) {
         let Drag::Node { last } = self.drag else {
             return;
@@ -168,6 +205,31 @@ impl App {
         };
         let motion = delta.hypot() + HOLD_MM_PER_S * held;
         let turn = if swap { -1.0 } else { 1.0 };
+        if self.tool == Tool::AttractRepel {
+            // A move starts afresh from the outline as it is now.
+            if delta.hypot() > 1e-9 || self.brush_stroke.base.is_empty() {
+                self.brush_stroke.base = self.brush_page_paths();
+                self.brush_stroke.dose = 0.0;
+            }
+            let before = self.brush_stroke.dose;
+            let dose =
+                (before + motion * b.attract_rate(swap) * ATTRACT_DOSE / radius).clamp(-1.0, 1.0);
+            if !dose.is_finite() || dose == before {
+                // Attract and Repel at their whole effect: at rest.
+                self.drag = Drag::Node { last: p };
+                return;
+            }
+            self.brush_stroke.dose = dose;
+        }
+        if self.tool == Tool::Roughen {
+            if self.brush_stroke.base.is_empty() {
+                self.brush_stroke.base = self.brush_page_paths();
+            }
+            if self.brush_stroke.swath.last() != Some(&p) {
+                self.brush_stroke.swath.push(p);
+            }
+        }
+        let dose = self.brush_stroke.dose;
         let mut cmds = Vec::new();
         for s in self.selected_shapes() {
             let ShapeKind::Path { path, closed } = &s.kind else {
@@ -180,33 +242,37 @@ impl App {
             // drawing) is reshaped within the nib as drawn, not within a
             // nib scaled with it.
             let page_path = s.transform * path;
-            let new_page = match self.tool {
-                Tool::Smear => effects::smear(
+            let base = self
+                .brush_stroke
+                .base
+                .iter()
+                .find(|(id, _)| *id == s.id)
+                .map(|(_, b)| b);
+            let new_page = match (self.tool, base) {
+                (Tool::Smear, _) => effects::smear(
                     &page_path,
                     p,
                     delta * BrushSettings::pressure(b.smear_pressure),
                     radius,
                 ),
-                Tool::Twirl => {
+                (Tool::Twirl, _) => {
                     effects::twirl(&page_path, p, motion * b.twirl_rate() * turn, radius)
                 }
-                Tool::AttractRepel => {
-                    effects::attract(&page_path, p, radius, motion * b.attract_rate(swap))
-                }
-                Tool::Smudge => effects::smear(
+                (Tool::AttractRepel, Some(from)) => effects::attract(from, p, radius, dose),
+                (Tool::Smudge, _) => effects::smear(
                     &effects::smooth(&page_path, p, radius, 0.2),
                     p,
                     delta * BrushSettings::pressure(b.smudge_pressure),
                     radius,
                 ),
-                Tool::Roughen => effects::roughen(
-                    &page_path,
-                    p,
+                (Tool::Roughen, Some(from)) => effects::roughen_stroke(
+                    from,
+                    &self.brush_stroke.swath,
                     radius,
                     self.roughen_amount,
                     b.roughen_spacing(),
                 ),
-                Tool::Smooth => effects::smooth(&page_path, p, radius, b.smooth_tolerance()),
+                (Tool::Smooth, _) => effects::smooth(&page_path, p, radius, b.smooth_tolerance()),
                 _ => continue,
             };
             if new_page == page_path {
@@ -240,6 +306,17 @@ impl App {
         if self.engine.run_batch(label, &cmds).is_ok() {
             self.brush_stepped = true;
         }
+    }
+
+    /// The selected curves as they lie on the page.
+    fn brush_page_paths(&self) -> Vec<(ShapeId, BezPath)> {
+        self.selected_shapes()
+            .into_iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Path { path, .. } => Some((s.id, s.transform * path)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The brushes' pointer input. A drag that starts with Shift held
@@ -453,18 +530,16 @@ mod tests {
             app.brush_begin(Point::new(36.0, 36.0));
             app.brush_step(Point::new(37.0, 36.0), shift, 0.0);
             app.brush_step(Point::new(36.0, 36.0), shift, 0.0);
-            let reach = match &app.doc().find_shape(id).expect("shape").kind {
-                ShapeKind::Path { path, .. } => path
-                    .elements()
-                    .iter()
-                    .filter_map(|e| match e {
-                        tracedraw_core::geometry::PathEl::MoveTo(q)
-                        | tracedraw_core::geometry::PathEl::LineTo(q) => Some(q.x + q.y),
-                        _ => None,
-                    })
-                    .fold(f64::MIN, f64::max),
-                _ => 0.0,
-            };
+            // Along the outline, curves flattened: the brushes fit the
+            // stretch in reach with curves.
+            let mut reach = f64::MIN;
+            if let ShapeKind::Path { path, .. } = &app.doc().find_shape(id).expect("shape").kind {
+                tracedraw_core::geometry::flatten(path, 0.01, &mut |e| match e {
+                    tracedraw_core::geometry::PathEl::MoveTo(q)
+                    | tracedraw_core::geometry::PathEl::LineTo(q) => reach = reach.max(q.x + q.y),
+                    _ => {}
+                });
+            }
             app.undo();
             reach
         };
@@ -497,6 +572,82 @@ mod tests {
             app.brush_step(Point::new(35.0, 35.0), false, 0.1);
         }
         assert_ne!(bounds(&app, id), before);
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+    use tracedraw_core::Rect;
+
+    /// Held still over the top side of a square, Attract and Repel move
+    /// the side from the first step on, at a steady rate, and come to
+    /// rest once the dose is full (the live test of 0.41: the objects
+    /// kept moving and never settled); Repel pushes the side out to at
+    /// most the nib's edge, Attract pulls it in.
+    #[test]
+    fn attract_and_repel_come_to_rest_while_held() {
+        for repel in [false, true] {
+            let mut app = App::headless();
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("shape");
+            app.select(vec![id]);
+            app.tool = Tool::AttractRepel;
+            app.brush.repel = repel;
+            app.brush_radius = 8.0;
+            let at = Point::new(20.0, 36.0);
+            app.brush_begin(at);
+            let mut revs = Vec::new();
+            let mut tops = Vec::new();
+            for _ in 0..200 {
+                app.brush_step(at, false, 1.0 / 60.0);
+                revs.push(app.doc().shape_on_page(id).expect("shape").page_path());
+                // Where the side crosses x = 20.
+                let page = app.doc().shape_on_page(id).expect("shape").page_path();
+                let mut side = f64::NAN;
+                let mut prev: Option<Point> = None;
+                tracedraw_core::geometry::flatten(&page, 0.01, &mut |e| match e {
+                    tracedraw_core::geometry::PathEl::MoveTo(q) => prev = Some(q),
+                    tracedraw_core::geometry::PathEl::LineTo(q) => {
+                        if let Some(a) = prev {
+                            let crosses = (a.x - 20.0) * (q.x - 20.0) <= 0.0 && a.x != q.x;
+                            if crosses && a.y.max(q.y) > 20.0 {
+                                side = a.y + (q.y - a.y) * (20.0 - a.x) / (q.x - a.x);
+                            }
+                        }
+                        prev = Some(q);
+                    }
+                    _ => {}
+                });
+                tops.push(side);
+            }
+            assert!(
+                (tops[2] - tops[0]).abs() > 0.02,
+                "repel {repel}: moving from the start: {:?}",
+                &tops[..3]
+            );
+            // A steady rate: about as far in the second tenth of a
+            // second as in the first.
+            let (a, b) = ((tops[6] - tops[0]).abs(), (tops[12] - tops[6]).abs());
+            assert!(
+                a > 0.0 && (a - b).abs() < 0.5 * a,
+                "repel {repel}: {a} then {b}"
+            );
+            assert_eq!(revs[150], revs[199], "repel {repel}: at rest");
+            let end = tops[199];
+            if repel {
+                // 4 mm from the centre: out to 5 mm, within the nib.
+                assert!((end - 41.0).abs() < 0.15, "pushed to {end}");
+            } else {
+                // In to 2 mm from the centre.
+                assert!((end - 38.0).abs() < 0.15, "pulled to {end}");
+            }
+        }
     }
 }
 

@@ -862,8 +862,8 @@ impl App {
             sp.size_pt = size;
             sp.bold = bold;
             sp.italic = italic;
-            sp.underline = underline;
-            sp.strikethrough = strike;
+            sp.underline = underline.into();
+            sp.strikethrough = strike.into();
         });
         let Some(e) = self.table_edit.clone() else {
             return;

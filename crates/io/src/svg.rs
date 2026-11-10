@@ -65,7 +65,7 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
     let flip = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]);
     let mut gradient_defs = String::new();
     let mut body = String::new();
-    let mut next_grad = 0usize;
+    let mut ctx = SvgCtx { next_grad: 0, flip };
     let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     for layer in layers {
         if !layer.visible {
@@ -84,7 +84,7 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
                 flip,
                 &mut body,
                 &mut gradient_defs,
-                &mut next_grad,
+                &mut ctx,
                 2,
             );
         }
@@ -98,6 +98,22 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
     out
 }
 
+/// What one page's writer carries along: the numbering of gradients and
+/// patterns in `defs`, and the page flip (page space, Y up, to the
+/// output's Y down), which anchors patterns to the page.
+struct SvgCtx {
+    next_grad: usize,
+    flip: Affine,
+}
+
+impl SvgCtx {
+    /// The next id with `prefix`.
+    fn next(&mut self, prefix: &str) -> String {
+        self.next_grad += 1;
+        format!("{prefix}{}", self.next_grad)
+    }
+}
+
 /// A linked object inside a link (`<a>`) to its address; links of the
 /// objects inside it are dropped, since links cannot nest. Page links
 /// (`#page=n`) have no target in a one-page SVG and are left out.
@@ -107,12 +123,12 @@ fn write_shape(
     parent: Affine,
     out: &mut String,
     defs: &mut String,
-    next_grad: &mut usize,
+    ctx: &mut SvgCtx,
     indent: usize,
 ) {
     // Bitmap effects on a vector object: its picture in its place.
     if let Some(pic) = shape.drawn_as() {
-        return write_shape(&pic, symbols, parent, out, defs, next_grad, indent);
+        return write_shape(&pic, symbols, parent, out, defs, ctx, indent);
     }
     let link = shape
         .link
@@ -120,14 +136,14 @@ fn write_shape(
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with("#page="));
     let Some(link) = link.filter(|_| shape.visible) else {
-        write_unlinked(shape, symbols, parent, out, defs, next_grad, indent);
+        write_unlinked(shape, symbols, parent, out, defs, ctx, indent);
         return;
     };
     let pad = "  ".repeat(indent);
     let _ = writeln!(out, "{pad}<a href=\"{}\">", escape(link));
     let mut inner = shape.clone();
     drop_links(&mut inner);
-    write_unlinked(&inner, symbols, parent, out, defs, next_grad, indent + 1);
+    write_unlinked(&inner, symbols, parent, out, defs, ctx, indent + 1);
     let _ = writeln!(out, "{pad}</a>");
 }
 
@@ -150,7 +166,7 @@ fn write_unlinked(
     parent: Affine,
     out: &mut String,
     defs: &mut String,
-    next_grad: &mut usize,
+    ctx: &mut SvgCtx,
     indent: usize,
 ) {
     if !shape.visible {
@@ -168,16 +184,26 @@ fn write_unlinked(
         for b in &ev.below {
             let mut b = b.clone();
             b.effects.clear();
-            write_shape(&b, symbols, parent, out, defs, next_grad, indent + 1);
+            write_shape(&b, symbols, parent, out, defs, ctx, indent + 1);
         }
         let mut main = ev.main.clone();
         main.effects.clear();
         // Lens and non-uniform transparency have no SVG equivalent here;
-        // approximate with the average opacity of the mask.
+        // approximate with the average opacity of the mask. The merge
+        // mode goes out as the CSS blend mode when one matches it.
+        let mut blend = None;
+        // The transparency's opacity and its target (the fill, the
+        // outline or the whole object, live test of 0.41).
+        let mut fade: Option<(f64, u8)> = None;
         for e in &shape.effects {
             match e {
-                tracedraw_core::live::Effect::Transparency { mask, .. } => {
-                    main.opacity *= average_luminance(mask) as f64;
+                tracedraw_core::live::Effect::Transparency {
+                    mask,
+                    merge,
+                    target,
+                } => {
+                    fade = Some((average_luminance(mask) as f64, *target));
+                    blend = svg_blend_mode(*merge);
                 }
                 tracedraw_core::live::Effect::Lens(tracedraw_core::live::Lens::Transparency {
                     rate,
@@ -192,11 +218,31 @@ fn write_unlinked(
                 _ => {}
             }
         }
-        write_shape(&main, symbols, parent, out, defs, next_grad, indent + 1);
+        let parts = match fade {
+            Some((_, target)) => tracedraw_core::live::transparency_parts(&main, target),
+            None => vec![(main, false)],
+        };
+        for (mut part, faded) in parts {
+            if !faded {
+                write_shape(&part, symbols, parent, out, defs, ctx, indent + 1);
+                continue;
+            }
+            if let Some((opacity, _)) = fade {
+                part.opacity *= opacity;
+            }
+            match blend {
+                Some(b) => {
+                    let _ = writeln!(out, "{pad}  <g style=\"mix-blend-mode:{b}\">");
+                    write_shape(&part, symbols, parent, out, defs, ctx, indent + 2);
+                    let _ = writeln!(out, "{pad}  </g>");
+                }
+                None => write_shape(&part, symbols, parent, out, defs, ctx, indent + 1),
+            }
+        }
         for a in &ev.above {
             let mut a = a.clone();
             a.effects.clear();
-            write_shape(&a, symbols, parent, out, defs, next_grad, indent + 1);
+            write_shape(&a, symbols, parent, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         return;
@@ -205,7 +251,7 @@ fn write_unlinked(
     if let Some(parts) = shape.text_parts() {
         let _ = writeln!(out, "{pad}<g id=\"{}\">", shape.id.raw());
         for p in &parts {
-            write_unlinked(p, symbols, parent, out, defs, next_grad, indent + 1);
+            write_unlinked(p, symbols, parent, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         return;
@@ -220,9 +266,9 @@ fn write_unlinked(
             if shape.opacity < 1.0 {
                 let mut c = c.clone();
                 c.absorb_opacity(shape.opacity);
-                write_shape(&c, symbols, transform, out, defs, next_grad, indent + 1);
+                write_shape(&c, symbols, transform, out, defs, ctx, indent + 1);
             } else {
-                write_shape(c, symbols, transform, out, defs, next_grad, indent + 1);
+                write_shape(c, symbols, transform, out, defs, ctx, indent + 1);
             }
         }
         let _ = writeln!(out, "{pad}</g>");
@@ -234,7 +280,7 @@ fn write_unlinked(
     ) {
         let _ = writeln!(out, "{pad}<g id=\"{}\">", shape.id.raw());
         for c in shape.expand(symbols) {
-            write_shape(&c, symbols, transform, out, defs, next_grad, indent + 1);
+            write_shape(&c, symbols, transform, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         return;
@@ -248,7 +294,7 @@ fn write_unlinked(
         let mut fill_only = (**frame).clone();
         fill_only.stroke = None;
         let mut m = String::new();
-        write_shape(&fill_only, symbols, transform, &mut m, defs, next_grad, 3);
+        write_shape(&fill_only, symbols, transform, &mut m, defs, ctx, 3);
         let mut mask = format!(
             "    <mask id=\"mask{id}\" maskUnits=\"userSpaceOnUse\" x=\"-100000\" y=\"-100000\" width=\"200000\" height=\"200000\">\n"
         );
@@ -272,7 +318,7 @@ fn write_unlinked(
         };
         let _ = writeln!(out, "{pad}<g id=\"{id}\" mask=\"url(#mask{id})\"{opacity}>");
         for c in contents {
-            write_shape(c, symbols, transform, out, defs, next_grad, indent + 1);
+            write_shape(c, symbols, transform, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         return;
@@ -281,7 +327,7 @@ fn write_unlinked(
         // Frame fill, then the contents clipped to the frame, then its outline.
         let mut fill_only = (**frame).clone();
         fill_only.stroke = None;
-        write_shape(&fill_only, symbols, transform, out, defs, next_grad, indent);
+        write_shape(&fill_only, symbols, transform, out, defs, ctx, indent);
         let clip_id = format!("clip{}", shape.id.raw());
         let _ = writeln!(
             defs,
@@ -294,13 +340,13 @@ fn write_unlinked(
             shape.id.raw()
         );
         for c in contents {
-            write_shape(c, symbols, transform, out, defs, next_grad, indent + 1);
+            write_shape(c, symbols, transform, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         let mut outline = (**frame).clone();
         outline.fill = Fill::None;
         if outline.stroke.is_some() {
-            write_shape(&outline, symbols, transform, out, defs, next_grad, indent);
+            write_shape(&outline, symbols, transform, out, defs, ctx, indent);
         }
         return;
     }
@@ -308,7 +354,7 @@ fn write_unlinked(
     if let Some(parts) = shape.layers() {
         let _ = writeln!(out, "{pad}<g id=\"{}\">", shape.id.raw());
         for p in &parts {
-            write_shape(p, symbols, parent, out, defs, next_grad, indent + 1);
+            write_shape(p, symbols, parent, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
         return;
@@ -358,7 +404,7 @@ fn write_unlinked(
 
     let fill_attr = format!(
         "fill=\"{}\"",
-        paint_value(&shape.fill, bounds, symbols, defs, next_grad)
+        paint_value(&shape.fill, bounds, transform, symbols, defs, ctx)
     );
 
     let drawn = shape.stroke.as_ref().map(|s| drawn_stroke(s, transform));
@@ -372,7 +418,8 @@ fn write_unlinked(
         .and_then(|(s, (_, scale))| {
             tracedraw_core::shaping::outline_band(&shape.page_path(), s, *scale).map(|b| {
                 let band = parent * b;
-                let paint = outline_paint_value(s, band.bounding_box(), symbols, defs, next_grad);
+                let paint =
+                    outline_paint_value(s, band.bounding_box(), transform, symbols, defs, ctx);
                 (band, paint)
             })
         });
@@ -394,7 +441,7 @@ fn write_unlinked(
             // as on screen.
             let half = s.width / 2.0;
             let paint =
-                outline_paint_value(s, bounds.inflate(half, half), symbols, defs, next_grad);
+                outline_paint_value(s, bounds.inflate(half, half), transform, symbols, defs, ctx);
             let mut a = format!(
                 "stroke=\"{paint}\" stroke-width=\"{}\" stroke-linecap=\"{cap}\" stroke-linejoin=\"{join}\"",
                 s.width
@@ -522,38 +569,199 @@ pub(crate) fn drawn_stroke(
 fn outline_paint_value(
     s: &tracedraw_core::Stroke,
     bounds: tracedraw_core::Rect,
+    object: Affine,
     symbols: &[tracedraw_core::Symbol],
     defs: &mut String,
-    next_grad: &mut usize,
+    ctx: &mut SvgCtx,
 ) -> String {
     match s.fill.as_deref() {
         Some(fill) if !matches!(fill, Fill::None | Fill::Solid(_)) => {
-            paint_value(fill, bounds, symbols, defs, next_grad)
+            paint_value(fill, bounds, object, symbols, defs, ctx)
         }
         _ => s.color.to_hex(),
     }
 }
 
+/// Most stops a gradient sampled along a hue path or a smooth transition
+/// is written with (a stepped gradient keeps a pair per band).
+pub const MAX_SAMPLED_STOPS: usize = 64;
+
+/// `stops` (sorted, over 0..1) as `n` stops spaced evenly, each the
+/// colour and opacity the run has there.
+pub(crate) fn resample_stops(
+    stops: &[tracedraw_core::Stop],
+    n: usize,
+) -> Vec<tracedraw_core::Stop> {
+    let n = n.max(2);
+    let k = (n - 1) as f64;
+    (0..n)
+        .map(|i| {
+            let pos = i as f64 / k;
+            tracedraw_core::Stop {
+                pos,
+                ..tracedraw_core::style::sample_stop(stops, pos)
+            }
+        })
+        .collect()
+}
+
+/// `matrix(a b c d e f)` for an SVG transform attribute.
+fn matrix(m: Affine) -> String {
+    let c = m.as_coeffs();
+    format!(
+        "matrix({} {} {} {} {} {})",
+        fmt(c[0]),
+        fmt(c[1]),
+        fmt(c[2]),
+        fmt(c[3]),
+        fmt(c[4]),
+        fmt(c[5])
+    )
+}
+
+/// The `<pattern>` of a pattern fill, written into `defs`: its tile is
+/// the block of tiles that repeats (one tile, or the mirrored and
+/// shifted tiles of the placement) in millimetres, Y down, and
+/// `patternTransform` carries the placement (tile size, offset,
+/// rotation, skew, the row or column lean) into the output space, from
+/// the page origin, or from the object (`object`, its transform into the
+/// output space) when the pattern transforms with its object. Returns
+/// the paint reference.
+fn pattern_paint(
+    p: &tracedraw_core::Pattern,
+    object: Affine,
+    symbols: &[tracedraw_core::Symbol],
+    defs: &mut String,
+    ctx: &mut SvgCtx,
+) -> String {
+    let id = ctx.next("pat");
+    let placement = p.placement().sanitized();
+    let tile = p.tile_size();
+    let (cols, rows) = placement.cell_tiles();
+    // The block in pattern space: `cw` by `ch` mm, Y down.
+    let (cw, ch) = (tile.width * f64::from(cols), tile.height * f64::from(rows));
+    let cell = placement.cell(tile);
+    // Pattern space to the block's unit square (Y up), and back.
+    let q = Affine::new([1.0 / cw, 0.0, 0.0, -1.0 / ch, 0.0, 1.0]);
+    let q_inv = Affine::new([cw, 0.0, 0.0, -ch, 0.0, ch]);
+    let to_output = if placement.transform_with_object {
+        object * placement.place()
+    } else {
+        ctx.flip * placement.place()
+    };
+    let m = to_output * cell * q;
+    let identity = m
+        .as_coeffs()
+        .iter()
+        .zip(Affine::IDENTITY.as_coeffs())
+        .all(|(a, b)| (a - b).abs() < 1e-9);
+    let pattern_transform = if identity {
+        String::new()
+    } else {
+        format!(" patternTransform=\"{}\"", matrix(m))
+    };
+    let mut inner = String::new();
+    match p {
+        tracedraw_core::Pattern::TwoColor { .. } => {
+            // Rasterised at 32 px per tile (the block holds two where
+            // mirrored) into a data URI.
+            let dpi = (32.0 / tile.width.max(1e-6) * 25.4).clamp(1.0, 2400.0);
+            if let Some((pm, _)) = tracedraw_render::render_pattern_cell(p, dpi) {
+                let png = pm.encode_png().unwrap_or_default();
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+                let _ = writeln!(
+                    inner,
+                    "      <image width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{b64}\"/>",
+                    fmt(cw),
+                    fmt(ch)
+                );
+            }
+        }
+        tracedraw_core::Pattern::Bitmap {
+            png,
+            width_px,
+            height_px,
+            ..
+        } => {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+            // The picture's pixels (Y down) to one tile's millimetres (Y up).
+            let content = Affine::new([
+                tile.width / f64::from((*width_px).max(1)),
+                0.0,
+                0.0,
+                -tile.height / f64::from((*height_px).max(1)),
+                0.0,
+                tile.height,
+            ]);
+            for copy in placement.tile_copies(tile) {
+                let t = q_inv * cell.inverse() * copy * content;
+                let _ = writeln!(
+                    inner,
+                    "      <image width=\"{width_px}\" height=\"{height_px}\" transform=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{b64}\"/>",
+                    matrix(t)
+                );
+            }
+        }
+        tracedraw_core::Pattern::Vector {
+            shapes: tile_shapes,
+            tile: own,
+            ..
+        } => {
+            // The tile's content stays vector: its shapes are written into
+            // the pattern once per copy with the tile's own Y flip (tile
+            // space is Y up, origin bottom-left). Gradients they use land
+            // in `defs` too.
+            let content = Affine::scale_non_uniform(
+                tile.width / own.width.max(1e-9),
+                tile.height / own.height.max(1e-9),
+            );
+            for copy in placement.tile_copies(tile) {
+                let t = q_inv * cell.inverse() * copy * content;
+                for s in tile_shapes {
+                    write_shape(s, symbols, t, &mut inner, defs, ctx, 3);
+                }
+            }
+        }
+    }
+    let _ = writeln!(
+        defs,
+        "    <pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\"{pattern_transform}>\n{inner}    </pattern>",
+        fmt(cw),
+        fmt(ch)
+    );
+    format!("url(#{id})")
+}
+
 /// The SVG paint of `fill` over `bounds` (output space): `none`, a
 /// colour, or a reference to a gradient or pattern written into `defs`.
-/// Fills SVG cannot draw (textures, meshes) give a representative colour.
+/// `object` is the object's transform into the output space (a pattern
+/// set to transform with its object follows it). Fills SVG cannot draw
+/// (textures, meshes) give a representative colour.
 fn paint_value(
     fill: &Fill,
     bounds: tracedraw_core::Rect,
+    object: Affine,
     symbols: &[tracedraw_core::Symbol],
     defs: &mut String,
-    next_grad: &mut usize,
+    ctx: &mut SvgCtx,
 ) -> String {
     match fill {
         Fill::None => "none".to_string(),
         Fill::Solid(c) => c.to_hex(),
         Fill::Fountain(f) => {
-            *next_grad += 1;
-            let id = format!("grad{}", *next_grad);
-            // The edge pad, repeats, mirror and inversion as one run of
-            // stops; a shaped fountain (0 on the edge) runs from the
-            // centre out as a radial one.
+            let id = ctx.next("grad");
+            // The edge pad, repeats, mirror, inversion and blend settings
+            // as one run of stops: a stepped fountain gets a pair of stops
+            // per band (hard edges), a hue path or a smooth transition is
+            // sampled, at most MAX_SAMPLED_STOPS of them; a shaped
+            // fountain (0 on the edge) runs from the centre out as a
+            // radial one.
             let mut stops = f.resolved_stops();
+            if !f.stepped() && stops.len() > MAX_SAMPLED_STOPS {
+                stops = resample_stops(&stops, MAX_SAMPLED_STOPS);
+            }
             if f.kind == tracedraw_core::FountainKind::Shaped {
                 stops.reverse();
                 for s in &mut stops {
@@ -634,71 +842,54 @@ fn paint_value(
             }
             format!("url(#{id})")
         }
-        Fill::Pattern(tracedraw_core::Pattern::TwoColor {
-            tile,
-            front,
-            back,
-            size_mm,
-        }) => {
-            *next_grad += 1;
-            let id = format!("pat{}", *next_grad);
-            // Rasterize the tile at 32 px into a data URI.
-            let n = 32u32;
-            let mut rgba = Vec::with_capacity((n * n * 4) as usize);
-            for y in 0..n {
-                for x in 0..n {
-                    let u = (x as f64 + 0.5) / n as f64;
-                    let v = 1.0 - (y as f64 + 0.5) / n as f64;
-                    let c = if tile.front(u, v) { *front } else { *back };
-                    let [r, g, b] = c.to_rgb8();
-                    rgba.extend_from_slice(&[r, g, b, 255]);
-                }
-            }
-            let png = encode_png(n, n, &rgba);
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-            let _ = writeln!(defs, "    <pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{s}\" height=\"{s}\"><image width=\"{s}\" height=\"{s}\" href=\"data:image/png;base64,{b64}\"/></pattern>", s = fmt(*size_mm));
-            format!("url(#{id})")
-        }
-        Fill::Pattern(tracedraw_core::Pattern::Bitmap {
-            png,
-            width_px,
-            height_px,
-            size_mm,
-        }) => {
-            *next_grad += 1;
-            let id = format!("pat{}", *next_grad);
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-            let h = size_mm * *height_px as f64 / (*width_px).max(1) as f64;
-            let _ = writeln!(defs, "    <pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\"><image width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{b64}\"/></pattern>", fmt(*size_mm), fmt(h), fmt(*size_mm), fmt(h));
-            format!("url(#{id})")
-        }
-        Fill::Pattern(tracedraw_core::Pattern::Vector {
-            shapes: tile_shapes,
-            tile,
-        }) => {
-            *next_grad += 1;
-            let id = format!("pat{}", *next_grad);
-            // The tile's content stays vector: its shapes are written into
-            // the pattern with the tile's own Y flip (tile space is Y up,
-            // origin bottom-left). Gradients they use land in `defs` too.
-            let tile_flip = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, tile.height]);
-            let mut inner = String::new();
-            for s in tile_shapes {
-                write_shape(s, symbols, tile_flip, &mut inner, defs, next_grad, 3);
-            }
-            let _ = writeln!(
-            defs,
-            "    <pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\">\n{inner}    </pattern>",
-            fmt(tile.width),
-            fmt(tile.height)
-        );
-            format!("url(#{id})")
-        }
+        Fill::Pattern(p) => pattern_paint(p, object, symbols, defs, ctx),
         Fill::Texture(t) => {
             // Approximate with the average of the two colours.
             tracedraw_core::style::lerp_color(t.color_a, t.color_b, 0.5).to_hex()
+        }
+        Fill::Procedural(p) => {
+            let id = ctx.next("pat");
+            // The tile's paths as they are (vector), with the tile's Y
+            // flip (tile space is Y up, origin bottom-left), over a
+            // rectangle of the background colour when there is one.
+            let tile = tracedraw_core::procedural::procedural_tile(p);
+            let (w, h) = (tile.size.width, tile.size.height);
+            let tile_flip = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]);
+            let mut inner = String::new();
+            if let Some(bg) = p.background {
+                let _ = writeln!(
+                    inner,
+                    "      <rect width=\"{}\" height=\"{}\" fill=\"{}\"/>",
+                    fmt(w),
+                    fmt(h),
+                    bg.to_hex()
+                );
+            }
+            let fg = p.foreground.to_hex();
+            for path in &tile.paths {
+                let _ = writeln!(
+                    inner,
+                    "      <path d=\"{}\" fill=\"{fg}\"/>",
+                    path_data(&(tile_flip * path))
+                );
+            }
+            // The tiles start at the page origin, as on screen.
+            let origin = ctx.flip * tracedraw_core::geometry::Point::ZERO;
+            let anchor = if origin.x == 0.0 && origin.y == 0.0 {
+                String::new()
+            } else {
+                format!(
+                    " patternTransform=\"{}\"",
+                    matrix(Affine::translate(origin.to_vec2()))
+                )
+            };
+            let _ = writeln!(
+                defs,
+                "    <pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\"{anchor}>\n{inner}    </pattern>",
+                fmt(w),
+                fmt(h)
+            );
+            format!("url(#{id})")
         }
         Fill::Mesh(m) => {
             // Average of the node colours; the renderer image path is exact.
@@ -730,6 +921,33 @@ fn fmt(v: f64) -> String {
     }
 }
 
+/// The CSS `mix-blend-mode` that draws a merge mode as the drawing
+/// window does (see `tracedraw_render::merge_blend`); None for the modes
+/// CSS has no blend for, which draw normally.
+pub fn svg_blend_mode(merge: tracedraw_core::live::MergeMode) -> Option<&'static str> {
+    use tracedraw_core::live::MergeMode as M;
+    Some(match merge {
+        M::Multiply | M::Texturize => "multiply",
+        M::Subtract | M::Difference => "difference",
+        M::Divide | M::Screen => "screen",
+        M::IfLighter => "lighten",
+        M::IfDarker => "darken",
+        M::Hue => "hue",
+        M::Saturation => "saturation",
+        M::Color => "color",
+        M::Lightness => "luminosity",
+        M::Invert | M::Exclusion => "exclusion",
+        M::Overlay => "overlay",
+        M::SoftLight => "soft-light",
+        M::HardLight => "hard-light",
+        M::ColorDodge => "color-dodge",
+        M::ColorBurn => "color-burn",
+        M::Normal | M::Add | M::And | M::Or | M::Xor | M::Red | M::Green | M::Blue | M::Behind => {
+            return None
+        }
+    })
+}
+
 /// Mean luminance (0..1) of a mask fill, for exporters without masks.
 pub fn average_luminance(fill: &Fill) -> f32 {
     match fill {
@@ -744,6 +962,10 @@ pub fn average_luminance(fill: &Fill) -> f32 {
         }
         Fill::Pattern(_) => 0.5,
         Fill::Texture(t) => (t.color_a.luminance() + t.color_b.luminance()) / 2.0,
+        Fill::Procedural(p) => {
+            let back = p.background.map_or(1.0, |b| b.luminance());
+            (p.foreground.luminance() + back) / 2.0
+        }
         Fill::Mesh(m) => {
             let n = m.nodes.len().max(1) as f32;
             m.nodes.iter().map(|x| x.color.luminance()).sum::<f32>() / n
@@ -806,9 +1028,56 @@ fn escape(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tracedraw_core::{geometry::Rect, Color, Document, Stroke};
+
+    /// A rounded rectangle, red with a blue outline, with a uniform
+    /// transparency of half on `target` (0 the fill, 1 the outline, 2 all).
+    pub(crate) fn doc_with_targeted_transparency(target: u8) -> Document {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut s = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 6.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        s.stroke = Some(Stroke::new(Color::rgb8(0, 0, 255), 2.0));
+        s.effects.push(tracedraw_core::live::Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: tracedraw_core::live::MergeMode::Normal,
+            target,
+        });
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        doc
+    }
+
+    /// A live test of 0.41: the transparency's target made no difference,
+    /// the whole object faded. The fill alone, the outline alone or both
+    /// go out see-through as the target says.
+    #[test]
+    fn a_transparency_target_fades_the_fill_the_outline_or_both() {
+        for target in 0..=2u8 {
+            let svg = page_to_svg(&doc_with_targeted_transparency(target), 0);
+            let line = |paint: &str| {
+                svg.lines()
+                    .filter(|l| l.contains("<path") && l.contains(paint))
+                    .map(|l| l.contains(" opacity=\"0."))
+                    .collect::<Vec<_>>()
+            };
+            let (fill, outline) = (line("fill=\"#ff0000\""), line("stroke=\"#0000ff\""));
+            assert!(!fill.is_empty() && !outline.is_empty(), "{svg}");
+            assert!(fill.iter().all(|f| *f == (target != 1)), "{target}: {svg}");
+            assert!(
+                outline.iter().all(|o| *o == (target != 0)),
+                "{target}: {svg}"
+            );
+        }
+    }
 
     #[test]
     fn opacity_masks_are_svg_masks() {
@@ -1286,6 +1555,51 @@ mod tests {
         assert!(!svg.contains("fill=\"#0000ff\" stroke=\"none\""));
     }
 
+    /// #1210: a head sized to 200 % and moved 5 mm out past the end is
+    /// written where the editor put it: 16 mm long from x 49 to the tip
+    /// at 65, 12.8 mm tall about the line (page y 150, flipped against
+    /// the 297 mm page).
+    #[test]
+    fn a_moved_and_scaled_arrowhead_lands_where_the_editor_put_it() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut line = arrow_line();
+        if let Some(st) = line.stroke.as_mut() {
+            st.end_arrow = tracedraw_core::Arrowhead::Arrow;
+            st.end_head.size = 200.0;
+            st.end_head.offset = 5.0;
+        }
+        doc.layer_mut(layer).unwrap().shapes.push(line);
+        let svg = page_to_svg(&doc, 0);
+        let head = svg
+            .lines()
+            .find(|l| l.contains("fill=\"#0000ff\" stroke=\"none\""))
+            .expect("head path");
+        let d = head
+            .split("d=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("path data");
+        let nums: Vec<f64> = d
+            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
+        assert!(nums.len() >= 8 && nums.len() % 2 == 0, "{d}");
+        let xs: Vec<f64> = nums.iter().step_by(2).copied().collect();
+        let ys: Vec<f64> = nums.iter().skip(1).step_by(2).copied().collect();
+        let (x0, x1) = xs
+            .iter()
+            .fold((f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
+        let (y0, y1) = ys
+            .iter()
+            .fold((f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
+        assert!((x0 - 49.0).abs() < 0.01 && (x1 - 65.0).abs() < 0.01, "{d}");
+        assert!(
+            (y0 - (297.0 - 156.4)).abs() < 0.01 && (y1 - (297.0 - 143.6)).abs() < 0.01,
+            "{d}"
+        );
+    }
+
     #[test]
     fn vector_pattern_exports_as_svg_pattern_with_vector_content() {
         let mut doc = Document::default();
@@ -1312,6 +1626,7 @@ mod tests {
         s.fill = Fill::Pattern(tracedraw_core::Pattern::Vector {
             shapes: vec![tile_square],
             tile: tracedraw_core::geometry::Size::new(10.0, 10.0),
+            placement: Default::default(),
         });
         s.stroke = None;
         doc.layer_mut(layer).unwrap().shapes.push(s);
@@ -1327,6 +1642,134 @@ mod tests {
         assert!(pattern.contains("M0 10L5 10L5 5L0 5Z"), "{pattern}");
         assert!(!pattern.contains("<image"));
         assert!(svg.contains("fill=\"url(#pat1)\""));
+    }
+
+    /// A transparency's merge mode goes out as the CSS blend mode on a
+    /// group around the object; modes CSS has no blend for draw normally
+    /// (#1203).
+    #[test]
+    fn merge_modes_go_out_as_mix_blend_mode() {
+        use tracedraw_core::live::{Effect, MergeMode};
+        let svg_with = |merge: MergeMode| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let id = doc.ids_mut().shape();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+            s.effects.push(Effect::Transparency {
+                mask: Fill::Solid(Color::WHITE),
+                merge,
+                target: 2,
+            });
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+            page_to_svg(&doc, 0)
+        };
+        for (merge, css) in [
+            (MergeMode::Screen, "screen"),
+            (MergeMode::Overlay, "overlay"),
+            (MergeMode::SoftLight, "soft-light"),
+            (MergeMode::HardLight, "hard-light"),
+            (MergeMode::ColorDodge, "color-dodge"),
+            (MergeMode::ColorBurn, "color-burn"),
+            (MergeMode::Exclusion, "exclusion"),
+            (MergeMode::Multiply, "multiply"),
+            (MergeMode::IfLighter, "lighten"),
+        ] {
+            let svg = svg_with(merge);
+            assert!(
+                svg.contains(&format!("style=\"mix-blend-mode:{css}\"")),
+                "{merge:?}: {svg}"
+            );
+            assert!(svg.contains("fill=\"#ff0000\""), "{merge:?}");
+        }
+        for merge in [MergeMode::Normal, MergeMode::Behind, MergeMode::Xor] {
+            assert!(!svg_with(merge).contains("mix-blend-mode"), "{merge:?}");
+        }
+    }
+
+    /// The placement goes out as `patternTransform`; mirrored tiles make
+    /// the pattern's tile the two-tile block with the picture flipped in
+    /// its second half; Transform with object puts the object's transform
+    /// in front.
+    #[test]
+    fn pattern_transform_carries_the_placement() {
+        use tracedraw_core::style::PatternPlacement;
+        let checker = |placement| {
+            Fill::Pattern(tracedraw_core::Pattern::TwoColor {
+                tile: tracedraw_core::PatternTile::Checker,
+                front: Color::BLACK,
+                back: Color::WHITE,
+                size_mm: 10.0,
+                placement,
+            })
+        };
+        // The default page is 297 mm tall: the tiles anchor at its
+        // bottom-left corner, so the pattern's origin is 287 mm down.
+        let svg = one_shape_svg(checker(PatternPlacement::default()), None);
+        assert!(
+            svg.contains("width=\"10\" height=\"10\" patternTransform=\"matrix(1 0 0 1 0 287)\""),
+            "{svg}"
+        );
+        let svg = one_shape_svg(
+            checker(PatternPlacement {
+                mirror_horizontal: true,
+                offset_x: 2.0,
+                offset_y: 3.0,
+                rotation: 90.0,
+                ..PatternPlacement::default()
+            }),
+            None,
+        );
+        // Two tiles wide; turned a quarter turn counter-clockwise on the
+        // page around the offset point (2, 3): the block's bottom-left
+        // corner, pattern space (0, 10), lands on the offset, output
+        // (2, 294), and its 10 mm of height run left along the page.
+        assert!(
+            svg.contains("width=\"20\" height=\"10\" patternTransform=\"matrix(0 -1 1 0 -8 294)\""),
+            "{svg}"
+        );
+        assert!(svg.contains("<image width=\"20\" height=\"10\""), "{svg}");
+
+        // A vector tile with a row offset: the leaning block holds the
+        // tile's shapes once per copy, and the lean is in the transform.
+        let mut tile_square = Shape::new(
+            tracedraw_core::ShapeId(7),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 5.0, 5.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        tile_square.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        tile_square.stroke = None;
+        let svg = one_shape_svg(
+            Fill::Pattern(tracedraw_core::Pattern::Vector {
+                shapes: vec![tile_square],
+                tile: tracedraw_core::geometry::Size::new(10.0, 10.0),
+                placement: PatternPlacement {
+                    shift_percent: 50.0,
+                    transform_with_object: true,
+                    ..PatternPlacement::default()
+                },
+            }),
+            None,
+        );
+        // With the object (an untransformed rectangle): the page flip
+        // alone, so the tiles start at the page's bottom-left corner, the
+        // rows leaning half a tile (the block's top edge starts 5 mm
+        // along, and pattern space runs down from there).
+        assert!(
+            svg.contains("patternTransform=\"matrix(1 0 -0.5 1 5 287)\""),
+            "{svg}"
+        );
+        assert_eq!(svg.matches("<path id=\"7\"").count(), 4, "{svg}");
     }
 
     fn one_shape_svg(fill: Fill, stroke: Option<Stroke>) -> String {
@@ -1345,6 +1788,33 @@ mod tests {
         s.stroke = stroke;
         doc.layer_mut(layer).unwrap().shapes.push(s);
         page_to_svg(&doc, 0)
+    }
+
+    /// A procedural fill is a `<pattern>` holding the tile's paths as
+    /// vectors over its background, never a picture (#1212).
+    #[test]
+    fn procedural_fill_is_a_vector_pattern() {
+        use tracedraw_core::{Procedural, ProceduralPattern};
+        let mut p = Procedural::new(ProceduralPattern::Honeycomb, Color::rgb8(255, 0, 0));
+        p.params.size_mm = 6.0;
+        let svg = one_shape_svg(Fill::Procedural(p.clone()), None);
+        assert!(svg.contains("fill=\"url(#pat1)\""), "{svg}");
+        let start = svg.find("<pattern id=\"pat1\"").expect("a pattern");
+        let end = svg[start..].find("</pattern>").expect("closed") + start;
+        let pat = &svg[start..end];
+        assert!(pat.contains("patternUnits=\"userSpaceOnUse\""), "{pat}");
+        assert!(pat.contains("width=\"6\""), "{pat}");
+        // Two rows of hexagons: the tile is sqrt(3) times as high.
+        assert!(pat.contains("height=\"10.3923\""), "{pat}");
+        assert!(pat.contains("<rect width=\"6\" height=\"10.3923\" fill=\"#ffffff\"/>"));
+        assert_eq!(pat.matches("<path d=\"").count(), 7, "{pat}");
+        assert!(pat.contains("fill=\"#ff0000\""), "{pat}");
+        assert!(!pat.contains("<image"), "{pat}");
+        // No background: no rectangle, what is beneath shows through.
+        p.background = None;
+        let svg = one_shape_svg(Fill::Procedural(p), None);
+        assert!(!svg.contains("<rect width=\"6\""), "{svg}");
+        assert!(svg.contains("<pattern id=\"pat1\""), "{svg}");
     }
 
     /// A fill whose nodes were placed freely goes out through a gradient
@@ -1419,6 +1889,7 @@ mod tests {
             front: red,
             back: blue,
             size_mm: 5.0,
+            placement: Default::default(),
         })));
         let svg = one_shape_svg(Fill::None, Some(st.clone()));
         assert!(svg.contains("stroke=\"url(#pat1)\""), "{svg}");
@@ -1460,5 +1931,59 @@ mod tests {
         saw.repeats = 3;
         let svg = one_shape_svg(Fill::Fountain(saw), None);
         assert_eq!(svg.matches("<stop ").count(), 6, "{svg}");
+    }
+
+    /// A stepped gradient goes out as a pair of stops per band; a hue
+    /// path or a smooth transition as a sampled run of stops, at most
+    /// MAX_SAMPLED_STOPS of them (#1208).
+    #[test]
+    fn blend_settings_go_out_as_stops() {
+        use tracedraw_core::style::{Fountain, FountainKind};
+        let (red, blue) = (Color::rgb8(255, 0, 0), Color::rgb8(0, 0, 255));
+        let mut f = Fountain::two(FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        f.steps = 4;
+        let svg = one_shape_svg(Fill::Fountain(f), None);
+        assert_eq!(svg.matches("<stop ").count(), 8, "{svg}");
+        assert!(
+            svg.contains("<stop offset=\"0.25\" stop-color=\"#000000\""),
+            "{svg}"
+        );
+        assert!(
+            svg.contains("<stop offset=\"0.25\" stop-color=\"#555555\""),
+            "{svg}"
+        );
+        assert!(
+            svg.contains("<stop offset=\"0.5\" stop-color=\"#aaaaaa\""),
+            "{svg}"
+        );
+        // Two stops around the wheel: 17 sampled stops, green half way.
+        let mut h = Fountain::two(FountainKind::Linear, red, blue, 0.0);
+        h.blend_direction = tracedraw_core::ColorBlend::Clockwise;
+        let svg = one_shape_svg(Fill::Fountain(h), None);
+        assert_eq!(
+            svg.matches("<stop ").count(),
+            Fountain::MID_STEPS + 1,
+            "{svg}"
+        );
+        assert!(
+            svg.contains("<stop offset=\"0.5\" stop-color=\"#00ff00\""),
+            "{svg}"
+        );
+        // Many stops smoothed: sampled down to the cap.
+        let mut s = Fountain {
+            stops: (0..=6)
+                .map(|i| {
+                    tracedraw_core::Stop::new(i as f64 / 6.0, if i % 2 == 0 { red } else { blue })
+                })
+                .collect(),
+            ..Default::default()
+        };
+        s.smooth = true;
+        assert!(s.resolved_stops().len() > MAX_SAMPLED_STOPS);
+        let svg = one_shape_svg(Fill::Fountain(s), None);
+        assert_eq!(svg.matches("<stop ").count(), MAX_SAMPLED_STOPS, "{svg}");
+        // A plain gradient keeps its two stops.
+        let svg = one_shape_svg(Fill::linear(red, blue, 0.0), None);
+        assert_eq!(svg.matches("<stop ").count(), 2, "{svg}");
     }
 }

@@ -63,6 +63,14 @@ pub enum PageOrder {
     /// 1 2 3 and 7 8 9 on the first sheet, 4 5 6 and 10 11 12 on the
     /// second).
     DownThroughSheets,
+    /// Cut and stack: each cell runs down the stack of sheets, the next
+    /// page on the next sheet, so the piles cut from the stacked sheets
+    /// each run in one series and go on top of each other in order. With
+    /// `pages` pages and `per` cells a sheet there are `sheets` =
+    /// ceil(pages / per) sheets, and cell `n` of sheet `s` holds page
+    /// `n * sheets + s` (100 pages 4 up: 1, 26, 51 and 76 on the first
+    /// sheet, 2, 27, 52 and 77 on the second).
+    CutAndStack,
 }
 
 impl PageOrder {
@@ -71,6 +79,7 @@ impl PageOrder {
         match i {
             1 => PageOrder::Down,
             2 => PageOrder::DownThroughSheets,
+            3 => PageOrder::CutAndStack,
             _ => PageOrder::Across,
         }
     }
@@ -94,6 +103,7 @@ impl PageOrder {
             PageOrder::Across => sheet * per + n,
             PageOrder::Down => sheet * per + col * rows + row,
             PageOrder::DownThroughSheets => col * rows * sheets + sheet * rows + row,
+            PageOrder::CutAndStack => n * sheets + sheet,
         };
         (i < pages).then_some(i)
     }
@@ -1522,6 +1532,64 @@ mod tests {
         let (a, b, c) = (n.cells[0].trim, n.cells[1].trim, n.cells[2].trim);
         assert!((b.x0 - a.x1 - 4.0).abs() < 1e-9);
         assert!((a.y0 - c.y1 - 10.0).abs() < 1e-9);
+    }
+
+    /// Cut and stack: each place on the sheet runs down the stack, so the
+    /// piles cut from it each hold one run of records.
+    #[test]
+    fn n_up_cut_and_stack_numbers_down_the_stack() {
+        let plan_of = |order: PageOrder, n: usize, cols: u32, rows: u32| {
+            let o = Options {
+                layout: Layout::NUp { cols, rows },
+                order,
+                ..Default::default()
+            };
+            plan(&vec![A5; n], &o)
+                .iter()
+                .map(|s| s.cells.iter().map(|c| c.page.map(|p| p + 1)).collect())
+                .collect::<Vec<Vec<Option<usize>>>>()
+        };
+        // 100 records 4 up: 25 sheets.
+        let sheets = plan_of(PageOrder::CutAndStack, 100, 2, 2);
+        assert_eq!(sheets.len(), 25);
+        assert_eq!(sheets[0], [Some(1), Some(26), Some(51), Some(76)]);
+        assert_eq!(sheets[1], [Some(2), Some(27), Some(52), Some(77)]);
+        assert_eq!(sheets[24], [Some(25), Some(50), Some(75), Some(100)]);
+        // Each place, read down the stack, is one run.
+        for p in 0..4 {
+            let pile: Vec<usize> = sheets.iter().filter_map(|s| s[p]).collect();
+            assert_eq!(pile, ((p * 25 + 1)..=(p * 25 + 25)).collect::<Vec<_>>());
+        }
+        // Every record once.
+        let mut all: Vec<usize> = sheets.iter().flatten().flatten().copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, (1..=100).collect::<Vec<_>>());
+        // An uneven count: 10 records 4 up take 3 sheets, the last place
+        // holding only record 10.
+        assert_eq!(
+            plan_of(PageOrder::CutAndStack, 10, 2, 2),
+            vec![
+                vec![Some(1), Some(4), Some(7), Some(10)],
+                vec![Some(2), Some(5), Some(8), None],
+                vec![Some(3), Some(6), Some(9), None],
+            ]
+        );
+        // One row of three, 7 records: 3 sheets.
+        assert_eq!(
+            plan_of(PageOrder::CutAndStack, 7, 3, 1),
+            vec![
+                vec![Some(1), Some(4), Some(7)],
+                vec![Some(2), Some(5), None],
+                vec![Some(3), Some(6), None],
+            ]
+        );
+        // Off, the order is as before.
+        assert_eq!(
+            plan_of(PageOrder::Across, 10, 2, 2)[0],
+            [Some(1), Some(2), Some(3), Some(4)]
+        );
+        assert_eq!(PageOrder::from_index(3), PageOrder::CutAndStack);
+        assert_eq!(PageOrder::from_index(0), PageOrder::Across);
     }
 
     /// #1658: several pages per sheet run down the columns: on the same

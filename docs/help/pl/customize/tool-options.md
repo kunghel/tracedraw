@@ -35,7 +35,16 @@ również na pasku właściwości każdego narzędzia.
   przy skalibrowanej rozdzielczości ekranu; wyłączone to 96 pikseli na cal.
 - [[options.wheel_center_mouse]] (wyłączone): powiększenie kółkiem przenosi punkt pod
   wskaźnikiem na środek widoku, razem ze wskaźnikiem.
+- [[options.smooth_zoom]] (włączone): ząbek kółka powiększa w krótkim płynnym
+  ruchu zamiast skoku; im szybciej obraca się kółko, tym krótszym.
+  Wyłączone: każdy ząbek powiększa od razu.
+- [[options.wheel_zoom_step]] jak bardzo jeden ząbek powiększa lub pomniejsza,
+  od 1 do 100 procent (na początku 15 %).
 - [[options.pan_right_button]] [[options.zoom_out]] lub [[options.context_menu]] (na początku).
+- [[options.pan_inertia]] (wyłączone): przesunięcie puszczone, gdy wskaźnik
+  jeszcze się porusza, sprawia, że widok sunie dalej w tę samą stronę i
+  łagodnie wyhamowuje. Kliknięcie lub kółko go zatrzymuje. Działa dla narzędzia
+  Przesuwanie, środkowego przycisku i dwóch palców.
 
 ## Odręczne/Bézier {#curves}
 

@@ -70,6 +70,17 @@ is asked for), selects it, and is one undo step.
 - EAN and UPC guard bars reach down into the digits' line when the text
   is under the bars.
 
+## Print Merge
+
+The inserted barcode keeps the wizard's settings in its object data
+(`barcode`, JSON), so Print Merge can make it again for every record
+when its data names merge fields as `<Field>` (#1084; see
+`print-merge.md`, Barcodes). With records loaded, step 1 has an Insert
+field list that appends a field's `<Name>` to the data. Data naming
+fields is checked and shown with the symbology's sample in its place
+(as typed when the symbology holds it, as Code 128 does), and changing
+the standard keeps it.
+
 ## Checks
 
 - Known check characters: EAN-13 590123412345 gives 7, Code 39 CODE39

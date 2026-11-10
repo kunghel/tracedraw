@@ -6,7 +6,7 @@
 //! apply to the selected dimensions and to the ones made next.
 
 use crate::app::App;
-use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, TextPosition};
+use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, LabelAlong, TextPosition};
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::tools::Tool;
@@ -287,6 +287,21 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("dimension.text_position"));
     if pos != style.text_position {
         app.set_dimension_style(|s| s.text_position = pos);
+    }
+    // Along the line: the middle, toward either end or outside (#1500).
+    let mut along = style.label_along;
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_text_along")
+        .selected_text(tr(along.key()))
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for a in LabelAlong::ALL {
+                ui.selectable_value(&mut along, a, tr(a.key()));
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("dimension.text_along"));
+    if along != style.label_along {
+        app.set_dimension_style(|s| s.label_along = along);
     }
     let mut size = style.text_size;
     let r = ui

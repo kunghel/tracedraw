@@ -4,6 +4,9 @@
 //! The choices either replace the family in the drawing's text for good
 //! (one undo step, saved with the drawing) or hold for this session only
 //! (the drawing keeps its font names; `FontSystem::set_substitute`).
+//! Add Font File installs a font from a file as Font Manager's Add Font
+//! does (remembered for the next start), and the families it brings leave
+//! the list (#1989).
 //! Shown only by the windowed application, never for automated opens
 //! (tests, scripts, the MCP server), which keep the plain note. See
 //! docs/behavior/missing-fonts.md.
@@ -11,6 +14,7 @@
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::ui::dialogs::window;
+use crate::ui::tips::RichTip;
 use egui::Context;
 use tracedraw_core::Command;
 
@@ -42,6 +46,9 @@ pub struct MissingFontsState {
     /// Pictures read smaller than the file holds them, said after this
     /// dialog (#1835).
     pub shrunk: Vec<String>,
+    /// How many families were installed when the rows were last checked:
+    /// a font added since may bring a missing one.
+    pub families_seen: usize,
 }
 
 impl MissingFontsState {
@@ -67,7 +74,23 @@ impl MissingFontsState {
             dont_show: false,
             filter: String::new(),
             shrunk: Vec::new(),
+            families_seen: 0,
         }
+    }
+
+    /// Rows whose family is installed now (a font file added from the
+    /// dialog) leave the list, their stand-in dropped. True when one did.
+    pub fn drop_installed(&mut self, app: &App) -> bool {
+        self.families_seen = app.font_families.len();
+        let before = self.rows.len();
+        self.rows.retain(|r| {
+            let installed = app.font_installed(&r.missing);
+            if installed {
+                tracedraw_text::fonts().set_substitute(&r.missing, None);
+            }
+            !installed
+        });
+        self.rows.len() != before
     }
 
     /// The commands that replace the families for good: one per row with
@@ -128,6 +151,14 @@ impl App {
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &mut bool) {
     let mut help = false;
     let mut ok = false;
+    // A font file added (now, or on a later frame where the picker
+    // answers later): the families it brings are no longer missing.
+    if st.families_seen != app.font_families.len() && st.drop_installed(app) {
+        app.check_missing_fonts();
+        if st.rows.is_empty() {
+            *close = true;
+        }
+    }
     window(ctx, tr("missing_fonts.title")).show(ctx, |ui| {
         ui.set_width(520.0);
         ui.label(trf("missing_fonts.intro", &[("name", &st.name)]));
@@ -177,6 +208,21 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
                         }
                     });
             });
+        ui.add_space(4.0);
+        if ui
+            .button(tr("missing_fonts.add_font"))
+            .rich_tip(crate::ui::tips::pair(
+                "missing_fonts.add_font",
+                "missing_fonts.add_font_tip",
+            ))
+            .clicked()
+        {
+            crate::files::Dialog::new()
+                .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
+                .pick_files(app, |app, paths| {
+                    crate::ui::font_manager::add_picked_fonts(app, &paths)
+                });
+        }
         ui.add_space(6.0);
         ui.radio_value(&mut st.keep, false, tr("missing_fonts.session"));
         ui.radio_value(&mut st.keep, true, tr("missing_fonts.keep"));
@@ -239,15 +285,17 @@ mod tests {
 
     /// A drawing whose text is set in a family that is not installed.
     fn drawing() -> (App, String) {
+        drawing_in("Nowhere Grotesk 936")
+    }
+
+    /// [`drawing`] with the text in `missing` (a family of its own for a
+    /// test, as the stand-ins chosen are shared by the tests).
+    fn drawing_in(missing: &str) -> (App, String) {
         tracedraw_text::install();
         let mut app = App::headless();
         let family = app.font_families.first().cloned().unwrap_or_default();
         app.new_shape(ShapeKind::Text {
-            spans: vec![tracedraw_core::TextSpan::new(
-                "Hello",
-                "Nowhere Grotesk 936",
-                12.0,
-            )],
+            spans: vec![tracedraw_core::TextSpan::new("Hello", missing, 12.0)],
             origin: tracedraw_core::geometry::Point::new(10.0, 10.0),
             frame: None,
             align: Default::default(),
@@ -257,6 +305,36 @@ mod tests {
         .expect("text");
         app.check_missing_fonts();
         (app, family)
+    }
+
+    /// A font file added from the dialog that brings a missing family
+    /// takes its row away; with none left the dialog closes and the
+    /// drawing has no missing font (#1989).
+    #[test]
+    fn a_font_added_from_the_dialog_takes_its_row_away() {
+        let (mut app, family) = drawing_in("Nowhere Serif 1989");
+        if family.is_empty() {
+            return;
+        }
+        app.ask_missing_fonts = true;
+        app.show_open_notes("a.tdraw".into(), 0);
+        let Dialog::MissingFonts(st) = &app.dialog else {
+            panic!("asked");
+        };
+        assert_eq!(st.rows.len(), 1);
+        let ctx = crate::theme::ui_context();
+        frame(&mut app, &ctx, Vec::new());
+        assert!(matches!(&app.dialog, Dialog::MissingFonts(st) if st.rows.len() == 1));
+        // What Add Font File leaves when the file holds the family.
+        app.font_families.push("Nowhere Serif 1989".into());
+        frame(&mut app, &ctx, Vec::new());
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.dialog);
+        assert!(app.missing_fonts.is_empty());
+        assert_eq!(
+            app.doc().font_families_used(),
+            vec!["Nowhere Serif 1989".to_string()],
+            "the drawing keeps its font"
+        );
     }
 
     /// Automated opens never ask: the headless app keeps the plain note.

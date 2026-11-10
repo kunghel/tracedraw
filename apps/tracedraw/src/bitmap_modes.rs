@@ -824,30 +824,44 @@ pub fn build_palette(img: &RgbaImage, s: &PalettedSettings) -> Vec<[u8; 3]> {
                 s.custom.iter().take(256).copied().collect()
             }
         }
-        PaletteType::Adaptive | PaletteType::Optimized => {
-            let n = s.colors.clamp(2, 256) as usize;
-            // Sample the image (at most about 64k pixels).
-            let total = (img.width() as usize * img.height() as usize).max(1);
-            let step = (total / 16_384).max(1);
-            let colors: Vec<[u8; 3]> = img
-                .pixels()
-                .step_by(step)
-                .filter(|p| p[3] > 0)
-                .map(|p| [p[0], p[1], p[2]])
-                .collect();
-            let mut unique = colors.clone();
-            unique.sort_unstable();
-            unique.dedup();
-            if unique.len() <= n {
-                return if unique.is_empty() {
-                    vec![[0, 0, 0]]
-                } else {
-                    unique
-                };
-            }
-            median_cut(&colors, n, s.palette == PaletteType::Optimized)
-        }
+        PaletteType::Adaptive | PaletteType::Optimized => palette_from_sample(
+            &palette_sample(img),
+            s.colors,
+            s.palette == PaletteType::Optimized,
+        ),
     }
+}
+
+/// The pixels the adaptive and optimized palettes are chosen from: about
+/// 16k of them spread over the image (every pixel of a small one), the
+/// transparent ones left out. Read once, it gives the palette for any
+/// number of colours ([`palette_from_sample`]) without the image.
+pub fn palette_sample(img: &RgbaImage) -> Vec<[u8; 3]> {
+    let total = (img.width() as usize * img.height() as usize).max(1);
+    let step = (total / 16_384).max(1);
+    img.pixels()
+        .step_by(step)
+        .filter(|p| p[3] > 0)
+        .map(|p| [p[0], p[1], p[2]])
+        .collect()
+}
+
+/// The adaptive (or, with `optimized`, the optimized) palette of `n`
+/// colours (2 to 256) for the pixels of [`palette_sample`]: every colour
+/// there when it has no more than `n`.
+pub fn palette_from_sample(colors: &[[u8; 3]], n: u32, optimized: bool) -> Vec<[u8; 3]> {
+    let n = n.clamp(2, 256) as usize;
+    let mut unique = colors.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.len() <= n {
+        return if unique.is_empty() {
+            vec![[0, 0, 0]]
+        } else {
+            unique
+        };
+    }
+    median_cut(colors, n, optimized)
 }
 
 /// Nearest palette entry, through a 32 x 32 x 32 cache.

@@ -24,6 +24,19 @@ pub enum FieldKind {
         digits: u32,
         format: NumberFormat,
     },
+    /// A random whole number from `min` to `max` (both included) for
+    /// each record, padded with zeros to `digits` digits after `prefix`;
+    /// with `unique`, no number comes twice in the batch. The numbers come
+    /// from `seed`, so the merge, its preview and its print show the same
+    /// ones until they are drawn again; its cells are not typed in.
+    Random {
+        min: i64,
+        max: i64,
+        digits: u32,
+        prefix: String,
+        unique: bool,
+        seed: u64,
+    },
     /// The path of a picture (relative paths from the data file's folder);
     /// a text object holding only `<Field>` becomes the picture, fitted in
     /// its box.
@@ -115,6 +128,106 @@ fn letters(mut n: u64, first: u8) -> String {
     }
     out.reverse();
     String::from_utf8_lossy(&out).into_owned()
+}
+
+impl FieldKind {
+    /// A field whose cells are worked out (a counter or random numbers),
+    /// not typed in.
+    pub fn is_generated(&self) -> bool {
+        matches!(self, FieldKind::Number { .. } | FieldKind::Random { .. })
+    }
+}
+
+/// A seed for a new draw of random numbers: the clock's nanoseconds,
+/// mixed.
+pub fn new_seed() -> u64 {
+    let nanos = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    SplitMix(nanos).next()
+}
+
+/// The SplitMix64 generator: small, fast and the same everywhere, so a
+/// seed gives the same numbers on every system.
+struct SplitMix(u64);
+
+impl SplitMix {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// A number from 0 to `n - 1` (`n` at least 1).
+    fn below(&mut self, n: u128) -> u128 {
+        // The high half of a 64 x 128 bit product: even, with no bias
+        // worth a mention for the ranges a merge uses.
+        (u128::from(self.next()) * n) >> 64
+    }
+}
+
+/// How many whole numbers there are from `min` to `max` (in either
+/// order), both included.
+pub fn range_size(min: i64, max: i64) -> u128 {
+    (i128::from(max) - i128::from(min)).unsigned_abs() + 1
+}
+
+/// `count` random whole numbers from `min` to `max` (both included, in
+/// either order) drawn from `seed`; with `unique`, all different, as many
+/// as the range holds when it holds fewer than `count`.
+pub fn random_numbers(min: i64, max: i64, count: usize, unique: bool, seed: u64) -> Vec<i64> {
+    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+    let size = range_size(lo, hi);
+    let mut rng = SplitMix(seed);
+    let at = |offset: u128| (i128::from(lo) + offset as i128) as i64;
+    if !unique {
+        return (0..count).map(|_| at(rng.below(size))).collect();
+    }
+    // A Fisher-Yates shuffle of the range, only as far as it is drawn,
+    // keeping just the places it moved: any range, memory for `count`.
+    let take = (count as u128).min(size) as usize;
+    let mut moved: std::collections::HashMap<u128, u128> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(take);
+    for i in 0..take as u128 {
+        let j = i + rng.below(size - i);
+        let pick = *moved.get(&j).unwrap_or(&j);
+        let here = *moved.get(&i).unwrap_or(&i);
+        moved.insert(j, here);
+        out.push(at(pick));
+    }
+    out
+}
+
+/// Why the merge cannot be made: a random field with No repeats whose
+/// range holds fewer numbers than there are records.
+pub fn check(st: &PrintMergeState) -> Result<(), String> {
+    for (i, name) in st.headers.iter().enumerate() {
+        if let FieldKind::Random {
+            min,
+            max,
+            unique: true,
+            ..
+        } = kind_of(st, i)
+        {
+            let size = range_size(min, max);
+            if size < st.rows.len() as u128 {
+                return Err(trf(
+                    "merge.random_too_few",
+                    &[
+                        ("name", name.as_str()),
+                        ("count", &st.rows.len().to_string()),
+                        ("range", &size.to_string()),
+                        ("min", &min.min(max).to_string()),
+                        ("max", &max.max(min).to_string()),
+                    ],
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How a picture sits in the placeholder of a picture field: the Print
@@ -501,6 +614,32 @@ pub fn kind_of(st: &PrintMergeState, i: usize) -> FieldKind {
 /// The value of every cell as the merge uses it: counters worked out,
 /// short records padded with empty cells.
 pub fn values(st: &PrintMergeState) -> Vec<Vec<String>> {
+    // The random numbers of each random field, drawn once for the batch;
+    // records past what a range without repeats holds stay empty.
+    let random: Vec<Option<Vec<String>>> = (0..st.headers.len())
+        .map(|c| match kind_of(st, c) {
+            FieldKind::Random {
+                min,
+                max,
+                digits,
+                prefix,
+                unique,
+                seed,
+            } => {
+                let format = NumberFormat::Custom {
+                    prefix,
+                    suffix: String::new(),
+                };
+                Some(
+                    random_numbers(min, max, st.rows.len(), unique, seed)
+                        .into_iter()
+                        .map(|n| format.write(n, digits))
+                        .collect(),
+                )
+            }
+            _ => None,
+        })
+        .collect();
     st.rows
         .iter()
         .enumerate()
@@ -516,6 +655,12 @@ pub fn values(st: &PrintMergeState) -> Vec<Vec<String>> {
                         let n = start.saturating_add(step.saturating_mul(r as i64));
                         format.write(n, digits)
                     }
+                    FieldKind::Random { .. } => random
+                        .get(c)
+                        .and_then(|v| v.as_ref())
+                        .and_then(|v| v.get(r))
+                        .cloned()
+                        .unwrap_or_default(),
                     _ => row.get(c).cloned().unwrap_or_default(),
                 })
                 .collect()
@@ -571,6 +716,38 @@ pub fn add_number_field(
 
 /// The most records an end value adds.
 pub const MAX_RANGE_RECORDS: usize = 100_000;
+
+/// Add a random number field (see [`FieldKind::Random`]) drawn from
+/// `seed`; with `records`, records are added until there are that many
+/// (at most [`MAX_RANGE_RECORDS`]), so a merge needs no data file;
+/// records already there are kept.
+#[allow(clippy::too_many_arguments)]
+pub fn add_random_field(
+    st: &mut PrintMergeState,
+    name: &str,
+    min: i64,
+    max: i64,
+    digits: u32,
+    prefix: &str,
+    unique: bool,
+    seed: u64,
+    records: usize,
+) {
+    add_field(st, name);
+    if let Some(k) = st.kinds.last_mut() {
+        *k = FieldKind::Random {
+            min,
+            max,
+            digits: digits.clamp(1, 12),
+            prefix: prefix.to_string(),
+            unique,
+            seed,
+        };
+    }
+    while st.rows.len() < records.min(MAX_RANGE_RECORDS) {
+        add_record(st);
+    }
+}
 
 /// Remove field `i` and its cells.
 pub fn remove_field(st: &mut PrintMergeState, i: usize) {
@@ -642,7 +819,7 @@ pub fn clear_cells(st: &mut PrintMergeState, sel: CellRange) {
     let (rows, cols) = range_bounds(sel);
     for r in rows {
         for c in cols.clone() {
-            if matches!(kind_of(st, c), FieldKind::Number { .. }) {
+            if kind_of(st, c).is_generated() {
                 continue;
             }
             if let Some(cell) = st.rows.get_mut(r).and_then(|row| row.get_mut(c)) {
@@ -812,6 +989,12 @@ fn fill_shape(
     cmds: &mut Vec<Command>,
 ) {
     let value_of = |i: usize| row.get(i).map(String::as_str).unwrap_or("");
+    // A barcode whose data names fields: made again with the record's
+    // values (#1084).
+    if let Some(cmds_here) = merged_barcode(st, s, row, new_id) {
+        cmds.extend(cmds_here);
+        return;
+    }
     // An object named `<Field>` of a picture or QR field: a placeholder
     // the Print Merge docker made, or a shape of the user's made the
     // field's frame (#378, #437), on the page or inside a group (#460).
@@ -918,6 +1101,98 @@ fn fill_shape(
             },
         });
     }
+}
+
+/// `text` with every field's `<Name>` replaced by the record's value.
+fn with_values(st: &PrintMergeState, text: &str, row: &[String]) -> String {
+    let mut t = text.to_string();
+    for (i, h) in st.headers.iter().enumerate() {
+        let ph = format!("<{h}>");
+        if t.contains(&ph) {
+            t = t.replace(&ph, row.get(i).map(String::as_str).unwrap_or(""));
+        }
+    }
+    t
+}
+
+/// The barcode object `s` takes its data from merge fields: its
+/// settings (Object > Insert > Barcode keeps them, see
+/// [`crate::barcode::DATA_KEY`]) name one of the fields.
+fn merge_barcode_spec(st: &PrintMergeState, s: &Shape) -> Option<crate::barcode::BarcodeSpec> {
+    let spec = crate::barcode::BarcodeSpec::of_shape(s)?;
+    st.headers
+        .iter()
+        .any(|h| spec.data.contains(&format!("<{h}>")))
+        .then_some(spec)
+}
+
+/// The commands that make the barcode object `s` again with the record's
+/// values in its data, in its place (the new symbol centred where the old
+/// one was, in the object's own space, so a moved, scaled or turned
+/// barcode keeps that), its settings updated to the data it now holds;
+/// a record whose data the symbology cannot hold (an empty cell, letters
+/// in an EAN-13) gets no barcode. `None` when `s` is no barcode taking
+/// merge fields.
+fn merged_barcode(
+    st: &PrintMergeState,
+    s: &Shape,
+    row: &[String],
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+) -> Option<Vec<Command>> {
+    let spec = merge_barcode_spec(st, s)?;
+    let merged = crate::barcode::BarcodeSpec {
+        data: with_values(st, &spec.data, row),
+        ..spec
+    };
+    // Where the symbol is now, in the object's own space.
+    let old = match &s.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .map(Shape::bounds)
+            .reduce(|a, b| a.union(b))?,
+        ShapeKind::Path { path, .. } => path.bounding_box(),
+        _ => return None,
+    };
+    let delete = || Some(vec![Command::DeleteShapes { shapes: vec![s.id] }]);
+    if merged.data.trim().is_empty() {
+        return delete();
+    }
+    let Ok(mut shapes) = crate::ui::barcode_wizard::barcode_shapes(
+        &merged,
+        tracedraw_core::geometry::Point::ZERO,
+        new_id,
+    ) else {
+        return delete();
+    };
+    let made = shapes.iter().map(Shape::bounds).reduce(|a, b| a.union(b))?;
+    let d = old.center() - made.center();
+    for c in &mut shapes {
+        c.transform_by(tracedraw_core::geometry::Affine::translate(d));
+    }
+    let kind = match &s.kind {
+        ShapeKind::Group { .. } => ShapeKind::Group { children: shapes },
+        // The bars alone (no text, no quiet zone): one curve.
+        _ => {
+            let bars = shapes
+                .into_iter()
+                .find(|c| matches!(c.kind, ShapeKind::Path { .. }))?;
+            ShapeKind::Path {
+                path: bars.page_path(),
+                closed: true,
+            }
+        }
+    };
+    let mut data: Vec<(String, String)> = s
+        .data
+        .iter()
+        .filter(|(k, _)| k != crate::barcode::DATA_KEY)
+        .cloned()
+        .collect();
+    data.push((crate::barcode::DATA_KEY.to_string(), merged.to_data()));
+    Some(vec![
+        Command::SetShapeKind { shape: s.id, kind },
+        Command::SetObjectData { shape: s.id, data },
+    ])
 }
 
 /// A placeholder object named `<Field>` filled with the record's value:
@@ -1058,6 +1333,7 @@ fn merge_with(
     page: tracedraw_core::PageId,
     st: &PrintMergeState,
 ) -> Result<Vec<tracedraw_core::PageId>, String> {
+    check(st)?;
     let rows = values(st);
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -1133,6 +1409,9 @@ pub struct InPlaceMerge {
 /// Whether `s`, or an object in it, is a merge field: a text holding a
 /// field's `<Name>`, or an object named after a picture or QR field.
 fn holds_field(st: &PrintMergeState, s: &Shape) -> bool {
+    if merge_barcode_spec(st, s).is_some() {
+        return true;
+    }
     if s.name
         .as_deref()
         .is_some_and(|n| whole_field(st, n).is_some())
@@ -1160,6 +1439,7 @@ pub fn merge_onto_pages(
     engine: &mut tracedraw_core::Engine,
     st: &PrintMergeState,
 ) -> Result<InPlaceMerge, String> {
+    check(st)?;
     let rows = values(st);
     // Copies of a field put on every page go where the field is now on
     // its own page, unless they were moved by hand (#956).
@@ -1261,6 +1541,82 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// Random numbers: the same seed gives the same numbers, in range,
+    /// padded and after their text; No repeats gives each record its own,
+    /// and a range too small for the records stops the merge with a reason
+    /// instead of repeating or failing quietly. No data file is needed.
+    #[test]
+    fn a_random_number_field_draws_in_range_without_repeats() {
+        let mut st = PrintMergeState::default();
+        add_random_field(&mut st, "Ticket", 1, 500, 4, "T-", true, 42, 100);
+        assert_eq!(st.rows.len(), 100, "records made without a data file");
+        let col = |st: &PrintMergeState| -> Vec<String> {
+            values(st).into_iter().map(|r| r[0].clone()).collect()
+        };
+        let v = col(&st);
+        assert_eq!(v, col(&st), "the same numbers every time");
+        let nums: Vec<i64> = v
+            .iter()
+            .map(|t| {
+                let digits = t.strip_prefix("T-").expect("the text before");
+                assert_eq!(digits.len(), 4, "{t}");
+                digits.parse().expect("a number")
+            })
+            .collect();
+        assert!(nums.iter().all(|n| (1..=500).contains(n)), "{nums:?}");
+        let mut unique = nums.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 100, "no repeats");
+        assert!(check(&st).is_ok());
+        // Another seed, other numbers; a known seed, known numbers.
+        assert_ne!(random_numbers(1, 500, 100, true, 43), nums);
+        assert_eq!(random_numbers(1, 6, 6, true, 7).len(), 6, "the whole range");
+        let mut all = random_numbers(1, 6, 6, true, 7);
+        all.sort_unstable();
+        assert_eq!(all, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(random_numbers(5, 5, 3, false, 1), [5, 5, 5]);
+        // A range given backwards, negative numbers and the widest range.
+        assert!(random_numbers(10, -10, 50, false, 3)
+            .iter()
+            .all(|n| (-10..=10).contains(n)));
+        assert_eq!(random_numbers(i64::MIN, i64::MAX, 20, true, 9).len(), 20);
+        // Repeats allowed: any count from a small range.
+        let mut st2 = PrintMergeState::default();
+        add_random_field(&mut st2, "Die", 1, 6, 1, "", false, 5, 30);
+        assert!(check(&st2).is_ok());
+        assert!(col(&st2)
+            .iter()
+            .all(|t| ["1", "2", "3", "4", "5", "6"].contains(&t.as_str())));
+        // No repeats from too small a range: the reason, and no merge.
+        let mut st3 = PrintMergeState::default();
+        add_random_field(&mut st3, "Seat", 1, 10, 2, "", true, 5, 12);
+        let why = check(&st3).expect_err("too few numbers");
+        assert!(
+            why.contains("Seat") && why.contains("12") && why.contains("10"),
+            "{why}"
+        );
+        let v3 = col(&st3);
+        assert_eq!(v3.iter().filter(|t| !t.is_empty()).count(), 10);
+        assert_eq!(v3.len(), 12);
+        let doc =
+            tracedraw_core::Document::new("t", tracedraw_core::geometry::Size::new(50.0, 50.0));
+        let page = doc.pages[0].id;
+        let mut engine = tracedraw_core::Engine::new(doc);
+        assert_eq!(merge_with(&mut engine, page, &st3), Err(why.clone()));
+        assert_eq!(merge_onto_pages(&mut engine, &st3).err(), Some(why));
+        assert_eq!(engine.document().pages.len(), 1, "nothing merged");
+        // Merged, each page gets its record's number.
+        let mut st4 = PrintMergeState::default();
+        add_random_field(&mut st4, "N", 100, 999, 3, "", true, 11, 5);
+        assert_eq!(merge_with(&mut engine, page, &st4).map(|p| p.len()), Ok(5));
+        // Generated cells are not typed in or cleared.
+        assert!(kind_of(&st4, 0).is_generated());
+        let before = values(&st4);
+        clear_cells(&mut st4, ((0, 0), (4, 0)));
+        assert_eq!(values(&st4), before);
     }
 
     /// Add Column with a number from 15 to 25 in three digits, as in the
@@ -1441,6 +1797,163 @@ mod tests {
         let second = &doc.pages[2];
         let n: usize = second.layers.iter().map(|l| l.shapes.len()).sum();
         assert_eq!(n, 1);
+    }
+
+    /// The barcode objects of a page, with the settings they keep.
+    fn barcodes(
+        page: &tracedraw_core::document::Page,
+    ) -> Vec<(Shape, crate::barcode::BarcodeSpec)> {
+        page.layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter_map(|s| Some((s.clone(), crate::barcode::BarcodeSpec::of_shape(s)?)))
+            .collect()
+    }
+
+    /// The bars of a barcode object, in page space: the curve inside it.
+    fn bars_of(s: &Shape) -> tracedraw_core::geometry::BezPath {
+        match &s.kind {
+            ShapeKind::Group { children } => children
+                .iter()
+                .find(|c| matches!(c.kind, ShapeKind::Path { .. }))
+                .map(|c| s.transform * c.page_path())
+                .expect("bars"),
+            _ => s.page_path(),
+        }
+    }
+
+    /// Barcodes in Print Merge (#1084): a barcode whose data names a field
+    /// is made again for every record, with fixed digits before a counter
+    /// kept and only the counter's digits changing; it stays where it was
+    /// placed, and a record the symbology cannot hold gets none.
+    #[test]
+    fn barcodes_take_their_data_from_merge_fields() {
+        use crate::barcode::{BarcodeSpec, Symbology};
+        let mut app = App::headless();
+        let st = PrintMergeState {
+            headers: vec!["Serial".into(), "Code".into()],
+            rows: vec![
+                vec![String::new(), "AB-1".into()],
+                vec![String::new(), "CD-2".into()],
+                vec![String::new(), String::new()],
+            ],
+            kinds: vec![
+                FieldKind::Number {
+                    start: 15,
+                    step: 1,
+                    digits: 6,
+                    format: NumberFormat::Digits,
+                },
+                FieldKind::Text,
+            ],
+            ..Default::default()
+        };
+        // An EAN-13 of six fixed digits and the six of the counter, and a
+        // Code 128 of the Code column with text around it.
+        let ean = BarcodeSpec {
+            symbology: Symbology::Ean13,
+            data: "590123<Serial>".into(),
+            ..Default::default()
+        };
+        crate::ui::barcode_wizard::insert(&mut app, &ean).expect("inserted");
+        let ean_id = app.selection[0];
+        // Moved after it was placed: the copies stay where it went.
+        app.run(Command::TransformShapes {
+            shapes: vec![ean_id],
+            transform: tracedraw_core::geometry::Affine::translate((-30.0, 40.0)),
+        });
+        let code = BarcodeSpec {
+            symbology: Symbology::Code128,
+            data: "ID <Code>".into(),
+            human_readable: false,
+            ..Default::default()
+        };
+        crate::ui::barcode_wizard::insert(&mut app, &code).expect("inserted");
+        // The template shows the sample where EAN-13 cannot hold `<Serial>`,
+        // and keeps the settings with the field.
+        let template = barcodes(&app.doc().pages[0]);
+        assert_eq!(template.len(), 2);
+        assert_eq!(template[0].1.data, "590123<Serial>");
+        assert_eq!(template[1].1.data, "ID <Code>");
+        let ean_box = template[0].0.bounds();
+        let doc = merged_document(&app, &st).expect("merged");
+        assert_eq!(doc.pages.len(), 3);
+        let mut bars = Vec::new();
+        for (k, page) in doc.pages.iter().enumerate() {
+            let codes = barcodes(page);
+            let data: Vec<&str> = codes.iter().map(|(_, s)| s.data.as_str()).collect();
+            match k {
+                0 => assert_eq!(data, ["590123000015", "ID AB-1"]),
+                1 => assert_eq!(data, ["590123000016", "ID CD-2"]),
+                // The empty cell: Code 128 still holds "ID ", the EAN its
+                // counter.
+                _ => assert_eq!(data, ["590123000017", "ID "]),
+            }
+            // The EAN-13 text shows the record's digits with the check digit.
+            let (ean_shape, _) = &codes[0];
+            let ShapeKind::Group { children } = &ean_shape.kind else {
+                panic!("a group");
+            };
+            let text: String = children.iter().filter_map(text_of).collect();
+            let digits = format!("590123{:06}", 15 + k);
+            let check =
+                crate::barcode::ean_check(&digits.bytes().map(|b| b - b'0').collect::<Vec<u8>>());
+            assert_eq!(
+                text.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>(),
+                format!("{digits}{check}"),
+                "page {k}"
+            );
+            // In the same place as the template, moved with it.
+            let b = ean_shape.bounds();
+            assert!(
+                (b.center() - ean_box.center()).hypot() < 0.5,
+                "{b:?} {ean_box:?}"
+            );
+            bars.push(bars_of(ean_shape));
+        }
+        assert_ne!(bars[0], bars[1], "each record its own bars");
+        // A record whose data EAN-13 cannot hold gets no barcode.
+        let mut bad = st.clone();
+        bad.kinds[0] = FieldKind::Text;
+        bad.rows = vec![vec!["12AB34".into(), "x".into()]];
+        let doc = merged_document(&app, &bad).expect("merged");
+        let codes = barcodes(&doc.pages[0]);
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].1.data, "ID x");
+    }
+
+    /// The Print Merge panel's Barcode field opens the Barcode Wizard with
+    /// the column as the data; its Finish places the barcode.
+    #[test]
+    fn the_panel_inserts_a_barcode_field_through_the_wizard() {
+        let mut app = App::headless();
+        app.merge_state = Some(PrintMergeState {
+            headers: vec!["Name".into(), "SKU".into()],
+            rows: vec![vec!["a".into(), "X1".into()]],
+            kinds: vec![FieldKind::Text, FieldKind::Text],
+            ..Default::default()
+        });
+        app.merge_docker.kind = 3;
+        app.merge_docker.column = 1;
+        app.insert_merge_field();
+        let crate::ui::dialogs::Dialog::Barcode(st) = &app.dialog else {
+            panic!("the wizard: {:?}", app.dialog);
+        };
+        assert_eq!(st.spec.data, "<SKU>");
+        assert_eq!(st.spec.symbology, crate::barcode::Symbology::Code128);
+        let spec = st.spec.clone();
+        crate::ui::barcode_wizard::insert(&mut app, &spec).expect("inserted");
+        let s = app
+            .doc()
+            .find_shape(app.selection[0])
+            .expect("barcode")
+            .clone();
+        assert!(holds_field(app.merge_state.as_ref().expect("data"), &s));
+        let doc = merged_document(&app, app.merge_state.as_ref().expect("data")).expect("merged");
+        let codes = barcodes(&doc.pages[0]);
+        assert_eq!(codes[0].1.data, "X1");
     }
 
     /// Bulk cards (#377, #378): fields inside a group are filled, a

@@ -708,29 +708,6 @@ impl Pen {
         }
     }
 
-    /// A disc whose fill fades from `from` at its left to `to` at its
-    /// right (a fan with vertex colours, premultiplied).
-    pub fn fade_circle(&self, cx: f32, cy: f32, rad: f32, from: Color32, to: Color32) {
-        let mix = |t: f32| {
-            let a = from.to_array().map(|b| b as f32);
-            let b = to.to_array().map(|b| b as f32);
-            let c = |i: usize| (a[i] + (b[i] - a[i]) * t).round() as u8;
-            Color32::from_rgba_premultiplied(c(0), c(1), c(2), c(3))
-        };
-        let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(self.at(cx, cy), mix(0.5));
-        let n = 48u32;
-        for i in 0..n {
-            let a = i as f32 / n as f32 * std::f32::consts::TAU;
-            let (x, y) = (cx + rad * a.cos(), cy + rad * a.sin());
-            mesh.colored_vertex(self.at(x, y), mix((x - (cx - rad)) / (2.0 * rad)));
-        }
-        for i in 0..n {
-            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
-        }
-        self.painter.add(mesh);
-    }
-
     /// A convex fill (nodes, arrowheads), smoothed by the tessellator.
     pub fn convex(&self, pts: &[Pos2], color: Color32) {
         self.painter.add(epaint::PathShape::convex_polygon(

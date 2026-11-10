@@ -23,6 +23,7 @@
 
 ## Главное в последних версиях {#highlights}
 
+- **Траектории ЧПУ, экспорт и выделение.** [[menu.tools > menu.tools.tracecut]] создаёт G-код для фрезерного станка с ЧПУ и рисует люверсы, коробки на шипах и гнутые кассеты; [[menu.file > menu.file.export]] сначала спрашивает файл, а затем показывает параметры формата, а [[menu.file > menu.file.export_with_options]] показывает их всегда; [[menu.edit > menu.edit.select_similar]] и [[menu.edit > menu.edit.invert_selection]] меняют выделение; [[menu.object > menu.object.insert > menu.object.add_dimensions]] ставит размеры выделения; новые процедурные заливки, кнопки OpenType и интерфейс на лаосском языке.
 - **Развороты и связанный текст.** [[menu.layout > menu.layout.facing_pages]] показывает страницы рядом разворотами; [[menu.text > menu.text.link_content]] связывает тексты, чтобы ввод в одном менял остальные; многостраничный PDF спрашивает, какие страницы импортировать; [[menu.edit > menu.edit.step_and_repeat]] может заполнить страницу копиями.
 - **Сенсорный ввод и телефоны.** Кнопки Shift, Ctrl и Alt на стандартной
   панели остаются нажатыми для пальца; на Android интерфейс не заходит под

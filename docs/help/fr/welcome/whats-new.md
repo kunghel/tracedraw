@@ -25,6 +25,7 @@ dernières versions.
 
 ## Points forts des dernières versions {#highlights}
 
+- **Parcours CNC, exportation et sélection.** [[menu.tools > menu.tools.tracecut]] produit du G-code pour une fraiseuse CNC et dessine des œillets, des boîtes à entures et des bacs pliés ; [[menu.file > menu.file.export]] demande d'abord le fichier, puis affiche les options du format, et [[menu.file > menu.file.export_with_options]] les affiche toujours ; [[menu.edit > menu.edit.select_similar]] et [[menu.edit > menu.edit.invert_selection]] modifient la sélection ; [[menu.object > menu.object.insert > menu.object.add_dimensions]] cote la sélection ; les remplissages procéduraux, les boutons OpenType et l'interface en lao sont nouveaux.
 - **Pages en vis-à-vis et texte lié.** [[menu.layout > menu.layout.facing_pages]] affiche les pages côte à côte en planches ; [[menu.text > menu.text.link_content]] lie des textes pour que la saisie dans l'un modifie les autres ; un PDF de plusieurs pages demande quelles pages importer ; [[menu.edit > menu.edit.step_and_repeat]] peut remplir une page de copies.
 - **Tactile et téléphones.** Des boutons Maj, Ctrl et Alt dans la barre
   standard restent enfoncés pour le doigt ; sous Android, l'interface évite

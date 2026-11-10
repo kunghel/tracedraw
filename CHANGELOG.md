@@ -4,6 +4,201 @@ Versions follow the tags of this repository; every push to `main` also
 publishes a nightly build. [`docs/features.md`](docs/features.md) has the
 full, row-by-row status.
 
+## Unreleased
+
+- Extrude: a body turned in space with a vanishing point (the small and large types) no longer throws faces far past the object when the vanishing point sits near it or on it. A point takes its share of the way to the vanishing point from its own depth in the body, no longer from where the turn puts it (#2207).
+
+- Extrude: with a long offset and the body turned in space, side faces farther away were drawn over nearer ones, which showed as dark slivers across the letters of extruded text. The faces of a parallel extrusion are now ordered by how near they are where they overlap (#2206).
+
+- Extrude, Bevel: a bevel wider than the narrowest part of the outline (a letter's stem, the wall between an outline and its hole) is narrowed to the widest one that fits, so the near face of bevelled text no longer folds over itself into stray shapes (#2205).
+
+- Shape tool, Reduce Nodes and the curve smoothness slider: an outline made of many short straight segments along a curve (an effect broken apart, an imported polyline) is reduced to curves. Before, it was only reduced to fewer straight segments, which turned a round shape into a polygon (#2209).
+
+- Saving `.cdr`: a picture scaled on the page (a picture fitted into a frame, for one) is written with an image resolution that matches its box, the scaling left to its transform as the files hold it, and with its picture's own pixel size; the box and the image disagreed before, one candidate for the reading program closing when such a picture was clicked. `tracedraw-cli check` reports both differences (#1222).
+
+- Edit > Select Similar: the objects inside groups are compared too, each on its own, and a selected group stands for the objects in it. Before, a yellow square in a group was never found, and a group (which has no fill of its own) was taken with the objects without a fill (#2203).
+
+- Saving `.cdr` (version 12 and later): curly apostrophes and quotes, dashes, the euro sign and the other letters past U+00FF are written as two-byte letters, no longer as single Windows-1252 bytes, which the program that reads the files showed as unknown characters (version 18) or dropped (version 21) (#2124).
+- Colour panel, Spot inks: an ink's name is a field, typed over to rename the ink (Enter or leaving the field gives it, one undo step; an empty name or another ink's is refused). Its swatches, the objects painted with it and its separation in PDF and PostScript take the new name, so a spot colour can be given the name a printer or cutter expects. The Palette Editor already renames the colours of your own palettes (#2187).
+
+- Drop Shadow: the shadow of an object with a hole (a ring of two circles combined, a letter shape converted and combined, a crossing star) has the hole too, on the page, in a group's shadow, after Break Drop Shadow Apart and in PDF and `.cdr` output; before, the silhouette was always filled solid, a dark disc under a ring. A curve set to the nonzero fill rule and text keep a solid shadow where their contours overlap, as they are filled themselves (#2216).
+
+- TraceCut, CutContour: the swatch it adds goes by its ink's name, CutContour, in the document palette, the Palette Manager, the status bar and any palette it is added to, instead of its ink number ("Spot 1"), so the name cutting RIPs look for shows, as it is in the PDF's Separation colour space. Every spot colour's swatch is named by its ink the same way (#2186).
+
+- File > Import of PNG and JPEG files: a photo whose Exif orientation says the camera was turned comes in upright, with its width, height and resolution turned with it, a CMYK JPEG's inks too; before, it came in on its side. Every common kind of PNG (8 and 16 bits, grey, alpha, palette) and JPEG (baseline, progressive, grey, CMYK) is checked to import (#2167).
+
+- File > Import of a CMYK JPEG shows its colours as the drawing shows the same CMYK colours, through the colour management, and keeps the file's inks (a CMYK picture, as a CMYK TIFF comes in): an object exported as a CMYK JPEG and imported again no longer comes back brighter than it was, such as a bright blue for a muted purple. The four channels are read as stored: inverted under an Adobe marker (as the CMYK export and most programs write them), YCCK, or as they are without the marker (#2163).
+- Windows: the window is drawn through Direct3D 12 when the graphics card offers it, rather than Vulkan, whose swap chain made the window blink after switching from another program or opening a dialog on Intel and NVIDIA drivers; the card chosen in Options, or the fastest, stays the same (#1579).
+
+- Multipage View: a press picks the object that shows there, whatever page holds it: an object of the current page lying over another page's paper is picked instead of that page being made current, and another page's object, on its page or off it, makes its page current and is picked by the same click, found by its shape rather than its box. The objects every page holds off its paper are drawn while another page is current; they showed only on their own page, so they seemed to vanish (#2055, still seen in 0.42.1).
+
+- Weld, Trim, Intersect and the other shaping operations read a group as what its objects cover together: where two objects of a group overlapped, the result had a hole (Weld) or kept a piece it should have lost (Trim, the Minus operations). Text in a shaping operation, and the cutters of Trim, are read with the nonzero rule as the other operations read them, so the overlapping strokes of a letter make no hole. Tests run every operation on overlapping rectangles, ellipses, curves, groups, objects with holes, text and text converted to curves, and a target behind the source (#555).
+
+- Block shadow and contour follow text: the block shadow of a word showed shards running from one letter to the next, as the letters' outlines were swept as one line through all of them; each contour now casts its own shadow, with its corners exact. The contour and the block shadow read text, and objects set to the nonzero rule, with that rule, so the overlapping strokes of letters in many variable fonts no longer leave black triangles and bars inside an inside contour (#2156).
+- `.cdr` files: text in the vertical form of an East Asian font (its name starting with `@`) opens as vertical text in that font, its ideographs upright, instead of a missing font and sideways letters; TraceDraw writes vertical text back the same way. A picture's graded transparency in a version 16 or later file runs where the file places it (a photo faded over the middle instead of its top) (#1544).
+
+- An ellipse made an arc (its node dragged outward with the Shape tool, or Arc on the property bar) is an open curve everywhere: with the document's Fill open curves off it shows no fill in SVG, PDF and the other vector exports and is picked on its outline only, as on screen; a pie keeps its fill. With Fill open curves on, a click inside an open curve's fill picks it.
+
+- Transparency: the outline of an object with a transparency no longer stays partly opaque, which on a rounded rectangle made part of the outline seem to vanish: the mask, drawn over the object's box, now goes on past the box as it is at its edge. The target (Apply to: Fill, Outline, All) is drawn on screen and in SVG and PDF exports: Outline fades the outline alone, Fill the fill alone, the other part as it is; an outline set behind the fill stays behind it.
+
+- Weld, Combine and the other shaping operations keep a mesh fill: the result takes the mesh in its place on the page when the mesh covers it, else the mesh's mean colour; Combine left the mesh in the wrong place and a result reaching past the mesh showed no colour there.
+
+- Windows: the Microsoft Store package carries the thumbnail provider of `.tdraw` files and declares it, so Store installs show a picture of the first page in the Explorer as the setup's do; the setup also registers it under `SystemFileAssociations\.tdraw`, which stays when another program opens `.tdraw` files. A test checks the setup's keys and that the release build makes, signs and packs the DLL (#1740; 0.41 had no thumbnail provider, it came in 0.42.0).
+
+- Objects docker: dragging an object's row now also moves objects between layers: let go on an object of another layer (of any page or of the master page) it goes in front of or behind that object in its layer, and let go on a layer's row it goes on the top of that layer. A selected row carries the rest of the selection along, the whole move is one undo step, and the objects stay selected with their layer active. Rows inside groups no longer start a drag that failed, locked objects stay and a locked layer takes nothing (live test of 0.41).
+
+- View > Navigator, with the key N, in the shortcut table like any menu command, so it can be changed or removed in Options > Customization > Commands and is found by Help > Search Commands. N held shows the Navigator as before; the menu row opens it until a click: a click on the picture goes there, a click elsewhere or Esc closes it (live test of 0.41).
+
+- Help > Search Commands (Ctrl+Shift+P) finds settings too: every setting of the Options and of Document Setup by its label or the words of its tip, and each options page by its name, listed after the menu commands with the page they are on. Choosing one opens the Options or Document Setup at that page with the setting framed for a moment, scrolled into view; "fill open" finds Fill open curves (live test of 0.41).
+
+- Align and Distribute, Distribute To > Set spacing: a slider under the spacing box, and the wheel over the box, change the spacing live: once a Distribute button has spread the selection, it spreads again at each new value as you adjust. Letting go of the slider or moving away from the box keeps the result as one undo step; Esc puts the spacing and the objects back. Before, a new spacing took a click on the button again.
+
+- Palette bars dock beside other bars: dragged over the toolbox, the default palette, the document palette row, a column of panels or another palette bar, a palette bar goes just outside it (let go on its half towards the window's edge) or just inside it (the other half), with a blue line showing where. Several palette bars stand side by side in the order they were put, such as a second row next to the default palette or a column next to the toolbox; the place is kept in the preferences and in workspace files. Before, a palette bar docked only at the window's edges (live test of 0.41).
+
+- Paragraph text: linking a frame of text to an empty frame flows the text that does not fit into the empty one, whichever of the two was picked first. Picked empty frame first, the whole text went into it and the frame it came from was left empty, so the text seemed to vanish when going back to that frame.
+
+- Text > Insert Placeholder Text is also in the right-click menu of a paragraph frame and in the right-click menu shown while typing in one. A frame being edited, an empty one just drawn too, is filled and stays edited with the caret after the sample text; editing used to end.
+
+- Drop shadows: a click on an object that has a shadow of its own picks it, also where another object's shadow falls over it; picking one shadowed object after another used to jump to the neighbour whose shadow lay there. A double click on a shadow with the Pick tool chooses the Drop Shadow tool for its object, and Edit Shadow in the object's right-click menu and in the new Drop Shadow section of the Properties docker does the same. The Drop Shadow tool's handles and property bar follow the first selected object that has a shadow.
+
+- Drop Shadow tool: every handle is grabbed and dragged, flat or standing on any edge. Where handles lie close together a press takes the nearest one; the end handle used to take every press within its reach, so the start handle under it could not be grabbed. The start handle follows the pointer while it is dragged.
+
+- Object > Convert Outline to Object (Ctrl+Shift+Q) keeps curves as curves: each segment of the path is offset to either side, a curve as the fewest curves within 0.01 mm of its true offset, so a constant-width outline has about as many nodes as its path (a smooth curve of four nodes now gives ten at most, it gave 32; an ellipse's ring eight). Round ends and corners are exact arcs with a node at each end's tip. The Shape tool no longer shows corner widgets on nodes where rounding would change nothing that shows, such as the near-straight kinks the old conversion left.
+
+- Attract and Repel move the whole stretch of the outline in the nib, evenly in every direction, from the moment the button goes down; they moved only the nodes and handles in reach, so a side with its nodes outside the nib did not react until one came in, and Repel pushed unevenly. Held still, they pull or push at a steady pace and come to rest once the effect is complete (Attract gathers the outline towards the middle of the nib, Repel pushes it out to at most the nib's edge) instead of moving on for as long as the button was held.
+
+- Roughen works out the whole stroke from the outline it began with, so going back over the same place or holding the button adds no more spikes: a long stroke piled up nodes by the million.
+
+- TraceCut, Find Crossings: On OK has Move them apart, which moves objects that cross each other apart in one undo step, each the shortest way that leaves the spacing (2 mm at first) to the others; the lowest of each set of crossing objects stays, and so do locked ones. Finding crossings offered no way to resolve them by moving the objects.
+
+## 0.43.0 (2026-11-08)
+
+- The interface comes in Lao (ພາສາລາວ): Options > Global, the Windows installer and the system language offer it, and the browser build fetches Noto Sans Lao for its letters (#2062).
+
+- Linux: the window's application id is `tracedraw`, the name of its desktop file, so docks and task bars (Plank, and on Wayland GNOME and KDE) show TraceDraw's icon instead of a blank one (#1718).
+
+- Palettes: the palette editor has a Spot color box that makes the chosen colour a named ink of the entry's name, printed on a plate of its own with the colour as its stand-in, and `.tdpal` palettes keep spot colours. PDF exports keep fill and outline overprint, and a selection exported alone keeps its spot inks. Macros reach the palettes by name (Application.Palettes, Document.Palette, a spot colour's Name), and a spot colour a macro applies brings its ink into the drawing; they also gain CreateContour, Outline.ConvertToObject, CopyToLayer, the view with overprints, PDFSettings.PublishRange, Dir, StartsWith, EndsWith and Contains in queries, and named arguments for the object model's methods.
+
+- Browser: File > Package, the Scripts docker's VBA tab and its Debug button are greyed with a tip that says why (they need the desktop version), as the macro commands already say; Debug was missing altogether (#1416). The start notice no longer says that only the bundled fonts are there: other fonts are downloaded when text uses them, and fonts added in Font Manager are kept (#1417).
+
+- Browser version: the module no longer carries the eighteen interface languages besides English (about 10 MB of text); the page fetches the chosen language's file when the editor starts in it or it is chosen, showing English until it arrives, then switching without a reload, and the installed app keeps a fetched language for use without a network. The desktop program keeps every language built in.
+
+- Icon buttons (toolbox, standard toolbar, property bar, the Outline Pen's picture buttons): a button that is on, such as the active tool or Portrait or Landscape, stands out with a sharp blue frame, and a hovered button shows a clearer blue fill and frame; on and hovered together look different again. The pressed look was white with a grey frame and the hover a faint tint, hard to tell apart from the panel. The same looks apply in the light, dark and high contrast themes.
+
+- Text docker, Character section: the OpenType row now has a button for every common feature (ligatures, discretionary ligatures, small caps, capitals to small caps, case-sensitive forms, lining, old-style and tabular numerals, fractions, ordinals, slashed zero, stylistic alternates, swash), each enabled only when the font has the feature and greyed with a tip saying so when it does not; a feature the font applies by itself (ligatures) shows on and can be switched off; and Superscript and Subscript buttons use the font's own forms where it has them, else draw the characters at 58 % of the size raised by 33 % or lowered by 15 %. Settings are kept in .tdraw files, and files saved before open unchanged (#1201).
+
+- Text docker, Character: the underline and the strikethrough are lists of styles (none, single thin, single thick, double thin, and each of those under the words only, skipping the spaces); All caps draws the characters as capitals while the text keeps the case typed; Enclosed draws the font's enclosed forms, or a ring round each character where the font has none; Overprint fill and Overprint outline mark characters of their own, used by Simulate Overprints and the PDF export like the object's. All are drawn on the page and in every export and kept in `.tdraw` files, which still write a plain underline as before. The Strikethrough button beside Underline and the property bar's buttons switch between none and a single thin line and show on for any style (#1209).
+
+- Transparency: ten more merge modes, Texturize, Lightness, Behind, Screen, Overlay, Soft Light, Hard Light, Color Dodge, Color Burn and Exclusion (28 in all), drawn by their formulas, kept in `.tdraw` files and carried into SVG and PDF exports as their blend modes where those exist; drop shadows can use them too (#1203).
+
+- Properties docker: the Summary section now reports the selection's count, layer, kind, size, centre and centre of rotation, and holds Wrap paragraph text (style and offset) and Lock Object; it listed only each object's kind and id. Crop tool: Crop and Clear buttons float under the crop area on the canvas, so the area is applied or dropped without reaching the property bar (#1202).
+
+- Properties docker: a fountain fill's placement in numbers (W, H with a lock, X, Y, skew and rotate, setting the nodes the Interactive Fill tool drags), the opacity of each colour stop, Overprint fill and Overprint outline, and Edit Fill... and Outline Pen... buttons that open the dialogs; the calligraphic nib under Advanced is a percentage field, an angle field and the nib picture to drag, as in the dialog (#1200).
+
+- TraceCut: CNC Toolpath turns the selected curves and shapes into a G-code file for a CNC router or mill: the tool's radius outside the outlines and inside the holes (holes found by themselves and cut first), passes down to the total depth, safe height, feed, plunge and spindle speed, climb or conventional milling and optional holding tabs.
+
+- TraceCut: Eyelets, in the new Make group, places eyelet (grommet) marks along the selection's box or along each of its closed curves: circles of a given diameter, a given distance in from the edge, one in each corner and more along the sides, at most a spacing apart or a number per side; OK adds them as one group.
+
+- TraceCut: Box Maker, in the Make group, draws the flat panels of a box with finger joints for laser or CNC cutting from its width, depth and height (outside or inside sizes), the material thickness and the finger width, with or without a top; the panels are laid out side by side as one group, every finger matching a slot of the panel it joins.
+
+- Drawings are saved, listed and named in any script: the direction marks a right-to-left keyboard or pasted text leaves in a Hebrew or Arabic name no longer hide the extension (a name came out as "שלום.tdraw.tdraw"), auto-backups, Send To and printing keep a name's letters, accents and vowel marks instead of turning them into underscores, and the interface uses a system font for Hebrew, so a Hebrew name typed in the Save Drawing dialog, the tabs and the recent files no longer shows as boxes.
+
+- Print Merge: Print Merged Document asked for again while the merged drawing it made is still open and unchanged (after closing Print Preview, from the merged drawing or from the drawing merged, with the same records) prints that drawing instead of making another merged drawing behind it.
+
+- Print, Layout: several pages per sheet can go in the order Cut and stack, numbering down the stack for merged tickets and cards: each place on the sheet takes the next page on the next sheet, so the piles cut from the stacked sheets each run in order (100 records 4 up: 1, 26, 51 and 76 on the first sheet). The other orders are unchanged.
+
+- Print Merge: a Random number field, for raffle tickets and codes without a data file: From and To, Digits, Text before and No repeats, and Records to make that many records at once. The numbers stay the same in the grid, the merged pages and the print until Draw Again; a range too small for No repeats is said in the dialog and the merge is not made. Numbers counting from a start by a step are the Number field, as before.
+
+- Clip frames: the canvas right-click menu of a clip frame has Edit Contents and Extract Contents, and while its contents are edited, Finish Editing (on the contents or on the empty page). Ctrl+Shift+F3 enters the selected clip frame and leaves it again (#1273).
+
+- Touch screens: a tap of two fingers on the drawing undoes, of three redoes; a pinch or a pan, which moves, does neither. Shift, Ctrl and Alt move from the Standard toolbar to keys floating over the drawing's bottom left corner, with a Delete key beside them; Options > Display shows or hides them (#1996).
+
+- Dimensions: Object > Insert > Add Dimensions measures the selection, a width along its bottom and a height along its right, 5 mm away, in the Dimension tool's style and units; Add Dimensions to Each Object gives every selected object its own pair. Both are in the right-click menu too, and one undo takes them away.
+
+- Gradient fills: the Properties docker gets Blend direction (straight through RGB, or clockwise or counterclockwise round the colour wheel), Steps (the fill drawn as 2 to 255 colour bands; unticked, smooth), Smooth transition (the colour change eases in and out at each node) and Acceleration (-100 to 100, skewing every blend's midpoint on top of the nodes' own). The screen, SVG (a pair of stops per band, a sampled run for a hue path) and PDF (a sampled function) draw them alike, each setting is one undo step and goes into each selected object's own gradient, and `.tdraw` files keep them while files without them read as before (#1208).
+
+- Pattern fills: every pattern kind (two-colour, bitmap, vector) takes a placement in the Properties panel: tile size with a lock, X and Y offset, rotation, skew, Mirror tiles (every second column or row flipped), row or column offset as a percentage of a tile, and Transform with object (the tiles follow the object instead of staying on the page). The panel has Vector pattern and Bitmap pattern buttons beside the two-colour one, with a picker over the drawing's patterns, the pictures on the page and a picture import, and New from selection running Object > Create > Pattern Fill. The placement draws on screen, goes out in SVG (`patternTransform`) and PDF (a tiling pattern with its `/Matrix`, where patterns were rasterised) and is kept in `.tdraw` files; tiles now anchor to the page origin rather than the corner of the view, so they no longer slide when the view pans (#1207).
+
+- Outline, Arrowhead editor: the "..." beside the start and end arrowhead lists (Properties docker, Outline Pen dialog) opens an editor for that end with the head list, Size (10 to 1000 % of the preset size), Offset along the line, Mirror horizontally and vertically, Rotation and a preview of the line's end; OK applies it to the selection as one undo step, to the default outline with nothing selected, or back into the Outline Pen dialog. Share attributes beside the End list copies the start arrowhead and its settings to the end and keeps them the same while on. The settings are drawn on the canvas and in SVG, PDF, EPS and EMF files alike and saved in `.tdraw` files (untouched files stay as they were). Arrowheads had a shape only (#1210).
+
+- Procedural fill: a new fill kind in the Properties panel (Fill > Procedural), the Edit Fill dialog and the Interactive Fill tool's bar, with a library of nine patterns drawn from a few numbers (octagons and squares, triangles, bricks, honeycomb, crosshatch, dots, waves, spirals, speckle): tile size, line width, cover, amplitude, turns, specks per tile and a seed, a foreground colour and an optional background colour, with a preview. The pattern is a vector tile repeated from the page origin on screen, a `<pattern>` with the tile's paths in SVG and a tiling pattern in PDF, kept in `.tdraw`; each setting is one undo step and goes into every selected object's own fill. Other exports draw it rasterised or in its foreground colour (#1212).
+
+- Updates: Install opens an Updating TraceDraw window of a fixed size with the TraceDraw icon, the two versions, a progress bar with the percentage and a line with the megabytes, the speed and the time left, and Cancel, which stops the download at once and deletes what was downloaded. Checking the download and Installing follow with a moving bar, then a check mark with Restart Now and Later, or the reason of a failure in plain words with Try Again and Download from the website. The update card shows the same progress. It replaces a message box whose download line was cut off with its button on Windows: message boxes share one window, which was drawn for a frame in the size and place of the box before it; such a frame is now laid out again.
+
+- Focus mode and Edit Contents: the rest of the page fades by "Visibility of inactive objects" in both (Edit Contents kept a quarter of its strength whatever the setting), and at 0 % it is not drawn at all, so a crowded page stays quick (#981).
+
+- Object > Clip to Frame has Center Contents, Fit Contents Proportionally, Fill Frame Proportionally and Stretch Contents to Fill, the clip bar's Fit Contents choices, so they can take shortcuts in Options > Customization > Commands; with several clip frames selected each fits its own contents in one undo step (#1299).
+
+- Print Preview: with Print separations on, the ink boxes stand side by side in a row that wraps, instead of one per line (#1737).
+
+- Common Shapes: the shape picker has an All tab that shows every set at once, each under its name (#1650).
+
+- Options > Display > View when a drawing opens has Zoom level: a drawing opens at the zoom typed beside the list, its page in the middle of the window (#1266).
+
+- Colour Eyedropper and Attributes Eyedropper: Ctrl+click in Apply mode samples again without leaving Apply mode (Ctrl+Shift+click with the Colour Eyedropper takes the outline colour first); the pointer is the pipette while Ctrl is held (#1302).
+
+- Dimensions: Place on the property bar puts a linear dimension's label in the middle of its line, toward either end, or outside the extension lines at either end, where the line runs on under it (#1500).
+
+- Colour picker: under the sliders a Harmony list and a row of swatches (complementary, analogous, triadic and the other rules) offer colours that go with the one picked; a click on a swatch picks it (#1498).
+
+- Shape tool: beside Corner rounding, Round, Scalloped and Chamfered Corner choose what the value does to the chosen corners (or every corner of the selected curves), cut as the Corners docker cuts them (#1147).
+
+- Welcome Screen: the recent documents are a table across the window with each drawing's name, location, size and last edit, under a header row; a narrow window and a phone keep the list (#1675).
+
+- Symmetry: the mirrored copies keep the object's transparency and lens, and what its other effects draw (contour, blend, extrusion, bevel, block shadow) is mirrored with it; the copies had the fill and outline only (#2121).
+
+- An envelope, perspective or distortion on a group bends the blends inside it: the steps between the two objects follow the warp instead of staying where they were (#2120).
+
+- File > Import of a PDF or AI file can bring each page in as one picture: the Import PDF dialog and Options > File Formats have Picture besides Text and Curves, with its resolution, one undo step (#1916).
+
+- Missing Fonts dialog: Add Font File... installs fonts from files, remembered for the next start as Font Manager's Add Font does (a copy kept on Android), and the families they bring leave the list (#1989).
+
+- Tab ruler: the paragraph's left and right indents show as markers along the ruler; dragging one sets the indent, the text following as it moves, one undo step (#1993).
+
+- Text docker: the Paragraph section shows the paragraph's tab stops and has a Tabs... button opening the Tabs dialog box (#2003).
+
+- Pick tool: holding the right mouse button while a selection box is dragged moves the box instead of sizing it; let go, it is sized again, and the left release selects what it encloses where it was moved to. The Shape tool's node selection box moves the same way (#2050).
+
+- The browser version's start notice says where its fonts come from: not the computer's installed fonts, but free fonts fetched from the page's catalogue when a drawing needs them and fonts added in the Font Manager; it said only the bundled fonts were available (#1417).
+
+- Auto-scroll: a drag that reaches the edge of the drawing window (moving or sizing objects, drawing, a selection box, nodes) scrolls the view that way, faster the nearer the edge, while the button is held (#2051).
+
+- B-Spline tool: a point placed with C or V held is a fixed point, which the curve passes through with a corner; the curve made keeps it for the Shape tool (#2060).
+
+- AI: replies may be longer (Longest reply in Options > AI, 32000 tokens at first instead of 8000), an address typed without its API path (only the server, or ending in /v1) gets it, and the AI strings are in Simplified Chinese (#1011).
+
+- Common Shapes: a sixth set, My shapes, holds shapes of your own. Add Selection as Common Shape (in that set, in Object > Create and on the right-click menu) keeps the outline of the selected objects as a shape, saved in the settings folder so it is still there after a restart; it is drawn like the built-in shapes by dragging a box, Ctrl keeping its proportions, and Remove takes it out again (#481, #782).
+
+- Contour tool: an object with a contour shows two handles on the drawing, a square at the last step that sets how far the contour reaches and a bar at the first step that sets the number of steps (the last step staying where it is). The contour follows live and each drag is one undo step. Steps on the property bar is a slider (#1265).
+
+- Bitmap effects on all pages: in a drawing of several pages the effect dialogs have an All pages box that gives the effect to every picture on every page as well, and Effects > Apply to Pictures on All Pages gives every other picture the effects of the selected one (effects without a dialog included), each as one undo step (#1551).
+
+- Print Merge: barcodes take their data from merge fields. Barcode in the Data Merge panel opens the Barcode Wizard with the field as its data, and the wizard's Insert Print Merge field list adds a field to any barcode's data; each merged record gets its own barcode in the place of the one placed, fixed digits before a counter staying the same (#1084).
+
+- Edit > Invert Selection selects the objects of the page that are not selected and deselects the others; Edit > Select Similar selects the objects with the same fill, the same outline, the same text formatting (font and size) or of the same kind as the selected ones. Each one is a step of Undo and Redo (#2002).
+
+- The Transparency tool's icon is a checkerboard fading in steps, no longer a disc fading like a gradient that was taken for the fill tools (#1682).
+
+- Multipage View: View > Pages in Multipage View, and a button next to the view's in the page bar, choose which pages the view shows, all of them or a range such as "1-3, 7"; the range is saved with the drawing like the page spacing (#1440).
+
+- Wheel zoom: the glide after a notch is shorter the faster the wheel turns, so a quick spin zooms at once and a single notch still glides; Options > Tools > Zoom/Pan has Smooth zoom (on; off zooms each notch at once) and the zoom per wheel notch, 15 % at first (#1648, #895).
+
+- Options > Tools > Zoom/Pan: Pan inertia (off at first). A pan with the Pan tool, the middle button or two fingers let go while still moving keeps the view sliding and easing out; a click or the wheel stops it (#831).
+
+- File > Export asks for the file first, then shows the export options: the Save dialog offers every format, the one used last first, and the extension of the name chosen picks the format; the Export dialog then opens with that format's last choices and its preview, titled with the file name, OK writes the file and Cancel writes nothing. Choosing another format in the dialog changes the file's extension. In the browser and on Android the options still come first. Export used to go straight to the Save dialog and write the file with no options for anyone who had once ticked "Do not show filter dialog": the tick was the setting itself, so it stayed even when the dialog was cancelled, and Options did not show it. It is now "Do not show this dialog again", kept on OK only, also on the Options > Global > File Formats page; with it on, the status bar says the last options were used, and holding Shift while choosing Export, or the new File > Export with Options (Ctrl+Shift+E), shows them. Preferences of earlier versions show the options again once.
+
+- TraceCut: Folded Tray, in the Make group, draws the flat pattern of a tray folded from composite panel, such as a sign face with returns or a light box: the face size (or the selection's), return depths (one or per side), panel thickness and groove allowance, corner reliefs, optional overlap flaps, mounting ears with holes, holes in the returns and a window in the face; OK adds one group with the fold grooves (open lines, first pass) and the cut lines (closed, second pass) in their own colours, the preview follows every setting, and the last settings are kept (discussion #2069).
+
+- Palettes: drag a picture from the drawing onto a palette (any palette bar, docked or floating, or the document palette) and a small window asks how many of its colours to take, 2 to 64 with a slider and a number box, showing the colours as the number changes; OK adds them to that palette, skipping the colours it already has, and Cancel adds nothing. A built-in or locked palette is left as it is and OK makes a new palette with the colours. The colours are those of Add Colors from Bitmap, which keeps working (#2137).
+
+- Palettes: colours can be deleted one or several at a time. Right-click a colour of one of your palettes (or of the document palette) and choose Delete Color; on a built-in palette the item is greyed and says why. Edit Palette... in a palette's menu, or a double-click on the palette outside its colours, opens the Palette Editor on that palette, where Ctrl+click and Shift+click select several colours, Delete (the button or the key) removes them all, Move up and Move down or a drag reorder them, and the selected colour can be renamed. The editor now works on a copy: OK or Apply keeps the changes, Cancel drops them, and Undo takes back the last one. Reset Palette asks before it takes out the colours the drawing does not use (#2138).
+
+## 0.42.1 (2026-11-08)
+
+- Release pages start with a download table that links every installer, the 64-bit Windows setup first: the page lists only the first ten files by name, so the 64-bit Windows setup was folded away behind the 32-bit one.
+
+- Windows: the 32-bit setup (`windows-x86-setup.exe`) runs on 64-bit Windows too. It refused it with only Windows's message that the program does not support this version of Windows; it now recommends the x86_64 setup there and installs the 32-bit version when asked to (#1975).
+
 ## 0.42.0 (2026-11-08)
 
 - Export opens the file dialog in the folder exported to last, kept between sessions, instead of the drawing's folder or the default one (#1817).

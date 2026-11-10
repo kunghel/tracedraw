@@ -30,7 +30,7 @@ holds the licence of every font in the folder.
 
 | Fonts | Licence |
 |---|---|
-| Families from the google/fonts collection (Carlito, Caladea, Gelasio, Comic Neue, EB Garamond, Open Sans, Roboto, Montserrat, Lato, Poppins, Inter, Noto Sans and Serif, Noto Sans Arabic, Hebrew, Thai, SC, TC, JP and KR, and about ninety more; see `web/fonts.txt`) | SIL Open Font License 1.1, Apache License 2.0 (Roboto Slab) or Ubuntu Font Licence 1.0 (Ubuntu, Ubuntu Mono) |
+| Families from the google/fonts collection (Carlito, Caladea, Gelasio, Comic Neue, EB Garamond, Open Sans, Roboto, Montserrat, Lato, Poppins, Inter, Noto Sans and Serif, Noto Sans Arabic, Hebrew, Thai, Lao, SC, TC, JP and KR, and about ninety more; see `web/fonts.txt`) | SIL Open Font License 1.1, Apache License 2.0 (Roboto Slab) or Ubuntu Font Licence 1.0 (Ubuntu, Ubuntu Mono) |
 | TeX Gyre Pagella, Bonum, Schola, Adventor, Chorus, Heros Cn | GUST Font License |
 | DejaVu Serif, DejaVu Sans Mono | Bitstream Vera Fonts licence and public domain changes |
 

@@ -19,7 +19,8 @@ use tracedraw_core::{Command, Fill, Shape, ShapeId, ShapeKind};
 /// The docker's choices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeDocker {
-    /// The kind of field Insert Field makes: 0 text, 1 image, 2 QR code.
+    /// The kind of field Insert Field makes: 0 text, 1 image, 2 QR code,
+    /// 3 barcode (the Barcode Wizard, its data from the column, #1084).
     pub kind: usize,
     /// The data source column chosen.
     pub column: usize,
@@ -32,6 +33,44 @@ pub struct MergeDocker {
     /// Place Inside Frame puts the placeholder picture in the same place
     /// on every page too (#598).
     pub all_pages: bool,
+    /// The drawing Print Merged Document made last, so that printing it
+    /// again (after Print Preview, say) prints it instead of merging
+    /// another one.
+    pub made: Option<MergedDrawing>,
+}
+
+/// A merged drawing made for printing, and what it was made from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedDrawing {
+    /// The merged drawing's engine and its revision when it was made.
+    drawing: (u64, u64),
+    /// The drawing merged, its revision and its page then.
+    source: (u64, u64, tracedraw_core::PageId),
+    /// The records and fields merged.
+    data: (
+        Vec<String>,
+        Vec<Vec<String>>,
+        Vec<crate::print_merge::FieldKind>,
+        Option<std::path::PathBuf>,
+    ),
+}
+
+impl MergedDrawing {
+    fn data_of(
+        st: &crate::ui::dialogs::PrintMergeState,
+    ) -> (
+        Vec<String>,
+        Vec<Vec<String>>,
+        Vec<crate::print_merge::FieldKind>,
+        Option<std::path::PathBuf>,
+    ) {
+        (
+            st.headers.clone(),
+            st.rows.clone(),
+            st.kinds.clone(),
+            st.pictures.clone(),
+        )
+    }
 }
 
 impl Default for MergeDocker {
@@ -43,6 +82,7 @@ impl Default for MergeDocker {
             anchor: 4,
             scale: Scale::Fit,
             all_pages: false,
+            made: None,
         }
     }
 }
@@ -88,6 +128,16 @@ impl App {
             return;
         };
         let field = format!("<{name}>");
+        if self.merge_docker.kind == 3 {
+            // A barcode: the wizard, its data the field; Finish places it
+            // (on every page too with On every page).
+            self.dialog =
+                Dialog::Barcode(crate::ui::barcode_wizard::BarcodeState::for_merge_field(
+                    &name,
+                    self.merge_docker.all_pages,
+                ));
+            return;
+        }
         // The middle of the view, else (no window yet) of the page.
         let at = Some(self.view_center())
             .filter(|p| p.x.is_finite() && p.y.is_finite())
@@ -180,6 +230,12 @@ impl App {
             }
             Err(e) => self.status = e.to_string(),
         }
+    }
+
+    /// [`Self::copy_to_other_pages`] for a field made elsewhere (a
+    /// barcode the wizard placed, #1084).
+    pub fn copy_merge_field_to_other_pages(&mut self, id: ShapeId) {
+        self.copy_to_other_pages(id);
     }
 
     /// A copy of the object `id` (on the current page) in the same place
@@ -606,17 +662,56 @@ impl App {
             }
             return;
         }
+        // The merged drawing made for printing is printed again as long
+        // as neither it nor what it came from changed: asked for again
+        // from the merged drawing or from the drawing merged (after
+        // closing Print Preview, say), no second one is made.
+        if print {
+            if let Some(i) = self.unchanged_merged_drawing(&st) {
+                self.switch_document(i);
+                let n = self.doc().pages.len();
+                self.status = crate::i18n::trf("status.merge_done", &[("n", &n.to_string())]);
+                self.print();
+                return;
+            }
+        }
+        let source = (self.engine.instance(), self.engine.revision(), self.page);
         match crate::print_merge::merged_document(self, &st) {
             Ok(doc) => {
                 let n = doc.pages.len();
                 self.open_document(doc, None);
                 self.status = crate::i18n::trf("status.merge_done", &[("n", &n.to_string())]);
+                self.merge_docker.made = print.then(|| MergedDrawing {
+                    drawing: (self.engine.instance(), self.engine.revision()),
+                    source,
+                    data: MergedDrawing::data_of(&st),
+                });
                 if print {
                     self.print();
                 }
             }
             Err(e) => self.status = e,
         }
+    }
+
+    /// The tab of the drawing Print Merged Document made last, when it is
+    /// still open and unchanged, the merge data is the same and the
+    /// active drawing is that drawing or, unchanged, the one it was
+    /// merged from (on the same page).
+    fn unchanged_merged_drawing(&self, st: &crate::ui::dialogs::PrintMergeState) -> Option<usize> {
+        let made = self.merge_docker.made.as_ref()?;
+        if made.data != MergedDrawing::data_of(st) {
+            return None;
+        }
+        let active = (self.engine.instance(), self.engine.revision());
+        let from_source = (active.0, active.1, self.page) == made.source;
+        if active != made.drawing && !from_source {
+            return None;
+        }
+        (0..self.docs.len()).find(|&i| {
+            self.tab_engine(i)
+                .is_some_and(|e| (e.instance(), e.revision()) == made.drawing)
+        })
     }
 }
 
@@ -722,9 +817,14 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
     ui.add_enabled_ui(!headers.is_empty(), |ui| {
         let d = &mut app.merge_docker;
         ui.horizontal(|ui| {
-            for (i, key) in ["merge.kind_text", "merge.kind_image", "merge.kind_qr"]
-                .iter()
-                .enumerate()
+            for (i, key) in [
+                "merge.kind_text",
+                "merge.kind_image",
+                "merge.kind_qr",
+                "merge.kind_barcode",
+            ]
+            .iter()
+            .enumerate()
             {
                 ui.radio_value(&mut d.kind, i, tr(key));
             }
@@ -1914,5 +2014,138 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The texts drawn in a frame of the whole window, with their places.
+    fn texts_of(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match s {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_string(), t.visual_bounding_rect()))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            walk(&c.shape, &mut out);
+        }
+        out
+    }
+
+    /// Print Merged Document, then Print Preview from the Print dialog
+    /// and its Close: one merged drawing, made once. Closing the preview
+    /// made the merged drawing again behind it.
+    #[test]
+    fn closing_print_preview_merges_nothing_again() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut st = data(std::path::Path::new("."));
+        st.kinds = vec![FieldKind::Text, FieldKind::Text, FieldKind::Text];
+        app.merge_state = Some(st);
+        app.merge_docker.column = 0;
+        app.insert_merge_field();
+        app.open_docker(crate::app::DockerTab::PrintMerge);
+        let size = egui::vec2(1600.0, 1000.0);
+        let run = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+            out.shapes
+        };
+        let click_on = |app: &mut App, text: &str| {
+            let mut found = None;
+            for _ in 0..6 {
+                let shapes = run(app, Vec::new());
+                found = texts_of(&shapes).into_iter().find(|(t, _)| t == text);
+                if found.is_some() {
+                    break;
+                }
+            }
+            let (_, r) = found.unwrap_or_else(|| panic!("{text:?} is drawn"));
+            let at = r.center();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            run(app, vec![button(true)]);
+            run(app, vec![button(false)]);
+        };
+        let docs = app.docs.len();
+        click_on(&mut app, &tr("merge.print_document"));
+        assert_eq!(app.docs.len(), docs + 1, "the merged drawing");
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
+        click_on(&mut app, &tr("menu.file.print_preview"));
+        assert!(app.print_preview.is_some(), "the preview opened");
+        click_on(&mut app, &tr("dialog.close"));
+        assert!(app.print_preview.is_none(), "the preview closed");
+        for _ in 0..6 {
+            run(&mut app, Vec::new());
+        }
+        assert_eq!(app.docs.len(), docs + 1, "no second merged drawing");
+        // Escape closes it the same way.
+        app.print_preview(None);
+        run(&mut app, Vec::new());
+        run(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.print_preview.is_none());
+        for _ in 0..6 {
+            run(&mut app, Vec::new());
+        }
+        assert_eq!(app.docs.len(), docs + 1, "no second merged drawing");
+        // Print Merged Document again, from the merged drawing or from
+        // the drawing merged: the same merged drawing is printed.
+        let merged = app.active_doc;
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.create_merged_document(true);
+        assert_eq!((app.docs.len(), app.active_doc), (docs + 1, merged));
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.switch_document(0);
+        app.create_merged_document(true);
+        assert_eq!((app.docs.len(), app.active_doc), (docs + 1, merged));
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        // Create Merged Document always makes one.
+        app.switch_document(0);
+        app.create_merged_document(false);
+        assert_eq!(app.docs.len(), docs + 2);
+        // Other records, or a changed drawing, make a new one.
+        app.switch_document(0);
+        if let Some(st) = app.merge_state.as_mut() {
+            st.rows.push(vec!["Cy".into(), String::new(), "C-3".into()]);
+        }
+        app.create_merged_document(true);
+        assert_eq!(app.docs.len(), docs + 3);
+        assert_eq!(app.doc().pages.len(), 3);
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.switch_document(0);
+        app.merge_docker.column = 1;
+        app.insert_merge_field();
+        app.create_merged_document(true);
+        assert_eq!(app.docs.len(), docs + 4);
+        // A merged drawing changed after it was made is merged anew.
+        let before = app.docs.len();
+        app.merge_docker.column = 0;
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.insert_merge_field();
+        app.create_merged_document(true);
+        assert_eq!(app.docs.len(), before + 1);
     }
 }

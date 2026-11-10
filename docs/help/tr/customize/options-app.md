@@ -29,7 +29,7 @@ bir sayfa seçin.
   veya [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (başlangıçta),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] veya
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] veya
   [[options.open_view_saved]] (her TraceDraw dosyası kaydedilişinde saklanan
   sayfa, yer ve yakınlaştırma).
 - [[options.ruler_calibration]]: ekrana bir cetvel tutun ve işaretler

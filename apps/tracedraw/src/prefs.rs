@@ -259,6 +259,10 @@ pub struct FormatPrefs {
     /// own size, unless the memory guard says otherwise (#1835). The
     /// browser and Android always reduce them.
     pub pdf_reduce_pictures: bool,
+    /// File > Import of a PDF or AI file: each page comes in as one
+    /// picture (Import as Picture, #1916), at `pdf_picture_dpi`.
+    pub pdf_as_picture: bool,
+    pub pdf_picture_dpi: f64,
 }
 
 impl Default for FormatPrefs {
@@ -286,6 +290,8 @@ impl Default for FormatPrefs {
             pdf_text_as_curves: false,
             pdf_ask_text: true,
             pdf_reduce_pictures: false,
+            pdf_as_picture: false,
+            pdf_picture_dpi: 300.0,
             export_presets: Vec::new(),
         }
     }
@@ -417,7 +423,7 @@ impl LayoutPreset {
         st.layout_kind = self.layout_kind.min(3);
         st.cols = self.cols.clamp(1, 99);
         st.rows = self.rows.clamp(1, 99);
-        st.page_order = self.page_order.min(2);
+        st.page_order = self.page_order.min(3);
         let size_ok = |s: tracedraw_core::geometry::Size| {
             s.width.is_finite()
                 && s.height.is_finite()
@@ -1303,6 +1309,8 @@ mod tests {
         assert!(matches!(&app.dialog, Dialog::Print(st) if st.crop_marks));
         app.settings.formats.export_format = 1;
         app.settings.formats.remember_last = true;
+        // The Save dialog first; a name without an extension keeps PDF.
+        crate::files::test_save::answer(Some(std::env::temp_dir().join("td-prefs")));
         app.export();
         assert!(matches!(&app.dialog, Dialog::Export(st) if st.format == 1 && st.remember));
         // The presets for the web and office never overwrite the choices.
@@ -1518,7 +1526,7 @@ mod tests {
         w.apply(&mut st);
         assert_eq!(
             (st.layout_kind, st.cols, st.rows, st.page_order),
-            (3, 1, 99, 2)
+            (3, 1, 99, 3)
         );
         assert_eq!(st.sheet, CUSTOM_SHEET);
         assert_eq!(

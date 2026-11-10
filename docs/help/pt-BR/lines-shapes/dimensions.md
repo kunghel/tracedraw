@@ -45,6 +45,16 @@ A ferramenta [[tool.segment_dimension]] mede um segmento de um objeto: clique
 no segmento para pegar suas duas pontas e depois clique onde vai a linha de
 cota.
 
+## Adicionar cotas a objetos {#add-dimensions}
+
+Selecione objetos e escolha **Objeto > Inserir > [[menu.object.add_dimensions]]**
+(também está no menu do botão direito): uma cota embaixo mede a largura da
+caixa da seleção e outra à direita mede a altura, cada uma a 5 mm dela, no
+estilo e nas unidades de cota abaixo. Com [[menu.object.add_dimensions_each]],
+cada objeto selecionado ganha seu próprio par. As cotas da seleção não são
+medidas, e um objeto sem altura (ou largura) não ganha cota para ela. As
+cotas novas ficam selecionadas e um desfazer tira todas.
+
 ## Estilo da cota {#dimension-style}
 
 A barra de propriedades mostra estas configurações com as ferramentas de cota e

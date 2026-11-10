@@ -454,22 +454,35 @@ impl App {
     }
 
     /// OK: the preview the drawing shows is kept as one undo step; with
-    /// none shown yet (or an older one) the effect is made now.
+    /// none shown yet (or an older one) the effect is made now. With All
+    /// pages the pictures on every page take the effect too, in the same
+    /// step.
     pub fn commit_bitmap_effect(&mut self, st: &EffectState) {
+        let recorded = self.commit_bitmap_effect_here(st);
+        if st.all_pages && st.edit.is_none() {
+            self.add_bitmap_effect_on_all_pages(st.effect.clone(), recorded);
+        }
+    }
+
+    /// [`Self::commit_bitmap_effect`] on the selection alone: whether an
+    /// undo step was recorded.
+    fn commit_bitmap_effect_here(&mut self, st: &EffectState) -> bool {
         self.poll_fx_preview();
         let key = preview_key(st, &self.selection);
         if self.fx_preview.shown == Some(key) {
             self.fx_preview.cancel_job();
-            if std::mem::take(&mut self.fx_preview.active) {
+            let kept = std::mem::take(&mut self.fx_preview.active);
+            if kept {
                 self.engine.keep_preview();
             }
             self.fx_preview.shown = None;
             self.fx_preview.base = None;
             self.fx_preview.last_start = None;
-            return;
+            return kept;
         }
         self.end_bitmap_effect_preview();
         let e = st.effect.clone();
+        let before = self.engine.last_step_id();
         match st.edit {
             Some((id, i)) => self.edit_bitmap_effects(id, "Edit Effect", move |list| {
                 if let Some(slot) = list.get_mut(i) {
@@ -478,6 +491,7 @@ impl App {
             }),
             None => self.add_bitmap_effect(e),
         }
+        self.engine.last_step_id() != before
     }
 
     /// Wait for a preview being made (tests): frames until it is on the
@@ -565,6 +579,105 @@ mod tests {
             frame(&ctx, &mut app, Vec::new());
         }
         (ctx, app, id)
+    }
+
+    /// A second page holding a picture (and a locked one), as in a
+    /// drawing of many pages; the ids of the pictures there.
+    fn second_page_pictures(app: &mut App) -> (ShapeId, ShapeId) {
+        app.run(Command::AddPage {
+            name: None,
+            size: tracedraw_core::geometry::Size::new(210.0, 297.0),
+            layer: None,
+        });
+        let layer = app.doc().pages[1].layers[0].id;
+        let png = match &app.doc().find_shape(app.selection[0]).expect("first").kind {
+            ShapeKind::Bitmap { png, .. } => png.clone(),
+            _ => panic!("a picture"),
+        };
+        let mut ids = Vec::new();
+        for locked in [false, true] {
+            let id = app.engine.new_shape_id();
+            let mut shape = Shape::new(
+                id,
+                ShapeKind::Bitmap {
+                    rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 8.0),
+                    width_px: 40,
+                    height_px: 32,
+                    png: png.clone(),
+                    fx: None,
+                },
+            );
+            shape.locked = locked;
+            app.run(Command::AddShape { layer, shape });
+            ids.push(id);
+        }
+        (ids[0], ids[1])
+    }
+
+    /// The effect dialogs' All pages: OK gives the effect to the pictures
+    /// on the other pages too, locked ones aside, in the same undo step,
+    /// with the live preview on the drawing or without it (#1551).
+    #[test]
+    fn all_pages_gives_the_effect_to_every_picture_in_one_step() {
+        for preview in [false, true] {
+            let (ctx, mut app, id) = bitmap_app(40, 32);
+            let (other, locked) = second_page_pictures(&mut app);
+            app.select(vec![id]);
+            let steps = app.engine.history_labels().0.len();
+            let mut st = crate::ui::effect_dialog::EffectState::new("gaussian_blur");
+            st.preview = preview;
+            st.all_pages = true;
+            app.dialog = Dialog::Effect(st.clone());
+            frame(&ctx, &mut app, Vec::new());
+            if preview {
+                assert!(app.settle_fx_preview(&ctx, 20.0), "the preview is made");
+                assert!(app.fx_preview.on_drawing());
+            }
+            app.commit_bitmap_effect(&st);
+            assert_eq!(effects_of(&app, id).len(), 1, "preview {preview}");
+            assert_eq!(effects_of(&app, other).len(), 1, "preview {preview}");
+            assert!(effects_of(&app, locked).is_empty());
+            assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+            assert_eq!(app.engine.undo_label(), Some("Add Effect"));
+            // One undo takes both back.
+            let _ = app.engine.undo();
+            assert!(effects_of(&app, id).is_empty());
+            assert!(effects_of(&app, other).is_empty());
+        }
+        // Without the box only the selection changes.
+        let (_ctx, mut app, id) = bitmap_app(40, 32);
+        let (other, _) = second_page_pictures(&mut app);
+        app.select(vec![id]);
+        let st = crate::ui::effect_dialog::EffectState {
+            preview: false,
+            ..crate::ui::effect_dialog::EffectState::new("gaussian_blur")
+        };
+        app.commit_bitmap_effect(&st);
+        assert_eq!(effects_of(&app, id).len(), 1);
+        assert!(effects_of(&app, other).is_empty());
+    }
+
+    /// Effects > Apply to Pictures on All Pages: the other pictures take
+    /// the selected picture's effects, one undo step (#1551).
+    #[test]
+    fn the_selected_pictures_effects_go_to_all_pages() {
+        let (_ctx, mut app, id) = bitmap_app(40, 32);
+        let (other, locked) = second_page_pictures(&mut app);
+        app.select(vec![id]);
+        assert!(!app.can_apply_effects_to_all_pages(), "no effects yet");
+        app.add_bitmap_effect(super::super::new_effect("invert_colors"));
+        app.add_bitmap_effect(super::super::new_effect("desaturate"));
+        assert!(app.can_apply_effects_to_all_pages());
+        let steps = app.engine.history_labels().0.len();
+        app.apply_effects_to_all_pages();
+        assert_eq!(effects_of(&app, other), effects_of(&app, id));
+        assert!(effects_of(&app, locked).is_empty());
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        // Again: nothing left to change, no step.
+        app.apply_effects_to_all_pages();
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        let _ = app.engine.undo();
+        assert!(effects_of(&app, other).is_empty());
     }
 
     fn effects_of(app: &App, id: ShapeId) -> Vec<BitmapEffect> {
@@ -691,6 +804,7 @@ mod tests {
             lab: Default::default(),
             pick: None,
             preview: true,
+            all_pages: false,
         });
         for _ in 0..3 {
             frame(&ctx, &mut app, Vec::new());

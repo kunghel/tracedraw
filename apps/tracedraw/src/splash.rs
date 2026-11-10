@@ -425,7 +425,15 @@ pub fn main_window_builder(settings: &Settings, plain: bool) -> egui::ViewportBu
         .with_min_inner_size(MIN_SIZE)
         .with_maximized(settings.window_maximized && !plain)
         .with_title("TraceDraw")
+        .with_app_id(APP_ID)
 }
+
+/// The window's application id: the Wayland `app_id` and the X11
+/// `WM_CLASS` class, which docks and task bars match to the installed
+/// `tracedraw.desktop` (its name and `StartupWMClass`) to show the icon.
+/// Left unset, eframe used the window's name, "TraceDraw", and docks such
+/// as Plank showed a blank icon (#1718).
+pub const APP_ID: &str = "tracedraw";
 
 /// Turn the splash window into the main window: decorations, resizable,
 /// the kept size centred on the monitor. Sizes are worked out in system
@@ -744,6 +752,23 @@ mod eframe_window_start;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window's application id is the one the Linux desktop file
+    /// names (its file name and `StartupWMClass`), so docks show its icon
+    /// (#1718).
+    #[test]
+    fn the_window_says_which_desktop_file_it_belongs_to() {
+        let desktop = include_str!("../../../packaging/linux/tracedraw.desktop");
+        assert!(
+            desktop
+                .lines()
+                .any(|l| l.trim() == format!("StartupWMClass={APP_ID}")),
+            "{desktop}"
+        );
+        assert_eq!(APP_ID, "tracedraw", "the file is tracedraw.desktop");
+        let main = main_window_builder(&Settings::default(), false);
+        assert_eq!(main.app_id.as_deref(), Some(APP_ID));
+    }
 
     #[test]
     fn the_main_window_drops_the_splash_maximum_before_it_turns_resizable() {

@@ -34,6 +34,11 @@ language list at the top to read the same page in another language.
 - Click the **?** button at the bottom of a dialog box or an options page to
   open its page.
 - Choose [[menu.help > menu.help.help_topics]] to open this page.
+- Press <kbd>Ctrl+Shift+P</kbd> (Search Commands, in the Help menu) and type
+  part of a name to find a menu command or a setting. Choose a command to
+  run it; choose a setting to open its page of the options or of the
+  document setup, with the setting framed for a moment. A setting is also
+  found by the words of its tip.
 - The [[docker.hints]] panel describes the active tool while you work; its
   [[hint.learn_more]] link opens the tool's page here. See
   [Hints](get-started/hints.md).

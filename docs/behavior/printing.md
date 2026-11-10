@@ -241,8 +241,9 @@ same function (`export::print_sheets`).
   (#862, `print_preview::tests::the_options_panel_is_wider_and_its_edge_drags`,
   `print_preview::tests::no_option_is_cut_off_in_any_language`).
   While Print separations is on, a box for cyan, magenta, yellow, black
-  and each spot ink stands indented under it, all ticked at first
-  (#571; `print_preview::tests::the_ink_boxes_stand_under_print_separations`).
+  and each spot ink stands indented under it, side by side in a row that
+  wraps at the panel's edge, all ticked at first
+  (#571, #1737; `print_preview::tests::the_ink_boxes_stand_under_print_separations`).
   Every ink ticked shows the sheet as it is; one alone shows its plate
   in grey; some show the colours those inks print together (process
   colours keep the channels ticked, a spot colour shows when its ink is
@@ -312,6 +313,14 @@ same function (`export::print_sheets`).
     stacked and cut into columns, each column is one series. 2 x 3 on
     two sheets: 1 2 3 and 7 8 9 on the first sheet, 4 5 6 and 10 11 12
     on the second. Cells past the last page stay empty.
+  - Cut and stack: each cell runs down the stack of sheets. With T
+    pages and N cells a sheet there are S = ceil(T / N) sheets, and cell
+    p (0 based, left to right, top to bottom) of sheet s holds page
+    p * S + s, so each pile cut from the stacked sheets is one series and
+    the piles go on top of each other in order. 100 pages 4 up: 1, 26,
+    51 and 76 on the first sheet, 25, 50, 75 and 100 on the last; 10
+    pages 4 up: 1 4 7 10, 2 5 8 and 3 6 9 over three sheets, the last
+    cell of the last two empty.
 - Layout presets (#1796): the Preset row at the top of the layout fields
   (Print dialog's Layout tab and Print Preview) lists the layouts saved
   under a name; choosing one sets the imposition, columns and rows, page

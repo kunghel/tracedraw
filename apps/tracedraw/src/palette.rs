@@ -441,6 +441,21 @@ fn parse_tdpal(src: &str) -> Result<Vec<(String, Color)>, String> {
                 .to_string();
             if let Some(c) = e.get("color") {
                 if let Ok(c) = serde_json::from_value::<Color>(c.clone()) {
+                    // A spot colour's ink goes by its name, whatever
+                    // number the file kept (a name edited by hand).
+                    let c = match c {
+                        Color::Spot {
+                            tint, c, m, y, k, ..
+                        } => Color::Spot {
+                            ink: spot_ink_id(&name),
+                            tint,
+                            c,
+                            m,
+                            y,
+                            k,
+                        },
+                        other => other,
+                    };
                     out.push((name, c));
                 }
             }
@@ -916,6 +931,36 @@ mod tests {
         d.extend_from_slice(&(body.len() as u32).to_be_bytes());
         d.extend_from_slice(&body);
         d
+    }
+
+    #[test]
+    fn tdpal_spot_colours_keep_their_ink_by_name() {
+        let dir = std::env::temp_dir().join(format!("td_spot_pal_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("uv.tdpal");
+        let white = spot_color("Spot_1_W", Color::cmyk_pct(0.0, 0.0, 0.0, 20.0));
+        let pal = Palette {
+            name: "UV".into(),
+            key: "",
+            colors: vec![("Spot_1_W".into(), white), ("Plain".into(), Color::BLACK)],
+            builtin: false,
+            path: None,
+        };
+        save_palette(&pal, &path).expect("saved");
+        let back = load_palette(&path).expect("loaded");
+        assert_eq!(back.colors[0], ("Spot_1_W".to_string(), white));
+        assert_eq!(back.colors[1].1, Color::BLACK);
+        // A name edited in the file gives the ink of the new name.
+        let text = std::fs::read_to_string(&path)
+            .expect("read")
+            .replace("Spot_1_W", "Spot_3_K");
+        std::fs::write(&path, text).expect("written");
+        let back = load_palette(&path).expect("loaded");
+        let Color::Spot { ink, .. } = back.colors[0].1 else {
+            panic!("not a spot colour: {:?}", back.colors[0]);
+        };
+        assert_eq!(ink, spot_ink_id("Spot_3_K"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

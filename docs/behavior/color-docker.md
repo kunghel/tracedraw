@@ -151,6 +151,16 @@ as outside (#440,
 `ui::color_picker::tests::a_choice_in_the_model_list_keeps_the_popup_open`,
 `ui::color_picker::tests::the_model_can_be_changed_on_demand`).
 
+Under the colour's description a **Harmony** list (Analogous,
+Complementary at first, Split complementary, Triadic, Tetradic,
+Monochromatic: the rules of the Color Styles docker's harmony editor,
+`palette::Harmony`) and a row of its swatches for the colour shown,
+worked out again as it changes. Each swatch is in the model the colour
+is edited in, so a CMYK colour gives CMYK swatches; a click on one
+picks it as the viewer would, the popup staying open (#1498,
+`ui::color_picker::tests::a_harmony_swatch_picks_its_colour`). The
+list's choice is kept while the popup is open.
+
 A drag in the popup on the Properties docker's or the Interactive Fill
 bar's uniform colour is one undo step, and the colour joins the
 document palette when the button is let go, not every colour passed

@@ -628,7 +628,7 @@ fn artistic_text_runs_and_lines() {
         red.fill = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
         red.italic = true;
         let mut lined = TextSpan::new("under\nnext line", "Arial", 20.0);
-        lined.underline = true;
+        lined.underline = true.into();
         vec![
             text(ids, vec![bold], Point::new(20.0, 80.0), TextAlign::Left),
             text(
@@ -672,7 +672,11 @@ fn artistic_text_runs_and_lines() {
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, "Red under\nnext line", "version {}: {spans:?}", r.v);
         assert_eq!(spans[0].font_family, "Georgia", "version {}", r.v);
-        assert!(spans[0].italic && !spans[0].underline, "version {}", r.v);
+        assert!(
+            spans[0].italic && !spans[0].underline.is_on(),
+            "version {}",
+            r.v
+        );
         assert_eq!(
             spans[0].fill,
             Some(Fill::Solid(Color::rgb8(255, 0, 0))),
@@ -682,7 +686,7 @@ fn artistic_text_runs_and_lines() {
         let last = spans.last().expect("span");
         assert_eq!(last.font_family, "Arial", "version {}", r.v);
         assert!(near(last.size_pt, 20.0, 0.01), "version {}", r.v);
-        assert!(last.underline && !last.italic, "version {}", r.v);
+        assert!(last.underline.is_on() && !last.italic, "version {}", r.v);
         let ShapeKind::Text { align, .. } = &r.shape(2).kind else {
             panic!("version {}", r.v);
         };
@@ -1095,6 +1099,7 @@ fn pattern_texture_and_mesh_fills_go_out_as_one_colour() {
         front: Color::rgb8(255, 0, 0),
         back: Color::rgb8(0, 0, 255),
         size_mm: 5.0,
+        placement: Default::default(),
     });
     let tile = picture(4, 4, false);
     let bitmap_pattern = Fill::Pattern(Pattern::Bitmap {
@@ -1102,6 +1107,7 @@ fn pattern_texture_and_mesh_fills_go_out_as_one_colour() {
         width_px: 4,
         height_px: 4,
         size_mm: 8.0,
+        placement: Default::default(),
     });
     let texture = Fill::Texture(Texture {
         kind: TextureKind::Clouds,

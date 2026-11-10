@@ -4,7 +4,7 @@
 //! pseudo-Latin passage printers have used for centuries (public domain).
 
 use crate::app::App;
-use tracedraw_core::{geometry::Affine, Command, Shape, ShapeKind, TextSpan};
+use tracedraw_core::{geometry::Affine, Command, Shape, ShapeId, ShapeKind, TextSpan};
 
 /// The filler, cycled as often as a frame needs.
 const FILLER: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do \
@@ -106,9 +106,12 @@ fn words_that_fit(shape: &Shape, default: &TextSpan) -> usize {
 impl App {
     /// Fill each selected paragraph text frame with as much filler text as
     /// it holds, in the style of its first character, as one undo step.
-    /// Artistic text and other objects are left alone.
+    /// Artistic text and other objects are left alone. A frame being
+    /// edited (an empty one just drawn too) is filled and stays edited,
+    /// the caret after the filler.
     pub fn insert_placeholder_text(&mut self) {
-        if self.text_edit.is_some() {
+        let editing = self.text_edit.as_ref().map(|te| te.shape);
+        if editing.is_some() {
             self.finish_text();
         }
         let default = TextSpan::new("", self.text_font.clone(), self.text_size_pt);
@@ -128,7 +131,23 @@ impl App {
         }
         if let Err(e) = self.engine.run_batch("Insert Placeholder Text", &cmds) {
             self.status = format!("Insert Placeholder Text: {e}");
+            return;
         }
+        let filled = |id: &ShapeId| {
+            cmds.iter()
+                .any(|c| matches!(c, Command::SetShapeKind { shape, .. } if shape == id))
+        };
+        if let Some(id) = editing.filter(filled) {
+            self.begin_text_edit(id);
+        }
+    }
+
+    /// Insert Placeholder Text can act: a paragraph text frame is
+    /// selected or being edited.
+    pub fn placeholder_text_offered(&self) -> bool {
+        self.selected_shapes()
+            .iter()
+            .any(|s| matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }))
     }
 }
 
@@ -136,7 +155,7 @@ impl App {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::{Point, Size};
-    use tracedraw_core::{ShapeId, TextAlign};
+    use tracedraw_core::TextAlign;
 
     #[test]
     fn filler_ends_with_a_full_stop_in_paragraphs() {
@@ -206,5 +225,64 @@ mod tests {
         app.undo();
         assert_eq!(text_of(&app, small), "");
         assert_eq!(text_of(&app, large), "keep my style");
+    }
+
+    /// A frame just drawn with the Text tool, empty and being edited:
+    /// the filler fills it, as much as it holds, and the frame stays
+    /// edited with the caret after the filler. One Undo empties it again.
+    #[test]
+    fn an_empty_frame_being_edited_fills_and_stays_edited() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        app.start_text(Point::new(20.0, 100.0), Some(Size::new(60.0, 30.0)));
+        let id = app.text_edit.as_ref().expect("editing").shape;
+        assert_eq!(text_of(&app, id), "");
+        app.insert_placeholder_text();
+        let filled = text_of(&app, id);
+        assert!(filled.starts_with("Lorem ipsum"), "{filled:?}");
+        let te = app.text_edit.as_ref().expect("still editing");
+        assert_eq!(te.shape, id);
+        assert_eq!(te.caret, filled.chars().count(), "the caret at the end");
+        app.undo();
+        assert_eq!(text_of(&app, id), "");
+        assert!(app.doc().find_shape(id).is_some(), "the frame stays");
+    }
+
+    /// Insert Placeholder Text is in the right-click menu of a paragraph
+    /// frame, and in the one shown while a frame is edited, and fills an
+    /// empty frame from there; an artistic text's menu has no such row.
+    #[test]
+    fn the_right_click_menus_offer_placeholder_text_for_frames() {
+        use crate::ui::context::{object_menu, run_menu_row, text_edit_menu};
+        tracedraw_text::install();
+        const KEY: &str = "menu.text.insert_placeholder_text";
+        let picked = || {
+            let mut app = App::headless();
+            let id = frame(&mut app, "", 60.0, 30.0);
+            app.select(vec![id]);
+            app
+        };
+        let app = run_menu_row(&picked, object_menu, KEY).expect("the row");
+        let id = app.selection[0];
+        assert!(text_of(&app, id).starts_with("Lorem ipsum"));
+        let edited = || {
+            let mut app = App::headless();
+            app.set_tool(crate::tools::Tool::Text);
+            app.start_text(Point::new(20.0, 100.0), Some(Size::new(60.0, 30.0)));
+            app
+        };
+        let app = run_menu_row(&edited, text_edit_menu, KEY).expect("the row");
+        let id = app.text_edit.as_ref().expect("still editing").shape;
+        assert!(text_of(&app, id).starts_with("Lorem ipsum"));
+        let artistic = || {
+            let mut app = App::headless();
+            app.start_text(Point::new(20.0, 100.0), None);
+            app.text_insert("headline");
+            app.finish_text();
+            let id = app.selection[0];
+            app.select(vec![id]);
+            app
+        };
+        assert!(run_menu_row(&artistic, object_menu, KEY).is_none());
     }
 }

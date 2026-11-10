@@ -1261,6 +1261,37 @@ impl App {
 
     /// Object > Clip to Frame > Finish Editing Contents: place the (surviving) contents
     /// back inside the frame.
+    /// Object > Clip to Frame > Extract Contents: every selected clip
+    /// frame's contents come out as objects of their own, each frame
+    /// staying, empty.
+    pub fn extract_clip_contents(&mut self) {
+        let clips: Vec<ShapeId> = self
+            .selected_shapes()
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }))
+            .map(|s| s.id)
+            .collect();
+        for clip in clips {
+            self.run(Command::ExtractContents { clip });
+        }
+    }
+
+    /// A clip frame's contents are being edited (not a symbol's objects,
+    /// which finish from the Symbol menu).
+    pub fn editing_clip_contents(&self) -> bool {
+        self.clip_frame_edit.is_some() && self.symbol_edit_index().is_none()
+    }
+
+    /// The key for Edit Contents and Finish Editing: into the selected
+    /// clip frame, or out of the one being edited.
+    pub fn toggle_clip_frame_edit(&mut self) {
+        if self.editing_clip_contents() {
+            self.finish_clip_frame_edit();
+        } else if self.clip_frame_edit.is_none() {
+            self.edit_clip_frame();
+        }
+    }
+
     pub fn finish_clip_frame_edit(&mut self) {
         let contents = self.clip_edit_contents();
         let Some((frame, outside)) = self.clip_frame_edit.take() else {
@@ -1317,39 +1348,54 @@ impl App {
     /// The clip frame bar's Fit Contents: the contents moved (and
     /// scaled) to the frame's box as `mode` says; one undo step.
     pub fn fit_clip_contents(&mut self, clip: ShapeId, mode: crate::ui::clip_bar::FitContents) {
-        let (frame_bounds, ids) = match self.doc().find_shape(clip) {
-            Some(s) => match &s.kind {
-                ShapeKind::ClipFrame { contents, .. } => (
-                    self.doc()
-                        .shape_on_page(clip)
-                        .map(|c| c.bounds())
-                        .unwrap_or_default(),
-                    contents.iter().map(|c| c.id).collect::<Vec<_>>(),
-                ),
-                _ => return,
-            },
-            None => return,
-        };
-        let Some(contents_bounds) = ids
+        self.fit_clips_contents(&[clip], mode);
+    }
+
+    /// Fit Contents on each of `clips` (Object > Clip to Frame, #1299):
+    /// every frame's contents fitted to its own box, one undo step for
+    /// them all. Ids that are not clip frames are left alone.
+    pub fn fit_clips_contents(
+        &mut self,
+        clips: &[ShapeId],
+        mode: crate::ui::clip_bar::FitContents,
+    ) {
+        let commands: Vec<Command> = clips
             .iter()
-            .filter_map(|id| self.doc().shape_on_page(*id).map(|s| s.bounds()))
-            .reduce(|a, b| a.union(b))
-        else {
-            return;
-        };
-        let t = fit_contents_transform(contents_bounds, frame_bounds, mode);
-        if t == Affine::IDENTITY {
+            .filter_map(|clip| self.fit_contents_command(*clip, mode))
+            .collect();
+        if commands.is_empty() {
             return;
         }
-        if let Err(e) = self.engine.run_batch(
-            "Fit Contents",
-            &[Command::TransformShapes {
-                shapes: ids,
-                transform: t,
-            }],
-        ) {
+        if let Err(e) = self.engine.run_batch("Fit Contents", &commands) {
             self.status = e.to_string();
         }
+    }
+
+    /// The command that fits `clip`'s contents as `mode` says, `None`
+    /// when it is not a clip frame, is empty or fits already.
+    fn fit_contents_command(
+        &self,
+        clip: ShapeId,
+        mode: crate::ui::clip_bar::FitContents,
+    ) -> Option<Command> {
+        let ShapeKind::ClipFrame { contents, .. } = &self.doc().find_shape(clip)?.kind else {
+            return None;
+        };
+        let frame_bounds = self
+            .doc()
+            .shape_on_page(clip)
+            .map(|c| c.bounds())
+            .unwrap_or_default();
+        let ids: Vec<ShapeId> = contents.iter().map(|c| c.id).collect();
+        let contents_bounds = ids
+            .iter()
+            .filter_map(|id| self.doc().shape_on_page(*id).map(|s| s.bounds()))
+            .reduce(|a, b| a.union(b))?;
+        let t = fit_contents_transform(contents_bounds, frame_bounds, mode);
+        (t != Affine::IDENTITY).then_some(Command::TransformShapes {
+            shapes: ids,
+            transform: t,
+        })
     }
 
     /// What the renderer draws in full while the rest fades: the object
@@ -1365,7 +1411,7 @@ impl App {
                 vec![*frame]
             };
             all.extend(self.clip_edit_contents());
-            return Some((all, CLIP_EDIT_VISIBILITY));
+            return Some((all, self.focus_visibility()));
         }
         self.focus_target()
             .map(|id| (vec![id], self.focus_visibility()))
@@ -2246,6 +2292,7 @@ impl App {
             width_px,
             height_px,
             size_mm: bounds.width().max(0.1),
+            placement: Default::default(),
         });
         self.set_default_properties(tracedraw_core::DefaultKind::Graphic, |p| p.fill = fill);
         self.status = tr("status.pattern_created");
@@ -3226,8 +3273,8 @@ impl App {
             let set_size = differs(&|s| ((s.size_pt - size) * scale).abs() > 0.005);
             let set_bold = differs(&|s| s.bold != bold);
             let set_italic = differs(&|s| s.italic != italic);
-            let set_underline = differs(&|s| s.underline != underline);
-            let set_strike = differs(&|s| s.strikethrough != strike);
+            let set_underline = differs(&|s| s.underline.is_on() != underline);
+            let set_strike = differs(&|s| s.strikethrough.is_on() != strike);
             self.text_apply_style(move |sp| {
                 if set_font {
                     sp.font_family = font.clone();
@@ -3242,10 +3289,10 @@ impl App {
                     sp.italic = italic;
                 }
                 if set_underline {
-                    sp.underline = underline;
+                    sp.underline = underline.into();
                 }
                 if set_strike {
-                    sp.strikethrough = strike;
+                    sp.strikethrough = strike.into();
                 }
             });
             return;
@@ -3302,11 +3349,13 @@ impl App {
                         if set_italic {
                             sp.italic = self.text_italic;
                         }
-                        if set_underline {
-                            sp.underline = self.text_underline;
+                        // A styled line stays while the button shows it
+                        // on (#1209).
+                        if set_underline && sp.underline.is_on() != self.text_underline {
+                            sp.underline = self.text_underline.into();
                         }
-                        if set_strike {
-                            sp.strikethrough = self.text_strikethrough;
+                        if set_strike && sp.strikethrough.is_on() != self.text_strikethrough {
+                            sp.strikethrough = self.text_strikethrough.into();
                         }
                     });
                     Some(Command::SetShapeKind {
@@ -4035,24 +4084,23 @@ impl App {
     /// ([`crate::bitmap_modes::build_palette`]), ordered dark to light.
     /// None without a picture selected or when it cannot be read.
     pub fn selected_bitmap_colors(&self, n: u32) -> Option<Vec<Color>> {
+        Some(picture_colors_from_sample(
+            &self.selected_bitmap_sample()?,
+            n,
+        ))
+    }
+
+    /// The pixels of the selected picture its colours are chosen from
+    /// ([`crate::bitmap_modes::palette_sample`]): read once, they give
+    /// the colours for any count ([`picture_colors_from_sample`]). None
+    /// without a picture selected or when it cannot be read.
+    pub fn selected_bitmap_sample(&self) -> Option<Vec<[u8; 3]>> {
         let id = self.selected_bitmap()?;
         let ShapeKind::Bitmap { png, .. } = &self.doc().find_shape(id)?.kind else {
             return None;
         };
         let img = crate::bitmap_fx::decode(png)?;
-        let settings = crate::bitmap_modes::PalettedSettings {
-            palette: crate::bitmap_modes::PaletteType::Optimized,
-            colors: n.clamp(2, 256),
-            ..Default::default()
-        };
-        let mut rgb = crate::bitmap_modes::build_palette(&img, &settings);
-        rgb.sort_by_key(|c| 299 * u32::from(c[0]) + 587 * u32::from(c[1]) + 114 * u32::from(c[2]));
-        rgb.dedup();
-        Some(
-            rgb.into_iter()
-                .map(|c| Color::rgb8(c[0], c[1], c[2]))
-                .collect(),
-        )
+        Some(crate::bitmap_modes::palette_sample(&img))
     }
 
     /// Add Colors from Bitmap (#1840): up to `n` colours of the selected
@@ -4065,21 +4113,29 @@ impl App {
         };
         match palette {
             Some(i) => self.add_colors_to_palette(i, &found),
-            None => {
-                let mut colors = self.doc().palette.clone();
-                let before = colors.len();
-                for c in found {
-                    if !colors.contains(&c) {
-                        colors.push(c);
-                    }
-                }
-                if colors.len() == before {
-                    return false;
-                }
-                self.run(Command::SetDocumentPalette { colors });
-                true
+            None => self.add_colors_to_document_palette(&found),
+        }
+    }
+
+    /// `found` joins the document palette after the colours it has
+    /// (those it has not got yet), one undo step. Says whether any was
+    /// added.
+    pub fn add_colors_to_document_palette(&mut self, found: &[Color]) -> bool {
+        if !self.has_document() {
+            return false;
+        }
+        let mut colors = self.doc().palette.clone();
+        let before = colors.len();
+        for c in found {
+            if !colors.contains(c) {
+                colors.push(*c);
             }
         }
+        if colors.len() == before {
+            return false;
+        }
+        self.run(Command::SetDocumentPalette { colors });
+        true
     }
 
     pub fn palette_from_selection(&mut self) {
@@ -5910,10 +5966,6 @@ mod tests {
     }
 }
 
-/// How much of the rest of the page shows while a clip frame's contents
-/// are edited (the frame and its contents are drawn in full).
-pub const CLIP_EDIT_VISIBILITY: f32 = 0.25;
-
 /// The page transform that takes `contents` (its box) to `frame` as the
 /// Fit Contents `mode` says: centred without scaling, scaled alike to fit
 /// inside or to cover, or stretched to the box. The identity for an
@@ -6224,6 +6276,28 @@ mod clip_frame_tests {
         assert!(
             near(bounds, Rect::new(10.0, 10.0, 110.0, 60.0)),
             "{bounds:?}"
+        );
+        // Object > Clip to Frame fits every selected frame in one undo
+        // step; an object that is no frame is left alone (#1299).
+        let g = rect(&mut app, Rect::new(200.0, 10.0, 220.0, 30.0));
+        let c = rect(&mut app, Rect::new(300.0, 300.0, 310.0, 305.0));
+        app.place_inside(vec![c], g);
+        let clip2 = app.doc().top_level_of(c).expect("clip");
+        let plain = rect(&mut app, Rect::new(400.0, 400.0, 410.0, 410.0));
+        let depth = app.engine.history_labels().0.len();
+        app.fit_clips_contents(&[clip, clip2, plain], FitContents::Center);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let centre = |id| {
+            app.doc()
+                .shape_on_page(id)
+                .expect("on page")
+                .bounds()
+                .center()
+        };
+        assert!((centre(c) - centre(clip2)).hypot() < 1e-6);
+        assert_eq!(
+            app.doc().shape_on_page(plain).expect("plain").bounds(),
+            Rect::new(400.0, 400.0, 410.0, 410.0)
         );
     }
 }
@@ -6559,6 +6633,20 @@ fn char_edits(old: &[char], new: &[char]) -> Vec<CharEdit> {
         push(CharEdit::Keep(tail));
     }
     out
+}
+
+/// The colours that best stand for a picture whose pixels
+/// [`crate::bitmap_modes::palette_sample`] read: at most `n` (2 to 256),
+/// chosen by the median cut the paletted conversion uses, ordered dark
+/// to light. Add Colors from Bitmap and a picture dropped on a palette
+/// (#2137) both take them from here, so both give the same colours.
+pub fn picture_colors_from_sample(sample: &[[u8; 3]], n: u32) -> Vec<Color> {
+    let mut rgb = crate::bitmap_modes::palette_from_sample(sample, n, true);
+    rgb.sort_by_key(|c| 299 * u32::from(c[0]) + 587 * u32::from(c[1]) + 114 * u32::from(c[2]));
+    rgb.dedup();
+    rgb.into_iter()
+        .map(|c| Color::rgb8(c[0], c[1], c[2]))
+        .collect()
 }
 
 #[cfg(test)]

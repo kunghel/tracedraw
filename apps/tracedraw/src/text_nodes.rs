@@ -711,10 +711,13 @@ mod tests {
         app.sync_text_defaults_from(id);
         assert!(app.text_bold);
         // The docker's other character settings.
-        crate::ui::text_docker::edit_spans(&mut app, |sp| sp.underline = true);
+        crate::ui::text_docker::edit_spans(&mut app, |sp| sp.underline = true.into());
         let spans = spans_of(&app);
         assert_eq!(
-            spans.iter().map(|sp| sp.underline).collect::<Vec<_>>(),
+            spans
+                .iter()
+                .map(|sp| sp.underline.is_on())
+                .collect::<Vec<_>>(),
             vec![false, true, false]
         );
         // A colour from the palette and an outline colour.

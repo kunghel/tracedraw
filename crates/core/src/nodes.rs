@@ -1259,8 +1259,39 @@ fn refine_span(span: &mut Span, tolerance: f64) -> f64 {
     best
 }
 
+/// The end tangents of a run of three or more lines that bends as a
+/// flattened curve does: every corner turns the same way, by 20 degrees
+/// at most. The tangents lean back from the first and the last line by
+/// half the turn next to them, as a curve's ends do from its chords. None
+/// for any other run: a straight stretch, or lines that meet at corners.
+fn flattened_tangents(run: &[&Span]) -> Option<(Vec2, Vec2)> {
+    if run.len() < 3 || !run.iter().all(|s| matches!(s.el, PathEl::LineTo(_))) {
+        return None;
+    }
+    let dirs: Vec<Vec2> = run
+        .iter()
+        .map(|s| unit(s.end() - s.start))
+        .collect::<Option<_>>()?;
+    let limit = 20f64.to_radians().sin();
+    let mut sense = 0.0;
+    for w in dirs.windows(2) {
+        let (cross, dot) = (w[0].cross(w[1]), w[0].dot(w[1]));
+        if dot <= 0.0 || cross.abs() > limit || cross.abs() < 1e-6 || cross * sense < 0.0 {
+            return None;
+        }
+        sense = cross;
+    }
+    let (first, second) = (*dirs.first()?, *dirs.get(1)?);
+    let (last, before) = (*dirs.last()?, *dirs.get(dirs.len() - 2)?);
+    Some((
+        unit(first * 1.5 - second * 0.5)?,
+        unit(before * 0.5 - last * 1.5)?,
+    ))
+}
+
 /// The one span that replaces the consecutive spans `run`: a line when
-/// they are all lines, otherwise a cubic keeping the outer tangents,
+/// they are all lines (a cubic when the lines follow a curve, see
+/// [`flattened_tangents`]), otherwise a cubic keeping the outer tangents,
 /// fitted to their original outline.
 fn merge_run(run: &[&Span]) -> Option<Span> {
     let (first, last) = (run.first()?, run.last()?);
@@ -1270,7 +1301,10 @@ fn merge_run(run: &[&Span]) -> Option<Span> {
     }
     let a = first.start;
     let c = last.end();
-    let el = if run.iter().all(|s| matches!(s.el, PathEl::LineTo(_))) {
+    let el = if let Some((t1, t2)) = flattened_tangents(run) {
+        let (h1, h2) = fit_cubic(a, c, t1, t2, &orig);
+        PathEl::CurveTo(h1, h2, c)
+    } else if run.iter().all(|s| matches!(s.el, PathEl::LineTo(_))) {
         PathEl::LineTo(c)
     } else {
         let ca = element_cubic(first.start, first.el)?;
@@ -2899,6 +2933,60 @@ mod reduce_tests {
         }
         // Tiny tolerance: nothing goes, and the path is the same.
         assert_eq!(reduce_nodes(&twelve, 1e-6), normalize(&twelve));
+    }
+
+    /// #2209: an outline of short lines along a curve (as a flattened
+    /// outline is) was reduced to fewer lines only, a round shape to a
+    /// polygon.
+    #[test]
+    fn reduce_fits_curves_to_lines_that_follow_a_curve() {
+        let gon = |n: usize| {
+            let mut p = BezPath::new();
+            for i in 0..n {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                let q = Point::new(10.0 * a.cos(), 10.0 * a.sin());
+                if i == 0 {
+                    p.move_to(q);
+                } else {
+                    p.line_to(q);
+                }
+            }
+            p.close_path();
+            p
+        };
+        let count = |p: &BezPath| {
+            let els = p.elements();
+            (
+                els.iter()
+                    .filter(|e| matches!(e, PathEl::LineTo(_)))
+                    .count(),
+                els.iter()
+                    .filter(|e| matches!(e, PathEl::CurveTo(..)))
+                    .count(),
+            )
+        };
+        let round = gon(64);
+        for tol in [0.1, 0.5, 1.0] {
+            let r = reduce_nodes(&round, tol);
+            let (lines, curves) = count(&r);
+            assert!(
+                lines <= 1 && (2..=12).contains(&curves),
+                "{tol}: {lines} lines, {curves} curves"
+            );
+            // Still the circle of radius 10, within the tolerance.
+            let mut worst = 0.0f64;
+            kurbo::flatten(r.elements().iter().copied(), 0.01, |el| {
+                if let PathEl::MoveTo(q) | PathEl::LineTo(q) = el {
+                    worst = worst.max((q.to_vec2().hypot() - 10.0).abs());
+                }
+            });
+            assert!(worst <= tol + 0.05, "{tol}: strays {worst}");
+        }
+        // Lines that meet at corners stay lines: a hexagon keeps its six.
+        let hexagon = gon(6);
+        let (lines, curves) = count(&reduce_nodes(&hexagon, 0.5));
+        assert_eq!((lines, curves), count(&normalize(&hexagon)));
+        assert_eq!(curves, 0);
     }
 
     /// A wobbly, traced-looking closed curve of 200 nodes keeps its shape:

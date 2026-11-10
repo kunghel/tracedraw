@@ -15,8 +15,8 @@
 use crate::app::{App, Drag};
 use crate::tools::Tool;
 use tracedraw_core::corner_cut::{
-    corners, corners_and_fillets, cut_corners, fillets, max_fillet, unround, Corner, CornerCut,
-    Fillet,
+    corner_reach, corners, corners_and_fillets, cut_corners, fillets, max_fillet, unround, Corner,
+    CornerCut, Fillet,
 };
 use tracedraw_core::geometry::{Affine, BezPath, Point};
 use tracedraw_core::{Command, ShapeId, ShapeKind};
@@ -30,6 +30,11 @@ const WIDGET_PICK_PX: f32 = 7.0;
 /// A curve with more corners than this shows widgets only on its chosen
 /// nodes (a traced outline would be covered in them).
 const MAX_WIDGETS: usize = 32;
+/// A sharp corner shows a widget only when rounding it can move its
+/// middle at least this far on the screen, pixels: a node where the
+/// curve barely turns, or between very short sides, has no widget, as
+/// dragging it would change nothing that shows.
+const MIN_ROUNDING_PX: f64 = 2.0;
 
 /// The corners of the curves the Shape tool edits, worked out once per
 /// change of the drawing or of the selection.
@@ -55,6 +60,10 @@ struct Spot {
     depth: f64,
     /// The nodes that choose it: the corner's, or every node of the arc.
     nodes: Vec<usize>,
+    /// How far into the corner (mm on the page) the most rounding it
+    /// takes on its own reaches; infinite for a corner rounded already
+    /// and on a curve with too many corners to measure each.
+    reach: f64,
 }
 
 /// One widget on the screen: the curve, its corner, how far its arc lies
@@ -150,9 +159,14 @@ impl App {
             }
             let only_chosen =
                 many || (!chosen.is_empty() && !self.settings.nodes.corner_one_at_a_time);
+            let zoom = f64::from(self.view.zoom);
             for spot in list {
                 let is_chosen = spot.nodes.iter().any(|n| chosen.contains(n));
                 if only_chosen && !is_chosen {
+                    continue;
+                }
+                // No widget where rounding would change nothing that shows.
+                if spot.reach * zoom < MIN_ROUNDING_PX {
                     continue;
                 }
                 let c = &spot.corner;
@@ -207,15 +221,25 @@ impl App {
                     }
                     // Corners and roundings on the page, then the roundings
                     // made before a stretch, round in the curve's own space.
-                    let (sharp, rounded) = corners_and_fillets(&(t * path.clone()));
+                    let page = t * path.clone();
+                    let (sharp, rounded) = corners_and_fillets(&page);
+                    // How far each sharp corner rounds, measured where
+                    // its widgets can all show.
+                    let reach = if sharp.len() <= MAX_WIDGETS {
+                        corner_reach(&page)
+                    } else {
+                        Vec::new()
+                    };
                     let mut spots: Vec<Spot> = sharp
                         .into_iter()
-                        .map(|c| Spot {
+                        .enumerate()
+                        .map(|(i, c)| Spot {
                             space: t,
                             stretched: false,
                             corner: c,
                             depth: 0.0,
                             nodes: vec![c.node],
+                            reach: reach.get(i).copied().unwrap_or(f64::INFINITY),
                         })
                         .collect();
                     let taken: Vec<usize> = rounded.iter().flat_map(|f| f.nodes.clone()).collect();
@@ -237,6 +261,7 @@ impl App {
                             },
                             depth,
                             nodes: f.nodes,
+                            reach: f64::INFINITY,
                         })
                     }));
                     Some((*id, t, spots))
@@ -563,15 +588,19 @@ impl App {
 
     /// Round the corners the corner radius field stands for to `r` mm on
     /// the page (#2057): the chosen corners, or every corner of the
-    /// selected curves with none chosen; 0 takes the rounding off. A
+    /// selected curves with none chosen; 0 takes the rounding off. With
+    /// the bar's corner kind set to Scallop or Chamfer (#1147) the
+    /// corners are cut that way instead, `r` along each side. A
     /// radius larger than a corner takes is cut to the largest every one
     /// of them fits, as a drag of a widget is. One undo step; the chosen
     /// corners stay chosen. False when nothing changed.
     pub fn set_corner_rounding(&mut self, r: f64) -> bool {
+        use crate::corners::CornerOp;
         if !r.is_finite() {
             return false;
         }
         let r = r.max(0.0);
+        let op = self.corner_bar_op;
         let curves = self.page_corners();
         let chosen_only = self.corner_chosen(&curves);
         let mut cmds = Vec::new();
@@ -603,12 +632,36 @@ impl App {
                 .filter(|k| near(k.at))
                 .map(|k| k.node)
                 .collect();
-            let rounded = match max_fillet(&base, Some(&only)) {
-                Some(max) if r > 1e-9 && !only.is_empty() => {
+            let rounded = match (op, max_fillet(&base, Some(&only))) {
+                (CornerOp::Fillet, Some(max)) if r > 1e-9 && !only.is_empty() => {
                     let rr = r.min(max * 0.999);
                     used = Some(used.map_or(rr, |u: f64| u.min(rr)));
                     if rr > 1e-9 {
                         cut_corners(&base, CornerCut::Fillet(rr), Some(&only)).0
+                    } else {
+                        base
+                    }
+                }
+                // Scalloped or chamfered (#1147), as the Corners docker
+                // cuts them: the distance along the sides, cut down until
+                // every chosen corner takes it.
+                (CornerOp::Scallop | CornerOp::Chamfer, _) if r > 1e-9 && !only.is_empty() => {
+                    let cut = |d: f64| match op {
+                        CornerOp::Chamfer => CornerCut::Chamfer(d, d),
+                        _ => CornerCut::Scallop(d),
+                    };
+                    let mut d = r;
+                    let mut made = cut_corners(&base, cut(d), Some(&only));
+                    for _ in 0..60 {
+                        if made.1 >= only.len() || d < 1e-6 {
+                            break;
+                        }
+                        d *= 0.9;
+                        made = cut_corners(&base, cut(d), Some(&only));
+                    }
+                    if made.1 > 0 {
+                        used = Some(used.map_or(d, |u: f64| u.min(d)));
+                        made.0
                     } else {
                         base
                     }
@@ -633,7 +686,12 @@ impl App {
         if cmds.is_empty() {
             return false;
         }
-        let label = if r > 1e-9 { "Fillet" } else { "Clear Rounding" };
+        let label = match op {
+            _ if r <= 1e-9 => "Clear Rounding",
+            CornerOp::Fillet => "Fillet",
+            CornerOp::Scallop => "Scallop",
+            CornerOp::Chamfer => "Chamfer",
+        };
         if let Err(e) = self.engine.run_batch(label, &cmds) {
             self.status = e.to_string();
             return false;

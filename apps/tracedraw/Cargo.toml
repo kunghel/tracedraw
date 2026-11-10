@@ -41,13 +41,17 @@ base64 = "0.22"
 qrcode = { version = "0.14", default-features = false }
 rqrr = "0.11"
 csv = "1"
-i_overlay = "9"
 eframe.workspace = true
 egui.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
 # Reading CMYK TIFF files with their inks (Edit Bitmap, #1834); the same
 # version the image crate reads TIFF with.
 tiff = "0.11"
+# Reading the four channels of a CMYK JPEG as they are stored, to show
+# them through the colour management and keep them as inks (#2163); the
+# same versions the image crate reads JPEG with.
+zune-jpeg = "0.5"
+zune-core = { version = "0.5", default-features = false }
 log.workspace = true
 env_logger.workspace = true
 flate2 = "1"

@@ -224,9 +224,12 @@ impl SaveAsState {
     }
 
     /// The name with the chosen type's extension (one it already has of
-    /// either type is replaced).
+    /// either type is replaced). Typed in any script: the direction marks
+    /// a right-to-left keyboard leaves and what no file name can hold
+    /// go first ([`files::clean_file_name`]).
     pub fn file_name(&self) -> String {
-        let name = self.name.trim();
+        let clean = files::clean_file_name(&self.name);
+        let name = clean.as_str();
         let lower = name.to_ascii_lowercase();
         let stem = [TDRAW, CDR]
             .iter()
@@ -235,7 +238,8 @@ impl SaveAsState {
                     .strip_suffix(&format!(".{ext}"))
                     .map(|s| &name[..s.len()])
             })
-            .unwrap_or(name);
+            .unwrap_or(name)
+            .trim_end();
         format!("{stem}.{}", self.extension())
     }
 
@@ -1456,6 +1460,82 @@ mod tests {
         let mut other = App::headless();
         other.open_path(dir.join("native.tdraw"));
         assert_eq!(other.tdraw_version, Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "You can't save files with Hebrew name!": names in any script,
+    /// right-to-left ones typed with their direction marks, are saved,
+    /// listed, reopened and exported under the name as typed.
+    #[test]
+    fn names_in_every_script_save_reopen_and_export() {
+        let dir = temp_dir("save-as-scripts");
+        let ctx = crate::theme::ui_context();
+        for name in ["שלום", "café", "文件", "שָׁלוֹם עולם", "مرحبا"] {
+            let mut app = drawing();
+            app.save_as_dialog();
+            let st = state(&mut app);
+            st.open_dir(dir.clone());
+            st.set_cdr(false);
+            // A right-to-left keyboard leaves marks around the name.
+            st.name = format!("\u{200F}{name}.tdraw\u{200F}");
+            assert_eq!(st.file_name(), format!("{name}.tdraw"));
+            frame(&ctx, &mut app, true);
+            assert!(
+                matches!(app.dialog, Dialog::None),
+                "{name}: {:?}",
+                app.dialog
+            );
+            let path = dir.join(format!("{name}.tdraw"));
+            assert!(path.is_file(), "{name} written");
+            assert_eq!(app.file.as_deref(), Some(path.as_path()));
+            assert_eq!(app.settings.recent_files.first(), Some(&path));
+            assert_eq!(app.document_name(), name);
+            assert_eq!(app.document_tab_title(app.active_doc), name);
+            // The next Save As offers the name again, and Save keeps it.
+            assert_eq!(SaveAsState::new(&app).name, format!("{name}.tdraw"));
+            app.save(false);
+            assert_eq!(app.file.as_deref(), Some(path.as_path()));
+            // Opened again under its name.
+            let mut other = App::headless();
+            other.open_path(path.clone());
+            assert_eq!(other.document_name(), name, "{name} reopened");
+            let count = |a: &App| -> usize {
+                a.doc()
+                    .pages
+                    .iter()
+                    .flat_map(|p| &p.layers)
+                    .map(|l| l.shapes.len())
+                    .sum()
+            };
+            assert_eq!(count(&other), count(&app));
+            // As .cdr.
+            app.save_as_dialog();
+            let st = state(&mut app);
+            st.set_cdr(true);
+            st.name = format!("{name}\u{200E}");
+            assert_eq!(st.file_name(), format!("{name}.cdr"));
+            let mut st = st.clone();
+            assert!(app.finish_save_as(&mut st));
+            let cdr = dir.join(format!("{name}.cdr"));
+            assert!(version_of(&cdr).is_some(), "{name}.cdr written");
+            let mut other = App::headless();
+            other.open_path(cdr);
+            assert_eq!(other.document_name(), name);
+            // Exports.
+            for ext in ["svg", "pdf", "png"] {
+                let format = crate::ui::dialogs::EXPORT_FORMATS
+                    .iter()
+                    .position(|(_, e)| *e == ext)
+                    .expect("format");
+                let st = crate::ui::dialogs::ExportState {
+                    format,
+                    ..Default::default()
+                };
+                let out = dir.join(format!("{name}.{ext}"));
+                crate::export::export(&mut app, &out, &st).expect("exported");
+                assert!(out.is_file(), "{name}.{ext}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

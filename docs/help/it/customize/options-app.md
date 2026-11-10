@@ -29,7 +29,7 @@ sinistra.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (in partenza),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] o
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] o
   [[options.open_view_saved]] (la pagina, il punto e lo zoom tenuti a ogni
   salvataggio di un file TraceDraw).
 - [[options.ruler_calibration]]: tieni un righello contro lo schermo e cambia

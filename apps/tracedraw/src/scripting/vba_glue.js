@@ -25,6 +25,7 @@ G.__host_inputbox = function (prompt, title, def) {
 };
 
 // GetSetting and SaveSetting: kept by the app with the macros.
+G.__host_dir = function (path) { return __dir(String(path)); };
 G.__host_setting = function (op, app, section, key, value) {
   const r = __setting(op, app, section, key, value === null || value === undefined ? "" : value);
   return op === "all" ? (r ? JSON.parse(r) : []) : r;

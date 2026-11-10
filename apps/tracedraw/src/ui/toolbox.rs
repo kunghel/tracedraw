@@ -543,24 +543,9 @@ fn tool_button(
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let has_flyout = group.tools.len() > 1;
     let arrow_zone = Rect::from_min_max(rect.right_bottom() - Vec2::splat(10.0), rect.max);
-    // The active tool's button is white with a grey frame; hovering
-    // tints a button blue.
-    let bg = if active {
-        crate::theme::Tokens::field()
-    } else if resp.hovered() {
-        Tokens::tool_hover()
-    } else {
-        Tokens::panel()
-    };
-    ui.painter().rect_filled(rect, 0.0, bg);
-    if active {
-        ui.painter().rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(1.0, Tokens::control_border()),
-            egui::StrokeKind::Inside,
-        );
-    }
+    // The active tool's button stands out with an accent frame;
+    // hovering tints a button blue.
+    crate::theme::paint_icon_button(ui.painter(), rect, resp.hovered(), active);
     // The icon's box grows with the button size (16 to 40 px), shrunk
     // with a button squeezed to fit a short column.
     let icon_side = crate::theme::icon_in(side, Tokens::tool_button(), Tokens::tool_icon());

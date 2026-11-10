@@ -30,7 +30,7 @@ izquierda.
   predeterminada) o [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (opción predeterminada),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] o
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] o
   [[options.open_view_saved]] (la página, el lugar y el zoom que se guardan
   cada vez que se guarda un archivo de TraceDraw).
 - [[options.ruler_calibration]]: sostenga una regla junto a la pantalla y

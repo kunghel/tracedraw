@@ -1,5 +1,5 @@
 //! The TraceCut window (Launch > TraceCut, Tools > TraceCut): the tools
-//! grouped on the left (Cut, Nesting, Measure); on the right the chosen
+//! grouped on the left (Cut, Nesting, Measure, Make); on the right the chosen
 //! tool's presets and settings, a preview of the selection with what the
 //! tool finds, a status line, and Apply, OK and Cancel. Apply works the
 //! result out into the preview without touching the drawing; OK applies
@@ -32,6 +32,12 @@ const OBJECT: Color32 = Color32::from_gray(70);
 const MARKED: Color32 = Color32::from_rgb(0xD0, 0x20, 0x20);
 /// Moves with the knife up.
 const MOVE: Color32 = Color32::from_rgb(0x30, 0x80, 0xD0);
+/// Lines grooved, not cut through (a folded tray's first pass).
+const SCORED: Color32 = Color32::from_rgb(
+    crate::tracecut_make::GROOVE_COLOR.0,
+    crate::tracecut_make::GROOVE_COLOR.1,
+    crate::tracecut_make::GROOVE_COLOR.2,
+);
 /// The status line under the preview.
 const STRIP: Color32 = Color32::from_rgb(0xFF, 0xF4, 0xB0);
 
@@ -84,7 +90,10 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TraceCutState, close: &mut 
                 Some(w) if app.tracecut_current(&w, st.tool, &st.settings) => w,
                 _ => app.tracecut_work_out(st.tool, &st.settings),
             };
-            if !worked.targets.is_empty() || st.tool == ToolId::RegistrationMarks {
+            if !worked.targets.is_empty()
+                || st.tool == ToolId::RegistrationMarks
+                || !st.tool.needs_selection()
+            {
                 app.tracecut_commit(&worked, &st.settings, Some(ctx.clone()));
             }
             *close = true;
@@ -141,10 +150,20 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
         .show(ui, |ui| {
             let a = crate::ui::tracecut_cut::settings(ui, app.units, st);
             crate::ui::tracecut_nest::settings(ui, app.units, st);
+            let take =
+                crate::ui::tracecut_make::settings(ui, app.units, st, !app.selection.is_empty());
             settings(ui, app.units, st);
-            a
+            (a, take)
         })
         .inner;
+    let (action, take_size) = action;
+    if take_size {
+        // Folded Tray's face takes the selection's size.
+        if let Some(b) = app.tracecut_selection_box() {
+            st.settings.tray.width = b.width();
+            st.settings.tray.height = b.height();
+        }
+    }
     if action == Some(crate::ui::tracecut_cut::Action::TestCut) {
         let plot = app.tracecut_test_job(&st.settings.plotter);
         let s = st.settings.plotter.clone();
@@ -154,12 +173,16 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
         // A setting changed: the result shown is not this one's.
         st.worked = None;
     }
+    if app.settings.tracecut.tray != st.settings.tray {
+        // Folded Tray starts from its last settings next time.
+        app.settings.tracecut.tray = st.settings.tray.clone();
+    }
     let targets = app.tracecut_targets();
     st.track_targets(&targets);
-    // The Measure tools show their results live, worked out again only
-    // when the drawing, the selection or a setting changes.
-    if st.tool.group() == Group::Measure
-        && !targets.is_empty()
+    // The Measure tools and Folded Tray show their results live, worked
+    // out again only when the drawing, the selection or a setting changes.
+    if st.tool.live()
+        && (!targets.is_empty() || !st.tool.needs_selection())
         && !st
             .worked
             .as_ref()
@@ -172,7 +195,8 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
         .as_ref()
         .filter(|w| app.tracecut_current(w, st.tool, &st.settings));
     let scene = app.tracecut_scene(current);
-    let has_targets = !scene.objects.is_empty() || !app.selection.is_empty();
+    let has_targets =
+        !scene.objects.is_empty() || !app.selection.is_empty() || !st.tool.needs_selection();
     let input = PreviewInput {
         scene: &scene,
         actual: f64::from(crate::settings::screen_points_per_inch(&app.settings)) / 25.4,
@@ -358,11 +382,28 @@ fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) {
                     .rich_tip(crate::ui::tips::keyed("tracecut.crossings_between"));
             });
             row(ui, &tr("tracecut.on_ok"), |ui| {
-                ui.radio_value(&mut s.fix, false, tr("tracecut.select_crossings"))
+                // Select, fix, or move apart.
+                let mut choice = if s.separate {
+                    2
+                } else if s.fix {
+                    1
+                } else {
+                    0
+                };
+                ui.radio_value(&mut choice, 0, tr("tracecut.select_crossings"))
                     .rich_tip(crate::ui::tips::keyed("tracecut.select_crossings"));
-                ui.radio_value(&mut s.fix, true, tr("tracecut.fix_crossings"))
+                ui.radio_value(&mut choice, 1, tr("tracecut.fix_crossings"))
                     .rich_tip(crate::ui::tips::keyed("tracecut.fix_crossings"));
+                ui.radio_value(&mut choice, 2, tr("tracecut.separate_crossings"))
+                    .rich_tip(crate::ui::tips::keyed("tracecut.separate_crossings"));
+                s.fix = choice == 1;
+                s.separate = choice == 2;
             });
+            if s.separate {
+                row(ui, &tr("tracecut.spacing"), |ui| {
+                    length(ui, units, &mut s.spacing, (0.0, 1000.0), "tracecut.spacing")
+                });
+            }
         }
         // The other Cut tools: ui/tracecut_cut.rs.
         _ => {}
@@ -794,6 +835,9 @@ fn preview(
     for path in &scene.objects {
         draw(path, Stroke::new(1.0, OBJECT));
     }
+    for path in &scene.scored {
+        draw(path, Stroke::new(1.5, SCORED));
+    }
     for path in &scene.marked {
         draw(path, Stroke::new(2.5, MARKED));
     }
@@ -993,6 +1037,47 @@ mod tests {
         assert_eq!(app.engine.history_labels().0.len(), before + 1);
     }
 
+    /// Find Crossings with Move them apart chosen in the window: the
+    /// spacing row shows, and OK (Enter) moves the upper of two crossing
+    /// squares clear of the lower in one undo step.
+    #[test]
+    fn find_crossings_moves_crossing_objects_apart_from_the_window() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let square = |x: f64, y: f64| ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(x, y, x + 30.0, y + 30.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let a = app.new_shape(square(10.0, 10.0)).expect("a");
+        let b = app.new_shape(square(30.0, 15.0)).expect("b");
+        app.select(vec![a, b]);
+        app.settings.tracecut.tool = ToolId::FindCrossings;
+        app.open_tracecut();
+        let Dialog::TraceCut(st) = &mut app.dialog else {
+            panic!("open");
+        };
+        st.settings.crossings.separate = true;
+        st.settings.crossings.spacing = 3.0;
+        frame(&ctx, &mut app, false);
+        let before = app.engine.history_labels().0.len();
+        frame(&ctx, &mut app, true);
+        frame(&ctx, &mut app, false);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.engine.history_labels().0.len(), before + 1);
+        let x0 = |app: &App, id| {
+            app.doc()
+                .shape_on_page(id)
+                .expect("shape")
+                .page_path()
+                .bounding_box()
+                .x0
+        };
+        assert_eq!(x0(&app, a), 10.0);
+        // 10 mm of overlap and 3 of spacing.
+        assert!((x0(&app, b) - 43.0).abs() < 0.01, "{}", x0(&app, b));
+    }
+
     #[test]
     fn a_window_without_a_selection_changes_nothing_on_ok() {
         let ctx = crate::theme::ui_context();
@@ -1004,6 +1089,86 @@ mod tests {
         frame(&ctx, &mut app, false);
         frame(&ctx, &mut app, true);
         assert_eq!(app.engine.revision(), rev);
+    }
+
+    #[test]
+    fn the_box_maker_needs_no_selection() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.select(Vec::new());
+        app.settings.tracecut.tool = ToolId::BoxMaker;
+        app.open_tracecut();
+        frame(&ctx, &mut app, false);
+        let before = app.engine.history_labels().0.len();
+        frame(&ctx, &mut app, true);
+        frame(&ctx, &mut app, false);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.engine.history_labels().0.len(), before + 1);
+        assert_eq!(app.selection.len(), 1);
+    }
+
+    #[test]
+    fn the_folded_tray_shows_its_pattern_live_and_remembers_its_settings() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.select(Vec::new());
+        app.settings.tracecut.tool = ToolId::FoldedTray;
+        app.settings.tracecut.tray.width = 800.0;
+        app.open_tracecut();
+        let Dialog::TraceCut(st) = &mut app.dialog else {
+            panic!("open");
+        };
+        // The window starts from the last settings; every option on, so
+        // every row draws.
+        assert_eq!(st.settings.tray.width, 800.0);
+        let t = &mut st.settings.tray;
+        (t.per_side, t.ears, t.holes, t.window, t.flaps) = (true, true, true, true, true);
+        t.auto_allowance = false;
+        t.ear_by_count = true;
+        frame(&ctx, &mut app, false);
+        // Worked out without Apply, grooves and cuts in the preview.
+        let worked = match &app.dialog {
+            Dialog::TraceCut(st) => {
+                let w = st.worked.clone().expect("worked out live");
+                assert!(app.tracecut_current(&w, ToolId::FoldedTray, &st.settings));
+                let scene = app.tracecut_scene(Some(&w));
+                assert!(scene.objects.is_empty());
+                assert!(scene.scored.len() > 4 && scene.marked.len() > 2);
+                w
+            }
+            _ => panic!("open"),
+        };
+        // Remembered for the next time.
+        let kept = app.settings.tracecut.tray.clone();
+        assert!(kept.ears && kept.window && kept.flaps && kept.width == 800.0);
+        // Nothing changed: the result stands, not worked out again.
+        frame(&ctx, &mut app, false);
+        assert!(matches!(&app.dialog, Dialog::TraceCut(st) if st.worked.as_ref() == Some(&worked)));
+        // OK adds the pattern in one step.
+        let before = app.engine.history_labels().0.len();
+        frame(&ctx, &mut app, true);
+        frame(&ctx, &mut app, false);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.engine.history_labels().0.len(), before + 1);
+        app.open_tracecut();
+        assert!(matches!(&app.dialog, Dialog::TraceCut(st) if st.settings.tray == kept));
+    }
+
+    #[test]
+    fn folded_tray_presets_keep_every_setting() {
+        let mut store = crate::tracecut::PresetStore::default();
+        let mut s = crate::tracecut::ToolSettings::default();
+        s.tray.width = 1200.0;
+        s.tray.per_side = true;
+        s.tray.depths = [30.0, 40.0, 50.0, 60.0];
+        s.tray.through = tracedraw_tracecut::tray::Pair::TopBottom;
+        s.tray.place = tracedraw_tracecut::tray::Place::BesideSelection;
+        assert!(store.save_preset(ToolId::FoldedTray, "Shop front", &s));
+        let saved = s.tray.clone();
+        s.reset(ToolId::FoldedTray);
+        assert_eq!(s.tray, tracedraw_tracecut::tray::TraySpec::default());
+        assert!(store.apply_preset(ToolId::FoldedTray, "Shop front", &mut s));
+        assert_eq!(s.tray, saved);
     }
 
     #[test]

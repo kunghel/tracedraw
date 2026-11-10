@@ -35,38 +35,54 @@ When a newer version is known, a card opens in the middle of the window when
 TraceDraw starts, with the two version numbers and **Update now**, so you can
 update without opening the menu. **What's new** opens the release notes and
 **Dismiss** closes the card until the next start. Nothing is downloaded until
-you choose Update now.
+you choose Update now. Once you do, the card shows the same steps as the
+Updating TraceDraw window described below, with **Cancel** while the file
+downloads and **Restart Now** when the update is ready.
 
 When your copy can update itself, the box also offers **Install**, so you do
 not have to uninstall anything first. That is the case for every copy that has
 a download: the Windows installer and portable zip, the Mac app, and the Linux
-AppImage, archive and `.deb`. Install downloads the new version, checks that
-the download is complete and genuine, and then:
+AppImage, archive and `.deb`.
 
-- on the **Windows installer**, waits for you to choose **Close and install**:
-  TraceDraw closes (asking about drawings with unsaved changes), the installer
-  runs over this copy and keeps your settings and file associations, and the
-  new version starts by itself;
-- on the **Windows portable zip**, replaces the program and its files in place
-  and never touches the settings folder; **Restart now** opens the new
-  version;
-- on a **Linux `.deb`**, waits for you to choose **Close and install**:
-  TraceDraw closes, the system asks for your administrator password, installs
-  the package and TraceDraw starts again (the old version starts if you cancel
-  the password);
-- on a **Linux archive** (tar.gz), replaces the program in place; **Restart
-  now** opens the new version;
-- on a **Mac**, replaces the TraceDraw app in place; **Restart now** opens the
+Install opens the **Updating TraceDraw** window, which shows the two version
+numbers and each step as it happens:
+
+1. **Downloading**: a bar fills up with the percentage done, and the line
+   under it gives the megabytes downloaded, the speed and, once it can be
+   estimated, about how long is left. **Cancel** stops the download at once
+   and deletes what was downloaded; nothing is changed. Closing the window
+   lets the download go on, and the update card shows its progress.
+2. **Checking the download**: TraceDraw makes sure the file is complete and
+   genuine (its SHA-256 digest must match the release's).
+3. **Installing**: the new version is put in place. This step cannot be
+   cancelled half way.
+
+When it is done, a green check mark says **TraceDraw is ready**, with
+**Restart Now** and **Later**:
+
+- on the **Windows installer**, Restart Now closes TraceDraw (asking about
+  drawings with unsaved changes), the installer runs over this copy and keeps
+  your settings and file associations, and the new version starts by itself;
+- on the **Windows portable zip**, the program and its files were replaced in
+  place, the settings folder untouched; Restart Now opens the new version;
+- on a **Linux `.deb`**, Restart Now closes TraceDraw, the system asks for
+  your administrator password, installs the package and TraceDraw starts
+  again (the old version starts if you cancel the password);
+- on a **Linux archive** (tar.gz), the program was replaced in place; Restart
+  Now opens the new version;
+- on a **Mac**, the TraceDraw app was replaced in place; Restart Now opens the
   new version;
-- on a **Linux AppImage**, puts the new file in place of the old one;
-  **Restart now** opens the new version.
+- on a **Linux AppImage**, the new file took the place of the old one;
+  Restart Now opens the new version.
 
 Choose **Later** to keep working: the new version then runs the next time you
 open TraceDraw (on Windows, the downloaded installer is not run until you
-choose Close and install; on a `.deb`, the downloaded package is not
-installed until then). If anything does not check out, the old version stays
-as it was and the box tells you why and offers **Download**. Copies without a
-download (other system packages, Flatpak, Snap) keep **Download**.
+choose Restart Now; on a `.deb`, the downloaded package is not installed
+until then). If anything goes wrong, the old version stays as it was and the
+window says what happened in plain words (for example that the download
+server could not be reached, or that the download was damaged), with
+**Try Again** and **Download from the website**. Copies without a download
+(other system packages, Flatpak, Snap) keep **Download**.
 
 If the check fails (for example without an internet connection), the box
 says so and offers the releases page.

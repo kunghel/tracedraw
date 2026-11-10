@@ -609,6 +609,26 @@ mod tests {
         );
     }
 
+    /// Both builds put the interface languages the module does not embed
+    /// where it fetches them (`i18n::file_url`), before the worker's digest,
+    /// which counts them, and the worker keeps a fetched one.
+    #[test]
+    fn the_builds_ship_the_languages_the_module_fetches() {
+        assert_eq!(crate::i18n::file_url("de").as_deref(), Some("lang/de.toml"));
+        for (name, text) in [("scripts/web/build.sh", BUILD_SCRIPT), ("build.yml", CI)] {
+            let copy = text.find("for f in apps/tracedraw/lang/*.toml");
+            let digest = text.find("site/manifest.webmanifest site/lang/*.toml");
+            assert!(
+                text.contains("mkdir -p site/lang")
+                    && text.contains("cp \"$f\" site/lang/")
+                    && matches!((copy, digest), (Some(c), Some(d)) if c < d),
+                "{name} does not ship the interface languages"
+            );
+        }
+        assert!(WORKER.contains("path.startsWith(\"lang/\")"));
+        assert!(WORKER.contains("languageFile(request)"));
+    }
+
     /// Both builds of the page fill in the module's size and the version.
     #[test]
     fn the_builds_fill_in_the_modules_size_and_the_version() {

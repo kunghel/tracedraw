@@ -35,7 +35,16 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
   tela calibrada; desligado, é 96 pixels por polegada.
 - [[options.wheel_center_mouse]] (desligado): um zoom com a roda leva o ponto sob o
   ponteiro para o meio da vista, e o ponteiro junto.
+- [[options.smooth_zoom]] (ligado): cada clique da roda aplica o zoom num breve
+  deslizamento em vez de um salto; quanto mais rápido a roda gira, mais curto.
+  Desligado, cada clique aplica o zoom na hora.
+- [[options.wheel_zoom_step]] quanto um clique aproxima ou afasta, de 1 a 100 por
+  cento (15 % no início).
 - [[options.pan_right_button]] [[options.zoom_out]] ou o [[options.context_menu]] (de início).
+- [[options.pan_inertia]] (desligado): um deslocamento solto com o ponteiro
+  ainda em movimento faz a vista continuar deslizando na mesma direção e parar
+  aos poucos. Um clique ou a roda a interrompe. Vale para a ferramenta
+  Deslocamento, o botão do meio e dois dedos.
 
 ## Mão livre/Bézier {#curves}
 

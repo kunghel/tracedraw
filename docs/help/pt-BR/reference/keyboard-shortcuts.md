@@ -20,6 +20,7 @@ comando ao lado dele, e você pode acrescentar os seus; veja
 | <kbd>Ctrl+N</kbd>, <kbd>Ctrl+O</kbd> | novo desenho, abrir |
 | <kbd>Ctrl+S</kbd>, <kbd>Ctrl+Shift+S</kbd> | salvar, salvar como |
 | <kbd>Ctrl+I</kbd>, <kbd>Ctrl+E</kbd>, <kbd>Ctrl+P</kbd> | importar, exportar, imprimir |
+| <kbd>Ctrl+Shift+E</kbd> | exportar mostrando as opções |
 | <kbd>Ctrl+F4</kbd>, <kbd>Alt+F4</kbd> | fechar o desenho, sair |
 | <kbd>Ctrl+Z</kbd>, <kbd>Ctrl+Shift+Z</kbd>, <kbd>Ctrl+R</kbd> | desfazer, refazer, repetir |
 | <kbd>Ctrl+X</kbd>, <kbd>Ctrl+C</kbd>, <kbd>Ctrl+V</kbd>, <kbd>Ctrl+Shift+V</kbd> | recortar, copiar, colar, colar na vista |
@@ -36,6 +37,7 @@ comando ao lado dele, e você pode acrescentar os seus; veja
 | <kbd>F2</kbd>, <kbd>Shift+F2</kbd>, <kbd>F3</kbd> | ferramenta Zoom para um zoom (depois a ferramenta anterior volta; <kbd>Z</kbd> a mantém), zoom na seleção, afastar |
 | <kbd>F4</kbd>, <kbd>Shift+F4</kbd> | zoom para caber, zoom na página |
 | <kbd>Ctrl++</kbd>, <kbd>Ctrl+-</kbd> | aproximar e afastar um passo |
+| <kbd>N</kbd> (mantida) | o Navegador: mova o ponteiro sobre a miniatura da página para ir até lá ([[menu.view > menu.view.navigator]]) |
 | <kbd>Alt+Shift+R</kbd> | ligar e desligar as réguas |
 | <kbd>Alt+Q</kbd>, <kbd>Alt+Z</kbd>, <kbd>Ctrl+Y</kbd> | desligar o encaixe, encaixar em objetos, encaixar na grade |
 | <kbd>Alt+Shift+A</kbd>, <kbd>Alt+Shift+D</kbd> | guias de alinhamento, guias dinâmicas |
@@ -55,6 +57,7 @@ comando ao lado dele, e você pode acrescentar os seus; veja
 | Teclas de seta, com <kbd>Shift</kbd> ou <kbd>Ctrl</kbd> | deslocar, super deslocamento, micro deslocamento |
 | <kbd>Alt+S</kbd>, <kbd>Alt+E</kbd>, <kbd>Alt+Shift+E</kbd>, <kbd>Alt+Shift+S</kbd>, <kbd>Alt+X</kbd> | criar, editar, concluir, remover a simetria, quebrar o vínculo dela |
 | <kbd>Ctrl+M</kbd> | mesclar células da tabela |
+| <kbd>Ctrl+Shift+F3</kbd> | editar o conteúdo da moldura selecionada, concluir a edição |
 
 ## Painéis {#panels}
 

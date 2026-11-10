@@ -1,10 +1,13 @@
 //! Shift, Ctrl and Alt for a finger (#1499). A touch screen has no keys
 //! to hold, so a finger could not add an object or a node to the
 //! selection, keep a drag's angle or proportions, pick inside a group or
-//! the object behind. The Standard toolbar shows a Shift, a Ctrl and an
-//! Alt button where there is a touch screen (Android, or once a finger
-//! has touched the window): a tap holds the key down until the next tap
-//! on it, the button drawn pressed meanwhile. The keys held this way join
+//! the object behind. Where there is a touch screen (Android, or once a
+//! finger has touched the window) a Shift, a Ctrl, an Alt and a Delete
+//! key float over the bottom left corner of the drawing (#1996; up to
+//! 0.42 the first three sat on the Standard toolbar), unless Options >
+//! Display turns them off: a tap on Shift, Ctrl or Alt holds the key
+//! down until the next tap on it, the key drawn pressed meanwhile, and
+//! Delete deletes as the Delete key does. The keys held this way join
 //! every frame's input (the app's raw input hook), so every tool reads
 //! them as it reads the keyboard's. See docs/behavior/android.md.
 
@@ -146,6 +149,76 @@ impl TouchModifiers {
 /// touched the window (a touch screen laptop, a tablet in a browser).
 pub fn offered(ctx: &egui::Context) -> bool {
     crate::files::ANDROID || ctx.input(|i| i.has_touch_screen())
+}
+
+/// The keys on the drawing: where they go, from the drawing's bottom left
+/// corner (clear of the page tabs and the scroll bar), in points.
+const KEYS_MARGIN: egui::Vec2 = egui::vec2(10.0, 40.0);
+
+/// Shift, Ctrl, Alt and Delete over the bottom left corner of the drawing
+/// `canvas`, where there is a touch screen and Options > Display shows
+/// them (#1996). Their places go to `App::touch_keys_shown`.
+pub fn keys_on_drawing(app: &mut App, ui: &mut egui::Ui, canvas: egui::Rect) {
+    app.touch_keys_shown.clear();
+    if !app.settings.touch_keys || !offered(ui.ctx()) {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let at = egui::pos2(
+        canvas.left() + KEYS_MARGIN.x,
+        canvas.bottom() - KEYS_MARGIN.y,
+    );
+    let tip = crate::ui::toolbar::tip;
+    let mut shown = Vec::new();
+    egui::Area::new(egui::Id::new("touch_keys_on_drawing"))
+        .order(egui::Order::Middle)
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .fixed_pos(at)
+        .constrain_to(canvas)
+        .show(&ctx, |ui| {
+            egui::Frame::new()
+                .fill(crate::theme::Tokens::panel())
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    crate::theme::Tokens::control_border(),
+                ))
+                .corner_radius(4.0)
+                .inner_margin(3.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (id, key) in [
+                            ("shift", ModKey::Shift),
+                            ("ctrl", ModKey::Ctrl),
+                            ("alt", ModKey::Alt),
+                        ] {
+                            let held = app.touch_mods.held(key);
+                            let r = crate::ui::toolbar::mod_button(
+                                ui,
+                                key.label(),
+                                &tip(key.name_key()),
+                                held,
+                            );
+                            if r.clicked() {
+                                app.touch_mods.toggle(key);
+                            }
+                            shown.push((id, r.rect));
+                        }
+                        let can = app.has_document() && app.can_delete();
+                        let r = crate::ui::toolbar::std_button(
+                            ui,
+                            crate::ui::icons::Action::Delete,
+                            &tip("toolbar.delete"),
+                            can,
+                            false,
+                        );
+                        if r.clicked() {
+                            app.delete_command();
+                        }
+                        shown.push(("delete", r.rect));
+                    });
+                });
+        });
+    app.touch_keys_shown = shown;
 }
 
 /// Whether Alt is held from the toolbar, not on the keyboard: then it

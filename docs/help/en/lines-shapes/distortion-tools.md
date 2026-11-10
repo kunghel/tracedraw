@@ -43,11 +43,14 @@ still keeps turning.
 
 ## Attract and Repel {#attract-repel}
 
-The [[tool.attract_repel]] tool pulls the nodes inside the nib towards the
-pointer, or pushes them away. **Speed** (1 to 100%, 50% at first) sets how
-fast; choose Attract or Repel on the property bar, or hold <kbd>Alt</kbd> or
-<kbd>Shift</kbd> while dragging to swap them. Holding the pointer still keeps
-going.
+The [[tool.attract_repel]] tool pulls the outline inside the nib towards the
+pointer, or pushes it away, evenly in every direction. **Speed** (1 to 100%,
+50% at first) sets how fast; choose Attract or Repel on the property bar, or
+hold <kbd>Alt</kbd> or <kbd>Shift</kbd> while dragging to swap them. It works
+from the moment you press: holding the pointer still keeps pulling or pushing
+at a steady pace until the effect is complete, then the outline stays put
+(Attract gathers it towards the middle of the nib, Repel pushes it out to at
+most the edge of the nib).
 
 ## Smudge {#smudge}
 
@@ -60,4 +63,5 @@ first) sets how far.
 The [[tool.roughen]] tool (<kbd>E</kbd>) adds jagged spikes along the outline.
 **Frequency** (1 to 10 spikes per 10 mm, 5 at first) sets how many, and
 **Spike size** (2 mm at first) how tall. The spikes are straight, so they stay
-sharp.
+sharp. A stroke roughens each part of the outline once: going back over the
+same place, or holding the button, adds no more spikes.

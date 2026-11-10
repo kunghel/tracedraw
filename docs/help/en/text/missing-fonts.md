@@ -28,6 +28,12 @@ dialog box lists them:
      changes the drawing and undoes in one step.
 4. Click [[dialog.ok]].
 
+When you have the font itself as a file, click [[missing_fonts.add_font]]
+and pick it (several files at once if you like). TraceDraw installs it as
+the Font Manager's Add Font does and remembers it for the next start (on
+Android a copy is kept, in a browser it is stored there); the fonts it
+brings leave the list, and when none is left the dialog box closes.
+
 [[dialog.cancel]], <kbd>Esc</kbd> or the close button change nothing: the
 automatic fonts stay. Either way, the status bar then names the fonts still
 missing and the fonts that draw them, or says they were replaced. When some

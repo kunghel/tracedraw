@@ -237,7 +237,12 @@ and `--reset-settings` starts open windows of their own.
   Options > General > Use hardware acceleration (on) picks the graphics
   card named beside it, or with Fastest available a separate card before
   a built-in one, a virtual one, then others; never a software adapter
-  (#616). Off, the software adapter (WARP on Windows, a CPU Vulkan driver
+  (#616). On Windows a card wgpu offers through both Direct3D 12 and
+  Vulkan is taken through Direct3D 12, whose swap chain the desktop
+  compositor presents; a Vulkan swap chain there made the window blink
+  when another window or a dialog came over it or it came back to the
+  front, on Intel and NVIDIA drivers (#1579,
+  `gpu::tests::windows_takes_a_card_through_direct3d_12`). Off, the software adapter (WARP on Windows, a CPU Vulkan driver
   elsewhere). Options shows what draws the window in this run; the
   choice takes effect at the next start.
 - A start that cannot open the window that way runs TraceDraw again with
@@ -442,6 +447,14 @@ support). Drawings are never touched.
 - `app::tests::resetting_the_settings_brings_back_the_defaults`
 
 ## Window state
+
+On Linux the window (splash and main window alike) gives the application
+id `tracedraw` (`splash::APP_ID`): the Wayland `app_id` and the class of
+its X11 `WM_CLASS`, which docks and task bars match to the installed
+`tracedraw.desktop` (its file name and `StartupWMClass=tracedraw`) to show
+TraceDraw's icon. It was the window's name, "TraceDraw", and a dock such as
+Plank showed a blank icon (#1718,
+`splash::tests::the_window_says_which_desktop_file_it_belongs_to`).
 
 The main window's state is kept in the preferences on exit: maximized or
 not, and its inner size while it was neither maximized nor minimized.

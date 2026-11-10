@@ -150,6 +150,16 @@ for the next session (#617). Export for Web and Export for Office keep
 their own presets and never change these
 (`pick_drag_tests::the_export_dialog_starts_with_the_last_exports_choices`).
 
+Export without showing the options (use the last ones)
+(`skip_export_dialog`, off): the Export dialog's "Do not show this
+dialog again", kept here so it can be found and turned off once the
+dialog no longer shows; on, File > Export writes the file right after
+the Save dialog with the last options (see `export.md`, "Skipping the
+options"). Until 0.42.1 the dialog's check box was this setting itself,
+so a tick that was then cancelled stayed, and this page did not show it:
+preferences saved before are brought back to off once (upgrade 7,
+`settings::tests::older_preferences_show_the_export_options_again_once`).
+
 Place imported files with the import cursor (`import_with_cursor`, on):
 after File > Import (Ctrl+I, the toolbar button or Import on the
 drawing's right-click menu) and the file chosen, nothing comes in yet;
@@ -255,6 +265,7 @@ window first shows it (#1134):
 | Page width | the page's width across the window, the page centred down it |
 | Page height | the page's height down the window |
 | 100% (real size) | real size (see Ruler calibration), the middle of the page in the middle of the window |
+| Zoom level | the zoom typed beside the list (`open_zoom_percent`, 1 to 10000 %, 100 at first; a value that is not a number gives 100), the middle of the page in the middle of the window (#1266) |
 | As saved | the page, the point in the middle of the window and the zoom the drawing had when it was last saved |
 
 Saving a TraceDraw file keeps its view in the file (`saved_view`: the
@@ -284,7 +295,9 @@ so the interface size never changes real sizes. Reset puts
 
 General (rendering resolution; Fill open curves, off: an open curve's
 fill shows only in its closed subpaths, on screen, in hit testing and in
-vector exports; duplicate distance), Page Size, Layout, Background, Bleed,
+vector exports, and an ellipse made an arc (not a pie) is an open curve
+and shows none; on, the fill runs across the open ends and a click there
+picks the object; duplicate distance), Page Size, Layout, Background, Bleed,
 Rulers, Grid, Guidelines (see `rulers-grid-guidelines.md`). Save as
 Default keeps the grid, ruler and guideline settings and the page spacing
 for new drawings.

@@ -8,21 +8,43 @@ preview on the left and the settings on the right.
 
 ## To export {#export}
 
-1. Choose [[menu.file > menu.file.export]].
-2. Choose a **Preset** to start from saved choices, or choose the **format**.
-   The common formats (JPG, PDF, AI, PNG) are first. Choosing a format brings
-   back the settings you used for it last.
-3. Set the format's options (below).
-4. Tick **Selected only** to export only the selection, or **All pages** to
+1. Choose [[menu.file > menu.file.export]] (<kbd>Ctrl+E</kbd>, or the toolbar
+   button).
+2. In the **Save** dialog box, choose the folder, type the name and choose
+   the format under **Save as type**. Every format is offered, the one you
+   used last first; the extension of the name decides the format. The
+   folder you exported to last is opened.
+3. The Export dialog box opens with the options of that format, its title
+   naming the file (such as "Export Poster.png"). Choosing a format brings
+   back the settings you used for it last. Choose a **Preset** to start
+   from saved choices, or another **format**: the file's extension changes
+   with it. The common formats (JPG, PDF, AI, PNG) are first.
+4. Set the format's options (below).
+5. Tick **Selected only** to export only the selection, or **All pages** to
    export every page. For PDF and PostScript, All pages starts ticked;
    untick it to export the current page alone.
-5. Click [[dialog.ok]] and choose where to save. In the browser, the file is
-   downloaded.
+6. Click [[dialog.ok]] to write the file. [[dialog.cancel]] writes nothing.
+
+In the browser, which has no Save dialog box, the Export dialog box comes
+first and [[dialog.ok]] downloads the file; on Android, [[dialog.ok]] opens
+the system's picker to choose where to save.
 
 The dialog box estimates the size of the file and, for bitmap formats, says
-what comes out, such as "1240 x 1754 pixels, 150 dpi, sRGB". With **Do not show filter
-dialog** ticked, the next export goes straight to the file with the same
-choices.
+what comes out, such as "1240 x 1754 pixels, 150 dpi, sRGB".
+
+## Skipping the options {#skip}
+
+Tick [[dialog.skip_export_dialog]] at the bottom of the Export dialog box
+and click [[dialog.ok]]: the next exports write the file right after the
+Save dialog box, with the options of the last export, and the status bar
+says "Exported with the last options". To see the options again:
+
+- hold <kbd>Shift</kbd> while choosing [[menu.file > menu.file.export]] or
+  clicking the toolbar button, or choose
+  [[menu.file > menu.file.export_with_options]] (<kbd>Ctrl+Shift+E</kbd>),
+  and untick the box; or
+- untick [[options.skip_export_dialog]] on the [[options.file_formats]] page
+  of the global options (clicking the status bar's note opens it).
 
 ## Format options {#options}
 

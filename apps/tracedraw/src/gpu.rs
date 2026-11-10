@@ -102,6 +102,30 @@ pub struct Candidate {
     pub kind: eframe::wgpu::DeviceType,
     /// Whether it can draw on the window.
     pub surface: bool,
+    /// The graphics API wgpu reaches it through.
+    pub backend: eframe::wgpu::Backend,
+}
+
+/// The order graphics APIs are preferred in for the same card. On
+/// Windows Direct3D 12 comes first: its swap chain is the system's own
+/// (DXGI flip model), which the desktop compositor takes over smoothly
+/// when another window, a menu or a dialog comes over the window or the
+/// window comes back to the front. A Vulkan swap chain on Windows is the
+/// graphics driver's, presented apart from the compositor, and the
+/// change between the two ways of presenting is what blinks the window
+/// on many Intel and NVIDIA drivers (#1579). Elsewhere every API ranks
+/// alike, the order wgpu lists them in deciding.
+fn backend_rank(b: eframe::wgpu::Backend, windows: bool) -> u8 {
+    use eframe::wgpu::Backend;
+    if !windows {
+        return 0;
+    }
+    match b {
+        Backend::Dx12 => 0,
+        Backend::Vulkan => 1,
+        Backend::Gl => 2,
+        _ => 3,
+    }
 }
 
 /// The adapter a start in `mode` draws with (an index into `list`), and
@@ -110,6 +134,17 @@ pub struct Candidate {
 /// mode never takes a software adapter: the start fails instead and the
 /// next renderer is tried (#616).
 pub fn choose(mode: Mode, wanted: &str, list: &[Candidate]) -> (Option<usize>, Vec<&'static str>) {
+    choose_on(mode, wanted, list, cfg!(target_os = "windows"))
+}
+
+/// [`choose`] on Windows (`windows`) or elsewhere.
+fn choose_on(
+    mode: Mode,
+    wanted: &str,
+    list: &[Candidate],
+    windows: bool,
+) -> (Option<usize>, Vec<&'static str>) {
+    let api = |c: &Candidate| backend_rank(c.backend, windows);
     let software = |c: &Candidate| c.kind == eframe::wgpu::DeviceType::Cpu;
     let fits = |c: &Candidate| {
         c.surface
@@ -119,13 +154,19 @@ pub fn choose(mode: Mode, wanted: &str, list: &[Candidate]) -> (Option<usize>, V
             }
     };
     let named = (!wanted.is_empty())
-        .then(|| list.iter().position(|c| fits(c) && c.name == wanted))
+        .then(|| {
+            list.iter()
+                .enumerate()
+                .filter(|(_, c)| fits(c) && c.name == wanted)
+                .min_by_key(|(_, c)| api(c))
+                .map(|(i, _)| i)
+        })
         .flatten();
     let pick = named.or_else(|| {
         list.iter()
             .enumerate()
             .filter(|(_, c)| fits(c))
-            .min_by_key(|(_, c)| rank(c.kind))
+            .min_by_key(|(_, c)| (rank(c.kind), api(c)))
             .map(|(i, _)| i)
     });
     let notes = list
@@ -790,6 +831,7 @@ pub fn options(
                     name: i.name,
                     kind: i.device_type,
                     surface: surface.is_none_or(|s| a.is_surface_supported(s)),
+                    backend: i.backend,
                 }
             })
             .collect();
@@ -1246,7 +1288,54 @@ mod tests {
             name: name.into(),
             kind,
             surface,
+            backend: eframe::wgpu::Backend::Vulkan,
         }
+    }
+
+    fn on(c: Candidate, backend: eframe::wgpu::Backend) -> Candidate {
+        Candidate { backend, ..c }
+    }
+
+    /// On Windows the same card is taken through Direct3D 12 rather than
+    /// Vulkan, whichever wgpu lists first: a Vulkan swap chain there
+    /// blinks the window when another window or a dialog comes over it or
+    /// it comes back to the front, on Intel and NVIDIA drivers (#1579).
+    /// The faster card still wins over the API, a card named in Options
+    /// is taken through Direct3D 12 when it has both, and elsewhere the
+    /// order is wgpu's.
+    #[test]
+    fn windows_takes_a_card_through_direct3d_12() {
+        use eframe::wgpu::Backend::{Dx12, Gl, Vulkan};
+        use eframe::wgpu::DeviceType::*;
+        let list = [
+            on(
+                adapter("NVIDIA GeForce RTX 3050", DiscreteGpu, true),
+                Vulkan,
+            ),
+            on(adapter("Intel(R) Graphics", IntegratedGpu, true), Vulkan),
+            on(adapter("NVIDIA GeForce RTX 3050", DiscreteGpu, true), Dx12),
+            on(adapter("Intel(R) Graphics", IntegratedGpu, true), Dx12),
+            on(
+                adapter("NVIDIA GeForce RTX 3050/PCIe/SSE2", Other, true),
+                Gl,
+            ),
+            on(adapter("Microsoft Basic Render Driver", Cpu, true), Dx12),
+        ];
+        assert_eq!(choose_on(Mode::Hardware, "", &list, true).0, Some(2));
+        assert_eq!(choose_on(Mode::Hardware, "", &list, false).0, Some(0));
+        assert_eq!(
+            choose_on(Mode::Hardware, "Intel(R) Graphics", &list, true).0,
+            Some(3)
+        );
+        assert_eq!(
+            choose_on(Mode::Hardware, "Intel(R) Graphics", &list, false).0,
+            Some(1)
+        );
+        // A Direct3D 12 adapter that cannot draw on the window is left.
+        let mut no_surface = list.clone();
+        no_surface[2].surface = false;
+        assert_eq!(choose_on(Mode::Hardware, "", &no_surface, true).0, Some(0));
+        assert_eq!(choose_on(Mode::Software, "", &list, true).0, Some(5));
     }
 
     /// Hardware mode takes the card named in Options, else the fastest

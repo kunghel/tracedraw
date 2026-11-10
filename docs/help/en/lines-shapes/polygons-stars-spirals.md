@@ -52,10 +52,27 @@ button on the property bar to choose one from five sets:
 - **Banners**: ribbons, waves, scroll, explosion, burst and pennant.
 - **Callouts**: rectangle, rounded, oval, cloud and line callouts.
 
+The **All** tab shows every set at once, one under the other.
+
 Then drag a box. The shape becomes one curve with the default fill and
 outline. Parts that should look separate, such as the faces of a cube, are
 separate parts of the curve, and holes such as the middle of a ring stay
 holes whatever the fill.
+
+### My shapes {#my-shapes}
+
+The last tab of the shape picker, **My shapes**, holds shapes of your own.
+Select the objects to make a shape from and click
+[[menu.object.add_common_shape]] in that tab (it is also in
+[[menu.object > menu.object.create]] and on the right-click menu). Their
+outlines become one shape, which is picked at once. Draw it as any other
+common shape by dragging a box; hold <kbd>Ctrl</kbd> to keep its
+proportions. To take a shape out, pick it and click
+[[shapes.mine_remove]], or right-click it. The built-in shapes cannot be
+removed.
+
+Your shapes are kept with your settings, so they are still there the
+next time TraceDraw starts.
 
 ## Action Lines {#action-lines}
 

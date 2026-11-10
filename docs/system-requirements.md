@@ -26,8 +26,9 @@ memory, processor and disk lines are measured or estimated, and say so.
   the installer and the portable zip carry the C runtime inside the
   program, so a fresh Windows needs nothing more. 32-bit Windows 10 has
   its own installer and portable zip (`windows-x86`, built for
-  `i686-pc-windows-msvc`, #1975); its installer refuses 64-bit Windows,
-  which takes the x64 files, and the Store has no 32-bit package. A
+  `i686-pc-windows-msvc`, #1975). On 64-bit Windows its installer
+  recommends the x64 setup and installs only when asked to; the Store
+  has no 32-bit package. A
   32-bit program can use at most 2 GB of memory, so very large drawings
   and exports are better done on 64-bit Windows. There is no Windows on ARM build.
 - **macOS:** 11 Big Sur or later (`LSMinimumSystemVersion` in

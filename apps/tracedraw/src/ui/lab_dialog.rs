@@ -497,6 +497,7 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
             let hist = histogram(&preview.after);
             draw_histogram(right, &hist, Vec2::new(RIGHT_W - 20.0, 96.0));
         });
+        crate::ui::effect_dialog::all_pages_row(ui, app, st);
         if super::dialogs::ok_cancel(ui, close) {
             let e = lab_effect(&st.effect.params);
             match st.edit {
@@ -505,7 +506,14 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                         *slot = e;
                     }
                 }),
-                None => app.add_bitmap_effect(e),
+                None => {
+                    let before = app.engine.last_step_id();
+                    app.add_bitmap_effect(e.clone());
+                    if st.all_pages {
+                        let recorded = app.engine.last_step_id() != before;
+                        app.add_bitmap_effect_on_all_pages(e, recorded);
+                    }
+                }
             }
         }
     });

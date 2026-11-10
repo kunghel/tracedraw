@@ -187,6 +187,20 @@ pub fn user_palette_of(app: &App, which: Row) -> Option<usize> {
     app.palette_takes_colors(r.index).then_some(r.index)
 }
 
+/// The palette of [`App::palettes`] `which` shows (none for the
+/// document palette).
+pub fn palette_index_of(app: &App, which: Row) -> Option<usize> {
+    match which {
+        Row::Main => app.visible_palettes.first().copied(),
+        Row::Document => None,
+        Row::Extra(k) => app
+            .extra_palettes
+            .get(k)
+            .filter(|r| !r.document && r.index < app.palettes.len())
+            .map(|r| r.index),
+    }
+}
+
 /// How many swatches `which` holds, the No Color well included.
 pub fn swatch_count(app: &App, which: Row) -> usize {
     let n = if shows_document(app, which) {
@@ -383,9 +397,18 @@ fn in_rgb(c: Color) -> Color {
     }
 }
 
-/// The name of `c` in the default palette or the palettes shown; empty
-/// when it has none.
+/// The name of `c`: a spot ink's of the drawing, else its name in the
+/// default palette or the palettes shown; empty when it has none.
 pub fn name_of(app: &App, c: Color) -> String {
+    // A spot colour of the drawing goes by its ink's name, such as the
+    // CutContour ink TraceCut adds (#2186).
+    if let Color::Spot { ink, .. } = c {
+        if let Some(i) = app.has_document().then(|| app.doc().ink(ink)).flatten() {
+            if !i.name.is_empty() {
+                return i.name.clone();
+            }
+        }
+    }
     app.palette
         .iter()
         .chain(app.palettes.iter().flat_map(|p| p.colors.iter()))
@@ -439,6 +462,18 @@ pub fn color_values(c: Color) -> String {
         }
         Color::Rgb { r, g, b } => format!("R: {} G: {} B: {}", byte(r), byte(g), byte(b)),
         Color::Gray { v } => crate::i18n::trf("palette.gray_value", &[("v", &byte(v).to_string())]),
+        // A spot colour: its tint and the process colour it stands for;
+        // its name (the ink's) goes above, not its number (#2186).
+        Color::Spot {
+            tint, c, m, y, k, ..
+        } => {
+            let t = if tint.is_finite() { tint } else { 1.0 };
+            format!(
+                "{}% {}",
+                pct(t.clamp(0.0, 1.0)),
+                color_values(Color::Cmyk { c, m, y, k })
+            )
+        }
         other => crate::app::color_description(other),
     }
 }
@@ -508,6 +543,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     if which == Row::Document {
         app.doc_palette_rect = Some(rect);
     }
+    app.palette_strip_rects.push((which, rect));
     // A palette of the user's takes colours dropped on its bar.
     let own = user_palette_of(app, which);
     if let Some(i) = own {
@@ -613,6 +649,13 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         .id(egui::Id::new(("palette_menu_popup", which.key())))
         .style(crate::ui::menus::menu_popup_style)
         .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+    // A double click on the row outside the swatches edits its palette
+    // (#2138).
+    if bg.double_clicked() {
+        if let Some(i) = palette_index_of(app, which) {
+            app.open_palette_editor(i);
+        }
+    }
     // A right click on the row outside the swatches opens the same menu.
     egui::Popup::context_menu(&bg)
         .id(egui::Id::new(("palette_context_popup", which.key())))
@@ -1023,12 +1066,12 @@ fn swatch(
             .open_memory(hold_open.then_some(egui::SetOpenCommand::Bool(true)))
             .at_pointer_fixed()
             .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
     } else {
         egui::Popup::context_menu(&resp)
             .id(menu_id)
             .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
     }
 }
 
@@ -1235,6 +1278,12 @@ fn double_chevron(painter: &egui::Painter, c: Pos2, color: Color32, vertical: bo
 
 /// The palette menu (the arrow button, or a right click on the row).
 pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
+    menu_of(app, ui, which, false);
+}
+
+/// The palette menu; under a swatch's own Delete Color (`swatch`), the
+/// document palette's Delete Color of the current colour is left out.
+fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
     use crate::ui::menus::{check, item, sep};
     ui.set_min_width(220.0);
     let document = shows_document(app, which);
@@ -1242,8 +1291,12 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
         if which == Row::Main && item(ui, "menu.window.palette_open", "", true) {
             app.open_palette_file();
         }
-        if item(ui, "menu.window.palette_editor", "", true) {
-            app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(Default::default());
+        // Edit Palette...: the Palette Editor on this bar's palette
+        // (#2138).
+        if let Some(i) = palette_index_of(app, which) {
+            if item(ui, "palette.edit", "", true) {
+                app.open_palette_editor(i);
+            }
         }
         if item(ui, "menu.window.palette_manager", "", true) {
             app.show_dockers = true;
@@ -1252,7 +1305,7 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
         sep(ui);
     }
     if document {
-        document_items(app, ui);
+        document_items(app, ui, swatch);
         sep(ui);
     }
     if which == Row::Main
@@ -1293,6 +1346,47 @@ pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
     }
 }
 
+/// A swatch's menu: Delete Color for that colour (#2138), then the
+/// palette's menu. A built-in or locked palette shows Delete Color
+/// greyed, its tooltip saying why.
+pub fn swatch_menu(app: &mut App, ui: &mut Ui, which: Row, color_index: Option<usize>) {
+    use crate::ui::menus::{item, item_tip, sep};
+    if let Some(ci) = color_index {
+        if shows_document(app, which) {
+            let doc = app.has_document() && ci < app.doc().palette.len();
+            if item(ui, "palette.delete_color", "", doc) {
+                delete_document_color(app, ci);
+            }
+            sep(ui);
+        } else if let Some(i) = palette_index_of(app, which) {
+            let takes = app.palette_takes_colors(i);
+            let why = if app.palettes.get(i).is_some_and(|p| p.builtin) {
+                tr("dialog.builtin_palette_hint")
+            } else {
+                tr("dialog.locked_palette_hint")
+            };
+            if item_tip(ui, "palette.delete_color", "", takes, Some(&why)) {
+                app.delete_palette_color(i, ci);
+            }
+            sep(ui);
+        }
+    }
+    menu_of(app, ui, which, color_index.is_some());
+}
+
+/// Colour `i` leaves the document palette (one undo step).
+fn delete_document_color(app: &mut App, i: usize) {
+    if !app.has_document() || i >= app.doc().palette.len() {
+        return;
+    }
+    let mut colors = app.doc().palette.clone();
+    colors.remove(i);
+    app.run(Command::SetDocumentPalette { colors });
+    if app.doc_palette_current == Some(i) {
+        app.doc_palette_current = None;
+    }
+}
+
 /// How many colours Add Colors from Bitmap offers to take.
 pub const BITMAP_COLOR_COUNTS: [u32; 4] = [8, 16, 32, 64];
 
@@ -1313,7 +1407,7 @@ fn bitmap_colors_items(app: &mut App, ui: &mut Ui, palette: Option<usize>) {
 }
 
 /// The document palette's own items.
-fn document_items(app: &mut App, ui: &mut Ui) {
+fn document_items(app: &mut App, ui: &mut Ui, swatch: bool) {
     use crate::ui::menus::{check, item, sep, sub};
     let doc = app.has_document();
     if check(
@@ -1344,18 +1438,18 @@ fn document_items(app: &mut App, ui: &mut Ui) {
     } else {
         None
     };
-    if item(ui, "palette.delete_color", "", doc && current.is_some()) {
+    if !swatch && item(ui, "palette.delete_color", "", doc && current.is_some()) {
         if let Some(i) = current {
-            let mut colors = app.doc().palette.clone();
-            colors.remove(i);
-            app.run(Command::SetDocumentPalette { colors });
+            delete_document_color(app, i);
             app.doc_palette_current = None;
         }
     }
     sep(ui);
     sub(ui, "palette.palette", |ui| {
+        // Reset Palette takes every colour the drawing does not use out:
+        // asked first, apart from deleting a colour (#2138).
         if item(ui, "palette.reset", "", doc) {
-            app.reset_document_palette();
+            app.dialog = crate::ui::dialogs::Dialog::ConfirmResetPalette;
         }
         if item(ui, "palette.rename", "", true) {
             crate::ui::palette_bars::start_rename(app, Row::Document);
@@ -1740,6 +1834,128 @@ mod tests {
         for c in want {
             assert!(got.contains(&c), "{c:?} in {got:?}");
         }
+    }
+
+    /// Click the row `key` of the menu of swatch `color` of `which`, if it
+    /// is there and enabled. Says whether it was.
+    fn click_swatch_item(
+        app: &mut App,
+        make: impl Fn() -> App,
+        which: Row,
+        color: usize,
+        key: &str,
+    ) -> bool {
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        for target in 0..300 {
+            let mut probe = make();
+            replay::start(target);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                swatch_menu(&mut probe, ui, which, Some(color))
+            });
+            out.textures_delta.clear();
+            let (hit, seen) = replay::finish();
+            if hit.as_deref() == Some(key) {
+                replay::start(target);
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    swatch_menu(app, ui, which, Some(color))
+                });
+                out.textures_delta.clear();
+                replay::finish();
+                return true;
+            }
+            if target >= seen {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Delete Color on a swatch's menu takes that colour out (of the
+    /// user's palette; of the document palette as one undo step) and is
+    /// greyed on a built-in palette; Edit Palette... opens the editor on
+    /// the bar's palette; Reset Palette asks first (#2138).
+    #[test]
+    fn delete_color_and_edit_palette_in_the_palette_menus() {
+        let make = || {
+            let mut app = app_with_picture(false);
+            let i = app.new_palette("Mine").expect("palette");
+            app.palettes[i].colors = vec![
+                ("A".into(), Color::rgb8(10, 0, 0)),
+                ("B".into(), Color::rgb8(20, 0, 0)),
+                ("C".into(), Color::rgb8(30, 0, 0)),
+            ];
+            app.rebuild_palette();
+            app.run(Command::SetDocumentPalette {
+                colors: vec![Color::rgb8(1, 2, 3), Color::rgb8(4, 5, 6)],
+            });
+            app
+        };
+        let mut app = make();
+        let i = app.palettes.len() - 1;
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|r| !r.document && r.index == i)
+            .expect("its bar");
+        assert!(click_swatch_item(
+            &mut app,
+            make,
+            Row::Extra(k),
+            1,
+            "palette.delete_color"
+        ));
+        let names: Vec<&str> = app.palettes[i]
+            .colors
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, ["A", "C"]);
+        // The document palette: one undo step.
+        let mut app = make();
+        assert!(click_swatch_item(
+            &mut app,
+            make,
+            Row::Document,
+            0,
+            "palette.delete_color"
+        ));
+        assert_eq!(app.doc().palette, vec![Color::rgb8(4, 5, 6)]);
+        app.undo();
+        assert_eq!(app.doc().palette.len(), 2);
+        // The default palette is built in: greyed, nothing goes.
+        let mut app = make();
+        let main = app.visible_palettes[0];
+        let before = app.palettes[main].colors.len();
+        assert!(!click_swatch_item(
+            &mut app,
+            make,
+            Row::Main,
+            0,
+            "palette.delete_color"
+        ));
+        assert_eq!(app.palettes[main].colors.len(), before);
+        // Edit Palette... on the bar's palette.
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Extra(k), "palette.edit"));
+        match &app.dialog {
+            crate::ui::dialogs::Dialog::PaletteEditor(st) => assert_eq!(st.palette, i),
+            d => panic!("{d:?}"),
+        }
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Main, "palette.edit"));
+        match &app.dialog {
+            crate::ui::dialogs::Dialog::PaletteEditor(st) => assert_eq!(st.palette, main),
+            d => panic!("{d:?}"),
+        }
+        // Reset Palette asks first; nothing is reset yet.
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Document, "palette.reset"));
+        assert!(matches!(
+            app.dialog,
+            crate::ui::dialogs::Dialog::ConfirmResetPalette
+        ));
+        assert_eq!(app.doc().palette.len(), 2);
     }
 
     #[test]

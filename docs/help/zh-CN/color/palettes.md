@@ -45,7 +45,8 @@
 1. 选择要编辑的 [[dialog.palette]]，或单击 [[dialog.new_palette]] 新建一个。
 2. 输入其 [[dialog.name]]。
 3. 单击颜色将其选中；[[dialog.add_color]] 添加当前颜色，[[dialog.remove_color]] 删除所选颜色。
-4. 单击 [[dialog.save_palette]] 将其保存为文件。
-5. 单击 [[dialog.close]]。
+4. 勾选 [[dialog.spot_color]]，将所选颜色设为专色：以颜色名称在单独印版上印刷的命名油墨。导出 PDF 时保留为单独的油墨。
+5. 单击 [[dialog.save_palette]] 将其保存为文件。
+6. 单击 [[dialog.ok]]。
 
 内置调色板无法编辑；请新建调色板，或编辑其副本。

@@ -14,7 +14,7 @@ grid, ruler and guideline settings and the page spacing for new drawings.
 - [[options.rendering_resolution]]: the resolution of effects that are
   turned into pixels, such as drop shadows and bitmap effects.
 - [[options.fill_open_curves]] (off at first): when on, open curves show their
-  fill as if they were closed.
+  fill as if they were closed. An ellipse made an arc is an open curve too.
 - [[options.auto_inflate_bitmaps]] (on at first): bitmaps grow to make room
   for effects that spread past their edges.
 - [[options.duplicate_offset]] (none at first): how far

@@ -21,6 +21,7 @@ TraceDraw का हर संस्करण सुविधाएँ और �
 
 ## हाल के संस्करणों की मुख्य बातें {#highlights}
 
+- **CNC टूलपाथ, एक्सपोर्ट और चयन।** [[menu.tools > menu.tools.tracecut]] CNC राउटर के लिए G-code बनाता है और आईलेट, फ़िंगर जोड़ वाले बॉक्स और मुड़ी ट्रे बनाता है; [[menu.file > menu.file.export]] पहले फ़ाइल पूछता है, फिर फ़ॉर्मेट के विकल्प दिखाता है, और [[menu.file > menu.file.export_with_options]] उन्हें हमेशा दिखाता है; [[menu.edit > menu.edit.select_similar]] और [[menu.edit > menu.edit.invert_selection]] चयन बदलते हैं; [[menu.object > menu.object.insert > menu.object.add_dimensions]] चयन के आयाम जोड़ता है; प्रक्रियात्मक फ़िल, OpenType बटन और लाओ इंटरफ़ेस नए हैं।
 - **आमने-सामने पृष्ठ और लिंक किया गया टेक्स्ट।** [[menu.layout > menu.layout.facing_pages]] पृष्ठों को स्प्रेड के रूप में अगल-बगल दिखाता है; [[menu.text > menu.text.link_content]] टेक्स्ट को लिंक करता है ताकि एक में टाइप करने से बाकी बदलें; कई पृष्ठों वाला PDF पूछता है कि कौन से पृष्ठ आयात करने हैं; [[menu.edit > menu.edit.step_and_repeat]] पृष्ठ को प्रतियों से भर सकता है।
 - **टच और फ़ोन।** स्टैंडर्ड टूलबार के Shift, Ctrl और Alt बटन उँगली के लिए दबे
   रहते हैं; Android पर इंटरफ़ेस कैमरा कटआउट और गोल कोनों से दूर रहता है; Apple

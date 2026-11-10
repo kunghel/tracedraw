@@ -30,9 +30,11 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 #if Arch == "x86"
-; The 32-bit build installs on 32-bit Windows only: 64-bit Windows takes
-; the x86_64 setup, which shares this AppId and folder.
-ArchitecturesAllowed=x86os
+; The 32-bit build installs on any Windows that runs 32-bit programs. On
+; 64-bit Windows it first recommends the x86_64 setup (InitializeSetup
+; below) and goes on when asked to: refusing showed only Windows's
+; message that the program does not support this version of Windows.
+ArchitecturesAllowed=x86compatible
 #else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -67,6 +69,9 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 
 [CustomMessages]
+; The 32-bit setup run on 64-bit Windows (InitializeSetup).
+Use64Setup=This is the 32-bit TraceDraw for 32-bit Windows. Your Windows is 64-bit: the x86_64 setup (tracedraw-...-windows-x86_64-setup.exe) runs faster and can use all the memory. Install the 32-bit version anyway?
+brazilianportuguese.Use64Setup=Este é o TraceDraw de 32 bits, para Windows de 32 bits. Seu Windows é de 64 bits: o instalador x86_64 (tracedraw-...-windows-x86_64-setup.exe) é mais rápido e pode usar toda a memória. Instalar a versão de 32 bits mesmo assim?
 english.AddToPath=Add tracedraw-cli to PATH
 english.CommandLine=Command line:
 brazilianportuguese.AddToPath=Adicionar tracedraw-cli ao PATH
@@ -160,6 +165,9 @@ Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A6
 Root: HKA; Subkey: "Software\Classes\CLSID\{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; ValueType: dword; ValueName: "DisableProcessIsolation"; ValueData: "0"
 Root: HKA; Subkey: "Software\Classes\.tdraw\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
+; Kept when another program takes .tdraw's default (Open With, a
+; UserChoice): Explorer reads this key whichever program opens the file.
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tdraw\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
 ; "Open with TraceDraw" for .cdr, without stealing the default
 Root: HKA; Subkey: "Software\Classes\.cdr\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Document"; ValueData: ""; Flags: uninsdeletevalue
 ; TraceDraw's language as chosen on the "TraceDraw's language" page:
@@ -212,6 +220,7 @@ begin
       $15: Result := 'pl';
       $1F: Result := 'tr';
       $05: Result := 'cs';
+      $54: Result := 'lo';
     else
       Result := '';
     end;
@@ -262,6 +271,7 @@ begin
   AddAppLanguage('pl', 'Polski');
   AddAppLanguage('tr', 'Türkçe');
   AddAppLanguage('cs', 'Čeština');
+  AddAppLanguage('lo', 'ພາສາລາວ');
   SystemCode := AppLanguageForLangId(GetUILanguage);
   if SystemCode = '' then
     SystemCode := 'en';
@@ -315,3 +325,14 @@ begin
   end;
   Result := Pos(';' + Uppercase(ExpandConstant(Param)) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
 end;
+
+#if Arch == "x86"
+// The 32-bit setup on 64-bit Windows: recommend the x86_64 setup, go on
+// when the user says so.
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+  if IsWin64 then
+    Result := MsgBox(CustomMessage('Use64Setup'), mbConfirmation, MB_YESNO) = IDYES;
+end;
+#endif

@@ -14,36 +14,34 @@ One undo step, and the new objects are selected.
   its own and the gaps stay empty, the pattern in widths as drawn
   (#490).
 - A variable or calligraphic outline, or one inside or outside the path,
-  becomes its band, fitted to curves like any other outline. A Variable
-  Length band is built from the path flattened to 0.005 mm for it: the
-  eased width becomes a few curves on each side and the butt ends lines
-  (#627).
-- A combined curve's subpaths are stroked one by one and the pieces
-  joined into one shape (nonzero union), so where its lines cross the
-  result is filled as the outline was drawn, not a hole under the
-  even-odd fill of curves (#997).
-- A closed path, an ellipse included, is stroked all round, with no
-  ends at its start.
-- The result is clean: the stroke is computed on short lines, then
-  fitted back to lines and cubic curves within 0.01 mm, with corners
-  kept as corners and as few nodes as that allows. An ellipse's outline
-  becomes two rings of a few curves each, not hundreds of short lines
-  (#622). Each smooth run between corners is fitted by least squares,
-  refined by Newton steps and split in the middle until it fits, so the
-  nodes fall evenly, and neighbouring pieces that fit as one curve are
-  joined again. Vertices within the tolerance of the first of their run are
-  merged first (the tiny steps polygon operations leave; a run never
-  spans more than twice the tolerance, so the fine round ends of a thin
-  outline keep their shape), and a stretch that is straight
-  but leaves at an angle stays a curve, so curves stay smooth; a smooth closed ring is split at its leftmost and
-  rightmost points.
-- Round ends and round corners are real curves: each round end is two
-  curves meeting at its tip, with smooth nodes where it meets the sides,
-  and a round corner one or two curves between nodes where it meets
-  them; straight sides stay single lines (#623). The fans of round
-  parts step by 0.05 rad, so the node at an end's tip goes to the fan
-  vertex nearest to it, up to one step away; the nodes where ends and
-  corners meet the sides take only a vertex within the tolerance.
+  becomes its band, fitted to lines and cubic curves within 0.01 mm. A
+  Variable Length band is built from the path flattened to 0.005 mm for
+  it: the eased width becomes a few curves on each side and the butt ends
+  lines (#627).
+- A constant-width outline is not flattened: each segment of the path is
+  offset by half the width to either side, a line as a line and a curve
+  as the fewest cubic curves that stay within 0.01 mm of its true offset
+  (a curve's offset is fitted where it is not a cubic itself), so the
+  sides keep about as many nodes as the path has and smooth nodes stay
+  smooth. An ellipse's or a circle's outline is two rings of four curves
+  each; a smooth curve of three segments with butt ends becomes six
+  curves and two lines (#622). Before, the stroke was computed on short
+  lines and fitted back to curves, which gave several times the path's
+  nodes on curves, with near-straight kinks between them.
+- Miter and bevel corners and square ends are drawn as the outline
+  draws them (miter limit included). Round ends and round corners are
+  arcs of the pen's circle around the path's end or corner, drawn with
+  nodes on the side lines and at each end's tip: each round end is two
+  curves meeting exactly at its tip, a round corner one curve up to a
+  right angle, two beyond; straight sides stay single lines (#623).
+- The sides, ends and corners are joined into one shape (nonzero union,
+  the curves put back after the union): where the outline overlaps itself
+  (the inner side of a corner, the subpaths of a combined curve that
+  cross) the result is filled as the outline was drawn, not a hole under
+  the even-odd fill of curves (#997). Each closed subpath ends with its
+  own line or curve back to its start.
+- A closed path, an ellipse included, and an open one that ends where it
+  starts, is stroked all round, with no ends at its start.
 
 ## Checks
 
@@ -65,6 +63,17 @@ One undo step, and the new objects are selected.
 - Given an ellipse with a 4 mm outline, the result is a 4 mm ring of 8
   to 16 curves and no lines, its outer size 64 x 44 mm
   (`tools2::tests::an_ellipse_outline_becomes_a_few_curves`).
+- Given a smooth open curve of three segments (four nodes) with a 2 mm
+  butt-ended outline, the result has at most 10 nodes, two lines (the
+  ends) and the area of the outline drawn within 0.2 %; with round ends
+  at most 12 nodes; a circle of four curves with a 2 mm outline becomes
+  two rings of four curves, 2 mm apart
+  (`tools2::tests::a_curved_outline_keeps_about_as_many_nodes_as_its_path`).
+  The same curve converted the old way had 32 nodes.
+- With the Shape tool on the outline of a smooth curve converted with
+  butt ends, the corner widgets show at its four butt corners only
+  (`tools2::tests::corner_widgets_show_only_where_they_round_something`,
+  see `shape-tool.md`, Corner widgets).
 - Given a straight line with butt ends, the result is a rectangle of
   four lines (`tools2::tests::a_straight_outline_becomes_a_rectangle`).
 - Given a curved open path with a thick butt-ended outline (an arc 87 mm
@@ -92,8 +101,8 @@ One undo step, and the new objects are selected.
   the nearest vertex within its reach
   (`tracedraw_core::fit::tests::a_node_between_two_vertices_takes_the_nearest`);
   of two nodes within reach, the nearer one.
-- Given 10 mm and 17 mm lines with round ends, each tip has a node half
-  a fan step from it at most, each end two curves
+- Given 10 mm and 17 mm lines with round ends, each tip has a node on
+  it (within 0.001 mm), each end two curves
   (`tools2::tests::wide_round_ends_have_a_node_at_each_tip`).
 - The fitting: given nodes where a stadium's ends meet its sides, it
   becomes two lines and four curves with nodes at the tips

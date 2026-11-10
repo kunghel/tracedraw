@@ -661,8 +661,8 @@ impl Reader<'_, '_, '_> {
             Some("italic" | "oblique")
         );
         let deco = ctx.inherited(el, "text-decoration").unwrap_or_default();
-        s.underline = deco.contains("underline");
-        s.strikethrough = deco.contains("line-through");
+        s.underline = deco.contains("underline").into();
+        s.strikethrough = deco.contains("line-through").into();
         if let Some(ls) = ctx
             .inherited(el, "letter-spacing")
             .and_then(|v| ctx.length(&v, fs, fs))
@@ -939,7 +939,7 @@ mod tests {
         assert!(sp[1].bold && !sp[0].bold);
         assert_eq!(sp[1].fill, Some(Fill::Solid(Color::rgb8(255, 0, 0))));
         assert_eq!(sp[0].fill, None);
-        assert!(sp[3].italic && sp[3].underline);
+        assert!(sp[3].italic && sp[3].underline.is_on());
         assert_eq!(align(t[0]), TextAlign::Left);
     }
 

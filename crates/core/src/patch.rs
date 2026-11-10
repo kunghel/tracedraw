@@ -10,7 +10,7 @@
 //! selection ([`stroke_mixed`], [`fill_mixed`]), so it can show them as
 //! mixed.
 
-use crate::style::{Fill, Fountain, Stroke};
+use crate::style::{Fill, Fountain, Pattern, Procedural, Stroke};
 use serde::{Deserialize, Serialize};
 
 /// One attribute of an outline.
@@ -41,10 +41,16 @@ pub enum StrokeField {
     MiterLimit,
     /// Dashes fitted to corners and ends.
     AlignDashes,
+    /// The start head's placement (size, offset, mirror, rotation).
+    StartHead,
+    /// The end head's placement.
+    EndHead,
+    /// Share attributes: the end follows the start's head and placement.
+    ShareArrowheads,
 }
 
 impl StrokeField {
-    pub const ALL: [StrokeField; 16] = [
+    pub const ALL: [StrokeField; 19] = [
         StrokeField::Paint,
         StrokeField::Width,
         StrokeField::Cap,
@@ -61,6 +67,9 @@ impl StrokeField {
         StrokeField::Position,
         StrokeField::MiterLimit,
         StrokeField::AlignDashes,
+        StrokeField::StartHead,
+        StrokeField::EndHead,
+        StrokeField::ShareArrowheads,
     ];
 
     /// True when `a` and `b` have the same value for this field.
@@ -82,10 +91,16 @@ impl StrokeField {
             StrokeField::Position => a.position == b.position,
             StrokeField::MiterLimit => a.miter_limit == b.miter_limit,
             StrokeField::AlignDashes => a.align_dashes == b.align_dashes,
+            StrokeField::StartHead => a.start_head == b.start_head,
+            StrokeField::EndHead => a.end_head == b.end_head,
+            StrokeField::ShareArrowheads => a.share_arrowheads == b.share_arrowheads,
         }
     }
 
     /// Copy this field of `from` into `to`, leaving the others alone.
+    /// With Share attributes on in `to`, a start head or its placement
+    /// copied in goes to the end as well, and turning Share on copies the
+    /// start to the end, so the end always holds what is drawn.
     pub fn copy(self, from: &Stroke, to: &mut Stroke) {
         match self {
             StrokeField::Paint => {
@@ -107,6 +122,17 @@ impl StrokeField {
             StrokeField::Position => to.position = from.position,
             StrokeField::MiterLimit => to.miter_limit = from.miter_limit,
             StrokeField::AlignDashes => to.align_dashes = from.align_dashes,
+            StrokeField::StartHead => to.start_head = from.start_head,
+            StrokeField::EndHead => to.end_head = from.end_head,
+            StrokeField::ShareArrowheads => to.share_arrowheads = from.share_arrowheads,
+        }
+        if to.share_arrowheads
+            && matches!(
+                self,
+                StrokeField::StartArrow | StrokeField::StartHead | StrokeField::ShareArrowheads
+            )
+        {
+            to.share_start_head();
         }
     }
 }
@@ -200,14 +226,115 @@ pub enum FillField {
     Repeat,
     Bilinear,
     Invert,
+    /// How the colours go from stop to stop (straight or around the hue
+    /// circle).
+    BlendDirection,
+    /// The colour bands the fill is drawn with (256: smooth).
+    Steps,
+    /// The smooth transition over each blend.
+    Smooth,
+    /// The acceleration that skews every blend's midpoint.
+    Acceleration,
     /// Where the nodes are placed freely (see `Fountain::handles`), or
     /// none: the angle and the offset place the fill.
     Handles,
+    /// A pattern's tile size on the page (see [`Pattern::tile_size`]).
+    TileSize,
+    /// A pattern's offset X and Y.
+    TileOffset,
+    TileRotation,
+    TileSkew,
+    /// Mirror tiles, horizontally and vertically.
+    TileMirror,
+    /// The row or column offset and which of the two.
+    TileShift,
+    /// A pattern's Transform with object.
+    TransformWithObject,
+    /// A procedural fill's pattern.
+    ProceduralPattern,
+    /// A procedural fill's tile size.
+    ProceduralSize,
+    ProceduralLineWidth,
+    /// The share of the tile a dot covers.
+    ProceduralShare,
+    ProceduralAmplitude,
+    ProceduralTurns,
+    ProceduralDensity,
+    ProceduralSeed,
+    /// A procedural fill's foreground colour.
+    Foreground,
+    /// A procedural fill's background colour, or none.
+    Background,
 }
 
 impl FillField {
+    /// The procedural fill's fields, in the order an editor shows them.
+    pub const PROCEDURAL: [FillField; 10] = [
+        FillField::ProceduralPattern,
+        FillField::ProceduralSize,
+        FillField::ProceduralLineWidth,
+        FillField::ProceduralShare,
+        FillField::ProceduralAmplitude,
+        FillField::ProceduralTurns,
+        FillField::ProceduralDensity,
+        FillField::ProceduralSeed,
+        FillField::Foreground,
+        FillField::Background,
+    ];
+
+    /// Whether this is one of the procedural fill's fields.
+    pub fn is_procedural(self) -> bool {
+        FillField::PROCEDURAL.contains(&self)
+    }
+
+    /// The field of a procedural parameter.
+    pub fn of_param(p: crate::style::ProceduralParam) -> FillField {
+        use crate::style::ProceduralParam as P;
+        match p {
+            P::Size => FillField::ProceduralSize,
+            P::LineWidth => FillField::ProceduralLineWidth,
+            P::Share => FillField::ProceduralShare,
+            P::Amplitude => FillField::ProceduralAmplitude,
+            P::Turns => FillField::ProceduralTurns,
+            P::Density => FillField::ProceduralDensity,
+            P::Seed => FillField::ProceduralSeed,
+        }
+    }
+
+    fn same_procedural(self, a: &Procedural, b: &Procedural) -> bool {
+        match self {
+            FillField::ProceduralPattern => a.pattern == b.pattern,
+            FillField::ProceduralSize => a.params.size_mm == b.params.size_mm,
+            FillField::ProceduralLineWidth => a.params.line_width_mm == b.params.line_width_mm,
+            FillField::ProceduralShare => a.params.share == b.params.share,
+            FillField::ProceduralAmplitude => a.params.amplitude == b.params.amplitude,
+            FillField::ProceduralTurns => a.params.turns == b.params.turns,
+            FillField::ProceduralDensity => a.params.density == b.params.density,
+            FillField::ProceduralSeed => a.seed == b.seed,
+            FillField::Foreground => a.foreground == b.foreground,
+            FillField::Background => a.background == b.background,
+            _ => a == b,
+        }
+    }
+
+    fn copy_procedural(self, from: &Procedural, to: &mut Procedural) {
+        match self {
+            FillField::ProceduralPattern => to.pattern = from.pattern,
+            FillField::ProceduralSize => to.params.size_mm = from.params.size_mm,
+            FillField::ProceduralLineWidth => to.params.line_width_mm = from.params.line_width_mm,
+            FillField::ProceduralShare => to.params.share = from.params.share,
+            FillField::ProceduralAmplitude => to.params.amplitude = from.params.amplitude,
+            FillField::ProceduralTurns => to.params.turns = from.params.turns,
+            FillField::ProceduralDensity => to.params.density = from.params.density,
+            FillField::ProceduralSeed => to.seed = from.seed,
+            FillField::Foreground => to.foreground = from.foreground,
+            FillField::Background => to.background = from.background,
+            _ => *to = from.clone(),
+        }
+    }
+
     /// The gradient fields, in the order an editor shows them.
-    pub const FOUNTAIN: [FillField; 11] = [
+    pub const FOUNTAIN: [FillField; 15] = [
         FillField::FountainKind,
         FillField::StartColor,
         FillField::EndColor,
@@ -218,8 +345,82 @@ impl FillField {
         FillField::Repeat,
         FillField::Bilinear,
         FillField::Invert,
+        FillField::BlendDirection,
+        FillField::Steps,
+        FillField::Smooth,
+        FillField::Acceleration,
         FillField::Handles,
     ];
+
+    /// The pattern placement fields, in the order an editor shows them.
+    pub const PATTERN: [FillField; 7] = [
+        FillField::TileSize,
+        FillField::TileOffset,
+        FillField::TileRotation,
+        FillField::TileSkew,
+        FillField::TileMirror,
+        FillField::TileShift,
+        FillField::TransformWithObject,
+    ];
+
+    /// Whether this is one of the pattern placement fields.
+    pub fn is_placement(self) -> bool {
+        FillField::PATTERN.contains(&self)
+    }
+
+    fn same_pattern(self, a: &Pattern, b: &Pattern) -> bool {
+        let (pa, pb) = (a.placement(), b.placement());
+        match self {
+            FillField::TileSize => a.tile_size() == b.tile_size(),
+            FillField::TileOffset => pa.offset_x == pb.offset_x && pa.offset_y == pb.offset_y,
+            FillField::TileRotation => pa.rotation == pb.rotation,
+            FillField::TileSkew => pa.skew == pb.skew,
+            FillField::TileMirror => {
+                pa.mirror_horizontal == pb.mirror_horizontal
+                    && pa.mirror_vertical == pb.mirror_vertical
+            }
+            FillField::TileShift => pa.shift_percent == pb.shift_percent && pa.shift == pb.shift,
+            FillField::TransformWithObject => pa.transform_with_object == pb.transform_with_object,
+            _ => a == b,
+        }
+    }
+
+    fn copy_pattern(self, from: &Pattern, to: &mut Pattern) {
+        let f = *from.placement();
+        match self {
+            FillField::TileSize => to.set_tile_size(from.tile_size()),
+            FillField::TileOffset => {
+                let t = to.placement_mut();
+                t.offset_x = f.offset_x;
+                t.offset_y = f.offset_y;
+            }
+            FillField::TileRotation => to.placement_mut().rotation = f.rotation,
+            FillField::TileSkew => to.placement_mut().skew = f.skew,
+            FillField::TileMirror => {
+                let t = to.placement_mut();
+                t.mirror_horizontal = f.mirror_horizontal;
+                t.mirror_vertical = f.mirror_vertical;
+            }
+            FillField::TileShift => {
+                let t = to.placement_mut();
+                t.shift_percent = f.shift_percent;
+                t.shift = f.shift;
+            }
+            FillField::TransformWithObject => {
+                to.placement_mut().transform_with_object = f.transform_with_object
+            }
+            _ => *to = from.clone(),
+        }
+    }
+
+    /// Whether two patterns are the same tile: alike once their placements
+    /// and tile sizes are set aside.
+    fn same_tile(a: &Pattern, b: &Pattern) -> bool {
+        let mut a2 = a.clone();
+        a2.set_tile_size(b.tile_size());
+        *a2.placement_mut() = *b.placement();
+        a2 == *b
+    }
 
     fn same_fountain(self, a: &Fountain, b: &Fountain) -> bool {
         match self {
@@ -238,7 +439,12 @@ impl FillField {
             FillField::Repeat => a.repeat == b.repeat && a.repeats == b.repeats,
             FillField::Bilinear => a.bilinear == b.bilinear,
             FillField::Invert => a.invert == b.invert,
+            FillField::BlendDirection => a.blend_direction == b.blend_direction,
+            FillField::Steps => a.steps == b.steps,
+            FillField::Smooth => a.smooth == b.smooth,
+            FillField::Acceleration => a.acceleration == b.acceleration,
             FillField::Handles => a.handles == b.handles,
+            _ => true,
         }
     }
 
@@ -266,13 +472,18 @@ impl FillField {
             }
             FillField::Bilinear => to.bilinear = from.bilinear,
             FillField::Invert => to.invert = from.invert,
+            FillField::BlendDirection => to.blend_direction = from.blend_direction,
+            FillField::Steps => to.steps = from.steps,
+            FillField::Smooth => to.smooth = from.smooth,
+            FillField::Acceleration => to.acceleration = from.acceleration,
             FillField::Handles => to.handles = from.handles,
+            _ => {}
         }
     }
 }
 
 /// The type of a fill: 0 none, 1 uniform, 2 fountain, 3 pattern,
-/// 4 texture, 5 mesh.
+/// 4 texture, 5 mesh, 6 procedural.
 pub fn fill_kind(f: &Fill) -> usize {
     match f {
         Fill::None => 0,
@@ -281,15 +492,33 @@ pub fn fill_kind(f: &Fill) -> usize {
         Fill::Pattern(_) => 3,
         Fill::Texture(_) => 4,
         Fill::Mesh(_) => 5,
+        Fill::Procedural(_) => 6,
     }
 }
 
-/// What changed from `old` to `new`: nothing, the whole fill, or some
-/// gradient settings when both are gradients. A changed stop list counts
+/// What changed from `old` to `new`: nothing, the whole fill, some
+/// gradient settings when both are gradients, some placement settings
+/// when both are patterns of the same tile, or some procedural settings
+/// when both are procedural fills. A changed stop list counts
 /// as a start or end colour when only that colour moved.
 pub fn fill_changes(old: &Fill, new: &Fill) -> Vec<FillField> {
     if old == new {
         return Vec::new();
+    }
+    if let (Fill::Pattern(a), Fill::Pattern(b)) = (old, new) {
+        if !FillField::same_tile(a, b) {
+            return vec![FillField::All];
+        }
+        return FillField::PATTERN
+            .into_iter()
+            .filter(|f| !f.same_pattern(a, b))
+            .collect();
+    }
+    if let (Fill::Procedural(a), Fill::Procedural(b)) = (old, new) {
+        return FillField::PROCEDURAL
+            .into_iter()
+            .filter(|f| !f.same_procedural(a, b))
+            .collect();
     }
     let (Fill::Fountain(a), Fill::Fountain(b)) = (old, new) else {
         return vec![FillField::All];
@@ -319,8 +548,9 @@ pub fn fill_changes(old: &Fill, new: &Fill) -> Vec<FillField> {
 }
 
 /// `target` with `fields` taken from `from`. Gradient fields go into a
-/// gradient target; any other target, or [`FillField::All`], takes the
-/// whole of `from`.
+/// gradient target, placement fields into a pattern target (of any
+/// kind), procedural fields into a procedural target; any other target,
+/// or [`FillField::All`], takes the whole of `from`.
 pub fn patch_fill(target: &Fill, from: &Fill, fields: &[FillField]) -> Fill {
     if fields.is_empty() {
         return target.clone();
@@ -332,6 +562,22 @@ pub fn patch_fill(target: &Fill, from: &Fill, fields: &[FillField]) -> Fill {
                 field.copy_fountain(f, &mut out);
             }
             Fill::Fountain(out)
+        }
+        (Fill::Pattern(t), Fill::Pattern(f)) if fields.iter().all(|field| field.is_placement()) => {
+            let mut out = t.clone();
+            for field in fields {
+                field.copy_pattern(f, &mut out);
+            }
+            Fill::Pattern(out)
+        }
+        (Fill::Procedural(t), Fill::Procedural(f))
+            if fields.iter().all(|field| field.is_procedural()) =>
+        {
+            let mut out = t.clone();
+            for field in fields {
+                field.copy_procedural(f, &mut out);
+            }
+            Fill::Procedural(out)
         }
         _ => from.clone(),
     }
@@ -375,6 +621,18 @@ pub fn fill_mixed<'a>(fills: impl IntoIterator<Item = &'a Fill>) -> FillMix {
             (Fill::Fountain(a), Fill::Fountain(b)) => FillField::FOUNTAIN
                 .into_iter()
                 .filter(|x| !x.same_fountain(a, b))
+                .collect(),
+            // Patterns of different tiles differ as a whole, and in the
+            // placement values that differ too, so the editor can show
+            // those fields as mixed.
+            (Fill::Pattern(a), Fill::Pattern(b)) => FillField::PATTERN
+                .into_iter()
+                .filter(|x| !x.same_pattern(a, b))
+                .chain((!FillField::same_tile(a, b)).then_some(FillField::All))
+                .collect(),
+            (Fill::Procedural(a), Fill::Procedural(b)) => FillField::PROCEDURAL
+                .into_iter()
+                .filter(|x| !x.same_procedural(a, b))
                 .collect(),
             _ if base != f => vec![FillField::All],
             _ => Vec::new(),
@@ -449,6 +707,45 @@ mod tests {
         assert!(out.align_dashes);
         a.position = crate::OutlinePosition::Outside;
         assert!(!StrokeField::Position.same(&a, &b));
+    }
+
+    /// #1210: the head placements and Share attributes are fields of
+    /// their own; with Share on, a start head patched in reaches the end
+    /// too, and turning Share on copies the start to the end.
+    #[test]
+    fn head_placements_patch_one_at_a_time_and_share_follows_the_start() {
+        let a = stroke(Color::rgb8(255, 0, 0), 1.0);
+        let mut b = stroke(Color::rgb8(0, 0, 255), 2.0);
+        b.end_arrow = crate::Arrowhead::Circle;
+        let mut new = a.clone();
+        new.start_head.size = 250.0;
+        new.end_head.offset = 1.5;
+        let fields = stroke_changes(&a, &new);
+        assert_eq!(fields, vec![StrokeField::StartHead, StrokeField::EndHead]);
+        let out = patch_stroke(Some(&b), &new, &fields);
+        assert_eq!(out.start_head.size, 250.0);
+        assert_eq!(out.end_head.offset, 1.5);
+        assert_eq!(out.end_arrow, crate::Arrowhead::Circle, "the head stays");
+        assert_eq!(out.width, 2.0);
+        // Share on: the end takes the start's head and placement.
+        let mut shared = new.clone();
+        shared.start_arrow = crate::Arrowhead::Diamond;
+        shared.share_arrowheads = true;
+        let out = patch_stroke(
+            Some(&b),
+            &shared,
+            &[StrokeField::StartArrow, StrokeField::ShareArrowheads],
+        );
+        assert!(out.share_arrowheads);
+        assert_eq!(out.end_arrow, crate::Arrowhead::Diamond);
+        assert_eq!(out.end_head, out.start_head);
+        // A later start placement on a shared outline reaches the end.
+        let mut later = shared.clone();
+        later.start_head.rotation = 45.0;
+        let out = patch_stroke(Some(&out), &later, &[StrokeField::StartHead]);
+        assert_eq!(out.end_head.rotation, 45.0);
+        assert!(StrokeField::ALL.contains(&StrokeField::ShareArrowheads));
+        assert_eq!(StrokeField::ALL.len(), 19);
     }
 
     #[test]
@@ -538,5 +835,181 @@ mod tests {
         assert_eq!(m.fields, vec![FillField::Angle]);
         assert!(m.has(FillField::Angle) && !m.has(FillField::EdgePad));
         assert!(fill_mixed([&red, &red]).is_empty());
+    }
+
+    /// The blend direction, steps, smooth transition and acceleration are
+    /// fields of their own: an edit of one goes into each object's own
+    /// gradient and leaves the rest (#1208).
+    #[test]
+    fn gradient_blend_settings_change_one_at_a_time() {
+        use crate::ColorBlend;
+        let red = Color::rgb8(255, 0, 0);
+        let a = Fountain::two(crate::FountainKind::Linear, Color::BLACK, Color::WHITE, 0.0);
+        let mut b = a.clone();
+        b.angle = 45.0;
+        b.stops[1].color = red;
+        b.smooth = true;
+        let mut edited = a.clone();
+        edited.steps = 8;
+        let fields = fill_changes(&Fill::Fountain(a.clone()), &Fill::Fountain(edited.clone()));
+        assert_eq!(fields, vec![FillField::Steps]);
+        let Fill::Fountain(pb) =
+            patch_fill(&Fill::Fountain(b.clone()), &Fill::Fountain(edited), &fields)
+        else {
+            panic!("a gradient");
+        };
+        assert_eq!(pb.steps, 8);
+        assert_eq!((pb.angle, pb.stops[1].color, pb.smooth), (45.0, red, true));
+        let mut e2 = a.clone();
+        e2.blend_direction = ColorBlend::Clockwise;
+        e2.smooth = true;
+        e2.acceleration = -30;
+        let fields = fill_changes(&Fill::Fountain(a.clone()), &Fill::Fountain(e2.clone()));
+        assert_eq!(
+            fields,
+            vec![
+                FillField::BlendDirection,
+                FillField::Smooth,
+                FillField::Acceleration
+            ]
+        );
+        let Fill::Fountain(pb) =
+            patch_fill(&Fill::Fountain(b), &Fill::Fountain(e2.clone()), &fields)
+        else {
+            panic!("a gradient");
+        };
+        assert_eq!(
+            (pb.blend_direction, pb.smooth, pb.acceleration, pb.angle),
+            (ColorBlend::Clockwise, true, -30, 45.0)
+        );
+        let m = fill_mixed([&Fill::Fountain(a), &Fill::Fountain(e2)]);
+        assert!(m.has(FillField::Acceleration) && !m.has(FillField::Steps));
+    }
+
+    fn checker(size_mm: f64, placement: crate::style::PatternPlacement) -> Fill {
+        Fill::Pattern(Pattern::TwoColor {
+            tile: crate::style::PatternTile::Checker,
+            front: Color::BLACK,
+            back: Color::WHITE,
+            size_mm,
+            placement,
+        })
+    }
+
+    /// A placement setting changes on its own, going into each object's
+    /// own pattern (a bitmap pattern keeps its picture); a new tile
+    /// replaces the fill.
+    #[test]
+    fn pattern_placement_changes_one_at_a_time() {
+        use crate::style::PatternPlacement;
+        let plain = checker(5.0, PatternPlacement::default());
+        let turned = checker(
+            5.0,
+            PatternPlacement {
+                rotation: 45.0,
+                ..PatternPlacement::default()
+            },
+        );
+        assert_eq!(fill_changes(&plain, &turned), vec![FillField::TileRotation]);
+        assert_eq!(
+            fill_changes(&plain, &checker(8.0, PatternPlacement::default())),
+            vec![FillField::TileSize]
+        );
+        // Another tile: the whole fill.
+        let dots = Fill::Pattern(Pattern::TwoColor {
+            tile: crate::style::PatternTile::Dots,
+            front: Color::BLACK,
+            back: Color::WHITE,
+            size_mm: 5.0,
+            placement: PatternPlacement::default(),
+        });
+        assert_eq!(fill_changes(&plain, &dots), vec![FillField::All]);
+
+        // The rotation goes into a bitmap pattern, which keeps its picture
+        // and its own size.
+        let bitmap = Fill::Pattern(Pattern::Bitmap {
+            png: vec![1, 2, 3].into(),
+            width_px: 2,
+            height_px: 1,
+            size_mm: 20.0,
+            placement: PatternPlacement {
+                offset_x: 3.0,
+                ..PatternPlacement::default()
+            },
+        });
+        let out = patch_fill(&bitmap, &turned, &[FillField::TileRotation]);
+        let Fill::Pattern(p) = &out else {
+            panic!("a pattern");
+        };
+        assert!(matches!(p, Pattern::Bitmap { size_mm, .. } if *size_mm == 20.0));
+        assert_eq!(p.placement().rotation, 45.0);
+        assert_eq!(p.placement().offset_x, 3.0);
+        // The whole fill when the field says so.
+        assert_eq!(patch_fill(&bitmap, &turned, &[FillField::All]), turned);
+
+        // Mixed: the rotation differs, the tiles are the same.
+        let m = fill_mixed([&plain, &turned]);
+        assert_eq!(m.fields, vec![FillField::TileRotation]);
+        assert!(!m.has(FillField::All));
+        // Different tiles with the same placement: the whole fill differs,
+        // no placement field does.
+        let m = fill_mixed([&plain, &dots]);
+        assert_eq!(m.fields, vec![FillField::All]);
+    }
+
+    /// A procedural fill's settings change one at a time: the change is
+    /// named, goes into each object's own procedural fill (which keeps
+    /// its other numbers) and shows as mixed when objects differ in it.
+    #[test]
+    fn procedural_settings_change_one_at_a_time() {
+        use crate::style::{Procedural, ProceduralPattern};
+        let plain = Fill::Procedural(Procedural::new(ProceduralPattern::Bricks, Color::BLACK));
+        let mut wide = Procedural::new(ProceduralPattern::Bricks, Color::BLACK);
+        wide.params.line_width_mm = 1.5;
+        let wide = Fill::Procedural(wide);
+        assert_eq!(
+            fill_changes(&plain, &wide),
+            vec![FillField::ProceduralLineWidth]
+        );
+        let mut dots = Procedural::new(ProceduralPattern::Dots, Color::rgb8(255, 0, 0));
+        dots.background = None;
+        let dots = Fill::Procedural(dots);
+        assert_eq!(
+            fill_changes(&plain, &dots),
+            vec![
+                FillField::ProceduralPattern,
+                FillField::Foreground,
+                FillField::Background
+            ]
+        );
+        // The line width goes into a fill of another pattern and size.
+        let mut big = Procedural::new(ProceduralPattern::Spirals, Color::BLACK);
+        big.params.size_mm = 30.0;
+        let out = patch_fill(
+            &Fill::Procedural(big.clone()),
+            &wide,
+            &[FillField::ProceduralLineWidth],
+        );
+        let Fill::Procedural(p) = &out else {
+            panic!("a procedural fill");
+        };
+        assert_eq!(p.pattern, ProceduralPattern::Spirals);
+        assert_eq!(p.params.size_mm, 30.0);
+        assert_eq!(p.params.line_width_mm, 1.5);
+        // The whole fill when the field says so, or into another kind.
+        assert_eq!(
+            patch_fill(&Fill::Procedural(big), &wide, &[FillField::All]),
+            wide
+        );
+        let red = Fill::Solid(Color::rgb8(255, 0, 0));
+        assert_eq!(
+            patch_fill(&red, &wide, &[FillField::ProceduralLineWidth]),
+            wide
+        );
+        // Mixed: the width differs, nothing else.
+        let m = fill_mixed([&plain, &wide]);
+        assert_eq!(m.fields, vec![FillField::ProceduralLineWidth]);
+        assert!(!m.has(FillField::All) && !m.has(FillField::Foreground));
+        assert!(fill_mixed([&red, &wide]).kind);
     }
 }

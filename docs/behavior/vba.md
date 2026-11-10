@@ -224,7 +224,51 @@ Creatable with `New`.
   `cdrColorRegistration`), `RGBRed`, `RGBGreen`, `RGBBlue`, `RGBValue`,
   `CMYKCyan`, `CMYKMagenta`, `CMYKYellow`, `CMYKBlack` (all read and
   write), `Gray`, `HSBHue`, `HSBSaturation`, `HSBBrightness`,
-  `HexValue`, `Name`, `IsSpot`, `IsCMYK`, `IsSame`.
+  `HexValue`, `Name` (a spot colour's ink name; a palette colour's
+  name), `IsSpot`, `IsCMYK`, `IsSame`.
+
+### Palettes
+
+- **`Application.Palettes`** (also a global): the palettes of the
+  Palette Manager (built in and the user's), 1-based, by index or name,
+  `Count`, `For Each`.
+- **`Document.Palette`**: the drawing's own palette.
+- **`Palette`:** `Name`, `ColorCount`, `Color(Index)` (1-based, the
+  colour with its name), `Colors`, `FindColor(Name)`.
+- A spot colour a macro applies (`ApplyUniformFill`) whose ink the
+  drawing does not have yet joins the drawing's ink list under its
+  palette name, so exports print it on a plate of its own.
+
+### Contours, outlines as objects, copies on a layer
+
+- **`Shape.CreateContour(Direction, Offset, Steps, ..., FillColor)`:**
+  a contour effect (`cdrContourToCenter` 0, `cdrContourInside` 1,
+  `cdrContourOutside` 2; `Offset` in the document unit, mitred corners),
+  stepping from the object's fill to `FillColor`. It gives back the
+  effect, whose `Separate` turns it into plain objects; the object keeps
+  its `StaticID`, so a macro tells it from the rings.
+- **`Outline.ConvertToObject`:** a filled curve of the outline's shape
+  and colour right above the object, which loses its outline (the same
+  geometry as Object > Convert Outline to Object).
+- **`CopyToLayer(Layer)`** on a shape, range or selection: copies on that
+  layer, in the same place on the page.
+
+### View, PDF settings, files
+
+- **`ActiveWindow.ActiveView.Type`:** `cdrEnhancedViewWithOverprints` (5)
+  turns View > Simulate Overprints on, another view type off.
+- **`Document.PDFSettings`:** `PublishRange` (`pdfWholeDocument` 0,
+  `pdfCurrentPage` 1) chooses what `PublishToPDF` writes; `Load`, `Save`
+  and `ShowDialog` of a named style succeed without changing anything, as
+  the PDF always keeps spot inks and overprint.
+- **`Dir(PathName)`:** a file's name when it exists, else ""; a `*` or `?`
+  in the name gives the first match in its folder. `Dir` with no path is
+  not available.
+- **Queries** (`FindShapes(Query:=...)`): `@name`, `@type` and
+  `@fill.type` compared with `=`, `<>`, or tested with
+  `.StartsWith('...')`, `.EndsWith('...')`, `.Contains('...')`.
+- Methods of the object model take **named arguments**
+  (`CreateArtisticText(..., Font:="Arial", Size:=10)`).
 
 ### Constants
 

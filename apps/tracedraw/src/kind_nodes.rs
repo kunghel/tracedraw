@@ -1002,6 +1002,77 @@ mod tests {
         );
     }
 
+    /// A live test of 0.41: an ellipse whose node was dragged outward with
+    /// the Shape tool became an arc that kept its fill. An arc is an open
+    /// curve: with Fill open curves off it draws no fill and is picked on
+    /// its outline only; a pie keeps its fill.
+    #[test]
+    fn an_ellipse_made_an_arc_draws_no_fill_unless_open_curves_are_filled() {
+        use tracedraw_core::{Color, Command, Fill};
+        let mut app = crate::app::App::headless();
+        app.settings.treat_all_filled = false;
+        let id = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(80.0, 80.0, 120.0, 120.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Solid(Color::rgb8(255, 0, 0)));
+        assert!(!app.doc().metadata.fill_open_curves);
+        let centre = Point::new(100.0, 100.0);
+        assert_eq!(app.hit_test(centre), Some(id));
+        // The node dragged outward, counter-clockwise round to the left.
+        let s = app.doc().find_shape(id).cloned().expect("shape");
+        let mut turn = 0.0;
+        let mut kind = None;
+        for deg in [120.0f64, 160.0, 200.0] {
+            let p =
+                centre + Vec2::new(30.0 * deg.to_radians().cos(), 30.0 * deg.to_radians().sin());
+            kind = drag(&s, KindNode::EllipseStart, p, false, [false; 4], &mut turn);
+        }
+        let kind = kind.expect("an arc");
+        assert!(kind.is_open_curve(), "{kind:?}");
+        app.run(Command::SetShapeKind { shape: id, kind });
+        let red_at = |app: &crate::app::App, p: Point| {
+            let pm = tracedraw_render::render_page_image(app.doc(), app.page, 25.4).expect("page");
+            let h = pm.height() as f64;
+            let px = pm
+                .pixel(p.x.round() as u32, (h - p.y).round() as u32)
+                .expect("pixel")
+                .demultiply();
+            px.alpha() > 0 && px.red() > 200 && px.green() < 60
+        };
+        // Neither drawn filled nor picked inside.
+        assert!(!red_at(&app, centre));
+        assert_eq!(app.hit_test(centre), None);
+        // A document that fills open curves fills the arc.
+        let fill_open = |app: &mut crate::app::App, on: bool| {
+            let mut metadata = app.doc().metadata.clone();
+            metadata.fill_open_curves = on;
+            app.run(Command::SetMetadata { metadata });
+        };
+        fill_open(&mut app, true);
+        assert!(red_at(&app, centre));
+        assert_eq!(app.hit_test(centre), Some(id));
+        fill_open(&mut app, false);
+        // A pie is closed: filled.
+        let ShapeKind::Ellipse {
+            rect,
+            arc: Some(mut a),
+        } = app.doc().find_shape(id).expect("shape").kind.clone()
+        else {
+            panic!("an arc");
+        };
+        a.pie = true;
+        app.run(Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Ellipse { rect, arc: Some(a) },
+        });
+        assert!(red_at(&app, centre + Vec2::new(5.0, -8.0)));
+        assert_eq!(app.hit_test(centre + Vec2::new(5.0, -8.0)), Some(id));
+    }
+
     #[test]
     fn polygon_nodes_move_together() {
         let s = Shape::new(

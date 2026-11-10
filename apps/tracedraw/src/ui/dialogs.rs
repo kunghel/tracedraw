@@ -92,6 +92,15 @@ pub struct ExportState {
     /// JPEG and TIFF: the colours written, an index into
     /// [`EXPORT_COLOR_MODES`] (0 RGB, 1 CMYK, 2 Grayscale; #1763).
     pub color_mode: usize,
+    /// The file chosen in the Save dialog before the options were shown
+    /// (File > Export on the desktop): OK writes it, its extension
+    /// following the format chosen. `None`: OK asks where to save (the
+    /// presets for the web and office, the browser, Android).
+    pub target: Option<std::path::PathBuf>,
+    /// "Do not show this dialog again" as ticked in the dialog: it
+    /// becomes Options > Global > File Formats' setting on OK only, so
+    /// Cancel leaves the setting as it was.
+    pub dont_show: bool,
 }
 
 impl Default for ExportState {
@@ -123,6 +132,8 @@ impl Default for ExportState {
             size_unit: 0,
             scale: 1.0,
             color_mode: 0,
+            target: None,
+            dont_show: false,
         }
     }
 }
@@ -457,7 +468,7 @@ pub struct PrintState {
     pub gutter_y: f64,
     /// The order of several pages per sheet: 0 across, 1 down the
     /// columns of each sheet, 2 down each column through every sheet
-    /// (#1658, [`crate::imposition::PageOrder`]).
+    /// (#1658), 3 cut and stack ([`crate::imposition::PageOrder`]).
     pub page_order: usize,
     /// The layout preset chosen (#1796), empty for none.
     pub layout_preset: String,
@@ -830,6 +841,8 @@ pub struct PrintMergeState {
     /// step (0 when "continually increment" is off), digits, and the end
     /// value when one is set (#791).
     pub adding_number: NumberForm,
+    /// The Add Column form's settings for a random number field.
+    pub adding_random: RandomForm,
     /// The Go to Record field.
     pub go_to: String,
     /// The folder picture cells are looked for in first (the Print Merge
@@ -839,6 +852,33 @@ pub struct PrintMergeState {
     pub cells: Option<crate::print_merge::CellRange>,
     /// A drag selecting in the grid: what it selects and where it began.
     pub grid_drag: Option<(crate::print_merge::GridDrag, (usize, usize))>,
+}
+
+/// The settings of a random number field being added (see
+/// [`PrintMergeState::adding_random`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RandomForm {
+    pub min: i64,
+    pub max: i64,
+    pub digits: u32,
+    pub prefix: String,
+    pub unique: bool,
+    /// Records to make when there are fewer (0: none), so random numbers
+    /// merge without a data file.
+    pub records: usize,
+}
+
+impl Default for RandomForm {
+    fn default() -> Self {
+        RandomForm {
+            min: 1,
+            max: 1000,
+            digits: 1,
+            prefix: String::new(),
+            unique: true,
+            records: 0,
+        }
+    }
 }
 
 /// The counter of a number field being added (see
@@ -1043,12 +1083,7 @@ pub struct EncodeState {
 
 pub use crate::ui::font_manager::FontManagerState;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PaletteEditorState {
-    pub palette: usize,
-    pub selected: Option<usize>,
-    pub name: String,
-}
+pub use crate::ui::palette_editor::PaletteEditorState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
@@ -1079,6 +1114,12 @@ pub enum Dialog {
     /// Multipage View, in the document's units.
     PageSpacing {
         value: f64,
+    },
+    /// View > Pages in Multipage View (#1440): every page, or the pages
+    /// of `range` ("1-3, 7").
+    MultipagePages {
+        all: bool,
+        range: String,
     },
     InsertPage {
         count: u32,
@@ -1121,6 +1162,9 @@ pub enum Dialog {
     EditFill(Box<crate::ui::edit_fill::EditFillState>),
     /// The Outline Pen dialog (F12, #357).
     OutlinePen(Box<crate::ui::outline_pen::OutlinePenState>),
+    /// The Arrowhead editor: one end's head, size, offset, mirror and
+    /// rotation (#1210).
+    ArrowheadEditor(Box<crate::ui::arrowhead_editor::ArrowheadEditorState>),
     /// Text > Edit Text: the text of a text object in a box of its own
     /// (#355).
     EditText {
@@ -1207,6 +1251,12 @@ pub enum Dialog {
     /// Launch > TraceCut, Tools > TraceCut.
     TraceCut(Box<crate::tracecut::TraceCutState>),
     PaletteEditor(PaletteEditorState),
+    /// A picture dropped on a palette bar: how many of its colours go
+    /// to that palette (#2137).
+    PictureColors(Box<crate::ui::picture_colors::PictureColorsState>),
+    /// Reset Palette of the document palette: keep only the colours the
+    /// drawing uses?
+    ConfirmResetPalette,
     NewDocument(crate::new_document::NewDocState),
     About,
     /// File > GitHub.
@@ -1666,6 +1716,12 @@ pub fn show(app: &mut App, ctx: &Context) {
             app.dialog = *back;
         }
     }
+    // The Arrowhead editor asked for beside an arrowhead list: on the
+    // Outline Pen dialog's outline when that dialog is open (it comes
+    // back after), else on the selection's.
+    if let Some(end) = crate::ui::arrowhead_editor::take_request(ctx) {
+        app.open_arrowhead_editor(end);
+    }
     // The Edit Fill dialog closed some other way (Esc): its preview goes.
     if app.fill_preview && !matches!(app.dialog, Dialog::EditFill(_)) {
         app.end_edit_fill_preview();
@@ -1790,6 +1846,61 @@ pub fn show(app: &mut App, ctx: &Context) {
                 });
                 if ok_cancel(ui, &mut close) {
                     app.set_page_spacing(u.to_mm(*value));
+                }
+            });
+        }
+        Dialog::MultipagePages { all, range } => {
+            let count = app.doc().pages.len();
+            window(ctx, tr("dialog.multipage_pages")).show(ctx, |ui| {
+                ui.radio_value(all, true, tr("dialog.multipage_all_pages"))
+                    .rich_tip(crate::ui::tips::pair(
+                        "dialog.multipage_all_pages",
+                        "dialog.multipage_all_pages_desc",
+                    ));
+                ui.horizontal(|ui| {
+                    ui.radio_value(all, false, tr("dialog.multipage_some_pages"))
+                        .rich_tip(crate::ui::tips::pair(
+                            "dialog.multipage_some_pages",
+                            "dialog.multipage_some_pages_desc",
+                        ));
+                    let field = ui
+                        .add(
+                            egui::TextEdit::singleline(range)
+                                .hint_text("1-3, 7")
+                                .desired_width(140.0),
+                        )
+                        .rich_tip(crate::ui::tips::pair(
+                            "dialog.multipage_some_pages",
+                            "dialog.multipage_some_pages_desc",
+                        ));
+                    if field.changed() {
+                        *all = false;
+                    }
+                });
+                let shown = tracedraw_core::document::parse_page_range(range, count).len();
+                let bad = !*all && shown == 0;
+                ui.label(
+                    egui::RichText::new(if bad {
+                        tr("dialog.multipage_no_page")
+                    } else if *all {
+                        trf("dialog.multipage_n_pages", &[("n", &count.to_string())])
+                    } else {
+                        trf("dialog.multipage_n_pages", &[("n", &shown.to_string())])
+                    })
+                    .size(12.0)
+                    .color(Tokens::text_dim()),
+                );
+                if ok_cancel(ui, &mut close) {
+                    if bad {
+                        // Nothing to show: the dialog stays open.
+                        close = false;
+                    } else {
+                        let r = if *all { String::new() } else { range.clone() };
+                        app.set_multipage_pages(&r);
+                        if !app.multipage {
+                            app.set_multipage(true);
+                        }
+                    }
                 }
             });
         }
@@ -2014,6 +2125,9 @@ pub fn show(app: &mut App, ctx: &Context) {
         }
         Dialog::Options => crate::ui::options::options_dialog(app, ctx, &mut close),
         Dialog::OutlinePen(st) => crate::ui::outline_pen::dialog(app, ctx, st, &mut close),
+        Dialog::ArrowheadEditor(st) => {
+            crate::ui::arrowhead_editor::dialog(app, ctx, st, &mut close)
+        }
         Dialog::EditFill(st) => crate::ui::edit_fill::dialog(app, ctx, st, &mut close),
         Dialog::PdfText(st) => crate::ui::pdf_import_dialog::dialog(app, ctx, st, &mut close),
         Dialog::PdfPages(st) => crate::ui::pdf_pages::dialog(app, ctx, st, &mut close),
@@ -2085,64 +2199,47 @@ pub fn show(app: &mut App, ctx: &Context) {
             let install = app.installer.get();
             match app.updates.get() {
                 UpdateState::Available(r) if install != crate::updates::InstallState::Idle => {
-                    use crate::updates::InstallState;
-                    let (text, buttons): (String, Vec<String>) = match &install {
-                        InstallState::Downloading { done, total } => {
-                            ctx.request_repaint_after(std::time::Duration::from_millis(200));
-                            let mb = |b: u64| format!("{:.1}", b as f64 / 1_048_576.0);
-                            (
-                                trf(
-                                    "updates.downloading",
-                                    &[
-                                        ("new", &r.version),
-                                        ("done", &mb(*done)),
-                                        ("total", &mb(*total)),
-                                    ],
-                                ),
-                                vec![close_label.clone()],
-                            )
-                        }
-                        InstallState::Installed(v) => (
-                            trf("updates.installed", &[("new", v)]),
-                            vec![tr("updates.restart"), tr("updates.later")],
-                        ),
-                        InstallState::Ready(v) => (
-                            trf("updates.ready", &[("new", v)]),
-                            vec![tr("updates.restart_install"), tr("updates.later")],
-                        ),
-                        InstallState::Failed(e) => (
-                            trf("updates.install_failed", &[("error", e)]),
-                            vec![tr("updates.download"), close_label.clone()],
-                        ),
-                        InstallState::Idle => (String::new(), vec![close_label.clone()]),
-                    };
-                    let labels: Vec<&str> = buttons.iter().map(String::as_str).collect();
-                    match crate::ui::chrome::message_box(
-                        ctx,
-                        crate::ui::chrome::MessageIcon::Info,
-                        &text,
-                        &labels,
-                    ) {
-                        Some(0) if matches!(install, InstallState::Failed(_)) => {
-                            let url = r.download.clone().unwrap_or_else(|| r.page.clone());
-                            app.open_url(&url);
-                            close = true;
+                    use crate::ui::update_progress::{self, Action};
+                    let phase = update_progress::phase(&install, app.installer.progress());
+                    let picked = phase
+                        .as_ref()
+                        .and_then(|p| update_progress::dialog(ctx, version, &r.version, p));
+                    match picked {
+                        // Back to Idle: the box offers Install again.
+                        Some(Action::Cancel) => {
+                            app.installer.cancel();
                         }
                         // Restart: exit the usual way (asking about unsaved
                         // drawings); the new version starts when the
                         // program has exited.
-                        Some(0)
-                            if matches!(
-                                install,
-                                InstallState::Installed(_) | InstallState::Ready(_)
-                            ) =>
-                        {
+                        Some(Action::Restart) => {
                             if app.installer.arm() {
                                 app.request_exit();
                             }
                             close = true;
                         }
-                        Some(_) => close = true,
+                        Some(Action::TryAgain) => {
+                            match r.installer.clone().zip(crate::updates::install_target()) {
+                                Some((package, target)) => app.installer.start(
+                                    r.version.clone(),
+                                    package,
+                                    target,
+                                    Some(ctx.clone()),
+                                ),
+                                None => {
+                                    let url = r.download.clone().unwrap_or_else(|| r.page.clone());
+                                    app.open_url(&url);
+                                    close = true;
+                                }
+                            }
+                        }
+                        Some(Action::Website) => {
+                            let url = r.download.clone().unwrap_or_else(|| r.page.clone());
+                            app.open_url(&url);
+                            close = true;
+                        }
+                        // A download goes on behind the card.
+                        Some(Action::Later | Action::Close) => close = true,
                         None => {}
                     }
                 }
@@ -2894,7 +2991,26 @@ pub fn show(app: &mut App, ctx: &Context) {
         }
         Dialog::FontManager(st) => font_manager_dialog(app, ctx, st, &mut close),
         Dialog::TraceCut(st) => crate::ui::tracecut::dialog(app, ctx, st, &mut close),
-        Dialog::PaletteEditor(st) => palette_editor_dialog(app, ctx, st, &mut close),
+        Dialog::PaletteEditor(st) => crate::ui::palette_editor::dialog(app, ctx, st, &mut close),
+        Dialog::PictureColors(st) => crate::ui::picture_colors::dialog(app, ctx, st, &mut close),
+        Dialog::ConfirmResetPalette => {
+            let (reset, cancel) = (tr("palette.reset"), tr("dialog.cancel"));
+            match crate::ui::chrome::message_box(
+                ctx,
+                crate::ui::chrome::MessageIcon::Question,
+                &tr("palette.reset_question"),
+                &[&reset, &cancel],
+            ) {
+                Some(0) => {
+                    if app.has_document() {
+                        app.reset_document_palette();
+                    }
+                    close = true;
+                }
+                Some(_) => close = true,
+                None => {}
+            }
+        }
         Dialog::NewDocument(st) => {
             crate::new_document::new_document_dialog(app, ctx, st, &mut close)
         }
@@ -3938,25 +4054,53 @@ fn export_preview_box(app: &App, ui: &mut Ui, st: &ExportState, size: egui::Vec2
     preview.bytes
 }
 
-/// Ask for the file and export to it with `st`'s choices.
-pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
+/// File > Export asks for the file before the options (the folder, the
+/// name and the format, from the extension), as on every desktop; in a
+/// browser, which has no Save dialog (the file is downloaded under the
+/// name given), and on Android, whose picker makes the document as soon
+/// as it is chosen, the options come first and OK asks for the file.
+pub const EXPORT_FILE_FIRST: bool = !crate::files::WEB && !crate::files::ANDROID;
+
+/// The extensions a file of the export format `ext` takes, the usual one
+/// first: "jpg" and "jpeg" for JPEG, "tif" and "tiff" for TIFF, "html"
+/// and "htm" for HTML.
+pub fn export_extensions(ext: &'static str) -> Vec<&'static str> {
+    match export_patterns(ext) {
+        "*.*" => vec![ext],
+        patterns => patterns
+            .split(';')
+            .map(|p| p.trim_start_matches("*."))
+            .collect(),
+    }
+}
+
+/// The export format (an index into [`EXPORT_FORMATS`]) whose extension
+/// `path` has, in any case; `None` for a name without one of them.
+pub fn export_format_of(path: &std::path::Path) -> Option<usize> {
+    let typed = path.extension()?.to_str()?.to_ascii_lowercase();
+    EXPORT_FORMATS
+        .iter()
+        .position(|(_, e)| export_extensions(e).contains(&typed.as_str()))
+}
+
+/// The Save dialog of an export with `st`: every format, the one of `st`
+/// (the last one used) first, so the extension of the name typed decides
+/// (live test of 0.41: only the format of Options > File Formats was
+/// offered); the drawing's name with that format's extension; the folder
+/// exported to last, else the drawing's own (#1817).
+fn export_save_dialog(app: &App, st: &ExportState) -> crate::files::Dialog {
     let (name, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
     let stem = app
         .file
         .as_ref()
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "Graphic1".into());
-    let st = st.clone();
-    // The chosen format first, then every other one, so the file dialog
-    // offers them all (live test of 0.41: only the format of Options >
-    // File Formats was offered); the extension of the name typed decides.
-    let mut dialog = crate::files::Dialog::new().add_filter(name, &[ext]);
+    let mut dialog = crate::files::Dialog::new().add_filter(name, &export_extensions(ext));
     for (other, e) in EXPORT_FORMATS.iter() {
         if *e != ext {
-            dialog = dialog.add_filter(*other, &[*e]);
+            dialog = dialog.add_filter(*other, &export_extensions(e));
         }
     }
-    // The folder exported to last, else the drawing's own (#1817).
     let folder = app
         .settings
         .last_export_dir
@@ -3972,28 +4116,122 @@ pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
     if let Some(dir) = folder {
         dialog = dialog.set_directory(dir);
     }
-    dialog
-        .set_file_name(format!("{stem}.{ext}"))
-        .save_file(app, move |app, path| {
-            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-                app.settings.last_export_dir = Some(dir.to_path_buf());
+    dialog.set_file_name(format!("{stem}.{ext}"))
+}
+
+/// The file `path` chosen in an export's Save dialog: its folder is the
+/// next export's, its extension picks the format (with the choices that
+/// format was exported with last), and a name without an export format's
+/// extension gets the extension of `st`'s format. Returns the path to
+/// write.
+pub fn export_chosen_file(
+    app: &mut App,
+    st: &mut ExportState,
+    path: std::path::PathBuf,
+) -> std::path::PathBuf {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        app.settings.last_export_dir = Some(dir.to_path_buf());
+    }
+    match export_format_of(&path) {
+        Some(i) => {
+            if i != st.format || st.script.is_some() {
+                app.recall_export_format(st, i);
             }
-            let mut st = st.clone();
-            if let Some(typed) = path.extension().and_then(|e| e.to_str()) {
-                if let Some(i) = EXPORT_FORMATS
-                    .iter()
-                    .position(|(_, e)| e.eq_ignore_ascii_case(typed))
-                {
-                    if i != st.format {
-                        app.recall_export_format(&mut st, i);
-                    }
+            path
+        }
+        None => {
+            let ext = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1;
+            match path.extension().filter(|e| !e.is_empty()) {
+                // "Poster.v2": the extension is added, not put instead.
+                Some(_) => {
+                    let mut name = path.into_os_string();
+                    name.push(".");
+                    name.push(ext);
+                    name.into()
                 }
+                None => path.with_extension(ext),
             }
-            match crate::export::export(app, &path, &st) {
-                Ok(msg) => app.status = msg,
-                Err(e) => app.status = format!("{}: {e}", tr("dialog.export_failed")),
-            }
-        });
+        }
+    }
+}
+
+/// Write the export of `st` to `path` and say so on the status line.
+/// With `last_options` (the options dialog was not shown) the status line
+/// says the last options were used and how to see them, and a click on it
+/// opens Options > Global > File Formats, where the setting is.
+pub fn write_export(app: &mut App, path: &std::path::Path, st: &ExportState, last_options: bool) {
+    match crate::export::export(app, path, st) {
+        Ok(msg) if last_options => {
+            log::info!("{msg}");
+            app.status = tr("status.exported_last_options");
+            app.status_opens_options = Some((app.status.clone(), OptionsPage::FileFormats));
+        }
+        Ok(msg) => app.status = msg,
+        Err(e) => app.status = format!("{}: {e}", tr("dialog.export_failed")),
+    }
+}
+
+/// Ask for the file and export to it with `st`'s choices: the options
+/// were chosen first (the presets for the web and office, the browser,
+/// Android) or are not shown (`last_options`).
+pub fn export_with_file_dialog(app: &mut App, st: &ExportState, last_options: bool) {
+    let st = st.clone();
+    export_save_dialog(app, &st).save_file(app, move |app, path| {
+        let mut st = st;
+        let path = export_chosen_file(app, &mut st, path);
+        write_export(app, &path, &st, last_options);
+    });
+}
+
+/// File > Export on the desktop: the Save dialog with every format, then
+/// the Export dialog with the options of the format chosen and the file
+/// in its title; OK writes it, Cancel writes nothing. With `skip` ("Do not
+/// show this dialog again" on, Shift not held) the file is written right
+/// after the Save dialog with the last options instead.
+pub fn choose_export_file(app: &mut App, st: ExportState, skip: bool) {
+    export_save_dialog(app, &st).save_file(app, move |app, path| {
+        let mut st = st;
+        let path = export_chosen_file(app, &mut st, path);
+        if skip {
+            write_export(app, &path, &st, true);
+            app.keep_export_choices(&st);
+        } else {
+            st.target = Some(path);
+            st.dont_show = app.settings.formats.skip_export_dialog;
+            app.dialog = Dialog::Export(st);
+        }
+    });
+}
+
+/// The file chosen before the options takes the extension of the format
+/// chosen in them (a script filter's first one): "Graphic1.svg" becomes
+/// "Graphic1.png" when PNG is chosen. An extension the format already
+/// takes ("photo.jpeg" for JPEG) stays.
+pub fn sync_export_target(app: &App, st: &mut ExportState) {
+    let Some(path) = st.target.as_mut() else {
+        return;
+    };
+    let wanted: Vec<String> = match &st.script {
+        Some(name) => app
+            .settings
+            .script_filters
+            .iter()
+            .find(|f| &f.name == name && f.export)
+            .map(|f| f.extensions.clone())
+            .unwrap_or_default(),
+        None => export_extensions(EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    };
+    let Some(first) = wanted.first() else {
+        return;
+    };
+    let has = path.extension().and_then(|e| e.to_str());
+    if has.is_some_and(|h| wanted.iter().any(|w| w.eq_ignore_ascii_case(h))) {
+        return;
+    }
+    path.set_extension(first);
 }
 
 /// The Export dialog's presets (#547): a list of every saved one, each
@@ -4191,16 +4429,27 @@ pub(crate) fn preset_label(p: &crate::prefs::ExportPreset) -> String {
     }
 }
 
+/// The Export dialog's title: the file chosen before it ("Export
+/// Graphic1.png"), else Export, or Export for Web for that preset.
+pub fn export_dialog_title(st: &ExportState) -> String {
+    if st.web {
+        return tr("menu.file.export_for_web");
+    }
+    match st.target.as_ref().and_then(|p| p.file_name()) {
+        Some(name) => trf(
+            "dialog.export_file_title",
+            &[("name", &name.to_string_lossy())],
+        ),
+        None => tr("dialog.export"),
+    }
+}
+
 fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut bool) {
-    window(
-        ctx,
-        if st.web {
-            tr("menu.file.export_for_web")
-        } else {
-            tr("dialog.export")
-        },
-    )
-    .show(ctx, |ui| {
+    // The file chosen follows the format chosen in the dialog.
+    sync_export_target(app, st);
+    // Named apart from its title, which follows the file chosen.
+    let win = window(ctx, export_dialog_title(st)).id_salt("export_dialog");
+    win.show(ctx, |ui| {
         ui.horizontal_top(|ui| {
             let estimate = export_preview_box(app, ui, st, egui::vec2(260.0, 300.0));
             ui.add_space(14.0);
@@ -4482,16 +4731,6 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                 if !st.selection_only {
                     export_range_fields(app, ui, st);
                 }
-                if !st.web {
-                    ui.checkbox(
-                        &mut app.settings.formats.skip_export_dialog,
-                        tr("dialog.skip_export_dialog"),
-                    )
-                    .rich_tip(crate::ui::tips::pair(
-                        "dialog.skip_export_dialog",
-                        "dialog.skip_export_dialog_tip",
-                    ));
-                }
                 if !scripted && export_keeps_properties(EXPORT_FORMATS[st.format].1) {
                     egui::Grid::new("exp_props").num_columns(2).show(ui, |ui| {
                         ui.label(tr("dialog.title"));
@@ -4519,38 +4758,70 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                 }
             });
         });
+        // File > Export's own setting, in sight where it takes effect; it
+        // is kept on OK only (it was the preference itself, so a tick
+        // undone by Cancel stayed, and every export after went straight
+        // to the file).
+        if st.remember {
+            ui.add_space(4.0);
+            ui.checkbox(&mut st.dont_show, tr("dialog.skip_export_dialog"))
+                .rich_tip(crate::ui::tips::pair(
+                    "dialog.skip_export_dialog",
+                    "dialog.skip_export_dialog_tip",
+                ));
+        }
         if ok_cancel(ui, close) {
-            let filter = st.script.as_ref().and_then(|n| {
-                app.settings
-                    .script_filters
-                    .iter()
-                    .find(|f| &f.name == n && f.export)
-                    .cloned()
-            });
-            if let Some(filter) = filter {
-                let stem = app
-                    .file
-                    .as_ref()
-                    .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                    .unwrap_or_else(|| "Graphic1".into());
-                let ext = filter.extensions.first().cloned().unwrap_or_default();
-                let exts: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
-                let st2 = st.clone();
-                crate::files::Dialog::new()
-                    .add_filter(filter.label(), &exts)
-                    .set_file_name(format!("{stem}.{ext}"))
-                    .save_file(app, move |app, path| {
-                        match app.export_with_script(&path, &filter, &st2) {
-                            Ok(msg) => app.status = msg,
-                            Err(e) => app.status = format!("{}: {e}", tr("dialog.export_failed")),
-                        }
-                    });
-                return;
-            }
-            export_with_file_dialog(app, st);
-            app.keep_export_choices(st);
+            export_dialog_ok(app, st);
         }
     });
+}
+
+/// OK in the Export dialog: "Do not show this dialog again" becomes the
+/// preference (File > Export only), then the file chosen before the
+/// dialog is written, or, without one, the Save dialog asks for it.
+pub fn export_dialog_ok(app: &mut App, st: &ExportState) {
+    if st.remember && app.settings.formats.skip_export_dialog != st.dont_show {
+        app.settings.formats.skip_export_dialog = st.dont_show;
+        app.settings.save();
+    }
+    let filter = st.script.as_ref().and_then(|n| {
+        app.settings
+            .script_filters
+            .iter()
+            .find(|f| &f.name == n && f.export)
+            .cloned()
+    });
+    if let Some(filter) = filter {
+        let (label, exts) = (filter.label(), filter.extensions.clone());
+        let write = move |app: &mut App, path: std::path::PathBuf, st: &ExportState| match app
+            .export_with_script(&path, &filter, st)
+        {
+            Ok(msg) => app.status = msg,
+            Err(e) => app.status = format!("{}: {e}", tr("dialog.export_failed")),
+        };
+        if let Some(path) = st.target.clone() {
+            write(app, path, st);
+            return;
+        }
+        let stem = app
+            .file
+            .as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "Graphic1".into());
+        let ext = exts.first().cloned().unwrap_or_default();
+        let patterns: Vec<&str> = exts.iter().map(String::as_str).collect();
+        let st2 = st.clone();
+        crate::files::Dialog::new()
+            .add_filter(label, &patterns)
+            .set_file_name(format!("{stem}.{ext}"))
+            .save_file(app, move |app, path| write(app, path, &st2));
+        return;
+    }
+    match st.target.clone() {
+        Some(path) => write_export(app, &path, st, false),
+        None => export_with_file_dialog(app, st, false),
+    }
+    app.keep_export_choices(st);
 }
 
 /// Export: the pages to export (the current page, every page or a list
@@ -4911,11 +5182,12 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                             "print.order_across",
                             "print.order_down",
                             "print.order_down_sheets",
+                            "print.order_cut_stack",
                         ];
                         ui.label(tr("print.page_order"))
                             .rich_tip(crate::ui::tips::keyed("print.page_order"));
                         crate::ui::keynav::ComboBox::from_id_salt("print_page_order")
-                            .selected_text(tr(orders[st.page_order.min(2)]))
+                            .selected_text(tr(orders[st.page_order.min(orders.len() - 1)]))
                             .width(170.0)
                             .show_ui(ui, |ui| {
                                 for (i, k) in orders.iter().enumerate() {
@@ -4925,8 +5197,8 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
                             })
                             .response
                             .rich_tip(crate::ui::tips::pair(
-                                orders[st.page_order.min(2)],
-                                &format!("{}_desc", orders[st.page_order.min(2)]),
+                                orders[st.page_order.min(orders.len() - 1)],
+                                &format!("{}_desc", orders[st.page_order.min(orders.len() - 1)]),
                             ));
                         ui.end_row();
                     }
@@ -5863,12 +6135,13 @@ fn print_tab_issues(
     }
 }
 
-fn merge_kind_names() -> [String; 4] {
+fn merge_kind_names() -> [String; 5] {
     [
         tr("merge.kind_text"),
         tr("merge.kind_number"),
         tr("merge.kind_image"),
         tr("merge.kind_qr"),
+        tr("merge.kind_random"),
     ]
 }
 
@@ -5883,8 +6156,49 @@ fn merge_kind_of(index: usize) -> crate::print_merge::FieldKind {
         },
         2 => FieldKind::Image,
         3 => FieldKind::Qr,
+        4 => {
+            let f = RandomForm::default();
+            FieldKind::Random {
+                min: f.min,
+                max: f.max,
+                digits: f.digits,
+                prefix: f.prefix,
+                unique: f.unique,
+                seed: crate::print_merge::new_seed(),
+            }
+        }
         _ => FieldKind::Text,
     }
+}
+
+/// A random number field's range, digits, text before and No repeats.
+fn merge_random_fields(
+    ui: &mut egui::Ui,
+    min: &mut i64,
+    max: &mut i64,
+    digits: &mut u32,
+    prefix: &mut String,
+    unique: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        ui.add(crate::ui::field::NumField::new(min).prefix(tr("merge.random_min")))
+            .rich_tip(crate::ui::tips::keyed("merge.random_min"));
+        ui.add(crate::ui::field::NumField::new(max).prefix(tr("merge.random_max")))
+            .rich_tip(crate::ui::tips::keyed("merge.random_max"));
+    });
+    ui.horizontal(|ui| {
+        ui.add(
+            crate::ui::field::NumField::new(digits)
+                .range(1..=12)
+                .prefix(tr("merge.digits")),
+        )
+        .rich_tip(crate::ui::tips::keyed("merge.digits"));
+        ui.label(tr("merge.prefix"));
+        ui.add(egui::TextEdit::singleline(prefix).desired_width(90.0))
+            .rich_tip(crate::ui::tips::keyed("merge.prefix"));
+    });
+    ui.checkbox(unique, tr("merge.random_unique"))
+        .rich_tip(crate::ui::tips::keyed("merge.random_unique"));
 }
 
 /// A number field's Format: 1, 2, 3 / A, B, C / a, b, c / Custom, and for
@@ -6067,6 +6381,25 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                         .rich_tip_always(crate::ui::tips::keyed("merge.end_value"));
                     });
                 }
+                // A random number field: its range and, with no data
+                // file, how many records to make.
+                if *kind == 4 {
+                    let f = &mut st.adding_random;
+                    merge_random_fields(
+                        ui,
+                        &mut f.min,
+                        &mut f.max,
+                        &mut f.digits,
+                        &mut f.prefix,
+                        &mut f.unique,
+                    );
+                    ui.add(
+                        crate::ui::field::NumField::new(&mut f.records)
+                            .range(0..=crate::print_merge::MAX_RANGE_RECORDS)
+                            .prefix(tr("merge.random_records")),
+                    )
+                    .rich_tip(crate::ui::tips::keyed("merge.random_records"));
+                }
                 ui.horizontal(|ui| {
                     let ok = !name.trim().is_empty();
                     if ui
@@ -6098,6 +6431,19 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                         f.digits,
                         f.format,
                         (f.use_end && f.increment).then_some(f.end),
+                    );
+                } else if kind == 4 {
+                    let f = st.adding_random.clone();
+                    pm::add_random_field(
+                        st,
+                        &name,
+                        f.min,
+                        f.max,
+                        f.digits,
+                        &f.prefix,
+                        f.unique,
+                        pm::new_seed(),
+                        f.records,
                     );
                 } else {
                     pm::add_field(st, &name);
@@ -6146,6 +6492,7 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                         FieldKind::Number { .. } => 1,
                                         FieldKind::Image => 2,
                                         FieldKind::Qr => 3,
+                                        FieldKind::Random { .. } => 4,
                                     };
                                     let mut pick = cur;
                                     crate::ui::keynav::ComboBox::from_id_salt(("merge_kind", i))
@@ -6190,6 +6537,24 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                         )
                                         .rich_tip_always(crate::ui::tips::keyed("merge.digits"));
                                     }
+                                    if let FieldKind::Random {
+                                        min,
+                                        max,
+                                        digits,
+                                        prefix,
+                                        unique,
+                                        seed,
+                                    } = &mut st.kinds[i]
+                                    {
+                                        merge_random_fields(ui, min, max, digits, prefix, unique);
+                                        if ui
+                                            .button(tr("merge.random_draw"))
+                                            .rich_tip(crate::ui::tips::keyed("merge.random_draw"))
+                                            .clicked()
+                                        {
+                                            *seed = pm::new_seed();
+                                        }
+                                    }
                                 });
                                 ui.separator();
                             }
@@ -6199,6 +6564,11 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
         }
         if let Some(i) = remove_field {
             pm::remove_field(st, i);
+        }
+        // A range without repeats too small for the records: said here,
+        // and the merge is not made.
+        if let Err(why) = pm::check(st) {
+            ui.label(egui::RichText::new(why).color(egui::Color32::from_rgb(0xC4, 0x2B, 0x1C)));
         }
         st.current = st.current.min(st.rows.len().saturating_sub(1));
         // The records: a grid, or the current one as a form.
@@ -6222,7 +6592,7 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                                     c: usize,
                                     w: f32|
                          -> Option<egui::Response> {
-                            if matches!(pm::kind_of(st, c), FieldKind::Number { .. }) {
+                            if pm::kind_of(st, c).is_generated() {
                                 let v = values
                                     .get(r)
                                     .and_then(|row| row.get(c))
@@ -6572,7 +6942,7 @@ pub(crate) fn tab_kind_key(k: tracedraw_core::TabKind) -> &'static str {
 }
 
 /// `v` with at most three decimals and no trailing zeros.
-fn trim_number(v: f64) -> String {
+pub(crate) fn trim_number(v: f64) -> String {
     let s = format!("{v:.3}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -7208,196 +7578,30 @@ fn font_manager_dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, 
     crate::ui::font_manager::dialog(app, ctx, st, close);
 }
 
-fn palette_editor_dialog(
-    app: &mut App,
-    ctx: &Context,
-    st: &mut PaletteEditorState,
-    close: &mut bool,
-) {
-    window(ctx, tr("menu.window.palette_editor")).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(tr("dialog.palette"));
-            let names: Vec<String> = app.palettes.iter().map(|p| p.display_name()).collect();
-            crate::ui::keynav::ComboBox::from_id_salt("pal_sel")
-                .selected_text(names.get(st.palette).cloned().unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for (i, n) in names.iter().enumerate() {
-                        if ui.selectable_label(st.palette == i, n).clicked() {
-                            st.palette = i;
-                            st.selected = None;
-                        }
-                    }
-                })
-                .response
-                .rich_tip(crate::ui::tips::pair(
-                    "dialog.palette",
-                    "dialog.palette_pick_desc",
-                ));
-            if ui
-                .button(tr("dialog.new_palette"))
-                .rich_tip(crate::ui::tips::pair(
-                    "dialog.new_palette_tip",
-                    "dialog.new_palette_desc",
-                ))
-                .clicked()
-            {
-                app.palettes.push(crate::palette::Palette {
-                    name: format!("Palette {}", app.palettes.len() + 1),
-                    key: "",
-                    colors: Vec::new(),
-                    builtin: false,
-                    path: None,
-                });
-                st.palette = app.palettes.len() - 1;
-            }
-        });
-        // A locked palette shows as a built-in one does: nothing changes
-        // it until it is unlocked in the Palette Manager (#1343).
-        let locked = app.palette_locked(st.palette);
-        let mut save_as = None;
-        let Some(pal) = app.palettes.get_mut(st.palette) else {
-            *close = true;
-            return;
-        };
-        let read_only = pal.builtin || locked;
-        if !read_only {
-            ui.horizontal(|ui| {
-                ui.label(tr("dialog.name"));
-                ui.text_edit_singleline(&mut pal.name)
-                    .rich_tip(crate::ui::tips::pair(
-                        "dialog.name",
-                        "dialog.palette_name_desc",
-                    ));
-            });
-        }
-        let cols = 12;
-        egui::ScrollArea::vertical()
-            .max_height(180.0)
-            .show(ui, |ui| {
-                egui::Grid::new("pal_grid")
-                    .spacing(egui::vec2(2.0, 2.0))
-                    .show(ui, |ui| {
-                        for (i, (_, c)) in pal.colors.iter().enumerate() {
-                            let [r, g, b] = c.to_rgb8();
-                            let (rect, resp) = ui
-                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                            ui.painter()
-                                .rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
-                            if st.selected == Some(i) {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    2.0,
-                                    egui::Stroke::new(2.0, egui::Color32::BLACK),
-                                    egui::StrokeKind::Outside,
-                                );
-                            }
-                            let resp = resp.rich_tip_with(|| {
-                                format!("{}\n{}", pal.colors[i].0, tr("dialog.palette_swatch_desc"))
-                            });
-                            if resp.clicked() {
-                                st.selected = Some(i);
-                            }
-                            if (i + 1) % cols == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-            });
-        if let Some(i) = st.selected {
-            if let Some((name, c)) = pal.colors.get_mut(i) {
-                ui.horizontal(|ui| {
-                    // A built-in or locked palette's names stay as they are.
-                    let mut shown = name.clone();
-                    let name = if read_only { &mut shown } else { name };
-                    ui.add_enabled(!read_only, egui::TextEdit::singleline(name))
-                        .rich_tip(crate::ui::tips::pair(
-                            "dialog.color_name",
-                            "dialog.color_name_desc",
-                        ));
-                    let mut edited = *c;
-                    let changed = crate::ui::tips::tip_over(
-                        ui,
-                        crate::ui::tips::pair("dialog.color_value", "dialog.color_value_desc"),
-                        |ui| crate::ui::color_picker::color_button(ui, &mut edited),
-                    );
-                    if changed && !read_only {
-                        *c = edited;
-                    }
-                    ui.label(crate::app::color_description(*c));
-                });
-            }
-        }
-        if !read_only {
-            ui.horizontal(|ui| {
-                if ui
-                    .button(tr("dialog.add_color"))
-                    .rich_tip(crate::ui::tips::keyed("dialog.add_color"))
-                    .clicked()
-                {
-                    let n = pal.colors.len() + 1;
-                    pal.colors
-                        .push((format!("Color {n}"), Color::rgb8(128, 128, 128)));
-                    st.selected = Some(pal.colors.len() - 1);
-                }
-                if let Some(i) = st.selected {
-                    if ui
-                        .button(tr("dialog.remove_color"))
-                        .rich_tip(crate::ui::tips::keyed("dialog.remove_color"))
-                        .clicked()
-                        && i < pal.colors.len()
-                    {
-                        pal.colors.remove(i);
-                        st.selected = None;
-                    }
-                }
-                if ui
-                    .button(tr("dialog.save_palette"))
-                    .rich_tip(crate::ui::tips::keyed("dialog.save_palette"))
-                    .clicked()
-                {
-                    save_as = Some(pal.name.clone());
-                }
-            });
-        } else {
-            ui.label(
-                egui::RichText::new(tr(if pal.builtin {
-                    "dialog.builtin_palette_hint"
-                } else {
-                    "dialog.locked_palette_hint"
-                }))
-                .color(Tokens::text_dim())
-                .size(11.0),
-            );
-        }
-        // The save dialog, a download, or the system's save picker on
-        // Android (#1402); the palette keeps the file it was saved as.
-        if let Some(name) = save_as {
-            let index = st.palette;
-            crate::files::Dialog::new()
-                .add_filter(
-                    crate::palette::filter_label(&tr("file.palettes"), &["tdpal", "gpl"]),
-                    &["tdpal", "gpl"],
-                )
-                .set_file_name(format!("{name}.tdpal"))
-                .save_file(app, move |app, p| {
-                    let Some(pal) = app.palettes.get_mut(index) else {
-                        return;
-                    };
-                    match crate::palette::save_palette(pal, &p) {
-                        Ok(()) => pal.path = Some(p),
-                        Err(e) => app.status = e.to_string(),
-                    }
-                });
-        }
-        if ui
-            .button(tr("dialog.close"))
-            .rich_tip(crate::ui::tips::keyed("dialog.close"))
-            .clicked()
-        {
-            app.rebuild_palette();
-            *close = true;
-        }
-    });
+/// A palette editor entry's colour: a spot colour when `spot` (its ink
+/// named after the entry, the colour as its process stand-in; a spot
+/// colour keeps its stand-in and tint under the new name), otherwise the
+/// colour itself (a spot colour's process colour at its tint when it was
+/// one).
+pub(crate) fn palette_entry_color(name: &str, c: Color, spot: bool) -> Color {
+    match (spot, c) {
+        (
+            true,
+            Color::Spot {
+                tint, c, m, y, k, ..
+            },
+        ) => Color::Spot {
+            ink: crate::palette::spot_ink_id(name),
+            tint,
+            c,
+            m,
+            y,
+            k,
+        },
+        (true, other) => crate::palette::spot_color(name, other),
+        (false, s @ Color::Spot { .. }) => s.process(),
+        (false, other) => other,
+    }
 }
 
 #[cfg(test)]
@@ -7480,6 +7684,54 @@ pub(crate) mod tests {
     }
     use super::*;
 
+    #[test]
+    fn palette_entries_turn_into_spot_colours_and_back() {
+        let cmyk = Color::cmyk_pct(10.0, 20.0, 30.0, 40.0);
+        let spot = palette_entry_color("Spot_2_L", cmyk, true);
+        assert_eq!(spot, crate::palette::spot_color("Spot_2_L", cmyk));
+        // Renaming the entry renames its ink, the stand-in stays.
+        let renamed = palette_entry_color("Spot_4_F", spot, true);
+        let (Color::Spot { ink: a, c: ca, .. }, Color::Spot { ink: b, c: cb, .. }) =
+            (spot, renamed)
+        else {
+            panic!("not spot colours");
+        };
+        assert_ne!(a, b);
+        assert_eq!(b, crate::palette::spot_ink_id("Spot_4_F"));
+        assert!((ca - cb).abs() < 1e-6);
+        // A tint is kept under the new name.
+        let half = Color::Spot {
+            ink: 3,
+            tint: 0.5,
+            c: 0.0,
+            m: 1.0,
+            y: 0.0,
+            k: 0.0,
+        };
+        let Color::Spot { ink, tint, m, .. } = palette_entry_color("Rose", half, true) else {
+            panic!("not a spot colour");
+        };
+        assert_eq!(ink, crate::palette::spot_ink_id("Rose"));
+        assert_eq!((tint, m), (0.5, 1.0));
+        // Unticked, the entry is its process colour at its tint.
+        assert_eq!(
+            palette_entry_color("Rose", half, false),
+            Color::Cmyk {
+                c: 0.0,
+                m: 0.5,
+                y: 0.0,
+                k: 0.0
+            }
+        );
+        let back = palette_entry_color("Spot_4_F", renamed, false);
+        let Color::Cmyk { c, m, y, k } = back else {
+            panic!("not CMYK: {back:?}");
+        };
+        assert!((c - 0.1).abs() < 1e-3 && (m - 0.2).abs() < 1e-3);
+        assert!((y - 0.3).abs() < 1e-3 && (k - 0.4).abs() < 1e-3);
+        assert_eq!(palette_entry_color("Plain", cmyk, false), cmyk);
+    }
+
     /// Every dialog, as the menus open it.
     pub(crate) fn all_dialogs(app: &App) -> Vec<Dialog> {
         let layer = app.active_layer().unwrap_or(tracedraw_core::LayerId(1));
@@ -7497,6 +7749,10 @@ pub(crate) mod tests {
             },
             Dialog::GoToPage { page: 1 },
             Dialog::PageSpacing { value: 30.0 },
+            Dialog::MultipagePages {
+                all: false,
+                range: "1-2".into(),
+            },
             Dialog::InsertPage {
                 count: 1,
                 after: true,
@@ -7600,6 +7856,13 @@ pub(crate) mod tests {
             Dialog::FontManager(FontManagerState::default()),
             Dialog::TraceCut(Box::default()),
             Dialog::PaletteEditor(PaletteEditorState::default()),
+            Dialog::PictureColors(Box::new(
+                crate::ui::picture_colors::PictureColorsState::new(
+                    crate::ui::picture_colors::PaletteTarget::Document,
+                    vec![[200, 20, 20], [20, 20, 200], [250, 250, 250]],
+                ),
+            )),
+            Dialog::ConfirmResetPalette,
             Dialog::NewDocument(crate::new_document::NewDocState::from_settings(
                 &Default::default(),
                 "n".into(),
@@ -7726,6 +7989,82 @@ pub(crate) mod tests {
         assert_eq!(tabs(&app).len(), 1, "{:?}", tabs(&app));
     }
 
+    /// Add Column with Random number makes the field and, with Records,
+    /// the records, with no data file; the grid shows the numbers drawn,
+    /// Configure Columns edits the field and Draw Again draws new ones; a
+    /// range too small for No repeats is said in the dialog.
+    #[test]
+    fn the_merge_dialog_adds_a_random_number_field() {
+        use crate::print_merge::FieldKind;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut st = PrintMergeState {
+            adding: Some(("Ticket".into(), 4)),
+            ..Default::default()
+        };
+        st.adding_random = RandomForm {
+            min: 1,
+            max: 50,
+            digits: 3,
+            prefix: "T".into(),
+            unique: true,
+            records: 20,
+        };
+        app.dialog = Dialog::PrintMerge(st);
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = frame_texts(&ctx, &mut app, Vec::new());
+        }
+        let add = texts
+            .iter()
+            .find(|(t, _)| *t == tr("merge.add"))
+            .map(|(_, p)| *p)
+            .expect("Add is drawn");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: add,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_texts(&ctx, &mut app, vec![egui::Event::PointerMoved(add)]);
+        frame_texts(&ctx, &mut app, vec![press(true)]);
+        frame_texts(&ctx, &mut app, vec![press(false)]);
+        let texts = frame_texts(&ctx, &mut app, Vec::new());
+        let Dialog::PrintMerge(st) = &mut app.dialog else {
+            panic!("the dialog closed");
+        };
+        assert_eq!(st.headers, ["Ticket"]);
+        assert_eq!(st.rows.len(), 20);
+        assert!(matches!(
+            st.kinds[0],
+            FieldKind::Random {
+                min: 1,
+                max: 50,
+                digits: 3,
+                unique: true,
+                ..
+            }
+        ));
+        let drawn = crate::print_merge::values(st);
+        assert!(drawn
+            .iter()
+            .all(|r| r[0].starts_with('T') && r[0].len() == 4));
+        assert!(
+            texts.iter().any(|(t, _)| *t == drawn[0][0]),
+            "the grid shows them"
+        );
+        // Too small a range for No repeats: said in the dialog.
+        if let FieldKind::Random { max, .. } = &mut st.kinds[0] {
+            *max = 10;
+        }
+        st.configure = true;
+        let why = crate::print_merge::check(st).expect_err("too small");
+        let texts = frame_texts(&ctx, &mut app, Vec::new());
+        assert!(texts.iter().any(|(t, _)| *t == why), "{why}");
+        assert!(texts.iter().any(|(t, _)| *t == tr("merge.random_draw")));
+        assert!(texts.iter().any(|(t, _)| *t == tr("merge.random_unique")));
+    }
+
     /// A drag from one cell of the Print Merge grid to another selects the
     /// block between; Delete empties it, Delete (the button) removes its
     /// records and Add puts as many empty ones after it (#501).
@@ -7816,6 +8155,50 @@ pub(crate) mod tests {
         assert_eq!(app.doc().metadata.page_spacing, Some(15.0));
         app.undo();
         assert_eq!(app.page_spacing(), 30.0);
+    }
+
+    /// View > Pages in Multipage View: OK keeps the range in the drawing
+    /// (one undo step) and turns the view on; a range naming no page of
+    /// the drawing keeps the dialog open; All pages clears it (#1440).
+    #[test]
+    fn the_multipage_pages_dialog_keeps_the_range_and_shows_the_view() {
+        let mut app = App::headless();
+        for _ in 0..4 {
+            app.insert_page(true);
+        }
+        assert_eq!(app.doc().pages.len(), 5);
+        let ctx = crate::theme::ui_context();
+        app.dialog = Dialog::MultipagePages {
+            all: false,
+            range: "9-12".into(),
+        };
+        frame(&ctx, &mut app, false);
+        frame(&ctx, &mut app, true);
+        assert!(
+            matches!(app.dialog, Dialog::MultipagePages { .. }),
+            "no page in the range: the dialog stays"
+        );
+        app.dialog = Dialog::MultipagePages {
+            all: false,
+            range: "2-3, 5".into(),
+        };
+        frame(&ctx, &mut app, false);
+        frame(&ctx, &mut app, true);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.multipage);
+        assert_eq!(app.doc().metadata.multipage_pages, "2-3, 5");
+        assert_eq!(app.multipage_page_indices(), vec![1, 2, 4]);
+        assert_eq!(app.multipage_layout().len(), 3);
+        app.dialog = Dialog::MultipagePages {
+            all: true,
+            range: "2-3, 5".into(),
+        };
+        frame(&ctx, &mut app, false);
+        frame(&ctx, &mut app, true);
+        assert_eq!(app.doc().metadata.multipage_pages, "");
+        assert_eq!(app.multipage_layout().len(), 5);
+        app.undo();
+        assert_eq!(app.doc().metadata.multipage_pages, "2-3, 5");
     }
 
     #[test]
@@ -7920,6 +8303,73 @@ pub(crate) mod tests {
         assert_ne!(ctx.layer_id_at(egui::pos2(5.0, 5.0)), Some(blocker));
     }
 
+    /// The file chosen in the Save dialog picks the export format by its
+    /// extension, in any case and with the other spellings ("jpeg",
+    /// "TIFF"); a name without an export format's extension gets the
+    /// format's; and a format chosen in the options afterwards changes
+    /// the extension, one the format takes staying as typed.
+    #[test]
+    fn the_exported_file_follows_the_format() {
+        use std::path::{Path, PathBuf};
+        let at = |ext: &str| EXPORT_FORMATS.iter().position(|f| f.1 == ext).expect(ext);
+        assert_eq!(export_format_of(Path::new("a/photo.JPEG")), Some(at("jpg")));
+        assert_eq!(export_format_of(Path::new("scan.TIFF")), Some(at("tif")));
+        assert_eq!(export_format_of(Path::new("page.htm")), Some(at("html")));
+        assert_eq!(export_format_of(Path::new("logo.svg")), Some(at("svg")));
+        assert_eq!(export_format_of(Path::new("Poster.v2")), None);
+        assert_eq!(export_format_of(Path::new("Poster")), None);
+        assert_eq!(export_extensions("jpg"), ["jpg", "jpeg"]);
+        assert_eq!(export_extensions("svg"), ["svg"]);
+        let mut app = App::headless();
+        let mut st = ExportState {
+            format: at("svg"),
+            remember: true,
+            ..ExportState::default()
+        };
+        // The extension typed picks the format.
+        let p = export_chosen_file(&mut app, &mut st, PathBuf::from("/x/photo.jpeg"));
+        assert_eq!((p, st.format), (PathBuf::from("/x/photo.jpeg"), at("jpg")));
+        assert_eq!(app.settings.last_export_dir, Some(PathBuf::from("/x")));
+        // None, or one of no export format: the format's is added.
+        let p = export_chosen_file(&mut app, &mut st, PathBuf::from("/x/Poster"));
+        assert_eq!(p, PathBuf::from("/x/Poster.jpg"));
+        let p = export_chosen_file(&mut app, &mut st, PathBuf::from("/x/Poster.v2"));
+        assert_eq!(p, PathBuf::from("/x/Poster.v2.jpg"));
+        assert_eq!(st.format, at("jpg"));
+        // The options' format decides the extension.
+        st.target = Some(PathBuf::from("/x/photo.jpeg"));
+        sync_export_target(&app, &mut st);
+        assert_eq!(st.target, Some(PathBuf::from("/x/photo.jpeg")), "kept");
+        st.format = at("png");
+        sync_export_target(&app, &mut st);
+        assert_eq!(st.target, Some(PathBuf::from("/x/photo.png")));
+        st.format = at("tif");
+        sync_export_target(&app, &mut st);
+        assert_eq!(st.target, Some(PathBuf::from("/x/photo.tif")));
+        assert!(export_dialog_title(&st).contains("photo.tif"));
+        // An installed script filter: its own extension.
+        app.settings
+            .script_filters
+            .push(crate::scripting::ScriptFilter {
+                name: "Plotter".into(),
+                extensions: vec!["hpgl".into()],
+                import: false,
+                export: true,
+                source: String::new(),
+            });
+        st.script = Some("Plotter".into());
+        sync_export_target(&app, &mut st);
+        assert_eq!(st.target, Some(PathBuf::from("/x/photo.hpgl")));
+        // No file chosen yet (the browser, Android, the presets): the
+        // dialog keeps its plain title.
+        let plain = ExportState::default();
+        assert_eq!(export_dialog_title(&plain), tr("dialog.export"));
+        assert_eq!(
+            export_dialog_title(&ExportState::web()),
+            tr("menu.file.export_for_web")
+        );
+    }
+
     #[test]
     fn the_export_list_puts_the_common_formats_first() {
         let order = export_format_order();
@@ -8021,6 +8471,128 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// One frame of `show` with `events`, as the accessibility tree sees
+    /// it: each widget's role, label, whether it is enabled and its id.
+    fn frame_widgets(
+        ctx: &Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+    ) -> Vec<(egui::accesskit::Role, String, bool, egui::accesskit::NodeId)> {
+        ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| show(app, &ui.ctx().clone()));
+        out.textures_delta.clear();
+        out.platform_output
+            .accesskit_update
+            .map(|u| {
+                u.nodes
+                    .iter()
+                    .map(|(id, n)| {
+                        (
+                            n.role(),
+                            n.label().unwrap_or_default().to_string(),
+                            !n.is_disabled(),
+                            *id,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn click(id: egui::accesskit::NodeId) -> egui::Event {
+        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::Click,
+            target_node: id,
+            target_tree: egui::accesskit::TreeId::ROOT,
+            data: None,
+        })
+    }
+
+    /// The update progress dialog: a progress bar and Cancel while the
+    /// file downloads, Cancel greyed while it is checked, Restart Now and
+    /// Later when the update is ready, Try Again and the website after a
+    /// failure. Cancel stops the download and the box offers Install
+    /// again.
+    #[test]
+    fn the_update_dialog_shows_the_progress_and_the_buttons_of_each_step() {
+        use crate::updates::{InstallState, Package, Release, UpdateState};
+        use egui::accesskit::{NodeId, Role};
+        type Widgets = [(Role, String, bool, NodeId)];
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let release = Release {
+            version: "9.0.0".into(),
+            page: "https://example.org/r".into(),
+            download: None,
+            installer: Some(Package {
+                url: "https://example.org/a.AppImage".into(),
+                sha256: "0".repeat(64),
+                size: 3 << 20,
+            }),
+        };
+        *app.updates.state.lock().expect("lock") = UpdateState::Available(release);
+        app.dialog = Dialog::Updates;
+        let shown = |app: &mut App, install: InstallState| {
+            *app.installer.state.lock().expect("lock") = install;
+            frame_widgets(&ctx, app, Vec::new());
+            frame_widgets(&ctx, app, Vec::new())
+        };
+        let button = |w: &Widgets, label: &str| {
+            w.iter()
+                .find(|(r, l, _, _)| *r == Role::Button && l == label)
+                .map(|(_, _, enabled, id)| (*enabled, *id))
+        };
+        let bar = |w: &Widgets| w.iter().any(|(r, _, _, _)| *r == Role::ProgressIndicator);
+        let downloading = InstallState::Downloading {
+            done: 1 << 20,
+            total: 3 << 20,
+        };
+        let w = shown(&mut app, downloading.clone());
+        assert!(bar(&w), "a progress bar: {w:?}");
+        assert_eq!(button(&w, "Cancel").map(|b| b.0), Some(true), "{w:?}");
+        assert!(button(&w, "Restart Now").is_none());
+        let w = shown(&mut app, InstallState::Checking);
+        assert_eq!(button(&w, "Cancel").map(|b| b.0), Some(false), "greyed");
+        assert!(!bar(&w), "a moving bar, not a share");
+        let w = shown(&mut app, InstallState::Installing);
+        assert_eq!(button(&w, "Cancel").map(|b| b.0), Some(false), "greyed");
+        let w = shown(&mut app, InstallState::Installed("9.0.0".into()));
+        assert!(button(&w, "Restart Now").is_some_and(|b| b.0), "{w:?}");
+        assert!(button(&w, "Later").is_some_and(|b| b.0));
+        assert!(button(&w, "Cancel").is_none() && !bar(&w));
+        let w = shown(&mut app, InstallState::Ready("9.0.0".into()));
+        assert!(button(&w, "Restart Now").is_some() && button(&w, "Later").is_some());
+        let w = shown(
+            &mut app,
+            InstallState::Failed("the download answered 404".into()),
+        );
+        assert!(button(&w, "Try Again").is_some(), "{w:?}");
+        assert!(button(&w, "Download from the website").is_some());
+        // Later closes the box.
+        let w = shown(&mut app, InstallState::Installed("9.0.0".into()));
+        let (_, later) = button(&w, "Later").expect("Later");
+        frame_widgets(&ctx, &mut app, vec![click(later)]);
+        assert!(matches!(app.dialog, Dialog::None), "Later closed it");
+        // Cancel: the download stops, the box stays and offers Install.
+        app.dialog = Dialog::Updates;
+        let w = shown(&mut app, downloading);
+        let (_, cancel) = button(&w, "Cancel").expect("Cancel");
+        frame_widgets(&ctx, &mut app, vec![click(cancel)]);
+        assert_eq!(app.installer.get(), InstallState::Idle);
+        assert!(matches!(app.dialog, Dialog::Updates), "still open");
+        let w = frame_widgets(&ctx, &mut app, Vec::new());
+        assert!(!bar(&w));
+        assert!(button(&w, "Install").is_some() || button(&w, "Download").is_some());
     }
 }
 

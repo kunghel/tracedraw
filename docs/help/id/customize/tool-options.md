@@ -36,7 +36,16 @@ ada di bilah properti masing-masing alat.
   layar yang dikalibrasi; nonaktif, 96 piksel per inci.
 - [[options.wheel_center_mouse]] (nonaktif): zum dengan roda membawa titik di bawah
   penunjuk ke tengah tampilan, bersama penunjuknya.
+- [[options.smooth_zoom]] (aktif): satu takik roda melakukan zoom dalam luncuran
+  singkat, bukan lompatan; makin cepat roda diputar, makin singkat. Nonaktif,
+  tiap takik langsung melakukan zoom.
+- [[options.wheel_zoom_step]] seberapa besar satu takik memperbesar atau
+  memperkecil, 1 sampai 100 persen (awalnya 15 %).
 - [[options.pan_right_button]] [[options.zoom_out]] atau [[options.context_menu]] (awalnya).
+- [[options.pan_inertia]] (nonaktif): geseran yang dilepas saat penunjuk masih
+  bergerak membuat tampilan terus meluncur ke arah yang sama lalu melambat.
+  Klik atau roda menghentikannya. Berlaku untuk alat Geser, tombol tengah dan
+  dua jari.
 
 ## Tangan bebas/Bézier {#curves}
 

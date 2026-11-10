@@ -19,6 +19,14 @@ herramienta [[tool.pick]] selecciona su objeto; con la herramienta
 la mueve. Las sombras aparecen en los PDF exportados e impresos, con su color,
 opacidad y difuminado.
 
+Un doble clic en una sombra con la herramienta [[tool.pick]] elige la
+herramienta [[tool.drop_shadow]] para su objeto, con los tiradores de la sombra
+en la página y sus ajustes en la barra de propiedades. Haga clic con el botón
+derecho en un objeto con sombra y elija [[context.edit_shadow]], o use el mismo
+botón en la sección de la sombra del panel Propiedades, para lo mismo. Un
+objeto con sombra propia siempre se selecciona con un clic en él, también donde
+cae encima la sombra de otro objeto.
+
 ## Ajustes {#settings}
 
 En la barra de propiedades:

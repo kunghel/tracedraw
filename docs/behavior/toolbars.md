@@ -5,6 +5,25 @@ the bundled interface font. Toolbars,
 panels, palettes, the status bar and dialog bodies are `#F4F4F4`; light
 lines between bands are `#D8D8D8`.
 
+## Icon buttons
+
+Every icon button (toolbox, standard toolbar, property bar and its
+toggles such as Portrait and Landscape, the Outline Pen's picture
+buttons) has four looks, from one place in the theme
+(`Tokens::icon_button`):
+
+- Plain: no fill, no frame.
+- Hovered: a light blue fill (`#CCE8FF`) with a blue frame (`#99D1FF`).
+- On (the active tool, a toggle pressed in): white with a sharp 1 px
+  accent frame (`#0078D7`).
+- On and hovered: the light blue fill with the accent frame.
+
+The dark themes use the picked row's blue for the fill of a button that
+is on and a lighter blue (`#5CB2FF`) for its frame; high contrast uses
+the desktop's highlight and hot-track colours
+(`theme::theme_tests::icon_buttons_have_four_distinct_looks`,
+`theme::theme_tests::the_on_frame_contrasts_with_the_panel`).
+
 ## Menu bar
 
 A 24 px `#D8D8D8` band. Titles are 13 px, the first 11 px from the edge
@@ -156,8 +175,8 @@ split by thin lines:
    and, behind its arrow, Zoom to Selected, to All Objects, to Page, to
    Page Width, to Page Height and levels from 10% to 1600%. Full-screen
    preview.
-6. Show Rulers, Show Grid, Show Guidelines: toggles drawn pressed (white
-   with a grey frame) while on.
+6. Show Rulers, Show Grid, Show Guidelines: toggles drawn pressed while
+   on (see Icon buttons above).
 7. Snap Off (Alt+Q), pressed while snapping is off; Snap To with the
    snapping list.
 8. Options (the TraceDraw options); Panels (a window with a side panel),

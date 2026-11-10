@@ -79,6 +79,17 @@ groups.
 [[menu.effects > menu.effects.flatten]] makes the effects permanent: a bitmap
 keeps what it shows, and a vector object becomes a bitmap.
 
+### On all pages
+
+In a drawing of several pages, the dialog box of an effect shows an
+[[dialog.fx_all_pages]] box while a picture is selected. With it ticked, OK
+gives the effect to every picture on every page as well, in one undo step.
+Locked pictures, and pictures on locked layers, stay as they are.
+
+[[menu.effects > menu.effects.all_pages]] does the same with the effects the
+selected picture already has, effects without a dialog box included: every
+other picture takes the same list of effects, in one undo step.
+
 ## The Effect Picker {#effect-picker}
 
 [[menu.effects > menu.effects.picker]] opens a window that stays open while

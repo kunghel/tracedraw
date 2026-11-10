@@ -24,6 +24,7 @@ versies.
 
 ## Hoogtepunten van recente versies {#highlights}
 
+- **CNC-gereedschapsbanen, exporteren en selecteren.** [[menu.tools > menu.tools.tracecut]] maakt G-code voor een CNC-frees en tekent ringen, dozen met vingerverbindingen en gezette bakken; [[menu.file > menu.file.export]] vraagt eerst om het bestand en toont daarna de opties van het formaat, en [[menu.file > menu.file.export_with_options]] toont ze altijd; [[menu.edit > menu.edit.select_similar]] en [[menu.edit > menu.edit.invert_selection]] wijzigen de selectie; [[menu.object > menu.object.insert > menu.object.add_dimensions]] maat de selectie; procedurele vullingen, OpenType-knoppen en een Laotiaanse interface zijn nieuw.
 - **Tegenoverliggende pagina's en gekoppelde tekst.** [[menu.layout > menu.layout.facing_pages]] toont de pagina's naast elkaar als spreads; [[menu.text > menu.text.link_content]] koppelt teksten zodat typen in de ene de andere wijzigt; een PDF met meerdere pagina's vraagt welke pagina's te importeren; [[menu.edit > menu.edit.step_and_repeat]] kan een pagina met kopieën vullen.
 - **Aanraken en telefoons.** Shift-, Ctrl- en Alt-knoppen op de standaardbalk
   blijven ingedrukt voor een vinger; op Android blijft de interface vrij van

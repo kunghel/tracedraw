@@ -284,6 +284,20 @@ impl App {
         self.duplicate_offset = saved;
     }
 
+    /// Overprint the fill (`fill`) or the outline of the painted objects
+    /// of the selection (#1200).
+    pub fn set_overprint(&mut self, fill: bool, on: bool) {
+        let shapes: Vec<_> = self.paint_targets().iter().map(|s| s.id).collect();
+        if shapes.is_empty() {
+            return;
+        }
+        self.run(Command::SetOverprint {
+            shapes,
+            fill: fill.then_some(on),
+            outline: (!fill).then_some(on),
+        });
+    }
+
     pub fn set_locked(&mut self, locked: bool) {
         if self.selection.is_empty() {
             return;
@@ -636,28 +650,56 @@ impl App {
                 return;
             }
         };
-        // Print-size pictures too (#2000).
-        let img = match crate::files::decode_picture(&bytes) {
-            Ok(i) => i.into_rgba8(),
+        // Print-size pictures too (#2000); a CMYK JPEG or TIFF keeps its
+        // inks and shows them as the drawing's CMYK colours show (#2163).
+        let picture = match crate::bitmap_file::read(&bytes) {
+            Ok(p) => p,
             Err(e) => {
                 self.status = crate::i18n::trf(
                     "status.could_not_read",
-                    &[("p", &path.display().to_string()), ("e", &e.to_string())],
+                    &[("p", &path.display().to_string()), ("e", &e)],
                 );
                 return;
             }
         };
         let name = path.file_name().and_then(|n| n.to_str()).map(String::from);
-        // At the resolution the file records, else 96 dpi.
-        let dpi = crate::image_dpi::resolution(&bytes);
-        if let Some(id) = self.place_image_at(img, name, dpi) {
-            // Remember where it came from: Image > Update from Link re-reads it.
-            self.run(Command::SetObjectData {
-                shape: id,
-                data: vec![("bitmap.link".into(), path.display().to_string())],
-            });
-            self.select(vec![id]);
+        // At the resolution the file records, else 96 dpi; a picture its
+        // orientation stands upright has its across and down swapped.
+        let dpi = crate::image_dpi::resolution(&bytes).map(|(x, y)| {
+            if crate::files::picture_turns_sideways(&bytes) {
+                (y, x)
+            } else {
+                (x, y)
+            }
+        });
+        let planes = picture.planes;
+        let Some(id) = self.place_image_at(picture.rgba, name, dpi) else {
+            return;
+        };
+        if let Some(planes) = planes {
+            // The pixels as the object keeps them, with the inks beside.
+            let png = match self.doc().find_shape(id).map(|s| &s.kind) {
+                Some(ShapeKind::Bitmap { png, .. }) => Some(png.clone()),
+                _ => None,
+            };
+            if let Some(png) = png {
+                let inks =
+                    tracedraw_core::picture_inks::PictureInks::cmyk(png.as_slice(), planes.into());
+                if let Err(e) = self.engine.amend(&Command::SetPictureInks {
+                    shape: id,
+                    cmyk: true,
+                    inks: Some(Box::new(inks)),
+                }) {
+                    self.status = e.to_string();
+                }
+            }
         }
+        // Remember where it came from: Image > Update from Link re-reads it.
+        self.run(Command::SetObjectData {
+            shape: id,
+            data: vec![("bitmap.link".into(), path.display().to_string())],
+        });
+        self.select(vec![id]);
     }
 
     /// Double-clicking the Rectangle tool: a rectangle exactly the size of
@@ -732,6 +774,7 @@ impl App {
                     width_px: img.width(),
                     height_px: img.height(),
                     size_mm: size.width.max(size.height),
+                    placement: Default::default(),
                 },
             )),
         });
@@ -898,6 +941,38 @@ fn group_leaves(s: &Shape) -> Vec<Shape> {
     out
 }
 
+/// The area an object covers on the page, as an outline read with the
+/// even-odd rule, for the shaping operations: text and curves set to the
+/// nonzero rule (#1919) without holes where their contours overlap, and
+/// a group as the union of its objects. A group's outline is its
+/// objects' outlines one after the other, so where two of them overlapped
+/// the even-odd rule left a hole, and Weld, Trim and Intersect cut it
+/// out of their results (#555).
+fn shaping_area(s: &Shape) -> tracedraw_core::BezPath {
+    use tracedraw_core::shaping::{nonzero_as_even_odd, overlay, overlay_with, FillRule, Op};
+    let own = |s: &Shape| {
+        if matches!(s.kind, ShapeKind::Text { .. }) || s.fill_rule == FillRule::NonZero {
+            nonzero_as_even_odd(&s.page_path())
+        } else {
+            s.page_path()
+        }
+    };
+    let leaves = group_leaves(s);
+    if leaves.is_empty() {
+        return own(s);
+    }
+    // Each object's area as clean contours (outer ones turning one way,
+    // holes the other), so all of them together fill, with the nonzero
+    // rule, what any of them covers: one pass instead of a weld for each.
+    let empty = tracedraw_core::BezPath::new();
+    let mut all = tracedraw_core::BezPath::new();
+    for leaf in &leaves {
+        let clean = overlay(&own(leaf), &empty, Op::Weld);
+        all.extend(clean.elements().iter().copied());
+    }
+    overlay_with(&all, &empty, Op::Weld, FillRule::NonZero)
+}
+
 /// What a picture target shows, for a shaping result to hold: the picture
 /// itself, or what a cropped picture (a clip frame holding one) holds,
 /// placed on the page. `None` for other objects.
@@ -1054,18 +1129,11 @@ impl App {
         let target = kept;
         let mut used: Vec<tracedraw_core::ShapeId> = ordered.iter().map(|s| s.id).collect();
         used.extend(&slicer_ids);
-        // The area each object fills: a curve that fills nonzero (#1919)
-        // as the even-odd outline of that area, so its overlaps are not
-        // read as holes.
-        let paths: Vec<tracedraw_core::BezPath> = ordered
-            .iter()
-            .map(|s| match s.fill_rule {
-                tracedraw_core::shaping::FillRule::NonZero => {
-                    tracedraw_core::shaping::nonzero_as_even_odd(&s.page_path())
-                }
-                tracedraw_core::shaping::FillRule::EvenOdd => s.page_path(),
-            })
-            .collect();
+        // The area each object fills: text and a curve that fills nonzero
+        // (#1919) as the even-odd outline of that area, so its overlaps
+        // are not read as holes, and a group as what its objects cover
+        // together (#555).
+        let paths: Vec<tracedraw_core::BezPath> = ordered.iter().map(shaping_area).collect();
         let open_result = open_target.then(|| {
             use tracedraw_core::shaping::{cut_open, Keep};
             let regions: Vec<tracedraw_core::BezPath> = ordered
@@ -1138,10 +1206,10 @@ impl App {
                     return;
                 }
                 Shaping::Trim => {
-                    let mut p = target.page_path();
-                    for s in &ordered {
+                    let mut p = shaping_area(&target);
+                    for (s, cut) in ordered.iter().zip(&paths) {
                         if s.id != target.id {
-                            p = overlay(&p, &s.page_path(), Op::Trim);
+                            p = overlay(&p, cut, Op::Trim);
                         }
                     }
                     p
@@ -1275,7 +1343,7 @@ impl App {
                 ShapeKind::Path { path, closed: true },
             );
             let look = own.as_ref().unwrap_or(&attrs);
-            frame.fill = look.fill.clone();
+            frame.fill = look.fill.for_result(look.transform, &frame.page_path());
             frame.stroke = look.stroke.clone();
             frame.opacity = look.opacity;
             let contents = held
@@ -1308,13 +1376,9 @@ impl App {
                 // The result lies in page space: a mesh fill's nodes, kept
                 // in the object's own space, go there with it, or the mesh
                 // sat away from the result and its colour was lost (live
-                // test of 0.41).
-                shape.fill = match &attrs.fill {
-                    tracedraw_core::Fill::Mesh(m) => {
-                        tracedraw_core::Fill::Mesh(m.transformed(attrs.transform))
-                    }
-                    f => f.clone(),
-                };
+                // test of 0.41). A result the mesh does not cover takes its
+                // mean colour.
+                shape.fill = attrs.fill.for_result(attrs.transform, &shape.page_path());
                 shape.stroke = attrs.stroke.clone();
                 shape.opacity = attrs.opacity;
                 shape
@@ -1333,8 +1397,9 @@ impl App {
             // (#539).
             let cutters: Vec<tracedraw_core::BezPath> = ordered
                 .iter()
-                .filter(|s| s.id != attrs.id)
-                .map(Shape::page_path)
+                .zip(&paths)
+                .filter(|(s, _)| s.id != attrs.id)
+                .map(|(_, p)| p.clone())
                 .collect();
             let mut children = Vec::new();
             for leaf in &leaves {
@@ -1357,7 +1422,7 @@ impl App {
                             closed: true,
                         },
                     );
-                    piece.fill = leaf.fill.clone();
+                    piece.fill = leaf.fill.for_result(leaf.transform, &piece.page_path());
                     piece.stroke = leaf.stroke.clone();
                     piece.opacity = leaf.opacity;
                     children.push(piece);
@@ -1382,7 +1447,7 @@ impl App {
                     closed: true,
                 },
             );
-            shape.fill = first.fill.clone();
+            shape.fill = first.fill.for_result(first.transform, &shape.page_path());
             shape.stroke = first.stroke.clone();
             shape.opacity = first.opacity;
             shape
@@ -1542,6 +1607,84 @@ mod smoke_tests {
             .iter()
             .all(|s| s.page_path().bounding_box().y1 <= 10.0 + 1e-6));
         assert!(app.doc().find_shape(g).is_none() && app.doc().find_shape(front).is_none());
+    }
+
+    /// A live test of 0.41: Weld or Combine of objects with a mesh fill
+    /// lost the colour. A result the mesh covers keeps the mesh, in its
+    /// place on the page; one reaching past the mesh's grid takes its mean
+    /// colour, as Combine does.
+    #[test]
+    fn weld_and_combine_keep_a_mesh_fill_or_its_mean_colour() {
+        use tracedraw_core::{command::Command, Color, Fill, Mesh, Shape};
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        let meshed = |app: &mut App| {
+            let layer = app.active_layer().expect("layer");
+            let mut m = Mesh::new(Rect::new(0.0, 0.0, 20.0, 20.0), 1, 1, red);
+            for n in m.nodes.iter_mut().filter(|n| n.pos.x > 10.0) {
+                n.color = blue;
+            }
+            let mut s = Shape::new(
+                app.engine.new_shape_id(),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Mesh(m);
+            s.transform = tracedraw_core::geometry::Affine::translate((100.0, 100.0));
+            let id = s.id;
+            app.run(Command::AddShape { layer, shape: s });
+            id
+        };
+        let circle = |app: &mut App, r: Rect| {
+            let id = app
+                .new_shape(ShapeKind::Ellipse { rect: r, arc: None })
+                .expect("circle");
+            app.select(vec![id]);
+            app.apply_fill(Fill::Solid(Color::BLACK));
+            id
+        };
+        let colour_at = |app: &App, x: f64, y: f64| {
+            let pm = tracedraw_render::render_page_image(app.doc(), app.page, 25.4).expect("page");
+            let p = pm
+                .pixel(x as u32, (pm.height() as f64 - y) as u32)
+                .expect("pixel")
+                .demultiply();
+            (p.red(), p.green(), p.blue())
+        };
+        // Weld with a circle inside the square: the mesh, on the page.
+        let mut app = App::headless();
+        let sq = meshed(&mut app);
+        let inner = circle(&mut app, Rect::new(105.0, 105.0, 110.0, 110.0));
+        app.select(vec![inner, sq]);
+        app.shaping(crate::ops::Shaping::Weld);
+        let result = app.selected_shapes().first().cloned().expect("result");
+        assert!(matches!(result.fill, Fill::Mesh(_)), "{:?}", result.fill);
+        let (r, _, b) = colour_at(&app, 103.0, 110.0);
+        assert!(r > 200 && b < 60, "{r} {b}");
+        let (r, _, b) = colour_at(&app, 117.0, 110.0);
+        assert!(b > 200 && r < 60, "{r} {b}");
+        // Weld with a circle reaching out of it: the mesh's mean colour.
+        let mut app = App::headless();
+        let sq = meshed(&mut app);
+        let out = circle(&mut app, Rect::new(115.0, 105.0, 130.0, 115.0));
+        app.select(vec![out, sq]);
+        app.shaping(crate::ops::Shaping::Weld);
+        let result = app.selected_shapes().first().cloned().expect("result");
+        let purple = Color::rgb8(128, 0, 128);
+        assert_eq!(result.fill, Fill::Solid(purple));
+        assert_eq!(colour_at(&app, 127.0, 110.0), (128, 0, 128));
+        // Combine likewise, the meshed square on top giving its look.
+        let mut app = App::headless();
+        let other = circle(&mut app, Rect::new(140.0, 105.0, 150.0, 115.0));
+        let sq = meshed(&mut app);
+        app.select(vec![other, sq]);
+        app.combine();
+        let result = app.selected_shapes().first().cloned().expect("result");
+        assert_eq!(result.fill, Fill::Solid(purple));
+        assert_eq!(colour_at(&app, 145.0, 110.0), (128, 0, 128));
     }
 
     /// The sequence a user runs through: draw one of everything, then

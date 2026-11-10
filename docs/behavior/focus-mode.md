@@ -28,10 +28,15 @@ title leaves focus mode; a click on a step goes back to that group.
   works on its members.
 - Everything else is drawn at the "Visibility of inactive objects"
   (Tools > Options > TraceDraw > Edit, 0 to 100 %, default 20 %; Reset restores
-  it). The focused object is drawn again at full strength on top.
+  it). The focused object is drawn again at full strength on top. The
+  same setting fades the page while a clip frame's contents are edited.
+  At 0 % the rest of the page is not drawn at all, so a crowded page
+  costs nothing while it is hidden (#981).
 - Exports and printing are not affected.
 
 ## Formula
 
 Every pixel of the page is multiplied by `visibility / 100`, then the
 focused object is rendered over it with its parents' transformation.
+At 0 the page and its layers are skipped and only the focused object
+is rendered.

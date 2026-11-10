@@ -26,7 +26,10 @@
 - [[options.wheel_action]]：[[options.wheel_zoom]] 或 [[options.wheel_scroll]]。
 - [[options.zoom_relative_1to1]]（开启）：100% 缩放按校准的屏幕分辨率显示实际大小；关闭时为每英寸 96 像素。
 - [[options.wheel_center_mouse]]（关闭）：滚轮缩放会把指针下的位置连同指针移到视图中央。
+- [[options.smooth_zoom]]（开启）：滚轮每转一格以短暂的平滑过渡缩放，而不是跳变；滚轮转得越快，过渡越短。关闭时每格立即缩放。
+- [[options.wheel_zoom_step]]滚轮每格放大或缩小的幅度，1 到 100 百分比（初始为 15 %）。
 - [[options.pan_right_button]][[options.zoom_out]] 或 [[options.context_menu]]（初始）。
+- [[options.pan_inertia]]（关闭）：在指针仍在移动时松开平移，视图会沿同一方向继续滑动并逐渐停下。单击或滚动滚轮可停止。适用于平移工具、鼠标中键和双指。
 
 ## 手绘/贝塞尔 {#curves}
 

@@ -138,7 +138,7 @@ fn shapes_bottom_up(doc: &Document) -> Vec<Shape> {
 fn paints_inside(s: &Shape, fill_open: bool) -> bool {
     !matches!(s.fill, Fill::None)
         && !matches!(s.kind, ShapeKind::Text { .. })
-        && (fill_open || !matches!(s.kind, ShapeKind::Path { closed: false, .. }))
+        && (fill_open || !s.kind.is_open_curve())
 }
 
 /// The library ink and tint a fill paints with, when it is one.

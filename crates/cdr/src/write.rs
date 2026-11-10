@@ -633,6 +633,17 @@ fn cp1252(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// The one byte a letter of a version 12+ text record takes, or `None`
+/// when it must go out as a marked UTF-16 unit: the byte is the letter's
+/// own code point, so only U+0000 to U+00FF have one. The program that
+/// reads the files takes such a byte as that code point, not as a
+/// Windows-1252 byte: curly quotes written as Windows-1252 0x92 and 0x94
+/// showed as missing glyphs in its version 18 reader and vanished in
+/// its version 21 one (#2124).
+fn text_byte(c: char) -> Option<u8> {
+    u8::try_from(u32::from(c)).ok()
+}
+
 /// A layer or object name: UTF-16 from version 12, 8-bit before.
 fn name_bytes(v: Ver, s: &str) -> Vec<u8> {
     if v.unicode() {
@@ -2794,7 +2805,8 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
 /// 8): "RI", its length, 0, a 78-byte header (model 99, 1, size, 1 plane,
 /// 8 bits, stride, bytes, 64 at 62) and one byte per pixel, 255 opaque,
 /// rows bottom-up padded to 4 bytes.
-fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<Vec<u8>> {
+/// Returns the record and the image's width and height in pixels.
+pub(crate) fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<(Vec<u8>, u32, u32)> {
     let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
     let (w, h) = (pm.width(), pm.height());
     if w == 0 || h == 0 {
@@ -2889,7 +2901,7 @@ fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<Vec<u8>> {
             .zeros(12);
         b.bytes(&mask);
     }
-    Some(b.done())
+    Some((b.done(), w, h))
 }
 
 /// `loda`: header (length, argument count, offsets table, types table,
@@ -3246,10 +3258,10 @@ fn object_style_json(
 /// next bit up its italic.
 fn style_flags(sp: &TextSpan) -> u32 {
     let mut f = weight_code(sp);
-    if sp.underline {
+    if sp.underline.is_on() {
         f |= 1 << 18;
     }
-    if sp.strikethrough {
+    if sp.strikethrough.is_on() {
         f |= 1 << 24;
     }
     f
@@ -3373,8 +3385,8 @@ fn font_json(v: Ver, sp: Option<&TextSpan>, charset: u32, tech: &fonts::FaceTech
             (sp.size_pt * 254000.0 / 72.0).round() as i64,
             weight_member(sp),
             u8::from(sp.italic),
-            u8::from(sp.underline),
-            u8::from(sp.strikethrough),
+            u8::from(sp.underline.is_on()),
+            u8::from(sp.strikethrough.is_on()),
         ),
         None => ("Arial".to_string(), 254000 * 24 / 72, 64, 0, 0, 0),
     };
@@ -3979,6 +3991,7 @@ impl<'a> Writer<'a> {
             width_px,
             height_px,
             size_mm,
+            ..
         }) = fill
         {
             let key = (*width_px, *height_px, size_mm.to_bits());
@@ -4028,12 +4041,14 @@ impl<'a> Writer<'a> {
         id
     }
 
-    fn bitmap_id(&mut self, png: &[u8], size_mm: (f64, f64)) -> Option<u32> {
+    /// A new `bmp ` record for `png`: its id and the image's size in
+    /// pixels.
+    fn bitmap_id(&mut self, png: &[u8], size_mm: (f64, f64)) -> Option<(u32, u32, u32)> {
         let id = self.next_bitmap;
-        let rec = bmp_record(id, png, size_mm)?;
+        let (rec, w, h) = bmp_record(id, png, size_mm)?;
         self.next_bitmap += 1;
         self.bitmaps.push(rec);
-        Some(id)
+        Some((id, w, h))
     }
 
     /// The whole file: version chunks, bitmaps, the document tables, the
@@ -5000,25 +5015,20 @@ impl<'a> Writer<'a> {
                 bounds: None,
             };
         };
-        let (sx, sy) = {
-            let c = s.transform.as_coeffs();
-            (c[0].hypot(c[1]), c[2].hypot(c[3]))
-        };
-        let Some(image) = self.bitmap_id(png, (rect.width() * sx, rect.height() * sy)) else {
+        // The image's resolution gives it the size of the object's box,
+        // which the object's transform places and scales, as every bitmap
+        // of the files seen holds it; the picture's pixel size is the
+        // image's own (#1222). The resolution was taken from the size on
+        // the page, so a scaled picture's box and image disagreed, and the
+        // pixel size from the shape, which need not match its picture.
+        let Some((image, width_px, height_px)) = self.bitmap_id(png, (rect.width(), rect.height()))
+        else {
             return Placed {
                 nodes: Vec::new(),
                 bounds: None,
             };
         };
         let v = self.v;
-        let (width_px, height_px) = match &s.kind {
-            ShapeKind::Bitmap {
-                width_px,
-                height_px,
-                ..
-            } => (*width_px, *height_px),
-            _ => (0, 0),
-        };
         // The page box is the shape's as it stands; the record then
         // speaks in the image's own space, from the origin.
         let page_box = match crop {
@@ -5649,9 +5659,32 @@ impl<'a> Writer<'a> {
                 // A paragraph frame hangs from the object's (0, 0), its
                 // top left (`writes_frame` let only such frames through).
                 let frame = frame.filter(|_| self.writes_frame(s));
+                // Vertical text with its columns from the right goes out
+                // as files hold it (#1544): a horizontal line turned a
+                // quarter clockwise, set in the vertical form of its face,
+                // the family's name with a leading `@`.
+                let at_spans: Option<Vec<TextSpan>> =
+                    (para.vertical && para.columns_from_right() && frame.is_none()).then(|| {
+                        spans
+                            .iter()
+                            .map(|sp| {
+                                let mut sp = sp.clone();
+                                if !sp.font_family.starts_with('@') {
+                                    sp.font_family = format!("@{}", sp.font_family);
+                                }
+                                sp
+                            })
+                            .collect()
+                    });
+                let turn = if at_spans.is_some() {
+                    tracedraw_core::document::vertical_line_frame()
+                } else {
+                    Affine::IDENTITY
+                };
+                let spans = at_spans.as_deref().unwrap_or(spans);
                 let t = match frame {
                     Some(f) => s.transform * Affine::translate((origin.x, origin.y + f.height)),
-                    None => s.transform * Affine::translate(origin.to_vec2()),
+                    None => s.transform * Affine::translate(origin.to_vec2()) * turn,
                 };
                 self.has_text = true;
                 let record = if v.0 >= 16 {
@@ -5710,7 +5743,13 @@ impl<'a> Writer<'a> {
                 // The character settings of the first run, the width of
                 // the lines as the frame's one column (files give artistic
                 // text its line width there) and the alignment.
-                let width = s.local_path().bounding_box().width();
+                let lines_box = s.local_path().bounding_box();
+                // (A turned line runs down the box of the columns.)
+                let width = if at_spans.is_some() {
+                    lines_box.height()
+                } else {
+                    lines_box.width()
+                };
                 let character = format!(
                     r#"{},"frame":{{"equalWidthColumns":"1","rtlColumns":"0","columns":"{},0"}},"paragraph":{{"justify":"{}"}}"#,
                     spans
@@ -5903,7 +5942,8 @@ impl<'a> Writer<'a> {
     /// `txsm` of versions 7 to 15: one frame, a paragraph per line, one
     /// style per run (font, encoding, style flags, size and, when it
     /// differs from the object's, the fill), the text in UTF-16 from
-    /// version 12 and in Windows-1252 before.
+    /// version 12 (one byte for U+0000 to U+00FF) and in Windows-1252
+    /// before.
     /// The style id of a text format (versions 7 to 15), adding it to
     /// the style table when new.
     fn text_style(&mut self, f: TextFormat) -> u32 {
@@ -6078,19 +6118,21 @@ impl<'a> Writer<'a> {
             }
             let chars = text.chars().count();
             if v.unicode() {
-                // From version 12 a letter is one byte in Windows-1252
-                // unless bit 0 of the first byte of its 8-byte record marks
-                // it as a UTF-16 unit in two bytes. Text all in UTF-16 with
-                // no letter marked made the program that wrote the samples
-                // crash.
+                // From version 12 a letter of U+0000 to U+00FF is one byte
+                // (its code point) unless bit 0 of the first byte of its
+                // 8-byte record marks it as a UTF-16 unit in two bytes.
+                // Text all in UTF-16 with no letter marked made the
+                // program that wrote the samples crash. Letters Windows-1252
+                // holds above 0x7f but Latin-1 does not (curly quotes,
+                // dashes, the euro) go out marked too (#2124).
                 let mut descriptions = Buf::default();
                 let mut bytes = Vec::new();
                 for (i, c) in text.chars().enumerate() {
                     let number = record_of_letter.get(i).copied().unwrap_or(0);
-                    match cp1252(&c.to_string()) {
+                    match text_byte(c) {
                         Some(b) => {
                             descriptions.u8(0).u8(0).u8(number << 1).zeros(5);
-                            bytes.extend_from_slice(&b);
+                            bytes.push(b);
                         }
                         None => {
                             let unit = if (c as u32) <= 0xffff {
@@ -6130,9 +6172,9 @@ impl<'a> Writer<'a> {
     /// versions 16 to 18 and 1800 from 19 (#1698), one frame with the
     /// text's matrix, then a paragraph per line with the default style
     /// string (the first run's style and the alignment) and one record
-    /// per run whose style string the letters select; text in UTF-16
-    /// (16) or one byte per letter (17 on: Windows-1252, or UTF-8 for
-    /// letters it lacks).
+    /// per run whose style string the letters select; text one byte per
+    /// letter of U+0000 to U+00FF (its code point), other letters as
+    /// marked UTF-16 units.
     fn txsm16(
         &mut self,
         spans: &[TextSpan],
@@ -6281,24 +6323,22 @@ impl<'a> Writer<'a> {
             // The letters are one byte each from version 16 (files saved
             // for 16 hold them so, while their style strings are UTF-16;
             // UTF-16 letters in a version 16 file are read as half the
-            // text by the program that opens it), Windows-1252, except a
-            // letter Windows-1252 lacks (Cyrillic, Greek, most of Central
-            // European): bit 0 of its record's flags marks it as a UTF-16
-            // unit of two bytes, as from version 12 (#368). A letter beyond
-            // the 16-bit range goes out as "?".
+            // text by the program that opens it), the letter's code point
+            // for U+0000 to U+00FF, except a letter beyond them (Cyrillic,
+            // Greek, most of Central European, and the curly quotes,
+            // dashes and euro Windows-1252 puts in 0x80 to 0x9f, #2124):
+            // bit 0 of its record's flags marks it as a UTF-16 unit of two
+            // bytes, as from version 12 (#368). A letter beyond the 16-bit
+            // range goes out as "?".
             let mut bytes = Vec::new();
             for (c, k) in text.chars().zip(&index) {
-                let one = if v.0 >= 16 {
-                    cp1252(&c.to_string())
-                } else {
-                    None
-                };
+                let one = if v.0 >= 16 { text_byte(c) } else { None };
                 let wide = one.is_none();
                 t.u16(u16::from(wide && v.0 >= 16))
                     .u8(k.saturating_mul(2))
                     .zeros(5);
                 match one {
-                    Some(b) => bytes.extend_from_slice(&b),
+                    Some(b) => bytes.push(b),
                     None => {
                         let unit = if (c as u32) <= 0xffff {
                             c as u16

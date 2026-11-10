@@ -20,6 +20,16 @@ rulers:
   when it is taller than the window, each tab keeping its own place; the
   tab row stays put, so recent documents below the window are reached
   (#1288, `ui::welcome::tests::the_recent_documents_scroll_into_view`).
+- Get Started's recent documents are a table across the free width when
+  it is 560 points or more (#1675): a header row (Name, Location, Size,
+  Last edited) over rows with the thumbnail, the file name, its folder,
+  its size (KB or MB) and its last change as a local date and time, each
+  text kept to its column (32, 38, 12 and 18 % of the width after the
+  thumbnail). Size and date are read with the check that the file is
+  there, on a worker thread (`file_presence::info`), so a slow share
+  never holds the window; a missing file shows neither. A narrower
+  window and a phone keep the list of name over folder
+  (`ui::welcome::tests::the_recent_documents_are_a_table_with_size_and_date`).
 - The Welcome Screen tab has a close button on hover (a middle click
   also closes it): the tab shrinks to its house alone (a 26 px square,
   the title as its tip) and the active drawing shows. With no drawing
@@ -81,7 +91,39 @@ the question, as macOS expects of a document program.
 The Window menu lists the open drawings, numbered, with a check on the
 active one.
 
+## Thumbnails in file managers
+
+A `.tdraw` file shows a picture of its first page on white paper in the
+Windows Explorer and in Linux file managers. Nothing is stored in the
+file for it: the picture is drawn from the drawing itself when the file
+manager asks, so every `.tdraw` file has one, those saved by older
+versions included.
+
+- Windows: `tracedraw_thumbnailer.dll` (`apps/tracedraw-thumbnailer`), a
+  thumbnail provider (`IThumbnailProvider` with `IInitializeWithStream`,
+  class id `{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}`). The setup copies it
+  beside `tracedraw.exe` and registers it under `Software\Classes` of the
+  user (an install for the user alone) or of the machine (one for
+  everybody): the class with `InprocServer32` and `ThreadingModel`
+  Apartment, and the class id under `ShellEx\{e357fccd-a995-4576-b01f-234630154e96}`
+  of `.tdraw`, of `TraceDraw.Document` and of
+  `SystemFileAssociations\.tdraw`, the last kept when another program
+  opens `.tdraw` files. The Store package carries the DLL and declares
+  the same class as a surrogate COM server with a `ThumbnailHandler` on
+  the `.tdraw` association. The release build makes, signs and packs the
+  DLL with the programs; the portable zip registers nothing and has no
+  thumbnails. Explorer keeps the pictures it made in its thumbnail cache:
+  files seen before the install show their picture once the cache lets
+  go of the icon (Disk Cleanup, Thumbnails).
+- Linux: the `.deb` installs the `application/x-tdraw` type and a
+  thumbnailer that runs `tracedraw-cli thumbnail`.
+
+Version 0.41 had no thumbnail provider; it came in 0.42.0 (#1740).
+
 ## Checks
+
+- `tracedraw_thumbnailer::tests::the_setup_and_the_release_build_ship_and_register_the_provider`
+  and `tracedraw_thumbnailer::tests::the_first_page_is_drawn_at_the_size_asked`.
 
 - `documents::tests::each_drawing_keeps_its_objects_history_and_selection`
 - `documents::tests::closing_moves_to_a_neighbour_then_to_the_welcome_screen`

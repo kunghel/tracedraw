@@ -4,7 +4,7 @@
 |---|---|---|
 | Type | Uniform | None, Uniform, Gradient (linear, radial, conical, square, shaped), Pattern (two-colour, vector, bitmap), Texture |
 | Transparency | 50% | 0..100 |
-| Merge mode | Normal | Normal, Add, Subtract, Difference, Multiply, Divide, If lighter, If darker, Texturize, Hue, Saturation, Colour, Invert, And, Or, Xor, Red, Green, Blue |
+| Merge mode | Normal | the 28 modes of the table in Merge modes below |
 | Apply to | Fill and outline | fill, outline, both |
 
 Gradient transparency uses the same geometry as gradient fills with
@@ -14,6 +14,25 @@ mask, then composited with the merge mode. A shaped gradient follows
 the object's outline (`tests::shaped_transparency_follows_the_object`).
 A gradient mask turns, mirrors and skews with its object as a gradient
 fill does (see `gradient-fill.md`, #775).
+
+The mask is drawn over the object's box; past the box (where the outer
+half of an outline lies, or a drop shadow) it goes on as it is at the
+box's edge. It was taken as no transparency there, so the outline of a
+rounded rectangle stayed opaque outside the box and faded inside it:
+part of it seemed to vanish (a live test of 0.41).
+
+Apply to (the target): Fill fades the fill alone and draws the outline
+as it is, Outline the reverse, All the whole object. The fill and the
+outline are then drawn apart, each through the same mask (placed on the
+object's box), the outline first when it is set behind the fill; an
+object without the part named is drawn as it is. Groups, clip frames,
+tables, symbols and pictures fade whole whatever the target
+(`live::transparency_parts`). The screen, SVG and PDF exports draw the
+target alike; the exports give the faded part the mask's average
+opacity (`render::tests::a_transparency_fades_the_part_its_target_names_outline_and_all`,
+`svg::tests::a_transparency_target_fades_the_fill_the_outline_or_both`,
+`pdf::tests::a_transparency_target_fades_the_fill_or_the_outline`; a
+live test of 0.41: the outline never faded).
 Moving nodes or cropping keeps a gradient mask where it lies on the
 page, cut by the new outline, not squeezed into its new box (see
 `gradient-fill.md`, #1491).
@@ -162,7 +181,59 @@ Transparency tool's bar keeps its one-row form.
 Settings that differ across the selection show as mixed; a change sends
 only that setting to each object (`mixed::patch_transparency`).
 
-Not yet: the ten missing merge modes, Free scale and skew, the mirror
+Not yet: Free scale and skew, the mirror
 tiles button, foreground and background for vector and bitmap patterns,
 the texture library list, saving a new preset from the picker, and the
 docker header's Scroll/Tab mode and style indicators.
+
+## Merge modes
+
+The object (the source, `s`) drawn through its mask is mixed with
+everything beneath it (the backdrop, `b`) by the merge mode, each
+channel in 0..1 unless the mode says otherwise. The mix applies where
+both are present; where only one is, that one shows, as the usual
+compositing of blend modes does (`tracedraw_render::composite_layer`).
+The `.tdraw` name of a mode is its name in lower case without spaces
+(`softlight`, `colordodge`).
+
+| Mode | Result | SVG `mix-blend-mode` | PDF `/BM` |
+|---|---|---|---|
+| Normal | `s` | | |
+| Add | `b + s`, clipped | | |
+| Subtract | `abs(b - s)` (drawn as Difference) | difference | Difference |
+| Difference | `abs(b - s)` | difference | Difference |
+| Multiply | `b * s` | multiply | Multiply |
+| Divide | drawn as Screen | screen | Screen |
+| If Lighter | `max(b, s)` | lighten | Lighten |
+| If Darker | `min(b, s)` | darken | Darken |
+| Texturize | `b * L(s)`, `L` the source's lightness (0.2126 r + 0.7152 g + 0.0722 b) | multiply (nearest) | Multiply (nearest) |
+| Hue | the source's hue with the backdrop's saturation and lightness | hue | Hue |
+| Saturation | the source's saturation with the backdrop's hue and lightness | saturation | Saturation |
+| Color | the source's hue and saturation with the backdrop's lightness | color | Color |
+| Lightness | the source's HSL lightness `(max + min) / 2` with the backdrop's hue and saturation | luminosity (nearest) | Luminosity (nearest) |
+| Invert | drawn as Exclusion | exclusion | Exclusion |
+| And, Or, Xor | drawn as the Xor compositing operator | | |
+| Red, Green, Blue | drawn as Normal | | |
+| Behind | the source only where the backdrop is clear (destination over) | | |
+| Screen | `b + s - b * s` | screen | Screen |
+| Overlay | Hard Light with source and backdrop exchanged | overlay | Overlay |
+| Soft Light | `s <= 0.5`: `b - (1 - 2 s) b (1 - b)`; else `b + (2 s - 1) (D(b) - b)`, `D(b) = ((16 b - 12) b + 4) b` for `b <= 0.25`, else `sqrt(b)` | soft-light | SoftLight |
+| Hard Light | `s <= 0.5`: `2 s b`; else `screen(b, 2 s - 1)` | hard-light | HardLight |
+| Color Dodge | `b = 0`: 0; `s = 1`: 1; else `min(1, b / (1 - s))` | color-dodge | ColorDodge |
+| Color Burn | `b = 1`: 1; `s = 0`: 0; else `1 - min(1, (1 - b) / s)` | color-burn | ColorBurn |
+| Exclusion | `b + s - 2 b s` | exclusion | Exclusion |
+
+The SVG and PDF exports draw a non-uniform transparency at the mask's
+mean opacity (they have no masks of their own here) and set the blend of
+the table on a group (SVG, `style="mix-blend-mode:..."`) or a graphics
+state (PDF, `/ExtGState /BM`) around the object; modes without a blend
+draw normally, and PDF/X-1a flattens the object into a picture instead
+(`svg::tests::merge_modes_go_out_as_mix_blend_mode`,
+`pdf::tests::transparency_merge_modes_go_out_as_blend_modes`). Drop
+shadows use the same table (`drop-shadow.md`).
+
+Tests: `render::tests::merge_modes_mix_with_the_backdrop_as_their_formulas_say`
+(a pixel of each new mode against its formula),
+`behind_draws_only_where_the_backdrop_is_clear`,
+`pixel_merges_composite_alpha_like_blend_modes`;
+`io::tests::transparency_merge_modes_round_trip_in_native_files`.

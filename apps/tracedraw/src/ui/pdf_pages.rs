@@ -119,7 +119,9 @@ impl App {
     /// drawing's. With `new_pages` each becomes a page after the current
     /// one, at its own size and in order, and the first of them is shown;
     /// otherwise their objects go on the active layer, each page's a group
-    /// when there are several. What came is selected.
+    /// when there are several. What came is selected. With Import as
+    /// Picture each page's objects then become one picture, by Convert to
+    /// Bitmap, in the same undo step (#1916).
     pub fn import_pdf_pages(
         &mut self,
         path: &std::path::Path,
@@ -134,6 +136,82 @@ impl App {
         if pages.is_empty() {
             return;
         }
+        if self.settings.formats.pdf_as_picture {
+            let mark = self.engine.begin_group();
+            let before = self.engine.last_step_id();
+            self.import_pdf_pages_as_read(path, pdf, chosen, new_pages);
+            if self.engine.last_step_id() != before {
+                self.pdf_pages_to_pictures(new_pages, pages.len());
+            }
+            self.engine.end_group(mark, "Import");
+        } else {
+            self.import_pdf_pages_as_read(path, pdf, chosen, new_pages);
+        }
+    }
+
+    /// The pages just brought in by [`App::import_pdf_pages`] (the
+    /// selection, or the `count` pages from the current one) become one
+    /// picture each at the resolution of Import as Picture.
+    fn pdf_pages_to_pictures(&mut self, new_pages: bool, count: usize) {
+        let options = crate::bitmap_modes::ConvertOptions {
+            dpi: self.settings.formats.pdf_picture_dpi,
+            ..Default::default()
+        };
+        if new_pages {
+            let at = self.page_index();
+            let mut pictures = Vec::new();
+            for k in 0..count {
+                self.goto_page(at + k);
+                let ids: Vec<ShapeId> = self
+                    .doc()
+                    .pages
+                    .get(at + k)
+                    .map(|p| p.layers.iter().flat_map(|l| &l.shapes).map(|s| s.id))
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                self.selection = ids;
+                self.convert_to_bitmap_with(&options);
+                if k == 0 {
+                    pictures = self.selection.clone();
+                }
+            }
+            self.goto_page(at);
+            self.select(pictures);
+        } else {
+            // Several pages: each page's group (or its one object) as
+            // one; else all that came.
+            let came = self.selection.clone();
+            let sets: Vec<Vec<ShapeId>> = if count > 1 && came.len() == count {
+                came.iter().map(|id| vec![*id]).collect()
+            } else {
+                vec![came]
+            };
+            let mut pictures = Vec::new();
+            for ids in sets {
+                self.selection = ids;
+                self.convert_to_bitmap_with(&options);
+                pictures.extend(self.selection.iter().copied());
+            }
+            self.select(pictures);
+        }
+    }
+
+    /// [`App::import_pdf_pages`] with the objects as the file has them.
+    fn import_pdf_pages_as_read(
+        &mut self,
+        path: &std::path::Path,
+        pdf: &ImportedPdf,
+        chosen: &[usize],
+        new_pages: bool,
+    ) {
+        let pages: Vec<(usize, &tracedraw_io::pdf_import::ImportedPage)> = chosen
+            .iter()
+            .filter_map(|&i| pdf.pages.get(i).map(|p| (i, p)))
+            .collect();
         let mut cmds = Vec::new();
         // The file's spot inks join the drawing's: one of the same name is
         // the same ink, the others are added.
@@ -545,6 +623,62 @@ mod tests {
         assert!(shapes
             .iter()
             .all(|s| !matches!(s.kind, ShapeKind::Group { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Import as Picture: each page comes in as one picture, on new
+    /// pages or on the current one, in one undo step (#1916).
+    #[test]
+    fn import_as_picture_makes_each_page_one_picture() {
+        let dir = std::env::temp_dir().join(format!("tracedraw-pdfpic-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = three_page_pdf(&dir);
+        let bytes = std::fs::read(&path).expect("read");
+        let pdf = tracedraw_io::pdf_import::parse_with_options(
+            &bytes,
+            &mut tracedraw_core::id::IdSource::default(),
+            "",
+            Default::default(),
+        )
+        .expect("parsed");
+        let mut app = App::headless();
+        app.settings.formats.pdf_as_picture = true;
+        app.settings.formats.pdf_picture_dpi = 72.0;
+        let picture = |s: &Shape| matches!(s.kind, ShapeKind::Bitmap { .. });
+
+        // On new pages: one picture a page.
+        let undo = undo_steps(&app);
+        app.import_pdf_pages(&path, &pdf, &[1, 2], true);
+        let d = app.doc();
+        assert_eq!(d.pages.len(), 3);
+        for i in [1, 2] {
+            let shapes: Vec<&Shape> = d.pages[i].layers.iter().flat_map(|l| &l.shapes).collect();
+            assert_eq!(shapes.len(), 1, "page {i}");
+            assert!(picture(shapes[0]), "page {i}");
+        }
+        assert_eq!(app.page, d.pages[1].id);
+        assert_eq!(app.selection.len(), 1);
+        assert_eq!(undo_steps(&app), undo + 1, "one undo step");
+        app.undo();
+        assert_eq!(app.doc().pages.len(), 1);
+
+        // On the current page: a picture for each page.
+        app.goto_page(0);
+        let layer = app.active_layer().expect("layer");
+        app.import_pdf_pages(&path, &pdf, &[0, 2], false);
+        let shapes = &app.doc().layer(layer).expect("layer").shapes;
+        assert_eq!(shapes.len(), 2);
+        assert!(shapes.iter().all(picture));
+        assert_eq!(app.selection.len(), 2);
+        assert_eq!(undo_steps(&app), undo + 1, "one undo step");
+        app.undo();
+        // One page: its three objects make one picture of their size.
+        app.import_pdf_pages(&path, &pdf, &[2], false);
+        let shapes = &app.doc().layer(layer).expect("layer").shapes;
+        assert_eq!(shapes.len(), 1);
+        assert!(picture(&shapes[0]));
+        let b = shapes[0].bounds();
+        assert!((b.width() - 40.0).abs() < 1.0, "{b:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

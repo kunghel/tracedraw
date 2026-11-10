@@ -68,6 +68,10 @@ anti-horário a partir da direita) e a direção. Você também pode arrastar o 
 de uma elipse com a ferramenta [[tool.shape]] para fazer uma fatia (arrastando
 para dentro) ou um arco (para fora).
 
+Um arco é uma curva aberta: o preenchimento só aparece enquanto
+[[options.fill_open_curves]] estiver ativado nas opções do documento. Uma
+fatia é fechada e mantém o preenchimento.
+
 ## Elipse de 3 pontos {#three-point-ellipse}
 
 A ferramenta [[tool.three_point_ellipse]] desenha uma elipse inclinada:

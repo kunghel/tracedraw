@@ -65,7 +65,8 @@ otwiera edytor palet.
 2. Wpisz jej nazwę w polu [[dialog.name]].
 3. Kliknij kolor, aby go zaznaczyć; [[dialog.add_color]] dodaje bieżący kolor,
    a [[dialog.remove_color]] usuwa zaznaczony.
-4. Kliknij [[dialog.save_palette]], aby zapisać ją jako plik.
-5. Kliknij [[dialog.close]].
+4. Zaznacz [[dialog.spot_color]], aby zmienić wybrany kolor w kolor dodatkowy: nazwaną farbę drukowaną na własnej płycie. Eksport do PDF zachowuje ją jako osobną farbę.
+5. Kliknij [[dialog.save_palette]], aby zapisać ją jako plik.
+6. Kliknij [[dialog.ok]].
 
 Palet wbudowanych nie można edytować; utwórz nową paletę lub edytuj kopię.

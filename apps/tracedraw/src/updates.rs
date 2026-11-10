@@ -622,6 +622,11 @@ pub enum InstallState {
         done: u64,
         total: u64,
     },
+    /// The whole file is in: its size and SHA-256 digest are checked.
+    Checking,
+    /// The checked file is being put in place (unpacked, copied or
+    /// moved over the old one). It cannot be cancelled any more.
+    Installing,
     /// The new version is in place; Restart starts it, otherwise it runs
     /// from the next start.
     Installed(String),
@@ -631,14 +636,43 @@ pub enum InstallState {
     Failed(String),
 }
 
+impl InstallState {
+    /// An install is running: downloading, checking or installing.
+    pub fn busy(&self) -> bool {
+        matches!(
+            self,
+            InstallState::Downloading { .. } | InstallState::Checking | InstallState::Installing
+        )
+    }
+}
+
+/// How far an install got, as it tells the one who started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// This many bytes of the file are written.
+    Bytes(u64),
+    /// The whole file is in; its digest is compared.
+    Checking,
+    /// The file is put in place.
+    Installing,
+}
+
+/// What an install reports its steps to. An error stops the install
+/// there (Cancel), and the partial files are removed.
+pub type Report<'a> = &'a mut dyn FnMut(Step) -> Result<(), String>;
+
+/// The error of a download stopped by Cancel.
+pub const CANCELLED: &str = "cancelled";
+
 /// Download `from` into `part`, checking its size and SHA-256 digest
-/// against `package`; `progress` gets the bytes written so far. The
-/// partial file is left for the caller to move or remove.
+/// against `package`; `progress` gets the bytes written so far, then
+/// [`Step::Checking`]. The partial file is left for the caller to move
+/// or remove.
 fn write_verified(
     from: &mut dyn std::io::Read,
     package: &Package,
     part: &std::path::Path,
-    progress: &mut dyn FnMut(u64),
+    progress: Report,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
@@ -657,8 +691,9 @@ fn write_verified(
         }
         hash.update(&buf[..n]);
         out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        progress(done);
+        progress(Step::Bytes(done))?;
     }
+    progress(Step::Checking)?;
     if done != package.size {
         return Err(format!(
             "the download stopped at {done} of {} bytes",
@@ -675,16 +710,17 @@ fn write_verified(
 /// Write `from` next to `target`, check its size and SHA-256 digest, give
 /// it the target's permissions and move it over the target. On any
 /// failure the target is left as it was and the partial file removed.
-/// `progress` gets the bytes written so far.
+/// `progress` gets the bytes written so far and the steps after them.
 pub fn install_file(
     from: &mut dyn std::io::Read,
     package: &Package,
     target: &std::path::Path,
-    progress: &mut dyn FnMut(u64),
+    progress: Report,
 ) -> Result<(), String> {
     let part = neighbour(target, ".update").ok_or("no file name")?;
     let result = (|| {
         write_verified(from, package, &part, progress)?;
+        progress(Step::Installing)?;
         let perms = std::fs::metadata(target)
             .map_err(|e| e.to_string())?
             .permissions();
@@ -703,7 +739,7 @@ pub fn save_verified(
     from: &mut dyn std::io::Read,
     package: &Package,
     dest: &std::path::Path,
-    progress: &mut dyn FnMut(u64),
+    progress: Report,
 ) -> Result<(), String> {
     let part = neighbour(dest, ".part").ok_or("no file name")?;
     let result = write_verified(from, package, &part, progress)
@@ -1145,30 +1181,34 @@ fn stage(
     version: &str,
     package: &Package,
     target: &InstallTarget,
-    progress: &mut dyn FnMut(u64),
+    body: &mut dyn std::io::Read,
+    progress: Report,
 ) -> Result<(Launch, bool), String> {
-    let mut body = download(&package.url)?;
     match target {
         InstallTarget::AppImage(path) => {
-            install_file(&mut body, package, path, progress)?;
+            install_file(body, package, path, progress)?;
             Ok((appimage_launch(path), true))
         }
         InstallTarget::Setup => {
             let dir = staging_dir()?;
             let file = dir.join(format!("TraceDraw-{}-setup.exe", safe_version(version)));
-            save_verified(&mut body, package, &file, progress)?;
+            save_verified(body, package, &file, progress)?;
             Ok((setup_launch(&file), false))
         }
         InstallTarget::Deb(exe) => {
             let dir = staging_dir()?;
             let file = dir.join(format!("tracedraw_{}.deb", safe_version(version)));
-            save_verified(&mut body, package, &file, progress)?;
+            save_verified(body, package, &file, progress)?;
             Ok((deb_launch(&file, exe), false))
         }
         InstallTarget::Bundle(bundle) => {
             let dir = staging_dir()?;
             let dmg = dir.join("TraceDraw.dmg");
-            save_verified(&mut body, package, &dmg, progress)?;
+            save_verified(body, package, &dmg, progress)?;
+            if let Err(e) = progress(Step::Installing) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
             let done = install_bundle(&dmg, &dir.join("mount"), bundle);
             let _ = std::fs::remove_dir_all(&dir);
             done?;
@@ -1177,7 +1217,11 @@ fn stage(
         InstallTarget::Tarball(exe) | InstallTarget::Portable(exe) => {
             let dir = staging_dir()?;
             let archive = dir.join("update.archive");
-            save_verified(&mut body, package, &archive, progress)?;
+            save_verified(body, package, &archive, progress)?;
+            if let Err(e) = progress(Step::Installing) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
             let done = if matches!(target, InstallTarget::Tarball(_)) {
                 install_tarball(&archive, exe)
             } else {
@@ -1190,6 +1234,289 @@ fn stage(
     }
 }
 
+/// How long the speed of a download takes to follow a change, seconds
+/// (the time constant of its exponential smoothing).
+const SPEED_SMOOTHING: f64 = 2.5;
+/// Samples of a download closer together than this are merged, seconds.
+const SAMPLE_GAP: f64 = 0.25;
+/// The time left is shown once the download has run this long, seconds
+/// (before that the speed says little).
+const LEFT_AFTER: f64 = 3.0;
+/// A pause longer than this counts as nothing arriving, seconds.
+const STALL: f64 = 1.0;
+
+/// The speed of a download and the time it has left: the rate between
+/// samples, smoothed exponentially so that the numbers shown do not
+/// jump. Times are seconds since any fixed moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Meter {
+    /// The first sample: time and bytes.
+    first: Option<(f64, u64)>,
+    /// The last sample taken into the speed.
+    last: Option<(f64, u64)>,
+    /// Bytes per second, smoothed.
+    speed: Option<f64>,
+    /// Samples taken into the speed.
+    samples: u32,
+}
+
+/// The weight of a new rate measured over `dt` seconds.
+fn smoothing(dt: f64) -> f64 {
+    1.0 - (-dt / SPEED_SMOOTHING).exp()
+}
+
+impl Meter {
+    /// `done` bytes are in at time `t`.
+    pub fn record(&mut self, t: f64, done: u64) {
+        let Some((t0, d0)) = self.last else {
+            self.first = Some((t, done));
+            self.last = Some((t, done));
+            return;
+        };
+        let dt = t - t0;
+        if dt < SAMPLE_GAP {
+            return;
+        }
+        let rate = done.saturating_sub(d0) as f64 / dt;
+        self.speed = Some(match self.speed {
+            None => rate,
+            Some(s) => s + smoothing(dt) * (rate - s),
+        });
+        self.last = Some((t, done));
+        self.samples += 1;
+    }
+
+    /// The smoothed speed at time `t`, bytes per second: a download that
+    /// has stalled slows down on screen too.
+    pub fn speed_at(&self, t: f64) -> Option<f64> {
+        let s = self.speed?;
+        let (t0, _) = self.last?;
+        let quiet = t - t0 - STALL;
+        Some(if quiet > 0.0 {
+            s * (1.0 - smoothing(quiet))
+        } else {
+            s
+        })
+    }
+
+    /// The seconds left at time `t` with `done` of `total` bytes in, once
+    /// that means something: after [`LEFT_AFTER`] seconds and a few
+    /// samples, at a speed above nothing.
+    pub fn left_at(&self, t: f64, done: u64, total: u64) -> Option<f64> {
+        let (t_first, _) = self.first?;
+        if t - t_first < LEFT_AFTER || self.samples < 3 {
+            return None;
+        }
+        let s = self.speed_at(t)?;
+        if s < 1.0 {
+            return None;
+        }
+        let left = total.saturating_sub(done) as f64 / s;
+        // Days left is no estimate at all.
+        (left < 24.0 * 3600.0).then_some(left)
+    }
+}
+
+/// The share of a download done, 0 to 1.
+pub fn fraction(done: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        (done.min(total) as f64 / total as f64) as f32
+    }
+}
+
+/// The whole percent of a download done, rounded down: 100 only when
+/// every byte is in.
+pub fn percent(done: u64, total: u64) -> u32 {
+    if total == 0 {
+        0
+    } else {
+        (u128::from(done.min(total)) * 100 / u128::from(total)) as u32
+    }
+}
+
+/// A download as the dialog shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    /// Bytes per second, smoothed; `None` until it is measured.
+    pub speed: Option<f64>,
+    /// Seconds left, once that means something.
+    pub left: Option<f64>,
+}
+
+/// Why an install failed, in the words the dialog uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// The server could not be reached or the connection broke.
+    Network,
+    /// The file came in short, long or with another digest.
+    Damaged,
+    /// The folder of the program cannot be written.
+    Permission,
+    /// The disk is full.
+    Space,
+    Other,
+}
+
+/// What kind of trouble the install error `error` is.
+pub fn trouble(error: &str) -> Trouble {
+    let e = error.to_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| e.contains(w));
+    if any(&["digest", "larger than", "damaged"]) {
+        Trouble::Damaged
+    } else if any(&[
+        "no space",
+        "not enough space",
+        "disk full",
+        "os error 28)",
+        "os error 112)",
+    ]) {
+        Trouble::Space
+    } else if any(&[
+        "permission denied",
+        "access is denied",
+        "read-only",
+        "os error 13)",
+    ]) {
+        Trouble::Permission
+    } else if any(&[
+        "answered",
+        "redirect",
+        "connect",
+        "dns",
+        "resolve",
+        "timed out",
+        "timeout",
+        "network",
+        "certificate",
+        "tls",
+        "the download stopped",
+    ]) {
+        Trouble::Network
+    } else {
+        Trouble::Other
+    }
+}
+
+/// A download that Cancel stops at once: the body is read on a thread of
+/// its own, so that a connection that hangs does not hold the install.
+/// Every read checks the flag, and waits for data a tenth of a second at
+/// a time.
+#[cfg(not(target_arch = "wasm32"))]
+struct Cancellable {
+    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    at: usize,
+    ended: bool,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Cancellable {
+    fn new(
+        mut body: Box<dyn std::io::Read + Send>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        let (send, chunks) = std::sync::mpsc::sync_channel(4);
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match body.read(&mut buf) {
+                    Ok(0) => {
+                        let _ = send.send(Ok(Vec::new()));
+                        return;
+                    }
+                    Ok(n) => {
+                        // Nobody reads any more: the download was cancelled.
+                        if send.send(Ok(buf[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        let _ = send.send(Err(e));
+                        return;
+                    }
+                }
+            }
+        });
+        Cancellable {
+            chunks,
+            chunk: Vec::new(),
+            at: 0,
+            ended: false,
+            stop,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::io::Read for Cancellable {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::other(CANCELLED));
+            }
+            if self.at < self.chunk.len() {
+                let n = out.len().min(self.chunk.len() - self.at);
+                out[..n].copy_from_slice(&self.chunk[self.at..self.at + n]);
+                self.at += n;
+                return Ok(n);
+            }
+            if self.ended {
+                return Ok(0);
+            }
+            match self
+                .chunks
+                .recv_timeout(std::time::Duration::from_millis(100))
+            {
+                Ok(Ok(chunk)) => {
+                    self.ended = chunk.is_empty();
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(std::io::Error::other("the download stopped"));
+                }
+            }
+        }
+    }
+}
+
+/// How often a running download tells the window how far it is.
+#[cfg(not(target_arch = "wasm32"))]
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The speed of the running download, with the moment it started.
+#[derive(Debug, Clone, Copy)]
+struct Transfer {
+    started: web_time::Instant,
+    meter: Meter,
+}
+
+impl Transfer {
+    fn new() -> Self {
+        Transfer {
+            started: web_time::Instant::now(),
+            meter: Meter::default(),
+        }
+    }
+
+    fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+}
+
+/// Opens the download of a release file.
+#[cfg(not(target_arch = "wasm32"))]
+type Opener = Box<dyn FnOnce(&str) -> Result<Box<dyn std::io::Read + Send>, String> + Send>;
+
 /// An in-place install running in the background.
 #[derive(Debug, Clone, Default)]
 pub struct Installer {
@@ -1198,11 +1525,66 @@ pub struct Installer {
     launch: Arc<Mutex<Option<Launch>>>,
     /// Restart was chosen: [`Installer::run_pending`] starts `launch`.
     armed: Arc<std::sync::atomic::AtomicBool>,
+    /// The Cancel flag of the running install (each start has its own).
+    stop: Arc<Mutex<Arc<std::sync::atomic::AtomicBool>>>,
+    /// The thread of the last install, which a new one waits for: a
+    /// cancelled download may still be removing its files.
+    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// The speed of the running download.
+    transfer: Arc<Mutex<Option<Transfer>>>,
 }
 
 impl Installer {
     pub fn get(&self) -> InstallState {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// The running download with its speed and time left; `None` when
+    /// nothing downloads.
+    pub fn progress(&self) -> Option<Progress> {
+        let InstallState::Downloading { done, total } = self.get() else {
+            return None;
+        };
+        let transfer = self.transfer.lock().ok().and_then(|t| *t);
+        let (speed, left) = transfer
+            .map(|t| {
+                let now = t.now();
+                (t.meter.speed_at(now), t.meter.left_at(now, done, total))
+            })
+            .unwrap_or((None, None));
+        Some(Progress {
+            done,
+            total,
+            speed,
+            left,
+        })
+    }
+
+    /// Cancel: stop the running download, remove what it wrote and go
+    /// back to [`InstallState::Idle`] at once. `false` when nothing
+    /// downloads (a file being checked or put in place is not stopped
+    /// half way).
+    pub fn cancel(&self) -> bool {
+        let Ok(mut s) = self.state.lock() else {
+            return false;
+        };
+        if !matches!(*s, InstallState::Downloading { .. }) {
+            return false;
+        }
+        if let Ok(stop) = self.stop.lock() {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *s = InstallState::Idle;
+        true
+    }
+
+    /// Wait for the install thread to end (tests).
+    #[cfg(test)]
+    pub fn wait(&self) {
+        let worker = self.worker.lock().ok().and_then(|mut w| w.take());
+        if let Some(w) = worker {
+            let _ = w.join();
+        }
     }
 
     /// Choose Restart: when TraceDraw exits, the new version starts (or,
@@ -1274,58 +1656,214 @@ impl Installer {
         #[cfg(target_arch = "wasm32")]
         let _ = (version, package, target, ctx);
         #[cfg(not(target_arch = "wasm32"))]
+        self.start_from(version, package, target, ctx, Box::new(download));
+    }
+
+    /// [`Installer::start`] with the download opened by `open`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_from(
+        &self,
+        version: String,
+        package: Package,
+        target: InstallTarget,
+        ctx: Option<egui::Context>,
+        open: Opener,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
         {
-            if let Ok(mut s) = self.state.lock() {
-                if matches!(*s, InstallState::Downloading { .. }) {
-                    return;
+            let Ok(mut s) = self.state.lock() else {
+                return;
+            };
+            if s.busy() {
+                return;
+            }
+            *s = InstallState::Downloading {
+                done: 0,
+                total: package.size,
+            };
+            if let Ok(mut flag) = self.stop.lock() {
+                *flag = stop.clone();
+            }
+        }
+        self.disarm();
+        if let Ok(mut l) = self.launch.lock() {
+            *l = None;
+        }
+        if let Ok(mut t) = self.transfer.lock() {
+            *t = Some(Transfer::new());
+        }
+        let previous = self.worker.lock().ok().and_then(|mut w| w.take());
+        let state = self.state.clone();
+        let launch = self.launch.clone();
+        let transfer = self.transfer.clone();
+        let handle = std::thread::spawn(move || {
+            if let Some(previous) = previous {
+                let _ = previous.join();
+            }
+            // Every change goes in under the state's lock, unless Cancel
+            // came first: then the state is the dialog's again.
+            let set = |next: InstallState| -> Result<(), String> {
+                {
+                    let Ok(mut s) = state.lock() else {
+                        return Err(CANCELLED.into());
+                    };
+                    if stop.load(Ordering::SeqCst) {
+                        return Err(CANCELLED.into());
+                    }
+                    *s = next;
                 }
-                *s = InstallState::Downloading {
-                    done: 0,
-                    total: package.size,
-                };
-            }
-            self.disarm();
-            if let Ok(mut l) = self.launch.lock() {
-                *l = None;
-            }
-            let state = self.state.clone();
-            let launch = self.launch.clone();
-            std::thread::spawn(move || {
-                let set = |next: InstallState| {
-                    if let Ok(mut s) = state.lock() {
-                        *s = next;
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+                Ok(())
+            };
+            // When the window last heard; the first block it hears of
+            // at once.
+            let mut told: Option<web_time::Instant> = None;
+            let total = package.size;
+            let mut report = |step: Step| -> Result<(), String> {
+                match step {
+                    Step::Bytes(done) => {
+                        if let Ok(mut t) = transfer.lock() {
+                            if let Some(t) = t.as_mut() {
+                                let now = t.now();
+                                t.meter.record(now, done);
+                            }
+                        }
+                        // The window hears of it now and then, not for
+                        // every block.
+                        if told.is_none_or(|t| t.elapsed() >= REPORT_EVERY) || done == total {
+                            told = Some(web_time::Instant::now());
+                            set(InstallState::Downloading { done, total })
+                        } else if stop.load(Ordering::SeqCst) {
+                            Err(CANCELLED.into())
+                        } else {
+                            Ok(())
+                        }
                     }
-                    if let Some(ctx) = &ctx {
-                        ctx.request_repaint();
-                    }
-                };
-                let mut last = 0u64;
-                let result = stage(&version, &package, &target, &mut |done| {
-                    // A frame now and then, not for every block.
-                    if done - last >= 512 * 1024 || done == package.size {
-                        last = done;
-                        set(InstallState::Downloading {
-                            done,
-                            total: package.size,
-                        });
-                    }
-                });
-                set(match result {
-                    Ok((next, in_place)) => {
+                    Step::Checking => set(InstallState::Checking),
+                    Step::Installing => set(InstallState::Installing),
+                }
+            };
+            let result = open(&package.url).and_then(|body| {
+                let mut body = Cancellable::new(body, stop.clone());
+                stage(&version, &package, &target, &mut body, &mut report)
+            });
+            let done = match result {
+                Ok((next, in_place)) => {
+                    if !stop.load(Ordering::SeqCst) {
                         if let Ok(mut l) = launch.lock() {
                             *l = Some(next);
                         }
-                        if in_place {
-                            InstallState::Installed(version)
-                        } else {
-                            InstallState::Ready(version)
-                        }
                     }
-                    Err(e) => InstallState::Failed(e),
-                });
-            });
+                    if in_place {
+                        InstallState::Installed(version)
+                    } else {
+                        InstallState::Ready(version)
+                    }
+                }
+                Err(e) => InstallState::Failed(e),
+            };
+            // Cancelled: the dialog is back to Idle already.
+            let _ = set(done);
+        });
+        if let Ok(mut w) = self.worker.lock() {
+            *w = Some(handle);
         }
     }
+}
+
+/// A file of zeros of `left` bytes read at about `rate` bytes a second.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+struct Trickle {
+    left: u64,
+    rate: u64,
+    sent: u64,
+    started: std::time::Instant,
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+impl std::io::Read for Trickle {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            return Ok(0);
+        }
+        let due = (self.started.elapsed().as_secs_f64() * self.rate as f64) as u64;
+        if self.sent >= due {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let n = (out.len() as u64).min(self.left).min(16 * 1024) as usize;
+        out[..n].fill(0);
+        self.left -= n as u64;
+        self.sent += n as u64;
+        Ok(n)
+    }
+}
+
+/// A pretend update for looking at the progress dialog (debug builds
+/// only, for the visual checks): with `TRACEDRAW_UPDATE_DEMO` set to a
+/// speed in bytes a second, Help > Updates finds version 0.43.0 and
+/// installs a 45 MB file of zeros, read at that speed, over a scratch
+/// file in the temporary folder. Nothing else is touched. `false` when
+/// the variable is not set.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub fn demo(checker: &Checker, installer: &Installer, ctx: Option<egui::Context>) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some(rate) = std::env::var("TRACEDRAW_UPDATE_DEMO")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|r| *r > 0)
+    else {
+        return false;
+    };
+    let size: u64 = 45 * 1024 * 1024 + 314_573;
+    let mut hash = Sha256::new();
+    let zeros = vec![0u8; 64 * 1024];
+    let mut left = size;
+    while left > 0 {
+        let n = left.min(zeros.len() as u64) as usize;
+        hash.update(&zeros[..n]);
+        left -= n as u64;
+    }
+    let sha256: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let package = Package {
+        url: "demo".into(),
+        sha256,
+        size,
+    };
+    let version = "0.43.0".to_string();
+    if let Ok(mut s) = checker.state.lock() {
+        *s = UpdateState::Available(Release {
+            version: version.clone(),
+            page: RELEASES_PAGE.into(),
+            download: None,
+            installer: Some(package.clone()),
+        });
+    }
+    let dir = std::env::temp_dir().join("tracedraw-update-demo");
+    let target = dir.join("TraceDraw.AppImage");
+    if std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&target, b"old"))
+        .is_err()
+    {
+        return false;
+    }
+    installer.start_from(
+        version,
+        package,
+        InstallTarget::AppImage(target),
+        ctx,
+        Box::new(move |_| {
+            Ok(Box::new(Trickle {
+                left: size,
+                rate,
+                sent: 0,
+                started: std::time::Instant::now(),
+            }) as Box<dyn std::io::Read + Send>)
+        }),
+    );
+    true
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1557,7 +2095,7 @@ mod tests {
     /// #1975: the release builds the 32-bit Windows programs, with the C
     /// runtime inside as the 64-bit ones, and names their setup and zip
     /// as the updater of a 32-bit copy looks for them; the setup installs
-    /// on 32-bit Windows only.
+    /// on any Windows, recommending the x86_64 setup on 64-bit Windows.
     #[test]
     fn the_release_builds_the_32_bit_windows_files() {
         let ci = include_str!("../../../.github/workflows/build.yml");
@@ -1569,7 +2107,8 @@ mod tests {
         assert!(ci.contains("-windows-$arch-portable.zip"));
         assert!(iss.contains("OutputBaseFilename=tracedraw-{#Version}-windows-{#Arch}-setup"));
         assert!(iss.contains("#if Arch == \"x86\"\n"));
-        assert!(iss.contains("ArchitecturesAllowed=x86os\n"));
+        assert!(iss.contains("ArchitecturesAllowed=x86compatible\n"));
+        assert!(iss.contains("if IsWin64 then"));
         assert!(cargo.contains(
             "[target.i686-pc-windows-msvc]\nrustflags = [\"-C\", \"target-feature=+crt-static\"]"
         ));
@@ -1869,13 +2408,23 @@ mod tests {
             (&b"hello!"[..], good.clone()),
         ] {
             let mut r = body;
-            assert!(install_file(&mut r, &pkg, &target, &mut |_| {}).is_err());
+            assert!(install_file(&mut r, &pkg, &target, &mut |_| Ok(())).is_err());
             assert_eq!(std::fs::read(&target).expect("read"), b"old");
             assert!(!part.exists());
         }
         let mut seen = 0;
         let mut r = &b"hello"[..];
-        install_file(&mut r, &good, &target, &mut |d| seen = d).expect("installs");
+        let mut steps = Vec::new();
+        install_file(&mut r, &good, &target, &mut |step| {
+            if let Step::Bytes(d) = step {
+                seen = d;
+            } else {
+                steps.push(step);
+            }
+            Ok(())
+        })
+        .expect("installs");
+        assert_eq!(steps, [Step::Checking, Step::Installing]);
         assert_eq!(seen, 5);
         assert_eq!(std::fs::read(&target).expect("read"), b"hello");
         assert!(!part.exists());
@@ -2011,7 +2560,7 @@ mod tests {
         };
         for body in [&b"hellp"[..], &b"hell"[..], &b"hello!"[..]] {
             let mut r = body;
-            assert!(save_verified(&mut r, &good, &dest, &mut |_| {}).is_err());
+            assert!(save_verified(&mut r, &good, &dest, &mut |_| Ok(())).is_err());
             assert!(!dest.exists());
             assert_eq!(
                 std::fs::read_dir(&dir).expect("dir").count(),
@@ -2020,7 +2569,7 @@ mod tests {
             );
         }
         let mut r = &b"hello"[..];
-        save_verified(&mut r, &good, &dest, &mut |_| {}).expect("saves");
+        save_verified(&mut r, &good, &dest, &mut |_| Ok(())).expect("saves");
         assert_eq!(std::fs::read(&dest).expect("read"), b"hello");
         assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2467,6 +3016,292 @@ mod tests {
         }
         assert_eq!(installer.get(), InstallState::Installed(r.version));
         assert_eq!(std::fs::metadata(&target).expect("meta").len(), p.size);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The percentage is rounded down and reaches 100 only with the last
+    /// byte; the bar's share stays between 0 and 1.
+    #[test]
+    fn the_percentage_counts_whole_percent_done() {
+        assert_eq!(percent(0, 0), 0, "no size yet");
+        assert_eq!(percent(0, 1000), 0);
+        assert_eq!(percent(123, 1000), 12);
+        assert_eq!(percent(999, 1000), 99, "never 100 before the end");
+        assert_eq!(percent(1000, 1000), 100);
+        assert_eq!(percent(2000, 1000), 100, "more than the size");
+        assert_eq!(percent(u64::MAX - 1, u64::MAX), 99, "no overflow");
+        assert_eq!(fraction(0, 0), 0.0);
+        assert!((fraction(1, 4) - 0.25).abs() < 1e-6);
+        assert_eq!(fraction(5, 4), 1.0);
+    }
+
+    /// The speed follows the download smoothly: a steady rate reads as
+    /// that rate, one fast burst moves it only part of the way, and a
+    /// stall brings it down. The time left waits until the speed means
+    /// something, then is the bytes left over the speed.
+    #[test]
+    fn the_speed_is_smoothed_and_the_time_left_waits_for_it() {
+        const MB: u64 = 1 << 20;
+        let mut m = Meter::default();
+        assert_eq!(m.speed_at(0.0), None);
+        assert_eq!(m.left_at(0.0, 0, 10 * MB), None);
+        // One megabyte a second, sampled every 0.1 s (merged to 0.25 s).
+        for i in 0..=20u64 {
+            let t = i as f64 * 0.1;
+            m.record(t, i * MB / 10);
+        }
+        let s = m.speed_at(2.0).expect("measured");
+        assert!((s - MB as f64).abs() < 0.01 * MB as f64, "{s}");
+        assert_eq!(m.left_at(2.0, 2 * MB, 10 * MB), None, "too early");
+        for i in 21..=40u64 {
+            m.record(i as f64 * 0.1, i * MB / 10);
+        }
+        let left = m.left_at(4.0, 4 * MB, 10 * MB).expect("meaningful now");
+        assert!((left - 6.0).abs() < 0.1, "{left}");
+        // A burst of 5 MB in half a second: the speed rises, but far less
+        // than the burst's 10 MB/s.
+        let mut burst = m;
+        burst.record(4.5, 9 * MB);
+        let s = burst.speed_at(4.5).expect("speed");
+        assert!(s > 1.5 * MB as f64 && s < 4.0 * MB as f64, "{s}");
+        // Nothing arrives for ten seconds: the speed shown falls, and so
+        // the time left grows.
+        let stalled = m.speed_at(14.0).expect("speed");
+        assert!(stalled < 0.1 * MB as f64, "{stalled}");
+        assert!(m.left_at(14.0, 4 * MB, 10 * MB).is_none_or(|l| l > 60.0));
+        // A finished download has no time left.
+        assert_eq!(m.left_at(4.0, 10 * MB, 10 * MB), Some(0.0));
+    }
+
+    /// Install errors read as the trouble the dialog explains.
+    #[test]
+    fn install_errors_are_told_in_plain_words() {
+        for (e, t) in [
+            (
+                "the download does not match the release's digest",
+                Trouble::Damaged,
+            ),
+            (
+                "the download is larger than the release says",
+                Trouble::Damaged,
+            ),
+            ("the archive is damaged", Trouble::Damaged),
+            ("the download answered 404", Trouble::Network),
+            ("the download stopped at 5 of 9 bytes", Trouble::Network),
+            ("io: Connection refused (os error 111)", Trouble::Network),
+            ("timeout: connect", Trouble::Network),
+            ("Permission denied (os error 13)", Trouble::Permission),
+            ("Access is denied. (os error 5)", Trouble::Permission),
+            ("No space left on device (os error 28)", Trouble::Space),
+            (
+                "There is not enough space on the disk. (os error 112)",
+                Trouble::Space,
+            ),
+            ("no file name", Trouble::Other),
+        ] {
+            assert_eq!(trouble(e), t, "{e}");
+        }
+    }
+
+    /// A reader that hands out `first` and then waits until the test lets
+    /// it go on (or for ever, as a hanging connection does).
+    struct Gate {
+        first: Vec<u8>,
+        rest: Vec<u8>,
+        go: std::sync::mpsc::Receiver<()>,
+        given: bool,
+    }
+
+    impl std::io::Read for Gate {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let from = if !self.given {
+                self.given = true;
+                std::mem::take(&mut self.first)
+            } else {
+                if self.rest.is_empty() {
+                    return Ok(0);
+                }
+                // Hangs until the test says go, or the sender is gone.
+                if self.go.recv().is_err() {
+                    return Err(std::io::Error::other("gone"));
+                }
+                std::mem::take(&mut self.rest)
+            };
+            out[..from.len()].copy_from_slice(&from);
+            Ok(from.len())
+        }
+    }
+
+    /// An installer whose download is `body`.
+    fn start_with(
+        installer: &Installer,
+        target: &std::path::Path,
+        package: &Package,
+        body: impl std::io::Read + Send + 'static,
+    ) {
+        let body: Box<dyn std::io::Read + Send> = Box::new(body);
+        installer.start_from(
+            "9.0.0".into(),
+            package.clone(),
+            InstallTarget::AppImage(target.to_path_buf()),
+            None,
+            Box::new(move |_| Ok(body)),
+        );
+    }
+
+    fn wait_for(installer: &Installer, what: impl Fn(&InstallState) -> bool) -> InstallState {
+        for _ in 0..200 {
+            let s = installer.get();
+            if what(&s) {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        installer.get()
+    }
+
+    fn hello() -> Package {
+        Package {
+            url: String::new(),
+            // sha256("hello")
+            sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
+            size: 5,
+        }
+    }
+
+    /// Cancel stops a download that hangs half way at once: the state is
+    /// Idle straight away, the thread ends, the partial file is removed,
+    /// the old file is untouched and nothing is ready to restart into.
+    /// A new Install after it runs to the end.
+    #[test]
+    fn cancel_stops_the_download_and_removes_the_partial_file() {
+        let dir = scratch("cancel");
+        let target = dir.join("TraceDraw.AppImage");
+        std::fs::write(&target, b"old").expect("write");
+        let part = dir.join(".TraceDraw.AppImage.update");
+        let installer = Installer::default();
+        assert!(!installer.cancel(), "nothing to cancel");
+        let (go, wait) = std::sync::mpsc::channel();
+        start_with(
+            &installer,
+            &target,
+            &hello(),
+            Gate {
+                first: b"he".to_vec(),
+                rest: b"llo".to_vec(),
+                go: wait,
+                given: false,
+            },
+        );
+        let s = wait_for(&installer, |s| {
+            matches!(s, InstallState::Downloading { done: 2, .. })
+        });
+        assert_eq!(s, InstallState::Downloading { done: 2, total: 5 });
+        assert!(part.exists(), "the partial file is written");
+        let p = installer.progress().expect("downloading");
+        assert_eq!((p.done, p.total), (2, 5));
+        assert!(installer.cancel());
+        assert_eq!(installer.get(), InstallState::Idle, "at once");
+        assert_eq!(installer.progress(), None);
+        // The connection still hangs, yet the install thread ends.
+        installer.wait();
+        assert!(!part.exists(), "the partial file is gone");
+        assert_eq!(std::fs::read(&target).expect("read"), b"old");
+        assert_eq!(installer.get(), InstallState::Idle, "stays Idle");
+        assert!(!installer.arm(), "nothing to restart into");
+        assert!(!installer.cancel(), "cancelled once");
+        drop(go);
+        // Install again: it runs to the end.
+        start_with(&installer, &target, &hello(), &b"hello"[..]);
+        installer.wait();
+        assert_eq!(installer.get(), InstallState::Installed("9.0.0".into()));
+        assert_eq!(std::fs::read(&target).expect("read"), b"hello");
+        assert!(installer.arm());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An install goes Downloading, Checking, Installing, then Installed;
+    /// a damaged download stops at Failed with the old file kept, and a
+    /// second Install while one runs is ignored.
+    #[test]
+    fn an_install_goes_through_its_steps() {
+        let dir = scratch("steps");
+        let target = dir.join("TraceDraw.AppImage");
+        std::fs::write(&target, b"old").expect("write");
+        // The steps the install reports, in order.
+        let mut steps = Vec::new();
+        let (launch, in_place) = stage(
+            "9.0.0",
+            &hello(),
+            &InstallTarget::AppImage(target.clone()),
+            &mut &b"hello"[..],
+            &mut |step| {
+                steps.push(step);
+                Ok(())
+            },
+        )
+        .expect("installs");
+        assert!(in_place);
+        assert_eq!(launch.program, target.display().to_string());
+        assert_eq!(
+            steps,
+            [Step::Bytes(5), Step::Checking, Step::Installing],
+            "downloaded, checked, put in place"
+        );
+        // A report that says stop (Cancel) stops before the file moves.
+        std::fs::write(&target, b"old").expect("write");
+        let stopped = stage(
+            "9.0.0",
+            &hello(),
+            &InstallTarget::AppImage(target.clone()),
+            &mut &b"hello"[..],
+            &mut |step| match step {
+                Step::Checking => Err(CANCELLED.into()),
+                _ => Ok(()),
+            },
+        );
+        assert_eq!(stopped.map(|_| ()), Err(CANCELLED.to_string()));
+        assert_eq!(std::fs::read(&target).expect("read"), b"old");
+        assert!(!dir.join(".TraceDraw.AppImage.update").exists());
+        // Through the installer: the state while the body waits, then
+        // the end.
+        let installer = Installer::default();
+        let (go, wait) = std::sync::mpsc::channel();
+        start_with(
+            &installer,
+            &target,
+            &hello(),
+            Gate {
+                first: b"hel".to_vec(),
+                rest: b"lo".to_vec(),
+                go: wait,
+                given: false,
+            },
+        );
+        let s = wait_for(&installer, |s| {
+            matches!(s, InstallState::Downloading { done: 3, .. })
+        });
+        assert_eq!(s, InstallState::Downloading { done: 3, total: 5 });
+        assert!(s.busy());
+        // Install again while it runs: ignored.
+        start_with(&installer, &target, &hello(), &b"xxxxx"[..]);
+        go.send(()).expect("go");
+        installer.wait();
+        let done = installer.get();
+        assert_eq!(done, InstallState::Installed("9.0.0".into()));
+        assert!(!done.busy());
+        assert_eq!(std::fs::read(&target).expect("read"), b"hello");
+        // A damaged download fails and leaves the file.
+        std::fs::write(&target, b"old").expect("write");
+        start_with(&installer, &target, &hello(), &b"hellp"[..]);
+        installer.wait();
+        let InstallState::Failed(e) = installer.get() else {
+            panic!("{:?}", installer.get());
+        };
+        assert_eq!(trouble(&e), Trouble::Damaged, "{e}");
+        assert_eq!(std::fs::read(&target).expect("read"), b"old");
+        assert!(InstallState::Checking.busy() && InstallState::Installing.busy());
+        assert!(!InstallState::Idle.busy());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

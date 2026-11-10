@@ -23,13 +23,30 @@ With the panel:
 
 Groups and bitmaps cannot take a contour.
 
+## Handles on the drawing {#handles}
+
+With the contour tool, an object with a contour shows a line from the
+middle of its right edge: outward for an outside contour, inward for an
+inside one or one to the center.
+
+- Drag the **square** at the end of the line to change the distance the
+  contour reaches. The steps stay as many, further apart or closer
+  together.
+- Drag the **bar** on the line, at the first step, to change the number of
+  steps: towards the object for more steps, away from it for fewer. The
+  last step stays where it is. A contour to the center has no bar, since
+  it takes as many steps as fit.
+
+The contour follows while you drag, and each drag is one step to undo.
+
 ## Contour settings {#settings}
 
 The property bar and the panel show the settings of the selected contour and
 change it at once.
 
 - **To center**, **Inside** or **Outside** (at first).
-- **Steps**: 3 at first, up to 999. To center makes as many as fit.
+- **Steps**: 3 at first, up to 999, set with a slider or typed in its box.
+  To center makes as many as fit.
 - **Offset**: the distance between steps (2 mm at first).
 - **Corners**: mitered (sharp, at first), round or beveled.
 - **Color direction**: direct, clockwise or counterclockwise around the color

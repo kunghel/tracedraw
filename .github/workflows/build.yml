@@ -69,8 +69,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
-          # 32-bit Windows 10 (#1975): the setup installs on 32-bit
-          # Windows only, the portable zip runs on either. New, so a
+          # 32-bit Windows 10 (#1975): the setup is for 32-bit
+          # Windows (on 64-bit it asks first), the portable zip runs on
+          # either. New, so a
           # failure of this build does not hold back the release of the
           # others (`experimental`).
           - os: windows-latest
@@ -388,6 +389,12 @@ jobs:
           grep -q "data-wasm-size=\"$size\"" site/index.html
           if grep -q "@VERSION@" site/index.html; then exit 1; fi
           cp assets/icon/tracedraw-256.png site/icon-256.png
+          # The interface languages but English, which the module embeds:
+          # the page fetches the one chosen (apps/tracedraw/src/i18n.rs).
+          mkdir -p site/lang
+          for f in apps/tracedraw/lang/*.toml; do
+            [ "$(basename "$f")" = en.toml ] || cp "$f" site/lang/
+          done
           # The installable app (docs/behavior/web.md, "Installing on a
           # tablet"): the manifest, its icons and the service worker, whose
           # cache is named after the version and a digest of the page,
@@ -396,7 +403,7 @@ jobs:
           cp web/manifest.webmanifest site/
           cp assets/icon/tracedraw-192.png site/icon-192.png
           cp assets/icon/tracedraw-512.png site/icon-512.png
-          build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest | sha256sum | cut -c1-16)
+          build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest site/lang/*.toml | sha256sum | cut -c1-16)
           sed -e "s/@VERSION@/${{ steps.ver.outputs.version }}/" -e "s/@BUILD@/$build/" web/sw.js > site/sw.js
           # The module loads, the page links the manifest and registers the
           # worker, the manifest and the worker are valid and name files the
@@ -599,12 +606,16 @@ jobs:
       - name: Release notes
         shell: bash
         run: |
+          # The files are listed by the release page itself, below the
+          # notes; the notes hold the changes only.
+          v="${RELEASE_TAG#v}"
+          : > release-notes.md
           if [[ -n "$RELEASE_TAG" ]]; then
             # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
-            v="${RELEASE_TAG#v}"
-            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' CHANGELOG.md > release-notes.md
+            echo "## Changes" >> release-notes.md
+            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' CHANGELOG.md >> release-notes.md
           else
-            echo "Installers built from ${GITHUB_SHA} on main. Replaced on every push." > release-notes.md
+            echo "Installers built from ${GITHUB_SHA} on main. Replaced on every push." >> release-notes.md
           fi
           printf '\nCode signing policy: https://github.com/%s#code-signing-policy\n' "$GITHUB_REPOSITORY" >> release-notes.md
           cat release-notes.md

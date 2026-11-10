@@ -846,7 +846,7 @@ impl FontManagerState {
 /// platform, a copy of a document the Android picker returned, the bytes
 /// in the browser's storage (#1400). The status line counts the faces
 /// added, or tells the first failure.
-fn add_picked_fonts(app: &mut App, paths: &[PathBuf]) {
+pub(crate) fn add_picked_fonts(app: &mut App, paths: &[PathBuf]) {
     let dir = kept_fonts_dir();
     let mut faces = 0;
     let mut failed = None;

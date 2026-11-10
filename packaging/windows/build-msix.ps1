@@ -61,6 +61,8 @@ New-Item -ItemType Directory -Force (Join-Path $stage 'Assets') | Out-Null
 
 Copy-Item (Join-Path $SrcDir 'tracedraw.exe') $stage
 Copy-Item (Join-Path $SrcDir 'tracedraw-cli.exe') $stage
+# The thumbnail provider the manifest declares for .tdraw files.
+Copy-Item (Join-Path $SrcDir 'tracedraw_thumbnailer.dll') $stage
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE') {
     Copy-Item (Join-Path $root $f) $stage
 }

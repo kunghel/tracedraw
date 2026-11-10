@@ -30,6 +30,9 @@ use tracedraw_core::{Command, Layer, LayerId, MasterScope, PageId, Shape, ShapeI
 const ROW_H: f32 = 22.0;
 /// Indent per nesting level.
 const INDENT: f32 = 16.0;
+/// The nesting level of a layer's own objects (under the page and the
+/// layer); a group's objects come deeper.
+const LAYER_OBJECT_DEPTH: usize = 2;
 /// Height of the bar with the New Layer, New Master Layer and Delete
 /// buttons.
 const BAR_H: f32 = 30.0;
@@ -58,9 +61,11 @@ struct Actions {
     rename_page: Option<String>,
     delete_layer: Option<LayerId>,
     reorder: Option<(LayerId, usize)>,
-    /// Each object row drawn and where, for a row dragged along the list
-    /// (live test of 0.41).
+    /// Each top-level object row drawn and where, and each layer row
+    /// that takes objects, for a row dragged along the list (live test
+    /// of 0.41).
     object_rows: Vec<(ShapeId, Rect)>,
+    layer_drop_rows: Vec<(LayerId, Rect)>,
     collapse: Option<LayerId>,
     expand_group: Option<ShapeId>,
     toggle_page: Option<PageId>,
@@ -746,6 +751,10 @@ fn layer_rows(
             Tokens::text_dim(),
         );
     }
+    // An object row let go here goes to the top of this layer.
+    if !layer.locked {
+        act.layer_drop_rows.push((layer.id, rect));
+    }
     // A layer of another page: that page comes first.
     let elsewhere = at.page.filter(|p| *p != app.page);
     if resp.double_clicked() {
@@ -882,7 +891,7 @@ fn layer_rows(
     });
     if open {
         for s in layer.shapes.iter().rev() {
-            object_rows(app, ui, s, 2, act);
+            object_rows(app, ui, s, LAYER_OBJECT_DEPTH, act);
         }
     }
 }
@@ -1140,12 +1149,16 @@ fn object_row(
     if l.rich_tip(tr(lock_tip)).clicked() {
         act.object_locked = Some((s.id, !s.locked));
     }
-    // A row dragged along the list moves its object in the stacking order
-    // where it is let go (see `drag_rows`).
-    act.object_rows.push((s.id, rect));
-    if resp.drag_started() && !s.locked {
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(egui::Id::new(ROW_DRAG), s.id));
+    // A row dragged along the list moves its object (with the rest of
+    // the selection when it is selected) in the stacking order where it
+    // is let go (see `drag_rows`). Only a layer's own objects move so: a
+    // group's objects keep their place in it.
+    if depth == LAYER_OBJECT_DEPTH {
+        act.object_rows.push((s.id, rect));
+        if resp.drag_started() && !s.locked {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(ROW_DRAG), s.id));
+        }
     }
     if resp.double_clicked() {
         act.rename_object = Some((s.id, s.name.clone().unwrap_or_else(|| label.clone())));
@@ -1702,24 +1715,146 @@ fn layer_holding(app: &App, id: ShapeId) -> Option<LayerId> {
 /// The object row being dragged, kept in the context's memory.
 const ROW_DRAG: &str = "objects_row_drag";
 
-/// An object row dragged along the list: a line shows where it goes, and
-/// let go over another object's row it goes in front of that object when
-/// dropped on the row's upper half, behind it on the lower half (the list
-/// shows the front object first), in the layer and page of that object.
-fn drag_rows(app: &mut App, ui: &Ui, rows: &[(ShapeId, Rect)]) {
+/// Where an object row let go goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RowDrop {
+    /// In front of `reference` (`in_front`) or behind it, in its layer.
+    Object { reference: ShapeId, in_front: bool },
+    /// On the top of a layer.
+    Layer(LayerId),
+}
+
+/// The objects a dragged row carries, bottom first as they are drawn: the
+/// selected objects of the layers when the row's object is selected (a
+/// group's objects stay in their group), else that object; locked ones
+/// stay where they are.
+fn dragged_objects(app: &App, dragged: ShapeId) -> Vec<ShapeId> {
+    let with_selection = app.selection.contains(&dragged);
+    let mut out = Vec::new();
+    // Layer after layer as their objects are kept, each bottom first.
+    for l in app.doc().all_layers() {
+        for s in &l.shapes {
+            let carried = s.id == dragged || (with_selection && app.selection.contains(&s.id));
+            if carried && !s.locked {
+                out.push(s.id);
+            }
+        }
+    }
+    out
+}
+
+/// The commands that put `ids` (bottom first) where `drop` says: objects
+/// of other layers (of any page or of the master page) go over to the
+/// target's layer first, keeping their place on the page. Empty when
+/// the target cannot take them (a locked layer, an object among those
+/// dragged).
+fn drop_commands(app: &App, ids: &[ShapeId], drop: RowDrop) -> Vec<Command> {
+    let doc = app.doc();
+    let layer = match drop {
+        RowDrop::Object { reference, .. } => {
+            if ids.is_empty() || ids.contains(&reference) {
+                return Vec::new();
+            }
+            match doc.locate(reference) {
+                Ok((l, _)) => l,
+                Err(_) => return Vec::new(),
+            }
+        }
+        RowDrop::Layer(l) => l,
+    };
+    if doc.all_layers().any(|l| l.id == layer && l.locked) {
+        return Vec::new();
+    }
+    let mut cmds = move_commands(app, ids, layer);
+    if let RowDrop::Object {
+        reference,
+        in_front,
+    } = drop
+    {
+        cmds.push(Command::OrderRelative {
+            shapes: ids.to_vec(),
+            reference,
+            in_front,
+        });
+    }
+    cmds
+}
+
+/// Put the objects `ids` (bottom first) where `drop` says, one undo
+/// step; they stay selected, and their layer becomes the active one, on
+/// its page.
+fn drop_rows(app: &mut App, ids: &[ShapeId], drop: RowDrop) {
+    let layer = match drop {
+        RowDrop::Object { reference, .. } => layer_holding(app, reference),
+        RowDrop::Layer(l) => Some(l),
+    };
+    let cmds = drop_commands(app, ids, drop);
+    let Some(layer) = layer.filter(|_| !cmds.is_empty()) else {
+        return;
+    };
+    if let [one] = cmds.as_slice() {
+        app.run(one.clone());
+    } else if let Err(e) = app.engine.run_batch("Move to Layer", &cmds) {
+        app.status = e.to_string();
+        return;
+    }
+    let page = app
+        .doc()
+        .pages
+        .iter()
+        .position(|p| p.layers.iter().any(|l| l.id == layer));
+    if let Some(i) = page {
+        if app.doc().pages.get(i).map(|p| p.id) != Some(app.page) {
+            app.goto_page(i);
+        }
+    }
+    app.picked_layer = Some(layer);
+    app.select(ids.to_vec());
+}
+
+/// An object row dragged along the list: a line shows where it goes. Let
+/// go over another object's row, the object goes in front of that object
+/// when dropped on the row's upper half, behind it on the lower half (the
+/// list shows the front object first), in the layer and page of that
+/// object; let go over a layer's row, it goes on the top of that layer. A
+/// selected row carries the rest of the selection along. One undo step.
+fn drag_rows(app: &mut App, ui: &Ui, rows: &[(ShapeId, Rect)], layers: &[(LayerId, Rect)]) {
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new("objects_rows_drawn"), rows.to_vec());
+        d.insert_temp(egui::Id::new("objects_layer_rows_drawn"), layers.to_vec());
+    });
     let id = egui::Id::new(ROW_DRAG);
     let Some(dragged) = ui.ctx().data(|d| d.get_temp::<ShapeId>(id)) else {
         return;
     };
-    let (pos, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+    let (pos, down, released) = ui.input(|i| {
+        (
+            i.pointer.latest_pos(),
+            i.pointer.primary_down(),
+            i.pointer.primary_released(),
+        )
+    });
     let target = pos.and_then(|p| {
-        rows.iter()
-            .find(|(sid, r)| *sid != dragged && r.contains(p))
-            .map(|(sid, r)| (*sid, *r, p.y < r.center().y))
+        if let Some((sid, r)) = rows.iter().find(|(_, r)| r.contains(p)) {
+            if *sid == dragged {
+                return None;
+            }
+            let in_front = p.y < r.center().y;
+            let y = if in_front { r.top() } else { r.bottom() };
+            let drop = RowDrop::Object {
+                reference: *sid,
+                in_front,
+            };
+            return Some((drop, y, *r));
+        }
+        layers
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .map(|(l, r)| (RowDrop::Layer(*l), r.bottom(), *r))
     });
     if down {
-        if let Some((_, r, front)) = target {
-            let y = if front { r.top() } else { r.bottom() };
+        if let Some((_, y, r)) = target {
             ui.painter().line_segment(
                 [Pos2::new(r.left(), y), Pos2::new(r.right(), y)],
                 Stroke::new(2.0, Tokens::ACCENT),
@@ -1727,19 +1862,17 @@ fn drag_rows(app: &mut App, ui: &Ui, rows: &[(ShapeId, Rect)]) {
         }
         return;
     }
+    // The button is up: the drag ends, and moves the objects only when it
+    // was let go over a row this frame (not when the list was away).
     ui.ctx().data_mut(|d| d.remove::<ShapeId>(id));
-    if let Some((reference, _, in_front)) = target {
-        app.run(Command::OrderRelative {
-            shapes: vec![dragged],
-            reference,
-            in_front,
-        });
-        app.select(vec![dragged]);
+    if let (true, Some((drop, _, _))) = (released, target) {
+        let ids = dragged_objects(app, dragged);
+        drop_rows(app, &ids, drop);
     }
 }
 
 fn apply(app: &mut App, ui: &Ui, act: Actions) {
-    drag_rows(app, ui, &act.object_rows);
+    drag_rows(app, ui, &act.object_rows, &act.layer_drop_rows);
     if let Some((layer, visible)) = act.visible {
         app.run(Command::SetLayerVisible { layer, visible });
     }
@@ -2506,5 +2639,193 @@ mod tests {
         assert_eq!(count(&app, low), 0);
         run(&mut app, (low, LayerClip::Paste));
         assert_eq!(count(&app, low), 2);
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    fn rect_kind() -> ShapeKind {
+        ShapeKind::Rect {
+            rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        }
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| objects_docker(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn object_row(ctx: &egui::Context, id: ShapeId) -> Rect {
+        ctx.data(|d| d.get_temp::<Vec<(ShapeId, Rect)>>(egui::Id::new("objects_rows_drawn")))
+            .and_then(|rows| rows.into_iter().find(|(s, _)| *s == id))
+            .map(|(_, r)| r)
+            .expect("the object's row")
+    }
+
+    fn layer_row(ctx: &egui::Context, id: LayerId) -> Rect {
+        ctx.data(|d| d.get_temp::<Vec<(LayerId, Rect)>>(egui::Id::new("objects_layer_rows_drawn")))
+            .and_then(|rows| rows.into_iter().find(|(l, _)| *l == id))
+            .map(|(_, r)| r)
+            .expect("the layer's row")
+    }
+
+    /// Press at `from`, drag to `to` over a few frames and let go there.
+    fn drag(ctx: &egui::Context, app: &mut App, from: Pos2, to: Pos2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(ctx, app, vec![egui::Event::PointerMoved(from)]);
+        frame(ctx, app, vec![button(from, true)]);
+        let mid = from + (to - from) * 0.5;
+        frame(ctx, app, vec![egui::Event::PointerMoved(mid)]);
+        frame(ctx, app, vec![egui::Event::PointerMoved(to)]);
+        frame(ctx, app, vec![button(to, false)]);
+        frame(ctx, app, Vec::new());
+    }
+
+    fn order(app: &App, layer: usize) -> Vec<ShapeId> {
+        app.doc().pages[0].layers[layer]
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Live test of 0.41: an object's row dragged along the Objects
+    /// docker and let go on another object's row puts it in front of
+    /// that object (the row's upper half) or behind it (its lower half),
+    /// one undo step; a selected row carries the selection along.
+    #[test]
+    fn a_row_dragged_along_the_list_changes_the_stacking_order() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let a = app.new_shape(rect_kind()).expect("a");
+        let b = app.new_shape(rect_kind()).expect("b");
+        let c = app.new_shape(rect_kind()).expect("c");
+        app.select(Vec::new());
+        assert_eq!(order(&app, 0), [a, b, c]);
+        frame(&ctx, &mut app, Vec::new());
+        // The list shows the front object first: c, b, a.
+        let (ra, rc) = (object_row(&ctx, a), object_row(&ctx, c));
+        assert!(rc.top() < ra.top());
+        // a onto the upper half of c's row: in front of c.
+        let to = Pos2::new(rc.center().x, rc.top() + 2.0);
+        drag(&ctx, &mut app, ra.center(), to);
+        assert_eq!(order(&app, 0), [b, c, a]);
+        assert_eq!(app.selection, vec![a]);
+        app.undo();
+        assert_eq!(order(&app, 0), [a, b, c], "one undo step");
+        // c onto the lower half of a's row: behind a.
+        frame(&ctx, &mut app, Vec::new());
+        let (ra, rc) = (object_row(&ctx, a), object_row(&ctx, c));
+        let to = Pos2::new(ra.center().x, ra.bottom() - 2.0);
+        drag(&ctx, &mut app, rc.center(), to);
+        assert_eq!(order(&app, 0), [c, a, b]);
+        app.undo();
+        // a and c selected, a's row dragged onto b's upper half: both go
+        // in front of b, keeping their order.
+        app.select(vec![a, c]);
+        frame(&ctx, &mut app, Vec::new());
+        let (ra, rb) = (object_row(&ctx, a), object_row(&ctx, b));
+        let to = Pos2::new(rb.center().x, rb.top() + 2.0);
+        drag(&ctx, &mut app, ra.center(), to);
+        assert_eq!(order(&app, 0), [b, a, c]);
+        app.undo();
+        assert_eq!(order(&app, 0), [a, b, c]);
+        // Let go on its own row, or below every row: nothing changes.
+        app.select(Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        let ra = object_row(&ctx, a);
+        drag(
+            &ctx,
+            &mut app,
+            ra.center(),
+            ra.center() + Vec2::new(30.0, 0.0),
+        );
+        drag(&ctx, &mut app, ra.center(), Pos2::new(200.0, 700.0));
+        assert_eq!(order(&app, 0), [a, b, c]);
+        // A locked object's row does not move.
+        app.run(Command::SetLocked {
+            shapes: vec![a],
+            locked: true,
+        });
+        frame(&ctx, &mut app, Vec::new());
+        let (ra, rc) = (object_row(&ctx, a), object_row(&ctx, c));
+        let to = Pos2::new(rc.center().x, rc.top() + 2.0);
+        drag(&ctx, &mut app, ra.center(), to);
+        assert_eq!(order(&app, 0), [a, b, c]);
+    }
+
+    /// A row let go on an object of another layer goes over to that layer
+    /// beside the object, and let go on a layer's row on the top of that
+    /// layer: one undo step each. A locked layer takes nothing.
+    #[test]
+    fn a_row_dragged_onto_another_layer_moves_the_object_there() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let low = app.doc().pages[0].layers[0].id;
+        let a = app.new_shape(rect_kind()).expect("a");
+        let b = app.new_shape(rect_kind()).expect("b");
+        let page = app.page;
+        app.run(Command::AddLayer {
+            page,
+            name: "Top".into(),
+        });
+        let high = app.doc().pages[0].layers[1].id;
+        app.picked_layer = Some(high);
+        let c = app.new_shape(rect_kind()).expect("c");
+        let d = app.new_shape(rect_kind()).expect("d");
+        app.select(Vec::new());
+        assert_eq!(order(&app, 0), [a, b]);
+        assert_eq!(order(&app, 1), [c, d]);
+        frame(&ctx, &mut app, Vec::new());
+        // b onto the lower half of d's row: behind d, in the top layer.
+        let (rb, rd) = (object_row(&ctx, b), object_row(&ctx, d));
+        let to = Pos2::new(rd.center().x, rd.bottom() - 2.0);
+        drag(&ctx, &mut app, rb.center(), to);
+        assert_eq!(order(&app, 0), [a]);
+        assert_eq!(order(&app, 1), [c, b, d]);
+        assert_eq!(app.active_layer(), Some(high));
+        app.undo();
+        assert_eq!(order(&app, 0), [a, b], "one undo step");
+        assert_eq!(order(&app, 1), [c, d]);
+        // c onto the lower layer's row: on the top of that layer.
+        frame(&ctx, &mut app, Vec::new());
+        let (rc, rl) = (object_row(&ctx, c), layer_row(&ctx, low));
+        drag(&ctx, &mut app, rc.center(), rl.center());
+        assert_eq!(order(&app, 0), [a, b, c]);
+        assert_eq!(order(&app, 1), [d]);
+        app.undo();
+        assert_eq!(order(&app, 1), [c, d]);
+        // A locked layer takes nothing, nor does an object dropped on
+        // itself.
+        app.run(Command::SetLayerLocked {
+            layer: low,
+            locked: true,
+        });
+        let ids = [d];
+        let on = |reference| RowDrop::Object {
+            reference,
+            in_front: true,
+        };
+        assert!(drop_commands(&app, &ids, RowDrop::Layer(low)).is_empty());
+        assert!(drop_commands(&app, &ids, on(a)).is_empty());
+        assert!(drop_commands(&app, &ids, on(d)).is_empty());
+        assert_eq!(drop_commands(&app, &ids, on(c)).len(), 1);
     }
 }

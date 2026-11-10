@@ -38,10 +38,11 @@ Updates opens the releases page).
   versions ("v0.28.0 to 0.29.0") and a line of text. Update now starts
   the install described below (where the copy cannot install by itself
   it opens the Updates box, which offers Download); nothing is
-  downloaded before the click. While the file downloads the card shows a
-  spinner and the megabytes done; once it is checked, the button becomes
-  Restart now (Close and install for the Windows setup and the `.deb`).
-  What's new opens the release notes. Dismiss, the cross and Escape
+  downloaded before the click. Once the install runs the card shows the
+  same step, bar and detail line as the progress dialog below
+  (`ui::update_progress::status`), with Cancel while the file downloads;
+  once it is ready the button becomes Restart Now, after a failure Try
+  Again. What's new opens the release notes. Dismiss, the cross and Escape
   close it for the session; a card dismissed during the download comes
   back once, when the file is ready. It waits for any dialog (the
   first-start question, recovery) and does not show over one. Help >
@@ -57,10 +58,44 @@ Updates opens the releases page).
   in the dialog (no uninstalling, the settings and drawings stay). It
   needs the release file for this system, processor and kind of install
   to carry a SHA-256 digest (GitHub gives one for every uploaded file); a
-  release without one only gets Download. The download shows the
-  megabytes done and is checked for size and digest before anything is
-  touched; a short, long or mismatched download is deleted, the installed
-  copy is left as it was, and the dialog says why and offers Download.
+  release without one only gets Download. The download is checked for
+  size and digest before anything is touched; a short, long or mismatched
+  download is deleted and the installed copy is left as it was.
+- The progress dialog (`ui/update_progress.rs`), opened by Install in
+  the Updates box: a window of a fixed size (500 x 280 points with its
+  title bar, so nothing moves while the numbers change), moved by its
+  title bar, with the TraceDraw icon, "Updating TraceDraw" and "Version
+  <this> to <new>". Below them the step (`updates::InstallState`):
+  - Downloading: an egui progress bar, the whole percent done (rounded
+    down, 100 only with the last byte, `updates::percent`) and the line
+    "12.3 MB of 45.0 MB, 3.2 MB/s, about 10 s left". The speed is the
+    rate between samples at least 0.25 s apart, smoothed exponentially
+    with a time constant of 2.5 s; after more than a second without data
+    it decays as if nothing arrived (`updates::Meter`). The time left is
+    the bytes left over that speed, shown once the download has run 3 s
+    with three samples and under a day; under 10 s in whole seconds,
+    under 90 s in steps of 5 s, else in minutes. Cancel stops the
+    download at once (`Installer::cancel`): the state is Idle straight
+    away, the body is read on a thread of its own that the install stops
+    waiting for within a tenth of a second (a hanging connection does not
+    hold it), the partial file is removed and the Updates box offers
+    Install again. A new install waits for the cancelled thread to end.
+    The close button and Escape close the window; the download goes on
+    and the update card shows it.
+  - Checking the download (the size and SHA-256 digest are compared) and
+    Installing (the file is moved, unpacked or copied into place): a
+    moving bar, Cancel greyed (a file is not stopped half way).
+  - Ready (`Installed` or `Ready`): a green check mark, "TraceDraw <new>
+    is ready", a line saying what Restart does, Restart Now (the default,
+    Enter) and Later.
+  - Failed: a red mark, "The update could not be installed", the reason
+    in plain words (`updates::trouble`: the server could not be reached,
+    the download was incomplete or damaged, the folder cannot be
+    written, the disk is full, or something else), the error itself in
+    small type, Try Again (Enter) and Download from the website.
+  The window asks for a frame every 200 ms while downloading (the
+  download also asks when it has news, at most every 150 ms), every
+  40 ms while the bar moves, and none once the update is ready or failed.
   Six kinds of copy (`updates::InstallTarget`), every one that has a
   release file:
   - Linux AppImage (`APPIMAGE` names the running file): the release's
@@ -103,9 +138,10 @@ Updates opens the releases page).
     a shared `/tmp`, because the file is installed as the administrator
     and must not be swappable after the check) and nothing is run yet
     (`InstallState::Ready`).
-  After an in-place install (AppImage, app, tar.gz, portable zip) the
-  dialog offers Restart now and
-  Later; after a Windows or `.deb` download, Close and install and Later. Later
+  After an in-place install (AppImage, app, tar.gz, portable zip) and
+  after a Windows or `.deb` download the dialog offers Restart Now and
+  Later (for the Windows setup and the `.deb` it says that TraceDraw
+  closes, installs the update and starts again). Later
   closes the dialog and changes nothing: the new version runs from the
   next start (Windows: the downloaded setup is not run). Restart exits
   the usual way (File > Exit): drawings with unsaved changes are asked
@@ -194,3 +230,15 @@ Updates opens the releases page).
 - `ui::update_card::tests::a_dismissed_card_comes_back_when_the_download_is_ready`
 - `app::tests::a_found_update_is_remembered_until_it_is_gone`
 - `ui::update_card::tests::the_card_draws_in_every_state`
+- `updates::tests::the_percentage_counts_whole_percent_done`
+- `updates::tests::the_speed_is_smoothed_and_the_time_left_waits_for_it`
+- `updates::tests::install_errors_are_told_in_plain_words`
+- `updates::tests::cancel_stops_the_download_and_removes_the_partial_file`
+- `updates::tests::an_install_goes_through_its_steps`
+- `ui::update_progress::tests::the_detail_line_grows_as_the_numbers_become_meaningful`
+- `ui::update_progress::tests::every_install_state_has_its_phase`
+- `ui::dialogs::tests::the_update_dialog_shows_the_progress_and_the_buttons_of_each_step`
+- `ui::chrome::tests::a_message_box_is_laid_out_in_its_own_size_from_its_first_frame`
+  (message boxes share one window, which egui sizes and places from the
+  frame before; a box that follows one of another size is laid out
+  again in the same frame)

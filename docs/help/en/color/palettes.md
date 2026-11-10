@@ -10,9 +10,12 @@ uses. You can open more palettes, make your own and edit them.
 |---|---|
 | Click a color | fills the selection (with nothing selected, sets the fill of new objects) |
 | Right-click a color | colors the outline of the selection |
+| Hold the right button on a color for a second (or right-click it, when right-click is set to open the menu), then **Delete Color** | takes that color out of a palette of yours or the document palette |
+| Double-click the palette outside the colors | opens the palette editor on that palette |
 | <kbd>Ctrl</kbd>+click a color | mixes a tenth of it into the selection's fill |
 | Click and hold a color | shows lighter, darker, duller and brighter shades of it to choose from |
 | Drag a color onto an object | fills the object, or colors its outline when dropped on the edge |
+| Drag a picture from the drawing onto a palette | offers the picture's colors to that palette (see below) |
 | Click the crossed-out well | removes the fill (right-click: the outline) |
 
 The arrows at the ends scroll the palette, and the button at the right end
@@ -38,6 +41,13 @@ The document palette can have a bar of its own too.
 - Each bar can go to any edge of the window (along the left and right edges
   its swatches stand in columns) or float in a small window: drag it by its
   dotted grip or its title, or pick a place from **Position** in its menu.
+- A bar can also sit beside another bar on the same side: drag it over the
+  toolbox, the default palette, a column of panels or another palette bar,
+  and let go on the half towards the inside to put it just inside that bar,
+  or on the half towards the window's edge to put it just outside. A blue
+  line shows where. Several palette bars can stand side by side this way,
+  in the order you put them, for example a second row next to the default
+  palette or a column next to the toolbox.
 - Drag the right or bottom edge of a floating palette to resize it: the
   swatches flow into rows in a wide window and into columns in a tall one.
 - Each bar has its own **Swatch Size** and **Rows**.
@@ -45,6 +55,25 @@ The document palette can have a bar of its own too.
   it.
 - The palettes you have open, where they are, their sizes and rows are
   remembered, and saved in workspace files.
+
+### Colors from a picture
+
+Drag a picture (a bitmap) from the drawing with the Pick tool and let go on
+any open palette, docked or floating, the document palette too. The picture
+stays where it was, and **Extract Colors from Picture** opens:
+
+![Extract Colors from Picture](../../img/color-palettes-picture-colors.png)
+
+Set the
+**Number of colors** (2 to 64, 8 at first) with the slider or type it in the
+box, and the swatches under it show the colors you will get. **OK** adds them
+to the palette you dropped the picture on, skipping the colors it already
+has; **Cancel** adds nothing. Built-in and locked palettes cannot be changed:
+OK then makes a new palette of yours with the colors, in a bar of its own.
+The colors are the same as those of **Add Colors from Bitmap** in a palette's
+menu, which still works with a picture selected. On the document palette the
+colors are one step of Undo; your own palettes are not part of the drawing,
+so Cancel is the way to back out.
 
 ### Naming palettes
 
@@ -63,7 +92,9 @@ Every color you apply to an object joins the document palette, which is saved
 with the drawing. Its eyedropper adds the color under the pointer, and its
 menu has **Automatically update** (to stop adding colors by themselves),
 **Add from selection**, **Add from document**, **Delete color** and **Reset
-palette** (keeps only the colors the drawing still uses). You can also drag
+palette** (keeps only the colors the drawing still uses; it asks first, and
+Undo brings the others back). To take out one color, right-click it and
+choose **Delete Color**. You can also drag
 colors or objects onto it. The color used last has a white frame: a color
 taken with the eyedropper that the palette already has gets the frame, so you
 see where it is, and applying a color of the palette moves the frame to it.
@@ -104,16 +135,28 @@ The [[docker.palettes]] panel lists the palettes you have in three sections,
 ## Editing a palette {#palette-editor}
 
 [[menu.window > menu.window.color_palettes > menu.window.palette_editor]] opens
-the palette editor.
+the palette editor. **Edit Palette...** in a palette's menu, or a double-click
+on the palette outside its colors, opens it on that palette.
 
 ![The Palette Editor](../../img/color-palettes-palette-editor.png)
 
 1. Choose the [[dialog.palette]] to edit, or click [[dialog.new_palette]] to
    start one.
 2. Type its [[dialog.name]].
-3. Click a color to select it; [[dialog.add_color]] adds the current color and
-   [[dialog.remove_color]] removes the selected one.
-4. Click [[dialog.save_palette]] to save it as a file.
-5. Click [[dialog.close]].
+3. Click a color to select it. <kbd>Ctrl</kbd>+click adds a color to the
+   selection or takes it away, <kbd>Shift</kbd>+click selects every color
+   from the last one clicked. [[dialog.add_color]] adds a color and
+   [[dialog.remove_color]] (or the <kbd>Delete</kbd> key) deletes every
+   selected color at once. **Move up** and **Move down** move the selected
+   colors, and you can drag a color to another place. With one color
+   selected, type its name or click its swatch to change it. **Undo** takes
+   back the last change.
+4. Tick [[dialog.spot_color]] to make the selected color a spot color: a
+   named ink, printed on a plate of its own under the color's name, with the
+   color as its stand-in on screen. PDF exports keep it as a separate ink.
+5. Click [[dialog.save_palette]] to save it as a file.
+6. Click [[dialog.ok]], or **Apply** to keep the changes and go on editing.
+   **Cancel** (or <kbd>Esc</kbd>) leaves the palette as it was: palettes are
+   not part of a drawing, so this is the way to undo changes to them.
 
 Built-in palettes cannot be edited; make a new palette, or edit a copy.

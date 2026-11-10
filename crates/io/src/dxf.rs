@@ -1405,6 +1405,7 @@ impl Writer<'_> {
                 Fill::Pattern(tracedraw_core::Pattern::TwoColor { front, .. }) => Some(*front),
                 Fill::Texture(t) => Some(t.color_a),
                 Fill::Mesh(m) => m.nodes.first().map(|n| n.color),
+                Fill::Procedural(p) => Some(p.foreground),
                 _ => None,
             }
             .unwrap_or(Color::Gray { v: 0.5 });

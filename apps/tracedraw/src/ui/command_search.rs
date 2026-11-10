@@ -1,9 +1,12 @@
 //! Help > Search Commands (Ctrl+Shift+P): a small box over the window
-//! that finds a menu command by part of its name and runs it. The
-//! commands are those of the menu bar, gathered by the same walk as
-//! Options > Customization > Commands (`menus::commands`) when the box
-//! opens; a command runs as its menu row would (`menus::run_command`).
-//! See `docs/behavior/command-search.md`.
+//! that finds a menu command by part of its name and runs it, or a
+//! setting of the Options or of Document Setup by its label or its tip
+//! and opens its page with the setting framed. The commands are those
+//! of the menu bar, gathered by the same walk as Options > Customization
+//! > Commands (`menus::commands`) when the box opens; a command runs as
+//! its menu row would (`menus::run_command`). The settings are the
+//! labels each options page shows (`options::settings_index`). See
+//! `docs/behavior/command-search.md`.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -19,11 +22,25 @@ const WIDTH: f32 = 460.0;
 /// The height of its list, points.
 const LIST_H: f32 = 340.0;
 
-/// A menu command as the box lists it.
+/// What a row of the box does when chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Target {
+    /// Run the menu command.
+    Command,
+    /// Open the options page (and tab of Options > Text) showing the
+    /// setting, framed.
+    Setting {
+        page: crate::ui::options::OptionsPage,
+        tab: usize,
+    },
+}
+
+/// A menu command or a setting as the box lists it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Found {
-    /// Its i18n key, which runs it.
+    /// Its i18n key, which runs it (a command) or names it (a setting).
     pub key: String,
+    pub target: Target,
     /// Its name and its menus ("Object > Align and Distribute"), in the
     /// interface language.
     pub name: String,
@@ -44,12 +61,40 @@ impl Found {
         );
         Found {
             key: key.to_string(),
+            target: Target::Command,
             name,
             place,
             shortcut,
             name_lc,
             all_lc,
         }
+    }
+
+    /// A setting: its label, the page it is on, and its tip, which the
+    /// words typed may match too.
+    pub fn setting(key: &str, name: String, place: String, tip: &str, target: Target) -> Self {
+        let mut f = Found::new(key, name, place, String::new());
+        f.all_lc = format!("{} {}", f.all_lc, tip.to_lowercase());
+        f.target = target;
+        f
+    }
+
+    /// The setting `e` of the options pages, named in the interface
+    /// language.
+    fn of_setting(e: &crate::ui::options::SettingEntry) -> Self {
+        let name = tr(&e.key);
+        let name = name.trim().trim_end_matches([':', '\u{ff1a}']).trim();
+        let tip = e.tip.as_deref().map(tr).unwrap_or_default();
+        Found::setting(
+            &e.key,
+            name.to_string(),
+            crate::ui::options::setting_place(e.page),
+            &tip,
+            Target::Setting {
+                page: e.page,
+                tab: e.tab,
+            },
+        )
     }
 
     /// The command `e` of the menu walk, named in the interface language.
@@ -81,7 +126,8 @@ pub struct CommandSearch {
     pub query: String,
     /// The highlighted row, an index into the matches shown.
     pub selected: usize,
-    /// The menu commands, gathered when the box opens.
+    /// The menu commands, then the settings, gathered when the box
+    /// opens.
     pub entries: Vec<Found>,
     /// The text box takes the keyboard on the next frame.
     focus: bool,
@@ -159,13 +205,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
     if app.command_search.entries.is_empty() {
         let entries = crate::ui::menus::commands(app, ctx);
-        app.command_search.entries = entries
+        let mut found: Vec<Found> = entries
             .iter()
             .filter(|e| e.key != MENU_KEY)
             .map(Found::of)
             .collect();
+        let settings = crate::ui::options::settings_index(app, ctx);
+        found.extend(settings.iter().map(Found::of_setting));
+        app.command_search.entries = found;
     }
-    let mut run: Option<String> = None;
+    let mut run: Option<Found> = None;
     let area = egui::Modal::default_area(egui::Id::new("command_search"))
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 72.0));
     let modal = egui::Modal::new(egui::Id::new("command_search"))
@@ -205,7 +254,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             st.selected = st.selected.min(last);
             if enter {
-                run = found.get(st.selected).map(|&i| st.entries[i].key.clone());
+                run = found.get(st.selected).map(|&i| st.entries[i].clone());
             }
             ui.add_space(4.0);
             if found.is_empty() {
@@ -261,7 +310,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             );
                         }
                         if resp.clicked() {
-                            run = Some(f.key.clone());
+                            run = Some(f.clone());
                         }
                     }
                 });
@@ -269,9 +318,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if modal.should_close() {
         app.command_search.close();
     }
-    if let Some(key) = run {
+    if let Some(f) = run {
         app.command_search.close();
-        app.pending_command = Some(key);
+        match f.target {
+            Target::Command => app.pending_command = Some(f.key),
+            Target::Setting { page, tab } => {
+                crate::ui::options::open_at_setting(app, page, tab, &f.key);
+            }
+        }
         ctx.request_repaint();
     }
 }
@@ -312,6 +366,149 @@ mod tests {
         assert!(keys(&entries, "zzz").is_empty());
         // Letters out of order do not match.
         assert!(keys(&entries, "tropxe").is_empty());
+    }
+
+    /// Live test of 0.41: settings could not be found ("Fill open
+    /// curves"). The box lists every options page's settings by label,
+    /// found by their tips' words too; choosing one opens Document Setup
+    /// or the Options at its page with the setting framed, scrolled into
+    /// view, for a moment.
+    #[test]
+    fn the_box_finds_settings_and_opens_their_page_framed() {
+        use crate::ui::options::OptionsPage;
+        crate::i18n::set_language("en");
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let key = |k: Key| {
+            vec![
+                egui::Event::Key {
+                    key: k,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                },
+                egui::Event::Key {
+                    key: k,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                },
+            ]
+        };
+        frame(&mut app, Vec::new());
+        app.options_page = OptionsPage::Grid;
+        app.command_search.open();
+        let started = web_time::Instant::now();
+        frame(&mut app, Vec::new());
+        eprintln!("commands and settings gathered in {:?}", started.elapsed());
+        assert_eq!(
+            app.options_page,
+            OptionsPage::Grid,
+            "the dialog's page is kept"
+        );
+        let st = &app.command_search;
+        let fill = st
+            .entries
+            .iter()
+            .find(|f| f.key == "options.fill_open_curves")
+            .expect("Fill open curves is listed");
+        assert_eq!(fill.name, "Fill open curves");
+        assert_eq!(fill.place, "Document Setup > General");
+        assert_eq!(
+            fill.target,
+            Target::Setting {
+                page: OptionsPage::DocumentGeneral,
+                tab: 0
+            }
+        );
+        let first = |q: &str| {
+            ranked(&st.entries, q)
+                .first()
+                .map(|&i| st.entries[i].key.clone())
+        };
+        assert_eq!(first("fill open"), Some("options.fill_open_curves".into()));
+        // By the words of its tip.
+        assert!(ranked(&st.entries, "curves that are not closed")
+            .iter()
+            .any(|&i| st.entries[i].key == "options.fill_open_curves"));
+        // Settings of the Options too, and the pages by name; the menu
+        // commands come first among equals.
+        let settings = |page: OptionsPage| {
+            st.entries
+                .iter()
+                .filter(|f| matches!(f.target, Target::Setting { page: p, .. } if p == page))
+                .count()
+        };
+        for page in [
+            OptionsPage::General,
+            OptionsPage::Display,
+            OptionsPage::ZoomPan,
+            OptionsPage::Grid,
+            OptionsPage::GlobalGeneral,
+        ] {
+            assert!(settings(page) > 1, "{page:?}");
+        }
+        assert_eq!(
+            settings(OptionsPage::Commands),
+            0,
+            "commands are listed once"
+        );
+        assert!(st
+            .entries
+            .iter()
+            .any(|f| f.key == "options.pan_inertia" && f.place == "Options > Tools > Zoom/Pan"));
+        assert!(st.entries.iter().any(|f| f.key == "options.spelling"
+            && f.target
+                == Target::Setting {
+                    page: OptionsPage::Text,
+                    tab: 3
+                }));
+        let last_command = st
+            .entries
+            .iter()
+            .rposition(|f| f.target == Target::Command)
+            .expect("commands");
+        let first_setting = st
+            .entries
+            .iter()
+            .position(|f| f.target != Target::Command)
+            .expect("settings");
+        assert!(last_command < first_setting);
+        // Typed and chosen: Document Setup opens at General, the setting
+        // framed.
+        frame(&mut app, vec![egui::Event::Text("fill open curves".into())]);
+        frame(&mut app, key(Key::Enter));
+        assert!(!app.command_search.open);
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
+        assert_eq!(app.options_page, OptionsPage::DocumentGeneral);
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let h = app.options_highlight.clone().expect("framed");
+        assert_eq!(h.label, "Fill open curves");
+        assert!(h.since.is_some(), "drawn");
+        assert!(
+            crate::ui::options::highlighted_rect(&ctx).is_some(),
+            "found on the page"
+        );
+        // Another page: the frame goes.
+        app.options_page = OptionsPage::Bleed;
+        frame(&mut app, Vec::new());
+        assert!(app.options_highlight.is_none());
     }
 
     /// The box lists the menu bar's commands in the interface language,

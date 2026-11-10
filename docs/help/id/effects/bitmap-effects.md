@@ -75,6 +75,17 @@ membuka kelompok-kelompok efek.
 [[menu.effects > menu.effects.flatten]] membuat efek menjadi permanen: bitmap
 mempertahankan apa yang ditampilkannya, dan objek vektor menjadi bitmap.
 
+### Di semua halaman
+
+Dalam gambar dengan beberapa halaman, kotak dialog efek menampilkan kotak
+[[dialog.fx_all_pages]] selama ada gambar yang dipilih. Jika dicentang, OK juga
+memberi efek itu ke setiap gambar di setiap halaman, dalam satu langkah urung.
+Gambar yang terkunci dan gambar di lapisan terkunci tetap seperti semula.
+
+[[menu.effects > menu.effects.all_pages]] melakukan hal yang sama dengan efek
+yang sudah dimiliki gambar yang dipilih, termasuk efek tanpa kotak dialog:
+setiap gambar lain mendapat daftar efek yang sama, dalam satu langkah urung.
+
 ## Pemilih Efek {#effect-picker}
 
 [[menu.effects > menu.effects.picker]] membuka jendela yang tetap terbuka

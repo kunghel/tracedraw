@@ -36,7 +36,16 @@ strumento.
   risoluzione dello schermo calibrata; disattivo, sono 96 pixel per pollice.
 - [[options.wheel_center_mouse]] (disattivo): uno zoom con la rotellina porta il punto
   sotto il puntatore al centro della vista, insieme al puntatore.
+- [[options.smooth_zoom]] (attivo): uno scatto della rotellina zooma con un breve
+  scorrimento invece di un salto; più veloce gira la rotellina, più è breve.
+  Disattivo, ogni scatto zooma subito.
+- [[options.wheel_zoom_step]] di quanto uno scatto ingrandisce o riduce, da 1 a
+  100 per cento (15 % all'inizio).
 - [[options.pan_right_button]] [[options.zoom_out]] o il [[options.context_menu]] (all'inizio).
+- [[options.pan_inertia]] (disattivo): una panoramica rilasciata mentre il
+  puntatore si muove ancora fa scorrere la vista nella stessa direzione,
+  rallentando fino a fermarsi. Un clic o la rotellina la ferma. Vale per lo
+  strumento Panoramica, il pulsante centrale e due dita.
 
 ## Mano libera/Bézier {#curves}
 

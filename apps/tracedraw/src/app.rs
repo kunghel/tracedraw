@@ -669,6 +669,10 @@ pub struct CurveInProgress {
     pub dragging_handle: bool,
     /// B-Spline tool: the nodes are control points the curve runs near.
     pub bspline: bool,
+    /// B-Spline tool: the control points placed with C or V held, which
+    /// the curve passes through with a corner (fixed points, #2060); one
+    /// flag a node, missing ones floating.
+    pub spline_fixed: Vec<bool>,
     /// Nodes made cusps (clicking the last node again, C while pulling a
     /// handle, a click after a dragged node): their incoming handle as it
     /// was frozen (`None`: the segment arrives straight), no longer the
@@ -744,7 +748,7 @@ impl CurveInProgress {
     pub fn path_closed(&self, preview: Option<Point>, closed: bool) -> tracedraw_core::BezPath {
         if closed && self.bspline {
             let pts: Vec<Point> = self.nodes.iter().map(|n| n.0).collect();
-            return tracedraw_core::geometry::bspline_path(&pts, true);
+            return tracedraw_core::geometry::bspline_path_fixed(&pts, &self.spline_fixed, true);
         }
         let mut path = self.open_path(preview);
         if closed {
@@ -777,6 +781,14 @@ impl CurveInProgress {
         pts
     }
 
+    /// The fixed-point flags to keep with the B-spline made: one a
+    /// control point, `None` when none is fixed.
+    pub fn spline_fixed_flags(&self) -> Option<Vec<bool>> {
+        let mut flags = self.spline_fixed.clone();
+        flags.resize(self.nodes.len(), false);
+        flags.contains(&true).then_some(flags)
+    }
+
     /// `p` is where the last control point already is.
     pub fn on_last_control(&self, p: Point) -> bool {
         self.nodes
@@ -792,7 +804,7 @@ impl CurveInProgress {
         }
         if self.bspline {
             let pts = self.bspline_controls(preview);
-            return tracedraw_core::geometry::bspline_path(&pts, false);
+            return tracedraw_core::geometry::bspline_path_fixed(&pts, &self.spline_fixed, false);
         }
         for (i, (p, _)) in nodes.iter().enumerate() {
             if i == 0 {
@@ -1077,9 +1089,15 @@ pub struct App {
     pub show_grid: bool,
     pub show_status_bar: bool,
     pub show_dockers: bool,
-    /// Shift, Ctrl and Alt held from the Standard toolbar, for a finger
-    /// (#1499, touch_modifiers.rs).
+    /// Shift, Ctrl and Alt held from the keys on the drawing, for a
+    /// finger (#1499, #1996, touch_modifiers.rs).
     pub touch_mods: crate::touch_modifiers::TouchModifiers,
+    /// The keys on the drawing as drawn this frame: each one's id and
+    /// place (empty when they are not shown).
+    pub touch_keys_shown: Vec<(&'static str, egui::Rect)>,
+    /// The fingers on the drawing, for the taps of two and three fingers
+    /// that undo and redo (touch_taps.rs).
+    pub touch_tap: crate::touch_taps::TapGesture,
     pub docker_tab: DockerTab,
     pub flyout_open: Option<usize>,
     /// The tool each toolbox group shows: the one last used from its flyout.
@@ -1103,6 +1121,10 @@ pub struct App {
     /// then: Undo with nothing changed since selects the copies again and
     /// brings the repeat back, for a deselect made by accident (#1494).
     pub forgotten_duplicate: Option<(Vec<(ShapeId, ShapeId)>, u64, Vec<ShapeId>)>,
+    /// Invert Selection and Select Similar made with the drawing
+    /// unchanged since: Undo and Redo take them back and make them again
+    /// before the drawing's own steps (#2002).
+    pub selection_steps: crate::select_similar::SelectionSteps,
     /// The last Duplicate of guidelines, which the next one repeats in
     /// the same way while the copies are the selection (#1494).
     pub last_guide_duplicate: Option<crate::guides::GuideDuplicate>,
@@ -1137,6 +1159,9 @@ pub struct App {
     /// The Contour tool's and panel's values and the tool's drag.
     pub contour: crate::contour_tool::ContourSettings,
     pub contour_drag: Option<crate::contour_tool::ContourDrag>,
+    /// A contour handle being dragged, and whether it has moved yet (the
+    /// first move starts the undo step).
+    pub contour_handle_drag: Option<(crate::contour_tool::ContourHandle, bool)>,
     /// The Blend tool's control being dragged on the canvas, and the
     /// start or end square's drag of its object.
     pub blend_handle_drag: Option<crate::blend_tool::BlendHandle>,
@@ -1144,6 +1169,11 @@ pub struct App {
     pub spiral_revolutions: u32,
     pub spiral_logarithmic: bool,
     pub common_shape: crate::tools2::CommonShape,
+    /// The Common Shapes tool's own set, My shapes (`my_shapes.rs`).
+    pub my_shapes: crate::my_shapes::MyShapes,
+    /// The shape of My shapes picked for the Common Shapes tool (`None`:
+    /// `common_shape`).
+    pub my_shape: Option<u64>,
     pub table_rows: u32,
     pub table_cols: u32,
     /// Create New Table's width and height in millimetres.
@@ -1317,6 +1347,9 @@ pub struct App {
     pub snap: crate::snap::SnapSettings,
     /// The Corners docker's operation and sizes.
     pub corners: crate::corners::CornersSettings,
+    /// The kind of corner the Shape tool bar's corner radius makes:
+    /// round, scalloped or chamfered (#1147).
+    pub corner_bar_op: crate::corners::CornerOp,
     /// The Join Curves docker's joint, gap tolerance and radius.
     pub join_settings: crate::corners::JoinSettings,
     /// The Fit Objects to Path docker's spacing, offset and turning.
@@ -1379,6 +1412,11 @@ pub struct App {
     /// A tab stop dragged on the tab ruler of the frame being edited
     /// (#1852).
     pub tab_drag: Option<crate::tab_ruler::TabDrag>,
+    /// Where the pointer was (page) when a selection box was last moved
+    /// with the right button held during its drag (#2050).
+    pub marquee_moved_from: Option<Point>,
+    /// An indent marker of the tab ruler being dragged (#1993).
+    pub indent_drag: Option<crate::tab_ruler::IndentDrag>,
     /// The right click that opened the context menu was on the tab ruler:
     /// the menu picks that stop's kind.
     pub tab_ruler_menu: Option<crate::tab_ruler::RulerHit>,
@@ -1444,6 +1482,10 @@ pub struct App {
     pub page_sorter: bool,
     /// View > Multipage View: every page laid out beside the current one.
     pub multipage: bool,
+    /// The wheel zoom still gliding (#1648).
+    pub zoom_glide: crate::view_motion::ZoomGlide,
+    /// The pan's slide after a flick (#831).
+    pub pan_inertia: crate::view_motion::PanInertia,
     /// The Font Sampler docker.
     pub font_sampler: crate::ui::font_sampler::FontSampler,
     /// View > Draw in Perspective.
@@ -1486,6 +1528,8 @@ pub struct App {
     /// Options > Text's tab (Display, Paragraph Text, Fonts, Spelling,
     /// Autocorrect).
     pub options_text_tab: usize,
+    /// A setting Help > Search Commands found, framed on its page.
+    pub options_highlight: Option<crate::ui::options::SettingHighlight>,
     /// What an open options dialog may change, for its Cancel button.
     pub options_snapshot: Option<crate::ui::options::OptionsSnapshot>,
     /// Options > Customization > Commands: the commands listed and the one
@@ -1565,6 +1609,9 @@ pub struct App {
     pub options_labels: bool,
     /// Navigator pop-up (corner of the scrollbars).
     pub navigator_open: bool,
+    /// View > Navigator opened the Navigator: it stays open until a click
+    /// (on its picture: the view goes there) or Esc.
+    pub navigator_pinned: bool,
     /// A right-button drag of the selection and the menu where it ended
     /// (see drop_menu.rs).
     pub right_drag: Option<crate::drop_menu::RightDrag>,
@@ -1577,6 +1624,11 @@ pub struct App {
     /// frame: the row of toolbars each lies over and its band, for the
     /// drops of a dragged palette bar (`palette_bars::toolbar_target`).
     pub palette_bands: Vec<(u32, egui::Rect)>,
+    /// The bars docked at the window's sides as this frame drew them, in
+    /// order from each edge inwards, with the places palette bars can
+    /// take between them: the drops of a dragged palette bar beside
+    /// another bar (`palette_bars::side_target`).
+    pub side_marks: Vec<crate::ui::palette_bars::SideMark>,
     /// A toolbar button being moved, and where the bars that take them
     /// were drawn this frame (see ui/bar_items.rs).
     pub bar_item_drag: Option<crate::ui::bar_items::ItemDrag>,
@@ -1678,6 +1730,13 @@ pub struct App {
     pub distribute_to: crate::ops::DistributeTo,
     /// Distribute with a set spacing: the distance, mm (#2005).
     pub distribute_gap: f64,
+    /// The last Distribute button used with a set spacing and the
+    /// selection it spread: changing the spacing then spreads it again,
+    /// live (`align_docker::GapLive`).
+    pub distribute_last: Option<(crate::ops::Distribute, Vec<tracedraw_core::ShapeId>)>,
+    /// The set spacing being changed with its slider or the wheel, shown
+    /// on the drawing as a preview until it is kept or put back.
+    pub gap_live: Option<crate::ui::align_docker::GapLive>,
     pub lens: crate::lens::LensSettings,
     /// How dragging an envelope node reshapes its sides.
     pub envelope_mode: tracedraw_core::envelope::Mode,
@@ -1693,6 +1752,9 @@ pub struct App {
     /// drag.
     pub crop_area: Option<Rect>,
     pub crop_drag: Option<crate::crop_tool::CropDrag>,
+    /// Where the Crop and Clear buttons were drawn on the canvas this
+    /// frame (screen space), for the tests (#1202).
+    pub crop_button_rects: Option<(egui::Rect, egui::Rect)>,
     pub transparency_default: crate::effects_ui::TransparencySettings,
     /// The Glyphs docker's font and character range.
     pub glyph_font: String,
@@ -1727,6 +1789,10 @@ pub struct App {
     /// is still shown). Kept from frame to frame, since a drop is handled
     /// while the rows are drawn, before later bars say where they are.
     pub palette_drop_rects: Vec<(usize, egui::Rect)>,
+    /// Where each palette strip was drawn this frame, the one drawn last
+    /// (over the others) last: a picture from the drawing let go there
+    /// gives that palette its colours (#2137).
+    pub palette_strip_rects: Vec<(crate::ui::palette::Row, egui::Rect)>,
     /// The New Palette window, open: the name typed.
     pub palette_new: Option<String>,
     /// The pointer on screen, wherever it is (drops outside the drawing).
@@ -1815,6 +1881,10 @@ pub struct App {
     /// The shaping brushes' nib being sized by a Shift+drag (see
     /// `brushes.rs`).
     pub brush_resize: Option<crate::brushes::BrushResize>,
+    /// What the brush stroke under way works from: the outlines Attract
+    /// and Repel's hold or Roughen's stroke started from, the dose held
+    /// so far and Roughen's way (see `brushes.rs`).
+    pub brush_stroke: crate::brushes::StrokeBase,
     /// The style new dimensions take (the dimension tools' bar).
     pub dimension_style: crate::dimensions::DimensionStyle,
     /// The document revision dimensions were last checked at for moves
@@ -2613,6 +2683,8 @@ impl App {
             show_status_bar: true,
             show_dockers: true,
             touch_mods: Default::default(),
+            touch_keys_shown: Vec::new(),
+            touch_tap: Default::default(),
             docker_tab: DockerTab::Hints,
             flyout_open: None,
             toolbox_last: crate::tools::GROUPS.iter().map(|g| g.tools[0]).collect(),
@@ -2624,6 +2696,7 @@ impl App {
             duplicate_offset: Vec2::ZERO,
             last_duplicate: Vec::new(),
             forgotten_duplicate: None,
+            selection_steps: Default::default(),
             last_guide_duplicate: None,
             polygon_points: 5,
             box_regular: false,
@@ -2639,11 +2712,14 @@ impl App {
             ellipse_arc: None,
             contour: Default::default(),
             contour_drag: None,
+            contour_handle_drag: None,
             blend_handle_drag: None,
             blend_end_drag: None,
             spiral_revolutions: 4,
             spiral_logarithmic: false,
             common_shape: crate::tools2::CommonShape::RightArrow,
+            my_shapes: Default::default(),
+            my_shape: None,
             table_rows: 3,
             table_cols: 4,
             table_size: (75.0, 100.0),
@@ -2734,6 +2810,7 @@ impl App {
             guide_anchors: Default::default(),
             align_cache: Default::default(),
             corners: Default::default(),
+            corner_bar_op: Default::default(),
             join_settings: Default::default(),
             fit_path: Default::default(),
             fit_path_for: None,
@@ -2756,6 +2833,8 @@ impl App {
             text_link_incoming: false,
             text_link_from_tab: false,
             tab_drag: None,
+            indent_drag: None,
+            marquee_moved_from: None,
             tab_ruler_menu: None,
             clip_frame_edit: None,
             clip_edit_marks: Vec::new(),
@@ -2783,6 +2862,8 @@ impl App {
             preview_selected_only: false,
             page_sorter: false,
             multipage: false,
+            zoom_glide: Default::default(),
+            pan_inertia: Default::default(),
             font_sampler: Default::default(),
             perspective: None,
             effect_picker: Default::default(),
@@ -2805,6 +2886,7 @@ impl App {
             show_baseline_grid: false,
             options_page: crate::ui::dialogs::OptionsPage::General,
             options_text_tab: 0,
+            options_highlight: None,
             options_snapshot: None,
             shortcut_editor: Default::default(),
             pending_command: None,
@@ -2827,6 +2909,7 @@ impl App {
             palette_drag: None,
             doc_palette_rect: None,
             palette_drop_rects: Vec::new(),
+            palette_strip_rects: Vec::new(),
             palette_new: None,
             pointer_screen: None,
             page_size_all: true,
@@ -2847,10 +2930,12 @@ impl App {
             pending_clone_effect: None,
             options_labels: false,
             navigator_open: false,
+            navigator_pinned: false,
             right_drag: None,
             bar_drag: None,
             bar_rows: Vec::new(),
             palette_bands: Vec::new(),
+            side_marks: Vec::new(),
             bar_item_drag: None,
             bar_slots: Vec::new(),
             shown_bar_slots: Vec::new(),
@@ -2909,6 +2994,8 @@ impl App {
             align_use_outline: false,
             distribute_to: Default::default(),
             distribute_gap: 1.0,
+            distribute_last: None,
+            gap_live: None,
             lens: Default::default(),
             envelope_mode: Default::default(),
             envelope_mapping: Default::default(),
@@ -2917,6 +3004,7 @@ impl App {
             extrude: Default::default(),
             extrude_drag: None,
             crop_area: None,
+            crop_button_rects: None,
             crop_drag: None,
             transparency_default: Default::default(),
             glyph_font: String::new(),
@@ -2970,6 +3058,7 @@ impl App {
             brush: Default::default(),
             brush_stepped: false,
             brush_resize: None,
+            brush_stroke: Default::default(),
             dimension_style: Default::default(),
             dimensions_checked: u64::MAX,
             dimension_labels_seen: Default::default(),
@@ -5406,7 +5495,8 @@ impl App {
             // A B-spline of its own keeps its control points (one that
             // went on from another curve is a curve like that one).
             if let Some(id) = id {
-                self.keep_spline(id, &line, c.nodes.iter().map(|n| n.0).collect());
+                let points = c.nodes.iter().map(|n| n.0).collect();
+                self.keep_spline(id, &line, points, c.spline_fixed_flags());
             }
         }
     }
@@ -5551,6 +5641,7 @@ impl App {
         id: ShapeId,
         line: &tracedraw_core::BezPath,
         points: Vec<Point>,
+        fixed: Option<Vec<bool>>,
     ) {
         let fresh = matches!(
             self.doc().find_shape(id).map(|s| &s.kind),
@@ -5560,7 +5651,7 @@ impl App {
             let _ = self.engine.amend(&Command::SetSpline {
                 shape: id,
                 points,
-                fixed: None,
+                fixed,
             });
         }
     }
@@ -5650,16 +5741,16 @@ impl App {
                 self.text_size_pt = (seen * 100.0).round() / 100.0;
                 self.text_bold = sp.bold;
                 self.text_italic = sp.italic;
-                self.text_underline = sp.underline;
-                self.text_strikethrough = sp.strikethrough;
+                self.text_underline = sp.underline.is_on();
+                self.text_strikethrough = sp.strikethrough.is_on();
                 self.text_shown = Some(TextShown {
                     shape: id,
                     font: Some(self.text_font.clone()),
                     size_pt: Some(self.text_size_pt),
                     bold: Some(sp.bold),
                     italic: Some(sp.italic),
-                    underline: Some(sp.underline),
-                    strikethrough: Some(sp.strikethrough),
+                    underline: Some(sp.underline.is_on()),
+                    strikethrough: Some(sp.strikethrough.is_on()),
                 });
             }
             // The alignment of the paragraph at the caret.
@@ -5810,14 +5901,7 @@ impl App {
     }
 
     pub fn select_all(&mut self) {
-        let ids = self
-            .page_layers()
-            .into_iter()
-            .filter(|l| !l.locked)
-            .flat_map(|l| &l.shapes)
-            .map(|s| s.id)
-            .filter(|id| !self.outside_clip_edit(*id))
-            .collect();
+        let ids = self.selectable_ids();
         self.select(ids);
     }
 
@@ -6665,6 +6749,10 @@ impl App {
         if self.undo_duplicate_deselect() {
             return;
         }
+        // Invert Selection or Select Similar just made (#2002).
+        if self.undo_selection_step() {
+            return;
+        }
         let step = self.engine.last_step_id();
         let undone = match self.engine.undo() {
             Ok(l) => {
@@ -6703,6 +6791,9 @@ impl App {
             return;
         }
         self.curve_steps.clear();
+        if self.redo_selection_step() {
+            return;
+        }
         let redone = match self.engine.redo() {
             Ok(l) => {
                 self.status = crate::i18n::trf("status.redo_n", &[("l", l)]);
@@ -7776,6 +7867,12 @@ impl App {
         }
         // The box says what the card would: no card over it afterwards.
         self.update_card_hidden = true;
+        // Debug builds: a pretend update for the visual checks.
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        if crate::updates::demo(&self.updates, &self.installer, ctx.clone()) {
+            self.dialog = crate::ui::dialogs::Dialog::Updates;
+            return;
+        }
         self.updates.start(ctx);
         self.dialog = crate::ui::dialogs::Dialog::Updates;
     }
@@ -7884,20 +7981,19 @@ impl App {
             None => self.drawing_title(self.active_doc),
             Some(i) => self.drawing_title(i),
         };
-        let stem: String = title
-            .trim_end_matches('*')
-            .trim()
-            .trim_end_matches(".tdraw")
-            .trim_end_matches(".cdr")
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        // The name in its own script, accents and vowel marks included
+        // (the tab of a recovered drawing shows it again); only what no
+        // file name can hold changes, the same on every system.
+        let stem: String = crate::files::clean_file_name_for(
+            title
+                .trim_end_matches('*')
+                .trim()
+                .trim_end_matches(".tdraw")
+                .trim_end_matches(".cdr"),
+            true,
+        )
+        .trim_start_matches('.')
+        .to_string();
         format!("AutoBackup_of_{stem}.tdraw")
     }
 
@@ -7945,22 +8041,47 @@ impl App {
         }
     }
 
-    /// File > Export (Ctrl+E, the toolbar button): the Export dialog with
-    /// every format, starting with the choices of the last export of this
-    /// session, else those of Options > Global > File Formats (#617).
+    /// File > Export (Ctrl+E, the toolbar button). On the desktop the
+    /// Save dialog comes first (folder, name and format, every format
+    /// offered, the last one used first), then the Export dialog with the
+    /// options of the format chosen; OK writes the file, Cancel nothing.
+    /// With "Do not show this dialog again" (Options > Global > File
+    /// Formats) the file is written right after the Save dialog with the
+    /// last options. In the browser and on Android the options come first
+    /// and OK asks for the file (see `EXPORT_FILE_FIRST`). The choices
+    /// start with those of the last export of this session, else those
+    /// of Options > Global > File Formats (#617).
     pub fn export(&mut self) {
+        self.export_asking(false);
+    }
+
+    /// File > Export with Options (Ctrl+Shift+E), or Export chosen with
+    /// Shift held: [`App::export`] with the options shown whatever "Do
+    /// not show this dialog again" says.
+    pub fn export_with_options(&mut self) {
+        self.export_asking(true);
+    }
+
+    fn export_asking(&mut self, show_options: bool) {
+        use crate::ui::dialogs::{
+            choose_export_file, export_with_file_dialog, Dialog, EXPORT_FILE_FIRST,
+        };
         let mut st = self
             .last_export
             .clone()
             .unwrap_or_else(|| self.settings.formats.state());
         st.remember = true;
-        // "Do not show filter dialog": straight to the file.
-        if self.settings.formats.skip_export_dialog {
-            crate::ui::dialogs::export_with_file_dialog(self, &st);
+        st.target = None;
+        st.dont_show = self.settings.formats.skip_export_dialog;
+        let skip = self.settings.formats.skip_export_dialog && !show_options;
+        if EXPORT_FILE_FIRST {
+            choose_export_file(self, st, skip);
+        } else if skip {
+            export_with_file_dialog(self, &st, true);
             self.keep_export_choices(&st);
-            return;
+        } else {
+            self.dialog = Dialog::Export(st);
         }
-        self.dialog = crate::ui::dialogs::Dialog::Export(st);
     }
 
     /// A File > Export done with `st`: the next export of the session
@@ -7979,6 +8100,9 @@ impl App {
         kept.tags.clear();
         kept.selection_only = false;
         kept.preset_name = None;
+        // The file belongs to this export; the check box to the settings.
+        kept.target = None;
+        kept.dont_show = false;
         crate::prefs::keep_format_choices(&mut self.export_by_format, &kept);
         self.last_export = Some(kept);
         if self.settings.formats.remember_last {
@@ -8816,6 +8940,20 @@ impl App {
                 let c = self.page_rect().center();
                 self.centre_view_at(c, 100.0, canvas);
             }
+            OpenView::Percent => {
+                let c = self.page_rect().center();
+                let percent = self.settings.open_zoom_percent;
+                // A number read from damaged settings opens at real size.
+                let percent = if percent.is_finite() {
+                    percent.clamp(
+                        *crate::settings::OPEN_ZOOM_RANGE.start(),
+                        *crate::settings::OPEN_ZOOM_RANGE.end(),
+                    )
+                } else {
+                    100.0
+                };
+                self.centre_view_at(c, percent, canvas);
+            }
             OpenView::AsSaved => {
                 let pages = self.doc().pages.len();
                 if let Some(v) = self.doc().saved_view.filter(|v| v.is_valid(pages)) {
@@ -9194,10 +9332,37 @@ pub fn fill_description(fill: &Fill) -> String {
         Fill::Pattern(tracedraw_core::Pattern::Bitmap { .. }) => tr("fill.bitmap_pattern"),
         Fill::Pattern(tracedraw_core::Pattern::Vector { .. }) => tr("fill.vector_pattern"),
         Fill::Texture(_) => tr("fill.texture_fill"),
+        Fill::Procedural(p) => trf(
+            "fill.procedural_fill",
+            &[(
+                "p",
+                &tr(crate::ui::dockers::procedural_pattern_key(p.pattern)),
+            )],
+        ),
         Fill::Mesh(m) => trf(
             "fill.mesh_fill_n",
             &[("r", &m.rows.to_string()), ("c", &m.cols.to_string())],
         ),
+    }
+}
+
+/// [`color_description`], a spot colour of `doc` by its ink's name and
+/// tint ("CutContour 100%", #2186) rather than its number.
+pub fn color_description_in(doc: &tracedraw_core::Document, c: Color) -> String {
+    if let Color::Spot { ink, tint, .. } = c {
+        if let Some(i) = doc.ink(ink).filter(|i| !i.name.is_empty()) {
+            let t = if tint.is_finite() { tint } else { 1.0 };
+            return format!("{} {:.0}%", i.name, t.clamp(0.0, 1.0) * 100.0);
+        }
+    }
+    color_description(c)
+}
+
+/// [`fill_description`], a spot colour of `doc` by its ink's name.
+pub fn fill_description_in(doc: &tracedraw_core::Document, fill: &Fill) -> String {
+    match fill {
+        Fill::Solid(c) => color_description_in(doc, *c),
+        other => fill_description(other),
     }
 }
 
@@ -10923,6 +11088,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Auto-backups keep the drawing's name in its own script, vowel
+    /// marks and accents included, and a recovered drawing shows it.
+    #[test]
+    fn auto_backups_keep_names_in_every_script() {
+        let mut app = App::headless();
+        for (file, backup) in [
+            ("שָׁלוֹם.tdraw", "AutoBackup_of_שָׁלוֹם.tdraw"),
+            ("cafe\u{301}.tdraw", "AutoBackup_of_cafe\u{301}.tdraw"),
+            ("文件 1.cdr", "AutoBackup_of_文件 1.tdraw"),
+            ("\u{200F}שלום: א?.tdraw", "AutoBackup_of_שלום_ א_.tdraw"),
+        ] {
+            app.file = Some(std::path::PathBuf::from("/x").join(file));
+            assert_eq!(app.backup_name(None), backup);
+        }
+        let dir =
+            std::env::temp_dir().join(format!("tracedraw-backup-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("AutoBackup_of_שָׁלוֹם.tdraw");
+        std::fs::write(&path, App::headless().doc().to_json().unwrap()).unwrap();
+        let mut back = App::headless();
+        back.recover(&[crate::recovery::Found {
+            marker: dir.join("marker"),
+            backups: vec![path],
+        }]);
+        assert_eq!(back.doc().title, "שָׁלוֹם");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn saving_over_a_file_keeps_a_backup_and_auto_backup_saves_dirty_drawings() {
         let dir = std::env::temp_dir().join(format!("tracedraw-backup-{}", std::process::id()));
@@ -11033,6 +11226,17 @@ mod tests {
         let mut next = App::headless();
         next.show_web_notice();
         assert!(matches!(next.dialog, crate::ui::dialogs::Dialog::WebNotice));
+    }
+
+    /// #1417: the browser notice no longer says that only the bundled
+    /// fonts are there: other fonts are fetched when text needs them and
+    /// fonts added in Font Manager are kept (#1400).
+    #[test]
+    fn the_browser_notice_tells_what_fonts_there_are() {
+        let text = crate::i18n::tr("web.notice_text");
+        assert!(!text.contains("only the bundled"), "{text}");
+        assert!(text.contains("Font Manager"), "{text}");
+        assert!(text.contains("downloaded the first time"), "{text}");
     }
 
     /// Save As .cdr with Embed fonts, opened on a machine without the

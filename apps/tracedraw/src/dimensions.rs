@@ -57,6 +57,61 @@ impl TextPosition {
     }
 }
 
+/// Where a linear dimension's label sits along its line (#1500): in
+/// the middle, toward the start (the first point measured) or the end,
+/// or outside the extension lines past either one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelAlong {
+    #[default]
+    Middle,
+    Start,
+    End,
+    OutsideStart,
+    OutsideEnd,
+}
+
+impl LabelAlong {
+    pub const ALL: [LabelAlong; 5] = [
+        LabelAlong::Middle,
+        LabelAlong::Start,
+        LabelAlong::End,
+        LabelAlong::OutsideStart,
+        LabelAlong::OutsideEnd,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            LabelAlong::Middle => "dimension.along_middle",
+            LabelAlong::Start => "dimension.along_start",
+            LabelAlong::End => "dimension.along_end",
+            LabelAlong::OutsideStart => "dimension.along_outside_start",
+            LabelAlong::OutsideEnd => "dimension.along_outside_end",
+        }
+    }
+
+    /// The label's middle, as a distance from the middle of a line `len`
+    /// long toward its end (negative: toward its start), for a label
+    /// reaching `half` along the line either way, with arrowheads
+    /// `arrow` long at the ends. A label that does not fit between the
+    /// arrowheads stays in the middle.
+    fn offset(self, len: f64, half: f64, arrow: f64) -> f64 {
+        let inside = (len / 2.0 - half - GAP - arrow).max(0.0);
+        let outside = len / 2.0 + 2.0 * GAP + half;
+        match self {
+            LabelAlong::Middle => 0.0,
+            LabelAlong::Start => -inside,
+            LabelAlong::End => inside,
+            LabelAlong::OutsideStart => -outside,
+            LabelAlong::OutsideEnd => outside,
+        }
+    }
+
+    fn outside(self) -> bool {
+        matches!(self, LabelAlong::OutsideStart | LabelAlong::OutsideEnd)
+    }
+}
+
 /// The marks at the ends of the dimension line (#475).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,6 +161,8 @@ pub struct DimensionStyle {
     pub prefix: String,
     pub suffix: String,
     pub text_position: TextPosition,
+    /// Where a linear dimension's label sits along its line (#1500).
+    pub label_along: LabelAlong,
     /// Label size, points.
     pub text_size: f64,
     /// The label's font; empty for the font of new text (as before the
@@ -142,6 +199,7 @@ impl Default for DimensionStyle {
             prefix: String::new(),
             suffix: String::new(),
             text_position: TextPosition::Above,
+            label_along: LabelAlong::Middle,
             text_size: 10.0,
             font: String::new(),
             line_color: Color::BLACK,
@@ -689,7 +747,6 @@ impl Dimension {
                     dir
                 };
                 let up = Vec2::new(-read.y, read.x);
-                let mid = a2.midpoint(b2);
                 let horizontal = self.style.horizontal_text;
                 // How far the label reaches along the line from its middle.
                 let half = if horizontal {
@@ -697,11 +754,20 @@ impl Dimension {
                 } else {
                     tb.width() / 2.0
                 };
+                // The label's middle on the line: the line's middle,
+                // toward either end, or past an extension line (#1500).
+                let along = self.style.label_along;
+                let arrow_len = if self.style.arrows == ArrowStyle::None {
+                    0.0
+                } else {
+                    ARROW_LEN
+                };
+                let mid = a2.midpoint(b2) + dir * along.offset(len, half, arrow_len);
                 // The dimension line, with a gap for a centred label.
                 // Joined, the extension lines run into it in a corner
                 // (#641).
                 let radius = self.style.radius();
-                if pos == TextPosition::Centered && len > 2.0 * (half + GAP) {
+                if pos == TextPosition::Centered && !along.outside() && len > 2.0 * (half + GAP) {
                     let (g1, g2) = (mid - dir * (half + GAP), mid + dir * (half + GAP));
                     if joined {
                         rounded_polyline(&mut lines, &[a1, a2, g1], radius);
@@ -717,6 +783,17 @@ impl Dimension {
                 } else {
                     lines.move_to(a2);
                     lines.line_to(b2);
+                }
+                // A label outside the extension lines above or below the
+                // line sits on the line run on to its far edge.
+                if along.outside() && pos != TextPosition::Centered {
+                    let (end, out) = if along == LabelAlong::OutsideStart {
+                        (a2, -dir)
+                    } else {
+                        (b2, dir)
+                    };
+                    lines.move_to(end);
+                    lines.line_to(mid + out * half);
                 }
                 arrow(a2, dir);
                 arrow(b2, -dir);
@@ -894,6 +971,29 @@ fn with_data(mut data: Vec<(String, String)>, d: &Dimension) -> Vec<(String, Str
     data
 }
 
+/// How far Add Dimensions puts the dimension lines from the box they
+/// measure, mm.
+pub const ADD_DIMENSIONS_GAP: f64 = 5.0;
+
+/// The dimensions Add Dimensions draws for the box `r` (page space, y
+/// up): its width along the bottom and its height along the right, each
+/// [`ADD_DIMENSIONS_GAP`] away from it.
+pub fn box_measures(r: Rect) -> [Measure; 2] {
+    let gap = ADD_DIMENSIONS_GAP;
+    [
+        Measure::Linear {
+            a: Point::new(r.x0, r.y0),
+            b: Point::new(r.x1, r.y0),
+            at: Point::new((r.x0 + r.x1) / 2.0, r.y0 - gap),
+        },
+        Measure::Linear {
+            a: Point::new(r.x1, r.y0),
+            b: Point::new(r.x1, r.y1),
+            at: Point::new(r.x1 + gap, (r.y0 + r.y1) / 2.0),
+        },
+    ]
+}
+
 impl App {
     /// A new dimension on the active layer, in the bar's style, one undo
     /// step.
@@ -901,6 +1001,71 @@ impl App {
         let Some(layer) = self.active_layer() else {
             return;
         };
+        let g = self.dimension_group(measure);
+        let group = g.id;
+        if let Err(e) = self
+            .engine
+            .run_batch(label, &[Command::AddShape { layer, shape: g }])
+        {
+            self.status = e.to_string();
+            return;
+        }
+        self.select(vec![group]);
+    }
+
+    /// Object > Insert > Add Dimensions: a horizontal dimension along the
+    /// bottom and a vertical one along the right of the selection's box,
+    /// or with `each`, of every selected object's own box, in the
+    /// Dimension tool's style and units, [`ADD_DIMENSIONS_GAP`] away; one
+    /// undo step. Dimensions in the selection are not measured. The new
+    /// dimensions are selected.
+    pub fn add_dimensions(&mut self, each: bool) {
+        let Some(layer) = self.active_layer() else {
+            return;
+        };
+        let boxes: Vec<Rect> = self
+            .selected_shapes()
+            .iter()
+            .filter(|s| !is_dimension(s))
+            .map(|s| s.bounds())
+            .filter(|r| r.is_finite() && (r.width() > 1e-9 || r.height() > 1e-9))
+            .collect();
+        let boxes = if each {
+            boxes
+        } else {
+            boxes
+                .into_iter()
+                .reduce(|a, b| a.union(b))
+                .into_iter()
+                .collect()
+        };
+        let mut cmds = Vec::new();
+        let mut ids = Vec::new();
+        for r in boxes {
+            for (i, m) in box_measures(r).into_iter().enumerate() {
+                // A flat box has no height (or width) to measure.
+                let extent = if i == 0 { r.width() } else { r.height() };
+                if extent <= 1e-9 {
+                    continue;
+                }
+                let g = self.dimension_group(m);
+                ids.push(g.id);
+                cmds.push(Command::AddShape { layer, shape: g });
+            }
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Add Dimensions", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        self.select(ids);
+    }
+
+    /// A dimension group for `measure` in the bar's style, its points held
+    /// to the objects they sit on.
+    fn dimension_group(&mut self, measure: Measure) -> Shape {
         let mut d = Dimension::new(measure, self.dimension_style.clone());
         d.anchors = self.anchors_for(&d);
         let d = d.noting_drawn(&self.text_font, self.units);
@@ -918,14 +1083,7 @@ impl App {
             },
         );
         g.data = with_data(Vec::new(), &d);
-        if let Err(e) = self
-            .engine
-            .run_batch(label, &[Command::AddShape { layer, shape: g }])
-        {
-            self.status = e.to_string();
-            return;
-        }
-        self.select(vec![group]);
+        g
     }
 
     /// The anchors of `d`'s points (page space) that sit on a node of an
@@ -1563,6 +1721,119 @@ mod tests {
             ShapeKind::Text { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Add Dimensions: the width along the bottom and the height along
+    /// the right of the selection's box, 5 mm away, in the Dimension
+    /// tool's style and units, as one undo step; with each object, a
+    /// pair per object; dimensions in the selection are not measured.
+    #[test]
+    fn add_dimensions_measures_the_selection_and_each_object() {
+        let mut app = App::headless();
+        let rect = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let a = rect(&mut app, Rect::new(10.0, 10.0, 60.0, 40.0));
+        let b = rect(&mut app, Rect::new(80.0, 20.0, 100.0, 90.0));
+        let measures = |app: &App| -> Vec<Measure> {
+            app.selection
+                .iter()
+                .map(|id| {
+                    let g = app.doc().find_shape(*id).expect("dimension");
+                    Dimension::of(g).expect("a dimension").measure
+                })
+                .collect()
+        };
+        let linear = |a: (f64, f64), b: (f64, f64), at: (f64, f64)| Measure::Linear {
+            a: Point::new(a.0, a.1),
+            b: Point::new(b.0, b.1),
+            at: Point::new(at.0, at.1),
+        };
+        // One object: 50 wide, 30 high.
+        app.select(vec![a]);
+        let steps = app.engine.history_labels().0.len();
+        app.dimension_style.precision = 1;
+        app.add_dimensions(false);
+        assert_eq!(
+            app.engine.history_labels().0.len(),
+            steps + 1,
+            "one undo step"
+        );
+        assert_eq!(
+            measures(&app),
+            [
+                linear((10.0, 10.0), (60.0, 10.0), (35.0, 5.0)),
+                linear((60.0, 10.0), (60.0, 40.0), (65.0, 25.0)),
+            ]
+        );
+        let values: Vec<f64> = app
+            .selection
+            .iter()
+            .map(|id| {
+                Dimension::of(app.doc().find_shape(*id).expect("g"))
+                    .expect("d")
+                    .value()
+            })
+            .collect();
+        assert_eq!(values, [50.0, 30.0]);
+        let labels: Vec<String> = app.selection.iter().map(|id| label_of(&app, *id)).collect();
+        assert!(labels[0].starts_with("50.0"), "{labels:?}");
+        assert!(labels[1].starts_with("30.0"), "{labels:?}");
+        // Below the box and to its right (y grows upwards).
+        for id in &app.selection {
+            let g = app.doc().find_shape(*id).expect("g");
+            let r = g.bounds();
+            assert!(
+                r.y1 <= 10.0 + 1e-6 || r.x0 >= 60.0 - 1e-6,
+                "{r:?} clear of the box"
+            );
+        }
+        // Undo takes both away.
+        app.undo();
+        assert!(app.doc().pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .all(|s| !is_dimension(s)));
+        // Two objects: the box around both, or a pair each.
+        app.select(vec![a, b]);
+        app.add_dimensions(false);
+        assert_eq!(
+            measures(&app),
+            [
+                linear((10.0, 10.0), (100.0, 10.0), (55.0, 5.0)),
+                linear((100.0, 10.0), (100.0, 90.0), (105.0, 50.0)),
+            ]
+        );
+        let made = app.selection.clone();
+        app.select(vec![a, b, made[0]]);
+        app.add_dimensions(true);
+        assert_eq!(
+            measures(&app),
+            [
+                linear((10.0, 10.0), (60.0, 10.0), (35.0, 5.0)),
+                linear((60.0, 10.0), (60.0, 40.0), (65.0, 25.0)),
+                linear((80.0, 20.0), (100.0, 20.0), (90.0, 15.0)),
+                linear((100.0, 20.0), (100.0, 90.0), (105.0, 55.0)),
+            ],
+            "the dimension selected is not measured"
+        );
+        // The units the tool's style names.
+        app.dimension_style.units = "cm".into();
+        app.select(vec![a]);
+        app.add_dimensions(false);
+        let label = label_of(&app, app.selection[0]);
+        assert!(label.starts_with("5.0"), "{label}");
+        // Nothing selected: nothing added.
+        app.select(Vec::new());
+        let steps = app.engine.history_labels().0.len();
+        app.add_dimensions(false);
+        assert_eq!(app.engine.history_labels().0.len(), steps);
     }
 
     /// A diameter dimension drawn across a circle: a click on the circle
@@ -2342,6 +2613,51 @@ mod tests {
         assert!(!json.contains("drawn") && !json.contains("\"text\""));
         let g = app.doc().find_shape(id).cloned().expect("g");
         assert_eq!(old.read_back(&g, None, None), None);
+    }
+
+    /// A linear dimension's label sits in the middle of its line, toward
+    /// either end, or outside the extension lines, where the line runs
+    /// on under it (#1500); a style saved before reads as the middle.
+    #[test]
+    fn the_label_sits_where_chosen_along_the_line() {
+        let measure = Measure::Linear {
+            a: Point::new(0.0, 0.0),
+            b: Point::new(100.0, 0.0),
+            at: Point::new(0.0, 10.0),
+        };
+        let ids = [ShapeId(1), ShapeId(2), ShapeId(3)];
+        let placed = |along: LabelAlong| {
+            let d = Dimension::new(
+                measure,
+                DimensionStyle {
+                    label_along: along,
+                    ..Default::default()
+                },
+            );
+            let [lines, _, label] = d.shapes(ids, "Arial", Units::Millimeters);
+            let reach = match &lines.kind {
+                ShapeKind::Path { path, .. } => path.bounding_box(),
+                _ => panic!("path"),
+            };
+            (label.transform.as_coeffs()[4], reach)
+        };
+        let (middle, plain) = placed(LabelAlong::Middle);
+        let (start, _) = placed(LabelAlong::Start);
+        let (end, _) = placed(LabelAlong::End);
+        let (before, run_back) = placed(LabelAlong::OutsideStart);
+        let (after, run_on) = placed(LabelAlong::OutsideEnd);
+        assert!(start > 0.0 && start < middle - 10.0, "{start} {middle}");
+        assert!(end < 100.0 && end > middle + 10.0, "{end} {middle}");
+        assert!(before < -2.0, "{before}");
+        assert!(after > 100.0, "{after}");
+        assert!(plain.x0 > -1e-9 && plain.x1 < 100.0 + 1e-9, "{plain:?}");
+        assert!(run_back.x0 < -2.0, "{run_back:?}");
+        assert!(run_on.x1 > 102.0, "{run_on:?}");
+        // A line too short for the label between its arrowheads keeps it
+        // in the middle.
+        assert_eq!(LabelAlong::Start.offset(10.0, 8.0, ARROW_LEN), 0.0);
+        let old: DimensionStyle = serde_json::from_str(r#"{"precision":1}"#).expect("old");
+        assert_eq!(old.label_along, LabelAlong::Middle);
     }
 
     /// The extension lines' gap and overshoot, the arrowheads' size and a

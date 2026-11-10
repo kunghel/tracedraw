@@ -73,6 +73,14 @@ configurações, e **Aplicar** as guarda para a próxima vez.
   páginas que não cabem saem da folha, e um aviso diz isso). Sem ela, as
   páginas encolhem para caber nas colunas e linhas pedidas. Na Visualização de impressão, arraste na folha para mover a
   informação da página.
+- [[print.page_order]], com várias páginas por folha:
+  [[print.order_across]], [[print.order_down]], [[print.order_down_sheets]]
+  ou [[print.order_cut_stack]]. Cortar e empilhar numera ao longo da pilha,
+  para ingressos e cartões mesclados: cada posição da folha recebe o
+  registro seguinte na folha seguinte, então depois de cortar as folhas
+  empilhadas cada monte é uma sequência e os montes se empilham em ordem.
+  100 registros, 4 por folha, saem em 25 folhas, a primeira com 1, 26, 51 e
+  76, a segunda com 2, 27, 52 e 77.
 
 ## Livretos {#booklet}
 

@@ -29,7 +29,7 @@ mengatur cara kerja program. Pilih halaman dari daftar di sebelah kiri.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (bawaan),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] atau
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] atau
   [[options.open_view_saved]] (halaman, posisi, dan zoom yang disimpan
   setiap kali berkas TraceDraw disimpan).
 - [[options.ruler_calibration]]: tempelkan penggaris ke layar dan ubah

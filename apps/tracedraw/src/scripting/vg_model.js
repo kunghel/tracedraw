@@ -134,7 +134,7 @@ const __consts = {
   cdrLensTintedGrayscale: 8, cdrLensTransparency: 9, cdrLensWireframe: 10,
   // cdrViewType
   cdrSimpleWireframeView: 0, cdrWireframeView: 1, cdrDraftView: 2, cdrNormalView: 3,
-  cdrEnhancedView: 4, cdrPixelView: 6,
+  cdrEnhancedView: 4, cdrEnhancedViewWithOverprints: 5, cdrPixelView: 6,
   // cdrAntiAliasingType
   cdrNoAntiAliasing: 0, cdrNormalAntiAliasing: 1, cdrSupersampling: 2,
   // cdrTextLanguage (Windows language ids)
@@ -813,19 +813,35 @@ function __matches(id, Name, Type, query) {
 const __typeNames = { rectangle: cdrRectangleShape, ellipse: cdrEllipseShape, curve: cdrCurveShape,
   polygon: cdrPolygonShape, bitmap: cdrBitmapShape, text: cdrTextShape, group: cdrGroupShape,
   symbol: cdrSymbolShape };
-// Queries: comparisons of @name, @type and @fill.type joined by "and" /
-// "or", e.g. "@name = 'Logo' and @type = 'rectangle'".
+// Queries: comparisons of @name, @type and @fill.type, and the string
+// tests StartsWith, EndsWith and Contains on them, joined by "and" /
+// "or", e.g. "@name = 'Logo' and @type = 'rectangle'" or
+// "@name.StartsWith('UNDERLAY_')".
+function __queryValue(info, prop) {
+  switch (prop.toLowerCase()) {
+    case 'name': return info.name || '';
+    case 'type': return Object.keys(__typeNames).find(k => __typeNames[k] === __typeOf(info)) || '';
+    case 'fill.type': return { none: 'none', solid: 'uniform', fountain: 'fountain', pattern: 'pattern', texture: 'texture', mesh: 'mesh' }[info.fill.fill];
+    default: return undefined;
+  }
+}
 function __query(info, q) {
   return String(q).split(/\s+or\s+/i).some(part => part.split(/\s+and\s+/i).every(t => {
-    const m = /^\s*@([\w.]+)\s*(=|<>|!=)\s*'([^']*)'\s*$/.exec(t);
-    if (!m) return false;
-    let v;
-    switch (m[1].toLowerCase()) {
-      case 'name': v = info.name; break;
-      case 'type': v = Object.keys(__typeNames).find(k => __typeNames[k] === __typeOf(info)) || ''; break;
-      case 'fill.type': v = { none: 'none', solid: 'uniform', fountain: 'fountain', pattern: 'pattern', texture: 'texture', mesh: 'mesh' }[info.fill.fill]; break;
-      default: return false;
+    let m = /^\s*@([\w.]+?)\.(StartsWith|EndsWith|Contains)\(\s*'([^']*)'\s*\)\s*$/i.exec(t);
+    if (m) {
+      const v = __queryValue(info, m[1]);
+      if (v === undefined) return false;
+      const s = String(v);
+      switch (m[2].toLowerCase()) {
+        case 'startswith': return s.startsWith(m[3]);
+        case 'endswith': return s.endsWith(m[3]);
+        default: return s.includes(m[3]);
+      }
     }
+    m = /^\s*@([\w.]+)\s*(=|<>|!=)\s*'([^']*)'\s*$/.exec(t);
+    if (!m) return false;
+    const v = __queryValue(info, m[1]);
+    if (v === undefined) return false;
     const eq = String(v).toLowerCase() === m[3].toLowerCase();
     return m[2] === '=' ? eq : !eq;
   }));
@@ -1229,7 +1245,10 @@ class Document {
     return new ExportFilter({ path: String(FileName), format: __filterExt[Filter] || '', page: this._d.page,
       w: Width || 0, h: Height || 0, dpi: ResolutionX || 0 });
   }
-  PublishToPDF(FileName) { __call('vg_export', { path: String(FileName), format: 'pdf' }); }
+  PublishToPDF(FileName) {
+    const r = (__vg.pdf && __vg.pdf.range) || pdfWholeDocument;
+    __call('vg_export', { path: String(FileName), format: 'pdf', current_page: r === pdfCurrentPage });
+  }
 }
 
 // ----- Application and globals --------------------------------------------
@@ -1343,8 +1362,10 @@ class __View {
   get OriginY() { return __un(__call('vg_doc', {}).view[1]); }
   get Zoom() { return 100; }
   set Zoom(v) { }
-  get Type() { return cdrEnhancedView; }
-  set Type(v) { }
+  // The view type: overprints are simulated in the enhanced view with
+  // overprints, as View > Simulate Overprints shows them.
+  get Type() { return __call('vg_doc', {}).simulate_overprints ? cdrEnhancedViewWithOverprints : cdrEnhancedView; }
+  set Type(v) { __call('vg_view', { simulate_overprints: v === cdrEnhancedViewWithOverprints }); }
   SetViewPoint() { }
   SetViewArea() { }
   ToFitPage() { }
@@ -1682,3 +1703,97 @@ Layer.prototype.PasteSpecial = function () { return __no('Layer.PasteSpecial', '
 __def(Fill, 'Pattern', function () { return { get Type() { return __no('Fill.Pattern'); } }; });
 __def(Shape, 'StartShape', function () { return __no('Shape.StartShape', 'connectors are not objects of their own'); });
 __Bitmap.prototype.GetPixelColor = function () { return __no('Bitmap.GetPixelColor'); };
+
+// ----- Palettes -----------------------------------------------------------
+// Application.Palettes: the Palette Manager's palettes, each a 1-based list
+// of named colours; Document.Palette: the drawing's own palette. A spot
+// colour's Name is its ink's name, so macros find inks by name.
+
+class Palette {
+  constructor(p) { this._p = p; }
+  get Name() { return this._p.name; }
+  get ColorCount() { return this._p.colors.length; }
+  Color(Index) {
+    const e = this._p.colors[Index - 1];
+    if (!e) throw new Error('The index is out of range: ' + Index);
+    const c = new Color(JSON.parse(JSON.stringify(e.color)));
+    c._name = e.name;
+    return c;
+  }
+  get Colors() {
+    const n = this._p.colors.length;
+    return { Count: n, Item: (i) => this.Color(i),
+      [Symbol.iterator]: () => __iter(Array.from({ length: n }, (_, i) => this.Color(i + 1))) };
+  }
+  FindColor(Name) {
+    const i = this._p.colors.findIndex(e => e.name.toLowerCase() === String(Name).toLowerCase());
+    return i < 0 ? null : this.Color(i + 1);
+  }
+}
+class __Palettes {
+  constructor() { this._list = __call('vg_palettes', {}).palettes; }
+  get Count() { return this._list.length; }
+  Item(IndexOrName) {
+    const p = typeof IndexOrName === 'number' ? this._list[IndexOrName - 1]
+      : this._list.find(q => q.name.toLowerCase() === String(IndexOrName).toLowerCase());
+    if (!p) throw new Error('No palette ' + IndexOrName);
+    return new Palette(p);
+  }
+  [Symbol.iterator]() { return __iter(this._list.map(p => new Palette(p))); }
+}
+Object.defineProperty(Application, 'Palettes', { get() { return new __Palettes(); }, configurable: true });
+Object.defineProperty(globalThis, 'Palettes', { get() { return new __Palettes(); }, configurable: true });
+__def(Document, 'Palette', function () { return new Palette(__call('vg_doc_palette', {})); });
+__def(Color, 'Name', function () {
+  if (this._name) return this._name;
+  if (this.v.model === 'spot') return __call('vg_ink_name', { ink: this.v.ink }).name;
+  return '';
+});
+
+// ----- Contours, outlines as objects, copies on another layer --------------
+// cdrContourDirection, as the published reference numbers it.
+const cdrContourToCenter = 0, cdrContourInside = 1, cdrContourOutside = 2;
+globalThis.cdrContourToCenter = cdrContourToCenter;
+globalThis.cdrContourInside = cdrContourInside;
+globalThis.cdrContourOutside = cdrContourOutside;
+// Shape.CreateContour(Direction, Offset, Steps, BlendType, OutlineColor,
+// FillColor, ...): a contour effect on the object; the effect it gives
+// back separates into plain objects.
+Shape.prototype.CreateContour = function (Direction, Offset, Steps, BlendType, OutlineColor, FillColor) {
+  const args = { id: this.id, direction: Direction === undefined ? cdrContourOutside : Direction,
+    offset: __mm(Offset === undefined ? 1 : Offset), steps: Steps === undefined ? 1 : Steps };
+  if (FillColor && FillColor.v) args.fill = FillColor.v;
+  const r = __call('vg_add_contour', args);
+  return new __Effect(this.id, { kind: 'contour', index: r.index });
+};
+Outline.prototype.ConvertToObject = function () {
+  const ids = this.o._ids();
+  let last = null;
+  for (const id of ids) last = new Shape(__call('vg_outline_to_object', { id: id }).id);
+  return last;
+};
+for (const cls of [Shape, ShapeRange, SelectionShape]) {
+  cls.prototype.CopyToLayer = function (Layer) {
+    return new ShapeRange(__call('vg_copy_to_layer', { ids: this._ids(), layer: Layer.id }).ids);
+  };
+}
+
+// ----- PDF settings ---------------------------------------------------------
+// Document.PDFSettings: the range PublishToPDF writes (the whole drawing or
+// the current page). TraceDraw's PDF always keeps spot inks and overprint,
+// so a named settings style loads and saves without changing anything.
+const pdfWholeDocument = 0, pdfCurrentPage = 1, pdfDocuments = 2, pdfPageRange = 3, pdfSelection = 4;
+Object.assign(globalThis, { pdfWholeDocument, pdfCurrentPage, pdfDocuments, pdfPageRange, pdfSelection });
+class __PdfSettings {
+  get _s() { if (!__vg.pdf) __vg.pdf = { range: pdfWholeDocument }; return __vg.pdf; }
+  get PublishRange() { return this._s.range; }
+  set PublishRange(v) {
+    if (v !== pdfWholeDocument && v !== pdfCurrentPage) __no('PDFSettings.PublishRange', 'the whole drawing or the current page');
+    this._s.range = v;
+  }
+  Load(Name) { return true; }
+  Save(Name) { }
+  ShowDialog() { return true; }
+  Reset() { this._s.range = pdfWholeDocument; }
+}
+__def(Document, 'PDFSettings', function () { return new __PdfSettings(); });

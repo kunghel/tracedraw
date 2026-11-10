@@ -86,14 +86,81 @@ pub fn shadow_covers(s: &Shape, p: Point) -> bool {
 }
 
 impl App {
-    /// The first selected object's shadow, with its id and box.
+    /// The shadow the Drop Shadow tool edits: the first selected object
+    /// that has one, with its id and box. Its handles show and the
+    /// property bar shows its settings, also with objects of no shadow
+    /// picked before it.
     pub fn selected_shadow(&self) -> Option<(ShapeId, Shadow, Rect)> {
-        let s = self.selected_shapes().into_iter().next()?;
-        let sh = s.shadow?;
-        Some((s.id, sh, shadow_box(&s)))
+        self.selected_rc()
+            .iter()
+            .find_map(|s| Some((s.id, s.shadow?, shadow_box(s))))
     }
 
-    /// The shadow handle under page point `p`, with the Drop Shadow tool.
+    /// The settings the Drop Shadow property bar shows: the selected
+    /// shadow's (see [`Self::selected_shadow`]), else those new shadows
+    /// get.
+    pub fn shadow_bar_shadow(&self) -> Shadow {
+        self.selected_shadow()
+            .map_or(self.shadow_default, |(_, sh, _)| sh)
+    }
+
+    /// Edit Shadow can act: a selected object has a drop shadow.
+    pub fn can_edit_shadow(&self) -> bool {
+        self.selected_shadow().is_some()
+    }
+
+    /// Edit Shadow (the object's right-click menu, the Properties
+    /// docker, a double click on a shadow): the Drop Shadow tool on the
+    /// first selected object with a shadow, that object alone selected,
+    /// with its handles on the canvas and its settings on the property
+    /// bar.
+    pub fn edit_shadow(&mut self) {
+        let Some((id, _, _)) = self.selected_shadow() else {
+            return;
+        };
+        self.set_tool(crate::tools::Tool::DropShadow);
+        self.select(vec![id]);
+    }
+
+    /// The handles of the selected shadow where they are drawn, end
+    /// first, with the Drop Shadow tool. While the start handle is
+    /// dragged it is drawn under the pointer, in every mode (the shadow
+    /// itself stands on the edge it is over, or lies flat in the middle),
+    /// with the opacity slider on the line from there; let go, it is back
+    /// where the shadow starts.
+    pub fn shown_shadow_handles(&self) -> Option<[(ShadowHandle, Point); 3]> {
+        if self.tool != crate::tools::Tool::DropShadow {
+            return None;
+        }
+        let (_, sh, b) = self.selected_shadow()?;
+        let mut hs = shadow_handles(&sh, b);
+        if let (
+            crate::app::Drag::ShadowHandle {
+                handle: ShadowHandle::Start,
+                grab,
+                ..
+            },
+            Some(at),
+        ) = (&self.drag, self.pointer_page)
+        {
+            let a = at + *grab;
+            let e = sh.end_point(b);
+            let o = a + (e - a) * sh.opacity.clamp(0.0, 1.0);
+            for (h, p) in &mut hs {
+                match h {
+                    ShadowHandle::Start => *p = a,
+                    ShadowHandle::Opacity => *p = o,
+                    ShadowHandle::End => {}
+                }
+            }
+        }
+        Some(hs)
+    }
+
+    /// The shadow handle under page point `p`, with the Drop Shadow tool:
+    /// the nearest one within reach of `p` (the end first where two lie
+    /// on one spot), so each handle is taken by a press on it however
+    /// close the others lie, flat or standing on an edge.
     pub fn shadow_handle_at(&self, p: Point) -> Option<ShadowHandle> {
         if self.tool != crate::tools::Tool::DropShadow {
             return None;
@@ -102,7 +169,9 @@ impl App {
         let tol = HANDLE_PX / f64::from(self.view.zoom.max(1e-6));
         shadow_handles(&sh, b)
             .into_iter()
-            .find(|(_, hp)| (*hp - p).hypot() <= tol)
+            .map(|(h, hp)| (h, (hp - p).hypot()))
+            .filter(|(_, d)| *d <= tol)
+            .min_by(|x, y| x.1.total_cmp(&y.1))
             .map(|(h, _)| h)
     }
 

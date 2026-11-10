@@ -103,8 +103,8 @@ objects. Below the drawing are:
   and the scroll bar to share the space between them.
 
 The **Navigator** button in the corner between the scroll bars shows a
-thumbnail of the page while you hold it; move the pointer over the thumbnail
-to move the view. Double-clicking the page border with the [[tool.pick]]
+thumbnail of the page while you hold it (or the <kbd>N</kbd> key); move the
+pointer over the thumbnail to move the view. Double-clicking the page border with the [[tool.pick]]
 tool opens the page size options.
 
 ## The color palette {#color-palette}

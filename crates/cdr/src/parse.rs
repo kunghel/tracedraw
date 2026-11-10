@@ -1248,6 +1248,7 @@ impl<'a> Ctx<'a> {
         Some(Fill::Pattern(tracedraw_core::style::Pattern::Vector {
             shapes,
             tile,
+            placement: Default::default(),
         }))
     }
 
@@ -1510,6 +1511,7 @@ impl<'a> Ctx<'a> {
             width_px: bm.width_px,
             height_px: bm.height_px,
             size_mm,
+            placement: Default::default(),
         }))
     }
 
@@ -1558,6 +1560,7 @@ impl<'a> Ctx<'a> {
                 width_px: tile.width,
                 height_px: tile.height,
                 size_mm,
+                placement: Default::default(),
             }));
         }
         self.report.warn(format!(
@@ -1568,6 +1571,7 @@ impl<'a> Ctx<'a> {
             front,
             back,
             size_mm,
+            placement: Default::default(),
         }))
     }
 
@@ -1907,8 +1911,8 @@ impl<'a> Ctx<'a> {
         if let Some(f) = style.flags {
             span.bold = f.bold();
             span.italic = f.italic();
-            span.underline = f.underline();
-            span.strikethrough = f.strikethrough();
+            span.underline = f.underline().into();
+            span.strikethrough = f.strikethrough().into();
             weight = f.weight();
         }
         if let Some(b) = style.bold {
@@ -1920,10 +1924,10 @@ impl<'a> Ctx<'a> {
             span.italic = i;
         }
         if let Some(u) = style.underline {
-            span.underline = u;
+            span.underline = u.into();
         }
         if let Some(t) = style.strikethrough {
-            span.strikethrough = t;
+            span.strikethrough = t.into();
         }
         if let Some(cs) = style.char_spacing {
             if cs != 0.0 {
@@ -2968,6 +2972,7 @@ impl<'a> Ctx<'a> {
                 width_px: tile.width,
                 height_px: tile.height,
                 size_mm,
+                placement: Default::default(),
             });
         }
         self.report
@@ -2977,6 +2982,7 @@ impl<'a> Ctx<'a> {
             front,
             back,
             size_mm,
+            placement: Default::default(),
         })
     }
 
@@ -3001,6 +3007,7 @@ impl<'a> Ctx<'a> {
             front: Color::cmyk_pct(0.0, 0.0, 0.0, 40.0),
             back: Color::cmyk_pct(0.0, 0.0, 0.0, 0.0),
             size_mm: 4.0,
+            placement: Default::default(),
         })
     }
 
@@ -3448,6 +3455,9 @@ impl<'a> Ctx<'a> {
                 ARG_STYLE => style_id = self.reader_at(d, arg.off).uint(),
                 ARG_STYLE_STRING => style_string = self.read_object_style_string(d, *arg),
                 ARG_OPACITY => {
+                    if let Some(axis) = self.read_graded_transparency_axis(d, *arg) {
+                        v15_mask_axis = Some(axis);
+                    }
                     if let Some(l) = self.read_lens(d, *arg) {
                         lens = Some(l);
                     } else if let Some((o, m)) = self.read_transparency_v11(d, *arg) {
@@ -3705,7 +3715,12 @@ impl<'a> Ctx<'a> {
 
         // The page origin is the page centre; ours is the bottom-left.
         let recenter = Affine::translate((page_size.width / 2.0, page_size.height / 2.0));
-        let transform = self.pending_text_transform.take().unwrap_or(transform);
+        let mut transform = self.pending_text_transform.take().unwrap_or(transform);
+        // Text set in a font named with a leading `@` (the vertical form of
+        // an East Asian face, #1544) is vertical text.
+        if let Some(turn) = vertical_font_text(&mut kind) {
+            transform *= turn;
+        }
         // The fill's angle is measured from the object's x axis (#1257).
         if let Fill::Fountain(f) = &mut fill {
             crate::turn_fountain(f, fill_axes.unwrap_or(transform), 1.0);
@@ -3768,7 +3783,12 @@ impl<'a> Ctx<'a> {
         }
         // A version 15 graded transparency runs between its record's two
         // points: they become the mask's nodes on the page.
-        if let (Some((Fill::Fountain(f), _)), Some((start, end))) = (&mut mask, v15_mask_axis) {
+        // A version 16+ record's points place the linear mask of the
+        // style string the same way (#1544).
+        let mask_axis = v15_mask_axis.filter(
+            |_| matches!(&mask, Some((Fill::Fountain(f), _)) if f.kind == FountainKind::Linear),
+        );
+        if let (Some((Fill::Fountain(f), _)), Some((start, end))) = (&mut mask, mask_axis) {
             use tracedraw_core::geometry::Shape as _;
             let pb = (shape.transform * shape.local_path()).bounding_box();
             let (s, e) = (shape.transform * start, shape.transform * end);
@@ -4301,6 +4321,42 @@ impl<'a> Ctx<'a> {
                 .all(|x| x.is_finite()))
         .then_some((start, end));
         Some(((grey_mask(f), 2), axis))
+    }
+
+    /// Where a version 16+ graded transparency runs (#1544, a version 22
+    /// file): argument 8000 holds the record of versions 13 and 15 (see
+    /// `read_graded_transparency_v15`), u32 1 at byte 29 of the body, the
+    /// type u16 1 (linear) at 37 and the start and end points in the
+    /// object's own space at 41 and 49, the opaque end first. The style
+    /// string holds the mask's greys, angle and a centred run that does
+    /// not say where the run lies (a bitmap fading out over the top third
+    /// of its height in the file's page preview; read from the style
+    /// string alone it faded over the middle fifth). `None` for other
+    /// records and versions.
+    fn read_graded_transparency_axis(&mut self, d: &'a [u8], arg: Arg) -> Option<(Point, Point)> {
+        if self.v < 16 || arg.end.checked_sub(arg.off)? < 8 + 117 {
+            return None;
+        }
+        let data = d.get(..arg.end)?;
+        let mut r = self.reader_at(data, arg.off);
+        if r.u32()? != 0x514 || r.u32()? != 117 || r.u8()? != 5 {
+            return None;
+        }
+        r.skip(28);
+        if r.u32()? != 1 {
+            return None;
+        }
+        r.skip(4);
+        if r.u16()? != 1 {
+            return None;
+        }
+        r.skip(2);
+        let start = Point::new(r.coord()?, r.coord()?);
+        let end = Point::new(r.coord()?, r.coord()?);
+        let finite = [start.x, start.y, end.x, end.y]
+            .iter()
+            .all(|x| x.is_finite());
+        (finite && (end - start).hypot() > 1e-6).then_some((start, end))
     }
 
     /// The uniform transparency record of a version 16+ object (#1706, a
@@ -4881,6 +4937,56 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
         }
     }
     items.iter().map(f).collect()
+}
+
+/// Text whose fonts all carry a leading `@` (the name a system gives the
+/// vertical form of an East Asian face) is stored as a horizontal line
+/// turned a quarter clockwise by its transform, the face itself standing
+/// the ideographs back up (a version 22 file of #1544: two titles in
+/// `@` and the face's name, each a column of upright ideographs in the
+/// page preview). It becomes vertical text in the face of that name:
+/// the fonts lose the `@`, the frame (if any) turns with the text, and
+/// the matrix returned, to be applied after the object's transform,
+/// takes back the quarter turn the vertical layout now makes itself.
+/// `None` (nothing changed) for other text and shapes.
+fn vertical_font_text(kind: &mut ShapeKind) -> Option<Affine> {
+    let ShapeKind::Text {
+        spans,
+        origin,
+        frame,
+        para,
+        on_path: None,
+        ..
+    } = kind
+    else {
+        return None;
+    };
+    let marked = |s: &TextSpan| s.font_family.starts_with('@') && s.font_family.len() > 1;
+    let mut written = spans
+        .iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .peekable();
+    if para.vertical || written.peek().is_none() || !written.all(marked) {
+        return None;
+    }
+    for s in spans.iter_mut() {
+        if let Some(name) = s.font_family.strip_prefix('@').filter(|n| !n.is_empty()) {
+            s.font_family = name.to_string();
+        }
+    }
+    let turn = tracedraw_core::document::vertical_line_frame();
+    match frame {
+        // The frame's box turned: its top left becomes the top right
+        // where the first column starts.
+        Some(f) => {
+            *origin = Point::new(origin.y, -origin.x - f.width);
+            *f = Size::new(f.height, f.width);
+        }
+        None => *origin = turn * *origin,
+    }
+    para.vertical = true;
+    para.vertical_columns = tracedraw_core::document::VerticalColumns::default();
+    Some(turn.inverse())
 }
 
 /// A paragraph frame (`origin` its lower left, `size`) under `transform`
@@ -6924,7 +7030,7 @@ pub(crate) mod tests {
         let mut ctx = Ctx::new(&main, &tree, 18);
         ctx.vector_patterns.insert(12, &drawing);
         ctx.read_fill(tree.root.find(b"fild").unwrap());
-        let Fill::Pattern(tracedraw_core::style::Pattern::Vector { shapes, tile }) =
+        let Fill::Pattern(tracedraw_core::style::Pattern::Vector { shapes, tile, .. }) =
             &ctx.fills[&5].fill
         else {
             panic!("{:?}", ctx.fills[&5].fill)
@@ -8982,6 +9088,118 @@ pub(crate) mod tests {
         parse(&riff(form, &body), v)
     }
 
+    /// Text set in a face named with a leading `@` (#1544: the vertical
+    /// form of an East Asian face, the line turned a quarter clockwise by
+    /// its transform) reads as vertical text in the face of that name,
+    /// in the same place: the layout's own quarter turn replaces the
+    /// transform's. Text in a face without the `@`, a face named `@`
+    /// alone, or with only some runs in an `@` face stays horizontal.
+    #[test]
+    fn text_in_an_at_face_is_vertical_text() {
+        let style = |chars: u16, font: u16| Style7 {
+            chars,
+            font: Some(font),
+            flags: None,
+            size_units: Some(127_000),
+            fill: None,
+        };
+        let read = |names: &[(u16, &str)], styles: &[Style7], text: &str| {
+            let tables = names
+                .iter()
+                .map(|(id, n)| chunk(b"font", &font_chunk(*id, n)))
+                .collect::<Vec<_>>()
+                .concat();
+            let (doc, rep) = text_doc(
+                12,
+                b"CDRC",
+                tables,
+                OBJ_ARTISTIC_TEXT,
+                &[(ARG_COORDS, i32s(&[0, 0]))],
+                txsm7(12, false, styles, text),
+            );
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).clone()
+        };
+        let s = read(&[(3, "@SimHei")], &[style(4, 3)], "小儿先天");
+        let ShapeKind::Text {
+            spans,
+            para,
+            origin,
+            ..
+        } = &s.kind
+        else {
+            panic!("{:?}", s.kind);
+        };
+        assert!(para.vertical && para.columns_from_right());
+        assert_eq!(spans[0].font_family, "SimHei");
+        // The column starts where the line started (the page centre) and
+        // runs where the line ran: to the right, as this object's
+        // transform does not turn it (a file's turns it down the page).
+        let turn = tracedraw_core::document::vertical_line_frame();
+        let start = s.transform * *origin;
+        let down = s.transform * (*origin + (turn * Point::new(10.0, 0.0)).to_vec2());
+        assert!(
+            (start - Point::new(127.0, 127.0)).hypot() < 1e-6,
+            "{start:?}"
+        );
+        assert!((down - Point::new(137.0, 127.0)).hypot() < 1e-6, "{down:?}");
+        for (names, styles, text) in [
+            (vec![(3, "SimHei")], vec![style(4, 3)], "小儿先天"),
+            (vec![(3, "@")], vec![style(4, 3)], "小儿先天"),
+            (
+                vec![(3, "@SimHei"), (4, "Arial")],
+                vec![style(2, 3), style(2, 4)],
+                "小儿ab",
+            ),
+        ] {
+            let s = read(&names, &styles, text);
+            let ShapeKind::Text { spans, para, .. } = &s.kind else {
+                panic!("{:?}", s.kind);
+            };
+            assert!(!para.vertical, "{names:?}");
+            assert_eq!(spans[0].font_family, names[0].1);
+            let [a, b, c, d, e, f] = s.transform.as_coeffs();
+            assert!(
+                (a - 1.0).abs() + b.abs() + c.abs() + (d - 1.0).abs() < 1e-9
+                    && (e - 127.0).abs() + (f - 127.0).abs() < 1e-9,
+                "{:?}",
+                s.transform
+            );
+        }
+    }
+
+    /// A paragraph frame in an `@` face turns with its text: its box is
+    /// the same box on the page, its width and height swapped.
+    #[test]
+    fn a_frame_in_an_at_face_turns_with_its_text() {
+        let mut kind = ShapeKind::Text {
+            spans: vec![TextSpan::new("縦", "@SimHei", 12.0)],
+            origin: Point::new(1.0, 2.0),
+            frame: Some(Size::new(30.0, 10.0)),
+            align: TextAlign::Left,
+            para: tracedraw_core::document::ParagraphStyle::default(),
+            on_path: None,
+        };
+        let turn = vertical_font_text(&mut kind).expect("turned");
+        let ShapeKind::Text { origin, frame, .. } = &kind else {
+            panic!("{kind:?}");
+        };
+        let f = frame.expect("frame");
+        assert_eq!((f.width, f.height), (10.0, 30.0));
+        let new_box = Rect::new(origin.x, origin.y, origin.x + f.width, origin.y + f.height);
+        let back = (turn * new_box.to_path(0.01)).bounding_box();
+        assert!(
+            (back.x0 - 1.0).abs() < 1e-9 && (back.y0 - 2.0).abs() < 1e-9,
+            "{back:?}"
+        );
+        assert!(
+            (back.x1 - 31.0).abs() < 1e-9 && (back.y1 - 12.0).abs() < 1e-9,
+            "{back:?}"
+        );
+        // Once vertical, nothing more changes.
+        assert!(vertical_font_text(&mut kind).is_none());
+    }
+
     #[test]
     fn artistic_text_version_12_runs_family_size_bold_and_fill() {
         let styles = [
@@ -10956,6 +11174,7 @@ pub(crate) mod tests {
                 height_px,
                 size_mm,
                 png,
+                ..
             }) => {
                 assert_eq!((*width_px, *height_px), (2, 2));
                 assert!((size_mm - 25.4).abs() < 1e-9);
@@ -11594,6 +11813,88 @@ pub(crate) mod tests {
             read(&format!(r#"{{"fill":{{{colour},"type":"1"}}}}"#)),
             FillRule::EvenOdd
         );
+    }
+
+    /// A version 22 picture whose graded transparency fades out over the
+    /// top third (#1544): the style string holds the greys, the angle and
+    /// a centred run 0.22 of the box long; argument 8000 holds where the
+    /// run lies, as versions 13 and 15 have it. The mask runs between the
+    /// record's points (it faded over the middle fifth before); a record
+    /// that is not graded, not linear or cut short leaves the style
+    /// string's run as it was.
+    #[test]
+    fn version_22_graded_transparency_runs_between_its_record_points() {
+        use tracedraw_core::live::Effect;
+        let v = 22u16;
+        let json = r#"{"transparency":{"appliesTo":"2","fill":{"angle":"90","fountainType":"1","primaryColor":"GRAY255,USER,255,100,00000000-0000-0000-0000-000000000000","secondaryColor":"GRAY255,USER,0,100,00000000-0000-0000-0000-000000000000","type":"2","xCenterOffset":"0","xScale":"0.22","yCenterOffset":"0","yScale":"0.22"}}}"#;
+        let style = [u32s(&[1, json.len() as u32]), json.as_bytes().to_vec()].concat();
+        let record = |graded: u32, kind: u16, len: usize| {
+            let mut b = vec![5u8];
+            b.extend_from_slice(&u32s(&[2, 0, 0]));
+            b.extend_from_slice(&i32s(&[-3_702_634, -3_391_392, 2_736_892, -9_213_092]));
+            b.extend_from_slice(&u32s(&[graded, 5]));
+            b.extend_from_slice(&u16s(&[kind, 0x079f]));
+            b.extend_from_slice(&i32s(&[127_000, 160_000, 127_000, 254_000]));
+            b.extend_from_slice(&u32s(&[0]));
+            b.extend_from_slice(&f64s(&[0.0, 100.0]));
+            b.resize(81, 0);
+            b.extend_from_slice(&u32s(&[2]));
+            b.resize(105, 0);
+            b.extend_from_slice(&u32s(&[4]));
+            b.resize(117, 0);
+            let mut op = u32s(&[0x514, 117]);
+            op.extend_from_slice(&b);
+            op.truncate(len);
+            op
+        };
+        let read = |op: Option<Vec<u8>>| {
+            let mut args = vec![(ARG_STYLE_STRING, style.clone())];
+            if let Some(op) = op {
+                args.insert(0, (ARG_OPACITY, op));
+            }
+            args.push((ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])));
+            let obj = list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args)));
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRN", &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).clone()
+        };
+        let mask_of = |s: &Shape| match s.effects.as_slice() {
+            [Effect::Transparency {
+                mask: Fill::Fountain(f),
+                target: 2,
+                ..
+            }] => f.clone(),
+            other => panic!("{other:?}"),
+        };
+        let s = read(Some(record(1, 1, 125)));
+        let f = mask_of(&s);
+        assert_eq!(f.kind, FountainKind::Linear);
+        assert_eq!(f.stops[0].color, Color::Gray { v: 1.0 });
+        assert_eq!(f.edge_pad, 0.0);
+        let h = f.handles.expect("placed by the record's points");
+        use tracedraw_core::geometry::Shape as _;
+        let b = (s.transform * s.local_path()).bounding_box();
+        let near = |rel: Point, x: f64, y: f64| {
+            let p = Fountain::rel_to_page(b, rel);
+            (p - s.transform * Point::new(x, y)).hypot() < 1e-3
+        };
+        assert!(near(h.start, 12.7, 16.0), "{h:?}");
+        assert!(near(h.end, 12.7, 25.4), "{h:?}");
+        // Without the record, or with one not graded, not linear or cut
+        // short: the style string's centred run.
+        let plain = mask_of(&read(None));
+        assert!(plain.handles.is_none());
+        assert!((plain.edge_pad - 0.39).abs() < 1e-9, "{}", plain.edge_pad);
+        for op in [record(0, 1, 125), record(1, 2, 125), record(1, 1, 60)] {
+            let f = mask_of(&read(Some(op)));
+            assert!(f.handles.is_none());
+            assert_eq!(f.edge_pad, plain.edge_pad);
+        }
     }
 
     #[test]

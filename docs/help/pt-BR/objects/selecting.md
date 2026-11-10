@@ -105,6 +105,35 @@ número. Pressione só o número para selecionar esses objetos de novo, e outra
 vez para dar zoom neles. <kbd>Alt</kbd> e o número acrescentam a seleção ao
 grupo. Os grupos são salvos com o desenho.
 
+### Inverter seleção e Selecionar semelhantes {#select-similar}
+
+[[menu.edit > menu.edit.invert_selection]] seleciona todos os objetos da
+página que [[menu.edit.select_all]] pegaria e que não estão selecionados, e
+tira da seleção os que estão. Sem nada selecionado, seleciona tudo.
+
+[[menu.edit > menu.edit.select_similar]] seleciona os objetos da página
+parecidos com os selecionados:
+
+- [[menu.edit.similar_fill]]: o mesmo preenchimento (a mesma cor,
+  gradiente, padrão ou nenhum preenchimento).
+- [[menu.edit.similar_outline]]: o mesmo contorno (largura, cor e estilo),
+  ou nenhum contorno quando o objeto selecionado não tem.
+- [[menu.edit.similar_text_format]]: texto com a mesma fonte e o mesmo
+  tamanho do texto selecionado (em qualquer um dos seus caracteres).
+- [[menu.edit.similar_kind]]: o mesmo tipo de objeto (retângulos, elipses,
+  curvas, texto artístico, texto de parágrafo, grupos, bitmaps...).
+
+Com vários objetos selecionados, vale um objeto parecido com qualquer um
+deles. Os objetos de dentro de grupos também são comparados, cada um por
+si, e um grupo selecionado vale pelos objetos que ele tem (com
+[[menu.edit.similar_kind]], um grupo selecionado acha os outros grupos).
+Objetos em camadas bloqueadas ficam de fora, como em
+[[menu.edit.select_all]].
+
+Cada um desses comandos é um passo de [[menu.edit.undo]]: logo depois dele,
+sem mudança no desenho, Desfazer devolve a seleção como era e Refazer a faz
+de novo. Quando o desenho muda, Desfazer volta aos passos do próprio desenho.
+
 ## A ferramenta Seleção à mão livre {#freehand-pick}
 
 A ferramenta [[tool.freehand_pick]] funciona como a ferramenta [[tool.pick]],

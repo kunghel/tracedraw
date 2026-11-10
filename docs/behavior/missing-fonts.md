@@ -33,6 +33,15 @@ after opening, and the command line tool has no dialogs.
   family, in groups, clip frames, tables and symbols, takes the font
   chosen (`Command::ReplaceFontFamily`, one undo step, "Replace Font").
   The drawing has unsaved changes afterwards.
+- Add Font File... (#1989) picks font files (several at once) and installs
+  each as Font Manager's Add Font does (`font_manager::add_picked_fonts`,
+  `add_font_in`): remembered for the next start, a copy kept in the app's
+  font folder for an Android document, stored in the browser on the web.
+  The rows whose family is installed then leave the list (their stand-in
+  dropped), checked each frame the installed families' count changed, so
+  a picker answering on a later frame works too; with no row left the
+  dialog closes as Cancel would, the drawing unchanged
+  (`missing_fonts::tests::a_font_added_from_the_dialog_takes_its_row_away`).
 - Do not show this message again turns the dialog off (its own choice
   in Options > Global > Warnings; the plain note keeps its choice).
 - OK applies the choices; Cancel, Esc or the close button changes

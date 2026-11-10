@@ -144,10 +144,10 @@ yours. Tool keys (single letters such as `Z` for Zoom) are listed under
 
 ## Languages
 
-The interface comes in 18 languages: English, Chinese (Simplified),
+The interface comes in 19 languages: English, Chinese (Simplified),
 Hindi, Spanish, French, Arabic (with a right-to-left layout), Bengali,
 Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese
-(Traditional), Italian, Dutch, Polish, Turkish and Czech.
+(Traditional), Italian, Dutch, Polish, Turkish, Czech and Lao.
 
 To switch: **Tools > Options > Global > General**, choose the language.
 It changes at once. Shortcuts are the same in every language.

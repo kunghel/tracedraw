@@ -94,7 +94,7 @@ of [`CHANGELOG.md`](../CHANGELOG.md) for the version submitted.
 7. Export PDF/X, SVG, EPS, DXF, EMF, PNG, JPEG, WebP and more
 8. Opens and saves .cdr files; imports PDF, AI, SVG, EPS, DXF and PSD
 9. Your own shortcuts, movable bars and exportable workspaces
-10. Interface in 18 languages; free, open source, no account
+10. Interface in 19 languages; free, open source, no account
 
 **Keywords** [up to 7]: vector editor, illustration, page layout,
 drawing, graphic design, print, cdr

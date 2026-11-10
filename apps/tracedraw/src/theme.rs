@@ -559,6 +559,65 @@ impl Tokens {
     pub fn prop_icon() -> f32 {
         bar_size().metrics().prop_icon
     }
+
+    /// The fill and frame of an icon button (toolbox, standard toolbar,
+    /// property bar toggles) in each of its states, or None when it is
+    /// plain. Hovering tints it blue with a blue frame; a button that is
+    /// on (the active tool, a toggle pressed in) stands out from the panel
+    /// with a sharp accent frame, on the field colour when light and on
+    /// the picked row's blue when dark; hovering it too deepens the fill.
+    pub fn icon_button(hovered: bool, on: bool) -> Option<(Color32, egui::Stroke)> {
+        icon_button_in(theme(), hovered, on)
+    }
+}
+
+/// [`Tokens::icon_button`] under theme `t`.
+fn icon_button_in(t: Theme, hovered: bool, on: bool) -> Option<(Color32, egui::Stroke)> {
+    let p = t.palette();
+    let stroke = |c: Color32| egui::Stroke::new(1.0, c);
+    if t == Theme::HighContrast {
+        let [r, g, b] = contrast_colors().hot_light;
+        let hot = Color32::from_rgb(r, g, b);
+        return match (hovered, on) {
+            (false, false) => None,
+            (true, false) => Some((p.hovered_row, stroke(p.selected_row))),
+            (false, true) => Some((p.selected_row, egui::Stroke::new(2.0, hot))),
+            (true, true) => Some((p.hovered_row, egui::Stroke::new(2.0, hot))),
+        };
+    }
+    let dark = t.is_dark();
+    // The frame of a button that is on: the accent, a lighter blue
+    // where the accent would not read on a dark panel.
+    let on_line = if dark {
+        Color32::from_rgb(0x5C, 0xB2, 0xFF)
+    } else {
+        Tokens::ACCENT
+    };
+    let hover_fill = if dark {
+        p.panel.lerp_to_gamma(p.selected_row, 0.6)
+    } else {
+        p.selected_row
+    };
+    match (hovered, on) {
+        (false, false) => None,
+        (true, false) => Some((hover_fill, stroke(p.selected_row_line))),
+        (false, true) if dark => Some((p.selected_row, stroke(on_line))),
+        (false, true) => Some((p.field, stroke(on_line))),
+        (true, true) if dark => Some((
+            p.selected_row.lerp_to_gamma(Color32::WHITE, 0.15),
+            stroke(on_line),
+        )),
+        (true, true) => Some((p.selected_row, stroke(on_line))),
+    }
+}
+
+/// Paint an icon button's background and frame for its state (see
+/// [`Tokens::icon_button`]) under the icon.
+pub fn paint_icon_button(painter: &egui::Painter, rect: egui::Rect, hovered: bool, on: bool) {
+    if let Some((fill, line)) = Tokens::icon_button(hovered, on) {
+        painter.rect_filled(rect, 2.0, fill);
+        painter.rect_stroke(rect, 2.0, line, egui::StrokeKind::Inside);
+    }
 }
 
 /// The icon box for a button of side `side` whose full size is `button`
@@ -891,7 +950,7 @@ pub fn bundled_font_definitions() -> egui::FontDefinitions {
 /// script (the bundled one covers Latin, Greek and Cyrillic).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn needs_system_font(code: &str) -> bool {
-    matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn")
+    matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo")
 }
 
 /// The family of the font folder (browser build) that covers the script
@@ -902,6 +961,7 @@ pub fn ui_script_family(code: &str) -> Option<&'static str> {
         "zh-CN" => Some("Noto Sans SC"),
         "zh-TW" => Some("Noto Sans TC"),
         "ja" => Some("Noto Sans JP"),
+        "lo" => Some("Noto Sans Lao"),
         _ => None,
     }
 }
@@ -915,64 +975,85 @@ pub fn ui_context() -> egui::Context {
     ctx
 }
 
+/// Per script, the system font families the interface tries in order
+/// (the first installed one wins): the scripts of the interface
+/// languages and those people write their file and drawing names in,
+/// which the bundled font (Latin, Greek, Cyrillic) does not cover.
+const UI_SCRIPT_FONTS: &[&[&str]] = &[
+    // Arabic (also covered by many Latin system fonts).
+    &[
+        "Noto Sans Arabic",
+        "Noto Naskh Arabic",
+        "Segoe UI",
+        "Arial",
+        "DejaVu Sans",
+        "Geeza Pro",
+    ],
+    // Hebrew: file names, layer and page names typed in it.
+    &[
+        "Noto Sans Hebrew",
+        "Arial Hebrew",
+        "Segoe UI",
+        "Arial",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "FreeSans",
+    ],
+    // Devanagari (Hindi).
+    &[
+        "Noto Sans Devanagari",
+        "Nirmala UI",
+        "Mangal",
+        "Kohinoor Devanagari",
+        "Lohit Devanagari",
+    ],
+    // Bengali.
+    &[
+        "Noto Sans Bengali",
+        "Nirmala UI",
+        "Vrinda",
+        "Kohinoor Bangla",
+        "Lohit Bengali",
+    ],
+    // Simplified Chinese and Japanese.
+    &[
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Microsoft YaHei",
+        "PingFang SC",
+        "Source Han Sans SC",
+        "WenQuanYi Micro Hei",
+        "Noto Sans CJK JP",
+    ],
+    // Traditional Chinese.
+    &[
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Microsoft JhengHei",
+        "PingFang TC",
+        "Source Han Sans TC",
+    ],
+    &[
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "Meiryo",
+        "Yu Gothic UI",
+        "Hiragino Sans",
+        "Source Han Sans",
+    ],
+    // Lao.
+    &[
+        "Noto Sans Lao",
+        "Lao Sangam MN",
+        "Leelawadee UI",
+        "Saysettha OT",
+    ],
+];
+
 /// Add the system fonts covering the non-Latin UI languages to `defs`;
 /// returns their keys.
 fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
-    // Per script, the families to try in order; the first installed one wins.
-    let groups: &[&[&str]] = &[
-        // Arabic (also covered by many Latin system fonts).
-        &[
-            "Noto Sans Arabic",
-            "Noto Naskh Arabic",
-            "Segoe UI",
-            "Arial",
-            "DejaVu Sans",
-            "Geeza Pro",
-        ],
-        // Devanagari (Hindi).
-        &[
-            "Noto Sans Devanagari",
-            "Nirmala UI",
-            "Mangal",
-            "Kohinoor Devanagari",
-            "Lohit Devanagari",
-        ],
-        // Bengali.
-        &[
-            "Noto Sans Bengali",
-            "Nirmala UI",
-            "Vrinda",
-            "Kohinoor Bangla",
-            "Lohit Bengali",
-        ],
-        // Simplified Chinese and Japanese.
-        &[
-            "Noto Sans CJK SC",
-            "Noto Sans SC",
-            "Microsoft YaHei",
-            "PingFang SC",
-            "Source Han Sans SC",
-            "WenQuanYi Micro Hei",
-            "Noto Sans CJK JP",
-        ],
-        // Traditional Chinese.
-        &[
-            "Noto Sans CJK TC",
-            "Noto Sans TC",
-            "Microsoft JhengHei",
-            "PingFang TC",
-            "Source Han Sans TC",
-        ],
-        &[
-            "Noto Sans CJK JP",
-            "Noto Sans JP",
-            "Meiryo",
-            "Yu Gothic UI",
-            "Hiragino Sans",
-            "Source Han Sans",
-        ],
-        // Cyrillic is in the bundled font; Latin extended too.
-    ];
+    let groups = UI_SCRIPT_FONTS;
     let fs = tracedraw_text::fonts();
     let mut added = Vec::new();
     for group in groups {
@@ -1002,6 +1083,26 @@ fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
 #[cfg(test)]
 mod theme_tests {
     use super::*;
+
+    /// Names typed in Hebrew show in the interface (the file name field,
+    /// the recent files, the tabs) when the system has a font for it.
+    #[test]
+    fn hebrew_names_have_an_interface_font() {
+        let hebrew = UI_SCRIPT_FONTS
+            .iter()
+            .find(|g| g.first() == Some(&"Noto Sans Hebrew"))
+            .expect("a group of Hebrew fonts");
+        let has_one = tracedraw_text::fonts().first_face_data(hebrew).is_some();
+        if has_one {
+            let ctx = ui_context();
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
+            let font = egui::FontId::proportional(14.0);
+            for c in "שלום".chars() {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+            }
+        }
+    }
 
     /// WCAG contrast ratio of two opaque colours.
     fn contrast(a: Color32, b: Color32) -> f32 {
@@ -1071,14 +1172,49 @@ mod theme_tests {
     }
 
     /// The browser build fetches a font for the interface languages no
-    /// bundled font covers (#561).
+    /// bundled font covers (#561), Lao among them.
     #[test]
     fn cjk_interface_languages_have_a_font_to_fetch() {
-        for code in ["zh-CN", "zh-TW", "ja"] {
+        for code in ["zh-CN", "zh-TW", "ja", "lo"] {
             assert!(needs_system_font(code));
             assert!(ui_script_family(code).is_some(), "{code}");
         }
         assert_eq!(ui_script_family("pt-BR"), None);
+    }
+
+    /// Plain, hovered, on and on while hovered look different from each
+    /// other in every theme, and a button that is on stands out from the
+    /// panel with a frame unlike the hover's.
+    #[test]
+    fn icon_buttons_have_four_distinct_looks() {
+        for t in Theme::ALL {
+            assert_eq!(icon_button_in(t, false, false), None, "{t:?}");
+            let hover = icon_button_in(t, true, false).expect("hover look");
+            let on = icon_button_in(t, false, true).expect("on look");
+            let both = icon_button_in(t, true, true).expect("on and hovered look");
+            assert_ne!(hover, on, "{t:?}");
+            assert_ne!(on, both, "{t:?}");
+            assert_ne!(hover, both, "{t:?}");
+            assert_ne!(on.1.color, hover.1.color, "{t:?}");
+            assert_ne!(on.0, t.palette().panel, "{t:?}");
+            assert_ne!(hover.0, t.palette().panel, "{t:?}");
+        }
+    }
+
+    /// A button that is on has a frame that contrasts with the panel.
+    #[test]
+    fn the_on_frame_contrasts_with_the_panel() {
+        let luma = |c: Color32| 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+        for t in [
+            Theme::Light,
+            Theme::MediumLight,
+            Theme::MediumDark,
+            Theme::Dark,
+        ] {
+            let (_, line) = icon_button_in(t, false, true).expect("on look");
+            let gap = (luma(line.color) - luma(t.palette().panel)).abs();
+            assert!(gap > 50.0, "{t:?}: {gap}");
+        }
     }
 }
 

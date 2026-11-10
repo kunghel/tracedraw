@@ -66,5 +66,13 @@ program, and choosing a folder (such as an export folder or a font folder).
 On a touch screen, a finger or a pen works the canvas, the toolbox, the bars
 and the menus. Tap to click, drag to draw or move. In the
 [[menu.window.workspace_touch]] workspace two fingers pan and a pinch zooms.
+Tap the drawing with two fingers together to undo, with three to redo; a
+pinch or a pan, which moves, does neither.
+
+Shift, Ctrl, Alt and Delete float over the bottom left corner of the
+drawing: a tap on Shift, Ctrl or Alt holds that key until you tap it again
+(it shows pressed meanwhile), so a tap adds to the selection with Shift,
+and Delete deletes what is selected. [[options.touch_keys]] in the Display
+page of the options shows or hides them.
 For pen pressure on desktop systems, see
 [Drawing with a graphics tablet](../lines-shapes/pen-pressure.md).

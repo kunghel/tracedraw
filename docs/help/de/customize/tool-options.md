@@ -36,7 +36,16 @@ Werkzeugs.
   kalibrierten Bildschirmauflösung; aus sind es 96 Pixel pro Zoll.
 - [[options.wheel_center_mouse]] (aus): ein Zoom mit dem Mausrad bringt die Stelle unter
   dem Zeiger in die Mitte der Ansicht, den Zeiger mit.
+- [[options.smooth_zoom]] (an): eine Rastung des Mausrads zoomt in einer kurzen
+  Gleitbewegung statt in einem Sprung; je schneller Sie das Rad drehen, desto
+  kürzer. Aus: jede Rastung zoomt sofort.
+- [[options.wheel_zoom_step]] wie stark eine Rastung hinein- oder herauszoomt,
+  von 1 bis 100 Prozent (anfangs 15 %).
 - [[options.pan_right_button]] [[options.zoom_out]] oder das [[options.context_menu]] (anfangs).
+- [[options.pan_inertia]] (aus): ein Verschieben, das Sie loslassen, während sich
+  der Zeiger noch bewegt, lässt die Ansicht in dieselbe Richtung weitergleiten
+  und sanft auslaufen. Ein Klick oder das Mausrad hält sie an. Gilt für das
+  Verschiebewerkzeug, die mittlere Maustaste und zwei Finger.
 
 ## Freihand/Bézier {#curves}
 

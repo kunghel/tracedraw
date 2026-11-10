@@ -28,7 +28,7 @@ nastavuje, jak program pracuje. Stránku zvolte ze seznamu vlevo.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (výchozí),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] nebo
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] nebo
   [[options.open_view_saved]] (stránka, místo a zvětšení uložené s každým
   uložením souboru TraceDraw).
 - [[options.ruler_calibration]]: přiložte k obrazovce pravítko a měňte

@@ -141,6 +141,9 @@ The panel shows these under the other controls; the bar has them in its
   seen from the vanishing point (Small: a perspective that puts the copy
   where the flat body has it, `s = t d / (t d + 1 - d)` of the way to the
   vanishing point at depth share `t`; Big: `d t` of the way away from it).
+  The depth share is a point's own depth in the body over `L` (0 at the
+  object, 1 at the copy), whatever the turn, so the faces stay by the
+  object however near the vanishing point is.
 - The turn is about the middle of the body, by x (the top tips away),
   then y (the right side turns away), then z (counterclockwise). The
   object itself becomes the turned front face; turned away, the far face
@@ -180,6 +183,8 @@ The panel shows these under the other controls; the bar has them in its
 - `extrude3d::tests::a_bevel_shrinks_the_near_cap_and_adds_a_band`
 - `extrude3d::tests::further_lights_brighten_the_faces_they_reach`
 - `extrude3d::tests::broken_values_never_panic`
+- `extrude3d::tests::a_turned_body_stays_by_the_object_with_the_vanishing_point_near`
+- `extrude3d::tests::a_turned_parallel_body_keeps_every_corner_in_its_reach`
 - Given a 20 mm square, Back parallel, offset (10, 10), then the far
   face is the square at (10, 10) and only the top and right faces show,
   the top one lighter with the light from the top left.

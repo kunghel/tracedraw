@@ -67,8 +67,9 @@ palet düzenleyiciyi açar.
 2. [[dialog.name]] alanını yazın.
 3. Seçmek için bir renge tıklayın; [[dialog.add_color]] geçerli rengi ekler
    ve [[dialog.remove_color]] seçili rengi kaldırır.
-4. Dosya olarak kaydetmek için [[dialog.save_palette]] düğmesine tıklayın.
-5. [[dialog.close]] düğmesine tıklayın.
+4. Seçili rengi spot renge çevirmek için [[dialog.spot_color]] kutusunu işaretleyin: kendi kalıbında basılan adlandırılmış bir mürekkep. PDF dışa aktarımları onu ayrı mürekkep olarak tutar.
+5. Dosya olarak kaydetmek için [[dialog.save_palette]] düğmesine tıklayın.
+6. [[dialog.ok]] düğmesine tıklayın.
 
 Yerleşik paletler düzenlenemez; yeni bir palet oluşturun veya bir kopyasını
 düzenleyin.

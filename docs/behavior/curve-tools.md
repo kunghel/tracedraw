@@ -186,6 +186,12 @@ delete the selection as everywhere (#1527,
   last preview without the tentative point (#1506). The last spans of
   the curve still change as points are added, as a B-spline's do: each
   point shapes the spans next to it.
+- C or V held while a point is placed (or C or V with a second click on
+  the last point) makes it a fixed point, as the Shape tool's C does
+  (#1758): the curve passes through it with a corner, in the preview and
+  in the curve made, which keeps the flags (`CurveInProgress::
+  spline_fixed`, `Shape::spline_fixed`; #2060,
+  `pick_drag_tests::bspline_points_placed_with_c_or_v_held_are_fixed`).
 - Double-click, Enter or Esc finishes (Esc with one point drops it);
   clicking the first point (once there are three) closes it into the periodic spline,
   smooth all round. The result is a curve object (its nodes are the

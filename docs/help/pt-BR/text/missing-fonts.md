@@ -30,6 +30,12 @@ Quando você abre um desenho com fontes ausentes, a caixa de diálogo
      muda o desenho e se desfaz em um passo.
 4. Clique em [[dialog.ok]].
 
+Quando você tem a própria fonte em um arquivo, clique em
+[[missing_fonts.add_font]] e escolha-o (vários arquivos de uma vez, se
+quiser). O TraceDraw a instala como o Adicionar fonte do Gerenciador de
+fontes e a lembra na próxima vez que abrir; as fontes que ela traz saem da
+lista e, quando não sobra nenhuma, a caixa de diálogo fecha.
+
 [[dialog.cancel]], <kbd>Esc</kbd> ou o botão de fechar não mudam nada: as
 fontes automáticas ficam. De qualquer forma, a barra de status então cita as
 fontes ainda ausentes e as fontes que as desenham, ou diz que foram

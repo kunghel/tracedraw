@@ -29,7 +29,7 @@
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (по умолчанию),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] или
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] или
   [[options.open_view_saved]] (страница, место и масштаб, запоминаемые при
   каждом сохранении файла TraceDraw).
 - [[options.ruler_calibration]]: приложите линейку к экрану и меняйте

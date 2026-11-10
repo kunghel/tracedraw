@@ -287,7 +287,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Mixed directions (an Arabic or Hebrew word in English text, or the other way round) | the Unicode bidirectional algorithm gives each character its level, the first strong letter setting the direction; it is worked out for each run of one formatting between tabs and line ends, so a direction change across differently formatted characters keeps them in text order. Each run of one level is shaped its own way; lines break in text order and each line shows its runs in display order: Arabic typed after "Asasa " reads right to left, joined, to the right of it, and a paragraph too narrow for "Hi مرحبا بك" keeps "Hi مرحبا" on the first line; digits inside right-to-left text read left to right (#628, `tracedraw_text::tests::mixed_text_is_cut_into_runs_of_one_direction`, `tracedraw_text::tests::lines_are_seen_in_bidi_order`, `tracedraw_text::tests::mixed_directions_lay_each_run_its_own_way`, `tracedraw_text::tests::mixed_paragraph_text_breaks_in_text_order`, `pick_drag_tests::right_to_left_typed_after_english_runs_right_to_left`) |
 | Right-to-left text (Arabic, Hebrew) | the caret before a letter is at its right end and the end of the text at its left; a selection shades the letters it holds, all of them after Ctrl+A, where it used to shade only the first letter (#629, `tracedraw_text::tests::right_to_left_carets_run_from_the_right`, `pick_drag_tests::select_all_in_right_to_left_text_highlights_all_of_it`); character backgrounds and a callout's box cover such text too, mixed directions included (`callouts::tests::text_boxes_and_backgrounds_cover_mixed_direction_text`) |
 | Ctrl+B / I / U | toggle bold, italic, underline on the selection, or on the whole text without one |
-| Ctrl+C / X / V, Edit > Cut / Copy / Paste / Delete, the toolbar's buttons, the right-click menu | act on the characters of the text being edited, never on the object (#1377): Copy keeps the selected characters with their formatting (font, size, colours, outline, every character setting) for a paste into a text here and puts their plain text on the system clipboard for other programs (line breaks as the system's line end); Paste puts them back with their formatting while the clipboard still holds that text, also into another text (characters showing their text's own fill or outline get it as theirs where the texts differ), and pastes text copied elsewhere as it is, in the style at the caret. Objects copied with Edit > Copy (SVG on the system clipboard) paste their text with its formatting, never the SVG markup; Cut and Paste are one undo step each. Copied characters are the last copy (they replace objects copied before) and, pasted with the Pick tool, make an artistic text of them with their formatting and their text's fill and outline (`text_editing::tests::copied_characters_pasted_outside_a_text_keep_their_colours`). The right-click menu while editing has Undo, Cut, Copy, Paste, Delete, Select All and Properties. On the desktop the clipboard is read when Paste is chosen from a menu; in the browser a menu's Paste has only the characters copied here, Ctrl+V the clipboard's text; on Android the system clipboard is read first (#1378, `text_editing::tests::copied_characters_keep_their_colours_when_pasted`, `text_editing::tests::copied_objects_paste_their_text_not_their_markup`) |
+| Ctrl+C / X / V, Edit > Cut / Copy / Paste / Delete, the toolbar's buttons, the right-click menu | act on the characters of the text being edited, never on the object (#1377): Copy keeps the selected characters with their formatting (font, size, colours, outline, every character setting) for a paste into a text here and puts their plain text on the system clipboard for other programs (line breaks as the system's line end); Paste puts them back with their formatting while the clipboard still holds that text, also into another text (characters showing their text's own fill or outline get it as theirs where the texts differ), and pastes text copied elsewhere as it is, in the style at the caret. Objects copied with Edit > Copy (SVG on the system clipboard) paste their text with its formatting, never the SVG markup; Cut and Paste are one undo step each. Copied characters are the last copy (they replace objects copied before) and, pasted with the Pick tool, make an artistic text of them with their formatting and their text's fill and outline (`text_editing::tests::copied_characters_pasted_outside_a_text_keep_their_colours`). The right-click menu while editing has Undo, Cut, Copy, Paste, Delete, Select All (and Insert Placeholder Text in a paragraph frame) and Properties. On the desktop the clipboard is read when Paste is chosen from a menu; in the browser a menu's Paste has only the characters copied here, Ctrl+V the clipboard's text; on Android the system clipboard is read first (#1378, `text_editing::tests::copied_characters_keep_their_colours_when_pasted`, `text_editing::tests::copied_objects_paste_their_text_not_their_markup`) |
 | Click / Shift+click / drag | place the caret / extend / select |
 | Double-click | select the word |
 | Esc | finish editing and return to the Pick tool; an empty artistic text is removed, an empty paragraph text frame stays (#1822) |
@@ -429,6 +429,48 @@ any other object; the steps and sides follow the letters' outlines
 (`text_effect_tests::the_blend_tool_blends_two_texts_and_a_text_with_a_shape`,
 `text_effect_tests::text_can_be_extruded`).
 
+### Character styles
+
+Each span of characters (`TextSpan`) carries, besides its weight and
+slant, the styles below (#1209). All are off by default and every one is
+drawn by the text layout, so the drawing window, bitmap exports, SVG and
+PDF show the same marks (PDF keeps the letters as text and the lines and
+rings as curves).
+
+- Underline and strikethrough styles (`LineStyle`): None, Single thin,
+  Single thick, Double thin, and the same three "word" styles, which skip
+  the spaces between words. A thin line is `size / 14` thick, a thick
+  line `size / 7`; a double line is two thin lines a thin line apart.
+  The underline hangs from the face's underline position down (the first
+  line from `pos - thin` to `pos`, the second from `pos - 3 thin` to
+  `pos - 2 thin`); a strike line is centred on the face's strikeout
+  position (a double one has its lines from `pos + thin / 2` up and
+  `pos - thin / 2` down). The underline and strikethrough buttons of the
+  property bar, the Text docker's Strikethrough button beside the
+  underline list and Ctrl+U switch between None and Single thin and show
+  on for any style; a style other than Single thin is kept while the
+  button shows it on.
+  In files the two styles are written as `true` (Single thin) and
+  `false` (None), as before, and by name otherwise, so files that use
+  only those stay unchanged; `.cdr` files set a single thin line where
+  their style tables carry an underline or strikeout flag.
+- All caps: the shaper gets the Unicode uppercase of each letter; the
+  text itself keeps the case typed, so editing and searching see it. A
+  letter whose capital is more than one letter (ß) stays as typed, so
+  the characters count one for one with the text.
+- Enclosed: the font's `nalt` feature (its enclosed forms) when the face
+  has it; otherwise a ring is drawn round each glyph, radius `0.6 size`,
+  stroke `size / 14`, centred on the glyph's advance and `0.35 size`
+  above the baseline, and the glyph's room grows to `1.3 size` when it is
+  narrower, the glyph moving to the middle of it; spaces get no ring.
+  Letters with a ring go to PDF as curves.
+- Overprint fill and Overprint outline per character: `None` (follow the
+  object's overprint, the default) or a value of their own. Characters
+  whose overprint differs from the object's are drawn as parts of their
+  own (`Shape::text_parts`, as character colours are), so Simulate
+  Overprints and the PDF export (`/OP` for the outline, `/op` for the
+  fill, `/OPM 1`) see them as the object's overprint is seen.
+
 ## Paragraph text frames
 
 - A paragraph text's bounds are its whole frame (with the letters, when
@@ -498,7 +540,12 @@ on its own line, which is why the lines are joined first.
   its frames in order and overflow runs on into the next frame after
   typing, linking and resizing (`textflow.rs`, links kept in the object
   data as `text.next` and `text.prev`). Unlink leaves each frame with the
-  text it shows.
+  text it shows. An empty frame that is in no chain always takes the
+  overflow of the other frame, whichever of the two was picked first:
+  the text stays in the frame it starts in, and typing in that frame
+  afterwards flows on into the empty one (picked first, the empty frame
+  took the whole text and the frame it came from was left empty;
+  `textflow::tests::linking_to_an_empty_frame_keeps_the_source_text_whatever_the_order`).
 - Deleting a frame of a chain (Delete, Cut, or a group or clip frame
   holding it) removes only the frame: the frames left are linked to one
   another in their order and the chain's whole text flows anew over them,
@@ -746,6 +793,18 @@ every text holds the whole text.
     `pick_drag_tests::the_tab_ruler_is_for_paragraph_text_being_edited`).
   - The text is laid out again when the stop is let go, not while it
     is dragged, so the drag costs no more than any other.
+  - Indents (#1993): the left and right indents of the paragraphs at
+    the caret show as small filled triangles hanging from the strip's
+    outer edge, pointing at the frame, at the left indent from the
+    frame's left end and at the right indent from its right end. A press
+    in the outer half of the strip within 6 points of one takes it (the
+    stops' markers stand in the inner half); a drag moves it by 0.1 mm,
+    with a line down the frame, the two indents keeping at least 1 mm of
+    line between them. The text flows to it as it moves, as for a stop,
+    and the drag is one undo step (`App::set_indent`, the same paragraph
+    style change as the Text docker's indent fields). A click on a
+    marker adds no stop
+    (`pick_drag_tests::the_tab_ruler_drags_the_left_and_right_indents`).
 - `.cdr` (#1852, see `docs/cdr-format.md`): opening reads each
   paragraph's stops, from the style table's tab entries (versions 7 to
   15) or the `tabs` member of the paragraph style string (16 on); the
@@ -784,16 +843,23 @@ the preferences, `text_sections_closed`).
   Normal, Italic, Bold, Bold-Italic for a family whose faces are not
   known, and the weight of a family named with one, "SemiBold") and the
   size list; range kerning (-50 to
-  200 %) and the underline button; the text fill, the characters'
+  200 %) and the underline style list (None, Single thin, Single thick,
+  Double thin and their word-only forms, see Character styles); the text
+  fill, the characters'
   background and the text outline, each as a kind (No Fill or Uniform
   Fill; none, hairline or a width in points for the outline), a colour
   and "..." for the Properties docker's full fill or outline settings.
   The background is drawn behind each character's box, from its descent
   to its ascent (`TextSpan::background`). The expander under the section
-  shows the characters' offsets and angle, strikethrough and the
-  OpenType features, and for text in a variable font a "Variable font"
+  shows the characters' offsets and angle, the strikethrough style list,
+  the All caps and Enclosed buttons, the Overprint fill and Overprint
+  outline boxes (ticked as the object's overprint until the characters
+  get their own; a box set back as the object's lets them follow it
+  again), the OpenType row (see OpenType features, superscript and
+  subscript below), and for text in a variable font a "Variable font"
   row with a slider for each axis the font shows (see Variable fonts
-  below).
+  below). The Properties docker's Character section names the styles set
+  after the font, size, weight and slant.
 - Paragraph: the gear opens Custom Optional Hyphens; six alignment
   buttons, no alignment (lines start at the left; characters keep their
   offsets), left, centre, right, full justification and forced
@@ -801,7 +867,13 @@ the preferences, `text_sections_closed`).
   spacing with its unit (% of the character height, points, or % of the
   font size; a change of unit keeps about the same spacing); left,
   first-line and right indents and space before and after paragraphs in
-  the ruler unit. The expander shows character and word spacing.
+  the ruler unit; Tab stops (#2003): a Tabs... button opening the Tabs
+  dialog (Text > Tabs) for the selected text, and the stops' places in
+  the ruler unit, the first six ("20, 42.5 mm", an ellipsis for more),
+  or "Every 12.7 mm" (the default grid's step) for a paragraph with none
+  (`text_docker::tab_summary`,
+  `text_docker::tests::the_paragraph_section_sums_up_the_tab_stops`).
+  The expander shows character and word spacing.
 - Frame, for paragraph text: the frame's background colour (on or off
   and its colour; drawn behind the text inside the frame), the vertical
   alignment as a list (top, middle, bottom), Fit Text to Frame, columns
@@ -880,6 +952,59 @@ Window > Panels > Glyphs. From the top:
   points, 44 at start), and Copy, which puts the glyph clicked last on
   the clipboard as text (dimmed until a glyph was clicked).
 
+## OpenType features, superscript and subscript
+
+The OpenType row of the Text docker's Character section (#1201): small
+buttons, each a picture of what the feature does, with a tip that names
+it and says what it does. In order: Ligatures (`liga`), Discretionary
+ligatures (`dlig`), Small caps (`smcp`), Capitals to small caps
+(`c2sc`), Case-sensitive forms (`case`), Lining numerals (`lnum`),
+Old-style numerals (`onum`), Tabular numerals (`tnum`), Fractions
+(`frac`), Ordinals (`ordn`), Slashed zero (`zero`), Stylistic
+alternates (`salt`), Swash (`swsh`); then Superscript and Subscript.
+
+- A feature button is enabled only when the font the text is drawn with
+  has the feature in its GSUB or GPOS table (`FontSystem::face_features`,
+  the stand-in's features for a family that is not installed, since that
+  is the face the shaper applies them to); a disabled button's tip says
+  the font lacks it. The list is cached per font until the fonts change
+  (`features_of`), so drawing the row costs nothing per frame.
+- Defaults: every feature off, except the ones the shaper applies by
+  itself (`DEFAULT_ON_FEATURES`: liga, clig, calt, kern, rlig, ccmp,
+  locl, mark, mkmk, curs). Ligatures shows on while the font has `liga`
+  and the text has not switched it off.
+- Storage (`TextSpan::features`, a list of tags): a tag turns a feature
+  on ("smcp"); a tag after a `-` turns one off ("-liga"); "liga=0" and
+  "+liga" are read too (`parse_feature`). `TextSpan::set_feature` keeps
+  one entry per tag and stores nothing for what the shaper does anyway,
+  so a span with no entries draws as it always did and files written
+  before #1201 (plain tags, all on) read unchanged. The shaper passes
+  each entry to the font with value 1 or 0; an entry that is no feature
+  is skipped.
+- Lining and old-style numerals exclude each other: turning one on takes
+  the other off.
+- Superscript and Subscript set `TextSpan::position` (`normal`,
+  `superscript`, `subscript`; left out of the file when normal). A second
+  click returns to normal; the other button replaces the position. With
+  the font's `sups` or `subs` feature the font's own forms are drawn, at
+  the text's size (characters the feature has no form for stay as they
+  are, as the font decides). Without it the characters are drawn at 58 %
+  of the size (`TextPosition::SYNTHETIC_SCALE`), superscripts raised by
+  33 % of the size and subscripts lowered by 15 % of it
+  (`TextPosition::synthetic_shift`), on top of any baseline shift set by
+  hand; the tracking, the horizontal offset and the line's height keep
+  the full size, and the Character offset fields stay at 0, since the
+  position is its own attribute.
+- Every click is one undo step on the selected characters (while
+  editing with a selection) or the selected text objects, through
+  `edit_spans`; the Glyphs docker's alternates set their feature the same
+  way (`set_feature`).
+- Checks: `document::tests::features_switch_on_and_off_and_positions_round_trip`,
+  `tracedraw_text::tests::features_switched_off_and_on_change_the_glyphs`,
+  `tracedraw_text::tests::superscripts_use_the_font_or_a_smaller_shifted_form`,
+  `tracedraw_io::tests::switched_off_features_and_superscripts_round_trip_in_native_files`,
+  `text_docker::tests::opentype_buttons_follow_the_font_and_switch_features_on_and_off`.
+
 ## Character offsets, angle and spacing
 
 - Each character can be shifted and turned: Horizontal character offset
@@ -948,8 +1073,15 @@ doubling, then halving the gap, with a full layout each time (at most
 20000 words). The filler takes the style of the frame's first
 character, or the default font and size of an empty frame; paragraphs
 end at the first full stop after 60 words and the text ends with a full
-stop. Artistic text and other objects are left alone; a text being
-edited is finished first. One undo step.
+stop. Artistic text and other objects are left alone. A frame being
+edited, an empty one just drawn with the Text tool too, is filled and
+stays edited, the caret after the filler
+(`placeholder::tests::an_empty_frame_being_edited_fills_and_stays_edited`).
+One undo step. The command is also in the right-click menu of a
+selection holding a paragraph frame (after Convert) and in the
+right-click menu shown while a paragraph frame is edited (after Select
+All); an artistic text's menus do not offer it
+(`placeholder::tests::the_right_click_menus_offer_placeholder_text_for_frames`).
 
 ## Fonts that come with a drawing
 
@@ -1208,8 +1340,27 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   path's end, letters mirrored; both together turn the text half round
   onto the other side, reading the other way (the older single mirror).
 - Fit text to frame: scale size so the paragraph fills the frame height.
+- Underline and strike lines: thin `= size / 14`, thick `= size / 7`;
+  a double line is two thin lines a thin line apart; the underline hangs
+  from the face's underline position, the strike line is centred on its
+  strikeout position; word-only styles leave out the whitespace glyphs.
+- Enclosed characters without the font's `nalt` forms: a ring of radius
+  `0.6 size` and stroke `size / 14`, centred on the glyph's advance,
+  `0.35 size` above the baseline; the advance grows to at least
+  `1.3 size`.
 
 ## Checks
+
+- Character styles (#1209):
+  `tracedraw_core` `document::tests::line_styles_read_the_old_flags_and_write_them_back`,
+  `document::tests::text_parts_carry_the_characters_overprint`;
+  `tracedraw_text` `tests::double_underlines_are_two_thin_lines_a_thin_line_apart`,
+  `tests::word_only_underlines_skip_the_spaces`,
+  `tests::all_caps_shapes_the_capitals_and_keeps_the_text`,
+  `tests::enclosed_characters_get_a_ring_each_where_the_font_has_no_forms`;
+  `tracedraw_io` `tests::character_styles_round_trip_in_native_files`,
+  `pdf::tests::overprint_is_written_for_objects_and_for_characters`;
+  `ui::text_docker::tests::character_styles_switch_on_the_selected_text`.
 
 - `tracedraw_text::tests::vertical_text_sets_columns_with_turned_and_upright_letters`,
   `tests::letters_that_stand_upright_in_columns`,

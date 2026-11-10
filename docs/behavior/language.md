@@ -72,7 +72,7 @@ Indonesian) gives Indonesian; `C` and `POSIX` give nothing.
   translation for it, else in English (`ShowLanguageDialog=no`).
 - The page "TraceDraw's language", after Select Additional Tasks, has one
   list: "System language (<the language it gives here>)" first, then the
-  eighteen interface languages in the app's order. System language is
+  nineteen interface languages in the app's order. System language is
   selected, so an install where nothing is changed follows the system.
   The language System language names comes from the Windows UI language
   (`GetUILanguage`) through `AppLanguageForLangId`, the same table as

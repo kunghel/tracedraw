@@ -1,9 +1,10 @@
 //! The update card: when a newer release is known (found by the check at
 //! start or by Help > Updates) a card opens in the middle of the window
 //! with the name, an UPDATE badge, the two versions and, in one click,
-//! Update now. While the file downloads the card shows the progress; once
-//! it is checked its button becomes Restart now (Close and install for
-//! the Windows setup and the `.deb`). What's new opens the release notes.
+//! Update now. While the file downloads the card shows the progress as
+//! the update dialog does (`update_progress`), with Cancel; once it is
+//! checked and in place its button becomes Restart Now, after a failure
+//! Try Again. What's new opens the release notes.
 //! Dismiss (or the cross, or Escape) closes it for this session; the check
 //! at the next start brings it back until the update is installed or the
 //! version is skipped in the Updates box. See docs/behavior/updates.md.
@@ -92,37 +93,18 @@ pub fn show(app: &mut App, ctx: &Context) {
         return;
     };
     let version = env!("CARGO_PKG_VERSION");
-    let working = matches!(install, InstallState::Downloading { .. });
-    let (status, button): (String, Option<String>) = match &install {
-        InstallState::Idle => (tr("updates.card_text"), Some(tr("updates.update_now"))),
-        InstallState::Failed(e) => (
-            trf("updates.install_failed", &[("error", e)]),
-            Some(tr("updates.update_now")),
-        ),
-        InstallState::Downloading { done, total } => {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
-            let mb = |b: u64| format!("{:.1}", b as f64 / 1_048_576.0);
-            (
-                trf(
-                    "updates.downloading",
-                    &[
-                        ("new", &release.version),
-                        ("done", &mb(*done)),
-                        ("total", &mb(*total)),
-                    ],
-                ),
-                None,
-            )
+    // Once an install was started the card shows its progress as the
+    // update dialog does; before, a line of text.
+    let phase = crate::ui::update_progress::phase(&install, app.installer.progress());
+    let button: Option<String> = match &install {
+        InstallState::Idle => Some(tr("updates.update_now")),
+        InstallState::Failed(_) => Some(tr("updates.try_again")),
+        InstallState::Installed(_) | InstallState::Ready(_) => Some(tr("updates.restart")),
+        InstallState::Downloading { .. } | InstallState::Checking | InstallState::Installing => {
+            None
         }
-        InstallState::Installed(v) => (
-            trf("updates.installed", &[("new", v)]),
-            Some(tr("updates.restart")),
-        ),
-        InstallState::Ready(v) => (
-            trf("updates.ready", &[("new", v)]),
-            Some(tr("updates.restart_install")),
-        ),
     };
+    let downloading = matches!(install, InstallState::Downloading { .. });
     // A dim layer and a blocker under the card: like the dialogs, the card
     // takes every click meant for the window behind it.
     ctx.layer_painter(egui::LayerId::new(
@@ -134,6 +116,7 @@ pub fn show(app: &mut App, ctx: &Context) {
 
     let icon = crate::ui::brand::icon(ctx);
     let mut pressed = false;
+    let mut cancel = false;
     let mut notes = false;
     let mut dismiss = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     egui::Area::new(egui::Id::new("update_card"))
@@ -191,12 +174,16 @@ pub fn show(app: &mut App, ctx: &Context) {
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        if working {
-                            ui.add(egui::Spinner::new().size(16.0));
+                    match &phase {
+                        Some(phase) => crate::ui::update_progress::card_status(ui, phase),
+                        None => {
+                            ui.label(
+                                RichText::new(tr("updates.card_text"))
+                                    .size(14.0)
+                                    .color(Tokens::text()),
+                            );
                         }
-                        ui.label(RichText::new(status).size(14.0).color(Tokens::text()));
-                    });
+                    }
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if ui
@@ -206,15 +193,27 @@ pub fn show(app: &mut App, ctx: &Context) {
                             notes = true;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(tr("updates.dismiss")).clicked() {
+                            if crate::ui::update_progress::push_button(
+                                ui,
+                                &tr("updates.dismiss"),
+                                false,
+                                true,
+                            ) {
                                 dismiss = true;
                             }
                             if let Some(label) = &button {
-                                let primary = egui::Button::new(
-                                    RichText::new(label).color(Color32::WHITE).strong(),
+                                pressed =
+                                    crate::ui::update_progress::push_button(ui, label, true, true);
+                            }
+                            if downloading
+                                && crate::ui::update_progress::push_button(
+                                    ui,
+                                    &tr("dialog.cancel"),
+                                    false,
+                                    true,
                                 )
-                                .fill(Tokens::ACCENT);
-                                pressed = ui.add(primary).clicked();
+                            {
+                                cancel = true;
                             }
                         });
                     });
@@ -223,7 +222,9 @@ pub fn show(app: &mut App, ctx: &Context) {
     if notes {
         app.open_url(&release.page);
     }
-    if dismiss {
+    if cancel {
+        app.installer.cancel();
+    } else if dismiss {
         app.update_card_hidden = true;
     } else if pressed {
         match install {
@@ -231,7 +232,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                 update_now(app, ctx, &release, crate::updates::install_target())
             }
             InstallState::Installed(_) | InstallState::Ready(_) => restart(app),
-            InstallState::Downloading { .. } => {}
+            InstallState::Downloading { .. }
+            | InstallState::Checking
+            | InstallState::Installing => {}
         }
     }
 }
@@ -363,6 +366,8 @@ mod tests {
                 done: 1 << 20,
                 total: 3 << 20,
             },
+            InstallState::Checking,
+            InstallState::Installing,
             InstallState::Installed("9.0.0".into()),
             InstallState::Ready("9.0.0".into()),
             InstallState::Failed("digest".into()),

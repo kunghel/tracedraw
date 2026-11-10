@@ -17,7 +17,14 @@ reflection across each line plus the rotations those reflections
 generate, `2n - 1` copies in all. The copies are drawn above the original
 (`evaluate()` puts them in `above`), share its fill, outline and other
 effects, and follow every edit of the original, because they are
-recomputed from it.
+recomputed from it. The symmetry is applied after the object's other
+effects, wherever it stands in the list: each copy keeps the object's
+transparency and lens (the renderer draws them on the copy as on the
+object), and what the other effects add around the object (contour steps,
+blend steps, extrusion faces, bevels, block shadows) is mirrored with it,
+under the object for what lies under it (#2121,
+`live::symmetry_tests::mirrored_copies_carry_the_other_effects`,
+`render::tests::a_mirrored_copy_keeps_the_transparency`).
 
 ## Defaults
 

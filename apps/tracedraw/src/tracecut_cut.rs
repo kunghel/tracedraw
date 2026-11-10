@@ -1,5 +1,6 @@
-//! TraceCut's Cut tools: plotter output (with the test cut), weeding,
-//! bridges, cut order, CutContour and registration marks. The geometry
+//! TraceCut's Cut tools: plotter output (with the test cut), CNC
+//! toolpaths, weeding, bridges, cut order, CutContour and registration
+//! marks. The geometry
 //! is `tracedraw_tracecut::cut`; this module keeps the tools' settings,
 //! works their results out for the preview and turns them into commands.
 //! See docs/behavior/tracecut.md.
@@ -12,6 +13,7 @@ use crate::tracecut_send::Destination;
 use serde::{Deserialize, Serialize};
 use tracedraw_core::geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _};
 use tracedraw_core::{Color, Command, Fill, LayerId, Shape, ShapeId, ShapeKind, Stroke};
+use tracedraw_tracecut::cnc::{self, CncSpec, Program};
 use tracedraw_tracecut::cut::bridges::{self, BridgeCount, BridgeSpec};
 use tracedraw_tracecut::cut::hpgl::{self, Plot, Profile};
 use tracedraw_tracecut::cut::marks::{self, RegSpec};
@@ -155,17 +157,25 @@ pub enum Change {
         paths: Vec<BezPath>,
         style: AddStyle,
     },
+    /// A new group named by the i18n key `name` holding one group for
+    /// each part: its i18n name, its paths and how they are drawn.
+    AddNested {
+        name: &'static str,
+        parts: Vec<(&'static str, Vec<BezPath>, AddStyle)>,
+    },
     /// A command as it is.
     Cmd(Box<Command>),
 }
 
 /// How new objects look.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AddStyle {
     /// A hairline, no fill (weeding lines).
     Hairline,
     /// Filled black, no outline (registration marks).
     Filled,
+    /// A hairline of this colour, no fill (one pass of a cut).
+    Line(Color),
 }
 
 /// What a Cut tool worked out: the changes for OK in one undo step
@@ -176,6 +186,9 @@ pub struct Changes {
     pub changes: Vec<Change>,
     /// Outlines to draw over the objects in the preview.
     pub preview: Vec<BezPath>,
+    /// Lines grooved or scored rather than cut through, drawn in the
+    /// preview in a colour of their own.
+    pub scored: Vec<BezPath>,
     /// Places to ring in the preview.
     pub points: Vec<Point>,
     /// Moves with the knife up, for the preview.
@@ -379,6 +392,56 @@ impl App {
                 crate::tracecut_send::start(dest, target, bytes, ctx);
             }
         }
+    }
+
+    /// CNC Toolpath: the G-code program of the selection, X0 Y0 at the
+    /// bottom-left corner of its box or at the ruler origin.
+    pub fn tracecut_cnc(&self, spec: &CncSpec) -> Program {
+        let outlines = self.tracecut_outlines(&self.tracecut_targets());
+        cnc::program(&outlines, spec, self.ruler_origin())
+    }
+
+    /// The program's line for the status strip.
+    pub fn tracecut_cnc_summary(&self, p: &Program) -> String {
+        let u = self.units;
+        if p.toolpaths.is_empty() {
+            return if p.skipped > 0 {
+                trf("tracecut.cnc_skipped", &[("n", &p.skipped.to_string())])
+            } else {
+                tr("tracecut.nothing_to_cut")
+            };
+        }
+        let mut line = trf(
+            "tracecut.cnc_found",
+            &[
+                ("n", &p.toolpaths.len().to_string()),
+                ("passes", &p.passes.to_string()),
+                ("cut", &fmt_len(u, p.cut_length)),
+                ("min", &format!("{:.1}", p.minutes)),
+            ],
+        );
+        if p.skipped > 0 {
+            line.push(' ');
+            line.push_str(&trf(
+                "tracecut.cnc_skipped",
+                &[("n", &p.skipped.to_string())],
+            ));
+        }
+        line
+    }
+
+    /// Save `p` as a G-code file where the user says.
+    pub fn tracecut_save_gcode(&mut self, p: &Program) {
+        let bytes = p.gcode.clone().into_bytes();
+        crate::files::Dialog::new()
+            .add_filter("G-code", &["nc", "gcode", "ngc", "tap"])
+            .set_file_name("toolpath.nc")
+            .save_file(self, move |app, path| {
+                app.status = match crate::files::write(&path, bytes) {
+                    Ok(()) => trf("tracecut.saved", &[("path", &path.display().to_string())]),
+                    Err(e) => e.to_string(),
+                };
+            });
     }
 
     /// The job's line for the status strip.
@@ -733,6 +796,18 @@ impl App {
                     added.push(g.id);
                     cmds.push(Command::AddShape { layer, shape: g });
                 }
+                Change::AddNested { name, parts } => {
+                    let Some(layer) = self.active_layer() else {
+                        continue;
+                    };
+                    let children = parts
+                        .iter()
+                        .map(|(n, paths, style)| self.tracecut_group(layer, n, paths, *style))
+                        .collect();
+                    let g = self.tracecut_group_of(name, children);
+                    added.push(g.id);
+                    cmds.push(Command::AddShape { layer, shape: g });
+                }
             }
         }
         if cmds.is_empty() {
@@ -779,10 +854,19 @@ impl App {
                         s.fill = Fill::Solid(Color::BLACK);
                         s.stroke = None;
                     }
+                    AddStyle::Line(c) => {
+                        s.fill = Fill::None;
+                        s.stroke = Some(Stroke::hairline(c));
+                    }
                 }
                 s
             })
             .collect();
+        self.tracecut_group_of(name, children)
+    }
+
+    /// A group of `children` named by the i18n key `name`.
+    fn tracecut_group_of(&mut self, name: &str, children: Vec<Shape>) -> Shape {
         let id = self.engine.new_shape_id();
         let mut g = Shape::new(id, ShapeKind::Group { children });
         g.fill = Fill::None;
@@ -840,6 +924,54 @@ mod tests {
         // Nothing selected: nothing to cut.
         app.select(Vec::new());
         assert_eq!(app.tracecut_job(&s).plot.outlines, 0);
+    }
+
+    #[test]
+    fn the_cnc_program_mills_the_selection_holes_first() {
+        let mut app = App::headless();
+        let plate = rect(&mut app, 10.0, 10.0, 100.0, 60.0);
+        let hole = rect(&mut app, 40.0, 30.0, 20.0, 20.0);
+        app.select(vec![plate, hole]);
+        let spec = CncSpec {
+            tool_diameter: 4.0,
+            ..Default::default()
+        };
+        let p = app.tracecut_cnc(&spec);
+        assert_eq!(p.toolpaths.len(), 2);
+        assert_eq!(p.toolpaths[0].side, cnc::Side::Inside);
+        assert_eq!(p.toolpaths[1].side, cnc::Side::Outside);
+        assert!(p.gcode.contains("G21") && p.gcode.trim_end().ends_with("M30"));
+        // X0 Y0 at the bottom-left corner of the selection.
+        assert_eq!(p.zero, Point::new(10.0, 10.0));
+        let summary = app.tracecut_cnc_summary(&p);
+        assert!(summary.contains('2'), "{summary}");
+        // Working it out and showing it change nothing.
+        let rev = app.engine.revision();
+        let mut settings = crate::tracecut::ToolSettings::default();
+        settings.cnc = spec;
+        let w = app.tracecut_work_out(crate::tracecut::ToolId::CncToolpath, &settings);
+        let scene = app.tracecut_scene(Some(&w));
+        assert_eq!(scene.marked.len(), 2);
+        assert!(!scene.moves.is_empty());
+        assert_eq!(app.engine.revision(), rev);
+        // A hole too small for the tool is said to be left out.
+        app.select(Vec::new());
+        assert_eq!(
+            app.tracecut_cnc_summary(&app.tracecut_cnc(&spec)),
+            tr("tracecut.nothing_to_cut")
+        );
+        let tiny = rect(&mut app, 200.0, 200.0, 2.0, 2.0);
+        app.select(vec![tiny]);
+        let inside = CncSpec {
+            side: cnc::Side::Inside,
+            ..spec
+        };
+        let p = app.tracecut_cnc(&inside);
+        assert!(p.toolpaths.is_empty() && p.skipped == 1);
+        assert_eq!(
+            app.tracecut_cnc_summary(&p),
+            trf("tracecut.cnc_skipped", &[("n", "1")])
+        );
     }
 
     #[test]
@@ -976,6 +1108,49 @@ mod tests {
         assert!(eps.contains("(CutContour) cvn"), "{eps}");
         assert!(tracedraw_io::svg::page_to_svg(app.doc(), 0)
             .contains("data-spot-stroke=\"CutContour\""));
+    }
+
+    /// #2186: the swatch CutContour adds goes by the name CutContour
+    /// wherever it shows (the document palette, the Palette Manager, the
+    /// status bar, a palette it is added to), never by its ink number,
+    /// and the PDF's separation is named CutContour exactly.
+    #[test]
+    fn the_cut_contour_swatch_is_named_cut_contour() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 20.0, 20.0);
+        app.select(vec![a]);
+        let c = app.tracecut_cut_contour(&CutContourSettings::default());
+        assert!(app.tracecut_apply_changes(&c));
+        let swatch = app.doc().palette.first().copied().expect("swatch");
+        assert!(matches!(swatch, Color::Spot { .. }));
+        assert_eq!(crate::ui::palette::name_of(&app, swatch), CUT_CONTOUR);
+        let tip =
+            crate::ui::palette::swatch_tip(&crate::ui::palette::name_of(&app, swatch), swatch);
+        assert!(tip.starts_with("CutContour\n"), "{tip}");
+        assert!(!tip.contains("Spot"), "{tip}");
+        assert_eq!(
+            crate::app::color_description_in(app.doc(), swatch),
+            "CutContour 100%"
+        );
+        let stroke = app.doc().find_shape(a).and_then(|s| s.stroke.clone());
+        let fill = Fill::Solid(swatch);
+        assert_eq!(
+            crate::app::fill_description_in(app.doc(), &fill),
+            "CutContour 100%"
+        );
+        assert_eq!(stroke.map(|s| s.color), Some(swatch));
+        // Added to one of the user's palettes, it keeps the name.
+        let i = app.new_palette("Cut").expect("palette");
+        assert!(app.add_colors_to_palette(i, &[swatch]));
+        assert_eq!(
+            app.palettes[i].colors,
+            vec![(CUT_CONTOUR.to_string(), swatch)]
+        );
+        // The separation of the exported PDF.
+        let pdf = tracedraw_io::pdf::document_to_pdf(app.doc());
+        let pdf = String::from_utf8_lossy(&pdf);
+        assert!(pdf.contains("/Separation /CutContour /DeviceCMYK"), "{pdf}");
+        assert!(!pdf.contains("/Separation /Spot"));
     }
 
     #[test]

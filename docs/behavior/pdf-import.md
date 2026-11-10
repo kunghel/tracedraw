@@ -166,6 +166,18 @@ the dialog keeps what was read until OK or Cancel.
   imported (the Import PDF dialog: Text or Curves, Do not ask again);
   Options > File Formats keeps the choice (`pdf_text_as_curves`,
   `pdf_ask_text`).
+- Import as Picture (#1916): File > Import offers a third choice,
+  Picture, with a resolution (`pdf_as_picture`, `pdf_picture_dpi`, 36 to
+  2400 dpi, 300 at first; Options > File Formats has them too). The file
+  is read with its text as curves, the chosen pages come in as with the
+  other choices, then the objects of each page become one picture by
+  Convert to Bitmap (RGB, anti-aliased, transparent background): one a
+  new page, or on the current page one a page (the page's group) or one
+  for a single page's objects; the pictures are selected, and the import
+  and the conversion are one undo step "Import"
+  (`pdf_pages::tests::import_as_picture_makes_each_page_one_picture`).
+  Opening a file offers no Picture: with Picture chosen, an opened file
+  reads its text as curves.
 
 ## Not read
 

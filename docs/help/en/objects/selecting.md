@@ -36,9 +36,11 @@ in the middle. The status bar says what is selected and on which layer.
 
 The pointer shows the move arrows only over what is selected. Over any other
 object it keeps the plain arrow, since a press there picks that object first;
-dragging an unselected object still picks and moves it. A right click while
-you drag a selection frame is ignored: the frame goes on and selects when you
-let go of the left button.
+dragging an unselected object still picks and moves it. While you drag a
+selection frame, hold the right mouse button as well to move the frame
+without changing its size, so that it sits exactly round the objects you
+want; let go of the right button to size it again. The frame selects when
+you let go of the left button.
 
 Drawing and shaping tools whose click has no job of its own (the rectangle,
 ellipse, polygon and other shape tools, the Knife, the connectors, Blend and
@@ -97,6 +99,35 @@ Press <kbd>Ctrl</kbd> and a number from 0 to 9 to remember the selection under
 that number. Press the number alone to select those objects again, and again
 to zoom to them. <kbd>Alt</kbd> and the number add the selection to the
 group. Groups are saved with the drawing.
+
+### Invert Selection and Select Similar {#select-similar}
+
+[[menu.edit > menu.edit.invert_selection]] selects every object of the
+page that [[menu.edit.select_all]] would take and is not selected now, and
+deselects the selected ones. With nothing selected it selects everything.
+
+[[menu.edit > menu.edit.select_similar]] selects the objects of the page
+that are like the selected ones:
+
+- [[menu.edit.similar_fill]]: the same fill (the same colour, gradient,
+  pattern or no fill).
+- [[menu.edit.similar_outline]]: the same outline (width, colour and
+  style), or no outline when the selected object has none.
+- [[menu.edit.similar_text_format]]: text that uses the same font and
+  size as the selected text (in any of its characters).
+- [[menu.edit.similar_kind]]: the same kind of object (rectangles,
+  ellipses, curves, artistic text, paragraph text, groups, bitmaps...).
+
+With several objects selected, an object like any of them is taken. The
+objects inside groups are compared too, each on its own, and a selected
+group stands for the objects in it (with
+[[menu.edit.similar_kind]], a selected group finds the other groups).
+Objects on locked layers stay out, as with [[menu.edit.select_all]].
+
+Each of these commands is one step of [[menu.edit.undo]]: right after
+it, with nothing changed in the drawing, Undo puts the selection back as
+it was and Redo makes it again. Once the drawing changes, Undo goes back
+to the drawing's own steps.
 
 ## The Freehand Pick tool {#freehand-pick}
 

@@ -8,6 +8,8 @@
 //! the object holds a colour of the new model). A click outside the
 //! popup or Esc closes it. The dotted strip at the popup's top drags it
 //! elsewhere (off the object it colours), and it stays there while open.
+//! Under the sliders a harmony list and a row of swatches offer colours
+//! that go with the one picked; a click on a swatch picks it (#1498).
 
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -33,6 +35,80 @@ struct Open {
     size: Vec2,
     /// How far the popup was dragged by its strip from where it opened.
     offset: Vec2,
+    /// The harmony whose swatches show under the sliders (#1498).
+    harmony: crate::palette::Harmony,
+}
+
+/// The harmony a picker shows when it opens.
+const FIRST_HARMONY: crate::palette::Harmony = crate::palette::Harmony::Complementary;
+
+/// The swatches of `harmony` for colour `c`, each in the model `c` is
+/// edited in, so a pick keeps the colour's model.
+pub fn harmony_swatches(c: Color, harmony: crate::palette::Harmony) -> Vec<Color> {
+    let model = edit_model(c);
+    harmony
+        .colors(c)
+        .into_iter()
+        .map(|h| h.convert_to(model))
+        .collect()
+}
+
+/// The id of the `i`th harmony swatch of picker `id`.
+fn harmony_swatch_id(id: Id, i: usize) -> Id {
+    id.with(("harmony_swatch", i))
+}
+
+/// The harmony list and its swatches; true when a swatch was clicked,
+/// `c` then being its colour.
+fn harmony_row(ui: &mut Ui, id: Id, c: &mut Color, harmony: &mut crate::palette::Harmony) -> bool {
+    use crate::palette::Harmony;
+    let mut picked = false;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(tr("color_picker.harmony"))
+                .color(Tokens::text_dim())
+                .size(11.0),
+        );
+        crate::ui::keynav::ComboBox::from_id_salt(id.with("harmony"))
+            .selected_text(tr(harmony.key()))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for h in Harmony::ALL {
+                    ui.selectable_value(harmony, h, tr(h.key()))
+                        .rich_tip(crate::ui::tips::keyed(h.key()));
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::keyed("color_picker.harmony"));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (i, h) in harmony_swatches(*c, *harmony).into_iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 18.0), Sense::hover());
+            let resp = ui
+                .interact(rect, harmony_swatch_id(id, i), Sense::click())
+                .rich_tip(crate::app::color_description(h));
+            let [r, g, b] = h.to_rgb8();
+            ui.painter()
+                .rect_filled(rect.shrink(1.0), 2.0, Color32::from_rgb(r, g, b));
+            let border = if resp.hovered() {
+                Tokens::text()
+            } else {
+                Tokens::control_border()
+            };
+            ui.painter().rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, border),
+                egui::StrokeKind::Inside,
+            );
+            if resp.clicked() && h != *c {
+                *c = h;
+                picked = true;
+            }
+        }
+    });
+    picked
 }
 
 /// A dotted strip `width` points wide that drags what it sits on: the
@@ -399,6 +475,7 @@ pub fn open_picker(ctx: &egui::Context, id: Id, c: Color) {
                 hue: viewer_point(c).0,
                 size: FIRST_SIZE,
                 offset: Vec2::ZERO,
+                harmony: FIRST_HARMONY,
             },
         )
     });
@@ -435,6 +512,7 @@ fn picker_popup(ui: &mut Ui, id: Id, swatch: Rect, c: &mut Color, clicked: bool)
                 hue: viewer_point(*c).0,
                 size: FIRST_SIZE,
                 offset: Vec2::ZERO,
+                harmony: FIRST_HARMONY,
             }),
         };
     }
@@ -484,6 +562,11 @@ fn picker_popup(ui: &mut Ui, id: Id, swatch: Rect, c: &mut Color, clicked: bool)
                             .color(Tokens::text_dim())
                             .size(11.0),
                     );
+                    ui.add_space(4.0);
+                    if harmony_row(ui, id, c, &mut st.harmony) {
+                        st.hue = viewer_point(*c).0;
+                        changed = true;
+                    }
                 });
             });
         let popup = area.response.rect;
@@ -669,6 +752,66 @@ mod tests {
             false
         ));
         assert!(closes(None, true, popup, swatch, true), "Esc always closes");
+    }
+
+    /// The harmony swatches keep the colour's model, and a click on one in
+    /// the open picker picks it (#1498).
+    #[test]
+    fn a_harmony_swatch_picks_its_colour() {
+        use crate::palette::Harmony;
+        let red = Color::rgb8(255, 0, 0);
+        let comp = harmony_swatches(red, Harmony::Complementary);
+        assert_eq!(comp.len(), 2);
+        assert_eq!(comp[1].to_rgb8(), [0, 255, 255]);
+        assert!(comp.iter().all(|c| matches!(c, Color::Rgb { .. })));
+        let cmyk = Color::cmyk_pct(0.0, 100.0, 100.0, 0.0);
+        for h in Harmony::ALL {
+            let swatches = harmony_swatches(cmyk, h);
+            assert!(swatches.len() >= 2, "{h:?}");
+            assert!(
+                swatches.iter().all(|c| matches!(c, Color::Cmyk { .. })),
+                "{h:?} keeps CMYK"
+            );
+        }
+
+        let ctx = crate::theme::ui_context();
+        let id = Id::new("harmony_test_picker");
+        let mut c = red;
+        let anchor = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::new(40.0, 18.0));
+        open_picker(&ctx, id, c);
+        let run = |c: &mut Color, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen()),
+                events,
+                ..Default::default()
+            };
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ui| {
+                changed = picker_beside(ui, id, anchor, c);
+            });
+            out.textures_delta.clear();
+            changed
+        };
+        run(&mut c, Vec::new());
+        run(&mut c, Vec::new());
+        let at = ctx
+            .read_response(harmony_swatch_id(id, 1))
+            .expect("the second swatch")
+            .rect
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&mut c, vec![egui::Event::PointerMoved(at)]);
+        run(&mut c, vec![button(true)]);
+        let changed = run(&mut c, vec![button(false)]);
+        assert!(changed, "the click picks the swatch");
+        assert_eq!(c.to_rgb8(), [0, 255, 255]);
+        assert!(matches!(c, Color::Rgb { .. }));
+        assert!(picker_open(&ctx, id), "the picker stays open");
     }
 
     /// A click on a swatch near the window's right edge opens the popup

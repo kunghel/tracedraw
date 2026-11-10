@@ -22,6 +22,7 @@ sprawdzić, co się zmieniło, i wymienia najważniejsze nowości ostatnich wers
 
 ## Najważniejsze nowości ostatnich wersji {#highlights}
 
+- **Ścieżki CNC, eksport i zaznaczanie.** [[menu.tools > menu.tools.tracecut]] tworzy G-code dla frezarki CNC i rysuje oczka, pudełka na wczepy i gięte kasety; [[menu.file > menu.file.export]] najpierw pyta o plik, a potem pokazuje opcje formatu, a [[menu.file > menu.file.export_with_options]] pokazuje je zawsze; [[menu.edit > menu.edit.select_similar]] i [[menu.edit > menu.edit.invert_selection]] zmieniają zaznaczenie; [[menu.object > menu.object.insert > menu.object.add_dimensions]] wymiaruje zaznaczenie; nowe są wypełnienia proceduralne, przyciski OpenType i interfejs po laotańsku.
 - **Strony widzące i połączony tekst.** [[menu.layout > menu.layout.facing_pages]] pokazuje strony obok siebie jako rozkładówki; [[menu.text > menu.text.link_content]] łączy teksty, aby pisanie w jednym zmieniało pozostałe; wielostronicowy PDF pyta, które strony zaimportować; [[menu.edit > menu.edit.step_and_repeat]] może wypełnić stronę kopiami.
 - **Dotyk i telefony.** Przyciski Shift, Ctrl i Alt na pasku standardowym
   pozostają wciśnięte dla palca; na Androidzie interfejs omija wycięcie

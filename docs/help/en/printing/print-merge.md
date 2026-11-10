@@ -77,6 +77,16 @@ number.
   number, or give an ending value to make the records from the start to the
   end at once (15 to 25 in three digits makes eleven records, 015 to 025),
   with no data file at all.
+- **[[merge.kind_random]]**: a random whole number for each record, drawn
+  [[merge.random_min]] one number [[merge.random_max]] another, padded with
+  zeros to its [[merge.digits]] and written after the [[merge.prefix]] you
+  give (raffle tickets, codes). With [[merge.random_unique]] (on at first)
+  no number comes twice; when the range holds fewer numbers than there are
+  records, the dialog says so and the merge is not made, so widen the range
+  or allow repeats. [[merge.random_records]] makes that many records when
+  there are fewer, so random numbers need no data file. The numbers stay
+  the same, in the grid, the merged pages and the print, until you click
+  [[merge.random_draw]] in Configure columns.
 - **Picture**: the cell holds the path of a picture. A text holding only
   `<Field>` becomes the picture, as large as fits its box. Put that text
   inside a frame with [[menu.object.clip_frame_place_inside]] (a photo frame) and the
@@ -86,6 +96,17 @@ number.
 Fields work in groups and frames too, so a card can be grouped.
 - **QR code**: a text holding only `<Field>` becomes a QR code of the cell's
   text.
+- **Barcode**: choose [[merge.kind_barcode]] in the panel and click
+  [[merge.insert_field]]. The Barcode Wizard opens with the field as its
+  data; choose the standard, sizes and text as for any
+  [barcode](../objects/barcodes.md#barcode-data) and click Finish. Each
+  record's page gets its own barcode made from its value, in the place and
+  size of the one you placed. With [[merge.all_pages]] ticked the barcode
+  goes on every page. The data can mix fixed text and fields: with a Number
+  field `Serial` of six digits starting at 15, the data `590123<Serial>`
+  gives the EAN-13 barcodes 590123000015, 590123000016 and so on, only the
+  last digits changing. A record whose value the standard cannot hold gets
+  no barcode.
 
 An empty cell, or a picture that does not load, removes that object from the
 record's page.

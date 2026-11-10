@@ -55,6 +55,8 @@ section of the [[docker.properties]] panel.
 
 To turn an outline into an object you can fill, choose
 [[menu.object > menu.object.convert_outline_to_object]] (<kbd>Ctrl+Shift+Q</kbd>).
+Curves stay curves: the new object has about as many nodes as the path the
+outline was drawn along, and round ends and corners become arcs.
 The settings of new objects are explained in
 [Object styles and defaults](../templates-styles/object-styles.md#document-defaults).
 

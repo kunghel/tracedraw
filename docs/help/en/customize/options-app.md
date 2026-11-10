@@ -28,7 +28,9 @@ sets how the program works. Choose a page from the list on the left.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (at first),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] or
+  [[options.open_view_height]], [[options.open_view_actual]],
+  [[options.open_view_percent]] (a zoom of your own, typed beside the list,
+  with the page in the middle of the window) or
   [[options.open_view_saved]] (the page, place and zoom kept each time a
   TraceDraw file is saved).
 - [[options.ruler_calibration]]: hold a ruler against the screen and change

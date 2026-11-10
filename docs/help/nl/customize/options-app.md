@@ -29,7 +29,7 @@ stelt in hoe het programma werkt. Kies een pagina in de lijst links.
   [[options.wheel_scroll]].
 - [[options.open_view]]: [[options.open_view_page]] (in het begin),
   [[options.open_view_objects]], [[options.open_view_width]],
-  [[options.open_view_height]], [[options.open_view_actual]] of
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] of
   [[options.open_view_saved]] (de pagina, plek en zoom die bij elke keer
   opslaan van een TraceDraw-bestand worden bewaard).
 - [[options.ruler_calibration]]: houd een liniaal tegen het scherm en wijzig de

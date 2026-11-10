@@ -91,6 +91,11 @@ length with width nodes.
   into a staircase edge with loose slivers and stood out past the far
   side of a loop (a live test of 0.41,
   `shaping::tests::a_closed_loops_variable_band_is_a_tapering_ring`).
+  Across the point where a closed path closes the band runs on as
+  anywhere else: nodes either side of it, or on it, give the same reach
+  just before and just after it, with no step and no open end there
+  (`shaping::tests::a_variable_band_tapers_across_the_closing_point`,
+  `render::tests::a_variable_outline_on_an_ellipse_tapers_across_its_closing_point`).
   Holes in the band smaller than `(0.05 r)^2` for the widest reach `r`
   are filled. Each point of the band is worked out once and shared by
   the pieces either side, and every piece has its ends on the path as

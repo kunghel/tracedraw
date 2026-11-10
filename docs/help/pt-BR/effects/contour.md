@@ -24,6 +24,22 @@ Com o painel:
 
 Grupos e bitmaps não recebem contorno concêntrico.
 
+## Alças no desenho {#handles}
+
+Com a ferramenta de contorno, um objeto com contorno concêntrico mostra uma
+linha a partir do meio da borda direita: para fora num contorno externo,
+para dentro num interno ou até o centro.
+
+- Arraste o **quadrado** na ponta da linha para mudar até onde o contorno
+  chega. Os passos continuam os mesmos, mais afastados ou mais juntos.
+- Arraste a **barra** sobre a linha, no primeiro passo, para mudar o número de
+  passos: em direção ao objeto para mais passos, para longe para menos. O
+  último passo fica onde está. Um contorno até o centro não tem barra, pois
+  usa quantos passos couberem.
+
+O contorno acompanha enquanto você arrasta, e cada arraste se desfaz em um
+só passo.
+
 ## Configurações {#settings}
 
 A barra de propriedades e o painel mostram as configurações do contorno

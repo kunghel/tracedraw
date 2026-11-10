@@ -4,7 +4,9 @@
 //! object, the page's edges, the page's centre, the grid) and Use Outline.
 //! Distribute: eight picture buttons (left edges, centres, gaps and right
 //! edges along x; top edges, centres, gaps and bottom edges along y) and
-//! where they spread the objects (between the outermost, across the page).
+//! where they spread the objects (between the outermost, across the page,
+//! or a set spacing apart, whose box and slider spread the selection
+//! again live while they change, see `spacing_row`).
 //! See `docs/behavior/align-distribute.md`.
 
 use crate::app::App;
@@ -316,6 +318,168 @@ fn align_to_key(to: AlignTo) -> &'static str {
     }
 }
 
+/// The set spacing's slider covers 0 to this many millimetres; the box
+/// takes any value.
+const GAP_SLIDER_MM: f64 = 100.0;
+
+/// A change of the set spacing with its slider or the wheel, made live:
+/// the selection is spread again at each new value, as a preview on the
+/// drawing (`Engine::begin_preview`), so the whole change is one undo
+/// step once kept, and putting it back leaves the drawing and the
+/// history as they were.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GapLive {
+    /// The Distribute button the selection was spread with.
+    how: Distribute,
+    /// The spacing before the change, mm.
+    before: f64,
+    /// The selection being spread.
+    selection: Vec<tracedraw_core::ShapeId>,
+    /// The spacing row was drawn this frame.
+    seen: bool,
+}
+
+/// A Distribute button clicked: the selection spreads as Distribute To
+/// says; with a set spacing the button is kept, so changing the spacing
+/// next spreads the same objects again, live.
+pub(crate) fn distribute_clicked(app: &mut App, how: Distribute) {
+    keep_gap(app);
+    let to = app.distribute_to;
+    app.distribute_with(how, to);
+    app.distribute_last = (to == DistributeTo::Spacing).then(|| (how, app.selection.clone()));
+}
+
+/// The spacing changed from `before` to `app.distribute_gap` (mm) while
+/// it is being adjusted: spread the selection again at the new spacing,
+/// in place of the preview shown so far. Nothing happens to the drawing
+/// when no Distribute button spread this selection with a set spacing.
+fn gap_changed(app: &mut App, before: f64) {
+    let Some((how, selection)) = app.distribute_last.clone() else {
+        return;
+    };
+    if selection != app.selection || !app.can_distribute(DistributeTo::Spacing) {
+        return;
+    }
+    if app.gap_live.is_some() {
+        app.engine.withdraw_preview();
+    } else {
+        app.gap_live = Some(GapLive {
+            how,
+            before,
+            selection,
+            seen: true,
+        });
+    }
+    app.engine.begin_preview();
+    app.distribute_with(how, DistributeTo::Spacing);
+}
+
+/// Keep the spacing being adjusted and what it did: one undo step.
+pub(crate) fn keep_gap(app: &mut App) {
+    if app.gap_live.take().is_some() {
+        app.engine.keep_preview();
+    }
+}
+
+/// Put back the spacing and the drawing as they were before the
+/// adjustment began (Esc, or the docker or the selection gone).
+pub(crate) fn cancel_gap(app: &mut App) {
+    if let Some(live) = app.gap_live.take() {
+        app.engine.withdraw_preview();
+        app.distribute_gap = live.before;
+    }
+}
+
+/// Once a frame, after the dockers: an adjustment whose spacing row was
+/// not drawn (the docker closed or showing something else) or whose
+/// selection changed is put back.
+pub fn settle_gap(app: &mut App) {
+    let Some(live) = app.gap_live.as_mut() else {
+        return;
+    };
+    let seen = std::mem::take(&mut live.seen);
+    if !seen || live.selection != app.selection {
+        cancel_gap(app);
+    }
+}
+
+/// Distribute To > Set spacing: the spacing's box (typed, its arrows or
+/// the wheel over it) and a slider under it. With the selection spread
+/// by a Distribute button, a change spreads it again at once; the change
+/// is kept as one undo step when the slider is let go, the box is left
+/// (Enter or a click elsewhere) or the pointer leaves the row after the
+/// wheel, and Esc puts everything back.
+fn spacing_row(app: &mut App, ui: &mut Ui) {
+    let units = app.units;
+    let unit_mm = units.world_mm();
+    let unit_mm = if unit_mm.is_finite() && unit_mm > 0.0 {
+        unit_mm
+    } else {
+        1.0
+    };
+    let before = app.distribute_gap;
+    let row = ui.scope(|ui| {
+        let field = ui
+            .horizontal(|ui| {
+                ui.label(tr("docker.distribute_gap"));
+                let mut v = app.distribute_gap / unit_mm;
+                let resp = ui
+                    .add(
+                        crate::ui::field::NumField::new(&mut v)
+                            .speed(0.1)
+                            .max_decimals(4)
+                            .suffix(format!(" {}", units.short())),
+                    )
+                    .rich_tip(crate::ui::tips::pair(
+                        "docker.distribute_gap",
+                        "docker.distribute_gap_tip",
+                    ));
+                if resp.changed() && v.is_finite() {
+                    app.distribute_gap = v * unit_mm;
+                }
+                resp
+            })
+            .inner;
+        let mut v = app.distribute_gap / unit_mm;
+        let slider = ui
+            .add(
+                crate::ui::slider::Slider::new(&mut v, 0.0..=GAP_SLIDER_MM / unit_mm)
+                    .show_value(false)
+                    .max_decimals(4),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "docker.distribute_gap",
+                "docker.distribute_gap_slider_tip",
+            ));
+        if slider.changed() && v.is_finite() {
+            app.distribute_gap = v * unit_mm;
+        }
+        (field, slider)
+    });
+    let (field, slider) = row.inner;
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new("gap_field_rect"), field.rect);
+        d.insert_temp(egui::Id::new("gap_slider_rect"), slider.rect);
+    });
+    if app.distribute_gap != before {
+        gap_changed(app, before);
+    }
+    let Some(live) = app.gap_live.as_mut() else {
+        return;
+    };
+    live.seen = true;
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        cancel_gap(app);
+        return;
+    }
+    let over = ui.rect_contains_pointer(row.response.rect);
+    let busy = slider.dragged() || field.has_focus() || field.dragged();
+    if slider.drag_stopped() || field.lost_focus() || (!over && !busy) {
+        keep_gap(app);
+    }
+}
+
 /// Draw the docker.
 pub fn align_distribute(app: &mut App, ui: &mut Ui) {
     let has = !app.selection.is_empty();
@@ -403,8 +567,7 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
                 gap(ui);
             }
             if button(ui, Icon::Distribute(d), &tr(key), can, false).clicked() {
-                let to = app.distribute_to;
-                app.distribute_with(d, to);
+                distribute_clicked(app, d);
             }
         }
     });
@@ -440,29 +603,7 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
     );
     // The set spacing, in the ruler unit through the drawing scale.
     if app.distribute_to == DistributeTo::Spacing {
-        ui.horizontal(|ui| {
-            ui.label(tr("docker.distribute_gap"));
-            let units = app.units;
-            let unit_mm = units.world_mm();
-            let unit_mm = if unit_mm.is_finite() && unit_mm > 0.0 {
-                unit_mm
-            } else {
-                1.0
-            };
-            let mut v = app.distribute_gap / unit_mm;
-            if ui
-                .add(
-                    crate::ui::field::NumField::new(&mut v)
-                        .speed(0.1)
-                        .max_decimals(4)
-                        .suffix(format!(" {}", units.short())),
-                )
-                .changed()
-                && v.is_finite()
-            {
-                app.distribute_gap = v * unit_mm;
-            }
-        });
+        spacing_row(app, ui);
     }
     if !can {
         ui.add_space(2.0);
@@ -603,6 +744,147 @@ mod tests {
         app.distribute_with(Distribute::Left, DistributeTo::Spacing);
         assert!(near(bounds(&app, b).x0, 15.0));
         assert!(near(bounds(&app, c).x0, 30.0));
+    }
+
+    /// Live test: the set spacing had no live adjustment. The wheel over
+    /// its box and the slider under it spread the selection again at
+    /// each new value, as a preview: the whole adjustment is one undo
+    /// step once kept (the slider let go, the pointer off the row after
+    /// the wheel), and Esc, or the docker gone, puts back the spacing
+    /// and the drawing with nothing added to the history.
+    #[test]
+    fn the_set_spacing_spreads_the_selection_live_in_one_undo_step() {
+        use egui::{Event, Modifiers, PointerButton};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let unit = app.units.world_mm();
+        let a = rect(&mut app, 0.0, 0.0, 10.0, 10.0);
+        let b = rect(&mut app, 30.0, 0.0, 50.0, 10.0);
+        let c = rect(&mut app, 90.0, 0.0, 100.0, 10.0);
+        app.select(vec![a, b, c]);
+        app.distribute_to = DistributeTo::Spacing;
+        app.distribute_gap = 5.0 * unit;
+        distribute_clicked(&mut app, Distribute::SpacingH);
+        let gap_now = |app: &App| bounds(app, b).x0 - bounds(app, a).x1;
+        assert!(near(gap_now(&app), 5.0 * unit));
+        let frame = |app: &mut App, events: Vec<Event>, docker: bool| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 700.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                if docker {
+                    align_distribute(app, ui);
+                }
+                settle_gap(app);
+            });
+            out.textures_delta.clear();
+        };
+        let rect_of = |name: &str| {
+            ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(name)))
+                .expect("drawn")
+        };
+        // The pointer comes over the box, then the wheel turns a notch.
+        let notch = |app: &mut App, at: Pos2| {
+            frame(app, vec![Event::PointerMoved(at)], true);
+            let turn = Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: Vec2::new(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            };
+            frame(app, vec![turn], true);
+        };
+        let away = Pos2::new(300.0, 690.0);
+        let steps = |app: &App| app.engine.history_labels().0.len();
+        frame(&mut app, Vec::new(), true);
+        let field = rect_of("gap_field_rect");
+        // A notch steps the box by its step, a tenth of the unit.
+        let step = 0.1 * unit;
+        let before = steps(&app);
+        // Two notches over the box: the selection follows each at once.
+        notch(&mut app, field.center());
+        assert!(near(app.distribute_gap, 5.0 * unit + step));
+        assert!(near(gap_now(&app), 5.0 * unit + step), "live");
+        assert!(near(
+            bounds(&app, c).x0 - bounds(&app, b).x1,
+            5.0 * unit + step
+        ));
+        notch(&mut app, field.center());
+        assert!(near(gap_now(&app), 5.0 * unit + 2.0 * step));
+        assert!(app.gap_live.is_some(), "still adjusting");
+        // The pointer leaves the row: kept, one step for both notches.
+        frame(&mut app, vec![Event::PointerMoved(away)], true);
+        assert!(app.gap_live.is_none());
+        assert_eq!(steps(&app), before + 1, "one undo step");
+        app.undo();
+        assert!(near(gap_now(&app), 5.0 * unit));
+        app.redo();
+        assert!(near(gap_now(&app), 5.0 * unit + 2.0 * step));
+        // Esc puts back the spacing and the drawing, adding no step.
+        notch(&mut app, field.center());
+        assert!(near(gap_now(&app), 5.0 * unit + 3.0 * step));
+        let esc = |pressed| Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        frame(&mut app, vec![esc(true), esc(false)], true);
+        assert!(app.gap_live.is_none());
+        assert!(near(app.distribute_gap, 5.0 * unit + 2.0 * step));
+        assert!(near(gap_now(&app), 5.0 * unit + 2.0 * step));
+        assert_eq!(steps(&app), before + 1);
+        // The slider: dragged, the selection follows; let go, one step.
+        let slider = rect_of("gap_slider_rect");
+        let from = Pos2::new(slider.left() + 2.0, slider.center().y);
+        let to = Pos2::new(slider.center().x, slider.center().y);
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(&mut app, vec![Event::PointerMoved(from)], true);
+        frame(&mut app, vec![button(from, true)], true);
+        frame(&mut app, vec![Event::PointerMoved(to)], true);
+        let dragged = app.distribute_gap;
+        assert!(
+            !near(dragged, 5.0 * unit + 2.0 * step),
+            "the slider moved the spacing"
+        );
+        assert!(near(gap_now(&app), dragged), "live");
+        assert!(app.gap_live.is_some());
+        frame(
+            &mut app,
+            vec![Event::PointerMoved(to + Vec2::new(4.0, 0.0))],
+            true,
+        );
+        let moved = app.distribute_gap;
+        assert!(near(gap_now(&app), moved));
+        frame(
+            &mut app,
+            vec![button(to + Vec2::new(4.0, 0.0), false)],
+            true,
+        );
+        assert!(app.gap_live.is_none(), "let go: kept");
+        assert_eq!(steps(&app), before + 2, "one more step for the whole drag");
+        app.undo();
+        assert!(near(gap_now(&app), 5.0 * unit + 2.0 * step));
+        app.redo();
+        // The docker gone while adjusting: put back.
+        frame(&mut app, vec![Event::PointerMoved(away)], true);
+        notch(&mut app, field.center());
+        assert!(app.gap_live.is_some());
+        frame(&mut app, Vec::new(), false);
+        assert!(app.gap_live.is_none());
+        assert!(near(gap_now(&app), moved));
+        assert_eq!(steps(&app), before + 2);
     }
 
     #[test]

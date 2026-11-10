@@ -26,6 +26,11 @@ Ctrl+F7).
   group work the same way. The group used to be drawn as one path with
   its own empty fill, so it vanished
   (`tracedraw_core::live::tests::an_envelope_on_a_group_keeps_each_object`).
+  A blend inside the group bends with it: the copy of the end object the
+  blend draws its steps to, and the path it follows, are mapped too, so
+  the steps between the two objects follow the envelope; they used to be
+  mixed toward the unbent end and stayed where they were (#2120,
+  `tracedraw_core::live::tests::a_grouped_blend_bends_with_the_group`).
 - Curves are flattened before the mapping with a tolerance of 1/50 000
   of the object's size (at most 0.05 units), so letters stay smooth; a
   fixed 0.05 left chords about 2 mm long on large text

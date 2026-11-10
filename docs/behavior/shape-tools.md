@@ -181,7 +181,10 @@ whatever tool is active.
 71 shapes in five sets (`common_shapes.rs`), picked on the property bar:
 the button shows the shape and its name; a click opens the sets as tabs
 (the current shape's set first) over a grid of outlines, nine to a row,
-each named in its tooltip. Picking one closes the grid.
+each named in its tooltip. Picking one closes the grid. The first tab,
+All, shows every set at once, each under its name, scrolling past 70 %
+of the window's height (#1650,
+`toolbar::tests::the_common_shapes_picker_has_an_all_tab`).
 
 - Basic shapes (18): parallelogram, trapezoid, diamond, triangle, right
   triangle, hexagon, octagon, plus, heart, lightning, crescent, ring,
@@ -210,6 +213,39 @@ summing junction, a callout's leader) are straight two-point lines that
 are stroked, not filled. Rounded corners (alternate process, the
 terminator's ends, a rounded callout) keep their size in long boxes.
 
+### My shapes
+
+The sixth tab of the grid, My shapes (`my_shapes.rs`, #481, #782), holds
+the user's own shapes, drawn like the built-in ones:
+
+- Add Selection as Common Shape (the button above the tab's grid, Object >
+  Create and the right-click menu) keeps the outline of the selected
+  objects as one shape at the end of the set and picks it: every object's
+  outline on the page (groups, text and symbol instances by their
+  outlines; bitmaps are left out) together as one curve, scaled into the
+  unit square, with its proportions (width over height) kept beside it.
+  It is named after the one object (its name or its kind) or "My shape
+  n". Nothing with an area (nothing selected, a level or upright line)
+  adds nothing and says so on the status bar.
+- A click on a shape picks it; the property bar shows it in its own
+  proportions with its name. Picking a built-in shape leaves My shapes.
+- A drag draws the picked shape into the box like a built-in one, one
+  curve with the default fill and outline (filled when the outline it
+  came from had a closed part, otherwise an open curve). Ctrl keeps the
+  shape's proportions instead of making a square: the larger side of the
+  drag sets the size, the start corner stays. Shift draws from the
+  centre.
+- Remove (beside the button, and the right-click menu of a shape) takes
+  the picked shape out; the built-in sets cannot be changed. The tool
+  then draws the built-in shape picked before.
+- The set is kept in the preferences folder as `my_shapes.json` (in the
+  browser in the page's local storage), written at once after every
+  change, so it is there after a restart: `{"kind": "tracedraw-my-shapes",
+  "version": 1, "shapes": [{"name", "path", "aspect", "closed"}]}`, each
+  outline an SVG path in the unit square. A missing, damaged or foreign
+  file gives an empty set; outlines that do not read are left out. At
+  most 200 shapes of at most 5000 path elements each.
+
 ## Action Lines
 
 - Lines: default 12 (2..500), parallel (default) or radial. Lengths are
@@ -228,6 +264,14 @@ terminator's ends, a rounded callout) keep their size in long boxes.
 - `common_shapes::tests::rounded_corners_keep_their_size_in_long_boxes`:
   a terminator in a 100 x 20 mm box has ends of radius 10 mm; ring and
   frame areas are the outer less the hole.
+- `my_shapes::tests::the_selection_becomes_a_shape_that_is_kept_and_read_back`:
+  a 40 x 20 mm triangle becomes a shape of aspect 2 that is written to
+  `my_shapes.json`, read back the same and removed.
+- `my_shapes::tests::a_shape_of_my_own_is_drawn_by_dragging_and_ctrl_keeps_its_proportions`:
+  a drag from (100,100) to (160,130) draws the triangle in that box (900
+  mm2); with Ctrl a drag to (10,30) gives a 60 x 30 mm box.
+- `my_shapes::tests::groups_and_several_objects_make_one_shape`,
+  `my_shapes::tests::damaged_and_foreign_files_give_an_empty_set`.
 
 - Given a drag from (10,10) to (30,20) with Ctrl, then the rectangle is
   20 x 20 mm.

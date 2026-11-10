@@ -19,6 +19,14 @@ strumento [[tool.pick]] seleziona il suo oggetto; con lo strumento
 sposta. Le ombre compaiono nei PDF esportati e stampati, con colore, opacità e
 sfumatura.
 
+Un doppio clic su un'ombra con lo strumento [[tool.pick]] sceglie lo strumento
+[[tool.drop_shadow]] per il suo oggetto, con le maniglie dell'ombra sulla pagina
+e le sue impostazioni nella barra delle proprietà. Lo stesso si ottiene con un
+clic destro su un oggetto con ombra e [[context.edit_shadow]], oppure con lo
+stesso pulsante nella sezione dell'ombra del pannello Proprietà. Un oggetto con
+un'ombra propria si seleziona sempre con un clic su di esso, anche dove vi cade
+sopra l'ombra di un altro oggetto.
+
 ## Impostazioni {#settings}
 
 Nella barra delle proprietà:

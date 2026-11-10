@@ -69,6 +69,10 @@ arc, set the start and end angles (in degrees, counterclockwise from the
 right) and the direction. You can also drag the node of an ellipse with the
 [[tool.shape]] tool to make a pie (drag inside) or an arc (drag outside).
 
+An arc is an open curve: its fill shows only while
+[[options.fill_open_curves]] is on in the document options. A pie is closed
+and keeps its fill.
+
 ## 3-Point Ellipse {#three-point-ellipse}
 
 The [[tool.three_point_ellipse]] tool draws an ellipse at an angle:

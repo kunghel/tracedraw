@@ -22,6 +22,23 @@ units. [[options.page_spacing]] on the Layout page of
 saved with the drawing, [[menu.edit.undo]] puts the previous one back, and
 **Save as default** in the document options keeps it for new drawings.
 
+## Choosing the pages {#choose-pages}
+
+With many pages, or to compare a few of them, choose which pages the view
+shows: [[menu.view > menu.view.multipage_pages]], or the button with two
+pages and a tick in the page bar, right after the Multipage View button
+(lit while a range of pages is chosen). In the dialog box pick
+[[dialog.multipage_all_pages]], or [[dialog.multipage_some_pages]] and type
+page numbers and ranges separated by commas, such as `1-3, 7`. The dialog
+box tells how many pages that shows; a range with no page of the drawing in
+it is not taken. **OK** turns the view on with those pages, packed into the
+grid in page order.
+
+The current page always shows, so a page you go to with the page tabs or the
+navigator joins the others while it is current. The pages chosen are saved
+with the drawing, like the page spacing, and [[menu.edit.undo]] puts the
+previous choice back.
+
 ## Working in multipage view {#working}
 
 - The current page is edited as usual: rulers, guidelines, grids and the

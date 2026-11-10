@@ -563,6 +563,145 @@ mod tests {
         assert!(overlap.width() <= 1e-6 || overlap.height() <= 1e-6);
     }
 
+    /// The live test of 0.41: Shape Nesting at 1 mm accuracy left objects
+    /// crossing each other and past the sheet's edge. Ellipses, stars,
+    /// round-cornered rectangles, an L-shaped curve, some turned or
+    /// scaled, nested from the window's tool and applied: in wireframe
+    /// no two outlines cross or come closer than the spacing, every
+    /// moved object lies on its sheet, and one too large stays where it
+    /// was and is reported.
+    #[test]
+    fn nested_objects_never_cross_and_stay_on_the_sheet() {
+        use tracedraw_core::geometry::{Affine, Shape as _};
+        let mut app = App::headless();
+        let mut ids = Vec::new();
+        for i in 0..14 {
+            let x = 400.0 + 60.0 * (i % 5) as f64;
+            let y = 400.0 + 60.0 * (i / 5) as f64;
+            let k = (i % 3) as f64;
+            let r = Rect::new(x, y, x + 30.0 + 8.0 * k, y + 18.0 + 6.0 * k);
+            let kind = match i % 4 {
+                0 => ShapeKind::Ellipse { rect: r, arc: None },
+                1 => ShapeKind::Polygon {
+                    rect: r,
+                    points: 5 + i as u32 % 3,
+                    sharpness: 0.5,
+                    complex: None,
+                    twist: 0.0,
+                },
+                2 => ShapeKind::Rect {
+                    rect: r,
+                    radius: 6.0,
+                    corners: None,
+                },
+                _ => {
+                    let mut p = BezPath::new();
+                    p.move_to((x, y));
+                    p.line_to((x + 40.0, y));
+                    p.curve_to(
+                        (x + 40.0, y + 10.0),
+                        (x + 20.0, y + 6.0),
+                        (x + 12.0, y + 12.0),
+                    );
+                    p.line_to((x + 12.0, y + 30.0));
+                    p.line_to((x, y + 30.0));
+                    p.close_path();
+                    ShapeKind::Path {
+                        path: p,
+                        closed: true,
+                    }
+                }
+            };
+            let id = app.new_shape(kind).expect("shape");
+            if i % 3 == 1 {
+                let c = r.center().to_vec2();
+                app.select(vec![id]);
+                app.transform_selection(
+                    Affine::translate(c)
+                        * Affine::rotate(0.5)
+                        * Affine::scale(1.2)
+                        * Affine::translate(-c),
+                );
+            }
+            ids.push(id);
+        }
+        let big = rect(&mut app, 900.0, 900.0, 300.0, 300.0);
+        let mut all = ids.clone();
+        all.push(big);
+        app.select(all);
+        let before_big = app.doc().shape_on_page(big).expect("big").page_path();
+        let mut settings = crate::tracecut::ToolSettings::default();
+        settings.shape_nest = ShapeNestSettings {
+            sheet: SheetSpec {
+                width: 150.0,
+                height: 120.0,
+                margin: 3.0,
+                spacing: 2.0,
+                ..Default::default()
+            },
+            rotations: Rotations::Eighth,
+            tolerance: 1.0,
+            rounds: 5,
+            draw_sheets: false,
+            ..Default::default()
+        };
+        let w = app.tracecut_work_out(crate::tracecut::ToolId::ShapeNesting, &settings);
+        assert!(app.tracecut_commit(&w, &settings, None));
+        assert!(app
+            .status
+            .contains(&trf("tracecut.nest_left_out", &[("n", "1")])));
+        assert_eq!(
+            app.doc().shape_on_page(big).expect("big").page_path(),
+            before_big,
+            "too large: left where it was"
+        );
+        let spec = settings.shape_nest.sheet;
+        let placed: Vec<BezPath> = ids
+            .iter()
+            .map(|id| app.doc().shape_on_page(*id).expect("shape").page_path())
+            .collect();
+        let sheet_of = |p: &BezPath| {
+            let b = p.bounding_box();
+            (0..20).find(|i| {
+                let s = spec.sheet_rect(*i, 0.0).inset(-3.0);
+                b.x0 >= s.x0 - 1e-6
+                    && b.y0 >= s.y0 - 1e-6
+                    && b.x1 <= s.x1 + 1e-6
+                    && b.y1 <= s.y1 + 1e-6
+            })
+        };
+        for p in &placed {
+            assert!(
+                sheet_of(p).is_some(),
+                "{:?} is off every sheet",
+                p.bounding_box()
+            );
+        }
+        for (i, a) in placed.iter().enumerate() {
+            for b in &placed[i + 1..] {
+                let shared =
+                    tracedraw_core::shaping::overlay(a, b, tracedraw_core::shaping::Op::Intersect);
+                assert!(
+                    measure::measure_object(&[shared]).area < 1e-6,
+                    "two objects cross"
+                );
+                // Grown by just under half the spacing, they still keep
+                // apart.
+                let ga = tracedraw_core::shaping::offset(a, 0.98);
+                let gb = tracedraw_core::shaping::offset(b, 0.98);
+                let shared = tracedraw_core::shaping::overlay(
+                    &ga,
+                    &gb,
+                    tracedraw_core::shaping::Op::Intersect,
+                );
+                assert!(
+                    measure::measure_object(&[shared]).area < 1e-6,
+                    "two objects closer than the spacing"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_object_too_big_for_the_sheet_is_left_where_it_is() {
         let mut app = App::headless();

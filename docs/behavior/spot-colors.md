@@ -19,6 +19,15 @@ standing for the new colour (in process inks); names are unique. The
 "..." menu's Add to Custom Spot Colors does the same with the name typed,
 or with the colour's `#rrggbb` code when none is (see `color-docker.md`).
 
+An ink's name in the list is a field: typing over it and pressing Enter,
+or leaving the field, renames the ink in one undo step; an empty name or
+one another ink has changes nothing. Objects and swatches refer to the
+ink by its number, so they all take the new name, as do its separation
+in PDF, EPS and PostScript and the plate it prints on (#2187,
+`ui::color_docker::tests::a_spot_ink_is_renamed`). A spot colour's
+swatch, in the document palette and elsewhere, is named by its ink, and
+the status bar names a spot fill or outline by its ink and tint (#2186).
+
 ## Colour books
 
 A palette file can be a colour book of spot inks: in an `.ase` palette,
@@ -33,6 +42,14 @@ books are not bundled; a book the user owns opens like any palette
 (Window > Color Palettes > Open Palette, `.tdpal`, `.gpl`, `.ase`,
 `.aco`).
 
+In the palette editor the Spot color box under the chosen colour makes
+it a spot colour of the entry's name, the colour as its stand-in, or a
+process colour again (its stand-in at its tint). Renaming a spot entry
+renames its ink, the stand-in and tint kept; an entry only looked at
+keeps its ink number. A `.tdpal` file keeps spot colours, and on loading
+each one's ink number comes from its name, so a name edited in the file
+is that name's ink.
+
 ## Output
 
 - On screen and in bitmap, SVG and `.cdr` output a spot colour is its
@@ -44,6 +61,10 @@ books are not bundled; a book the user owns opens like any palette
   prints as its stand-in. PDF/X keeps the Separation spaces. Opened or
   imported again, each Separation space is the ink of its name again and
   each colour in it a spot colour at its tint (see `pdf-import.md`).
+- PDF overprint: an object whose fill or outline overprints is drawn
+  under a graphics state with `/op` (fill) and `/OP` (outline) and
+  overprint mode `/OPM 1`, so the inks under it stay (ISO 32000-1,
+  8.6.7).
 - Separations (Print, or Export with separations): after the C, M, Y and
   K plates, a plate per ink of the list; a spot colour prints on its own
   plate only, at its tint, and on none of the process plates.
@@ -59,3 +80,7 @@ books are not bundled; a book the user owns opens like any palette
 - `ui::color_docker::tests::spot_inks_are_added_applied_and_removed`
 - `palette::tests::colour_book_spot_entries_are_spot_colours`
 - `palette::tests::a_colour_book_spot_colour_brings_its_ink_along`
+- `palette::tests::tdpal_spot_colours_keep_their_ink_by_name`
+- `ui::dialogs::tests::palette_entries_turn_into_spot_colours_and_back`
+- `pdf::tests::overprinting_objects_get_overprint_graphics_states` (io)
+- `export::tests::a_selection_exported_alone_keeps_its_spot_inks`

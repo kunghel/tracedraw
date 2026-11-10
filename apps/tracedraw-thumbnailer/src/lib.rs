@@ -50,7 +50,7 @@ mod com {
         CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
     };
     use windows::Win32::System::Com::{
-        IClassFactory, IClassFactory_Impl, IStream, STATSTG, STATFLAG_NONAME,
+        IClassFactory, IClassFactory_Impl, IStream, STATFLAG_NONAME, STATSTG,
     };
     use windows::Win32::UI::Shell::PropertiesSystem::{
         IInitializeWithStream, IInitializeWithStream_Impl,
@@ -90,7 +90,11 @@ mod com {
     }
 
     impl IInitializeWithStream_Impl for Provider_Impl {
-        fn Initialize(&self, pstream: Ref<'_, IStream>, _grfmode: u32) -> windows::core::Result<()> {
+        fn Initialize(
+            &self,
+            pstream: Ref<'_, IStream>,
+            _grfmode: u32,
+        ) -> windows::core::Result<()> {
             let stream = pstream.ok()?;
             let mut stat = STATSTG::default();
             unsafe { stream.Stat(&mut stat, STATFLAG_NONAME)? };
@@ -251,5 +255,106 @@ mod tests {
         assert_eq!(&rgba[..4], &[255, 255, 255, 255]);
         assert!(thumbnail_rgba(b"not a drawing", 256).is_none());
         assert!(thumbnail_rgba(&[0xff, 0xfe, 0x00], 256).is_none());
+    }
+
+    fn repo_file(path: &str) -> String {
+        let full = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("{full}: {e}"))
+    }
+
+    /// The setup copies the provider and registers it where Explorer looks
+    /// for the thumbnail handler of `.tdraw` files (the extension, its
+    /// ProgID and the system's per-extension key), under the class id the
+    /// DLL serves, as an in-process server in an apartment; the release
+    /// build makes, signs and hands the DLL to the setup and to the Store
+    /// package, whose manifest declares it too (#1740, live test of 0.41).
+    #[test]
+    fn the_setup_and_the_release_build_ship_and_register_the_provider() {
+        // IThumbnailProvider's interface id: the ShellEx key Explorer reads.
+        const THUMB_IID: &str = "{e357fccd-a995-4576-b01f-234630154e96}";
+        let iss = repo_file("packaging/windows/tracedraw.iss");
+        // Inno Setup writes "{{" for a literal brace.
+        let clsid = CLSID_TEXT.replacen('{', "{{", 1);
+        let iid = THUMB_IID.replacen('{', "{{", 1);
+        let lines: Vec<&str> = iss.lines().map(str::trim).collect();
+        let has = |want: &[&str]| lines.iter().any(|l| want.iter().all(|w| l.contains(w)));
+        assert!(
+            has(&[
+                "Source: \"{#SrcDir}\\tracedraw_thumbnailer.dll\"",
+                "DestDir: \"{app}\""
+            ]),
+            "the setup copies the DLL"
+        );
+        let class = format!("Software\\Classes\\CLSID\\{clsid}");
+        assert!(has(&["Root: HKA", &format!("Subkey: \"{class}\"")]));
+        assert!(has(&[
+            "Root: HKA",
+            &format!("Subkey: \"{class}\\InprocServer32\""),
+            "ValueName: \"\"",
+            "ValueData: \"{app}\\tracedraw_thumbnailer.dll\""
+        ]));
+        assert!(has(&[
+            &format!("Subkey: \"{class}\\InprocServer32\""),
+            "ValueName: \"ThreadingModel\"",
+            "ValueData: \"Apartment\""
+        ]));
+        for owner in [
+            "Software\\Classes\\.tdraw",
+            "Software\\Classes\\TraceDraw.Document",
+            "Software\\Classes\\SystemFileAssociations\\.tdraw",
+        ] {
+            assert!(
+                has(&[
+                    "Root: HKA",
+                    &format!("Subkey: \"{owner}\\ShellEx\\{iid}\""),
+                    "ValueName: \"\"",
+                    &format!("ValueData: \"{clsid}\""),
+                    "uninsdeletekey"
+                ]),
+                "{owner} names the provider"
+            );
+        }
+        // HKA: the current user's keys for an install for that user alone,
+        // the machine's for one for everybody; both are read by Explorer.
+        assert!(iss.contains("PrivilegesRequiredOverridesAllowed=dialog"));
+        assert!(iss.contains("ChangesAssociations=yes"));
+        // The class id the DLL answers to is the one registered.
+        let src = repo_file("apps/tracedraw-thumbnailer/src/lib.rs");
+        let hex = CLSID_TEXT.trim_matches(['{', '}']).replace('-', "_");
+        assert!(src.contains(&format!("GUID::from_u128(0x{hex})")), "{hex}");
+
+        // The release build makes the DLL, signs it with the programs and
+        // the setup is built from the folder it lies in.
+        let ci = repo_file(".github/workflows/build.yml");
+        let build = ci
+            .lines()
+            .find(|l| l.contains("cargo build --release") && l.contains("-p tracedraw "))
+            .expect("the release build");
+        assert!(build.contains("-p tracedraw-thumbnailer"), "{build}");
+        assert!(
+            ci.matches("release\\tracedraw_thumbnailer.dll").count()
+                + ci.matches("release/tracedraw_thumbnailer.dll").count()
+                >= 2,
+            "both signing providers sign the DLL"
+        );
+        assert!(ci.contains("signed-programs\\*.dll"));
+        assert!(ci.contains("/DSrcDir=\"$PWD\\$src\" packaging\\windows\\tracedraw.iss"));
+
+        // The Store package: staged and declared, the same class id.
+        let msix = repo_file("packaging/windows/build-msix.ps1");
+        assert!(msix.contains("Copy-Item (Join-Path $SrcDir 'tracedraw_thumbnailer.dll') $stage"));
+        let manifest = repo_file("packaging/windows/msix/AppxManifest.xml");
+        let bare = CLSID_TEXT.trim_matches(['{', '}']);
+        assert!(manifest.contains(&format!("<desktop2:ThumbnailHandler Clsid=\"{bare}\"")));
+        assert!(manifest.contains(&format!(
+            "<com:Class Id=\"{bare}\" Path=\"tracedraw_thumbnailer.dll\" ThreadingModel=\"STA\""
+        )));
+        // The handler sits in the .tdraw association, not the .cdr one.
+        let tdraw = manifest
+            .split("<uap:FileTypeAssociation Name=\"tdraw\">")
+            .nth(1)
+            .and_then(|s| s.split("</uap:FileTypeAssociation>").next())
+            .expect("the .tdraw association");
+        assert!(tdraw.contains("desktop2:ThumbnailHandler"));
     }
 }

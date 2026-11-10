@@ -194,7 +194,7 @@ Preparing a release, in that pull request:
    `apps/tracedraw/lang/en.toml` from the version's changelog section:
    one short paragraph for everyone, with only what a user notices and no
    technical details, record names or issue numbers. Translate both into
-   the other seventeen languages (`# mt` for machine translations) and
+   the other eighteen languages (`# mt` for machine translations) and
    delete the dropped version's keys from every language. A test fails
    while the top row is not the version in `Cargo.toml`.
 3. Help > Highlight What's New: replace `NEW_IN_THIS_VERSION` in

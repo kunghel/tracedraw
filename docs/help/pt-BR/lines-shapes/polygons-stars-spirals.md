@@ -55,6 +55,21 @@ contorno padrão. Partes que devem parecer separadas, como as faces de um cubo,
 são partes separadas da curva, e furos como o meio de um anel continuam furos
 seja qual for o preenchimento.
 
+### Minhas formas {#my-shapes}
+
+A última aba do seletor de formas, **Minhas formas**, guarda formas suas.
+Selecione os objetos que darão origem à forma e clique em
+[[menu.object.add_common_shape]] nessa aba (também está em
+[[menu.object > menu.object.create]] e no menu do botão direito). Os
+contornos deles viram uma forma, que fica escolhida na hora. Desenhe-a
+como qualquer outra forma comum arrastando uma caixa; segure
+<kbd>Ctrl</kbd> para manter as proporções. Para tirar uma forma, escolha-a
+e clique em [[shapes.mine_remove]], ou clique nela com o botão direito. As
+formas incluídas não podem ser removidas.
+
+Suas formas ficam guardadas com as suas configurações, então continuam lá
+na próxima vez que o TraceDraw abrir.
+
 ## Linhas de ação {#action-lines}
 
 A ferramenta [[tool.action_lines]] desenha linhas de velocidade no estilo de

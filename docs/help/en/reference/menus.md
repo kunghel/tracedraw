@@ -27,6 +27,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.file.acquire_image]] | [Importing](../file-formats/import.md) |
 | [[menu.file.import]] | [Importing](../file-formats/import.md) |
 | [[menu.file.export]] | [Exporting](../file-formats/export.md) |
+| [[menu.file.export_with_options]] | [Exporting](../file-formats/export.md) |
 | [[menu.file.export_for]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_web]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_office]] | [Exporting for the web](../web-graphics/export-for-web.md) |
@@ -67,6 +68,12 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.edit.select_all_text]] | [Selecting](../objects/selecting.md) |
 | [[menu.edit.select_all_guidelines]] | [Selecting](../objects/selecting.md) |
 | [[menu.edit.select_all_nodes]] | [Selecting](../objects/selecting.md) |
+| [[menu.edit.invert_selection]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.select_similar]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_fill]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_outline]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_text_format]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_kind]] | [Selecting](../objects/selecting.md#select-similar) |
 | [[menu.edit.find_and_replace]] | [Find and replace](../objects/find-replace.md) |
 | [[menu.edit.step_and_repeat]] | [Repeat copies](../objects/step-and-repeat.md) |
 
@@ -82,10 +89,12 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.view.preview_selected_only]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.page_sorter]] | [Multipage view](../pages-layout/multipage-view.md) |
 | [[menu.view.multipage]] | [Multipage view](../pages-layout/multipage-view.md) |
+| [[menu.view.multipage_pages]] | [Multipage view](../pages-layout/multipage-view.md#choose-pages) |
 | [[menu.view.draw_in_perspective]] | [Perspective](../effects/perspective.md#draw) |
 | [[menu.view.zoom_in]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Views](../get-started/undo-and-views.md#views) |
+| [[menu.view.navigator]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
@@ -124,16 +133,23 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.object.create]] | [Objects](../objects/index.md) |
 | [[menu.object.create_arrowhead]] | [Outlines](../lines-shapes/outlines.md#outline-pen) |
 | [[menu.object.create_pattern]] | [Pattern fills](../color/patterns.md) |
+| [[menu.object.add_common_shape]] | [Common Shapes](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[menu.object.insert]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_barcode]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_qr]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_page_number]] | [Page numbers](../pages-layout/pages.md#page-numbers) |
+| [[menu.object.add_dimensions]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
+| [[menu.object.add_dimensions_each]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
 | [[menu.object.clip_frame]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_place_inside]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_extract]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_finish]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_edit]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_lock]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_center]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_proportional]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fill_proportional]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_stretch]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_opacity_mask]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_invert_mask]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.symmetry]] | [Symmetry](../objects/symmetry.md) |
@@ -342,6 +358,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | Command | See |
 |---|---|
 | [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
+| [[menu.effects.all_pages]] | [Bitmap effects](../effects/bitmap-effects.md) |
 | [[menu.effects.brush_strokes]] | [Brush strokes](../lines-shapes/artistic-media.md) |
 | [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
 | [[menu.effects.blend]] | [Blends](../effects/blend.md) |

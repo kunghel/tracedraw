@@ -13,7 +13,7 @@ use egui::{Context, RichText, Ui};
 use tracedraw_core::Command;
 
 /// Languages offered, as their tag and their own name.
-pub const LANGUAGES: [(&str, &str); 30] = [
+pub const LANGUAGES: [(&str, &str); 31] = [
     ("ar", "العربية"),
     ("bn", "বাংলা"),
     ("cs-CZ", "Čeština"),
@@ -34,6 +34,7 @@ pub const LANGUAGES: [(&str, &str); 30] = [
     ("it-IT", "Italiano"),
     ("ja-JP", "日本語"),
     ("ko-KR", "한국어"),
+    ("lo-LA", "ພາສາລາວ"),
     ("nl-NL", "Nederlands"),
     ("no-NO", "Norsk"),
     ("pl-PL", "Polski"),
@@ -294,6 +295,7 @@ fn report(app: &App, ui: &mut Ui, st: &DocStats) {
         "docprops.fill_pattern",
         "docprops.fill_texture",
         "docprops.fill_mesh",
+        "docprops.fill_procedural",
     ]
     .iter()
     .enumerate()

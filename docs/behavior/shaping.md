@@ -5,8 +5,9 @@ objects selected) and the Combine Shapes panel.
 
 ## Operations
 
-The target gives the result its fill, outline and opacity; the other
-selected objects are the sources. With objects picked one by one
+The target gives the result its fill, outline and opacity (a mesh fill
+the result reaches past becomes the mesh's mean colour, see
+`mesh-fill.md`); the other selected objects are the sources. With objects picked one by one
 (click, Shift+click) the target is the one selected last; with a
 selection made by a marquee or a freehand region, the target is the
 bottom-most object of it (as long as the selection is not changed by a
@@ -134,6 +135,17 @@ rules. The result covers the same area under the even-odd rule
 (`shaping::tests::overlay_reads_its_inputs_with_the_fill_rule_given`).
 `shaping::nonzero_as_even_odd` turns one such outline into an even-odd one
 on its own.
+
+The operations read each object as the area it fills (#555): text and
+curves set to the nonzero rule with that rule, so the overlapping
+strokes of a letter make no hole; a group as what its objects cover
+together, so where two of them overlap is no hole either (its outline is
+their outlines one after the other, which the even-odd rule read as a
+hole there). Checked on overlapping rectangles, ellipses, curves, a
+group, a group of overlapping objects, an object with a hole, text and
+text converted to curves, and a target behind the source, by Weld,
+Trim, Intersect, Front Minus Back and Back Minus Front
+(`shaping_tests`).
 
 ## Clip frames
 

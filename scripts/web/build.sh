@@ -19,6 +19,12 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 sed -e "s/data-wasm-size=\"0\"/data-wasm-size=\"$size\"/" -e "s/@VERSION@/$version/" \
     web/index.html > site/index.html
 cp assets/icon/tracedraw-256.png site/icon-256.png
+# The interface languages but English, which the module embeds: the page
+# fetches the one chosen (apps/tracedraw/src/i18n.rs).
+mkdir -p site/lang
+for f in apps/tracedraw/lang/*.toml; do
+    [ "$(basename "$f")" = en.toml ] || cp "$f" site/lang/
+done
 # The installable app (docs/behavior/web.md, "Installing on a tablet"): the
 # manifest, its icons and the service worker, whose cache is named after
 # the version and a digest of the page, script and module, so a rebuilt
@@ -27,7 +33,7 @@ cp assets/icon/tracedraw-256.png site/icon-256.png
 cp web/manifest.webmanifest site/
 cp assets/icon/tracedraw-192.png site/icon-192.png
 cp assets/icon/tracedraw-512.png site/icon-512.png
-build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest \
+build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest site/lang/*.toml \
     | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" web/sw.js > site/sw.js
 if command -v node >/dev/null 2>&1; then

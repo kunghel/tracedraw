@@ -325,6 +325,14 @@ fn title_width(ui: &Ui, title: &str) -> f32 {
 }
 
 impl Window {
+    /// Name the window by `salt` rather than by its title, for a title
+    /// that changes while it is open (a file name): it then stays where
+    /// it is instead of opening afresh.
+    pub fn id_salt(mut self, salt: &'static str) -> Self {
+        self.id = egui::Id::new(("chrome_dialog_salt", salt));
+        self
+    }
+
     /// The window the user sizes, from `default` down to `min` (its body
     /// gets the whole room, nothing scrolls), with a maximize button.
     pub fn resizable(mut self, default: Vec2, min: Vec2) -> Self {
@@ -348,6 +356,15 @@ impl Window {
             .frame(window_frame());
         // Dragged by the title bar; opens centred (or where it was left).
         let window = placed(window, ctx, self.id);
+        // egui sizes and places a window from the frame before. Message
+        // boxes share one window, so a box whose text or buttons changed
+        // (the next box, or a line that grows) was drawn for a frame in
+        // the old box's size and place: shifted against its frame, its
+        // text and buttons cut off. Such a frame is laid out again.
+        let size_before = ctx
+            .memory(|m| m.area_rect(self.id))
+            .filter(|r| r.is_finite())
+            .map(|r| r.size());
         window.show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             let min_w = title_width(ui, &self.title).max(280.0);
@@ -388,6 +405,12 @@ impl Window {
                 closed = true;
             }
         });
+        let size_after = ctx.memory(|m| m.area_rect(self.id)).map(|r| r.size());
+        if let (Some(a), Some(b)) = (size_before, size_after) {
+            if (a - b).abs().max_elem() > 0.5 {
+                ctx.request_discard("dialog size changed");
+            }
+        }
         keep_tab_in(ctx, egui::LayerId::new(egui::Order::Foreground, self.id));
         if closed {
             request_close(ctx);
@@ -1312,6 +1335,28 @@ mod tests {
         }
     }
 
+    /// The browser notice tells what the browser has of fonts: not the
+    /// computer's own, but the page's catalogue and the fonts added in
+    /// the Font Manager; it said only the bundled fonts were there
+    /// (#1417).
+    #[test]
+    fn the_browser_notice_tells_where_fonts_come_from() {
+        crate::i18n::with_thread_language("en", || {
+            let text = crate::i18n::tr("web.notice_text");
+            let first = text.split("\n\n").next().unwrap_or("");
+            assert!(!first.contains("bundled"), "{first}");
+            assert!(first.contains("installed on your computer"), "{first}");
+            assert!(first.contains("Font Manager"), "{first}");
+        });
+        let en = crate::i18n::with_thread_language("en", || crate::i18n::tr("web.notice_text"));
+        for (code, _) in crate::i18n::LANGUAGES {
+            let text =
+                crate::i18n::with_thread_language(code, || crate::i18n::tr("web.notice_text"));
+            // Each language says it in its own words.
+            assert!(code == "en" || text != en, "{code}");
+        }
+    }
+
     /// The screen less the holes is covered once, and no piece reaches
     /// into a hole (#563).
     #[test]
@@ -1530,6 +1575,67 @@ mod tests {
         // A dialog narrower than what is kept stays inside sideways.
         let r = drag_reach(screen, Vec2::new(60.0, 20.0));
         assert_eq!((r.left(), r.right(), r.bottom()), (0.0, 1000.0, 700.0));
+    }
+
+    /// A message box that follows another one of a different size (the
+    /// boxes share one window) is drawn in its own size and place from
+    /// its first frame: the icon, the text and the buttons inside the
+    /// window, and the window centred. egui sizes a window from the frame
+    /// before; the frame is laid out again when the size changed (an
+    /// update's download line was cut off with its button).
+    #[test]
+    fn a_message_box_is_laid_out_in_its_own_size_from_its_first_frame() {
+        let ctx = crate::theme::ui_context();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1366.0, 700.0));
+        let id = egui::Id::new(("chrome_dialog", "TraceDraw".to_string()));
+        let run = |text: &str, buttons: &[&str]| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                message_box(ui.ctx(), MessageIcon::Info, text, buttons);
+            });
+            out.textures_delta.clear();
+            let area = ctx.memory(|m| m.area_rect(id)).expect("shown");
+            let mut texts = Vec::new();
+            for c in &out.shapes {
+                if let egui::Shape::Text(t) = &c.shape {
+                    texts.push((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    ));
+                }
+            }
+            (area, texts)
+        };
+        let wide = [
+            "Install",
+            "Download",
+            "Release notes",
+            "Skip this version",
+            "Close",
+        ];
+        for _ in 0..3 {
+            run("TraceDraw 9.0.0 is available (this is 8.0.0).", &wide);
+        }
+        let long = "A longer message that wraps onto a second line in the narrower \
+                    box, with a single button under it.";
+        for frame in 0..3 {
+            let (area, texts) = run(long, &["Close"]);
+            assert!(
+                (area.center().x - screen.center().x).abs() < 2.0,
+                "frame {frame}: centred {area:?}"
+            );
+            for (text, r) in &texts {
+                assert!(
+                    area.expand(0.5).contains_rect(*r),
+                    "frame {frame}: {text:?} {r:?} outside {area:?}"
+                );
+            }
+            let close = texts.iter().find(|(t, _)| t == "Close").expect("button");
+            assert!(close.1.right() > area.center().x, "on the right");
+        }
     }
 
     #[test]

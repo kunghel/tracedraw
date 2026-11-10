@@ -3,11 +3,12 @@
 The eyedropper tools take a color, or a whole set of attributes, from one
 object and give it to others. Both work in two steps, shown on the property
 bar: **select** (take a sample) and **apply** (paint with it). After a
-sample, the tool switches to apply; click the select button to sample again.
+sample, the tool switches to apply; click the select button, or
+<kbd>Ctrl</kbd>+click an object, to sample again.
 <kbd>Esc</kbd> drops the sample and goes back to the [[tool.pick]] tool.
 
 The pointer is a pipette while the tool samples and a paint bucket while it
-applies. Pictures give their color even inside a group or a frame.
+applies (a pipette again while <kbd>Ctrl</kbd> is held). Pictures give their color even inside a group or a frame.
 
 ## Color Eyedropper {#color-eyedropper}
 
@@ -19,7 +20,9 @@ applies. Pictures give their color even inside a group or a frame.
    takes the outline color first.
 3. Click objects to fill them with that color; <kbd>Shift</kbd>+click to color
    their outline (an object without an outline gets a thin one). Clicking
-   inside an empty closed shape fills it.
+   inside an empty closed shape fills it. <kbd>Ctrl</kbd>+click takes a new
+   color without leaving this step (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+click:
+   the outline color first).
 
 The property bar shows the sampled color.
 
@@ -42,7 +45,7 @@ from one object to others.
    - **Transformations**: size, rotation and position. Off at first.
    - **Effects**: transparency, drop shadow and live effects. Off at first.
 3. Click the object to copy from.
-4. Click each object to copy to. <kbd>Shift</kbd>+click samples another
-   object instead.
+4. Click each object to copy to. <kbd>Ctrl</kbd>+click or
+   <kbd>Shift</kbd>+click samples another object instead.
 
 Each click is one undo step.

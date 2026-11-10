@@ -12,10 +12,11 @@
 //! of the area they fill, which cross nowhere. Where two rebuilt outlines
 //! would still touch at a former crossing (the two loops of a figure
 //! eight), a dot as wide as the tolerance is cut out there so they come
-//! apart. Open lines are kept as they are.
+//! apart. Open lines are kept as they are. [`separate_crossing`] moves
+//! objects that cross each other apart instead.
 
 use crate::subpaths;
-use tracedraw_core::geometry::{BezPath, Point};
+use tracedraw_core::geometry::{BezPath, Point, Rect, Vec2};
 use tracedraw_core::shaping::{self, FillRule, Op};
 
 /// One crossing: where, and which objects (the same index twice for an
@@ -288,6 +289,238 @@ pub fn crossing_groups(found: &[Crossing], n: usize) -> Vec<Vec<usize>> {
     groups
 }
 
+/// How many directions [`separate_crossing`] tries for each object.
+pub const SEPARATE_DIRECTIONS: usize = 32;
+
+/// An object's outlines flattened: each subpath's points and whether it
+/// is closed, and the box around them.
+struct Flat {
+    rings: Vec<(Vec<Point>, bool)>,
+    bbox: Option<Rect>,
+}
+
+impl Flat {
+    fn new(paths: &[BezPath], tol: f64) -> Flat {
+        let mut rings = Vec::new();
+        for path in paths {
+            for sub in subpaths(path) {
+                let mut pts: Vec<Point> = Vec::new();
+                tracedraw_core::geometry::flatten(&sub.path, tol * 0.25, &mut |el| {
+                    if let Some(p) = el.end_point() {
+                        if pts.last().is_none_or(|q: &Point| (*q - p).hypot() > 1e-9) {
+                            pts.push(p);
+                        }
+                    }
+                });
+                if pts.is_empty() || !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+                    continue;
+                }
+                if sub.closed {
+                    if let (Some(a), Some(b)) = (pts.first().copied(), pts.last().copied()) {
+                        if (a - b).hypot() > 1e-9 {
+                            pts.push(a);
+                        }
+                    }
+                }
+                rings.push((pts, sub.closed));
+            }
+        }
+        let bbox = rings
+            .iter()
+            .flat_map(|(r, _)| r.iter())
+            .map(|p| Rect::from_points(*p, *p))
+            .reduce(|a, b| a.union(b));
+        Flat { rings, bbox }
+    }
+
+    /// Whether `p` lies inside the area of the closed rings (even-odd).
+    fn contains(&self, p: Point) -> bool {
+        let mut inside = false;
+        for (r, closed) in &self.rings {
+            if !*closed {
+                continue;
+            }
+            for w in r.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)
+                {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+}
+
+/// The distance from `p` to the segment `ab`.
+fn to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let len2 = ab.hypot2();
+    let t = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + ab * t)).hypot()
+}
+
+fn boxes_meet(a: Rect, b: Rect) -> bool {
+    a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
+}
+
+/// Whether `a` moved by `d` keeps `gap` from `b`: no outlines cross or
+/// come closer than `gap`, and neither lies inside the other's area.
+fn apart(a: &Flat, d: Vec2, b: &Flat, gap: f64) -> bool {
+    let (Some(ab), Some(bb)) = (a.bbox, b.bbox) else {
+        return true;
+    };
+    let ab = ab + d;
+    if !boxes_meet(ab.inflate(gap, gap), bb) {
+        return true;
+    }
+    let near_b = bb.inflate(gap, gap);
+    for (ra, _) in &a.rings {
+        for wa in ra.windows(2) {
+            let (p0, p1) = (wa[0] + d, wa[1] + d);
+            let sa = Rect::from_points(p0, p1);
+            if !boxes_meet(sa, near_b) {
+                continue;
+            }
+            let sa = sa.inflate(gap, gap);
+            for (rb, _) in &b.rings {
+                for wb in rb.windows(2) {
+                    let (q0, q1) = (wb[0], wb[1]);
+                    if !boxes_meet(sa, Rect::from_points(q0, q1)) {
+                        continue;
+                    }
+                    if intersect(p0, p1, q0, q1).is_some() {
+                        return false;
+                    }
+                    let dist = to_segment(p0, q0, q1)
+                        .min(to_segment(p1, q0, q1))
+                        .min(to_segment(q0, p0, p1))
+                        .min(to_segment(q1, p0, p1));
+                    if dist < gap {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    // No edges meet: each ring lies wholly inside or outside the other.
+    let a_in_b = a
+        .rings
+        .iter()
+        .any(|(r, _)| r.first().is_some_and(|p| b.contains(*p + d)));
+    let b_in_a = b
+        .rings
+        .iter()
+        .any(|(r, _)| r.first().is_some_and(|p| a.contains(*p - d)));
+    !(a_in_b || b_in_a)
+}
+
+/// Objects that cross each other moved apart ("Move them apart"): in each
+/// set of objects that cross one another ([`crossing_groups`] of the
+/// crossings `found` between the `objects`), the objects that may not
+/// move (`movable` false) and, when all may, the first (lowest) stay; the
+/// others, in order, each move the shortest way, of
+/// [`SEPARATE_DIRECTIONS`] evenly spread, that leaves `spacing` between
+/// its outlines and those of every object staying or moved before it
+/// (outlines flattened within `tol / 4`; an object inside another's area
+/// counts as touching it). Objects in no set, and those crossing only
+/// themselves, stay where they are and are kept clear of too. Returns how
+/// far each object moves (zero for those that stay).
+pub fn separate_crossing(
+    objects: &[Vec<BezPath>],
+    movable: &[bool],
+    found: &[Crossing],
+    spacing: f64,
+    tol: f64,
+) -> Vec<Vec2> {
+    let n = objects.len();
+    let mut moves = vec![Vec2::ZERO; n];
+    let gap = if spacing.is_finite() {
+        spacing.max(0.0)
+    } else {
+        0.0
+    };
+    let tol = if tol.is_finite() { tol.max(1e-6) } else { 0.05 };
+    let flats: Vec<Flat> = objects.iter().map(|o| Flat::new(o, tol)).collect();
+    let can_move = |i: usize| movable.get(i).copied().unwrap_or(false);
+    let groups = crossing_groups(found, n);
+    let mut to_move: Vec<usize> = Vec::new();
+    for g in &groups {
+        let anchored = g.iter().any(|i| !can_move(*i));
+        for (k, i) in g.iter().enumerate() {
+            if can_move(*i) && (anchored || k > 0) {
+                to_move.push(*i);
+            }
+        }
+    }
+    to_move.sort_unstable();
+    // Every object stays put except those still to move.
+    let mut placed: Vec<usize> = (0..n).filter(|i| !to_move.contains(i)).collect();
+    let all = flats
+        .iter()
+        .filter_map(|f| f.bbox)
+        .reduce(|a, b| a.union(b));
+    let Some(all) = all else {
+        return moves;
+    };
+    let reach = all.width().hypot(all.height());
+    for i in to_move {
+        let Some(me) = flats.get(i) else {
+            continue;
+        };
+        let Some(own) = me.bbox else {
+            continue;
+        };
+        let clear = |d: Vec2| {
+            placed.iter().all(|j| {
+                let other = moves.get(*j).copied().unwrap_or(Vec2::ZERO);
+                flats.get(*j).is_none_or(|f| apart(me, d - other, f, gap))
+            })
+        };
+        let mut found_move: Option<Vec2> = None;
+        if !clear(Vec2::ZERO) {
+            let size = own.width().hypot(own.height());
+            let step = (size / 16.0).max(gap * 0.5).max(tol);
+            let limit = reach + size + 2.0 * gap + step;
+            let mut best: Option<f64> = None;
+            for k in 0..SEPARATE_DIRECTIONS {
+                let a = k as f64 / SEPARATE_DIRECTIONS as f64 * std::f64::consts::TAU;
+                let u = Vec2::new(a.cos(), a.sin());
+                let mut t = step;
+                while t <= limit && best.is_none_or(|b| t - step < b) {
+                    if clear(u * t) {
+                        // Between the last place blocked and this one.
+                        let (mut lo, mut hi) = (t - step, t);
+                        for _ in 0..16 {
+                            let mid = (lo + hi) / 2.0;
+                            if clear(u * mid) {
+                                hi = mid;
+                            } else {
+                                lo = mid;
+                            }
+                        }
+                        if best.is_none_or(|b| hi < b) {
+                            best = Some(hi);
+                            found_move = Some(u * hi);
+                        }
+                        break;
+                    }
+                    t += step;
+                }
+            }
+        }
+        if let (Some(v), Some(m)) = (found_move, moves.get_mut(i)) {
+            *m = v;
+        }
+        placed.push(i);
+    }
+    moves
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +655,102 @@ mod tests {
         assert!((area(&w) - 175.0).abs() < 1e-6, "{}", area(&w));
         assert!(find_crossings(&[vec![w]], false, 0.05).is_empty());
         assert!(weld_crossing(&[], 0.05).elements().is_empty());
+    }
+
+    /// The closest two objects' outlines come, flattened finely: 0 when
+    /// they cross or one lies inside the other.
+    fn gap_between(a: &[BezPath], b: &[BezPath]) -> f64 {
+        let (fa, fb) = (Flat::new(a, 0.01), Flat::new(b, 0.01));
+        if !apart(&fa, Vec2::ZERO, &fb, 0.0) {
+            return 0.0;
+        }
+        let mut best = f64::INFINITY;
+        for (ra, _) in &fa.rings {
+            for wa in ra.windows(2) {
+                for (rb, _) in &fb.rings {
+                    for wb in rb.windows(2) {
+                        best = best
+                            .min(to_segment(wa[0], wb[0], wb[1]))
+                            .min(to_segment(wa[1], wb[0], wb[1]))
+                            .min(to_segment(wb[0], wa[0], wa[1]))
+                            .min(to_segment(wb[1], wa[0], wa[1]));
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    fn moved(o: &[BezPath], d: Vec2) -> Vec<BezPath> {
+        o.iter()
+            .map(|p| tracedraw_core::geometry::Affine::translate(d) * p.clone())
+            .collect()
+    }
+
+    /// Move them apart: of two squares overlapping by 3 mm, the upper
+    /// one moves the shortest way, 3 mm plus the spacing to the right;
+    /// a third crossing the second moves too, clear of both and of an
+    /// object nearby that crossed nothing; afterwards nothing crosses
+    /// and every pair keeps the spacing. A locked object stays and the
+    /// other moves instead.
+    #[test]
+    fn crossing_objects_move_apart_the_shortest_way() {
+        let a = vec![Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01)];
+        let b = vec![Rect::new(7.0, 0.0, 17.0, 10.0).to_path(0.01)];
+        let objects = vec![a.clone(), b.clone()];
+        let found = find_crossings(&objects, true, 0.01);
+        let m = separate_crossing(&objects, &[true, true], &found, 2.0, 0.01);
+        assert_eq!(m[0], Vec2::ZERO, "the lowest stays");
+        assert!(
+            (m[1].x - 5.0).abs() < 0.01 && m[1].y.abs() < 1e-9,
+            "{:?}",
+            m[1]
+        );
+        // Locked, the upper one stays and the lower one moves left.
+        let m = separate_crossing(&objects, &[true, false], &found, 2.0, 0.01);
+        assert_eq!(m[1], Vec2::ZERO);
+        assert!(
+            (m[0].x + 5.0).abs() < 0.01 && m[0].y.abs() < 1e-9,
+            "{:?}",
+            m[0]
+        );
+        // Neither may move: nothing moves.
+        let m = separate_crossing(&objects, &[false, false], &found, 2.0, 0.01);
+        assert!(m.iter().all(|v| *v == Vec2::ZERO));
+
+        // A circle crossing the second square, a star crossing the
+        // circle, a square inside nothing just above them.
+        let c = vec![tracedraw_core::geometry::Circle::new((18.0, 5.0), 6.0).to_path(0.01)];
+        let mut star = BezPath::new();
+        for k in 0..10 {
+            let ang = k as f64 * std::f64::consts::PI / 5.0;
+            let r = if k % 2 == 0 { 8.0 } else { 3.0 };
+            let p = Point::new(24.0 + r * ang.cos(), 6.0 + r * ang.sin());
+            if k == 0 {
+                star.move_to(p);
+            } else {
+                star.line_to(p);
+            }
+        }
+        star.close_path();
+        let lone = vec![Rect::new(0.0, 14.0, 30.0, 20.0).to_path(0.01)];
+        let objects = vec![a, b, c, vec![star], lone];
+        let found = find_crossings(&objects, true, 0.01);
+        assert!(!found.is_empty());
+        let m = separate_crossing(&objects, &[true; 5], &found, 1.5, 0.01);
+        assert_eq!(m[0], Vec2::ZERO);
+        assert_eq!(m[4], Vec2::ZERO, "crossed nothing: stays");
+        let after: Vec<Vec<BezPath>> = objects.iter().zip(&m).map(|(o, d)| moved(o, *d)).collect();
+        assert!(find_crossings(&after, true, 0.01).is_empty());
+        for i in 0..after.len() {
+            for j in i + 1..after.len() {
+                let g = gap_between(&after[i], &after[j]);
+                assert!(g >= 1.5 - 0.01, "{i} and {j}: {g} mm apart");
+            }
+        }
+        // Bad input moves nothing.
+        assert!(separate_crossing(&[], &[], &[], 2.0, 0.01).is_empty());
+        let m = separate_crossing(&objects, &[], &found, f64::NAN, f64::NAN);
+        assert!(m.iter().all(|v| *v == Vec2::ZERO));
     }
 }

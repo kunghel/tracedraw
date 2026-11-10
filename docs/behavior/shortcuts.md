@@ -11,6 +11,7 @@ Customization > Commands lists them and takes shortcuts of your own
 | --- | --- |
 | Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S | New, Open, Save, Save As |
 | Ctrl+I, Ctrl+E, Ctrl+P | Import, Export, Print |
+| Ctrl+Shift+E | Export with Options (the export options even when set not to show) |
 | Ctrl+F4, Alt+F4 | Close window, Exit |
 | Command+Q (macOS) | Quit TraceDraw from the application menu: asks about unsaved drawings as Exit does; File > Exit shows it there (see "On macOS" below) |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+R | Undo, Redo, Repeat |
@@ -96,6 +97,7 @@ original, #471). Checks:
 | Ctrl+Shift+A | Paste Style From: a dialog with Outline pen, Outline color, Fill and Text properties (all ticked at first, kept), then a click on the object to copy them from to the other selected objects, one undo step; a right click or Esc cancels the wait (#1345, `pick_drag_tests::ctrl_shift_a_copies_the_ticked_properties_from_the_object_clicked`). They are read from the object clicked inside a group or clip frame and written as the Attributes Eyedropper writes them (see `eyedroppers.md`; #1550, `pick_drag_tests::copying_properties_from_a_group_takes_the_object_clicked`) |
 | Alt+F7, Alt+F8, Alt+F9, Alt+F10 | Transformations panel on Position, Rotate, Scale and Mirror, Size |
 | Ctrl+M | Merge table cells |
+| Ctrl+Shift+F3 | Edit Contents of the selected clip frame; while its contents are edited, Finish Editing (Object > Clip to Frame, the canvas context menu; #1273, `pick_drag_tests::the_context_menu_and_a_key_edit_and_extract_clip_frame_contents`) |
 | Alt+Shift+F8, Alt+F11 | Run Macro, Macro Editor (Tools > Macros) |
 
 ## Text and effects
@@ -370,8 +372,9 @@ a key there),
 - `ui::options::tests::bar_buttons_and_rows_shown_at_times_take_shortcuts`
 - `ui::options::tests::no_two_default_commands_share_a_shortcut`: no two
   menu commands or tools have the same built-in keys, the documented
-  split of E (Align Centers Horizontally with a selection, Roughen
-  without) aside.
+  splits of E (Align Centers Horizontally with a selection, Roughen
+  without) and Ctrl+Shift+F3 (Edit Contents of a clip frame, Finish
+  Editing while inside, never offered together) aside.
 
 - Given a dialog open, when Esc is pressed, then the dialog is closed
   and the tool and selection are unchanged.

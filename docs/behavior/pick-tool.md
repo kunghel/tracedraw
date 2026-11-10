@@ -19,7 +19,8 @@
 | Skew handle (rotate mode, sides) | slant: the top and bottom handles sideways, the left and right ones up and down, the opposite side fixed; Shift about the centre line; Ctrl in steps of the constrain angle |
 | Centre of rotation (rotate mode, a ring with a dot) | drag it to turn about another point; it is kept with the object: rotate mode going off and on, clicking elsewhere and selecting the object again find it where it was put, and it travels with the object when that is moved, scaled or turned (kept in the object's own space; several objects selected together keep theirs as a place within their bounds; each drawing has its own; not saved in the file); double-click puts it back in the middle; a click on it keeps rotate mode |
 | Right click during a move, scale, rotation or skew | the original stays and a copy takes the change (the copy becomes the selection); a second right click takes it back; the status bar says which, and the pointer carries a plus in a square (beside the box of a move, at the lower right of the scale, turn and slant pointers). The transform runs until the left button goes up, whichever button is released first or both in one frame, and wherever it is dropped (bare canvas, another object): the release is never taken for a click there, a held second right press does not start it again, and a palette swatch under the pointer does not take the right click as an outline colour (#528, `pick_drag_tests::a_right_click_copy_survives_any_release_order`, `a_right_click_copy_dropped_on_another_object_copies_the_dragged_one`, `a_right_click_during_a_ctrl_mirror_leaves_a_mirrored_copy` (Ctrl and a side handle dragged across: a mirrored copy), `a_right_click_during_a_turn_or_a_slant_leaves_the_original`, `a_held_second_right_press_takes_the_copy_back_and_the_move_goes_on`); in the browser too, where the left button let go while the right one is held sends no pointer release (#1334, `a_left_release_while_the_right_button_is_held_ends_the_drag`) |
-| Right click during a marquee or a Freehand Pick lasso | ignored: the frame goes on with the pointer while the left button is held and selects when it goes up, whichever button is released first or both in one frame; no context menu or drop menu opens (#1015, `pick_drag_tests::a_right_press_during_a_selection_box_does_not_leave_it_frozen`) |
+| Right click during a marquee or a Freehand Pick lasso | no context menu or drop menu opens: the frame goes on while the left button is held and selects when it goes up, whichever button is released first or both in one frame (#1015, `pick_drag_tests::a_right_press_during_a_selection_box_does_not_leave_it_frozen`) |
+| Right button held during a marquee | the marquee moves with the pointer, keeping its size, instead of being sized; with the right button up again the pointer sizes it from where it was moved to, and the left release selects what it encloses there. The Shape tool's node marquee moves the same way; a Freehand Pick lasso goes on being drawn (#2050, `pick_drag_tests::the_right_button_moves_the_selection_box_while_it_is_held`) |
 | Esc during a move, scale, rotation or skew | cancels it; nothing changes |
 | Arrows | nudge by the nudge distance (2.54 mm default); Shift by the super nudge distance (5.08 mm), Ctrl by the micro nudge distance (0.254 mm); all three in Document Setup > Rulers; with guidelines selected and no object, the guidelines move |
 | Tab / Shift+Tab | cycle selection in stacking order, press after press: with nothing of the window focused, Tab is the drawing's and never moves the focus into the bars (#1667, `pick_drag_tests::tab_goes_from_object_to_object_press_after_press`) |
@@ -99,6 +100,45 @@ shows), and pressed again while they are selected zooms to them. Alt and
 the number add the selection to the group. Groups are saved with the
 drawing; objects deleted since drop out. With text selected, Ctrl+8 and
 Ctrl+2 keep changing the text size.
+
+## Invert Selection and Select Similar
+
+Edit > Invert Selection (#2002) selects the objects Select All takes
+(the top-level objects of the current page's unlocked layers; the
+contents only while a clip frame's contents are edited) that are not
+selected, and deselects the others; nothing selected selects all.
+
+Edit > Select Similar takes the same objects, and the objects inside
+their groups (at any depth, each on its own), when they are like one of
+the selected objects (those inside a group, chosen with Ctrl+click,
+count as references too). For Fill, Outline and Text Formatting a group
+is not compared itself: a selected group stands for the objects in it,
+and groups are never taken. For Object Type a group is a group: a
+selected group finds the other groups (#2203).
+
+| Item | Like when |
+|---|---|
+| Fill | the fill is equal (colour, gradient, pattern, texture, or both none) |
+| Outline | the outline is equal (width, colour, dashes, caps, arrows...), or both have none |
+| Text Formatting (Font and Size) | both are text and share a font family (any case) and size (to 0.01 pt) in some of their characters |
+| Object Type | the same shape kind (rectangle, ellipse, polygon, curve, text, group, bitmap, clip frame, table, symbol), artistic and paragraph text apart |
+
+Nothing selected, or no object alike: the selection stays. The status
+bar tells how many objects are selected.
+
+Each command is a selection step on the Undo list, ahead of the
+drawing's steps: Edit > Undo shows its name ("Undo Invert Selection",
+"Undo Select Similar (Fill)") and puts the selection back as it was;
+Redo makes it again. A step only counts while the drawing (its revision),
+the page and the selection are as the step left them: a change to the
+drawing, a selection made by hand or another window forgets the steps,
+and Undo goes on to the drawing's own steps. No drawing step is added,
+so the drawing is not marked changed.
+
+Checks: `select_similar::tests::invert_selection_takes_the_others_and_undo_puts_it_back`,
+`select_similar::tests::select_similar_fill_outline_text_and_kind`,
+`select_similar::tests::selection_steps_undo_in_order_and_end_with_a_drawing_change`,
+`select_similar::tests::the_menu_items_run_by_key`.
 
 ## Node tracking
 

@@ -125,6 +125,7 @@ mod mixed;
 #[cfg(test)]
 mod mockup_tests;
 mod multipage;
+mod my_shapes;
 mod net;
 mod new_document;
 mod node_edit;
@@ -159,9 +160,12 @@ mod script_filters;
 mod scripting;
 mod segment_delete;
 mod select_region;
+mod select_similar;
 mod settings;
 mod shadow_tool;
 mod shape_tool;
+#[cfg(test)]
+mod shaping_tests;
 mod shelf;
 mod shortcuts;
 mod snap;
@@ -208,10 +212,12 @@ mod title_bar;
 mod tools;
 mod tools2;
 mod touch_modifiers;
+mod touch_taps;
 mod trace;
 mod trace_preview;
 mod tracecut;
 mod tracecut_cut;
+mod tracecut_make;
 mod tracecut_nest;
 mod tracecut_send;
 mod ui;
@@ -219,6 +225,7 @@ mod updates;
 mod variable_outline;
 mod vector_mosaic;
 mod view;
+mod view_motion;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -395,6 +402,7 @@ pub fn run() -> eframe::Result<()> {
             .with_decorations(false)
             .with_resizable(true)
             .with_title("TraceDraw")
+            .with_app_id(splash::APP_ID)
     } else {
         splash::main_window_builder(&settings, plain)
     };

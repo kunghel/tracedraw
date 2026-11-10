@@ -109,6 +109,17 @@ cell a double-click lands in, and where in it, are found on the curved
 patch. Changing the rows and columns from the property bar spreads a
 straight grid anew.
 
+## Weld, Combine and the other shaping operations
+
+Their result lies in page space: a mesh fill it takes goes there with
+it, nodes and handles. A mesh paints nothing outside its grid, so a
+result that reaches past the grid (a Weld with an object outside the
+mesh, a Combine with objects elsewhere) takes the mesh's mean colour
+instead (`Fill::for_result`, `Mesh::covers`); it was left empty or in
+the wrong place (a live test of 0.41,
+`command::tests::combine_keeps_a_mesh_fill_or_its_mean_colour`,
+`ops::smoke_tests::weld_and_combine_keep_a_mesh_fill_or_its_mean_colour`).
+
 ## Saving as `.cdr`
 
 The mesh fill records of `.cdr` files are known only as far as reading

@@ -37,6 +37,9 @@ pub struct BarcodeState {
     /// The advanced settings of the second step are shown.
     pub advanced: bool,
     pub error: String,
+    /// Opened from the Print Merge panel with On every page: Finish puts
+    /// the barcode in the same place on every page too.
+    pub merge_all_pages: bool,
 }
 
 impl Default for BarcodeState {
@@ -51,6 +54,23 @@ impl Default for BarcodeState {
             units: Units::Inches,
             advanced: false,
             error: String::new(),
+            merge_all_pages: false,
+        }
+    }
+}
+
+impl BarcodeState {
+    /// The wizard for a Print Merge barcode: Code 128 (which holds any
+    /// text) taking its data from the field `<name>`.
+    pub fn for_merge_field(name: &str, all_pages: bool) -> Self {
+        BarcodeState {
+            spec: BarcodeSpec {
+                symbology: Symbology::Code128,
+                data: format!("<{name}>"),
+                ..Default::default()
+            },
+            merge_all_pages: all_pages,
+            ..Default::default()
         }
     }
 }
@@ -63,6 +83,11 @@ const FORM_W: f32 = 380.0;
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut bool) {
     let mut finish = false;
     let mut help = false;
+    let fields: Vec<String> = app
+        .merge_state
+        .as_ref()
+        .map(|m| m.headers.clone())
+        .unwrap_or_default();
     window(ctx, tr("barcode.title")).show(ctx, |ui| {
         ui.horizontal_top(|ui| {
             picture(ui, st.step);
@@ -70,13 +95,13 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
             ui.vertical(|ui| {
                 ui.set_width(FORM_W);
                 match st.step {
-                    0 => step_standard(ui, st),
+                    0 => step_standard(ui, st, &fields),
                     1 => step_printer(ui, st),
                     _ => step_text(ui, st),
                 }
                 ui.add_space(8.0);
                 ui.label(tr("barcode.sample_preview"));
-                preview(ui, &st.spec);
+                preview(ui, &st.spec.template());
                 if !st.error.is_empty() {
                     ui.colored_label(Color32::from_rgb(0xC4, 0x2B, 0x1C), &st.error);
                 }
@@ -117,7 +142,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
                     "barcode.next"
                 };
                 if button(ui, tr(next), true, crate::ui::tips::keyed(next)) || enter_pressed(ui) {
-                    match barcode::build(&st.spec) {
+                    // Data naming merge fields is checked for each record
+                    // when merged; the wizard checks the sample it shows.
+                    match barcode::build(&st.spec.template()) {
                         Ok(_) if last => finish = true,
                         Ok(_) => {
                             st.error.clear();
@@ -143,14 +170,22 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
     }
     if finish {
         match insert(app, &st.spec) {
-            Ok(()) => *close = true,
+            Ok(()) => {
+                *close = true;
+                if st.merge_all_pages {
+                    if let Some(id) = app.selection.first().copied() {
+                        app.copy_merge_field_to_other_pages(id);
+                    }
+                }
+            }
             Err(key) => st.error = tr(key),
         }
     }
 }
 
-/// Step 1: the industry standard and the data.
-fn step_standard(ui: &mut Ui, st: &mut BarcodeState) {
+/// Step 1: the industry standard and the data; with Print Merge data,
+/// Insert Field puts a field's `<Name>` in the data.
+fn step_standard(ui: &mut Ui, st: &mut BarcodeState, fields: &[String]) {
     ui.label(tr("barcode.welcome"));
     ui.add_space(10.0);
     ui.label(tr("barcode.select_standard"));
@@ -169,8 +204,11 @@ fn step_standard(ui: &mut Ui, st: &mut BarcodeState) {
             "barcode.standard_desc",
         ));
     if st.spec.symbology != before {
-        // Data of one symbology rarely suits another: start from a sample.
-        st.spec.data = st.spec.symbology.sample().into();
+        // Data of one symbology rarely suits another: start from a sample,
+        // unless it takes its data from merge fields.
+        if !st.spec.has_fields() {
+            st.spec.data = st.spec.symbology.sample().into();
+        }
         st.error.clear();
     }
     ui.add_space(10.0);
@@ -181,6 +219,31 @@ fn step_standard(ui: &mut Ui, st: &mut BarcodeState) {
         .changed()
     {
         st.error.clear();
+    }
+    if !fields.is_empty() {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let mut add = None;
+            crate::ui::keynav::ComboBox::from_id_salt("barcode_merge_field")
+                .width(160.0)
+                .selected_text(tr("barcode.merge_field"))
+                .show_ui(ui, |ui| {
+                    for f in fields {
+                        if ui.selectable_label(false, f).clicked() {
+                            add = Some(f.clone());
+                        }
+                    }
+                })
+                .response
+                .rich_tip(crate::ui::tips::pair(
+                    "barcode.merge_field",
+                    "barcode.merge_field_desc",
+                ));
+            if let Some(f) = add {
+                st.spec.data.push_str(&format!("<{f}>"));
+                st.error.clear();
+            }
+        });
     }
 }
 
@@ -568,16 +631,16 @@ fn preview(ui: &mut Ui, spec: &BarcodeSpec) {
     }
 }
 
-/// The shapes of `spec` at the page centre on the active layer, grouped,
-/// one undo step, then selected.
-pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
+/// The objects of `spec` with the bars' lower left corner at `at`
+/// (bars, text and background, in that drawing order behind to front),
+/// ids from `new_id`.
+pub fn barcode_shapes(
+    spec: &BarcodeSpec,
+    at: Point,
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+) -> Result<Vec<Shape>, &'static str> {
     let (built, _) = barcode::build(spec)?;
-    let Some(layer) = app.active_layer() else {
-        return Ok(());
-    };
-    let c = app.page_rect().center();
-    let ox = c.x - built.width / 2.0;
-    let oy = c.y - spec.bar_height_mm / 2.0;
+    let (ox, oy) = (at.x, at.y);
     let mut path = BezPath::new();
     for b in &built.bars {
         path.extend(tracedraw_core::geometry::rect_path(
@@ -587,9 +650,8 @@ pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
     }
     let mut shapes = Vec::new();
     if let Some(bg) = built.background {
-        let id = app.engine.new_shape_id();
         let mut s = Shape::new(
-            id,
+            new_id(),
             ShapeKind::Rect {
                 rect: Rect::new(bg.x0 + ox, bg.y0 + oy, bg.x1 + ox, bg.y1 + oy),
                 radius: 0.0,
@@ -600,19 +662,17 @@ pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
         s.stroke = None;
         shapes.push(s);
     }
-    let id = app.engine.new_shape_id();
-    let mut bars = Shape::new(id, ShapeKind::Path { path, closed: true });
+    let mut bars = Shape::new(new_id(), ShapeKind::Path { path, closed: true });
     bars.fill = Fill::Solid(Color::BLACK);
     bars.stroke = None;
     bars.name = Some(spec.symbology.name().to_string());
     shapes.push(bars);
     for l in &built.labels {
-        let id = app.engine.new_shape_id();
         let mut span = TextSpan::new(l.text.clone(), spec.font.clone(), spec.size_pt);
         span.bold = spec.bold;
         span.italic = spec.italic;
         let mut s = Shape::new(
-            id,
+            new_id(),
             ShapeKind::Text {
                 spans: vec![span],
                 origin: Point::new(l.at.x + ox, l.at.y + oy),
@@ -630,7 +690,28 @@ pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
         s.stroke = None;
         shapes.push(s);
     }
+    Ok(shapes)
+}
+
+/// The shapes of `spec` at the page centre on the active layer, grouped,
+/// one undo step, then selected. The object keeps the settings in its
+/// object data, so Print Merge makes it again for each record when the
+/// data names merge fields (#1084); until then it shows the symbology's
+/// sample when the symbology cannot hold the field names.
+pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
+    let shown = spec.template();
+    let (built, _) = barcode::build(&shown)?;
+    let Some(layer) = app.active_layer() else {
+        return Ok(());
+    };
+    let c = app.page_rect().center();
+    let at = Point::new(c.x - built.width / 2.0, c.y - shown.bar_height_mm / 2.0);
+    let mut new_id = || app.engine.new_shape_id();
+    let mut shapes = barcode_shapes(&shown, at, &mut new_id)?;
     let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
+    if let [only] = shapes.as_mut_slice() {
+        only.data = vec![(barcode::DATA_KEY.to_string(), spec.to_data())];
+    }
     let mut cmds: Vec<Command> = shapes
         .into_iter()
         .map(|shape| Command::AddShape { layer, shape })
@@ -652,6 +733,16 @@ pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
         .and_then(|l| l.shapes.last())
         .map(|s| s.id);
     if let Some(id) = last {
+        if ids.len() > 1 {
+            // The group keeps the settings, in the same undo step.
+            let data = vec![(barcode::DATA_KEY.to_string(), spec.to_data())];
+            if let Err(e) = app
+                .engine
+                .amend(&Command::SetObjectData { shape: id, data })
+            {
+                app.status = e.to_string();
+            }
+        }
         app.select(vec![id]);
     }
     Ok(())

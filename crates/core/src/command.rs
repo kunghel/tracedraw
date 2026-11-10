@@ -1322,6 +1322,10 @@ impl Command {
                         layer.shapes.remove(i);
                     }
                 }
+                // The parts lie in page space: a mesh fill goes there too,
+                // or becomes its mean colour where it would not cover them
+                // all (a live test of 0.41: the colour was lost).
+                let fill = top.fill.for_result(top.transform, &path);
                 let mut combined = Shape::new(
                     top_id,
                     ShapeKind::Path {
@@ -1329,7 +1333,7 @@ impl Command {
                         closed: !any_open,
                     },
                 );
-                combined.fill = top.fill;
+                combined.fill = fill;
                 combined.stroke = top.stroke;
                 combined.opacity = top.opacity;
                 let target = &mut doc.layer_mut(layer_id)?.shapes;
@@ -1868,7 +1872,7 @@ fn clip_frame_pieces(
 }
 
 /// `path` with every subpath that has a segment ended by a close.
-fn close_subpaths(path: &BezPath) -> BezPath {
+pub fn close_subpaths(path: &BezPath) -> BezPath {
     let mut out = BezPath::new();
     // Whether the subpath being copied has a segment and no close yet.
     let mut open = false;
@@ -3293,6 +3297,65 @@ mod tests {
             .apply(&mut doc)
             .unwrap();
         assert_eq!(doc.layer(layer).unwrap().shapes.len(), 2);
+    }
+
+    /// A live test of 0.41: Combine of objects with a mesh fill lost the
+    /// colour (the mesh stayed in the object's own space while the result
+    /// lies in page space). A mesh that covers the whole result goes to
+    /// page space with it; one that would leave a part empty becomes its
+    /// mean colour, never black or nothing.
+    #[test]
+    fn combine_keeps_a_mesh_fill_or_its_mean_colour() {
+        use crate::geometry::{Affine, Point};
+        use crate::style::Mesh;
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        // A 10 mm square moved 50 mm right, with a mesh red on the left
+        // and blue on the right, in its own space.
+        let meshed = |doc: &mut Document| {
+            let mut s = rect(doc, 0.0);
+            let mut m = Mesh::new(Rect::new(0.0, 0.0, 10.0, 10.0), 1, 1, red);
+            for n in m.nodes.iter_mut().filter(|n| n.pos.x > 5.0) {
+                n.color = blue;
+            }
+            s.fill = Fill::Mesh(m);
+            s.transform = Affine::translate((50.0, 0.0));
+            s
+        };
+        let combine = |under: Shape, top: Shape| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let ids = vec![under.id, top.id];
+            for shape in [under, top] {
+                Command::AddShape { layer, shape }.apply(&mut doc).unwrap();
+            }
+            Command::Combine { shapes: ids }.apply(&mut doc).unwrap();
+            doc.layer(layer).unwrap().shapes[0].fill.clone()
+        };
+        // A part inside the mesh's square: the mesh, on the page.
+        let mut doc = Document::default();
+        let top = meshed(&mut doc);
+        let mut inner = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(52.0, 2.0, 54.0, 4.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        inner.fill = Fill::Solid(Color::BLACK);
+        let Fill::Mesh(m) = combine(inner, top) else {
+            panic!("a mesh");
+        };
+        assert!(
+            m.nodes.iter().any(|n| n.pos == Point::new(60.0, 10.0)),
+            "{m:?}"
+        );
+        // A part elsewhere: the mesh's mean colour.
+        let mut doc = Document::default();
+        let top = meshed(&mut doc);
+        let other = rect(&mut doc, 0.0);
+        assert_eq!(combine(other, top), Fill::Solid(Color::rgb8(128, 0, 128)));
     }
 
     /// A live test of 0.41: Break Apart (Ctrl+K) on a brush stroke gives

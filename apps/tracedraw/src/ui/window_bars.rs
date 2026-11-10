@@ -363,7 +363,62 @@ pub fn page_navigator(app: &mut App, ui: &mut Ui) {
         if multipage_button(ui, app.multipage) {
             app.set_multipage(!app.multipage);
         }
+        // Next to it: which pages the view shows (#1440), lit while a
+        // range of pages is chosen.
+        let some = !app.doc().metadata.multipage_pages.is_empty();
+        if multipage_pages_button(ui, some) {
+            app.dialog = app.multipage_pages_dialog();
+        }
     });
+}
+
+/// The id of the page bar's button choosing the Multipage View's pages.
+pub const MULTIPAGE_PAGES_BUTTON: &str = "page_bar_multipage_pages";
+
+/// The Multipage View's pages: two small pages with a tick on the
+/// second, on a lit square while a range of pages is chosen. True when
+/// clicked.
+fn multipage_pages_button(ui: &mut Ui, some: bool) -> bool {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(18.0, BAR - 1.0), Sense::hover());
+    let resp = ui.interact(r, egui::Id::new(MULTIPAGE_PAGES_BUTTON), Sense::click());
+    let p = ui.painter();
+    if some {
+        p.rect_filled(r.shrink2(Vec2::new(0.0, 1.0)), 2.0, Tokens::tool_active());
+    } else if resp.hovered() {
+        p.rect_filled(r, 0.0, Tokens::tool_hover());
+    }
+    let color = if some {
+        Tokens::text()
+    } else {
+        Tokens::text_dim()
+    };
+    let s = Stroke::new(1.0, color);
+    let c = r.center();
+    // A page behind, a page in front with a tick: "these pages".
+    let back = Rect::from_center_size(c + Vec2::new(-2.0, -1.5), Vec2::new(7.0, 9.0));
+    let front = Rect::from_center_size(c + Vec2::new(2.0, 1.5), Vec2::new(7.0, 9.0));
+    p.rect_stroke(back, 0.0, s, egui::StrokeKind::Inside);
+    p.rect_filled(front, 0.0, Tokens::panel());
+    p.rect_stroke(front, 0.0, s, egui::StrokeKind::Inside);
+    p.line_segment(
+        [
+            front.center() + Vec2::new(-2.0, 0.0),
+            front.center() + Vec2::new(-0.5, 1.5),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            front.center() + Vec2::new(-0.5, 1.5),
+            front.center() + Vec2::new(2.0, -1.5),
+        ],
+        s,
+    );
+    resp.rich_tip(crate::ui::tips::pair(
+        "menu.view.multipage_pages",
+        "status.multipage_pages_desc",
+    ))
+    .clicked()
 }
 
 /// The id of the page bar's Multipage View button.
@@ -712,6 +767,143 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
+
+    /// Live test of 0.41: the Navigator has a key, N in the shortcut
+    /// table under View > Navigator (free there, see
+    /// `options::tests::no_two_default_commands_share_a_shortcut`). Held,
+    /// it shows the Navigator until it is let go; the menu row opens it
+    /// until Esc or a click, a click on the picture going there first. A
+    /// key the user gives it replaces N.
+    #[test]
+    fn view_navigator_has_the_key_n() {
+        use egui::{Event, Key, Modifiers, PointerButton};
+        crate::i18n::set_language("en");
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let frame = |app: &mut App, mut events: Vec<Event>| {
+            // The modifiers held, as the window reports them with a key.
+            let modifiers = events.iter().find_map(|e| match e {
+                Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            });
+            if let Some(m) = modifiers {
+                events.insert(0, Event::ModifiersChanged(m));
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let key = |k: Key, pressed: bool, modifiers: Modifiers| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let popup = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new("view_navigator_popup")))
+        };
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let entries = crate::ui::menus::commands(&mut app, &ctx);
+        let nav = entries
+            .iter()
+            .find(|e| e.key == "menu.view.navigator")
+            .expect("View > Navigator");
+        assert_eq!(nav.shortcut, "N");
+        assert_eq!(nav.path, ["menu.view"]);
+        // Held: open while down, shut once up.
+        frame(&mut app, vec![key(Key::N, true, Modifiers::NONE)]);
+        assert!(app.navigator_open, "N held opens it");
+        frame(&mut app, Vec::new());
+        assert!(app.navigator_open, "and keeps it open while held");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::NONE)]);
+        assert!(!app.navigator_open, "let go, it closes");
+        // Shift+N is not its key.
+        frame(&mut app, vec![key(Key::N, true, Modifiers::SHIFT)]);
+        assert!(!app.navigator_open);
+        frame(&mut app, vec![key(Key::N, false, Modifiers::SHIFT)]);
+        // The menu row: open until Esc.
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.navigator"
+        ));
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        assert!(app.navigator_open && app.navigator_pinned);
+        frame(&mut app, vec![key(Key::Escape, true, Modifiers::NONE)]);
+        frame(&mut app, vec![key(Key::Escape, false, Modifiers::NONE)]);
+        assert!(
+            !app.navigator_open && !app.navigator_pinned,
+            "Esc closes it"
+        );
+        // Open again; passing over the picture does not move the view, a
+        // click on it does and closes the Navigator.
+        crate::ui::menus::run_command(&mut app, &ctx, "menu.view.navigator");
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let pic = popup(&ctx).expect("the Navigator's picture");
+        let spot = pic.min + (pic.max - pic.min) * 0.2;
+        let before = app.view.origin;
+        frame(&mut app, vec![Event::PointerMoved(spot)]);
+        assert_eq!(app.view.origin, before, "passing over moves nothing");
+        let button = |pressed| Event::PointerButton {
+            pos: spot,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(&mut app, vec![button(true)]);
+        assert_ne!(app.view.origin, before, "a press goes there");
+        frame(&mut app, vec![button(false)]);
+        frame(&mut app, Vec::new());
+        assert!(!app.navigator_pinned && !app.navigator_open);
+        // A click away closes it too.
+        crate::ui::menus::run_command(&mut app, &ctx, "menu.view.navigator");
+        frame(&mut app, Vec::new());
+        let away = egui::pos2(600.0, 300.0);
+        frame(&mut app, vec![Event::PointerMoved(away)]);
+        frame(
+            &mut app,
+            vec![Event::PointerButton {
+                pos: away,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        assert!(!app.navigator_pinned);
+        frame(
+            &mut app,
+            vec![Event::PointerButton {
+                pos: away,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        // A key of the user's replaces N.
+        app.settings
+            .shortcuts
+            .push(("menu.view.navigator".into(), "Shift+N".into()));
+        frame(&mut app, vec![key(Key::N, true, Modifiers::NONE)]);
+        assert!(!app.navigator_open, "N is no longer its key");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::NONE)]);
+        frame(&mut app, vec![key(Key::N, true, Modifiers::SHIFT)]);
+        assert!(app.navigator_open, "Shift+N is");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::SHIFT)]);
+        assert!(!app.navigator_open);
+        assert!(!app.navigator_pinned, "held, it does not stay open");
+    }
 
     /// View > Scrollbars hides the drawing window's scrollbars: the
     /// drawing gets their room on the right, the page tabs and the

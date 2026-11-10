@@ -50,6 +50,8 @@ struct HostInner {
     view: vg::AppView,
     /// The status line text a macro left (`Application.Status`).
     status: Option<String>,
+    /// View > Simulate Overprints as a macro set it (`ActiveView.Type`).
+    simulate_overprints: Option<bool>,
 }
 
 /// How far a script is trusted.
@@ -344,6 +346,7 @@ fn host_for(app: &App, trust: Trust) -> HostInner {
         vg: false,
         view: vg::AppView::of(app),
         status: None,
+        simulate_overprints: None,
     }
 }
 
@@ -412,7 +415,7 @@ fn evaluate_with(
         )
         .map_err(|e| e.to_string())?;
     }
-    let prelude = if trust_vg { vg::PRELUDE } else { PRELUDE };
+    let prelude = if trust_vg { vg::prelude() } else { PRELUDE };
     ctx.eval(Source::from_bytes(COMMON))
         .map_err(|e| format!("prelude: {e}"))?;
     ctx.eval(Source::from_bytes(prelude))
@@ -486,6 +489,9 @@ fn run_host(
     let changes = inner.commands.len();
     if let Some(s) = inner.status {
         app.status = s;
+    }
+    if let Some(on) = inner.simulate_overprints {
+        app.simulate_overprints = on;
     }
     apply(app, inner.commands, inner.selection, inner.page, label);
     Ok((output, changes))
@@ -579,6 +585,7 @@ fn blank_host(doc: Document, trust: Trust) -> HostInner {
         vg: false,
         view: vg::AppView::default(),
         status: None,
+        simulate_overprints: None,
     }
 }
 
@@ -1567,7 +1574,7 @@ impl HostInner {
             }
             "fill_type" => {
                 let s = self.shape(id_arg(a, "id")?)?;
-                json!({"type": match s.fill { Fill::None => "none", Fill::Solid(_) => "uniform", Fill::Fountain(_) => "fountain", Fill::Pattern(_) => "pattern", Fill::Texture(_) => "texture", Fill::Mesh(_) => "mesh" }})
+                json!({"type": match s.fill { Fill::None => "none", Fill::Solid(_) => "uniform", Fill::Fountain(_) => "fountain", Fill::Pattern(_) => "pattern", Fill::Texture(_) => "texture", Fill::Mesh(_) => "mesh", Fill::Procedural(_) => "procedural" }})
             }
             "fill_color" => {
                 let s = self.shape(id_arg(a, "id")?)?;

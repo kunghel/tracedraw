@@ -22,6 +22,22 @@ of its name and run it, without looking through the menus.
   command runs as its menu row would (`ui::menus::run_command`); one
   that cannot run now (greyed in its menu) does nothing and the status
   bar says so.
+- Settings are found too (live test of 0.41: "Fill open curves" took
+  minutes to find). After the commands the list holds every setting of
+  the Options (TraceDraw, Customization, Tools, Global, Workspaces, AI)
+  and of Document Setup by its label, with the page it is on ("Options >
+  Tools > Zoom/Pan", "Document Setup > General"), and each page by its
+  name. A setting is also found by the words of its tip ("not closed"
+  finds Fill open curves). The settings are gathered when the box opens
+  by drawing each page once out of sight and keeping the labels it
+  translates (`ui::options::settings_index`, `i18n::recording`), so a
+  new option is found with no list to keep up; Options > Customization >
+  Commands is left out (its rows are the menu commands). The Options
+  dialog's page and tab are kept as they were.
+- Choosing a setting opens the Options (or Document Setup) at its page,
+  at its tab on Options > Text, and frames the setting's label in the
+  accent colour, scrolled into view, for 2.5 seconds or until another
+  page shows (`ui::options::open_at_setting`, `highlight_setting`).
 - Esc or a click outside the box closes it without running anything.
 - The key is free of every other command, panel and tool key, of the
   keys macOS keeps and of the keys browsers keep from a page

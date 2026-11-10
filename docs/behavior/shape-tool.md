@@ -187,6 +187,13 @@ round their corners with their own handles either way.
 - Every corner has one (a curve with more than 32 corners shows them
   only on chosen nodes, so a traced outline is not covered in them). A
   chosen corner's widget is filled with the node colour.
+- A widget shows only where it can do something: a sharp corner whose
+  largest rounding on its own (the shorter side times `tan(theta / 2)`)
+  moves the corner's middle less than 2 screen pixels has none, so a node
+  where the curve barely turns, or between very short sides, shows no
+  widget that a drag would leave unchanged; zoomed in far enough, it
+  shows (`tracedraw_core::corner_cut::corner_reach`,
+  `tools2::tests::corner_widgets_show_only_where_they_round_something`).
 - Options > Nodes and Handles > Round one corner at a time (on at first,
   under the rings option): a Ctrl+click (Cmd on macOS) on a widget
   chooses its corner, a second Ctrl+click takes it out, so one corner or
@@ -242,6 +249,15 @@ round their corners with their own handles either way.
   Rounding button beside it makes them sharp. One undo step each
   ("Fillet", "Clear Rounding"); the chosen corners stay chosen (#2057,
   `pick_drag_tests::the_property_bar_sets_the_corner_rounding_of_curves`).
+- Three buttons before the field choose the kind of corner it makes
+  (#1147, `App::corner_bar_op`, Round at first): Round Corner as above,
+  Scalloped Corner or Chamfered Corner, which cut the same corners as
+  the Corners docker does (`corner_cut::cut_corners`), the value being
+  the distance along each side; a distance some corner cannot take is
+  cut down by tenths until every one of them takes it. One undo step
+  ("Scallop", "Chamfer"); a cut corner is no longer a corner of its
+  own, so it leaves the chosen corners and shows no ring. Clear
+  Rounding takes back round corners only.
 - Checked by `pick_drag_tests::corner_widgets_round_every_corner_or_the_chosen_ones`,
   `pick_drag_tests::corner_widgets_follow_their_preference_off_by_default`,
   `pick_drag_tests::rounded_corners_keep_their_widgets_and_round_again`,
@@ -258,7 +274,7 @@ round their corners with their own handles either way.
 | Ctrl+drag a corner node | that corner only, as far as the neighbouring corners leave it room on both its sides (past half the shorter side when they are smaller, a whole side when they are square; #1757, `kind_nodes::tests::one_corner_dragged_takes_what_its_neighbours_leave`); Ctrl counts as it is held during the drag, also pressed after the button (#1325) |
 | Click a corner node; Shift+click or Ctrl+click; marquee or freehand marquee over corner nodes | chooses that corner alone; adds the corner to the chosen ones or takes it out; chooses the corners with a node inside (on every selected rectangle). Chosen corners' nodes are filled (#671) |
 | Drag a chosen corner node | the chosen corners only, all by the same amount, so two or three corners round together and the others keep theirs (#671) |
-| Drag an ellipse node | pie when the pointer is inside the ellipse, arc outside; a whole ellipse's node starts at the top and the way it turns picks which end it becomes; with Ctrl held (at the press or later) the angle goes in steps of the constrain angle (15 degrees at first; a whole ellipse's node counts its turn from the top) (#1340) |
+| Drag an ellipse node | pie when the pointer is inside the ellipse, arc outside; a whole ellipse's node starts at the top and the way it turns picks which end it becomes; with Ctrl held (at the press or later) the angle goes in steps of the constrain angle (15 degrees at first; a whole ellipse's node counts its turn from the top) (#1340). An arc is an open curve: with the document's Fill open curves off it draws no fill on screen, in SVG and PDF, and is picked on its outline only; a pie keeps its fill (a live test of 0.41, `kind_nodes::tests::an_ellipse_made_an_arc_draws_no_fill_unless_open_curves_are_filled`) |
 | Drag a polygon node | its mirrored nodes follow: a vertex moves every vertex in or out (the points between them stay, and keep their turn); a point between two vertices moves all of those: in or out sharpens the star, and through the centre it comes out on the far side, an inverted star (negative sharpness, down to -0.99; dragged back through the centre it is a plain star again). The pointer's turn is read on the near or the far side of the centre, whichever is nearer the turn the points had at the press, so a drag straight through inverts the star rather than turning its points half a turn; with Ctrl the side is the one the pointer is on along the kept turn. It used to stop short of the centre, sharpness held to 0.001..0.999 (#1331, `kind_nodes::tests::inner_nodes_cross_the_centre_into_an_inverted_star`). Around the centre turns them (a twisted star; within 1 degree of straight it stays untwisted; Ctrl keeps the turn they have, held at the press or later; it was read at the press for rectangle corners only, so it did nothing on a star, #1331) |
 
 Rectangles, ellipses and polygons show these nodes and the property bar
@@ -311,8 +327,9 @@ to Line, Convert to Curve | Cusp, Smooth, Symmetrical | Reverse
 Direction, Extend Curve to Close, Extract Subpath, Close Curve | Stretch
 and Scale Nodes, Rotate and Skew Nodes, Align Nodes | Reflect
 Horizontally, Reflect Vertically, Elastic Mode | Select All Nodes |
-Reduce Nodes, Curve smoothness | Corner rounding, Clear Rounding (a curve
-with a corner selected, see Corner widgets).
+Reduce Nodes, Curve smoothness | Round, Scalloped or Chamfered Corner,
+Corner rounding, Clear Rounding (a curve with a corner selected, see
+Corner widgets).
 
 ## Checks
 

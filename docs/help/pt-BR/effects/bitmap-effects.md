@@ -81,6 +81,17 @@ efeito** abre os grupos de efeitos.
 [[menu.effects > menu.effects.flatten]] torna os efeitos permanentes: um bitmap
 fica com o que mostra, e um objeto vetorial vira bitmap.
 
+### Em todas as páginas
+
+Num desenho de várias páginas, a caixa de diálogo de um efeito mostra a caixa
+[[dialog.fx_all_pages]] enquanto há uma imagem selecionada. Marcada, OK também
+aplica o efeito a todas as imagens de todas as páginas, em um só passo de
+desfazer. Imagens bloqueadas e imagens em camadas bloqueadas ficam como estão.
+
+[[menu.effects > menu.effects.all_pages]] faz o mesmo com os efeitos que a
+imagem selecionada já tem, incluindo os que não têm caixa de diálogo: todas as
+outras imagens recebem a mesma lista de efeitos, em um só passo de desfazer.
+
 ## O seletor de efeitos {#effect-picker}
 
 [[menu.effects > menu.effects.picker]] abre uma janela que fica aberta enquanto

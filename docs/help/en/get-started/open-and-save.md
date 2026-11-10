@@ -12,7 +12,9 @@ everything, and can also save `.cdr` files. It opens many other formats; see
 
 The drawing opens in a new tab. To open a drawing you used recently, use
 [[menu.file > menu.file.open_recent]], the arrow of the Open button, or the
-list on the Welcome Screen; [[menu.file.clear_recent]] empties the list. To
+list on the Welcome Screen, which shows each drawing's name, folder, size and
+last edit in a table when the window is wide enough;
+[[menu.file.clear_recent]] empties the list. To
 take one drawing off the Welcome Screen list, point at it and click the x at
 its right, or right-click it and choose [[welcome.remove_recent]]; the file
 itself stays where it is.
@@ -35,7 +37,7 @@ installed as an app does the same for `.tdraw`, `.cdr`, `.svg` and `.pdf`
 files in browsers that let installed apps open files.
 
 How a drawing is first shown (the whole page, its objects, the page's width,
-real size, or the page, place and zoom it had when it was saved) is set by
+real size, a zoom level of your own, or the page, place and zoom it had when it was saved) is set by
 [[options.open_view]] on the [[options.display]] page of
 [[menu.tools > menu.tools.options > menu.tools.options_app]].
 

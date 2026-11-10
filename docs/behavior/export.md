@@ -5,6 +5,66 @@ Export dialog. File > Export starts with the choices of Options > Global
 > File Formats, which can also keep those of the last export; the Web and
 Office presets start with their own (see `options.md`).
 
+## Order: the file, then the options
+
+On the desktop, File > Export (the menu, Ctrl+E, the toolbar button)
+first shows the system's Save dialog (`dialogs::choose_export_file`):
+
+- Every export format is offered, the format of the last export (else
+  of Options > Global > File Formats) first, each with its extensions
+  ("jpg" and "jpeg", "tif" and "tiff", "html" and "htm"); the name
+  offered is the drawing's (Graphic1 for a new one) with that format's
+  extension; the folder is the one exported to last, else the
+  drawing's, else the last one opened (#1817).
+- The extension of the name chosen picks the format, in any case, with
+  the choices that format was exported with last; a name without an
+  export format's extension ("Poster", "Poster.v2") keeps the format and
+  gets its extension added. The folder becomes the next export's.
+- Cancel there ends the export.
+- Then the Export dialog opens for that format, titled "Export
+  <file name>". Choosing another format (or a preset of another format,
+  or an installed script filter) changes the file's extension at once,
+  in the title too; an extension the format already takes ("photo.jpeg"
+  for JPEG) stays. OK writes the file with no second Save dialog;
+  Cancel, Esc or the close button write nothing
+  (`pick_drag_tests::export_asks_for_the_file_then_shows_the_options_of_its_format`,
+  `pick_drag_tests::cancelling_the_export_writes_nothing`,
+  `ui::dialogs::tests::the_exported_file_follows_the_format`).
+
+The browser build has no Save dialog (a file is a download named in the
+page), and Android's picker makes the document as soon as it is chosen:
+there the Export dialog comes first and OK asks for the file (a
+download in the browser), as before (`dialogs::EXPORT_FILE_FIRST`).
+File > Export Presets > Web and Documents keep that order everywhere:
+their dialog shows the preset's own choices first, and OK asks for the
+file.
+
+## Skipping the options
+
+"Do not show this dialog again", a check box at the bottom of the
+Export dialog of File > Export (not of the Web and Documents presets),
+shows the setting of Options > Global > File Formats, "Export without
+showing the options (use the last ones)" (`skip_export_dialog`, off).
+The dialog's tick becomes the setting on OK only. On, File > Export
+shows the Save dialog and writes the file right after it with the
+options of the last export; the status bar then says "Exported with
+the last options (hold Shift while choosing Export to see them)", and
+a click on that note opens Options > Global > File Formats. Shift held
+while choosing File > Export or clicking the toolbar button, File >
+Export with Options (Ctrl+Shift+E) show the options
+whatever the setting, with the check box ticked so it can be taken off
+(`pick_drag_tests::with_the_options_set_not_to_show_export_writes_at_once`).
+In the browser and on Android the setting goes straight to the file
+with the last options, as before.
+
+Until 0.42.1 the check box ("Do not show filter dialog") was the
+setting itself: a tick stayed when the dialog was then cancelled or
+closed, File > Export went straight to the Save dialog and wrote the
+file with no options from then on, and Options > Global > File Formats
+did not show the setting, although the check box's tip said it did.
+Preferences saved before are brought back to off once (upgrade 7,
+`settings::tests::older_preferences_show_the_export_options_again_once`).
+
 ## Layout
 
 - On the left, a 260 x 300 point preview of what will be written: the
@@ -204,6 +264,7 @@ dialog's choices, and Export for Web and Office keep their own (#617,
 - `export::tests::the_export_preview_shows_the_page_and_estimates_the_size`
 - `export::tests::export_writes_the_pages_chosen`, `export::tests::export_page_choices_pick_pages`, `export::tests::export_pdf_text_as_curves_holds_no_font`
 - `pick_drag_tests::the_export_dialog_starts_with_the_last_exports_choices`
+- `pick_drag_tests::export_asks_for_the_file_then_shows_the_options_of_its_format`, `pick_drag_tests::cancelling_the_export_writes_nothing`, `pick_drag_tests::with_the_options_set_not_to_show_export_writes_at_once`, `ui::dialogs::tests::the_exported_file_follows_the_format`, `settings::tests::older_preferences_show_the_export_options_again_once`
 - `export::tests::sizes_read_in_kilobytes_and_megabytes`
 - `ui::dialogs::tests::a_pixel_size_sets_the_resolution_that_gives_it`
 - `pick_drag_tests::the_export_dialog_lists_every_preset_and_a_format_change_unchooses`
@@ -217,10 +278,9 @@ dialog's choices, and Export for Web and Office keep their own (#617,
 - The Format list shows each format as "EXT - Description (*.ext)": JPG,
   PDF, AI and PNG first, a separator, then every format in the order of
   its extension, then installed script filters.
-- Under the format's settings: Selected only, the export range, and "Do not
-  show filter dialog": when on, File > Export (Ctrl+E) goes straight to
-  the file with the last choices (Options > Global > File Formats keeps
-  them); Export for Web and for Office still show their dialog.
+- Under the format's settings: Selected only and the export range; at
+  the bottom, above OK and Cancel, "Do not show this dialog again" (see
+  "Skipping the options").
 - PDF and AI files: Title (the drawing's title when empty) and Tags,
   written as the file's title and keywords (a classic AI file keeps the
   title in its `%%Title` comment and has no place for tags).

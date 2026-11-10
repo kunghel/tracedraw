@@ -42,18 +42,31 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// fills open curves, an open curve's fill is kept for its closed subpaths
 /// only (the curve becomes a group of the filled closed part and the
 /// outlined whole), or dropped when it has none, as the screen shows it.
+/// An ellipse made an arc (not a pie) is an open curve too.
 pub fn resolve_open_fills(doc: &Document) -> std::borrow::Cow<'_, Document> {
     use tracedraw_core::document::{Shape, ShapeKind};
     use tracedraw_core::Fill;
     fn needs(s: &Shape) -> bool {
         match &s.kind {
-            ShapeKind::Path { closed: false, .. } => !matches!(s.fill, Fill::None),
             ShapeKind::Group { children } => children.iter().any(needs),
             ShapeKind::ClipFrame { frame, contents } => needs(frame) || contents.iter().any(needs),
-            _ => false,
+            // A curve left open, or an ellipse made an arc (not a pie).
+            k => k.is_open_curve() && !matches!(s.fill, Fill::None),
         }
     }
     fn fix(s: &mut Shape) {
+        // An arc is an open curve: unfilled, as on screen (a live test of
+        // 0.41). One whose ends meet is a whole ellipse and keeps it.
+        if matches!(s.kind, ShapeKind::Ellipse { .. }) {
+            let open = s.kind.is_open_curve()
+                && tracedraw_render::closed_subpaths(&s.local_path())
+                    .elements()
+                    .is_empty();
+            if open {
+                s.fill = Fill::None;
+            }
+            return;
+        }
         match &mut s.kind {
             ShapeKind::Path {
                 path,
@@ -370,6 +383,47 @@ mod tests {
         ));
     }
 
+    /// A live test of 0.41: an ellipse made an arc with the Shape tool
+    /// kept its fill. It is an open curve: unfilled in SVG and PDF while
+    /// the document does not fill open curves; a pie keeps its fill.
+    #[test]
+    fn an_ellipse_arc_loses_its_fill_in_vector_exports_and_a_pie_keeps_it() {
+        use tracedraw_core::document::EllipseArc;
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let ellipse = |id: u64, pie: bool, x: f64| {
+            let mut s = Shape::new(
+                tracedraw_core::ShapeId(id),
+                ShapeKind::Ellipse {
+                    rect: Rect::new(x, 10.0, x + 40.0, 50.0),
+                    arc: Some(EllipseArc {
+                        start_deg: 200.0,
+                        end_deg: 90.0,
+                        pie,
+                    }),
+                },
+            );
+            s.stroke = Some(Stroke::hairline(Color::BLACK));
+            s
+        };
+        let mut arc = ellipse(5, false, 10.0);
+        arc.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        let mut pie = ellipse(6, true, 60.0);
+        pie.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        doc.layer_mut(layer).unwrap().shapes.extend([arc, pie]);
+        let resolved = resolve_open_fills(&doc);
+        let shapes = &resolved.pages[0].layers[0].shapes;
+        assert!(matches!(shapes[0].fill, Fill::None), "{:?}", shapes[0].fill);
+        assert!(shapes[0].stroke.is_some());
+        assert_eq!(shapes[1].fill, Fill::Solid(Color::rgb8(0, 0, 255)));
+        let svg = svg::page_to_svg(&doc, 0);
+        assert!(!svg.contains("#ff0000"), "{svg}");
+        assert!(svg.contains("#0000ff"), "{svg}");
+        // A document that fills open curves keeps the arc's fill.
+        doc.metadata.fill_open_curves = true;
+        assert!(svg::page_to_svg(&doc, 0).contains("#ff0000"));
+    }
+
     #[test]
     fn vector_pattern_fill_round_trips_through_the_native_format() {
         let mut doc = Document::default();
@@ -431,6 +485,112 @@ mod tests {
         ));
     }
 
+    /// A pattern's placement is kept in the native file, and a fill without
+    /// one writes as before (no `placement` key).
+    #[test]
+    fn pattern_placement_round_trips_through_the_native_format() {
+        use tracedraw_core::style::{PatternPlacement, PatternTile, TileShift};
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut make = |x: f64, placement: PatternPlacement| {
+            let id = doc.ids_mut().shape();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Pattern(Pattern::TwoColor {
+                tile: PatternTile::Bricks,
+                front: Color::rgb8(255, 0, 0),
+                back: Color::WHITE,
+                size_mm: 8.0,
+                placement,
+            });
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+        };
+        make(10.0, PatternPlacement::default());
+        make(
+            40.0,
+            PatternPlacement {
+                mirror_horizontal: true,
+                mirror_vertical: true,
+                offset_x: 1.5,
+                offset_y: -2.0,
+                rotation: 15.0,
+                skew: 5.0,
+                shift_percent: 25.0,
+                shift: TileShift::Column,
+                size: Some(Size::new(8.0, 4.0)),
+                transform_with_object: true,
+            },
+        );
+        let path = std::env::temp_dir().join(format!(
+            "tracedraw-pattern-placement-{}-{:?}.tdraw",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        save_native(&doc, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let back = load_native(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back, doc);
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(
+            text.matches("placement").count(),
+            1,
+            "only the placed fill writes one"
+        );
+    }
+
+    /// A procedural fill with every number set, a seed and no background
+    /// comes back from the native file as it was (#1212).
+    #[test]
+    fn procedural_fill_round_trips_through_the_native_format() {
+        use tracedraw_core::{Procedural, ProceduralParams, ProceduralPattern};
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Procedural(Procedural {
+            pattern: ProceduralPattern::Speckle,
+            params: ProceduralParams {
+                size_mm: 12.5,
+                line_width_mm: 0.75,
+                share: 0.4,
+                amplitude: 0.3,
+                turns: 4.5,
+                density: 55.0,
+            },
+            foreground: Color::cmyk_pct(0.0, 100.0, 100.0, 0.0),
+            background: None,
+            seed: 42,
+        });
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let path = std::env::temp_dir().join(format!(
+            "tracedraw-procedural-{}-{:?}.tdraw",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        save_native(&doc, &path).unwrap();
+        let back = load_native(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back, doc);
+        assert!(matches!(
+            &back.pages[0].layers[0].shapes[0].fill,
+            Fill::Procedural(p) if p.seed == 42 && p.params.density == 55.0
+        ));
+    }
+
     /// The axis values of a variable font set on text are kept in the
     /// native file (#1013): a weight of 600 reopens at 600.
     #[test]
@@ -467,6 +627,60 @@ mod tests {
         };
         assert_eq!(spans[0].variation("wght"), Some(600.0));
         assert_eq!(spans[0].variation("wdth"), Some(87.5));
+    }
+
+    /// Character styles (#1209) are kept in the native file: the
+    /// underline and strike line styles, all caps, enclosed and the
+    /// overprints; a single thin underline is still written as `true`.
+    #[test]
+    fn character_styles_round_trip_in_native_files() {
+        use tracedraw_core::LineStyle;
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut a = tracedraw_core::TextSpan::new("Styled ", "Selawik", 24.0);
+        a.underline = LineStyle::DoubleThinWord;
+        a.strikethrough = LineStyle::SingleThick;
+        a.all_caps = true;
+        a.enclosed = true;
+        a.overprint_fill = Some(true);
+        a.overprint_outline = Some(false);
+        let mut b = tracedraw_core::TextSpan::new("plain", "Selawik", 24.0);
+        b.underline = LineStyle::SingleThin;
+        let s = Shape::new(
+            id,
+            ShapeKind::Text {
+                spans: vec![a, b],
+                origin: tracedraw_core::geometry::Point::new(10.0, 20.0),
+                frame: None,
+                align: tracedraw_core::TextAlign::Left,
+                para: tracedraw_core::document::ParagraphStyle::default(),
+                on_path: None,
+            },
+        );
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let path = std::env::temp_dir().join(format!(
+            "tracedraw-character-styles-{}-{:?}.tdraw",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        save_native(&doc, &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let back = load_native(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back, doc);
+        assert!(text.contains("\"double_thin_word\""), "{text}");
+        assert!(text.contains("\"underline\": true"), "{text}");
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("not text");
+        };
+        assert_eq!(spans[0].underline, LineStyle::DoubleThinWord);
+        assert_eq!(spans[0].strikethrough, LineStyle::SingleThick);
+        assert!(spans[0].all_caps && spans[0].enclosed);
+        assert_eq!(spans[0].overprint_fill, Some(true));
+        assert_eq!(spans[0].overprint_outline, Some(false));
+        assert_eq!(spans[1].underline, LineStyle::SingleThin);
+        assert_eq!(spans[1].strikethrough, LineStyle::None);
     }
 
     #[test]
@@ -506,6 +720,109 @@ mod tests {
         let json = doc.to_json().unwrap();
         let back = Document::from_json(&json).unwrap();
         assert_eq!(back, doc);
+    }
+
+    /// Every merge mode of a transparency survives the native format, the
+    /// new ones under their lower-case names (#1203).
+    #[test]
+    fn transparency_merge_modes_round_trip_in_native_files() {
+        use tracedraw_core::live::{Effect, MergeMode};
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        for merge in MergeMode::ALL {
+            let id = doc.ids_mut().shape();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.effects.push(Effect::Transparency {
+                mask: Fill::linear(Color::WHITE, Color::BLACK, 0.0),
+                merge,
+                target: 2,
+            });
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+        }
+        let json = doc.to_json().unwrap();
+        for name in [
+            "\"texturize\"",
+            "\"lightness\"",
+            "\"behind\"",
+            "\"screen\"",
+            "\"overlay\"",
+            "\"softlight\"",
+            "\"hardlight\"",
+            "\"colordodge\"",
+            "\"colorburn\"",
+            "\"exclusion\"",
+            "\"iflighter\"",
+        ] {
+            assert!(json.contains(name), "{name}");
+        }
+        let back = Document::from_json(&json).unwrap();
+        assert_eq!(back, doc);
+    }
+
+    /// A gradient's blend direction, steps, smooth transition and
+    /// acceleration are kept in the native file, and left out while they
+    /// are the defaults (#1208).
+    #[test]
+    fn gradient_blend_settings_round_trip_in_native_files() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let mut f = tracedraw_core::Fountain::two(
+            tracedraw_core::FountainKind::Radial,
+            Color::rgb8(255, 0, 0),
+            Color::rgb8(0, 0, 255),
+            0.0,
+        );
+        f.blend_direction = tracedraw_core::ColorBlend::Clockwise;
+        f.steps = 24;
+        f.smooth = true;
+        f.acceleration = 35;
+        s.fill = Fill::Fountain(f);
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let json = doc.to_json().unwrap();
+        for what in [
+            "\"blend_direction\"",
+            "\"steps\": 24",
+            "\"smooth\": true",
+            "\"acceleration\": 35",
+        ] {
+            assert!(json.contains(what), "{what} in {json}");
+        }
+        let back = Document::from_json(&json).unwrap();
+        assert_eq!(back, doc);
+        // The defaults are not written.
+        let mut plain = Document::default();
+        let layer = plain.pages[0].layers[0].id;
+        let id = plain.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::linear(Color::BLACK, Color::WHITE, 0.0);
+        plain.layer_mut(layer).unwrap().shapes.push(s);
+        let json = plain.to_json().unwrap();
+        for what in ["blend_direction", "steps", "smooth", "acceleration"] {
+            assert!(!json.contains(what), "{what} in {json}");
+        }
     }
 
     #[test]
@@ -626,6 +943,116 @@ mod tests {
         assert!(st.end_arrow.is_custom());
         assert_eq!(st.end_arrow.name(), "My head");
         assert_eq!(st.start_arrow, tracedraw_core::Arrowhead::Circle);
+    }
+
+    /// A feature switched off ("-liga") and a superscript are kept in the
+    /// native file (#1201); a file written without them reads as before.
+    #[test]
+    fn switched_off_features_and_superscripts_round_trip_in_native_files() {
+        use tracedraw_core::TextPosition;
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut span = tracedraw_core::TextSpan::new("fi", "Quicksand", 24.0);
+        span.set_feature("liga", Some(false));
+        span.set_feature("smcp", Some(true));
+        let mut sup = tracedraw_core::TextSpan::new("2", "Quicksand", 24.0);
+        sup.position = TextPosition::Superscript;
+        let mut sub = tracedraw_core::TextSpan::new("3", "Quicksand", 24.0);
+        sub.position = TextPosition::Subscript;
+        let s = Shape::new(
+            id,
+            ShapeKind::Text {
+                spans: vec![span, sup, sub],
+                origin: tracedraw_core::geometry::Point::new(10.0, 20.0),
+                frame: None,
+                align: tracedraw_core::TextAlign::Left,
+                para: tracedraw_core::document::ParagraphStyle::default(),
+                on_path: None,
+            },
+        );
+        doc.layer_mut(layer).unwrap().shapes.push(s);
+        let path = std::env::temp_dir().join(format!(
+            "tracedraw-features-{}-{:?}.tdraw",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        save_native(&doc, &path).unwrap();
+        let back = load_native(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back, doc);
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("not text");
+        };
+        assert!(!spans[0].feature_on("liga"));
+        assert!(spans[0].feature_on("smcp"));
+        assert_eq!(
+            spans[0].features,
+            vec!["-liga".to_string(), "smcp".to_string()]
+        );
+        assert_eq!(spans[1].position, TextPosition::Superscript);
+        assert_eq!(spans[2].position, TextPosition::Subscript);
+        // Written by a version before #1201: the features as they were,
+        // the characters on the baseline.
+        let json = doc.to_json().unwrap();
+        let old = json.replace("\"position\": \"superscript\"", "\"features\": []");
+        assert_ne!(old, json);
+        let back = Document::from_json(&old).unwrap();
+        let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("not text");
+        };
+        assert_eq!(spans[1].position, TextPosition::Normal);
+    }
+
+    /// #1210: the arrowhead placements and Share attributes round trip
+    /// through the native format, and a drawing without them is written
+    /// as before.
+    #[test]
+    fn arrowhead_placement_round_trips_through_the_native_format() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut line = Shape::new(
+            id,
+            ShapeKind::Path {
+                path: {
+                    let mut p = tracedraw_core::BezPath::new();
+                    p.move_to((10.0, 50.0));
+                    p.line_to((60.0, 50.0));
+                    p
+                },
+                closed: false,
+            },
+        );
+        line.stroke = Some(Stroke {
+            start_arrow: tracedraw_core::Arrowhead::Arrow,
+            ..Stroke::new(Color::BLACK, 1.0)
+        });
+        doc.layer_mut(layer).unwrap().shapes.push(line);
+        let plain = doc.to_json().unwrap();
+        assert!(!plain.contains("start_head") && !plain.contains("share_arrowheads"));
+        let shape = &mut doc.layer_mut(layer).unwrap().shapes[0];
+        let st = shape.stroke.as_mut().unwrap();
+        st.start_head = tracedraw_core::ArrowheadPlacement {
+            size: 250.0,
+            offset: -1.25,
+            mirror_h: false,
+            mirror_v: true,
+            rotation: 12.5,
+        };
+        st.end_head.offset = 3.0;
+        st.share_arrowheads = true;
+        let json = doc.to_json().unwrap();
+        assert!(json.contains("\"start_head\""));
+        assert!(json.contains("\"share_arrowheads\""));
+        let back = Document::from_json(&json).unwrap();
+        assert_eq!(back, doc);
+        let s = back.pages[0].layers[0].shapes[0].stroke.as_ref().unwrap();
+        assert_eq!(s.start_head.size, 250.0);
+        assert_eq!(s.start_head.rotation, 12.5);
+        assert!(s.start_head.mirror_v);
+        assert_eq!(s.end_head.offset, 3.0);
+        assert!(s.share_arrowheads);
     }
 }
 

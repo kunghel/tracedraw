@@ -81,6 +81,17 @@ número do registro.
   os registros, ou informe um valor final para criar de uma vez os registros
   do início ao fim (15 a 25 com três dígitos cria onze registros, de 015 a
   025), sem arquivo de dados nenhum.
+- **[[merge.kind_random]]**: um número inteiro aleatório para cada registro,
+  sorteado [[merge.random_min]] um número [[merge.random_max]] outro,
+  completado com zeros até os [[merge.digits]] e escrito depois do
+  [[merge.prefix]] que você der (rifas, códigos). Com [[merge.random_unique]]
+  (ligado de início) nenhum número se repete; quando o intervalo tem menos
+  números que registros, a caixa de diálogo avisa e a mesclagem não é feita,
+  então amplie o intervalo ou permita repetições. [[merge.random_records]]
+  cria esse número de registros quando há menos, assim números aleatórios
+  dispensam arquivo de dados. Os números ficam os mesmos, na grade, nas
+  páginas mescladas e na impressão, até você clicar em [[merge.random_draw]]
+  em Configurar colunas.
 - **Imagem**: a célula tem o caminho de uma imagem. Um texto que contém apenas
   `<Field>` vira a imagem, do maior tamanho que caiba na caixa dele. Ponha esse
   texto dentro de uma moldura com [[menu.object.clip_frame_place_inside]] (uma moldura de
@@ -92,6 +103,18 @@ Os campos funcionam também em grupos e molduras, então um cartão pode estar
 agrupado.
 - **Código QR**: um texto que contém apenas `<Field>` vira um código QR do
   texto da célula.
+- **Código de barras**: escolha [[merge.kind_barcode]] no painel e clique em
+  [[merge.insert_field]]. O assistente de código de barras abre com o campo
+  como dados; escolha o padrão, os tamanhos e o texto como em qualquer
+  [código de barras](../objects/barcodes.md#barcode-data) e clique em
+  Concluir. A página de cada registro recebe seu próprio código de barras
+  feito do seu valor, no lugar e no tamanho do que você colocou. Com
+  [[merge.all_pages]] marcado, o código vai para todas as páginas. Os dados
+  podem misturar texto fixo e campos: com um campo Número `Serial` de seis
+  dígitos começando em 15, os dados `590123<Serial>` dão os códigos EAN-13
+  590123000015, 590123000016 e assim por diante, mudando só os últimos
+  dígitos. Um registro cujo valor o padrão não comporta fica sem código de
+  barras.
 
 Uma célula vazia, ou uma imagem que não carrega, remove esse objeto da página
 do registro.

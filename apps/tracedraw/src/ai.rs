@@ -217,6 +217,9 @@ pub struct AiPrefs {
     /// The model that makes pictures, when the service can (empty: the
     /// service's usual one; at an address of the user's, no pictures).
     pub image_model: String,
+    /// The most tokens a reply of the Messages API may have (#1011); see
+    /// [`AiPrefs::max_tokens`].
+    pub max_tokens: u32,
 }
 
 impl Default for AiPrefs {
@@ -229,18 +232,46 @@ impl Default for AiPrefs {
             remember_key: false,
             show_bar: true,
             image_model: String::new(),
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 }
 
 impl AiPrefs {
-    /// The address requests go to.
+    /// The address requests go to. An address typed without the API's
+    /// path (only the server, as `http://localhost:8787`, or its version,
+    /// as `.../v1`) gets the path of the kind of service: requests went
+    /// to the server's root and came back as a web page (#1011).
     pub fn endpoint(&self) -> String {
         let e = self.endpoint.trim();
         if e.is_empty() {
-            self.provider.default_endpoint().to_string()
+            return self.provider.default_endpoint().to_string();
+        }
+        let base = e.trim_end_matches('/');
+        // The path after the scheme and the host.
+        let after_scheme = base.split_once("://").map_or(base, |(_, rest)| rest);
+        let path = after_scheme.find('/').map_or("", |i| &after_scheme[i..]);
+        let call = match self.provider {
+            Provider::Anthropic => "messages",
+            Provider::OpenAiCompatible => "chat/completions",
+        };
+        if path.is_empty() {
+            format!("{base}/v1/{call}")
+        } else if path.to_ascii_lowercase().ends_with("/v1") {
+            format!("{base}/{call}")
         } else {
             e.to_string()
+        }
+    }
+
+    /// The most tokens a reply may have: the preference, kept to
+    /// [`MIN_MAX_TOKENS`]..=[`MAX_MAX_TOKENS`], or [`DEFAULT_MAX_TOKENS`]
+    /// when unset (older preferences).
+    pub fn max_tokens(&self) -> u32 {
+        if self.max_tokens == 0 {
+            DEFAULT_MAX_TOKENS
+        } else {
+            self.max_tokens.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
         }
     }
 
@@ -357,8 +388,13 @@ pub const MAX_HISTORY: usize = 3;
 pub const MAX_OBJECTS: usize = 300;
 /// Longest reply taken as a script, in bytes.
 const MAX_SCRIPT: usize = 256 * 1024;
-/// Tokens the Messages API may answer with.
-const MAX_TOKENS: u32 = 8000;
+/// Tokens the Messages API may answer with unless Options > AI says
+/// otherwise: a detailed drawing's script is long, and 8000 cut many
+/// short (#1011).
+pub const DEFAULT_MAX_TOKENS: u32 = 32000;
+/// The least and the most Options > AI takes for the longest reply.
+pub const MIN_MAX_TOKENS: u32 = 1000;
+pub const MAX_MAX_TOKENS: u32 = 128_000;
 /// The undo step of a drawing made by AI Drawing.
 const UNDO_LABEL: &str = "AI Drawing";
 
@@ -529,7 +565,7 @@ pub fn build_request_with(
     let body = match prefs.provider {
         Provider::Anthropic => json!({
             "model": prefs.model(),
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": prefs.max_tokens(),
             "system": system,
             "messages": msgs,
         }),
@@ -1010,6 +1046,72 @@ impl App {
 mod tests {
     use super::*;
 
+    /// An address typed as the server alone, or its `/v1`, gets the
+    /// path of the kind of service; a full address stays as typed
+    /// (#1011). The models' list goes next to it.
+    #[test]
+    fn an_address_without_its_path_gets_the_api_path() {
+        let mut prefs = AiPrefs::default();
+        let mut at = |provider: Provider, typed: &str| {
+            prefs.provider = provider;
+            prefs.endpoint = typed.into();
+            (prefs.endpoint(), prefs.models_endpoint())
+        };
+        let (a, c) = (Provider::Anthropic, Provider::OpenAiCompatible);
+        assert_eq!(
+            at(a, "http://localhost:8787"),
+            (
+                "http://localhost:8787/v1/messages".to_string(),
+                "http://localhost:8787/v1/models".to_string()
+            )
+        );
+        assert_eq!(
+            at(a, "http://localhost:8787/").0,
+            "http://localhost:8787/v1/messages"
+        );
+        assert_eq!(
+            at(a, "https://proxy.example/v1").0,
+            "https://proxy.example/v1/messages"
+        );
+        assert_eq!(
+            at(c, "http://localhost:8787").0,
+            "http://localhost:8787/v1/chat/completions"
+        );
+        assert_eq!(
+            at(c, "http://192.168.1.5:1234/V1/").0,
+            "http://192.168.1.5:1234/V1/chat/completions"
+        );
+        // Full addresses, and those of the presets, as typed.
+        for (_, provider, e) in PRESETS.iter().filter(|(_, _, e)| !e.is_empty()) {
+            assert_eq!(at(*provider, e).0, *e);
+        }
+        assert_eq!(
+            at(c, " http://h/api/v2/chat/completions ").0,
+            "http://h/api/v2/chat/completions"
+        );
+        assert_eq!(at(a, "").0, Provider::Anthropic.default_endpoint());
+    }
+
+    /// The longest reply is a preference, 32000 tokens unless set, kept
+    /// within its range, and goes with each Messages API request (#1011).
+    #[test]
+    fn the_longest_reply_is_a_preference() {
+        let mut prefs = AiPrefs::default();
+        assert_eq!(prefs.max_tokens(), DEFAULT_MAX_TOKENS);
+        prefs.max_tokens = 0;
+        assert_eq!(prefs.max_tokens(), DEFAULT_MAX_TOKENS);
+        prefs.max_tokens = 10;
+        assert_eq!(prefs.max_tokens(), MIN_MAX_TOKENS);
+        prefs.provider = Provider::Anthropic;
+        prefs.max_tokens = 64000;
+        let r = build_request(&prefs, "k", &[(Role::User, "a house".into())]);
+        let body: Value = serde_json::from_str(&r.body).expect("json");
+        assert_eq!(body["max_tokens"].as_u64(), Some(64000));
+        // Older preferences without it read the default.
+        let old: AiPrefs = serde_json::from_str("{}").expect("prefs");
+        assert_eq!(old.max_tokens(), DEFAULT_MAX_TOKENS);
+    }
+
     fn anthropic_reply(text: &str) -> HttpResult {
         Ok(HttpResponse {
             retry_after: None,
@@ -1063,7 +1165,7 @@ mod tests {
         assert_eq!(body["system"], SYSTEM_PROMPT);
         assert_eq!(body["messages"].as_array().map(Vec::len), Some(3));
         assert_eq!(body["messages"][1]["role"], "assistant");
-        assert!(body["max_tokens"].as_u64().is_some());
+        assert_eq!(body["max_tokens"].as_u64(), Some(DEFAULT_MAX_TOKENS as u64));
         // Chat completions: the system message first, a bearer key only
         // when there is one, the address and model as set.
         prefs.provider = Provider::OpenAiCompatible;

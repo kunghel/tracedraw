@@ -29,6 +29,9 @@ pub struct EffectState {
     /// The Preview box: the effect shows on the drawing while the dialog
     /// is open (see `fx::preview`).
     pub preview: bool,
+    /// The All pages box: OK also gives the effect to every picture on
+    /// the drawing's pages (#1551).
+    pub all_pages: bool,
 }
 
 impl EffectState {
@@ -46,6 +49,7 @@ impl EffectState {
             lab,
             pick: None,
             preview: PREVIEW_AT_START,
+            all_pages: false,
         }
     }
 }
@@ -990,7 +994,22 @@ fn effect_settings(
             );
         }
         preview_row(ui, app, &mut st.preview);
+        all_pages_row(ui, app, st);
     }
+}
+
+/// The All pages box, while adding an effect with a picture selected in a
+/// drawing of several pages: OK gives the effect to every picture on all
+/// pages too (#1551).
+pub fn all_pages_row(ui: &mut Ui, app: &App, st: &mut EffectState) {
+    if st.edit.is_some() || app.doc().pages.len() < 2 || !app.selection_has_picture() {
+        return;
+    }
+    ui.checkbox(&mut st.all_pages, tr("dialog.fx_all_pages"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.fx_all_pages",
+            "dialog.fx_all_pages_desc",
+        ));
 }
 
 /// The Preview box (the effect on the drawing while the dialog is open)
@@ -1065,6 +1084,7 @@ pub fn fx_section(app: &mut App, ui: &mut Ui, id: ShapeId) {
                     lab: Default::default(),
                     pick: None,
                     preview: PREVIEW_AT_START,
+                    all_pages: false,
                 });
             }
             if ui

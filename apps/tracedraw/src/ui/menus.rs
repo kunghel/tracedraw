@@ -331,6 +331,27 @@ pub(crate) fn item_label(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool
     item_text(ui, label, shortcut, enabled, None, label)
 }
 
+/// Object > Clip to Frame's Fit Contents rows, the clip bar's choices
+/// (#1299).
+pub(crate) const CLIP_FIT_ROWS: [(&str, crate::ui::clip_bar::FitContents); 4] = [
+    (
+        "menu.object.clip_frame_fit_center",
+        crate::ui::clip_bar::FitContents::Center,
+    ),
+    (
+        "menu.object.clip_frame_fit_proportional",
+        crate::ui::clip_bar::FitContents::FitProportionally,
+    ),
+    (
+        "menu.object.clip_frame_fill_proportional",
+        crate::ui::clip_bar::FitContents::FillProportionally,
+    ),
+    (
+        "menu.object.clip_frame_stretch",
+        crate::ui::clip_bar::FitContents::Stretch,
+    ),
+];
+
 /// Help > What's New: the Welcome Screen's history of the last releases.
 pub(crate) fn open_whats_new(app: &mut App) {
     app.show_welcome = true;
@@ -343,22 +364,9 @@ pub(crate) fn open_whats_new(app: &mut App) {
 /// submenus that lead to them, by their keys. Each version replaces the
 /// list with its own.
 pub const NEW_IN_THIS_VERSION: &[&str] = &[
-    // Page > Facing Pages shows the pages side by side in spreads.
-    "menu.layout",
-    "menu.layout.facing_pages",
-    "menu.layout.facing_start",
-    // Text > Link Text Content links the characters of several texts.
-    "menu.text",
-    "menu.text.link_content",
-    // Help > Search Commands finds a menu command by its name.
-    "menu.help",
-    "menu.help.search_commands",
-    // Object > Nodes: the Shape tool's node commands, with keys (#2001).
-    "menu.object",
-    "menu.object.nodes",
-    // Object > Symbol > Edit Symbol changes a symbol in place (#1980).
-    "menu.object.symbol",
-    "menu.object.symbol_edit",
+    // View > Navigator, with the key N, a command like any other.
+    "menu.view",
+    "menu.view.navigator",
 ];
 
 thread_local! {
@@ -1573,9 +1581,9 @@ mod tests {
                 "{key} is not in the menus"
             );
         }
-        assert!(!marked_new("menu.layout.facing_pages"));
+        assert!(!marked_new("menu.view.navigator"));
         set_highlight_new(true);
-        assert!(marked_new("menu.layout.facing_pages"));
+        assert!(marked_new("menu.view.navigator"));
         assert!(!marked_new("menu.file.export"));
         set_highlight_new(false);
         assert!(
@@ -1646,7 +1654,11 @@ mod tests {
             .collect();
         assert_eq!(
             create,
-            ["menu.object.create_arrowhead", "menu.object.create_pattern"]
+            [
+                "menu.object.create_arrowhead",
+                "menu.object.create_pattern",
+                "menu.object.add_common_shape"
+            ]
         );
         assert!(find("menu.table.create_new_table").is_some());
         // Table's commands sit in a submenu of Text.
@@ -2525,7 +2537,15 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
         app.import();
     }
     if item(ui, "menu.file.export", "Ctrl+E", doc) {
-        app.export();
+        // Shift held shows the options even when they are set not to show.
+        if !invoke::active() && ui.input(|i| i.modifiers.shift) {
+            app.export_with_options();
+        } else {
+            app.export();
+        }
+    }
+    if item(ui, "menu.file.export_with_options", "Ctrl+Shift+E", doc) {
+        app.export_with_options();
     }
     sub(ui, "menu.file.export_for", |ui| {
         if item(ui, "menu.file.export_for_web", "", doc) {
@@ -2553,8 +2573,16 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.file.publish_to_pdf", "", doc) {
         app.publish_pdf();
     }
-    // Folders are a desktop thing (#852).
-    if item(ui, "menu.file.package", "", doc && !crate::files::WEB) {
+    // Folders are a desktop thing (#852); greyed with the reason in the
+    // browser (#1416).
+    let why = crate::package::why_not_package(crate::files::WEB).map(tr);
+    if item_tip(
+        ui,
+        "menu.file.package",
+        "",
+        doc && why.is_none(),
+        why.as_deref(),
+    ) {
         app.package_dialog();
     }
     sep(ui);
@@ -2594,23 +2622,28 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The key of Edit Contents and of Finish Editing of a clip frame: into
+/// the frame and out again (`App::toggle_clip_frame_edit`).
+pub const CLIP_EDIT_KEY: &str = "Ctrl+Shift+F3";
+
 fn edit_menu(app: &mut App, ui: &mut Ui) {
     let has = !app.selection.is_empty();
-    let undo = app
-        .engine
-        .undo_label()
+    // A selection command (#2002) or the drawing's last step.
+    let undo_label = app.undo_label();
+    let redo_label = app.redo_label();
+    let can_redo = redo_label.is_some();
+    let undo = undo_label
+        .as_ref()
         .map(|l| format!("{} {l}", tr("menu.edit.undo")))
         .unwrap_or_else(|| tr("menu.edit.undo"));
-    let redo = app
-        .engine
-        .redo_label()
+    let redo = redo_label
         .map(|l| format!("{} {l}", tr("menu.edit.redo")))
         .unwrap_or_else(|| tr("menu.edit.redo"));
     if item_text(
         ui,
         &undo,
         "Ctrl+Z",
-        app.engine.undo_label().is_some(),
+        undo_label.is_some(),
         Some(crate::ui::icons::Action::Undo),
         "menu.edit.undo",
     ) {
@@ -2620,7 +2653,7 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         ui,
         &redo,
         "Ctrl+Shift+Z",
-        app.engine.redo_label().is_some(),
+        can_redo,
         Some(crate::ui::icons::Action::Redo),
         "menu.edit.redo",
     ) {
@@ -2707,6 +2740,17 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
             app.select_all_nodes();
         }
     });
+    // Selection commands, each one undo step (#2002).
+    if item(ui, "menu.edit.invert_selection", "", app.has_document()) {
+        app.invert_selection();
+    }
+    sub(ui, "menu.edit.select_similar", |ui| {
+        for how in crate::select_similar::Similar::ALL {
+            if item(ui, how.key(), "", has) {
+                app.select_similar(how);
+            }
+        }
+    });
     sep(ui);
     if item(ui, "menu.edit.find_and_replace", "Ctrl+F", true) {
         app.show_dockers = true;
@@ -2756,6 +2800,10 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
     if check(ui, "menu.view.multipage", "", app.multipage) {
         app.set_multipage(!app.multipage);
     }
+    // Which pages the Multipage View shows (#1440).
+    if item(ui, "menu.view.multipage_pages", "", app.has_document()) {
+        app.dialog = app.multipage_pages_dialog();
+    }
     if check(
         ui,
         "menu.view.draw_in_perspective",
@@ -2773,6 +2821,16 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
     }
     if item(ui, "menu.view.zoom_to_fit", "F4", true) {
         app.zoom_to_fit();
+    }
+    // The key held shows the Navigator while it is down (`view_navigator`);
+    // the menu row opens it until a click.
+    if item(
+        ui,
+        crate::ui::NAVIGATOR_KEY,
+        crate::ui::NAVIGATOR_DEFAULT_KEYS,
+        app.has_document(),
+    ) {
+        app.navigator_pinned = !app.navigator_pinned;
     }
     sep(ui);
     if check(ui, "menu.view.proof_colors", "", app.proof_colors) {
@@ -3108,6 +3166,16 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         ) {
             app.dialog = Dialog::CreatePattern { vector: true };
         }
+        // The selection's outline as a shape of the Common Shapes tool's
+        // own set (#481, #782).
+        if item(
+            ui,
+            "menu.object.add_common_shape",
+            "",
+            !app.selection.is_empty(),
+        ) {
+            app.add_selection_as_common_shape();
+        }
     });
     sub(ui, "menu.object.insert", |ui| {
         if item(ui, "menu.object.insert_barcode", "", true) {
@@ -3122,6 +3190,13 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.object.insert_page_number", "", true) {
             app.insert_page_number(crate::ops2::PageNumberWhere::Active);
         }
+        let has = !app.selection.is_empty();
+        if item(ui, "menu.object.add_dimensions", "", has) {
+            app.add_dimensions(false);
+        }
+        if item(ui, "menu.object.add_dimensions_each", "", has) {
+            app.add_dimensions(true);
+        }
     });
     sep(ui);
     sub(ui, "menu.object.clip_frame", |ui| {
@@ -3134,28 +3209,30 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
             app.status = tr("status.click_frame");
         }
         if item(ui, "menu.object.clip_frame_extract", "", is_clip) {
-            let clips: Vec<_> = app
-                .selected_shapes()
-                .iter()
-                .filter(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }))
-                .map(|s| s.id)
-                .collect();
-            for c in clips {
-                app.run(Command::ExtractContents { clip: c });
-            }
+            app.extract_clip_contents();
         }
         // Walked for the list of commands (Options > Customization >
         // Commands) both rows count, so each can take a shortcut (#1148).
         let editing = app.clip_frame_edit.is_some();
         // A symbol being edited finishes from the Symbol menu.
-        let clip_editing = editing && app.symbol_edit_index().is_none();
+        let clip_editing = app.editing_clip_contents();
         if (clip_editing || invoke::active())
-            && item(ui, "menu.object.clip_frame_finish", "", clip_editing)
+            && item(
+                ui,
+                "menu.object.clip_frame_finish",
+                CLIP_EDIT_KEY,
+                clip_editing,
+            )
         {
             app.finish_clip_frame_edit();
         }
         if (!editing || invoke::active())
-            && item(ui, "menu.object.clip_frame_edit", "", is_clip && !editing)
+            && item(
+                ui,
+                "menu.object.clip_frame_edit",
+                CLIP_EDIT_KEY,
+                is_clip && !editing,
+            )
         {
             app.edit_clip_frame();
         }
@@ -3167,6 +3244,16 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if check(ui, "menu.object.clip_frame_lock", "", is_clip && locked) && is_clip {
             app.toggle_clip_frame_lock();
         }
+        // The clip bar's Fit Contents choices, here so they can take
+        // shortcuts (#1299); each selected frame fits its own contents.
+        sep(ui);
+        for (key, mode) in CLIP_FIT_ROWS {
+            if item(ui, key, "", is_clip && !editing) {
+                let clips: Vec<_> = app.selected_shapes().iter().map(|s| s.id).collect();
+                app.fit_clips_contents(&clips, mode);
+            }
+        }
+        sep(ui);
         let masks: Vec<_> = app
             .selected_shapes()
             .iter()
@@ -3544,6 +3631,16 @@ fn effects_menu(app: &mut App, ui: &mut Ui) {
         .any(|s| matches!(s.kind, ShapeKind::Bitmap { .. }));
     if item(ui, "menu.effects.flatten", "", has) {
         app.flatten_effects();
+    }
+    // The selected picture's effects on every picture of the drawing
+    // (#1551).
+    if item(
+        ui,
+        "menu.effects.all_pages",
+        "",
+        app.doc().pages.len() > 1 && app.can_apply_effects_to_all_pages(),
+    ) {
+        app.apply_effects_to_all_pages();
     }
     sep(ui);
     // Bitmap effect groups.

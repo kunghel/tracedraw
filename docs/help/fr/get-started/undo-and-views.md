@@ -59,7 +59,10 @@ Double-cliquez sur le bouton de l'outil pour zoomer sur tous les objets.
 - Utilisez les barres de défilement, qui couvrent la page et une taille de
   page autour d'elle.
 - Maintenez le bouton Navigateur, dans le coin entre les barres de
-  défilement, et déplacez le pointeur sur la vignette de la page.
+  défilement, ou la touche <kbd>N</kbd>, et déplacez le pointeur sur la
+  vignette de la page. [[menu.view > menu.view.navigator]] ouvre la vignette
+  jusqu'à un clic : cliquez dessus pour y aller, ailleurs ou <kbd>Échap</kbd>
+  pour la fermer.
 - <kbd>PgUp</kbd> et <kbd>PgDn</kbd> vont à la page précédente et à la page
   suivante.
 

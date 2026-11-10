@@ -26,7 +26,9 @@ else is faded. Exports and printing are not affected.
 
 - How faded the other objects are is set by the visibility of inactive objects
   (0 to 100%, 20% at first) on the [[options.edit]] page of
-  [[menu.tools > menu.tools.options > menu.tools.options_app]].
+  [[menu.tools > menu.tools.options > menu.tools.options_app]]. At 0% they
+  are hidden, which also keeps a crowded page quick. The same setting
+  fades the rest of the page while you edit the contents of a clip frame.
 - Whether a double-click enters focus mode is set on the same page.
 
 See [TraceDraw options](../customize/options-app.md#edit).
