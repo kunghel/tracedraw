@@ -38,6 +38,10 @@ apart; the nodes of all of them can be chosen and moved, but end nodes of
 two objects are not joined (#1007,
 `pick_drag_tests::shape_tool_marks_the_last_picked_object_blue_and_the_others_red`).
 
+An object drawn through an envelope or a perspective shows that
+effect's frame only, not its own nodes, which lie where the object was
+before the effect (#2213; see `envelope.md`, Envelope tool).
+
 ## Taking nodes and handles
 
 A press takes the nearest node, or the nearest control handle of a
@@ -118,14 +122,14 @@ chosen it deletes the selected object, as the Delete key does (#1982).
 | Click segment | chooses that segment: it is drawn over in the main colour with its handles, its end node is not shown as chosen (To Line and To Curve act on the segment through it), and the spot clicked gets a small round mark; Add Node (+ or the property bar button) puts the new node at that spot |
 | Drag segment | bends it: the point grabbed follows the pointer exactly while both end nodes stay; a straight (or closing) segment becomes a curve first; both control points move, the nearer one more (by `k (1 - t) d` and `k t d` with `k = 1 / (3 t (1 - t) ((1 - t)² + t²))`, `t` the grabbed point's place along the segment, kept within 0.02 to 0.98, `d` the drag); a smooth or symmetrical end node stays so, its other handle turning along, and a node made cusp keeps its other handle where it is even when its handles line up (the type chosen for the node counts, not how its handles read, #1140); one undo step (Bend Segment) |
 | Drag handle | smooth nodes move the opposite handle to stay collinear; symmetrical also keep the length; with Ctrl or Shift the handle keeps to the constrain angle about its node (on the page), the node keeping its type (#510, `pick_drag_tests::ctrl_or_shift_keeps_a_handle_to_the_constrain_angle`); the page keeps its picture while the handle moves, as for a node drag (#1259) |
-| Smooth, Symmetrical (property bar, node menu, C, S, Y) | a node between two curves gets its handles in line (symmetrical: of one length); between a straight segment and a curve, the curve's handle lines up with the straight segment, keeping its length, and the straight segment stays straight; between two straight segments both become curves (as To Curve makes them) and the node is smoothed, except a closing line that is only a close, which stays straight; an end node of an open curve stays as it is |
+| Smooth, Symmetrical (property bar, node menu, C, S, Y) | a node between two curves gets its handles in line (symmetrical: of one length); between a straight segment and a curve, the curve's handle lines up with the straight segment, keeping its length, and the straight segment stays straight; between two straight segments both become curves (as To Curve makes them) and the node is smoothed, the closing line of a closed curve too, so the start node and the node before it round on both sides like every other corner (#1618, `nodes::segment_tests::smoothing_where_the_closing_line_meets_curves_both_sides`); an end node of an open curve stays as it is |
 | Double-click segment | add a node |
 | Double-click node | delete |
 | Double-click a rectangle, ellipse or polygon | it becomes a curve; pictures, text, groups and clip frames stay as they are |
 | Drag a picture's corner | the picture goes into a clip frame of its rectangle (Crop Bitmap) and the corner moves as a node of that frame; a clip frame's frame shows its nodes and edits like any curve, so a cropped picture can be reshaped further |
 | Delete, Backspace, Edit > Delete, the node menu's Delete, the toolbar's Delete button | with a segment chosen by a click: deletes that segment, its nodes staying (an open curve splits there or loses its end, a closed one opens there, a curve left with no segment is deleted; one undo step, Delete Segment); otherwise deletes the selected nodes; when a deleted node sat between segments and either side was a curve, one cubic is refitted from the segment before to the segment after (least squares with the old end tangents held, Graphics Gems), so the curve is kept rather than collapsing to the far handles; the first node of a closed curve too, its last and first segments refitted into one (#472, `nodes::tests::deleting_the_start_of_a_closed_curve_keeps_the_shape`); a node between two straight segments leaves a straight join; two or more neighbouring nodes deleted together become one curve between the nodes either side, fitted by least squares to the old segments, so the outline keeps its general shape even when they were all lines: at an end where the run's segment or the kept node's other segment is a curve the old tangent is held (only the handle's length is fitted, so a smooth node stays smooth), and between lines the handle is free in both directions; a closed curve left with one node is that node alone; the whole deletion is one pass over the curve, however many nodes go (#675, `nodes::tests::neighbouring_line_nodes_deleted_together_become_a_curve`, `a_run_between_curves_keeps_the_kept_nodes_smooth`, `a_run_holds_the_tangent_where_a_curve_meets_it`, `lone_nodes_go_as_delete_node_takes_them`, `deleting_many_nodes_of_a_long_curve_is_one_pass`, `pick_drag_tests::deleting_two_neighbouring_line_nodes_leaves_a_curve`). Every route takes the chosen nodes and never the object they belong to: Edit > Delete removed the whole object while nodes were chosen (#1982, `pick_drag_tests::the_delete_key_with_a_chosen_node_takes_the_node_not_the_object`, `edit_delete_with_a_chosen_node_takes_the_node_not_the_object`, `the_node_menus_delete_with_a_chosen_node_takes_the_node_not_the_object`). With no node chosen, each of them deletes the selected object, one undo step bringing it back (`delete_with_the_shape_tool_and_no_node_chosen_removes_the_object`) |
 | + / - | with nodes chosen: a node in the middle of each segment ending at them (for the start node of a closed curve, its closing segment), the chosen nodes staying chosen together with the new ones, so each press halves those segments again (a square with every node chosen: 4, 8, 16 nodes; #1326, `node_edit::tests::add_nodes_again_keeps_doubling`) / delete them (without chosen nodes they zoom) |
-| C, S, Y (with nodes chosen) | C turns cusp nodes smooth and the others cusp, S symmetrical nodes smooth and the others symmetrical, Y makes them symmetrical; while nodes are chosen these letters do not align objects or pick tools. The type chosen is kept with the curve (saved in `.tdraw`), so a cusp node may keep aligned handles and its handles still move apart; nodes never given a type read as their handles do (aligned: smooth; aligned and of equal length: symmetrical), and a curve that gains or loses nodes goes back to that |
+| C, S, Y (with nodes chosen) | C makes them cusp, S smooth and Y symmetrical, each key one type whatever the nodes were (C used to turn a cusp node smooth and S to make nodes symmetrical, so neither gave the type it stands for, #2210, `pick_drag_tests::node_keys_in_the_shape_tool`); while nodes are chosen these letters do not align objects or pick tools. The type chosen is kept with the curve (saved in `.tdraw`), so a cusp node may keep aligned handles and its handles still move apart; nodes never given a type read as their handles do (aligned: smooth; aligned and of equal length: symmetrical), and a curve that gains or loses nodes goes back to that |
 | Shift+L, Shift+U, Shift+C, Shift+M, Shift+Y, Shift+B, Shift+J (with nodes chosen) | To Line, To Curve, Cusp, Smooth, Symmetrical, Break Curve, Join Nodes, as the property bar's buttons; also Object > Nodes (with + Add Node), so Options > Customization > Commands lists them and can give them other keys (#2001, `pick_drag_tests::node_commands_have_keys_of_their_own`) |
 | Home, End (with nodes chosen) | the first or last node of the curve |
 | Arrow keys (with nodes chosen) | move the chosen nodes by the nudge distance (Shift: super nudge, Ctrl: micro nudge), one undo step per press |
@@ -194,6 +198,11 @@ round their corners with their own handles either way.
   widget that a drag would leave unchanged; zoomed in far enough, it
   shows (`tracedraw_core::corner_cut::corner_reach`,
   `tools2::tests::corner_widgets_show_only_where_they_round_something`).
+  A side is measured through the smooth nodes of the curve, as far as
+  the next corner (at most 8 segments): a corner with a smooth node
+  close beside it, as the shaping commands leave where two circles
+  cross near a node of one, has its widget (#2225,
+  `corner_widgets::tests::a_corner_beside_a_smooth_node_shows_its_ring_and_rounds`).
 - Options > Nodes and Handles > Round one corner at a time (on at first,
   under the rings option): a Ctrl+click (Cmd on macOS) on a widget
   chooses its corner, a second Ctrl+click takes it out, so one corner or
@@ -208,7 +217,18 @@ round their corners with their own handles either way.
   (`r = d / (1 / sin(theta / 2) - 1)` for a corner of angle `theta`), at
   most the largest radius every rounded corner still fits (a side two
   rounded corners share is split between them). Dragging back takes the
-  rounding back off. The status bar shows the radius.
+  rounding back off. The status bar shows the radius. With a curved
+  side the arc is the circle of that radius tangent to both sides (see
+  `corners-and-joins.md`), so its middle lies nearer the corner or
+  further than the pointer, and the largest radius is the largest
+  circle that touches both sides within them (#2223). A side runs on
+  through the smooth nodes of the curve to the next corner, and the
+  arc with it: the segments it passes are taken whole, so the rounding
+  does not stop at a node and leaves no sliver of a segment before one
+  (#2224, #2226). Between sides that bend away from each other (the
+  notch where two welded circles meet) every circle touches both,
+  flatter the larger it is; there the largest radius is the one whose
+  arc still turns a quarter of what the corner turns.
 - Open curves round their inner corners the same way.
 - The drag is one undo step, "Fillet". The rounded corners become arcs
   of the curve (nodes and segments, as the Corners panel makes them); the
@@ -217,14 +237,45 @@ round their corners with their own handles either way.
   later (#872). A rounded corner is a circular arc (one cubic or more,
   smooth where they join) between two straight sides, tangent to both,
   whose sides, run on, meet as far from both ends of the arc; the
-  radius is read back from the arc. Its widget sits 18 px off the
+  radius is read back from the arc. A corner rounded between curved
+  sides, or a curve and a line, is one too (#2223,
+  `corner_widgets::tests::corners_between_curves_keep_their_widgets_and_round_again`):
+  an arc of up to six cubics tangent to both sides, whose sides carried
+  on along their own curves (the same cubic past its end) cross at the
+  sharp corner; an arc whose neighbour bends as it does (a quarter of a
+  circle) is part of a round shape, not a rounded corner: the
+  neighbour bends within a tenth of what the arc's radius says where
+  they join and keeps within 4% of that radius of the arc's circle all
+  along, and every piece of the arc bends within a twentieth of it. A
+  circle cut by the shaping commands keeps its own nodes, and its
+  pieces are none (a quarter circle drawn as one cubic bends 2.1% less
+  at its ends than its radius says; #2222,
+  `corner_cut::tests::pieces_of_round_shapes_are_not_rounded_corners`,
+  `corner_widgets::tests::a_shape_cut_out_of_discs_keeps_one_ring_per_rounded_corner`).
+  A side that
+  is an arc of a circle (it turns 14 degrees or more, alone or with the
+  segments it runs on through, and keeps to the circle within a
+  thousandth of its radius) may have lost whole segments to the
+  rounding; where its own cubic carried on and the circle part by more
+  than a hundredth of the way to the corner, the circle is the side,
+  and taking the rounding off draws it as an arc beside the side
+  (#2224,
+  `corner_cut::tests::a_fillet_runs_on_through_the_smooth_nodes_of_a_side`).
+  The crossing of the sides is looked for from where the arc's
+  tangents meet and then from nearer the arc, up to 5000 times a
+  side's own length past its end, so a corner rounded as far as it
+  goes (the arc nearly half a turn, or a side cut down to a
+  thousandth of itself) keeps its widget (#2211,
+  `corner_widgets::tests::a_corner_rounded_as_far_as_it_goes_keeps_its_ring`).
+  Its widget
+  sits 18 px off the
   middle of the arc, along the middle of the corner. Dragging it takes
   the corner back to the sharp corner its sides meet at and rounds that
   again, starting from the radius it had: that corner alone, the chosen
   nodes' corners when it is one of them, or with Shift every corner of
   the curve (sharp or rounded) takes the new radius (a rounded corner is
-  chosen by any node of its arc). Dragging back past the corner makes it sharp. Arcs between
-  curved sides, scallops and chamfers are not found again.
+  chosen by any node of its arc). Dragging back past the corner makes it sharp. Scallops
+  and chamfers are not found again.
 - On a stretched or skewed curve corners round on the page, so a new
   rounding is round, also on a curve stretched after other corners were
   rounded. A corner rounded before the stretch keeps its stretched arc

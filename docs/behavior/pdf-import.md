@@ -356,3 +356,37 @@ their own crypt filter and signature contents are left alone.
   (`crates/io/tests/devanagari_pdf.rs`,
   `hindi_with_a_scrambled_tounicode_map_imports_as_the_typed_words`, and
   `pdf_import::tests::a_scrambled_tounicode_map_is_put_right`.)
+
+  With the file's font installed, nothing is worked out: the font is
+  asked (`crates/io/src/pdf_indic.rs`). The embedded subset keeps the
+  glyph numbers of the font it was cut from, and that font (the Hindi
+  font the operating system brings, as a rule) is laid out by the text
+  engine: every letter, every letter with every sign, every pair of
+  letters joined by a virama, the reph over every letter, and the signs
+  that join over a letter (a vowel sign with the reph, with a nasal
+  sign, with both). Each glyph that comes out takes the text that made
+  it: a conjunct's glyph its letters, a half form its letter and virama,
+  a form under a letter the virama and the letter, a glyph of joined
+  signs its signs. While a glyph the file uses is still without a text,
+  the conjuncts of three letters are tried from those of two. A glyph
+  with no outline and no advance stands for nothing. These texts take
+  the place of the map's for the glyphs that show Devanagari; the others
+  keep what the rules above give. Glyph by glyph in drawn order, a reph
+  also stands before the vowel sign drawn after its letter (र्वा is
+  drawn व, reph, ा), and one glyph can hold the short i sign with the
+  reph or a nasal sign, drawn before the letter: both go back to typed
+  order. The installed font is asked only when it is the embedded one:
+  the same number of glyphs and units per em, and the same advance and
+  bounding box for the glyphs the file uses (up to 64 of them); what a
+  font taught is kept while the program runs. Without the font
+  installed the file opens as before.
+
+  The 44 words the reporter listed as still wrong, and all 67 words of
+  the reporter's file with the 12 the map holds nowhere, then come in as
+  typed (`crates/io/tests/devanagari_pdf.rs`,
+  `the_words_reported_as_wrong_import_as_typed_with_the_font_installed`,
+  `every_word_of_a_scrambled_file_imports_as_typed_with_the_font_installed`;
+  `pdf_indic::tests`). These tests write the file with the test's
+  Devanagari font, which the tests also install; the reporter's own file
+  uses a system font we cannot ship or install here, so it was not
+  opened with its font.

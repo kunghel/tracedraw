@@ -1241,8 +1241,17 @@ fn properties(app: &mut App, ui: &mut Ui) {
                 ui.painter(),
                 egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
             );
-            if resp.rich_tip(tr(key)).clicked() {
-                toggle_section(app, id);
+            // A click shows the section alone, so the docker's content
+            // is what was picked at the top; with Ctrl or Shift it opens
+            // or closes beside the others, as the headers do (#2200).
+            let tip = crate::ui::tips::pair(key, "docker.section_pick_hint");
+            #[cfg(test)]
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(section_button_id(id), rect));
+            if resp.rich_tip(tip).clicked() {
+                let beside = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                let shown: Vec<&str> = sections.iter().map(|(id, _, _)| *id).collect();
+                pick_section(app, id, &shown, beside);
             }
         }
     });
@@ -1884,6 +1893,52 @@ fn toggle_section(app: &mut App, id: &str) {
         closed.retain(|c| c != id);
     } else {
         closed.push(id.to_string());
+    }
+}
+
+/// Where the button of section `id` was drawn last (for tests).
+#[cfg(test)]
+fn section_button_id(id: &str) -> egui::Id {
+    egui::Id::new(("properties_section_button", id.to_string()))
+}
+
+/// Every section the Properties docker can show, whatever is selected.
+const PROPERTIES_SECTIONS: [&str; 9] = [
+    "qr",
+    "outline",
+    "fill",
+    "transparency",
+    "corners",
+    "effects",
+    "shadow",
+    "character",
+    "summary",
+];
+
+/// A click on a section's button at the top of the Properties docker
+/// (#2200). The docker then shows that section alone: every other one
+/// is closed (those of other kinds of object too, so the docker stays
+/// on the section picked when the selection changes) and only their
+/// header bars remain. A click on the button of the only open section
+/// of `shown` (the sections the selection has) opens them all again.
+/// With `beside` (Ctrl or Shift held) the section opens or closes on its
+/// own, as a click on its header does.
+fn pick_section(app: &mut App, id: &str, shown: &[&str], beside: bool) {
+    if beside {
+        toggle_section(app, id);
+        return;
+    }
+    let closed = &mut app.settings.properties_closed;
+    let is_open = |closed: &[String], s: &str| !closed.iter().any(|c| c == s);
+    let alone = is_open(closed, id) && shown.iter().all(|s| *s == id || !is_open(closed, s));
+    closed.retain(|c| !PROPERTIES_SECTIONS.contains(&c.as_str()));
+    if !alone {
+        closed.extend(
+            PROPERTIES_SECTIONS
+                .iter()
+                .filter(|s| **s != id)
+                .map(|s| s.to_string()),
+        );
     }
 }
 
@@ -5435,6 +5490,123 @@ pub(crate) mod tests {
                 }
             });
         }
+    }
+
+    /// #2200: a click on a section's button at the top shows that
+    /// section alone, a second click on it all of them again; with Ctrl
+    /// or Shift the section opens or closes beside the others. The
+    /// sections of other kinds of object are closed too, so text selected
+    /// next still shows the section picked.
+    #[test]
+    fn a_section_button_shows_its_section_alone() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.show_dockers = true;
+        app.docker_tab = DockerTab::Properties;
+        // What a rectangle shows.
+        let shown = [
+            "outline",
+            "fill",
+            "transparency",
+            "corners",
+            "effects",
+            "summary",
+        ];
+        let open = |app: &App| -> Vec<&'static str> {
+            PROPERTIES_SECTIONS
+                .into_iter()
+                .filter(|s| !app.settings.properties_closed.iter().any(|c| c == s))
+                .collect()
+        };
+        assert_eq!(open(&app).len(), PROPERTIES_SECTIONS.len());
+        // Fill alone; the button's tip says so.
+        pick_section(&mut app, "fill", &shown, false);
+        assert_eq!(open(&app), ["fill"]);
+        crate::ui::tips::start_recording();
+        draw(&ctx, &mut app);
+        let tips = crate::ui::tips::recorded();
+        assert!(
+            tips.contains(&crate::ui::tips::pair(
+                "docker.fill",
+                "docker.section_pick_hint"
+            )),
+            "{tips:?}"
+        );
+        // Another button: that section alone.
+        pick_section(&mut app, "summary", &shown, false);
+        assert_eq!(open(&app), ["summary"]);
+        // With Ctrl or Shift: beside the others, and closed again.
+        pick_section(&mut app, "outline", &shown, true);
+        assert_eq!(open(&app), ["outline", "summary"]);
+        pick_section(&mut app, "outline", &shown, true);
+        assert_eq!(open(&app), ["summary"]);
+        // The button of the only open section: all of them again.
+        pick_section(&mut app, "summary", &shown, false);
+        assert_eq!(open(&app).len(), PROPERTIES_SECTIONS.len());
+        assert!(app.settings.properties_closed.is_empty());
+        // A section the selection does not have, open from before, does
+        // not count: Fill is the only one open of those shown.
+        app.settings.properties_closed = shown
+            .iter()
+            .filter(|s| **s != "fill")
+            .map(|s| s.to_string())
+            .collect();
+        assert!(open(&app).contains(&"character"));
+        pick_section(&mut app, "fill", &shown, false);
+        assert!(app.settings.properties_closed.is_empty());
+        // The headers still open and close one section.
+        toggle_section(&mut app, "fill");
+        assert_eq!(app.settings.properties_closed, ["fill"]);
+        draw(&ctx, &mut app);
+
+        // The buttons themselves: a click, then a click with Ctrl held.
+        app.settings.properties_closed.clear();
+        draw(&ctx, &mut app);
+        let click = |app: &mut App, id: &str, modifiers: egui::Modifiers| {
+            let rect: egui::Rect = ctx
+                .data(|d| d.get_temp(section_button_id(id)))
+                .expect("the button is drawn");
+            let at = rect.center();
+            for pressed in [true, false] {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 900.0),
+                    )),
+                    events: vec![
+                        egui::Event::ModifiersChanged(modifiers),
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+                out.textures_delta.clear();
+            }
+            draw(&ctx, app);
+        };
+        click(&mut app, "transparency", egui::Modifiers::NONE);
+        assert_eq!(open(&app), ["transparency"], "a click");
+        click(&mut app, "fill", egui::Modifiers::COMMAND);
+        assert_eq!(open(&app), ["fill", "transparency"], "a click with Ctrl");
+        click(&mut app, "fill", egui::Modifiers::NONE);
+        assert_eq!(open(&app), ["fill"]);
+        click(&mut app, "fill", egui::Modifiers::NONE);
+        assert!(app.settings.properties_closed.is_empty(), "all again");
     }
 
     /// The Properties sections come open; a button or a header closes and

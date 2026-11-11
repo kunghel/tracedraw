@@ -26,6 +26,11 @@ parallel, or Small back when they have a vanishing point.
 - The outline is flattened (0.05 mm) subpath by subpath (at most 400
   points each); a subpath that ends where it started counts as closed.
   Every edge gives a quad to its copy.
+- The outline is the object's as its outline warps leave it: an
+  envelope, perspective or distortion bends the body with the object,
+  also when it comes after the extrusion in the object's effects (it is
+  then put on the outline before the body is built; #2214, see
+  `envelope.md`).
 - A face shows when its normal (pointing away from the filled side, so a
   hole's walls face into the hole) points along the way the body runs
   at that face (back types) or against it (front types). Open subpaths
@@ -39,6 +44,17 @@ parallel, or Small back when they have a vanishing point.
   when the object has none. A square's body is its two sides, a
   circle's its one curved side: each side breaks apart and takes a
   colour or a fill as one part, not as a row of slats (#1281).
+- The flattened edges only decide which sides show, where they are cut
+  and how they are lit. What is drawn keeps the outline's curves: the
+  copy is the outline moved (parallel) or scaled about the vanishing
+  point, node for node, and a side runs along the outline's own curves
+  from where it starts to where it ends, then back along the copy's, so
+  a circle's side has a handful of nodes and breaks apart into curves,
+  not into a node for each flattened edge (#2208). A body turned in
+  space keeps the curves in its two caps (each lies at one depth, where
+  the turn and the view only move and scale the outline); its walls are
+  drawn face by face, and the near cap of a bevelled body is the
+  outline drawn in, kept as flattened.
 - Surfaces are drawn farthest first: along the offset for parallel
   bodies, by distance from the vanishing point for the others (nearer
   is farther for Small back and Big front, the other way for Big back
@@ -171,6 +187,7 @@ The panel shows these under the other controls; the bar has them in its
 - `extrude::tests::every_subpath_extrudes_and_holes_show_their_far_walls`
 - `extrude::tests::a_curved_side_is_one_outlined_surface`
 - `extrude::tests::odd_values_give_no_faces`
+- `live::warped_extrusion_tests::an_envelope_on_an_extruded_object_bends_its_body`
 - `extrude::tests::area_fill_reaches_the_side_of_a_back_cylinder`
 - `extrude_tool::tests::area_fill_takes_the_side_of_a_back_cylinder`
 - `extrude_tool::tests::a_drag_extrudes_toward_the_pointer`

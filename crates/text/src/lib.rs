@@ -3492,6 +3492,28 @@ impl FontSystem {
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.guess_segment_properties();
+        // A font made for the symbol encoding (a Windows symbol character
+        // map and no Unicode one) has a letter of its own at every code
+        // 0x20 to 0xFF. Older Tamil fonts set ஷ at 0xAD, and their
+        // keyboard layout sends that code for its key: it comes in as
+        // U+00AD, the soft hyphen, which the shaper leaves out of every
+        // font as a character nobody sees. In such a font it is drawn
+        // like the other codes (#1937).
+        let symbol_only = text.contains('\u{AD}')
+            && face.tables().cmap.is_some_and(|c| {
+                let mut symbol = false;
+                for s in c.subtables {
+                    if s.is_unicode() {
+                        return false;
+                    }
+                    symbol |=
+                        s.platform_id == ttf_parser::PlatformId::Windows && s.encoding_id == 0;
+                }
+                symbol
+            });
+        if symbol_only {
+            buffer.set_flags(rustybuzz::BufferFlags::PRESERVE_DEFAULT_IGNORABLES);
+        }
         // The direction the bidirectional runs gave, whatever the script
         // (digits and spaces inside right-to-left text included).
         if let Some(l) = level {
@@ -8134,6 +8156,79 @@ mod tests {
                 want.path.elements().len(),
                 "{typed:?} draws the font's letter"
             );
+        }
+    }
+
+    /// A font made for the symbol encoding with a letter at code 0xAD
+    /// (older Tamil fonts set ஷ there, and their keyboard layout sends
+    /// that code for its key): the code comes in as U+00AD, the soft
+    /// hyphen, which draws nothing in a font of letters. In a symbol
+    /// font it draws the font's glyph at U+F0AD, with its width; in any
+    /// other font it stays the invisible soft hyphen (#1937).
+    #[test]
+    fn a_symbol_font_draws_its_letter_at_the_place_of_the_soft_hyphen() {
+        let face = ttf_parser::Face::parse(SELAWIK, 0).expect("font");
+        let a = face.glyph_index('A').expect("A").0;
+        // A symbol map only, with Selawik's "A" at U+F0AD.
+        let mut symbol = Vec::new();
+        for v in [
+            4u16,
+            32,
+            0,
+            4,
+            4,
+            1,
+            0,
+            0xF0AD,
+            0xFFFF,
+            0,
+            0xF0AD,
+            0xFFFF,
+            a.wrapping_sub(0xF0AD),
+            1,
+            0,
+            0,
+        ] {
+            symbol.extend_from_slice(&v.to_be_bytes());
+        }
+        let mut table = Vec::new();
+        for v in [0u16, 1, 3, 0] {
+            table.extend_from_slice(&v.to_be_bytes());
+        }
+        table.extend_from_slice(&12u32.to_be_bytes());
+        table.extend_from_slice(&symbol);
+        let font = with_table(SELAWIK, b"cmap", &table);
+        let fonts = system_with(&[&font, QUICKSAND]);
+        let plain = system_with(&[SELAWIK]);
+        let want = plain.outline(&[TextSpan::new("A", "Selawik", 100.0)]);
+        for typed in ["\u{AD}", "\u{F0AD}"] {
+            let got = fonts.outline(&[TextSpan::new(typed, "Selawik", 100.0)]);
+            assert_eq!(
+                got.path.elements().len(),
+                want.path.elements().len(),
+                "{typed:?} draws the font's letter"
+            );
+            let (g, w) = (got.path.bounding_box(), want.path.bounding_box());
+            assert!((g.width() - w.width()).abs() < 1e-6, "{g:?} {w:?}");
+            // Two of them stand side by side, each its glyph's width on.
+            let two = fonts.outline(&[TextSpan::new(typed.repeat(2), "Selawik", 100.0)]);
+            let pair = plain.outline(&[TextSpan::new("AA", "Selawik", 100.0)]);
+            assert_eq!(two.path.elements().len(), pair.path.elements().len());
+            assert!(
+                (two.path.bounding_box().width() - pair.path.bounding_box().width()).abs() < 1e-6,
+                "{typed:?}: {:?} {:?}",
+                two.path.bounding_box(),
+                pair.path.bounding_box()
+            );
+        }
+        // A font of letters keeps its soft hyphen out of sight.
+        let with = plain.outline(&[TextSpan::new("A\u{AD}A", "Selawik", 100.0)]);
+        assert_eq!(with.path.elements().len(), pair_len(&plain));
+        fn pair_len(f: &FontSystem) -> usize {
+            f.outline(&[TextSpan::new("AA", "Selawik", 100.0)])
+                .path
+                .elements()
+                .len()
         }
     }
 

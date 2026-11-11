@@ -51,9 +51,11 @@ alternar. Manter o ponteiro parado continua o efeito.
 
 ## Esfumar {#smudge}
 
-A ferramenta [[tool.smudge]] (<kbd>V</kbd>) suaviza um pouco o contorno e
-depois o borra, então ele é puxado sem dobras. **Pressão** (1 a 100%, 100% de
-início) define quanto.
+A ferramenta [[tool.smudge]] (<kbd>V</kbd>) leva junto com o ponteiro o
+contorno que está sob a ponta: um traço que cruza o contorno o estica em uma
+língua com cerca de metade da largura da ponta, cujos lados se unem
+suavemente ao resto do contorno, seja o traço rápido ou lento. **Pressão**
+(1 a 100%, 100% de início) define quanto o contorno acompanha.
 
 ## Tornar áspero {#roughen}
 

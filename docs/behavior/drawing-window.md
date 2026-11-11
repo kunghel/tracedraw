@@ -90,6 +90,13 @@ From the left, after the ruler's width:
    (`ui::window_bars::tests::the_page_tab_menu_has_six_rows_in_order_each_with_a_picture`,
    `the_page_tab_menu_has_no_separators`,
    `the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages`).
+   A page nobody named is called after its place: when pages are
+   inserted in between, moved or deleted, the default names ("Page 3",
+   in the interface's language or in English) are given again from the
+   first page on, in the same undo step, so the tabs always read Page 1,
+   Page 2, Page 3 from left to right. A page with a name of its own
+   (and a copy, "Page 2 (copy)") keeps it wherever it goes (#2374,
+   #2355, `page_names::tests`).
 3. A dotted splitter: dragging it shares the row between the page tabs and
    the horizontal scrollbar (45 % for the tabs by default).
 4. The horizontal scrollbar.
@@ -167,10 +174,31 @@ window shows.
   render takes less than half the time it did.
 - While the view pans or scrolls the last render is shown moved into
   place at once (as sharp as it was), and the page is rendered anew
-  once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`); the
-  part the last render did not cover stays blank until then. So a page
-  of thousands of objects pans at the screen's rate whatever its size.
-  The Pixels view never shows a moved render.
+  once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`). So a
+  page of thousands of objects pans at the screen's rate whatever its
+  size. The Pixels view never shows a moved render.
+- The part of the page the last render does not cover (a render covers
+  the canvas only: what a pan brings in from the edge, and most of the
+  page after a zoom out) shows the whole page drawn small, the backdrop,
+  until the new render comes (#2048). It stayed blank paper before: a
+  white flash round the old picture at every step out of a dark design.
+  The backdrop is the page fitted into the canvas (at most 2048 pixels a
+  side: one more picture no larger than the render's own, whatever the
+  zoom), drawn on one thread of its own (not on every core, as a render
+  somebody waits for is) once the picture has been the one asked for
+  during 0.4 s (`raster::BACKDROP_REST`) and the pointer is still with
+  no button or key held, so once per change of the drawing and never
+  while the drawing changes, the view moves or the hand is busy.
+  It takes no render turn: a zoom that starts while it is drawn renders
+  at once all the same. Only the backdrop of the drawing as it is now is
+  shown (one of an earlier state would bring back what was deleted), it
+  is painted only where the render does not reach (never under it:
+  see-through objects would show twice as dense) and not at all at rest.
+  It covers the page, not what lies off it, and is not drawn while a
+  drag is previewed, in the Pixels view or while only some objects show.
+  The browser build, which has no thread to draw it on, has none.
+  (`raster::tests::the_whole_page_is_drawn_small_once_the_picture_rests`,
+  `pick_drag_tests::zooming_out_shows_the_whole_page_small_where_the_picture_does_not_reach`.)
 - A zoom (the wheel, a pinch, the Zoom tool, the zoom keys) does not
   wait for the view to rest: the last render, scaled into place, would
   look blurry, so the main canvas renders the new zoom at once on a

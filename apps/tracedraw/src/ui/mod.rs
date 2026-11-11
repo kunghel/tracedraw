@@ -479,6 +479,8 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if app.auto_backup_tick(web_time::Instant::now()) {
         app.status = tr("status.auto_backup_saved");
     }
+    // The open drawings keep their files (Windows, #2130).
+    app.sync_file_holds();
     // The Time Tracker's clock: while it counts, a frame a second keeps it
     // going (and its display current).
     let (now, input) = ctx.input(|i| (i.time, crate::time_tracker::is_user_input(&i.events)));

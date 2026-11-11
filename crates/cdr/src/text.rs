@@ -123,6 +123,51 @@ pub(crate) fn decode_charset(b: &[u8], charset: u8) -> String {
     }
 }
 
+/// The Unicode block of the letters a character set adds to the Latin
+/// ones, for the sets whose script is not written with Latin letters.
+fn charset_script(charset: u8) -> Option<std::ops::RangeInclusive<char>> {
+    Some(match charset {
+        161 => '\u{370}'..='\u{3ff}',
+        177 => '\u{590}'..='\u{5ff}',
+        178 => '\u{600}'..='\u{6ff}',
+        204 => '\u{400}'..='\u{4ff}',
+        222 => '\u{e00}'..='\u{e7f}',
+        _ => return None,
+    })
+}
+
+/// The text of a run in the code page of its character set, or in
+/// Windows-1252 when that reading shows the run is Latin text set in a
+/// font of another script (#2047: Spanish text in a font recorded with
+/// the Arabic set opened with an Arabic letter for each a, i, o and u
+/// acute, inside words of Latin letters). The run is Latin when more of
+/// its words mix Latin letters with the set's own than are written in
+/// the set's letters alone; a lone letter decides nothing.
+pub(crate) fn decode_run(b: &[u8], charset: u8) -> String {
+    let text = decode_charset(b, charset);
+    let Some(script) = charset_script(charset) else {
+        return text;
+    };
+    let latin = |c: char| c < '\u{250}' && c.is_alphabetic();
+    let (mut mixed, mut own) = (0usize, 0usize);
+    for word in text.split(|c: char| !(latin(c) || script.contains(&c))) {
+        let letters = word.chars().filter(|c| script.contains(c)).count();
+        if letters == 0 {
+            continue;
+        }
+        if word.chars().any(latin) {
+            mixed += 1;
+        } else if letters > 1 {
+            own += 1;
+        }
+    }
+    if mixed > own {
+        decode_charset(b, 0)
+    } else {
+        text
+    }
+}
+
 /// The character set is one whose text differs from Windows-1252.
 pub(crate) fn is_non_latin_charset(charset: u8) -> bool {
     charset == 2 || charset_encoding(charset).is_some()
@@ -2719,6 +2764,46 @@ mod tests {
             decode_cp1252(&[0x41, 0x80, 0x93, 0xe9, 0x00, 0x42]),
             "A\u{20ac}\u{201c}é"
         );
+    }
+
+    #[test]
+    fn latin_runs_in_a_font_of_another_script_read_as_latin() {
+        // "Economia" with i acute, "manana" with n tilde, "mas" with a
+        // acute: Windows-1256 has an Arabic letter or mark at each.
+        let es = [b'E', b'c', b'o', b'n', b'o', b'm', 0xed, b'a'];
+        assert_eq!(decode_charset(&es, 178), "Econom\u{64a}a");
+        assert_eq!(decode_run(&es, 178), "Econom\u{ed}a");
+        assert_eq!(
+            decode_run(&[b'm', b'a', 0xf1, b'a', b'n', b'a'], 178),
+            "ma\u{f1}ana"
+        );
+        // The same in a font of the Cyrillic, Greek or Hebrew set.
+        assert_eq!(decode_run(&[b'c', b'a', b'f', 0xe9], 204), "caf\u{e9}");
+        assert_eq!(decode_run(&[b'm', 0xe1, b's'], 161), "m\u{e1}s");
+        assert_eq!(decode_run(&[b'm', 0xe1, b's'], 177), "m\u{e1}s");
+        // Text of the set's own script stays, with Latin words beside it
+        // and even one joined to a word.
+        let ar = [0xe3, 0xd1, 0xcd, 0xc8, 0xc7];
+        assert_eq!(decode_run(&ar, 178), "\u{645}\u{631}\u{62d}\u{628}\u{627}");
+        let mut both = ar.to_vec();
+        both.extend_from_slice(b" PDF ");
+        both.extend_from_slice(&ar);
+        both.extend_from_slice(b"PDF");
+        assert_eq!(decode_run(&both, 178), decode_charset(&both, 178));
+        assert_eq!(
+            decode_run(
+                &[0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, b' ', b'c', b'a', b'f'],
+                204
+            ),
+            "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442} caf"
+        );
+        // Scripts written with Latin letters are read in their code page.
+        assert_eq!(
+            decode_run(&[0xa3, 0xf3, 0x64, 0x9f], 238),
+            decode_charset(&[0xa3, 0xf3, 0x64, 0x9f], 238)
+        );
+        // A lone letter decides nothing.
+        assert_eq!(decode_run(&[0xe1], 178), "\u{644}");
     }
 
     #[test]

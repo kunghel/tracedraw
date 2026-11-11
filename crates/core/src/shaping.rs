@@ -1165,7 +1165,17 @@ pub fn offset_filled(path: &BezPath, d: f64, join: Join, fill: FillRule) -> BezP
     if !d.is_finite() {
         return BezPath::new();
     }
-    fit_polygon_curves(&offset_polygon_with(path, d, join, fill), FIT_TOL)
+    fit_polygon_curves(&offset_polygon_with(path, d, join, fill), fit_tolerance(d))
+}
+
+/// How far the curves fitted to an offset by `d` mm may stray from it:
+/// [`FIT_TOL`], and no more than a tenth of the offset. A round corner
+/// of a small offset is an arc of that radius, and with the fixed
+/// tolerance an arc of a tenth of a millimetre or two was within reach of
+/// one or two straight lines, so a narrow round contour came out with its
+/// corners cut off straight, each a little differently (#2176).
+fn fit_tolerance(d: f64) -> f64 {
+    FIT_TOL.min(d.abs() / 10.0).max(1e-6)
 }
 
 /// The area `path` (read with `fill`) covers as it slides along `v`: the
@@ -2880,6 +2890,52 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The round corners of a narrow contour are round (#2176): a square
+    /// offset by a tenth of a millimetre or less keeps an arc of that
+    /// radius at each corner, at the contour's distance all the way. The
+    /// curves were fitted within 0.05 mm whatever the offset, which for
+    /// so small an arc is a straight cut or two across the corner.
+    #[test]
+    fn the_round_corners_of_a_narrow_offset_stay_round() {
+        use super::{offset_with, Join};
+        use crate::geometry::{BezPath, PathEl, Point};
+        let mut sq = BezPath::new();
+        sq.move_to(Point::new(0.0, 0.0));
+        sq.line_to(Point::new(10.0, 0.0));
+        sq.line_to(Point::new(10.0, 10.0));
+        sq.line_to(Point::new(0.0, 10.0));
+        sq.close_path();
+        let outside = |p: Point| {
+            let dx = (-p.x).max(p.x - 10.0).max(0.0);
+            let dy = (-p.y).max(p.y - 10.0).max(0.0);
+            dx.hypot(dy)
+        };
+        for d in [0.02, 0.05, 0.1, 0.2, 0.35] {
+            let q = offset_with(&sq, d, Join::Round);
+            let curves = q
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::CurveTo(..) | PathEl::QuadTo(..)))
+                .count();
+            assert!(
+                curves >= 4,
+                "{d}: a curve at each corner: {:?}",
+                q.elements()
+            );
+            let mut worst = 0.0f64;
+            for seg in q.segments() {
+                for i in 0..=20 {
+                    worst = worst.max((outside(seg.eval(i as f64 / 20.0)) - d).abs());
+                }
+            }
+            assert!(
+                worst < 0.04 * d,
+                "{d}: {worst} from the contour's distance, {:?}",
+                q.elements()
+            );
         }
     }
 

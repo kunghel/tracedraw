@@ -57,6 +57,28 @@ pub fn mapping_key(m: Mapping) -> &'static str {
     }
 }
 
+/// What a mapping does.
+fn mapping_hint_key(m: Mapping) -> &'static str {
+    match m {
+        Mapping::Horizontal => "envelope.mapping_horizontal_hint",
+        Mapping::Original => "envelope.mapping_original_hint",
+        Mapping::Putty => "envelope.mapping_putty_hint",
+        Mapping::Vertical => "envelope.mapping_vertical_hint",
+    }
+}
+
+/// The mapping list's tip: the mapping in use by name, and what it does
+/// with the object (#2212). The list showed the name alone and said
+/// only "How the object fills the envelope", whichever was chosen.
+fn mapping_tip(m: Mapping) -> String {
+    format!(
+        "{}: {}\n{}",
+        tr("envelope.mapping"),
+        tr(mapping_key(m)),
+        tr(mapping_hint_key(m))
+    )
+}
+
 fn dim(ui: &mut Ui, text: String) {
     ui.label(
         egui::RichText::new(text)
@@ -74,8 +96,10 @@ fn mapping_list(app: &mut App, ui: &mut Ui, width: f32) {
         .width(width)
         .show_ui(ui, |ui| {
             for m in Mapping::ALL {
+                // Each row says what its mapping does.
                 if ui
                     .selectable_label(m == shown, tr(mapping_key(m)))
+                    .rich_tip(crate::ui::tips::pair(mapping_key(m), mapping_hint_key(m)))
                     .clicked()
                 {
                     chosen = Some(m);
@@ -83,7 +107,7 @@ fn mapping_list(app: &mut App, ui: &mut Ui, width: f32) {
             }
         })
         .response
-        .rich_tip(tr("envelope.mapping_tip"));
+        .rich_tip(mapping_tip(shown));
     if let Some(m) = chosen {
         app.set_envelope_mapping(m);
     }
@@ -637,5 +661,57 @@ mod tests {
         }
         assert_eq!(mode_key(Mode::DoubleArc), "envelope.double_arc");
         assert_eq!(mapping_key(Mapping::Original), "envelope.mapping_original");
+    }
+
+    /// #2212: the mapping list says which mapping is in use and what it
+    /// does, on the property bar and in the docker, and follows the
+    /// mapping chosen; every mapping has words of its own.
+    #[test]
+    fn the_mapping_list_says_what_the_mapping_in_use_does() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(0.0, 0.0, 40.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        app.add_new_envelope();
+        app.tool = Tool::Envelope;
+        let mut hints = std::collections::BTreeSet::new();
+        for m in Mapping::ALL {
+            app.set_envelope_mapping(m);
+            assert_eq!(app.envelope_settings_shown().0, m);
+            let hint = tr(mapping_hint_key(m));
+            assert!(hint.len() > 20 && !hint.starts_with("envelope."), "{hint}");
+            hints.insert(hint.clone());
+            let tip = mapping_tip(m);
+            assert!(tip.starts_with(&format!(
+                "{}: {}\n",
+                tr("envelope.mapping"),
+                tr(mapping_key(m))
+            )));
+            assert!(tip.ends_with(&hint));
+            for docker in [false, true] {
+                crate::ui::tips::start_recording();
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1400.0, 600.0))),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    if docker {
+                        envelope_docker(&mut app, ui);
+                    } else {
+                        ui.horizontal(|ui| envelope_bar(&mut app, ui));
+                    }
+                });
+                out.textures_delta.clear();
+                let seen = crate::ui::tips::recorded();
+                assert!(seen.contains(&tip), "{m:?} (docker {docker}): {seen:?}");
+            }
+        }
+        assert_eq!(hints.len(), Mapping::ALL.len());
     }
 }

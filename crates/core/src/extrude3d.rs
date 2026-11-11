@@ -453,8 +453,14 @@ fn poly(pts: &[Point], close: bool) -> BezPath {
 
 /// The body of `shape` turned, lit and bevelled as `body.solid` and
 /// `body.bevel` say. `subs` are the outline's flattened subpaths with
-/// whether each closes and is a hole.
-pub(crate) fn faces(body: &Body, shape: &Shape, subs: &[(Vec<Point>, bool, bool)]) -> Faces {
+/// whether each closes and is a hole, `outline` the same subpaths with
+/// their curves.
+pub(crate) fn faces(
+    body: &Body,
+    shape: &Shape,
+    subs: &[(Vec<Point>, bool, bool)],
+    outline: &BezPath,
+) -> Faces {
     let mut out = Faces::default();
     let mut lo = Point::new(f64::INFINITY, f64::INFINITY);
     let mut hi = Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -770,12 +776,33 @@ pub(crate) fn faces(body: &Body, shape: &Shape, subs: &[(Vec<Point>, bool, bool)
         }
         p
     };
+    // A cap lies at one depth, where the turn and the view move and
+    // scale the outline and bend nothing: it is the outline's own curves
+    // taken there, with the outline's nodes (#2208). The near cap of a
+    // bevelled body is the outline drawn in, kept as its flattened ring.
+    let far_u = if dir < 0.0 { len } else { 0.0 };
+    let cap_curves = |u: f64| -> Option<BezPath> {
+        let at = |p: Point| ctx.project(ctx.turn(p, u), u);
+        let (o, x, y) = (
+            at(c),
+            at(c + Vec2::new(1.0, 0.0)),
+            at(c + Vec2::new(0.0, 1.0)),
+        );
+        let (ex, ey) = (x - o, y - o);
+        let all = [o.x, o.y, ex.x, ex.y, ey.x, ey.y];
+        if !all.iter().all(|v| v.is_finite()) || outline.elements().is_empty() {
+            return None;
+        }
+        let to_cap =
+            Affine::new([ex.x, ex.y, ey.x, ey.y, o.x, o.y]) * Affine::translate(-c.to_vec2());
+        Some(to_cap * outline.clone())
+    };
     // The far cap, darkest; the near cap looks like the object.
     let far_shows = any_closed && (far_area > 1e-12 || !turned);
     if far_shows {
         let mut far = template();
         far.kind = ShapeKind::Path {
-            path: cap_path(&far_loops),
+            path: cap_curves(far_u).unwrap_or_else(|| cap_path(&far_loops)),
             closed: true,
         };
         far.fill = Fill::Solid(to);
@@ -793,8 +820,13 @@ pub(crate) fn faces(body: &Body, shape: &Shape, subs: &[(Vec<Point>, bool, bool)
     near.effects.clear();
     near.shadow = None;
     near.transform = Affine::IDENTITY;
+    let near_curves = if bevel > 0.0 {
+        None
+    } else {
+        cap_curves(near_u)
+    };
     near.kind = ShapeKind::Path {
-        path: cap_path(&near_loops),
+        path: near_curves.unwrap_or_else(|| cap_path(&near_loops)),
         closed: any_closed,
     };
     // Far first: smaller z, then the larger flat key.
@@ -883,6 +915,69 @@ mod tests {
         assert_eq!(filled(&f.below).len(), 3, "{:?}", f.below.len());
         let far = f.below[0].bounds();
         assert!((far.x0 - 10.0).abs() < 1e-6 && (far.y0 - 10.0).abs() < 1e-6);
+    }
+
+    /// #2208: the caps of a turned body keep the outline's curves and
+    /// nodes (a turned circle's face had a node for each flattened edge).
+    #[test]
+    fn the_caps_of_a_turned_body_keep_the_outline_curves() {
+        use kurbo::{ParamCurveNearest, PathEl};
+        let mut c = square();
+        c.kind = ShapeKind::Ellipse {
+            rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+            arc: None,
+        };
+        let nodes = c.page_path().elements().len();
+        let solid = Solid {
+            rotation: [-17.0, 10.0, 5.0],
+            ..Default::default()
+        };
+        for kind in [
+            ExtrudeKind::BackParallel,
+            ExtrudeKind::FrontParallel,
+            ExtrudeKind::SmallBack,
+            ExtrudeKind::BigFront,
+        ] {
+            let curved = body(kind, solid.clone(), 0.0).faces(&c);
+            // The same body from the circle as a polygon of its flattened
+            // points: its caps are where the curved ones must lie.
+            let mut flat = BezPath::new();
+            crate::geometry::flatten(&c.page_path(), 0.05, &mut |el| flat.push(el));
+            let mut polygon = c.clone();
+            polygon.kind = ShapeKind::Path {
+                path: flat,
+                closed: true,
+            };
+            let lines = body(kind, solid.clone(), 0.0).faces(&polygon);
+            let cap = |f: &Faces| f.above.last().expect("the near cap").page_path();
+            let (near, want) = (cap(&curved), cap(&lines));
+            assert_eq!(near.elements().len(), nodes, "{kind:?}");
+            assert!(want.elements().len() > 3 * nodes, "{kind:?}");
+            for el in want.elements() {
+                let (PathEl::MoveTo(p) | PathEl::LineTo(p)) = el else {
+                    continue;
+                };
+                let d = near
+                    .segments()
+                    .map(|s| s.nearest(*p, 1e-9).distance_sq.sqrt())
+                    .fold(f64::INFINITY, f64::min);
+                assert!(d < 0.05, "{kind:?}: {p:?} is {d} off the cap");
+            }
+            // The far cap too, where it shows.
+            let far_nodes = |f: &Faces| {
+                f.above
+                    .iter()
+                    .chain(&f.below)
+                    .filter(|s| {
+                        s.fill == Fill::Solid(lerp_color(Color::rgb8(200, 0, 0), Color::BLACK, 0.5))
+                    })
+                    .map(|s| s.page_path().elements().len())
+                    .max()
+            };
+            if let Some(n) = far_nodes(&curved) {
+                assert_eq!(n, nodes, "{kind:?}: the far cap");
+            }
+        }
     }
 
     #[test]

@@ -252,7 +252,14 @@ same function (`export::print_sheets`).
   the ticked inks pixel by pixel (#1659,
   `print_preview::tests::plates_split_pictures_by_ink`).
 - A plate shows the ink's coverage in grey, black = full ink, as the
-  separations print; registration colour shows on every plate.
+  separations print; registration colour shows on every plate. So cyan
+  ink ticked alone shows a pure cyan square black, which reads as black
+  ink on the cyan plate. "Show one ink in its color" (under the ink
+  boxes, off at first) shows one ink alone as the colour it prints, the
+  way several inks show: the cyan square cyan, what the ink does not
+  print paper white. It changes the preview only; the plate prints the
+  same (#1652,
+  `print_preview::tests::one_ink_alone_shows_in_its_colour_when_asked`).
 - Paper margins (left, right, top, bottom, mm, 0 at first) keep the
   paper's edges clear: the pages and their marks go in the middle of what
   is left, shrinking to fit inside it unless Keep size is on; a sheet

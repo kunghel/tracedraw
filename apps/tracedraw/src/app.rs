@@ -1036,6 +1036,9 @@ pub struct App {
     /// `App::patch_selection_stroke_live`).
     pub live_stroke: Option<(u64, Option<Color>)>,
     pub file: Option<PathBuf>,
+    /// The open drawings' files, kept from being deleted or renamed by
+    /// another program while they are open (Windows, see `file_hold.rs`).
+    pub file_holds: crate::file_hold::Holds,
     /// The file the drawing was read from, in any format (canonical), until
     /// it is saved under a name of its own: opening that file again shows
     /// this drawing instead of a second copy (#645).
@@ -2662,6 +2665,7 @@ impl App {
             live_fill: None,
             live_stroke: None,
             file: None,
+            file_holds: Default::default(),
             opened_from: None,
             remote: None,
             vector_fx_base: Default::default(),
@@ -4557,7 +4561,17 @@ impl App {
             let Some((below, prev)) = self.engine.step_below(id).and_then(find) else {
                 break;
             };
-            if !same_objects(&prev.after, &entry.before) {
+            // An action that left other objects selected than it was done
+            // to (a copy, which selects the copy) was not done to the
+            // objects of the action before it, although the selection
+            // that one left is the one it began with: a Repeat of a
+            // mirror copy joined the copy before it and made two copies,
+            // and a move done before the first copy was replayed on
+            // every Repeat, pushing the copies apart (#2173). What was
+            // done to the copy afterwards still repeats with it.
+            if !same_objects(&prev.after, &entry.before)
+                || !same_objects(&entry.before, &entry.after)
+            {
                 break;
             }
             group.push(prev.action.clone());
@@ -5112,6 +5126,10 @@ impl App {
             if let Err(e) = self.engine.amend(&k) {
                 self.status = e.to_string();
             }
+        }
+        // Default page names follow the pages' order (#2374).
+        if crate::page_names::changes_page_order(&cmd) {
+            self.renumber_default_pages();
         }
         self.sync_effect_clones_for(&cmd);
         self.sync_object_clones();
@@ -5985,7 +6003,9 @@ impl App {
             })
             .collect();
         let connectors = self.connector_copies(&originals, &copies);
-        for shape in copies.into_iter().chain(connectors) {
+        let mut copies: Vec<Shape> = copies.into_iter().chain(connectors).collect();
+        self.bring_into_edited_frame(&mut copies);
+        for shape in copies {
             cmds.push(Command::AddShape { layer, shape });
         }
         if let Err(e) = self.engine.run_batch("Paste", &cmds) {
@@ -5997,6 +6017,38 @@ impl App {
         self.select(ids.clone());
         if self.symmetry_edit.is_some() {
             self.join_symmetry(&ids);
+        }
+    }
+
+    /// Objects about to be pasted while a clip frame's contents are
+    /// edited go where the frame shows them (#2044): pasted where they
+    /// were copied, away from the frame, they became contents the frame
+    /// cut away whole, so the paste seemed to land outside the frame and
+    /// showed nothing once the edit was finished. Objects that would lie
+    /// wholly outside the frame's box are centred on it, together;
+    /// objects reaching into the frame stay where they were copied.
+    fn bring_into_edited_frame(&self, pasted: &mut [Shape]) {
+        if !self.editing_clip_contents() {
+            return;
+        }
+        let Some(frame) = self
+            .clip_frame_edit
+            .as_ref()
+            .and_then(|(frame, _)| self.doc().find_shape(*frame))
+            .map(|f| f.bounds())
+        else {
+            return;
+        };
+        let Some(all) = pasted.iter().map(|s| s.bounds()).reduce(|a, b| a.union(b)) else {
+            return;
+        };
+        let finite = |r: Rect| [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
+        if !finite(frame) || !finite(all) || all.intersect(frame).area() > 0.0 {
+            return;
+        }
+        let d = frame.center() - all.center();
+        for s in pasted {
+            s.transform_by(Affine::translate(d));
         }
     }
 
@@ -7500,6 +7552,8 @@ impl App {
             Ok(()) => {
                 self.engine.mark_saved();
                 self.file = Some(path.clone());
+                // A file that was not there to be held is now.
+                self.file_holds.written(&path);
                 // The drawing is the saved file's now, not the one it was
                 // read from.
                 self.opened_from = None;
@@ -9146,6 +9200,7 @@ impl App {
             self.status = e.to_string();
             return;
         }
+        self.renumber_default_pages();
         let next = ids
             .get(b + 1)
             .or_else(|| a.checked_sub(1).and_then(|i| ids.get(i)));

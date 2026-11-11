@@ -396,6 +396,28 @@ impl App {
         self.docs.iter().position(|s| s.drawing == d)
     }
 
+    /// Keep the files of the open drawings from being deleted, renamed or
+    /// moved by another program while they are open (#2130; Windows only,
+    /// see `file_hold.rs`): the active drawing's file and the files of the
+    /// drawings in the other tabs, each for as long as its drawing is
+    /// open under that name. A drawing opened from a file it does not
+    /// save to (a `.cdr`, an SVG) holds that file until it is saved under
+    /// a name of its own. Called every frame; it only compares the paths
+    /// while the open drawings stay the same.
+    pub fn sync_file_holds(&mut self) {
+        let active = self.docs.get(self.active_doc).map(|d| d.drawing);
+        let files = active
+            .iter()
+            .filter_map(|_| self.file.as_deref().or(self.opened_from.as_deref()))
+            .chain(
+                self.docs
+                    .iter()
+                    .filter(|d| d.holds && Some(d.drawing) != active)
+                    .filter_map(|d| d.file.as_deref().or(d.opened_from.as_deref())),
+            );
+        self.file_holds.sync(files);
+    }
+
     /// Bring tab `i` to the front.
     pub fn switch_document(&mut self, i: usize) {
         if i >= self.docs.len() {
@@ -653,6 +675,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("temp dir");
         d
+    }
+
+    /// Open drawings keep their files (#2130): the file of every open
+    /// drawing, in the front tab or another, is held from the frame after
+    /// it is opened or saved until the drawing is closed or saved under
+    /// another name; an untitled drawing holds nothing.
+    #[test]
+    fn open_drawings_hold_their_files_until_closed_or_renamed() {
+        let dir = temp_dir("file-holds");
+        let mut app = App::headless();
+        app.file_holds = crate::file_hold::Holds::new(crate::file_hold::reading);
+        let new_drawing = |app: &mut App, name: &str| {
+            app.open_document(
+                tracedraw_core::Document::new(name, Size::new(100.0, 100.0)),
+                None,
+            );
+            add_rect(app);
+        };
+        new_drawing(&mut app, "Art");
+        app.sync_file_holds();
+        assert_eq!(app.file_holds.len(), 0, "an untitled drawing has no file");
+        let art = dir.join("art.tdraw");
+        app.save_to(art.clone());
+        app.sync_file_holds();
+        assert!(app.file_holds.holds(&art));
+        // A second drawing in a tab of its own: both files are held.
+        new_drawing(&mut app, "Two");
+        let two = dir.join("two.tdraw");
+        app.save_to(two.clone());
+        app.sync_file_holds();
+        assert!(app.file_holds.holds(&art) && app.file_holds.holds(&two));
+        // Saved under another name: the old file is let go.
+        let three = dir.join("three.tdraw");
+        app.save_to(three.clone());
+        app.sync_file_holds();
+        assert!(!app.file_holds.holds(&two), "the old name is free");
+        assert!(app.file_holds.holds(&art) && app.file_holds.holds(&three));
+        // Saving again and another tab in front change nothing.
+        app.save_to(three.clone());
+        let tab = app.tab_with_file(&art).expect("the first drawing's tab");
+        app.switch_document(tab);
+        app.sync_file_holds();
+        assert_eq!(app.file.as_deref(), Some(art.as_path()));
+        assert!(app.file_holds.holds(&art) && app.file_holds.holds(&three));
+        assert_eq!(app.file_holds.len(), 2);
+        // Closed: its file is anyone's again.
+        app.close_active_document();
+        app.sync_file_holds();
+        assert!(!app.file_holds.holds(&art));
+        assert!(app.file_holds.holds(&three));
+        let tab = app.tab_with_file(&three).expect("the other drawing's tab");
+        app.switch_document(tab);
+        app.close_active_document();
+        app.sync_file_holds();
+        assert!(!app.file_holds.holds(&three));
+        // A drawing opened from a file it does not save to holds that
+        // file until it is saved under a name of its own.
+        let svg = dir.join("mark.svg");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="9" height="9"/></svg>"#,
+        )
+        .expect("svg");
+        app.open_path(svg.clone());
+        assert_eq!(app.file, None);
+        let from = app.opened_from.clone().expect("opened from the SVG");
+        app.sync_file_holds();
+        assert!(app.file_holds.holds(&from));
+        let mark = dir.join("mark.tdraw");
+        app.save_to(mark.clone());
+        app.sync_file_holds();
+        assert!(!app.file_holds.holds(&from) && app.file_holds.holds(&mark));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The status bar does not keep naming a drawing's file once another

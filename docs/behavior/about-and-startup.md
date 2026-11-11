@@ -171,6 +171,18 @@ and `--reset-settings` starts open windows of their own.
   `try_recv` a frame when none came), waiting while a dialog or a question
   is up or the drawings are being closed. Wayland does not let a window
   raise itself: it asks for attention instead.
+- The window comes to the front in the frame the files arrive, restored
+  when it was minimized, before it reads them and whatever it shows
+  (#2129). Windows lets only the program the user last started or
+  clicked bring a window to the foreground, which is the start made for
+  the double-clicked file and not the running window: the start passes
+  that right to the window's process (`AllowSetForegroundWindow` with the
+  process `instance.json` names) once it reaches the window and before
+  it sends the files
+  (`instance::tests::the_start_lets_the_window_come_to_the_front_before_it_sends_the_files`,
+  `instance::tests::the_window_comes_up_when_the_files_arrive_and_before_they_are_read`;
+  the Windows call itself is not covered by a test). It is asked to
+  come up once more when the files have been opened, as before.
 - A start with the next renderer after a failed one (see below) takes the
   place over. Portable copies and `TRACEDRAW_CONFIG_DIR` each have their
   own window.

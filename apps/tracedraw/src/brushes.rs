@@ -259,11 +259,12 @@ impl App {
                     effects::twirl(&page_path, p, motion * b.twirl_rate() * turn, radius)
                 }
                 (Tool::AttractRepel, Some(from)) => effects::attract(from, p, radius, dose),
-                (Tool::Smudge, _) => effects::smear(
-                    &effects::smooth(&page_path, p, radius, 0.2),
+                (Tool::Smudge, _) => effects::smudge(
+                    &page_path,
+                    last,
                     p,
-                    delta * BrushSettings::pressure(b.smudge_pressure),
                     radius,
+                    BrushSettings::pressure(b.smudge_pressure),
                 ),
                 (Tool::Roughen, Some(from)) => effects::roughen_stroke(
                     from,

@@ -14,6 +14,18 @@ The geometry is the `tracedraw-tracecut` crate (pure geometry over
 page-space outlines in millimetres); the window turns its results into
 commands. Contributed by LaMka21 (#170).
 
+Every tool takes an object by the outline it draws: groups opened, a
+clip frame by its frame, and an object whose outline a live effect
+reshapes (an envelope, a perspective, a distortion) by the reshaped
+outline, not the one it had before the effect. So an enveloped object
+is cut where it shows, and nesting keeps what shows apart; it used to
+be placed by its outline from before the envelope, and its neighbours
+landed on the part the envelope had pulled out (#2227,
+`tracedraw_tracecut::tests::an_enveloped_object_gives_the_outline_it_draws`,
+`tracecut_nest::tests::an_enveloped_object_is_nested_by_what_it_draws`).
+What an effect adds beside the object (contour steps, blend steps, a
+shadow) is not part of its outline.
+
 ## Layout
 
 - **Tool list** (left, 210 wide), grouped: Cut, Nesting, Measure, Make. A

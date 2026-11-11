@@ -1108,6 +1108,15 @@ impl ComboBox {
         self
     }
 
+    /// Cut the shown name short with an ellipsis where it does not fit
+    /// the room: egui's combo box otherwise grows as wide as its name,
+    /// past the edge of a narrow panel (#2040).
+    #[inline]
+    pub fn truncate(mut self) -> Self {
+        self.inner = self.inner.truncate();
+        self
+    }
+
     pub fn selected_text(mut self, text: impl Into<egui::WidgetText>) -> Self {
         let text = text.into();
         self.shown = text.text().to_string();

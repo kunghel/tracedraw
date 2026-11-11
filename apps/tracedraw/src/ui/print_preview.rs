@@ -21,6 +21,9 @@ pub struct PrintPreview {
     /// The inks shown while Print separations is on, one per plate of
     /// [`plates`] (all at first, #571).
     pub inks: Vec<bool>,
+    /// One ink ticked alone shows in the colour it prints, as several
+    /// do, instead of its plate in grey (#1652).
+    pub ink_in_color: bool,
     /// Zoom over the fitted size (1 = the sheet fits the window).
     pub zoom: f32,
     /// A drag on the sheet moves the page information, not the artwork.
@@ -44,6 +47,7 @@ impl PrintPreview {
             st,
             sheet: 0,
             inks: Vec::new(),
+            ink_in_color: false,
             zoom: 1.0,
             move_info: false,
             margin_drag: None,
@@ -143,12 +147,14 @@ pub fn shown_page(
 
 /// The page shown with the inks ticked: every ink, the sheet as it is; one
 /// ink, its plate in grey (black = full ink); some, the colours those
-/// inks print (#571).
+/// inks print (#571). With `one_in_color` one ink alone shows the colour
+/// it prints too, cyan ink in cyan (#1652).
 pub fn shown_page_inks(
     doc: &Document,
     sheet: usize,
     inks: &[bool],
     separations: bool,
+    one_in_color: bool,
 ) -> Option<tracedraw_core::document::Page> {
     let page = doc.pages.get(sheet)?;
     let all = plates(doc);
@@ -158,7 +164,7 @@ pub fn shown_page_inks(
     if !separations || on.len() == all.len() {
         return Some(page.clone());
     }
-    if let [one] = on.as_slice() {
+    if let ([one], false) = (on.as_slice(), one_in_color) {
         return shown_page(doc, sheet, one + 1, true);
     }
     let mut process = [false; 4];
@@ -462,6 +468,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                                 ui.checkbox(on, name.clone());
                             }
                         });
+                        // One ink alone: its plate in grey, as it
+                        // prints, or the colour the ink gives (#1652).
+                        ui.checkbox(&mut pv.ink_in_color, tr("print.ink_in_color"))
+                            .rich_tip(tr("print.ink_in_color_tip"));
                     });
                 }
                 let st = &mut pv.st;
@@ -608,11 +618,16 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             let separations = pv.st.separations;
             let sheet = pv.sheet;
             let inks = pv.inks.clone();
-            let Some(page) = shown_page_inks(sheets(app, &mut pv), sheet, &inks, separations)
+            let in_color = pv.ink_in_color;
+            let Some(page) =
+                shown_page_inks(sheets(app, &mut pv), sheet, &inks, separations, in_color)
             else {
                 return;
             };
-            let plate: String = inks.iter().map(|on| if *on { '1' } else { '0' }).collect();
+            let mut plate: String = inks.iter().map(|on| if *on { '1' } else { '0' }).collect();
+            if in_color {
+                plate.push('c');
+            }
             // The edge the chosen printer cannot print on, as the system
             // reports it (#1924); none for a file.
             let hard = (pv.st.destination == 0)
@@ -1092,7 +1107,10 @@ mod tests {
         // Ticked inks (#571): one alone is its plate in grey; cyan and
         // yellow together keep only those channels; every ink, the sheet.
         let fill = |inks: &[bool]| {
-            shown_page_inks(&doc, 0, inks, true).expect("page").layers[0].shapes[0]
+            shown_page_inks(&doc, 0, inks, true, false)
+                .expect("page")
+                .layers[0]
+                .shapes[0]
                 .fill
                 .clone()
         };
@@ -1126,6 +1144,102 @@ mod tests {
         );
     }
 
+    /// Four squares of pure cyan, magenta, yellow and black, each with a
+    /// black outline, as in the report (#1652). One ink ticked alone
+    /// shows its plate in grey: the cyan square black, which read as
+    /// black ink on the cyan plate. With "Show one ink in its color" the
+    /// one ink shows the colour it prints, as several inks do: the cyan
+    /// square cyan, the others and every outline paper white, and no
+    /// black anywhere unless Black is the ink ticked.
+    #[test]
+    fn one_ink_alone_shows_in_its_colour_when_asked() {
+        use tracedraw_core::{Color, Fill, Shape, ShapeKind};
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        let inks = [
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+        ];
+        for (i, (c, m, y, k)) in inks.into_iter().enumerate() {
+            let id = doc.ids_mut().shape();
+            let x = 10.0 + 20.0 * i as f64;
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: tracedraw_core::geometry::Rect::new(x, 10.0, x + 15.0, 25.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(Color::Cmyk { c, m, y, k });
+            s.stroke = Some(tracedraw_core::Stroke {
+                color: Color::Cmyk {
+                    c: 0.0,
+                    m: 0.0,
+                    y: 0.0,
+                    k: 1.0,
+                },
+                ..Default::default()
+            });
+            doc.pages[0].layers[0].shapes.push(s);
+        }
+        // What the squares and their outlines show as, in CMYK.
+        let cmyk = |c: &Color| match c.convert_to("CMYK") {
+            Color::Cmyk { c, m, y, k } => [c, m, y, k],
+            other => panic!("{other:?}"),
+        };
+        let shown = |only: usize, in_color: bool| {
+            let mut ticked = [false; 4];
+            ticked[only] = true;
+            let p = shown_page_inks(&doc, 0, &ticked, true, in_color).expect("page");
+            p.layers[0]
+                .shapes
+                .iter()
+                .map(|s| {
+                    let fill = match &s.fill {
+                        Fill::Solid(c) => cmyk(c),
+                        f => panic!("{f:?}"),
+                    };
+                    (fill, cmyk(&s.stroke.as_ref().expect("outline").color))
+                })
+                .collect::<Vec<_>>()
+        };
+        let paper = [0.0f32; 4];
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.02);
+        for only in 0..4 {
+            // As a plate: grey, the ink's own square black.
+            let plate = shown(only, false);
+            for (i, (fill, line)) in plate.iter().enumerate() {
+                let want = if i == only { 1.0 } else { 0.0 };
+                assert!(
+                    near(*fill, [0.0, 0.0, 0.0, want]),
+                    "plate {only}, square {i}: {fill:?}"
+                );
+                let want = if only == 3 { 1.0 } else { 0.0 };
+                assert!(near(*line, [0.0, 0.0, 0.0, want]), "plate {only}: {line:?}");
+            }
+            // In its colour: the ink alone, nothing of the others.
+            let color = shown(only, true);
+            let mut ink = paper;
+            ink[only] = 1.0;
+            for (i, (fill, line)) in color.iter().enumerate() {
+                let want = if i == only { ink } else { paper };
+                assert!(near(*fill, want), "ink {only}, square {i}: {fill:?}");
+                let want = if only == 3 { ink } else { paper };
+                assert!(near(*line, want), "ink {only}: {line:?}");
+            }
+        }
+        // Several inks and every ink show the same either way.
+        for ticked in [[true, false, false, true], [true; 4]] {
+            let a = shown_page_inks(&doc, 0, &ticked, true, false).expect("page");
+            let b = shown_page_inks(&doc, 0, &ticked, true, true).expect("page");
+            for (x, y) in a.layers[0].shapes.iter().zip(b.layers[0].shapes.iter()) {
+                assert_eq!(x.fill, y.fill);
+            }
+        }
+    }
+
     /// Pictures split by ink in the preview too (#1659): one ink shows
     /// its plate in grey, some inks the colours they print, every ink
     /// the picture as it is.
@@ -1150,7 +1264,7 @@ mod tests {
         s.stroke = None;
         doc.pages[0].layers[0].shapes.push(s);
         let pixels = |inks: &[bool]| -> Vec<[u8; 4]> {
-            let p = shown_page_inks(&doc, 0, inks, true).expect("page");
+            let p = shown_page_inks(&doc, 0, inks, true, false).expect("page");
             let ShapeKind::Bitmap { png, .. } = &p.layers[0].shapes[0].kind else {
                 panic!("a picture");
             };
@@ -1167,7 +1281,7 @@ mod tests {
         let [r, g, b, _] = some[0];
         assert!(r > 200 && g > 200 && b < 80, "{some:?}");
         // Every ink: the picture as it is.
-        let all = shown_page_inks(&doc, 0, &[true; 4], true).expect("page");
+        let all = shown_page_inks(&doc, 0, &[true; 4], true, false).expect("page");
         assert!(matches!(
             &all.layers[0].shapes[0].kind,
             ShapeKind::Bitmap { png: p, .. } if tracedraw_core::SharedBytes::ptr_eq(p, &png)

@@ -36,8 +36,8 @@ drag is one undo step; the next drag is another.
   of segments within the nib and a quarter of its radius beyond (the
   points there do not move, so the new stretch joins the old curve
   smoothly) are measured into points (a sixth of the nib apart for Smear
-  and Twirl, a twelfth for Attract and Repel, half a millimetre for
-  Smooth), moved and fitted back into curves, and the fitted curves are
+  and Twirl, an eighth for Smudge, a twelfth for Attract and Repel, half
+  a millimetre for Smooth), moved and fitted back into curves, and the fitted curves are
   merged into as few as keep the stretch within 0.1 mm (0.01 mm for
   Attract and Repel, whose held steps move a few hundredths of a
   millimetre; `fit::fit_path`, whose splitting is bounded, so a long stroke never
@@ -68,8 +68,30 @@ object". The settings are kept in the preferences (`tools.brush_radius`,
 | Smear | Pressure 1 to 100 % (100) | points move by the pointer's move times pressure times `w^2` |
 | Twirl | Speed 1 to 100 % (50); Counterclockwise or Clockwise (Alt or Shift while dragging turns the other way) | points turn about the pointer by `speed / 1000` rad per mm the pointer moved, times `w`; held still, it goes on as if the pointer moved 10 mm a second |
 | Attract and Repel | Speed 1 to 100 % (50); Attract or Repel (Alt or Shift while dragging swaps them) | the points of the stretch move straight towards (away from) the pointer, the same in every direction, by a dose `f` (0 to 1) that grows by `2 x speed x 0.006 / radius` per mm the pointer moved: a point `d` from the centre goes to `d (1 - f s)` (Attract, never past the centre) or `d + f s (radius - d) / 2` (Repel, never past the nib's edge); both keep the points' order along each ray, so the outline never folds. Each move works on the outline as it is; held still, it works from the outline the hold found, the dose growing as if the pointer moved 10 mm a second, so it pulls or pushes at a steady pace and comes to rest at `f = 1` (a 10 mm nib at 50 % after 1.7 s) |
-| Smudge | Pressure 1 to 100 % (100) | a smooth (0.2 mm), then a smear at the pressure, so the outline is pulled without kinks |
+| Smudge | Pressure 1 to 100 % (100) | the nib carries the outline under it along: the points within half the nib's radius of its centre go all the way with the pointer (times the pressure), and from there to the nib's edge the carried share eases to nothing (`u^2 (3 - 2 u)`), so a stroke draws the outline out into a tongue as wide as that core, the piece of outline it took at its end and its sides running smoothly into the outline that stayed. Each move of the pointer is made in small moves of an eighth of the radius, each from the outline the one before left, so a quick stroke (a few long moves) and a slow one give the same outline, and no small move shifts neighbouring points past each other (`effects::smudge`, see below) |
 | Roughen | Frequency 1 to 10 spikes per 10 mm (5); Spike size (2 mm) | the whole stroke is worked out from the outline it began with and the places the nib went (a new place each half spacing the pointer moves): points `10 / frequency` mm apart along each subpath, counted from its start, are pushed off the curve along its normal by up to the spike size times `w` from the nearest place, the push from the point's place, and joined by straight lines so the spikes stay sharp; the nodes and the segments out of reach stay exactly. Going back over the same place or holding the button gives the same spikes, so a stroke adds at most one node per spacing of the stretch it covered (`effects::roughen_stroke`) |
+
+## Smudge
+
+Smudge used to be a smoothing pass (0.2 mm) followed by one Smear push
+of the whole pointer move, with Smear's weight, which peaks at the
+nib's centre. What a stroke left then depended on how many pointer
+events it came in: a quick stroke of a few long moves left a thin spike
+behind the nib's centre, and a slow one, smoothed again at every event,
+hardly moved the outline (a 10 mm nib dragged 30 mm out of a square's
+side: a bulge of 11 mm in 1 mm moves). Now the outline under the nib's
+core goes with it whatever the speed: the same drag gives a tongue 30 mm
+long, 10 mm wide at its middle and near its end, in 1 mm moves, in 6 mm
+moves or in one (#2228,
+`tracedraw_core::effects::tests::smudge_draws_a_tongue_whatever_the_speed`).
+Dragging along a thin part (a ring's wall narrower than the nib's core)
+carries both of its edges, as a finger through wet paint does.
+
+A step measures the stretch in reach into points an eighth of the
+radius apart and fits it back, as a Smear step does. On a stroke that
+winds a ring's wall three times round it takes 0.4 ms a step in a
+release build, far inside a frame; the old step took 0.07 ms there and
+left 19 elements, having smoothed the stroke away.
 
 ## Checks
 
@@ -78,6 +100,7 @@ object". The settings are kept in the preferences (`tools.brush_radius`,
 - `tracedraw_core::effects::tests::smooth_fits_jagged_lines_within_the_nib`
 - `tracedraw_core::effects::tests::a_smooth_stroke_along_a_wobbly_spiral_leaves_few_nodes_on_it`
 - `tracedraw_core::effects::tests::long_smudge_and_twirl_strokes_stay_light`
+- `tracedraw_core::effects::tests::smudge_draws_a_tongue_whatever_the_speed`
 - `brushes::tests::a_stroke_is_one_step_and_follows_the_settings`
 - `brushes::tests::attract_repel_and_twirl_follow_their_modes`
 - `brushes::hold_tests::attract_and_repel_come_to_rest_while_held`

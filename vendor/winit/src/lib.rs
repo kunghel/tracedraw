@@ -224,6 +224,10 @@ pub(crate) mod quit_request;
 // with its tool, for palm rejection (vendor/README.md).
 #[cfg(android_platform)]
 pub(crate) mod pointer_filter;
+// TraceDraw: a mouse's buttons, wheel and hover on Android
+// (vendor/README.md).
+#[cfg(android_platform)]
+pub(crate) mod android_mouse;
 // TraceDraw: files dragged over a window on Wayland (vendor/README.md).
 #[cfg(wayland_platform)]
 pub(crate) mod file_drop;

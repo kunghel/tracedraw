@@ -241,6 +241,7 @@ impl App {
                 self.status = e.to_string();
                 return;
             }
+            self.renumber_default_pages();
             let ids: Vec<ShapeId> = self
                 .doc()
                 .pages

@@ -22,6 +22,14 @@ was changed on every tab (#633).
   100 px of the dialog stays inside the left, right and bottom edges,
   so even a dialog as large as the window can be pushed aside to show
   the drawing (#908).
+- The window keeps its size and its place whatever page it shows: its
+  body is drawn in a child of its own, cut at the window's edge
+  (`chrome::dialog`), so a page cannot make the window wider or taller.
+  A page a little too wide did (the Edit page by 32 px: its Reset
+  button stood past the slider that took the whole row), and the
+  window, placed by its centre, moved to the side by half of every such
+  change, and by another half pixel each time the position was rounded
+  (#2199, `ui::options::tests::the_window_keeps_its_place_from_page_to_page`).
 - The tabs in a row at the top of the body, over a light line, the
   current one selected.
 - A white page list on the left (225 px; rows 23 px apart; the current

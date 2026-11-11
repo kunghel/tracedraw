@@ -11,6 +11,14 @@
 //! segment or a control point under it. Drawn cursors hide the system
 //! pointer and are painted above everything at the pointer position.
 //!
+//! A pointer painted in the window shows where the mouse was when the
+//! frame was made, and the frame reaches the screen a refresh or more
+//! later: next to the system's arrow, which the screen moves on its own,
+//! every drawn pointer trailed the hand (#2136). On Windows the drawn
+//! pointers are therefore handed to the system as bitmaps of the same
+//! drawing ([`bitmap`]), and the system moves them as it moves its own;
+//! only a nib too large for a pointer bitmap is still painted.
+//!
 //! The Pick tools: over a corner handle the diagonal resize arrows, over
 //! a side handle the horizontal or vertical ones, over the selection (or
 //! the centre of rotation) the move arrows; in rotate mode the corners
@@ -545,7 +553,9 @@ fn nib_px(mm: f64, zoom: f32) -> f32 {
 }
 
 /// Show `cursor` at `pos` (the pointer): set the system cursor, or hide it
-/// and paint the drawn one on top of everything.
+/// and paint the drawn one on top of everything, or (where the system
+/// takes pointer bitmaps, see [`bitmap_pointers`]) hand the drawing to
+/// the system as the pointer.
 pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
     let icon = match cursor {
         ToolCursor::System(icon) => icon,
@@ -557,6 +567,23 @@ pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
     ctx.set_cursor_icon(icon);
     if icon != egui::CursorIcon::None {
         return;
+    }
+    if bitmap_pointers() {
+        if let Some(image) = bitmap(cursor, ctx.pixels_per_point()) {
+            // Given to the system at the end of the frame, unless
+            // something asks for another pointer meanwhile
+            // ([`finish_frame`]); nothing is painted.
+            ctx.data_mut(|d| {
+                d.insert_temp(
+                    pending_id(),
+                    Pending {
+                        image,
+                        fallback: system_icon(cursor),
+                    },
+                )
+            });
+            return;
+        }
     }
     if let Some(p) = pos {
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -572,8 +599,211 @@ pub fn show(ctx: &egui::Context, cursor: ToolCursor, pos: Option<Pos2>) {
 /// blank image instead (see [`hidden_pointer`]). Decided from the frame's
 /// last word on the pointer, so a system pointer asked for after a drawn
 /// one in the same frame shows, never the blank image in its place.
+///
+/// A drawn pointer handed over as a bitmap ([`show`]) is given to the
+/// system here, by the same rule: only when the pointer is still the
+/// hidden one the tool asked for. The system pointer nearest to it goes
+/// along, for a window that cannot take the bitmap.
 pub fn finish_frame(ctx: &egui::Context) {
-    ctx.output_mut(|o| blank_when_hidden(o, cfg!(target_os = "windows")));
+    let pending: Option<Pending> = ctx.data_mut(|d| {
+        let p = d.get_temp(pending_id());
+        d.remove::<Pending>(pending_id());
+        p
+    });
+    ctx.output_mut(|o| match pending {
+        Some(p) if o.cursor_icon == egui::CursorIcon::None && o.cursor_image.is_none() => {
+            o.cursor_icon = p.fallback;
+            o.cursor_image = Some(p.image);
+        }
+        _ => blank_when_hidden(o, cfg!(target_os = "windows")),
+    });
+}
+
+/// A drawn pointer waiting for the end of its frame.
+#[derive(Clone)]
+struct Pending {
+    image: egui::CustomCursorImage,
+    fallback: egui::CursorIcon,
+}
+
+fn pending_id() -> egui::Id {
+    egui::Id::new("tool_cursor_bitmap")
+}
+
+/// Whether drawn pointers are handed to the system as bitmaps. On
+/// Windows, where the window already swaps the pointer for an image (the
+/// blank one, [`hidden_pointer`]) and a pointer bitmap is in the
+/// screen's pixels. Elsewhere they are painted as before: the browser
+/// takes no bitmap from the window, and how large a bitmap shows on a
+/// scaled screen differs between the other systems.
+/// `TRACEDRAW_BITMAP_POINTERS=1` turns it on anywhere and `0` off, for
+/// trying it out.
+fn bitmap_pointers() -> bool {
+    #[cfg(test)]
+    {
+        TEST_BITMAP_POINTERS.with(|b| b.get())
+    }
+    #[cfg(not(test))]
+    {
+        use std::sync::OnceLock;
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| {
+            if cfg!(target_arch = "wasm32") {
+                return false;
+            }
+            match std::env::var("TRACEDRAW_BITMAP_POINTERS").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(target_os = "windows"),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bitmap pointers on, for the tests of them (off in every other
+    /// test, whatever the system, so those see the painted pointer).
+    static TEST_BITMAP_POINTERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Bitmap pointers on or off on this thread, for the frame benchmarks.
+#[cfg(test)]
+pub(crate) fn set_test_bitmap_pointers(on: bool) {
+    TEST_BITMAP_POINTERS.with(|b| b.set(on));
+}
+
+/// How far from the hot spot a pointer's drawing may reach on its
+/// bitmap, points: the cross hair with a tool's sign reaches 20.
+const BITMAP_REACH: f32 = 48.0;
+
+/// Largest side of a pointer bitmap, pixels. The systems take larger
+/// ones, but draw them themselves instead of the graphics card, and a
+/// pointer that large hides what it points at.
+const BITMAP_MAX: usize = 192;
+
+/// Pointer bitmaps kept: a tool has a handful, a nib one for each size.
+const BITMAPS_KEPT: usize = 48;
+
+thread_local! {
+    /// The bitmaps made so far, by pointer and pixels per point (the
+    /// newest last), and the context that draws them.
+    static BITMAPS: std::cell::RefCell<Bitmaps> = std::cell::RefCell::new(Bitmaps::default());
+}
+
+#[derive(Default)]
+struct Bitmaps {
+    ctx: Option<egui::Context>,
+    made: Vec<(BitmapKey, Option<egui::CustomCursorImage>)>,
+}
+
+/// What a pointer bitmap is of: the pointer, the pixels per point, and
+/// the theme (a tool's sign is drawn in the theme's accent).
+type BitmapKey = (ToolCursor, u32, crate::theme::Theme);
+
+/// The drawn pointer `cursor` as a bitmap for the system to show as the
+/// pointer, at `ppp` pixels per point: what [`paint`] draws, in pixels,
+/// cut to what is drawn, with the hot spot where the pointer points.
+/// `None` for a system pointer and for a drawing that does not fit a
+/// pointer bitmap (a wide nib), which is painted instead.
+///
+/// The same bytes come back for the same pointer every frame (the window
+/// makes one system pointer of them and only swaps it when they change).
+pub fn bitmap(cursor: ToolCursor, ppp: f32) -> Option<egui::CustomCursorImage> {
+    if matches!(cursor, ToolCursor::System(_)) || !(ppp.is_finite() && ppp > 0.0) {
+        return None;
+    }
+    // A nib's size follows the zoom: half-point steps, so that a zoom
+    // does not make a bitmap for every frame.
+    let cursor = match cursor {
+        ToolCursor::Nib { radius, square } => ToolCursor::Nib {
+            radius: (radius * 2.0).round() / 2.0,
+            square,
+        },
+        other => other,
+    };
+    BITMAPS.with(|b| {
+        let mut b = b.borrow_mut();
+        let key: BitmapKey = (cursor, ppp.to_bits(), crate::theme::theme());
+        if let Some(i) = b.made.iter().rposition(|(k, _)| *k == key) {
+            return b.made[i].1.clone();
+        }
+        // The interface's own font, for a sign with a letter in it; the
+        // system's fonts (slow to load) have no part in a pointer.
+        let ctx = b
+            .ctx
+            .get_or_insert_with(|| {
+                let ctx = egui::Context::default();
+                ctx.set_fonts(crate::theme::bundled_font_definitions());
+                ctx
+            })
+            .clone();
+        let image = draw_bitmap(&ctx, cursor, ppp);
+        if b.made.len() >= BITMAPS_KEPT {
+            b.made.remove(0);
+        }
+        b.made.push((key, image.clone()));
+        image
+    })
+}
+
+/// [`bitmap`], drawn anew.
+fn draw_bitmap(
+    ctx: &egui::Context,
+    cursor: ToolCursor,
+    ppp: f32,
+) -> Option<egui::CustomCursorImage> {
+    if let ToolCursor::Nib { radius, .. } = cursor {
+        // (The square nib's corner, and the halo round it.)
+        if !radius.is_finite() || radius * std::f32::consts::SQRT_2 + 3.0 > BITMAP_REACH {
+            return None;
+        }
+    }
+    let side = (2.0 * BITMAP_REACH) as usize;
+    // The hot spot on the middle of a pixel, as the pointer is.
+    let hot = (BITMAP_REACH * ppp).floor() as usize;
+    let at = Pos2::new((hot as f32 + 0.5) / ppp, (hot as f32 + 0.5) / ppp);
+    let canvas =
+        crate::soft_canvas::rasterise(ctx, side, side, ppp, |painter| paint(painter, cursor, at));
+    // What is drawn, and the hot spot.
+    let (mut x0, mut y0, mut x1, mut y1) = (hot, hot, hot + 1, hot + 1);
+    let mut any = false;
+    for y in 0..canvas.h {
+        for x in 0..canvas.w {
+            if canvas.px[y * canvas.w + x][3] > 1.0 / 255.0 {
+                any = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    let (w, h) = (x1.min(canvas.w) - x0, y1.min(canvas.h) - y0);
+    // (Drawn up to the canvas's edge: it may not all be there.)
+    let cut = x0 == 0 || y0 == 0 || x1 >= canvas.w || y1 >= canvas.h;
+    if !any || cut || w > BITMAP_MAX || h > BITMAP_MAX {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            let p = canvas.px[y * canvas.w + x];
+            let a = p[3].clamp(0.0, 1.0);
+            // The canvas holds colour times alpha; the system wants the
+            // colour itself.
+            for c in &p[..3] {
+                let v = if a > 0.0 { c / a } else { 0.0 };
+                rgba.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+            rgba.push((a * 255.0).round() as u8);
+        }
+    }
+    Some(egui::CustomCursorImage {
+        rgba: rgba.into(),
+        size: [u16::try_from(w).ok()?, u16::try_from(h).ok()?],
+        hotspot: [u16::try_from(hot - x0).ok()?, u16::try_from(hot - y0).ok()?],
+    })
 }
 
 /// The blank image for a pointer the frame left hidden, where `windows`.
@@ -1488,6 +1718,280 @@ mod tests {
                 (C::None, cfg!(target_os = "windows")),
                 "{cursor:?}"
             );
+        }
+    }
+
+    /// Turns bitmap pointers on for a test, and off again after it.
+    struct BitmapPointers;
+    impl BitmapPointers {
+        fn on() -> Self {
+            TEST_BITMAP_POINTERS.with(|b| b.set(true));
+            BitmapPointers
+        }
+    }
+    impl Drop for BitmapPointers {
+        fn drop(&mut self) {
+            TEST_BITMAP_POINTERS.with(|b| b.set(false));
+        }
+    }
+
+    /// The pixel of a pointer bitmap at `dx`, `dy` from its hot spot.
+    fn pixel(image: &egui::CustomCursorImage, dx: i32, dy: i32) -> [u8; 4] {
+        let x = (i32::from(image.hotspot[0]) + dx) as usize;
+        let y = (i32::from(image.hotspot[1]) + dy) as usize;
+        let i = (y * usize::from(image.size[0]) + x) * 4;
+        [
+            image.rgba[i],
+            image.rgba[i + 1],
+            image.rgba[i + 2],
+            image.rgba[i + 3],
+        ]
+    }
+
+    /// A drawn pointer is the system's pointer where the system takes a
+    /// bitmap for it (#2136): painted in the window it showed where the
+    /// mouse was a frame or more ago, so every tool but the Pick tools
+    /// (the system's arrow) had a pointer that trailed the hand. The
+    /// frame hands over the same drawing as a bitmap with the hot spot
+    /// where the cross hair crosses, the same bytes every frame, paints
+    /// no pointer of its own, and names the nearest system pointer for a
+    /// window that cannot take the bitmap. Something else asking for a
+    /// system pointer later in the frame still wins.
+    #[test]
+    fn a_drawn_pointer_is_handed_to_the_system_as_a_bitmap() {
+        use egui::CursorIcon as C;
+        let _on = BitmapPointers::on();
+        let ctx = crate::theme::ui_context();
+        let at = Pos2::new(120.0, 80.0);
+        let frame = |cursor: ToolCursor, later: Option<C>| {
+            let input = egui::RawInput {
+                events: vec![egui::Event::PointerMoved(at)],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                show(ui.ctx(), cursor, Some(at));
+                if let Some(icon) = later {
+                    ui.ctx().set_cursor_icon(icon);
+                }
+                finish_frame(ui.ctx());
+            });
+            out.textures_delta.clear();
+            // What the frame painted of a pointer: the cross hair's ink.
+            let painted = out
+                .shapes
+                .iter()
+                .filter(|c| {
+                    matches!(&c.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == INK)
+                })
+                .count();
+            (
+                out.platform_output.cursor_icon,
+                out.platform_output.cursor_image.clone(),
+                painted,
+            )
+        };
+        let rect = ToolCursor::Badge(Tool::Rectangle);
+        let (icon, image, painted) = frame(rect, None);
+        let image = image.expect("the pointer as a bitmap");
+        assert_eq!(icon, C::Crosshair, "the nearest system pointer goes along");
+        assert_eq!(painted, 0, "no pointer painted in the window");
+        let [w, h] = image.size.map(usize::from);
+        assert_eq!(image.rgba.len(), w * h * 4);
+        assert!(w <= BITMAP_MAX && h <= BITMAP_MAX);
+        // The cross hair's arms either side of the hot spot, the sign
+        // below and to the right: about 21 by 21 with it.
+        assert!((24..=40).contains(&w) && (24..=40).contains(&h), "{w}x{h}");
+        let [hx, hy] = image.hotspot.map(usize::from);
+        assert!(
+            (9..=14).contains(&hx) && (9..=14).contains(&hy),
+            "{hx},{hy}"
+        );
+        // Black where the arms cross and along them, the white halo
+        // beside them, nothing in the empty corner above and to the
+        // right, the sign's patch below and to the right.
+        let dark = |p: [u8; 4]| p[..3].iter().all(|c| *c < 100) && p[3] > 250;
+        let light = |p: [u8; 4]| p[..3].iter().all(|c| *c > 200) && p[3] > 100;
+        for (dx, dy) in [(0, 0), (6, 0), (-6, 0), (0, -6), (0, 6)] {
+            assert!(
+                dark(pixel(&image, dx, dy)),
+                "{dx},{dy}: {:?}",
+                pixel(&image, dx, dy)
+            );
+        }
+        for (dx, dy) in [(6, 1), (6, -1), (1, -6), (-1, -6)] {
+            assert!(
+                light(pixel(&image, dx, dy)),
+                "{dx},{dy}: {:?}",
+                pixel(&image, dx, dy)
+            );
+        }
+        assert_eq!(pixel(&image, 7, -7)[3], 0);
+        assert!(pixel(&image, 8, 8)[3] > 100);
+        // The next frames: the very same bytes, so the window keeps the
+        // one system pointer it made of them.
+        for _ in 0..3 {
+            let (_, again, _) = frame(rect, None);
+            assert!(std::sync::Arc::ptr_eq(
+                &again.expect("bitmap").rgba,
+                &image.rgba
+            ));
+        }
+        // Another tool: another bitmap.
+        let (_, ellipse, _) = frame(ToolCursor::Badge(Tool::Ellipse), None);
+        assert_ne!(ellipse.expect("bitmap").rgba, image.rgba);
+        // A text box under the pointer asks for the I-beam after the
+        // tool's pointer: the I-beam, no bitmap.
+        let (icon, image, _) = frame(rect, Some(C::Text));
+        assert_eq!(icon, C::Text);
+        assert!(image.is_none());
+        // The system's own pointers stay the system's.
+        let (icon, image, _) = frame(ToolCursor::System(C::Default), None);
+        assert_eq!(icon, C::Default);
+        assert!(image.is_none());
+        // A nib wider than a pointer bitmap is painted as before, the
+        // system pointer hidden.
+        let wide = ToolCursor::Nib {
+            radius: 120.0,
+            square: false,
+        };
+        let (icon, image, painted) = frame(wide, None);
+        assert_eq!(icon, C::None);
+        assert_eq!(
+            image.is_some(),
+            cfg!(target_os = "windows"),
+            "the blank one"
+        );
+        assert!(painted > 0);
+        // Off (every system but Windows): painted, as it was.
+        drop(_on);
+        let (icon, _, painted) = frame(rect, None);
+        assert_eq!(icon, C::None);
+        assert!(painted > 0);
+    }
+
+    /// Every drawn pointer has a bitmap with its hot spot inside it, in
+    /// the screen's pixels: twice as many on a screen of two pixels a
+    /// point, with the hot spot twice as far in. A small nib has one of
+    /// its size; the bitmap of a pointer is kept, not drawn again.
+    #[test]
+    fn every_drawn_pointer_has_a_bitmap_in_the_screens_pixels() {
+        let all = [
+            ToolCursor::ZoomIn,
+            ToolCursor::ZoomOut,
+            ToolCursor::Hand { closed: false },
+            ToolCursor::Hand { closed: true },
+            ToolCursor::Pipette,
+            ToolCursor::Bucket,
+            ToolCursor::Rotate,
+            ToolCursor::Skew { horizontal: true },
+            ToolCursor::Skew { horizontal: false },
+            ToolCursor::ShapeArrow(ShapeMark::Nothing),
+            ToolCursor::ShapeArrow(ShapeMark::Node),
+            ToolCursor::ShapeArrow(ShapeMark::Segment),
+            ToolCursor::ShapeArrow(ShapeMark::Control),
+            ToolCursor::DragMove { copy: false },
+            ToolCursor::DragMove { copy: true },
+            ToolCursor::Badge(Tool::Rectangle),
+            ToolCursor::Badge(Tool::Text),
+            ToolCursor::Cross,
+            ToolCursor::IBeam,
+            ToolCursor::CurveBadge(Tool::Bezier, CurveMark::Join),
+            ToolCursor::CurveBadge(Tool::Freehand, CurveMark::Close),
+            ToolCursor::TargetArrow,
+            ToolCursor::PenNib(None),
+            ToolCursor::PenNib(Some(CurveMark::AddNode)),
+            ToolCursor::Nib {
+                radius: 8.0,
+                square: false,
+            },
+            ToolCursor::Nib {
+                radius: 20.0,
+                square: true,
+            },
+            ToolCursor::TableArrow { down: true },
+            ToolCursor::TableArrow { down: false },
+            ToolCursor::PlaceCorner,
+            ToolCursor::FlowText,
+        ];
+        for cursor in all {
+            let one = bitmap(cursor, 1.0).unwrap_or_else(|| panic!("{cursor:?}"));
+            let two = bitmap(cursor, 2.0).unwrap_or_else(|| panic!("{cursor:?} at 2"));
+            for image in [&one, &two] {
+                let [w, h] = image.size.map(usize::from);
+                assert_eq!(image.rgba.len(), w * h * 4, "{cursor:?}");
+                assert!(
+                    w > 4 && h > 4 && w <= BITMAP_MAX && h <= BITMAP_MAX,
+                    "{cursor:?}"
+                );
+                assert!(
+                    usize::from(image.hotspot[0]) < w && usize::from(image.hotspot[1]) < h,
+                    "{cursor:?}"
+                );
+                assert!(
+                    image.rgba.chunks_exact(4).any(|p| p[3] == 255),
+                    "{cursor:?} draws something solid"
+                );
+            }
+            // (The soft edge is a pixel wide at any scale.)
+            let grown = |a: u16, b: u16| (i32::from(b) - 2 * i32::from(a)).abs() <= 6;
+            assert!(
+                grown(one.size[0], two.size[0]) && grown(one.size[1], two.size[1]),
+                "{cursor:?}: {:?} and {:?}",
+                one.size,
+                two.size
+            );
+            assert!(
+                grown(one.hotspot[0], two.hotspot[0]) && grown(one.hotspot[1], two.hotspot[1]),
+                "{cursor:?}: {:?} and {:?}",
+                one.hotspot,
+                two.hotspot
+            );
+            // Kept.
+            let again = bitmap(cursor, 1.0).expect("bitmap");
+            assert!(std::sync::Arc::ptr_eq(&again.rgba, &one.rgba), "{cursor:?}");
+        }
+        // A nib's bitmap is as wide as the nib: 8 points either side of
+        // the hot spot and its outline.
+        let nib = bitmap(
+            ToolCursor::Nib {
+                radius: 8.0,
+                square: false,
+            },
+            1.0,
+        )
+        .expect("nib");
+        // (The cross hair's arms reach 10 points, past this nib.)
+        assert!((21..=27).contains(&nib.size[0]), "{:?}", nib.size);
+        let wide = bitmap(
+            ToolCursor::Nib {
+                radius: 30.0,
+                square: false,
+            },
+            1.0,
+        )
+        .expect("nib");
+        assert!((61..=69).contains(&wide.size[0]), "{:?}", wide.size);
+        // Too wide for a pointer: none, the nib is painted.
+        for radius in [47.0, 120.0, 400.0, f32::NAN] {
+            let nib = ToolCursor::Nib {
+                radius,
+                square: false,
+            };
+            assert!(bitmap(nib, 1.0).is_none(), "{radius}");
+        }
+        assert!(bitmap(ToolCursor::Cross, 0.0).is_none());
+        assert!(bitmap(ToolCursor::System(egui::CursorIcon::Default), 1.0).is_none());
+        // Saved for a look when asked (`POINTER_BITMAPS=<folder>`).
+        if let Ok(dir) = std::env::var("POINTER_BITMAPS") {
+            for (i, cursor) in all.into_iter().enumerate() {
+                for ppp in [1.0f32, 2.0] {
+                    let image = bitmap(cursor, ppp).expect("bitmap");
+                    let [w, h] = image.size.map(u32::from);
+                    let img = image::RgbaImage::from_raw(w, h, image.rgba.to_vec()).expect("image");
+                    let path = format!("{dir}/pointer-{i:02}-{ppp}.png");
+                    img.save(path).expect("saved");
+                }
+            }
         }
     }
 

@@ -14,32 +14,43 @@ use tracedraw_core::{
     Command, Document, ShapeId, TextSpan,
 };
 
+/// Document limited to the selection, sized to what it covers, and that
+/// box. Empty selection: the page, as it was.
+///
+/// One reading of what "the selection" means for an export, used by the
+/// Export dialog and by the MCP server's `export` with `selection`, so the
+/// two cannot come out different.
+pub(crate) fn selection_document(app: &App) -> (Document, Rect) {
+    let doc = app.engine.document();
+    let bounds = app.selection_bounds().unwrap_or(app.page_rect());
+    let mut tmp = Document::new(
+        doc.title.clone(),
+        Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
+    );
+    tmp.symbols = doc.symbols.clone();
+    // The drawing's spot inks and colour profile go along: without
+    // its ink, a spot colour exports as its process stand-in.
+    tmp.inks = doc.inks.clone();
+    tmp.cmyk_profile = doc.cmyk_profile.clone();
+    tmp.color_styles = doc.color_styles.clone();
+    let l = tmp.pages[0].layers[0].id;
+    for s in app.selected_shapes() {
+        let mut c = s.clone();
+        let shift = Affine::translate((-bounds.x0, -bounds.y0));
+        c.transform_by(shift);
+        carry_blend_ends(&mut c, shift);
+        if let Ok(layer) = tmp.layer_mut(l) {
+            layer.shapes.push(c);
+        }
+    }
+    (tmp, bounds)
+}
+
 /// Document limited to the selection or the current page, for exports.
 pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
     let doc = app.engine.document();
     if st.selection_only {
-        let bounds = app.selection_bounds().unwrap_or(app.page_rect());
-        let mut tmp = Document::new(
-            doc.title.clone(),
-            Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
-        );
-        tmp.symbols = doc.symbols.clone();
-        // The drawing's spot inks and colour profile go along: without
-        // its ink, a spot colour exports as its process stand-in.
-        tmp.inks = doc.inks.clone();
-        tmp.cmyk_profile = doc.cmyk_profile.clone();
-        tmp.color_styles = doc.color_styles.clone();
-        let l = tmp.pages[0].layers[0].id;
-        for s in app.selected_shapes() {
-            let mut c = s.clone();
-            let shift = Affine::translate((-bounds.x0, -bounds.y0));
-            c.transform_by(shift);
-            carry_blend_ends(&mut c, shift);
-            if let Ok(layer) = tmp.layer_mut(l) {
-                layer.shapes.push(c);
-            }
-        }
-        (tmp, bounds)
+        selection_document(app)
     } else {
         // Facing pages (#1972): each spread as one page, or each page
         // with what its facing page holds across the spine (and in the
@@ -2207,7 +2218,7 @@ pub fn parse_csv(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
 
 // ----- find and replace ----------------------------------------------------------
 
-fn matches_text(hay: &str, needle: &str, match_case: bool, whole_word: bool) -> bool {
+pub(crate) fn matches_text(hay: &str, needle: &str, match_case: bool, whole_word: bool) -> bool {
     if needle.is_empty() {
         return false;
     }
@@ -2334,7 +2345,7 @@ pub fn replace_text(
     }
 }
 
-fn replace_in(
+pub(crate) fn replace_in(
     text: &str,
     needle: &str,
     replacement: &str,

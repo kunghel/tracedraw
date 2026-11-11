@@ -43,13 +43,52 @@ written (the blend goes out alone, with a warning in the log).
   (the top and bottom edges first, then left and right) makes a
   perspective shadow standing on that edge: the edge stays where it is
   and the opposite side of the object falls on the pointer.
-- One drag is one undo step.
+- One drag is one undo step. A drag that starts on one of several
+  selected objects keeps the selection: each of them takes the shadow,
+  a perspective one standing on its own edge (#2218). A drag on an
+  object that is not selected takes that object alone.
+- The drag starts on the object picked at the press, or else on the
+  topmost object whose outline as drawn goes round the press: the hole
+  of a ring whose inner outline runs the other way round (as the
+  shaping operations leave it) picks nothing, and a press there started
+  no shadow, so a ring took one only from its band. From the hole, as
+  from anywhere in the middle, the shadow is flat (#2219,
+  `App::shadow_drag_target`,
+  `pick_drag_tests::shadow_drags_start_anywhere_inside_an_object`).
 - A group or a clip frame takes a shadow of its own, drawn beneath
   everything it holds. Its silhouette is what it shows: each object of
   a group, and a clip frame's filled frame with its contents cut to the
   frame (an empty part of an unfilled frame, or contents outside the
   frame, cast none). The shadow is measured on the frame's box (the
   group's box). Break Drop Shadow Apart makes the same silhouette (#873).
+
+- An object with an envelope, a perspective or a distortion takes its
+  shadow by the outline it shows: the box the tool measures on (which
+  edge a press is next to, where the handles sit, where a perspective
+  shadow stands and how far it reaches) is the box of the outline as
+  drawn, the same the shadow is cast from, and the shadow is picked
+  where it lies (`Shape::shadow_outline`, `Shape::shadow_box`). The
+  tool went by the outline without the warp, so a press in the middle
+  of a bent object could stand a perspective shadow on a far edge and
+  the handles sat away from the object (#2217,
+  `shadow_tool::tests::the_shadow_of_an_enveloped_object_goes_by_what_is_drawn`).
+- An object whose live effects draw objects of their own (the body of
+  an extrusion, the steps of a contour or a blend, a block shadow, the
+  copies of a symmetry) casts the shadow of all of it, drawn once
+  beneath all of it. The shadow is measured on the box of the object's
+  own outline as drawn (of its plain outline when the effects draw the
+  object among their objects, as a body turned in space does), and its
+  layer reaches round everything the effects add. Before, the shadow
+  was the object's alone and was drawn after what the effects put
+  behind the object, so it lay over the body of an extrusion; a body
+  turned in space cast none (#2215). A group's shadow takes in what
+  the effects of its objects draw, and the shadow's picture (Break
+  Drop Shadow Apart, PDF, `.cdr`) is the same silhouette, an envelope
+  or another warp taken in
+  (`tracedraw_render`
+  `tests::an_extruded_object_casts_the_shadow_of_its_body_beneath_it`,
+  `tests::the_shadow_picture_of_an_enveloped_object_is_of_what_is_drawn`).
+  A picture with effects keeps the shadow of what its pixels show.
 
 ## Perspective geometry
 

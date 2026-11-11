@@ -17,6 +17,7 @@
 
 mod ai;
 mod ai_image;
+mod ai_retry;
 mod anchors;
 #[cfg(target_os = "android")]
 mod android;
@@ -76,6 +77,7 @@ mod export;
 mod export_assets;
 mod extrude_tool;
 mod eyedropper;
+mod file_hold;
 mod file_presence;
 mod files;
 mod fill_page;
@@ -135,6 +137,7 @@ mod ops;
 mod ops2;
 mod package;
 mod page_drop;
+mod page_names;
 mod painterly_tool;
 mod palette;
 mod palm;
@@ -170,6 +173,7 @@ mod shelf;
 mod shortcuts;
 mod snap;
 mod snap_points;
+mod soft_canvas;
 mod soft_keyboard;
 mod spell;
 #[cfg(windows)]
@@ -272,6 +276,11 @@ mod winit_tablet_tool;
 #[allow(dead_code)]
 #[path = "../../../vendor/winit/src/frame_input.rs"]
 mod winit_frame_input;
+// A mouse's buttons, wheel and hover on Android, of the same copy
+// (#2152, #2161).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/android_mouse.rs"]
+mod winit_android_mouse;
 mod workspace_file;
 
 /// The desktop program: the window, with the command line's files and
@@ -478,7 +487,7 @@ pub fn run() -> eframe::Result<()> {
                 } else {
                     Shell::new(cc, open_path)
                 };
-                shell.handed_over = Some(handed_over);
+                shell.handed_over = Some(instance::Inbox::new(handed_over));
                 Ok(Box::new(shell))
             }),
         )
@@ -549,7 +558,7 @@ struct Shell {
     open: Option<std::path::PathBuf>,
     /// Files later starts handed over (see instance.rs).
     #[cfg(not(target_arch = "wasm32"))]
-    handed_over: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    handed_over: Option<instance::Inbox>,
     /// Frames paced on a software adapter (#616).
     #[cfg(not(target_arch = "wasm32"))]
     pacer: gpu::Pacer,
@@ -974,8 +983,8 @@ impl eframe::App for Shell {
         app.take_handed_pastes();
         // Files a later start handed over (one try_recv when none came).
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rx) = &self.handed_over {
-            if instance::open_handed_over(app, ui.ctx(), rx) {
+        if let Some(inbox) = &mut self.handed_over {
+            if instance::take_handed_over(app, ui.ctx(), inbox) {
                 ui.ctx().request_repaint();
             }
         }

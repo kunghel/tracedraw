@@ -167,6 +167,28 @@ the pointer stands still over the window is not taken as the pointer
 leaving it, so the pointer is never left as the arrow or invisible
 until the mouse moves (#1922, `winit_alt_shortcuts::tests`, see
 `vendor/README.md`).
+On Windows a drawn pointer is not painted in the window at all: its
+drawing is made a bitmap (`cursors::bitmap`: what `cursors::paint`
+draws, rasterised in software in the screen's pixels and cut to what is
+drawn, the hot spot where the pointer points) and given to the system
+as the pointer, which the system then moves as it moves its own arrow.
+Painted in the window, a pointer shows where the mouse was when the
+frame was made, a refresh or more before it reaches the screen, so with
+every tool but the Pick tools (the system's arrow) the pointer trailed
+the hand while the arrow did not (#2136). The same bytes are handed
+over every frame, so the window makes one system pointer of them; a
+bitmap is drawn once for each pointer, screen scale and theme and kept
+(the last 48). The nearest system pointer goes along for a window that
+cannot take a bitmap, and a system pointer asked for later in the frame
+still wins. A nib wider than 48 points either side (the eraser or a
+brush zoomed far in) does not fit a pointer bitmap and is painted as
+before, with the blank image. The other systems paint the drawn
+pointers as before (the browser takes no bitmap from the window, and
+the size a bitmap shows at on a scaled screen differs between them);
+`TRACEDRAW_BITMAP_POINTERS=1` turns the bitmaps on there for a trial,
+`0` off on Windows.
+(`cursors::tests::a_drawn_pointer_is_handed_to_the_system_as_a_bitmap`,
+`cursors::tests::every_drawn_pointer_has_a_bitmap_in_the_screens_pixels`.)
 The cross hair's lines cross on the middle of the pixel under the hot
 spot; the icons, nibs and drawn pointers are painted beside it, above
 the drawing. A tool's icon sits 4 points below and right of the cross

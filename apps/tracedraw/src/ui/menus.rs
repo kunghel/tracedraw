@@ -367,6 +367,13 @@ pub const NEW_IN_THIS_VERSION: &[&str] = &[
     // View > Navigator, with the key N, a command like any other.
     "menu.view",
     "menu.view.navigator",
+    // Keys for commands that had none (#2201): Ctrl+Shift+I, Ctrl+;
+    // and Ctrl+'.
+    "menu.edit",
+    "menu.edit.invert_selection",
+    "menu.view.guidelines",
+    "menu.view.grid",
+    "menu.view.document_grid",
 ];
 
 thread_local! {
@@ -2741,7 +2748,12 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     // Selection commands, each one undo step (#2002).
-    if item(ui, "menu.edit.invert_selection", "", app.has_document()) {
+    if item(
+        ui,
+        "menu.edit.invert_selection",
+        "Ctrl+Shift+I",
+        app.has_document(),
+    ) {
         app.invert_selection();
     }
     sub(ui, "menu.edit.select_similar", |ui| {
@@ -2870,7 +2882,7 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sub(ui, "menu.view.grid", |ui| {
-        if check(ui, "menu.view.document_grid", "", app.show_grid) {
+        if check(ui, "menu.view.document_grid", "Ctrl+'", app.show_grid) {
             app.show_grid = !app.show_grid;
         }
         if check(ui, "menu.view.pixel_grid", "", app.show_pixel_grid) {
@@ -2887,7 +2899,7 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         app.settings.show_scrollbars = !app.settings.show_scrollbars;
         app.settings.save();
     }
-    if check(ui, "menu.view.guidelines", "", app.show_guides) {
+    if check(ui, "menu.view.guidelines", "Ctrl+;", app.show_guides) {
         app.show_guides = !app.show_guides;
     }
     if check(
@@ -3409,17 +3421,37 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         }
         sep(ui);
         let three = app.selection.len() >= 3;
-        for (key, d) in [
-            ("menu.object.distribute_left", Distribute::Left),
-            ("menu.object.distribute_centers_h", Distribute::CentersH),
-            ("menu.object.distribute_spacing_h", Distribute::SpacingH),
-            ("menu.object.distribute_right", Distribute::Right),
-            ("menu.object.distribute_top", Distribute::Top),
-            ("menu.object.distribute_centers_v", Distribute::CentersV),
-            ("menu.object.distribute_spacing_v", Distribute::SpacingV),
-            ("menu.object.distribute_bottom", Distribute::Bottom),
+        for (key, shortcut, d) in [
+            ("menu.object.distribute_left", "Shift+L", Distribute::Left),
+            (
+                "menu.object.distribute_centers_h",
+                "Shift+E",
+                Distribute::CentersH,
+            ),
+            (
+                "menu.object.distribute_spacing_h",
+                "Shift+P",
+                Distribute::SpacingH,
+            ),
+            ("menu.object.distribute_right", "Shift+R", Distribute::Right),
+            ("menu.object.distribute_top", "Shift+T", Distribute::Top),
+            (
+                "menu.object.distribute_centers_v",
+                "Shift+C",
+                Distribute::CentersV,
+            ),
+            (
+                "menu.object.distribute_spacing_v",
+                "Shift+A",
+                Distribute::SpacingV,
+            ),
+            (
+                "menu.object.distribute_bottom",
+                "Shift+B",
+                Distribute::Bottom,
+            ),
         ] {
-            if item(ui, key, "", three) {
+            if item(ui, key, shortcut, three) {
                 app.distribute(d);
             }
         }

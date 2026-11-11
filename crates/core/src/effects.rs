@@ -1023,6 +1023,111 @@ pub fn smear(path: &BezPath, at: Point, delta: Vec2, radius: f64) -> BezPath {
     })
 }
 
+/// The share of the nib, from its centre, that Smudge carries whole.
+const SMUDGE_CORE: f64 = 0.5;
+/// How far the nib goes in one of Smudge's small moves, as a share of
+/// its radius. The carried share falls from all to nothing over half
+/// the radius, at most `1.5 / (radius / 2)` a millimetre, so a move of
+/// an eighth of the radius shifts neighbouring points by at most three
+/// eighths of their distance: the outline never folds over itself.
+const SMUDGE_STEP: f64 = 0.125;
+/// How many small moves one call makes at most (a move longer than
+/// that many steps is made in longer ones).
+const SMUDGE_MAX_STEPS: usize = 2048;
+
+/// Smudge tool: the nib (`radius`) goes from `from` to `to` and carries
+/// the outline under it along. The points within half the radius of the
+/// nib's centre go all the way with it (times `pressure`, 0 to 1), so a
+/// stroke draws the outline out into a tongue as wide as that core, with
+/// the piece of outline it took at its end; from there to the nib's edge
+/// the carried share eases to nothing (`s = u^2 (3 - 2 u)`, `u` from 1
+/// at the core to 0 at the edge), so the tongue's sides run smoothly
+/// into the outline that stayed.
+///
+/// The move is made in small moves of an eighth of the radius, each
+/// from the outline the one before left, whatever the distance between
+/// `from` and `to`: a quick stroke, which arrives as a few long moves,
+/// gives the same outline as a slow one. It used to be one push of the
+/// whole move with a weight that peaks at the nib's centre, after a
+/// smoothing pass per pointer event: a quick stroke left a thin spike
+/// behind the centre and a slow one, smoothed at every event, hardly
+/// moved the outline (#2228).
+pub fn smudge(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64) -> BezPath {
+    let delta = to - from;
+    let len = delta.hypot();
+    let usable = from.is_finite()
+        && to.is_finite()
+        && radius.is_finite()
+        && radius > 0.0
+        && pressure.is_finite()
+        && pressure > 0.0
+        && len > 1e-9;
+    if !usable {
+        return path.clone();
+    }
+    let pressure = pressure.min(1.0);
+    let steps = ((len / (radius * SMUDGE_STEP)).ceil() as usize).clamp(1, SMUDGE_MAX_STEPS);
+    let step = delta / steps as f64;
+    let max_len = radius / 8.0;
+    let core = radius * SMUDGE_CORE;
+    let carried = |d: f64| -> f64 {
+        if d <= core {
+            1.0
+        } else if d >= radius {
+            0.0
+        } else {
+            let u = (radius - d) / (radius - core);
+            u * u * (3.0 - 2.0 * u)
+        }
+    };
+    // The stretch the nib passes over: a circle round the middle of the
+    // move that holds the nib at both ends.
+    let middle = from.midpoint(to);
+    brush_runs(path, middle, radius + len / 2.0, |run, closed| {
+        let mut pts = densify(run, max_len);
+        for k in 0..steps {
+            // The sides of the tongue stretch as its end goes on: keep
+            // their points close, every few moves.
+            if k > 0 && k % 4 == 0 {
+                pts = spaced(&pts, max_len);
+            }
+            let c = from + step * k as f64;
+            let reach = kurbo::Rect::from_points(c, c).inflate(radius, radius);
+            for q in &mut pts {
+                if reach.contains(*q) {
+                    let w = carried((*q - c).hypot());
+                    if w > 0.0 {
+                        *q += step * (w * pressure);
+                    }
+                }
+            }
+        }
+        fewer_curves(&crate::geometry::smooth_path(&pts, closed))
+    })
+}
+
+/// `pts` with points put in so that no two neighbours are more than
+/// `max_len` apart.
+fn spaced(pts: &[Point], max_len: f64) -> Vec<Point> {
+    let max_len = max_len.max(0.05);
+    let mut out = Vec::with_capacity(pts.len());
+    for w in pts.windows(2) {
+        let len = (w[1] - w[0]).hypot();
+        let n = if len.is_finite() {
+            ((len / max_len).ceil() as usize).clamp(1, 4096)
+        } else {
+            1
+        };
+        for k in 0..n {
+            out.push(w[0].lerp(w[1], k as f64 / n as f64));
+        }
+    }
+    if let Some(l) = pts.last() {
+        out.push(*l);
+    }
+    out
+}
+
 /// Rotate points within `radius` of `at` by up to `angle` (Twirl tool).
 pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
     brush_each(path, at, radius, radius / 6.0, false, |pts, _| {
@@ -2145,6 +2250,109 @@ mod tests {
         assert!((back.bounding_box().x0 - 5.0).abs() < 1e-6);
     }
 
+    /// A Smudge stroke from `a` to `b` in moves of `step` mm.
+    fn smudge_stroke(path: &BezPath, a: Point, b: Point, step: f64, radius: f64) -> BezPath {
+        let n = ((b - a).hypot() / step).ceil().max(1.0) as usize;
+        let mut out = path.clone();
+        let mut last = a;
+        for k in 1..=n {
+            let at = a.lerp(b, k as f64 / n as f64);
+            out = smudge(&out, last, at, radius, 1.0);
+            last = at;
+        }
+        out
+    }
+
+    /// The flattened points of `path` whose `y` lies within half a
+    /// millimetre of `y`: their smallest and largest `x`.
+    fn span_at(path: &BezPath, y: f64) -> (f64, f64) {
+        let pts: Vec<Point> = densify(path, 0.1)
+            .into_iter()
+            .filter(|p| (p.y - y).abs() < 0.5)
+            .collect();
+        let lo = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let hi = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+        (lo, hi)
+    }
+
+    /// #2228: Smudge draws the outline out along the stroke into a
+    /// tongue, the same whether the stroke comes as many short moves or
+    /// a few long ones. A 10 mm nib dragged 30 mm up out of a square's
+    /// top side: the outline goes all the way with the nib's centre, the
+    /// tongue is as wide as the nib's core halfway up and does not thin
+    /// into a spike near its end, and its sides do not cross. A quick
+    /// stroke (6 mm moves) used to leave a thin spike, a slow one (1 mm
+    /// moves) a bulge of 11 mm for the 30 mm drag.
+    #[test]
+    fn smudge_draws_a_tongue_whatever_the_speed() {
+        let square = Rect::new(0.0, 0.0, 60.0, 40.0).to_path(0.01);
+        let (a, b) = (Point::new(30.0, 38.0), Point::new(30.0, 68.0));
+        let radius = 10.0;
+        let slow = smudge_stroke(&square, a, b, 1.0, radius);
+        let quick = smudge_stroke(&square, a, b, 6.0, radius);
+        let once = smudge(&square, a, b, radius, 1.0);
+        for (name, out) in [("slow", &slow), ("quick", &quick), ("once", &once)] {
+            let bounds = out.bounding_box();
+            // The top side was 2 mm ahead of the nib's centre and stays
+            // so (each move refits the curve within a tenth of a
+            // millimetre).
+            assert!((bounds.y1 - 70.0).abs() < 1.5, "{name}: {bounds:?}");
+            // The rest of the square is where it was.
+            assert!(
+                bounds.x0.abs() < 1e-6 && bounds.y0.abs() < 1e-6 && (bounds.x1 - 60.0).abs() < 1e-6,
+                "{name}: {bounds:?}"
+            );
+            for y in [50.0, 60.0, 67.0] {
+                let (lo, hi) = span_at(out, y);
+                assert!(
+                    hi - lo > radius * 0.9 && hi - lo < radius * 2.0 + 0.5,
+                    "{name}: {} mm wide at {y}",
+                    hi - lo
+                );
+                assert!(
+                    (lo + hi - 60.0).abs() < 1.0,
+                    "{name}: off the stroke at {y}: {lo} to {hi}"
+                );
+            }
+            assert!(
+                out.elements().len() < 60,
+                "{name}: {}",
+                out.elements().len()
+            );
+            assert!(matches!(out.elements().last(), Some(PathEl::ClosePath)));
+            // The outline goes round once: the tongue adds its area and
+            // no loop takes any away.
+            let area = out.area().abs();
+            assert!(area > 2400.0 + 30.0 * radius * 0.9, "{name}: {area}");
+        }
+        // The same outline at any speed.
+        for y in [45.0, 50.0, 55.0, 60.0, 65.0] {
+            let (s, q) = (span_at(&slow, y), span_at(&quick, y));
+            assert!(
+                (s.0 - q.0).abs() < 1.5 && (s.1 - q.1).abs() < 1.5,
+                "at {y}: slow {s:?}, quick {q:?}"
+            );
+        }
+        // Half the pressure: the outline follows half as far.
+        let half = smudge(&square, a, b, radius, 0.5);
+        let top = half.bounding_box().y1;
+        assert!(top > 45.0 && top < 62.0, "{top}");
+        // Nothing to do, or nothing usable: the path itself.
+        assert_eq!(smudge(&square, a, a, radius, 1.0), square);
+        assert_eq!(smudge(&square, a, b, f64::NAN, 1.0), square);
+        assert_eq!(smudge(&square, a, b, radius, 0.0), square);
+        assert_eq!(
+            smudge(&square, a, Point::new(f64::NAN, 0.0), radius, 1.0),
+            square
+        );
+        // A stroke away from the outline leaves it exactly.
+        let far = Point::new(200.0, 200.0);
+        assert_eq!(
+            smudge(&square, far, far + Vec2::new(5.0, 0.0), radius, 1.0),
+            square
+        );
+    }
+
     /// #1133: a long Smudge, Twirl, Attract or Repel stroke circling a
     /// square ends, keeps a handful of nodes and stays finite. The curve
     /// fitter used before hung or panicked partway through such a stroke.
@@ -2164,7 +2372,7 @@ mod tests {
                 q = match brush {
                     "smudge" => {
                         let d = Vec2::new(-0.55 * a.sin(), 0.55 * a.cos());
-                        smear(&smooth(&q, at, 10.0, 0.2), at, d, 10.0)
+                        smudge(&q, at - d, at, 10.0, 1.0)
                     }
                     "twirl" => twirl(&q, at, 0.1, 10.0),
                     "attract" => attract(&q, at, 10.0, 0.05),

@@ -56,7 +56,12 @@ step count, side and end colours, and the steps the file stores go
   leaves the straight side before it along that side and arrives at the
   next side along it, so it runs on from the sides it joins and stays at
   the contour's distance (#1542,
-  `shaping::tests::a_round_offset_corner_runs_on_from_its_sides`).
+  `shaping::tests::a_round_offset_corner_runs_on_from_its_sides`). The
+  curves of an offset are fitted within 0.05 mm of it and within a
+  tenth of the offset, whichever is less, so the round corners of a
+  contour a few hundredths of a millimetre wide are still arcs and not
+  straight cuts (#2176,
+  `shaping::tests::the_round_corners_of_a_narrow_offset_stay_round`).
 - Colours: step `i` of the `n` drawn takes `accelerate(i / n, colours)`
   of the way from the object's fill (and outline) colour to the last
   step's colours, mixed directly or through the hues clockwise or

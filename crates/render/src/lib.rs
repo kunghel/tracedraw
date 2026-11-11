@@ -233,6 +233,21 @@ pub fn render_page(doc: &Document, page: PageId, opts: &RenderOptions) -> Option
     render_page_whole(doc, page, opts)
 }
 
+/// [`render_page`] on the calling thread alone, never in bands on all
+/// the cores: for a picture nobody is waiting for (the whole page drawn
+/// small behind the canvas's picture, #2048), so that the other cores
+/// stay free for the frames meanwhile.
+pub fn render_page_on_one_thread(
+    doc: &Document,
+    page: PageId,
+    opts: &RenderOptions,
+) -> Option<Pixmap> {
+    if (opts.width.max(1) as u64) * (opts.height.max(1) as u64) > MAX_PIXELS {
+        return None;
+    }
+    render_page_whole(doc, page, opts)
+}
+
 /// Rows `y0..y1` of the image `opts` describes, the same as those rows of
 /// the whole image drawn at once: drawn with rows of margin above and
 /// below as far as shadow blurs reach (every row when the page has a
@@ -752,9 +767,22 @@ impl Renderer<'_> {
         // the pixel effects (lens, non-uniform transparency).
         if !shape.effects.is_empty() {
             let ev = tracedraw_core::live::evaluate(shape);
+            // An object whose effects draw objects of their own (the body
+            // of an extrusion, a contour's steps) casts the shadow of all
+            // of it, beneath all of it. The shadow was the object's
+            // alone, drawn over what its effects put behind it (#2215).
+            let whole = casts_whole(&ev);
+            if whole && !self.flags.wireframe && shape.opacity > 0.0 {
+                if let Some(sh) = shape.shadow.as_ref().filter(|sh| sh.opacity > 0.0) {
+                    self.draw_group_shadow(sh, shape, parent);
+                }
+            }
             for b in &ev.below {
                 let mut b = b.clone();
                 b.effects.clear();
+                if whole {
+                    b.shadow = None;
+                }
                 self.draw_shape(&b, parent);
             }
             let lens = shape.effects.iter().find_map(|e| match e {
@@ -771,6 +799,9 @@ impl Renderer<'_> {
             });
             let mut main = ev.main.clone();
             main.effects.clear();
+            if whole {
+                main.shadow = None;
+            }
             let was_text = self.flags.text_outline;
             self.flags.text_outline |= matches!(shape.kind, ShapeKind::Text { .. });
             if !self.flags.complex_effects || self.flags.wireframe {
@@ -806,6 +837,9 @@ impl Renderer<'_> {
                             | tracedraw_core::live::Effect::Transparency { .. }
                     )
                 });
+                if whole {
+                    a.shadow = None;
+                }
                 self.draw_shape(&a, parent);
             }
             return;
@@ -864,12 +898,11 @@ impl Renderer<'_> {
         if let (true, ShapeKind::ClipFrame { frame, contents }) =
             (self.flags.wireframe, &shape.kind)
         {
-            // Wireframe: the frame and everything inside it, unclipped.
+            // Wireframe: the frame, and of the contents what lies inside
+            // it, as the other views cut them (#2146). They were drawn
+            // whole, so the parts the frame hides showed all round it.
+            self.draw_wireframe_contents(frame, contents, transform);
             self.draw_shape(frame, transform);
-            for c in contents {
-                let t = self.child_transform(c, transform);
-                self.draw_shape(c, t);
-            }
             return;
         }
         if let (ShapeKind::ClipFrame { frame, contents }, Some(om)) =
@@ -967,22 +1000,31 @@ impl Renderer<'_> {
             return;
         };
         if self.flags.wireframe {
-            // Wireframe: every object as its bare path, a hairline in its
-            // outline's colour (black without one) whatever its width,
-            // fill, opacity or effects; bitmaps as grey boxes.
-            if matches!(shape.kind, ShapeKind::Bitmap { .. }) {
+            // Wireframe: every object as its bare path, the same black
+            // hairline whatever its outline's colour or width, its fill,
+            // opacity or effects; bitmaps as grey boxes. The hairline
+            // took the outline's colour, so an object with a pale outline
+            // stood out from the others in a colour of its own, and one
+            // with a white outline did not show on the page at all
+            // (#2041).
+            if let ShapeKind::Bitmap { rect, .. } = &shape.kind {
                 let mut paint = Paint::default();
                 paint.anti_alias = self.flags.anti_alias;
                 paint.set_color_rgba8(208, 208, 208, 255);
                 self.pixmap
                     .fill_path(&sk, &paint, FillRule::Winding, Transform::identity(), None);
+                // Corner to corner, the mark of a picture left out
+                // (#2146): a grey box alone read as an empty frame.
+                let mut cross = tracedraw_core::BezPath::new();
+                cross.move_to((rect.x0, rect.y0));
+                cross.line_to((rect.x1, rect.y1));
+                cross.move_to((rect.x0, rect.y1));
+                cross.line_to((rect.x1, rect.y0));
+                if let Some(cross) = to_sk_path(&(self.screen * (transform * cross))) {
+                    self.hairline(&cross, tracedraw_core::Color::BLACK);
+                }
             }
-            let color = shape
-                .stroke
-                .as_ref()
-                .map(|s| s.color)
-                .unwrap_or(tracedraw_core::Color::BLACK);
-            self.hairline(&sk, color);
+            self.hairline(&sk, tracedraw_core::Color::BLACK);
             return;
         }
         let opacity = shape.opacity.clamp(0.0, 1.0) as f32;
@@ -1546,8 +1588,18 @@ impl Renderer<'_> {
         sh: &tracedraw_core::Shadow,
         b: Rect,
     ) -> Option<((i32, i32), Pixmap, Affine)> {
+        self.shadow_target_over(sh, b, b)
+    }
+
+    /// [`Self::shadow_target`] for a silhouette that covers `extent`.
+    fn shadow_target_over(
+        &self,
+        sh: &tracedraw_core::Shadow,
+        b: Rect,
+        extent: Rect,
+    ) -> Option<((i32, i32), Pixmap, Affine)> {
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
-        let (x, y, lw, lh) = shadow_pixels(sh, b, self.screen, self.zoom, w, h)?;
+        let (x, y, lw, lh) = shadow_pixels_over(sh, b, extent, self.screen, self.zoom, w, h)?;
         let layer = Pixmap::new(lw, lh)?;
         let screen = Affine::translate((-f64::from(x), -f64::from(y))) * self.screen;
         Some(((x, y), layer, screen))
@@ -1558,10 +1610,10 @@ impl Renderer<'_> {
     /// returned before their own shadow was drawn, so a shadow given to a
     /// clip frame or a group never showed (#873).
     fn draw_group_shadow(&mut self, sh: &tracedraw_core::Shadow, shape: &Shape, parent: Affine) {
-        let Some(b) = group_shadow_box(shape, parent) else {
+        let Some((b, extent)) = cast_boxes(shape, parent) else {
             return;
         };
-        let Some((layer_at, mut layer, screen)) = self.shadow_target(sh, b) else {
+        let Some((layer_at, mut layer, screen)) = self.shadow_target_over(sh, b, extent) else {
             return;
         };
         group_shadow_layer(
@@ -1581,6 +1633,55 @@ impl Renderer<'_> {
     /// target, with what lies beneath.
     fn merge_shadow(&mut self, sh: &tracedraw_core::Shadow, layer: &Pixmap, at: (i32, i32)) {
         composite_layer(self.pixmap, layer, at, sh.merge);
+    }
+
+    /// The contents of a clip frame in the Wireframe view: their
+    /// hairlines on a layer the size of the frame, cut to the frame.
+    /// A frame with no area to cut to shows them whole.
+    fn draw_wireframe_contents(&mut self, frame: &Shape, contents: &[Shape], parent: Affine) {
+        if contents.is_empty() {
+            return;
+        }
+        let (x, y, w, h) = self.layer_area(frame, parent);
+        let to_layer = Affine::translate((-f64::from(x), -f64::from(y))) * self.screen;
+        let cut = to_sk_path(&(to_layer * (parent * frame.page_path()))).and_then(|sk| {
+            let mut mask = tiny_skia::Mask::new(w, h)?;
+            mask.fill_path(
+                &sk,
+                shape_fill_rule(frame, false),
+                self.flags.anti_alias,
+                Transform::identity(),
+            );
+            Some(mask)
+        });
+        let (Some(mask), Some(mut layer)) = (cut, Pixmap::new(w, h)) else {
+            // Nothing of the frame in sight, or no outline to cut to.
+            if w > 0 && h > 0 {
+                for c in contents {
+                    let t = self.child_transform(c, parent);
+                    self.draw_shape(c, t);
+                }
+            }
+            return;
+        };
+        {
+            let mut sub = self.sub(&mut layer);
+            sub.screen = to_layer;
+            sub.origin = (self.origin.0 + x as i32, self.origin.1 + y as i32);
+            for c in contents {
+                let t = sub.child_transform(c, parent);
+                sub.draw_shape(c, t);
+            }
+        }
+        layer.apply_mask(&mask);
+        self.pixmap.draw_pixmap(
+            x as i32,
+            y as i32,
+            layer.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
     }
 
     /// A one pixel line along `sk` (the Wireframe view).
@@ -2749,8 +2850,37 @@ fn group_shadow_layer(
 /// The box the shadow of a group or a clip frame drawn inside `parent`
 /// is measured on; `None` when it is not finite.
 fn group_shadow_box(shape: &Shape, parent: Affine) -> Option<Rect> {
-    let b = (parent * shape.page_path()).bounding_box();
-    (b.width().is_finite() && b.height().is_finite()).then_some(b)
+    cast_boxes(shape, parent).map(|(b, _)| b)
+}
+
+/// The effects of an object draw objects of their own: its drop shadow
+/// is cast by all of them together (a picture keeps the shadow of what
+/// its pixels show).
+fn casts_whole(ev: &tracedraw_core::live::Evaluated) -> bool {
+    !(ev.below.is_empty() && ev.above.is_empty())
+        && !matches!(ev.main.kind, ShapeKind::Bitmap { .. })
+}
+
+/// The box the drop shadow of `shape`, drawn inside `parent`, is measured
+/// on, and the box all it casts the shadow from lies in. The first is the
+/// box of its outline as drawn, an envelope or another warp taken in (of
+/// its plain outline when its effects draw it among their own objects,
+/// as a body turned in space does); the second reaches round what its
+/// effects add. `None` when they are not finite.
+fn cast_boxes(shape: &Shape, parent: Affine) -> Option<(Rect, Rect)> {
+    let plain = || (parent * shape.page_path()).bounding_box();
+    let (b, extent) = if shape.has_live_effects() {
+        let drawn = (!shape.effects.is_empty())
+            .then(|| tracedraw_core::live::evaluate(shape).main.page_path())
+            .filter(|p| !p.elements().is_empty());
+        let b = drawn.map_or_else(plain, |p| (parent * p).bounding_box());
+        let all = parent.transform_rect_bbox(shape.visual_bounds());
+        (b, if all.is_finite() { b.union(all) } else { b })
+    } else {
+        let b = plain();
+        (b, b)
+    };
+    (b.width().is_finite() && b.height().is_finite()).then_some((b, extent))
 }
 
 /// The pixels of a `w` x `h` target that the shadow `sh` of an object
@@ -2761,6 +2891,7 @@ fn group_shadow_box(shape: &Shape, parent: Affine) -> Option<Rect> {
 /// on a layer of only these is the same as on one the size of the target
 /// (a blur clamps at the target's own edges, which this keeps). `None`
 /// when it covers no pixel of the target.
+#[cfg(test)]
 fn shadow_pixels(
     sh: &tracedraw_core::Shadow,
     b: Rect,
@@ -2769,8 +2900,22 @@ fn shadow_pixels(
     w: u32,
     h: u32,
 ) -> Option<(i32, i32, u32, u32)> {
+    shadow_pixels_over(sh, b, b, screen, zoom, w, h)
+}
+
+/// [`shadow_pixels`] for a silhouette that covers `extent`, which the
+/// shadow measured on `b` moves or shears.
+fn shadow_pixels_over(
+    sh: &tracedraw_core::Shadow,
+    b: Rect,
+    extent: Rect,
+    screen: Affine,
+    zoom: f64,
+    w: u32,
+    h: u32,
+) -> Option<(i32, i32, u32, u32)> {
     let (w, h) = (f64::from(w), f64::from(h));
-    let flat = tracedraw_core::Shadow { blur: 0.0, ..*sh }.bounds(b);
+    let flat = sh.silhouette_transform(b).transform_rect_bbox(extent);
     let corners = [
         Point::new(flat.x0, flat.y0),
         Point::new(flat.x1, flat.y0),
@@ -2813,7 +2958,9 @@ fn shadow_pixels(
 /// layer by `to_screen`, inside `clip` when given: the objects of a group
 /// each, a clip frame's filled frame and its contents only where its
 /// frame is (nested frames cut further), hidden objects not at all.
-/// Each is filled by its own fill rule, holes left open (#2216).
+/// Each is filled by its own fill rule, holes left open (#2216). An
+/// object with live effects covers what they draw: its outline as they
+/// warp it and the objects they add (#2215).
 fn fill_silhouette(
     layer: &mut Pixmap,
     shape: &Shape,
@@ -2821,14 +2968,37 @@ fn fill_silhouette(
     clip: Option<&tiny_skia::Mask>,
     anti_alias: bool,
 ) {
+    silhouette(layer, shape, to_screen, clip, anti_alias, false)
+}
+
+/// [`fill_silhouette`]; `text` when `shape` is drawn from a text, whose
+/// warped outline fills as text does.
+fn silhouette(
+    layer: &mut Pixmap,
+    shape: &Shape,
+    to_screen: Affine,
+    clip: Option<&tiny_skia::Mask>,
+    anti_alias: bool,
+    text: bool,
+) {
     if !shape.visible {
+        return;
+    }
+    if !shape.effects.is_empty() {
+        let ev = tracedraw_core::live::evaluate(shape);
+        let text = text || matches!(shape.kind, ShapeKind::Text { .. });
+        for part in ev.below.iter().chain([&ev.main]).chain(&ev.above) {
+            let mut part = part.clone();
+            part.effects.clear();
+            silhouette(layer, &part, to_screen, clip, anti_alias, text);
+        }
         return;
     }
     let inner = to_screen * shape.transform;
     match &shape.kind {
         ShapeKind::Group { children } => {
             for c in children {
-                fill_silhouette(layer, c, inner, clip, anti_alias);
+                silhouette(layer, c, inner, clip, anti_alias, text);
             }
         }
         ShapeKind::ClipFrame { frame, contents } => {
@@ -2887,7 +3057,7 @@ fn fill_silhouette(
             let mut paint = Paint::default();
             paint.anti_alias = anti_alias;
             paint.set_color_rgba8(255, 255, 255, 255);
-            let rule = shape_fill_rule(shape, false);
+            let rule = shape_fill_rule(shape, text);
             layer.fill_path(&sk, &paint, rule, Transform::identity(), clip);
         }
     }
@@ -2956,7 +3126,18 @@ pub fn render_shadow_image(shape: &Shape, dpi: f64) -> Option<(Rect, Pixmap)> {
     if path.elements().is_empty() || !(dpi.is_finite() && dpi > 0.0) {
         return None;
     }
-    let area = sh.bounds(path.bounding_box());
+    // Measured on the outline as drawn and reaching round all the
+    // object's effects draw, as on the page (#2215, #2217).
+    let (b, extent) = cast_boxes(shape, Affine::IDENTITY)?;
+    let pad = if sh.blur.is_finite() {
+        sh.blur.max(0.0) * 3.0
+    } else {
+        0.0
+    };
+    let area = sh
+        .silhouette_transform(b)
+        .transform_rect_bbox(extent)
+        .inflate(pad, pad);
     let zoom = dpi / 25.4;
     let w = (area.width() * zoom).ceil();
     let h = (area.height() * zoom).ceil();
@@ -2966,7 +3147,10 @@ pub fn render_shadow_image(shape: &Shape, dpi: f64) -> Option<(Rect, Pixmap)> {
     let mut pm = Pixmap::new(w as u32, h as u32)?;
     // Page (y up) to the image (y down), the area's top left at 0, 0.
     let screen = Affine::new([zoom, 0.0, 0.0, -zoom, -area.x0 * zoom, area.y1 * zoom]);
-    let drawn = if matches!(
+    let drawn = if !shape.effects.is_empty() {
+        group_shadow_layer(&mut pm, sh, shape, Affine::IDENTITY, b, screen, zoom, true);
+        true
+    } else if matches!(
         shape.kind,
         ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
     ) {
@@ -5062,15 +5246,95 @@ mod tests {
         assert_eq!(px(&pm, 16, 50), (255, 255, 255), "no outline width outside");
         let edge = (18..23).map(|x| px(&pm, x, 50).0).min().unwrap();
         assert!(edge < 200, "a dark hairline on the edge, darkest {edge}");
-        // The hairline takes the outline's colour.
-        let mut s = rect(1, Rect::new(20.0, 20.0, 80.0, 80.0), Color::WHITE);
-        s.stroke = Some(Stroke::new(Color::rgb8(0, 0, 255), 10.0));
-        let (doc, page) = doc_with(vec![s]);
+        // The hairline is black whatever the outline's colour (#2041): a
+        // blue outline gives no blue line, and a white one still shows.
+        for colour in [Color::rgb8(0, 0, 255), Color::WHITE] {
+            let mut s = rect(1, Rect::new(20.0, 20.0, 80.0, 80.0), Color::WHITE);
+            s.stroke = Some(Stroke::new(colour, 10.0));
+            let (doc, page) = doc_with(vec![s]);
+            let pm = render_page_image_with(&doc, page, 25.4, &opts).unwrap();
+            let line: Vec<_> = (18..23).map(|x| px(&pm, x, 50)).collect();
+            assert!(
+                line.iter().all(|p| p.0 == p.1 && p.1 == p.2),
+                "a grey to black line, no colour: {line:?}"
+            );
+            let darkest = line.iter().map(|p| p.0).min().unwrap();
+            assert!(darkest < 200, "a dark hairline, darkest {darkest}");
+        }
+    }
+
+    /// The Wireframe view cuts a clip frame's contents to the frame, as
+    /// the other views do (#2146): a content reaching past the frame
+    /// shows its line inside the frame only. It was drawn whole.
+    #[test]
+    fn wireframe_cuts_clip_frame_contents_to_the_frame() {
+        let frame = rect(1, Rect::new(20.0, 20.0, 60.0, 60.0), Color::WHITE);
+        // From inside the frame to far outside it at the right.
+        let content = rect(2, Rect::new(40.0, 30.0, 90.0, 50.0), Color::rgb8(255, 0, 0));
+        let clip = Shape::new(
+            ShapeId(3),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![content],
+            },
+        );
+        let (doc, page) = doc_with(vec![clip]);
+        let opts = RenderOptions {
+            wireframe: true,
+            ..RenderOptions::default()
+        };
         let pm = render_page_image_with(&doc, page, 25.4, &opts).unwrap();
-        let blue = (18..23)
-            .map(|x| px(&pm, x, 50))
-            .find(|p| p.2 > 200 && p.0 < 160);
-        assert!(blue.is_some(), "a blue hairline");
+        let dark = |x0: u32, x1: u32, y: u32| (x0..x1).any(|x| px(&pm, x, y).0 < 200);
+        // Page y 50 is row 50 of the 100 px picture; the content's top and
+        // bottom sides run along rows 50 and 70 (page y 50 and 30).
+        assert!(
+            dark(38, 43, 60),
+            "the content's left side, inside the frame"
+        );
+        assert!(dark(58, 63, 60), "the frame's right side");
+        assert!(!dark(64, 95, 60), "nothing of the content's far side");
+        let row = |y: u32| (66..88).any(|x| px(&pm, x, y).0 < 200);
+        assert!(
+            !(45..75).any(row),
+            "no content lines to the right of the frame"
+        );
+        assert_eq!(px(&pm, 50, 60), (255, 255, 255), "no fill");
+    }
+
+    /// A picture in the Wireframe view is a grey box crossed corner to
+    /// corner, the mark of a picture left out, not a plain box (#2146).
+    #[test]
+    fn wireframe_marks_pictures_with_a_cross() {
+        let mut photo = Pixmap::new(2, 2).unwrap();
+        photo.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+        let png = photo.encode_png().unwrap();
+        let bmp = Shape::new(
+            ShapeId(1),
+            ShapeKind::Bitmap {
+                rect: Rect::new(20.0, 20.0, 80.0, 80.0),
+                width_px: 2,
+                height_px: 2,
+                png: png.into(),
+                fx: None,
+            },
+        );
+        let (doc, page) = doc_with(vec![bmp]);
+        let opts = RenderOptions {
+            wireframe: true,
+            ..RenderOptions::default()
+        };
+        let pm = render_page_image_with(&doc, page, 25.4, &opts).unwrap();
+        // Off the diagonals: the grey of the box.
+        assert_eq!(px(&pm, 50, 30), (208, 208, 208));
+        // On them, at a quarter and at the middle: a dark line.
+        for (x, y) in [(35, 35), (65, 35), (50, 50)] {
+            let darkest = (x - 1..=x + 1)
+                .flat_map(|i| (y - 1..=y + 1).map(move |j| (i, j)))
+                .map(|(i, j)| px(&pm, i, j).0)
+                .min()
+                .unwrap();
+            assert!(darkest < 120, "a diagonal at {x}, {y}: {darkest}");
+        }
     }
 
     #[test]
@@ -7378,6 +7642,132 @@ mod tests {
         }
     }
 
+    /// A blue square at 20 to 40 mm with a body running 10 mm up and to
+    /// the right and a flat, sharp black shadow.
+    fn extruded_square(offset: (f64, f64), turn: [f64; 3]) -> Shape {
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(20.0, 20.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        s.stroke = None;
+        s.effects = vec![tracedraw_core::live::Effect::Extrude {
+            depth: tracedraw_core::geometry::Vec2::new(10.0, 10.0),
+            vanishing: None,
+            amount: 0.0,
+            shade_from: None,
+            shade_to: None,
+            light_angle: 135.0,
+            light_intensity: 50.0,
+            bevel: 0.0,
+            kind: None,
+            on_object: false,
+            solid: None,
+            space: tracedraw_core::extrude3d::Solid {
+                rotation: turn,
+                ..Default::default()
+            },
+        }];
+        s.shadow = Some(tracedraw_core::Shadow {
+            offset: tracedraw_core::geometry::Vec2::new(offset.0, offset.1),
+            opacity: 1.0,
+            blur: 0.0,
+            color: Color::BLACK,
+            merge: tracedraw_core::live::MergeMode::Normal,
+            ..Default::default()
+        });
+        s
+    }
+
+    /// #2215: an extruded object casts the shadow of the object and its
+    /// body together, beneath both. The shadow was the object's alone and
+    /// was drawn over the body behind it, a dark patch on the body's
+    /// faces; a body turned in space cast none.
+    #[test]
+    fn an_extruded_object_casts_the_shadow_of_its_body_beneath_it() {
+        let black = (0, 0, 0);
+        // The shadow 4 mm to the right: the square's own would cover the
+        // body's right face up to x = 44.
+        let s = extruded_square((4.0, 0.0), [0.0; 3]);
+        let (doc, page) = doc_with(vec![s.clone()]);
+        let pm = render_page_image(&doc, page, 25.4).unwrap();
+        // Image rows run down: page y = 100 - row.
+        let (r, g, b) = px(&pm, 42, 68);
+        assert!(b > 60 && r < 40 && g < 40, "the body's face: {r} {g} {b}");
+        assert_eq!(px(&pm, 30, 70), (0, 0, 255), "the object");
+        // Beyond the body (it ends at x = 50) lies the body's shadow.
+        assert_eq!(px(&pm, 52, 60), black, "the body's shadow");
+        assert_eq!(px(&pm, 56, 60), (255, 255, 255));
+        // The picture of the shadow has the body in it.
+        let (area, alone) = render_shadow_image(&s, 25.4).expect("picture");
+        assert!(
+            (area.x1 - 54.0).abs() < 1.5 && (area.y1 - 50.0).abs() < 1.5,
+            "{area:?}"
+        );
+        assert!(
+            (area.x0 - 24.0).abs() < 1.5 && (area.y0 - 20.0).abs() < 1.5,
+            "{area:?}"
+        );
+        let at = |x: f64, y: f64| {
+            alone
+                .pixel((x - area.x0) as u32, (area.y1 - y) as u32)
+                .map_or(0, |p| p.alpha())
+        };
+        assert_eq!(at(52.5, 45.5), 255, "the body's far corner");
+        assert_eq!(at(26.5, 45.5), 0, "above the object, left of the body");
+        // In a group that has the shadow the body casts it too.
+        let mut child = s.clone();
+        let shadow = child.shadow.take();
+        let mut group = Shape::new(
+            tracedraw_core::ShapeId(2),
+            ShapeKind::Group {
+                children: vec![child],
+            },
+        );
+        group.shadow = shadow;
+        let (doc, page) = doc_with(vec![group]);
+        let pm = render_page_image(&doc, page, 25.4).unwrap();
+        assert_eq!(px(&pm, 52, 60), black, "a group's shadow");
+        // Turned in space the body casts a shadow at all.
+        let turned = extruded_square((40.0, 0.0), [0.0, 30.0, 0.0]);
+        let (doc, page) = doc_with(vec![turned]);
+        let pm = render_page_image(&doc, page, 25.4).unwrap();
+        assert_eq!(px(&pm, 70, 70), black, "a turned body's shadow");
+    }
+
+    /// The picture of the shadow of an enveloped object (Break Drop
+    /// Shadow Apart, PDF and `.cdr` output) is of the outline the envelope
+    /// draws, where the page shows the shadow; it was of the outline
+    /// without the envelope (#2217).
+    #[test]
+    fn the_shadow_picture_of_an_enveloped_object_is_of_what_is_drawn() {
+        let mut s = extruded_square((40.0, 0.0), [0.0; 3]);
+        // The envelope stretches the square to twice its height.
+        s.effects = vec![tracedraw_core::live::Effect::envelope_around(
+            Rect::new(20.0, 20.0, 40.0, 60.0),
+            false,
+        )];
+        let (area, pm) = render_shadow_image(&s, 25.4).expect("picture");
+        assert!(
+            (area.x0 - 60.0).abs() < 1.5 && (area.x1 - 80.0).abs() < 1.5,
+            "{area:?}"
+        );
+        assert!(
+            (area.y0 - 20.0).abs() < 1.5 && (area.y1 - 60.0).abs() < 1.5,
+            "{area:?}"
+        );
+        assert_eq!(pm.pixel(10, 3).map(|p| p.alpha()), Some(255));
+        // The page shows it there: beside the drawn top, page y = 55.
+        let (doc, page) = doc_with(vec![s]);
+        let pm = render_page_image(&doc, page, 25.4).unwrap();
+        assert_eq!(px(&pm, 70, 45), (0, 0, 0));
+        assert_eq!(px(&pm, 30, 45), (0, 0, 255));
+    }
+
     /// A ring as a user makes one, with a flat black shadow 30 mm to the
     /// right: two circles combined, or one curve whose inner circle runs
     /// the same way round as the outer one (`reversed` false) or the
@@ -8258,6 +8648,36 @@ mod band_tests {
         assert_eq!(green(770), Some(200));
         render_page_in_bands(&doc, page, &opts).unwrap();
         assert_eq!(image_cache::decodes_of(&png), 1);
+    }
+
+    /// A page drawn on one thread is the page drawn whole (large enough
+    /// here for [`render_page`] to draw it in bands), and an image too
+    /// large is refused as [`render_page`] refuses it.
+    #[test]
+    fn one_thread_draws_the_whole_page() {
+        let (doc, page) = heavy(60);
+        let opts = RenderOptions {
+            width: 900,
+            height: 700,
+            view: ViewTransform {
+                zoom: 3.0,
+                origin_x: 20.0,
+                origin_y: 650.0,
+            },
+            anti_alias: true,
+            ..RenderOptions::default()
+        };
+        let one = render_page_on_one_thread(&doc, page, &opts).expect("drawn");
+        let whole = render_page_whole(&doc, page, &opts).expect("drawn");
+        assert_eq!((one.width(), one.height()), (900, 700));
+        assert!(one.data() == whole.data());
+        assert!(one.data().iter().any(|v| *v != 0), "something is drawn");
+        let huge = RenderOptions {
+            width: 1 << 20,
+            height: 1 << 20,
+            ..opts
+        };
+        assert!(render_page_on_one_thread(&doc, page, &huge).is_none());
     }
 
     /// A page drawn in bands on several threads matches the page drawn

@@ -19,6 +19,15 @@ the object: a solid extrusion of the outline along `offset`.
   with no outline, in the shadow colour.
 - Gap: when greater than 0, the outline grown by `gap` mm is trimmed
   from the shadow, which leaves a clear band between object and shadow.
+- The shadow is cast by the whole object. A group casts it from what
+  its objects cover together: each object's area by its own rule, made
+  clean contours and joined with the nonzero rule (read as one outline,
+  two objects of a group were a hole where they overlap). An object
+  whose effects before the block shadow draw objects of their own (the
+  far face and the sides of an extrusion, the steps of a contour) casts
+  it from itself and those objects together, and the shadow is drawn
+  beneath all of them; it was the object's alone and lay over the body
+  (#2218, `live::tests::block_shadow_is_cast_by_the_whole_object`).
 
 ## Property bar
 
@@ -34,7 +43,17 @@ the object: a solid extrusion of the outline along `offset`.
 
 - Drag from an object: the object is selected and the shadow offset
   follows the pointer from the press point; every move replaces the
-  previous block shadow.
+  previous block shadow. A drag that starts on one of several selected
+  objects keeps the selection and gives each of them the shadow, in one
+  undo step (#2218,
+  `pick_drag_tests::a_shadow_drag_on_a_selection_shadows_every_selected_object`).
+- The object is the one picked at the press point (where the button
+  went down, not where the drag was noticed), or else the topmost one
+  whose outline as drawn goes round it, so a drag also starts in the
+  hole of a ring (#2219, as the Drop Shadow tool,
+  `pick_drag_tests::shadow_drags_start_anywhere_inside_an_object`).
+- Text takes a block shadow as it is, with no need to convert it to
+  curves, an envelope on it included, and so does a group.
 
 ## Checks
 

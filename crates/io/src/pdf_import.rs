@@ -1043,9 +1043,53 @@ fn devanagari_typed_order(text: &str, reph_glyph: bool, drawn: bool) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c == DEVA_SIGN_I && chars.get(i + 1).is_some_and(|n| deva_consonant(*n)) {
-            let end = cluster_end(i + 1);
-            out.extend_from_slice(&chars[i + 1..end]);
+            // One glyph for the short i sign with the reph or a nasal
+            // sign on it (drawn order, glyph by glyph: ि, then र्, then
+            // the nasal sign, all before the letter): the reph goes
+            // before the cluster, the i sign after it, the nasal sign
+            // last (र्किं).
+            let mut from = i + 1;
+            let reph = drawn
+                && chars.get(from) == Some(&DEVA_RA)
+                && chars.get(from + 1) == Some(&DEVA_VIRAMA)
+                && chars
+                    .get(from + 2)
+                    .is_some_and(|n| deva_consonant(*n) || matches!(n, '\u{0901}' | '\u{0902}'));
+            if reph {
+                from += 2;
+            }
+            let nasal = chars
+                .get(from)
+                .copied()
+                .filter(|n| drawn && matches!(n, '\u{0901}' | '\u{0902}'));
+            if nasal.is_some() {
+                from += 1;
+            }
+            if from == i + 1 || chars.get(from).is_some_and(|n| deva_consonant(*n)) {
+                let end = cluster_end(from);
+                if reph {
+                    out.extend([DEVA_RA, DEVA_VIRAMA]);
+                }
+                out.extend_from_slice(&chars[from..end]);
+                out.push(DEVA_SIGN_I);
+                out.extend(nasal);
+                i = end;
+                continue;
+            }
+        }
+        // The same with only a nasal sign between the i sign and its
+        // letter.
+        if drawn
+            && c == DEVA_SIGN_I
+            && chars
+                .get(i + 1)
+                .is_some_and(|n| matches!(n, '\u{0901}' | '\u{0902}'))
+            && chars.get(i + 2).is_some_and(|n| deva_consonant(*n))
+        {
+            let end = cluster_end(i + 2);
+            out.extend_from_slice(&chars[i + 2..end]);
             out.push(DEVA_SIGN_I);
+            out.push(chars[i + 1]);
             i = end;
             continue;
         }
@@ -1057,9 +1101,13 @@ fn devanagari_typed_order(text: &str, reph_glyph: bool, drawn: bool) -> String {
             && chars.get(i + 1) == Some(&DEVA_VIRAMA)
             && out.last() != Some(&DEVA_VIRAMA)
             && !chars.get(i + 2).is_some_and(|n| {
+                // (Glyph by glyph in drawn order, a reph also stands
+                // before the vowel sign drawn after its letter: र्वा is
+                // drawn व, the reph, ा. Typed text has no sign after a
+                // virama.)
                 *n == DEVA_VIRAMA
                     || is_joiner(*n)
-                    || (deva_mark(*n) && !matches!(n, '\u{0900}'..='\u{0902}'))
+                    || (!drawn && deva_mark(*n) && !matches!(n, '\u{0900}'..='\u{0902}'))
             })
         {
             let mut start = out.len();
@@ -3615,7 +3663,18 @@ impl<'a> Importer<'a> {
             .any(|(code, c)| map.get(code).is_some_and(|t| *t != c.to_string()));
         let fixes = if scrambled {
             let units = self.text_units(key, map);
-            unscramble_tounicode(map, &nominal, marks, &units)
+            let mut fixes = unscramble_tounicode(map, &nominal, marks, &units);
+            // The same font installed here says outright what each of its
+            // glyphs stands for; the map is worked out only for the
+            // others.
+            for (code, text) in self.installed_glyph_texts(map, desc_font, descriptor, &units) {
+                if map.get(&code) == Some(&text) {
+                    fixes.remove(&code);
+                } else {
+                    fixes.insert(code, text);
+                }
+            }
+            fixes
         } else {
             HashMap::new()
         };
@@ -3623,6 +3682,87 @@ impl<'a> Importer<'a> {
         let fixed = !fixes.is_empty();
         self.tounicode_fixes.insert(key, fixes);
         fixed
+    }
+
+    /// The text of the codes `units` show in a two-byte TrueType font,
+    /// as the font of the same name installed on the system draws it
+    /// with those glyphs (see [`crate::pdf_indic`]); empty when that
+    /// font is not installed or is not the embedded one.
+    fn installed_glyph_texts(
+        &self,
+        map: &HashMap<u32, String>,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        units: &[Vec<u32>],
+    ) -> HashMap<u32, String> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        let gid_of = |code: u32| match &cid_to_gid {
+            Some(m) => m.get(code as usize).copied(),
+            None => u16::try_from(code).ok(),
+        };
+        // The codes that show Devanagari, or nothing the map knows.
+        let mut codes: Vec<u32> = units
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|c| {
+                map.get(c).is_none_or(|t| {
+                    t.is_empty() || t.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+                })
+            })
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let used: Vec<u16> = codes.iter().filter_map(|c| gid_of(*c)).collect();
+        // The family the embedded font names itself, then the PDF's name
+        // for it without the subset's tag and the style.
+        let mut families: Vec<String> = Vec::new();
+        if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+            for id in [
+                ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
+                ttf_parser::name_id::FAMILY,
+            ] {
+                families.extend(
+                    face.names()
+                        .into_iter()
+                        .filter(|n| n.name_id == id)
+                        .filter_map(|n| n.to_string()),
+                );
+            }
+        }
+        let base = descriptor
+            .and_then(|d| self.get(d, b"FontName"))
+            .or_else(|| self.get(desc_font, b"BaseFont"))
+            .and_then(|o| o.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).into_owned());
+        if let Some(base) = base {
+            let name = base.split_once('+').map_or(base.as_str(), |(_, n)| n);
+            let name = name.split([',', '-']).next().unwrap_or(name);
+            families.push(name.to_string());
+        }
+        families.retain(|f| !f.trim().is_empty());
+        families.dedup();
+        let texts = crate::pdf_indic::glyph_texts(&data, &families, &used);
+        for code in codes {
+            if let Some(t) = gid_of(code).and_then(|g| texts.get(&g)) {
+                out.insert(code, t.clone());
+            }
+        }
+        out
     }
 
     /// The codes of a two-byte TrueType font whose glyph the font's own

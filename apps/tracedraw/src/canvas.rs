@@ -531,6 +531,31 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         (app.view_mode == crate::app::ViewMode::Pixels).then(|| app.document_dpi()),
     );
     let main_rendered = app.raster.borrow().render_count() != renders_before;
+    // The whole page drawn small, for where the picture does not reach
+    // while the view moves (#2048). Not while something is previewed or
+    // only part of the drawing shows: the backdrop is the drawing as it
+    // stands.
+    #[cfg(not(target_arch = "wasm32"))]
+    let backdrop = if preview.is_none()
+        && app.render_focus().is_none()
+        && app.view_mode != crate::app::ViewMode::Pixels
+    {
+        app.raster.borrow_mut().backdrop(
+            painter.ctx(),
+            doc,
+            app.page,
+            app.page_rect(),
+            view,
+            rect,
+            revision,
+            app.wireframe,
+            app.simulate_overprints,
+            app.rasterize_complex_effects,
+            app.proof_colors,
+        )
+    } else {
+        None
+    };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut raster = app.raster.borrow_mut();
@@ -636,6 +661,20 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
 
     if let Some((tex, at)) = main {
+        // Where the picture does not reach (it is shown scaled or shifted
+        // into place while the view moves): the whole page drawn small,
+        // instead of blank paper until the new picture comes (#2048).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((back, back_at)) = backdrop {
+            for part in backdrop_parts(rect, at, back_at) {
+                painter.with_clip_rect(part).image(
+                    back,
+                    back_at,
+                    ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
         painter.image(
             tex,
             at,
@@ -710,6 +749,21 @@ fn mask_outside_pages(app: &App, painter: &Painter, rect: ERect, paper: ERect) {
             }
         }
     }
+}
+
+/// The parts of the canvas `rect` where the backdrop (on screen at
+/// `back_at`) shows: those the page's picture (at `at`) does not cover.
+/// None while the picture covers the canvas, as it does at rest. The
+/// two are never drawn over one another: see-through objects would show
+/// twice as dense there.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn backdrop_parts(rect: ERect, at: ERect, back_at: ERect) -> Vec<ERect> {
+    let area = rect.intersect(back_at);
+    if !(area.width() > 0.0 && area.height() > 0.0) {
+        return Vec::new();
+    }
+    // (A picture a hair short of the canvas's edge covers it.)
+    outside(area, &[at.expand(0.5)])
 }
 
 /// The parts of `area` no rectangle of `holes` covers, as rectangles:

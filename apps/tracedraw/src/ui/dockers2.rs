@@ -453,10 +453,15 @@ fn color_styles(app: &mut App, ui: &mut Ui) {
     for (i, cs) in st.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             changed |= color_button(ui, &mut cs.color);
-            changed |= ui
-                .add(egui::TextEdit::singleline(&mut cs.name).desired_width(90.0))
-                .rich_tip(crate::ui::tips::keyed("docker.cs_name"))
-                .lost_focus();
+            let field = egui::Id::new(("color_style_name", i));
+            let (_, typed) = kept_text(ui, field, i, &cs.name.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(90.0))
+                    .rich_tip(crate::ui::tips::keyed("docker.cs_name"))
+            });
+            if let Some(name) = typed {
+                cs.name = name;
+                changed = true;
+            }
             if ui
                 .small_button(tr("docker.fill"))
                 .rich_tip(crate::ui::tips::pair("docker.fill", "docker.cs_fill_desc"))
@@ -670,10 +675,15 @@ fn styles_list(app: &mut App, ui: &mut Ui) {
     for (i, os) in st.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             style_swatches(ui, &os.fill, &os.stroke);
-            changed |= ui
-                .add(egui::TextEdit::singleline(&mut os.name).desired_width(96.0))
-                .rich_tip(crate::ui::tips::keyed("docker.style_name"))
-                .lost_focus();
+            let field = egui::Id::new(("object_style_name", i));
+            let (_, typed) = kept_text(ui, field, os.id, &os.name.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(96.0))
+                    .rich_tip(crate::ui::tips::keyed("docker.style_name"))
+            });
+            if let Some(name) = typed {
+                os.name = name;
+                changed = true;
+            }
             let n = counts.get(&os.id).copied().unwrap_or(0);
             dim(ui, trf("docker.style_objects", &[("n", &n.to_string())]));
         });
@@ -2517,20 +2527,30 @@ fn object_data(app: &mut App, ui: &mut Ui) {
         ui.label("");
         ui.end_row();
         for (i, (k, v)) in data.iter_mut().enumerate() {
-            changed |= ui
-                .add(egui::TextEdit::singleline(k).desired_width(90.0))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.field",
-                    "docker.data_field_desc",
-                ))
-                .lost_focus();
-            changed |= ui
-                .add(egui::TextEdit::singleline(v).desired_width(120.0))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.value",
-                    "docker.data_value_desc",
-                ))
-                .lost_focus();
+            let field = egui::Id::new(("object_data_field", i));
+            let (_, typed) = kept_text(ui, field, s.id, &k.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(90.0))
+                    .rich_tip(crate::ui::tips::pair(
+                        "docker.field",
+                        "docker.data_field_desc",
+                    ))
+            });
+            if let Some(name) = typed {
+                *k = name;
+                changed = true;
+            }
+            let field = egui::Id::new(("object_data_value", i));
+            let (_, typed) = kept_text(ui, field, s.id, &v.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(120.0))
+                    .rich_tip(crate::ui::tips::pair(
+                        "docker.value",
+                        "docker.data_value_desc",
+                    ))
+            });
+            if let Some(value) = typed {
+                *v = value;
+                changed = true;
+            }
             if ui
                 .small_button("x")
                 .rich_tip(crate::ui::tips::keyed("docker.data_remove"))
@@ -2585,23 +2605,71 @@ fn object_data(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The Hyperlink field of the Links and Bookmarks docker.
+pub fn hyperlink_field_id() -> egui::Id {
+    egui::Id::new("links.hyperlink")
+}
+
+/// A text field showing `stored` that keeps what is typed into it while
+/// it has the focus: `add` draws it on the text to show. Gives the text
+/// shown and, on the frame the field is left (Enter, Tab, a click
+/// elsewhere), the text typed when it differs from `stored`. `of` names
+/// what the field shows the text of (the object selected), so text typed
+/// for one object is never shown or stored for another.
+fn kept_text(
+    ui: &mut Ui,
+    field: egui::Id,
+    of: impl std::hash::Hash + std::fmt::Debug,
+    stored: &str,
+    add: impl FnOnce(&mut Ui, &mut String) -> egui::Response,
+) -> (String, Option<String>) {
+    // One text kept a field, with what it was typed for: text kept for
+    // another object is dropped, never shown or stored later.
+    let key = field.with("typed");
+    let of = egui::Id::new(of);
+    let kept = ui
+        .data(|d| d.get_temp::<(egui::Id, String)>(key))
+        .filter(|(typed_for, _)| *typed_for == of)
+        .map(|(_, text)| text);
+    let was_typed = kept.is_some();
+    let mut text = kept.unwrap_or_else(|| stored.to_string());
+    let resp = add(ui, &mut text);
+    if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(key, (of, text.clone())));
+        return (text, None);
+    }
+    ui.data_mut(|d| d.remove::<(egui::Id, String)>(key));
+    let typed = ((was_typed || resp.lost_focus() || resp.changed()) && text != stored)
+        .then(|| text.clone());
+    (text, typed)
+}
+
 fn links(app: &mut App, ui: &mut Ui) {
     let shapes = app.selected_shapes();
     if shapes.is_empty() {
         dim(ui, tr("docker.select_one_object"));
         return;
     }
-    let mut link = shapes[0].link.clone().unwrap_or_default();
+    let stored = shapes[0].link.clone().unwrap_or_default();
     ui.label(tr("docker.hyperlink"));
-    if ui
-        .text_edit_singleline(&mut link)
-        .rich_tip(crate::ui::tips::keyed("docker.hyperlink_field"))
-        .lost_focus()
-    {
+    // What is typed stays in the field until it is left (#2191): the
+    // field showed the stored link again on every frame, so no key
+    // typed into it ever stayed.
+    let (link, typed) = kept_text(
+        ui,
+        hyperlink_field_id(),
+        shapes[0].id,
+        &stored,
+        |ui, text| {
+            ui.add(egui::TextEdit::singleline(text).id(hyperlink_field_id()))
+                .rich_tip(crate::ui::tips::keyed("docker.hyperlink_field"))
+        },
+    );
+    if let Some(link) = typed {
         let ids = app.selection.clone();
         app.run(Command::SetLink {
             shapes: ids,
-            link: (!link.is_empty()).then_some(link.clone()),
+            link: (!link.is_empty()).then_some(link),
         });
     }
     ui.horizontal(|ui| {

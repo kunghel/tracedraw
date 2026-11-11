@@ -332,6 +332,22 @@ pub(crate) fn outline_reach(s: &tracedraw_core::Shape, to_page: Affine) -> f64 {
 }
 
 impl App {
+    /// The Distribute keys, each pressed with Shift: the letters of the
+    /// Align keys for the same edge or centre, P and A for the gaps.
+    pub const DISTRIBUTE_KEYS: [(Key, crate::ops::Distribute); 8] = {
+        use crate::ops::Distribute;
+        [
+            (Key::L, Distribute::Left),
+            (Key::E, Distribute::CentersH),
+            (Key::P, Distribute::SpacingH),
+            (Key::R, Distribute::Right),
+            (Key::T, Distribute::Top),
+            (Key::C, Distribute::CentersV),
+            (Key::A, Distribute::SpacingV),
+            (Key::B, Distribute::Bottom),
+        ]
+    };
+
     pub fn hit_test(&self, p: Point) -> Option<ShapeId> {
         self.hit_test_where(p, |_| false)
     }
@@ -427,9 +443,12 @@ impl App {
     pub fn hit_test_where(&self, p: Point, skip: impl Fn(ShapeId) -> bool) -> Option<ShapeId> {
         let tol = self.object_pick_tol();
         // Focus mode: only the parts of the object in focus (or itself).
+        // A clip frame's parts are its contents, where the frame shows
+        // them (#2157): a click in a focused clip frame took the clip
+        // frame itself, so nothing inside it could be picked or edited.
         if let Some(f) = self.focus_shape_on_page() {
             return match &f.kind {
-                ShapeKind::Group { .. } => self
+                ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. } => self
                     .children_hit(&f, p, tol)
                     .into_iter()
                     .find(|c| !skip(c.id))
@@ -911,10 +930,10 @@ impl App {
                 _ => candidates.push(s.clone()),
             }
         }
-        for s in &candidates {
-            if !crate::select_region::takes(region, s, touching, &fill_counts) {
+        for i in crate::select_region::taken(region, &candidates, touching, &fill_counts) {
+            let Some(s) = candidates.get(i) else {
                 continue;
-            }
+            };
             if !before.contains(&s.id) {
                 if !ids.contains(&s.id) {
                     ids.push(s.id);
@@ -1734,8 +1753,12 @@ impl App {
                             grab,
                             begun: false,
                         };
-                    } else if let Some(id) = self.hit_test(press) {
-                        self.select(vec![id]);
+                    } else if let Some(id) = self.shadow_drag_target(press) {
+                        // A press on one of several selected objects
+                        // keeps them all: each takes the shadow (#2218).
+                        if !self.selection.contains(&id) {
+                            self.select(vec![id]);
+                        }
                         self.drag = Drag::Shadow {
                             shape: id,
                             start: press,
@@ -2205,6 +2228,12 @@ impl App {
                 // A group or clip frame: into focus mode.
                 if self.focus_on_double_click(id) {
                     self.focus_on(id);
+                    // The part under the pointer comes selected (#2157):
+                    // the double click left nothing selected, as if it
+                    // had only deselected the object.
+                    if let Some(part) = self.hit_test(p).filter(|part| *part != id) {
+                        self.select(vec![part]);
+                    }
                     return;
                 }
                 if let Some(s) = self.doc().find_shape(id).cloned() {
@@ -4041,7 +4070,8 @@ impl App {
             return;
         }
 
-        if pressed(Key::Z, cmd) {
+        // Alt+Backspace undoes too, the older key for it (#2201).
+        if pressed(Key::Z, cmd) || pressed(Key::Backspace, Modifiers::ALT) {
             self.undo();
         }
         if pressed(Key::Z, cmd | Modifiers::SHIFT) {
@@ -4286,6 +4316,20 @@ impl App {
         if pressed(Key::PageDown, cmd) {
             self.order(2);
         }
+        // The bracket keys order too (#2201): Ctrl+] and Ctrl+[ one step,
+        // with Shift to the front and the back of the layer.
+        if pressed(Key::CloseBracket, cmd) {
+            self.order(1);
+        }
+        if pressed(Key::OpenBracket, cmd) {
+            self.order(2);
+        }
+        if pressed(Key::CloseBracket, cmd | Modifiers::SHIFT) {
+            self.order(0);
+        }
+        if pressed(Key::OpenBracket, cmd | Modifiers::SHIFT) {
+            self.order(3);
+        }
         // The rest of the menu shortcuts.
         if pressed(Key::P, cmd) {
             self.print();
@@ -4351,6 +4395,17 @@ impl App {
         }
         if pressed(Key::R, Modifiers::ALT | Modifiers::SHIFT) {
             self.show_rulers = !self.show_rulers;
+        }
+        // View > Guidelines and View > Grid > Document Grid (#2201).
+        if pressed(Key::Semicolon, cmd) {
+            self.show_guides = !self.show_guides;
+        }
+        if pressed(Key::Quote, cmd) {
+            self.show_grid = !self.show_grid;
+        }
+        // Edit > Invert Selection (#2201).
+        if pressed(Key::I, cmd | Modifiers::SHIFT) {
+            self.invert_selection();
         }
         // Ctrl+8 and Ctrl+2: selected text one keyboard text increment
         // larger or smaller (Options > Text).
@@ -4514,10 +4569,11 @@ impl App {
                 };
             }
         }
-        // The Shape tool with nodes chosen: C turns cusp nodes smooth and
-        // the others cusp, S symmetrical nodes smooth and the others
-        // symmetrical, Y makes them symmetrical (before the alignment and
-        // tool letters).
+        // The Shape tool with nodes chosen: C makes them cusp, S smooth
+        // and Y symmetrical (before the alignment and tool letters).
+        // Each key names one type: C used to turn a cusp node smooth
+        // and S to make nodes symmetrical, so neither key gave the type
+        // it stands for on the node it was pressed on (#2210).
         let nodes_chosen = self.tool == Tool::Shape && !self.node_selection.is_empty();
         if nodes_chosen {
             // The node commands' own keys (Object > Nodes, Shift and a
@@ -4532,18 +4588,16 @@ impl App {
                 return;
             }
             use tracedraw_core::nodes::NodeType;
-            let now = self.current_node_type();
-            let toggled = |key: Key, pair: NodeType| {
-                let ty = if now == Some(pair) {
-                    NodeType::Smooth
-                } else {
-                    pair
-                };
-                (key, ty)
+            // A B-spline's control point has two states, so C still
+            // switches a fixed one back to floating (#1758).
+            let cusp = if self.chosen_spline_points() == Some(true) {
+                NodeType::Smooth
+            } else {
+                NodeType::Cusp
             };
             for (k, ty) in [
-                toggled(Key::C, NodeType::Cusp),
-                toggled(Key::S, NodeType::Symmetrical),
+                (Key::C, cusp),
+                (Key::S, NodeType::Smooth),
                 (Key::Y, NodeType::Symmetrical),
             ] {
                 if pressed(k, Modifiers::NONE) {
@@ -4590,6 +4644,16 @@ impl App {
             ] {
                 if pressed(k, Modifiers::NONE) {
                     self.align(a);
+                    return;
+                }
+            }
+            // Distribute: Shift and the letter that aligns the same way,
+            // Shift+P and Shift+A for equal gaps across and down (#2147).
+            // The Distribute commands had no keys at all, so Shift+E and
+            // Shift+C did nothing.
+            for (k, d) in App::DISTRIBUTE_KEYS {
+                if pressed(k, Modifiers::SHIFT) {
+                    self.distribute(d);
                     return;
                 }
             }

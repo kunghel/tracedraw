@@ -2267,17 +2267,64 @@ impl App {
         bitmap.overprint_fill = o.overprint_black;
         bitmap.cmyk_bitmap = o.mode == ConvertMode::Cmyk;
         let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
-        let cmds = vec![
-            Command::DeleteShapes { shapes: ids },
+        let mut cmds = vec![
+            Command::DeleteShapes {
+                shapes: ids.clone(),
+            },
             Command::AddShape {
                 layer,
                 shape: bitmap,
             },
         ];
+        // The picture takes the place of the topmost object it was made
+        // of, not the top of the layer: put there, its shadow covered the
+        // objects that were above the selection (#2220).
+        if let Some((at_layer, index)) = self.stack_place_of(&ids) {
+            cmds.push(Command::Reorder {
+                shape: id,
+                layer: at_layer,
+                index,
+            });
+        }
         if let Err(e) = self.engine.run_batch("Convert to Bitmap", &cmds) {
             self.status = e.to_string();
         }
         self.selection = vec![id];
+    }
+
+    /// Where an object that replaces `ids` goes in the stack: the layer of
+    /// the topmost of them (each counted by its object on the layer, the
+    /// group or clip frame it is in), at the place it has once `ids` are
+    /// deleted: above the objects that stay under it. `None` when none of
+    /// them is on the current page.
+    fn stack_place_of(&self, ids: &[ShapeId]) -> Option<(tracedraw_core::LayerId, usize)> {
+        let doc = self.doc();
+        let tops: Vec<ShapeId> = ids
+            .iter()
+            .map(|id| doc.ancestors(*id).first().copied().unwrap_or(*id))
+            .collect();
+        let mut best: Option<(usize, usize)> = None;
+        let layers = self.page_layers();
+        for (li, l) in layers.iter().enumerate() {
+            for (i, s) in l.shapes.iter().enumerate() {
+                if tops.contains(&s.id) {
+                    best = Some((li, i));
+                }
+            }
+        }
+        let (li, i) = best?;
+        let l = layers.get(li)?;
+        let top = l.shapes.get(i)?;
+        // The objects that stay below it; the top object itself stays
+        // too when only some of its contents were taken.
+        let below = l
+            .shapes
+            .iter()
+            .take(i)
+            .filter(|s| !ids.contains(&s.id))
+            .count();
+        let stays = usize::from(!ids.contains(&top.id));
+        Some((l.id, below + stays))
     }
 
     /// Object > Create > Pattern Fill: the selection becomes a bitmap pattern
@@ -5458,6 +5505,54 @@ mod tests {
         );
         assert_eq!(apply_case("hello world", CaseMode::Title), "Hello World");
         assert_eq!(apply_case("aBc", CaseMode::Toggle), "AbC");
+    }
+
+    /// #2220: a ring with a shadow converted to a bitmap went to the top
+    /// of the layer, so its shadow covered the text that was above it.
+    /// The picture takes the place of the topmost object it was made of.
+    #[test]
+    fn convert_to_bitmap_keeps_the_place_in_the_stack() {
+        let mut app = App::headless();
+        for id in app.selectable_ids() {
+            app.select(vec![id]);
+            app.delete_selection();
+        }
+        let square = |app: &mut App, x: f64| {
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, 0.0, x + 20.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let below = square(&mut app, 0.0);
+        let ring = square(&mut app, 5.0);
+        let middle = square(&mut app, 8.0);
+        let above = square(&mut app, 10.0);
+        app.run(Command::SetFill {
+            shapes: vec![ring, middle],
+            fill: Fill::Solid(Color::rgb8(0, 0, 0)),
+        });
+        let order = |app: &App| -> Vec<ShapeId> {
+            app.page_layers()
+                .iter()
+                .flat_map(|l| l.shapes.iter().map(|s| s.id))
+                .collect()
+        };
+        // One object: the picture stands where it stood.
+        app.select(vec![ring]);
+        app.convert_to_bitmap(72.0, true);
+        let pic = app.selection[0];
+        assert_eq!(order(&app), vec![below, pic, middle, above]);
+        // Two objects: where the topmost of them stood, under the one
+        // that was above both.
+        app.select(vec![below, middle]);
+        app.convert_to_bitmap(72.0, true);
+        let pic2 = app.selection[0];
+        assert_eq!(order(&app), vec![pic, pic2, above]);
+        // One undo step gives the objects back in their places.
+        app.undo();
+        assert_eq!(order(&app), vec![below, pic, middle, above]);
     }
 
     #[test]

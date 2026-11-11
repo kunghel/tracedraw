@@ -341,6 +341,19 @@ change marked `TraceDraw:` in a comment.
   leave tracking anew. Both decisions are in `src/alt_shortcuts.rs`,
   which depends on nothing in the crate; TraceDraw's tests include and
   run it (`winit_alt_shortcuts::tests`).
+- Change: Android reports a mouse as a mouse (#2152, #2161). winit's
+  Android backend turned every pointer of a `MotionEvent` into a `Touch`
+  and dropped hover, scroll and button actions ("TODO mouse events"), so a
+  Bluetooth or USB mouse clicked like a finger with any button, its wheel
+  did nothing and nothing was hovered. In `platform_impl/android/mod.rs`
+  a motion event whose source is a mouse or whose first pointer's tool is
+  one is no longer made into touches: `src/android_mouse.rs` says what the
+  window is told (`CursorEntered`, `CursorMoved`, `MouseInput` for the
+  buttons that changed in the event's button state, `MouseWheel` in lines
+  from `AXIS_VSCROLL` and `AXIS_HSCROLL`, `CursorLeft` once a hover ended
+  and no press followed in the same batch of events). The file depends on
+  nothing in the crate, and TraceDraw's tests include and run it
+  (`winit_android_mouse::tests`).
 - Change: Android passes on the modifier keys of a hardware keyboard
   (#2052). winit's Android backend sent no `ModifiersChanged`, so with a
   Bluetooth or USB keyboard Shift, Ctrl and Alt never reached the app
