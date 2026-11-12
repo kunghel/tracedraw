@@ -889,6 +889,19 @@ impl eframe::App for Shell {
         }
     }
 
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Files a later start handed over bring the window up, minimized
+        // too: a minimized window runs this and no ui (#2129).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(inbox) = &mut self.handed_over {
+            if instance::bring_up_for_handed_over(ctx, inbox) {
+                ctx.request_repaint();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The start works once a frame reached the screen, not when the
         // window was made (#1999).

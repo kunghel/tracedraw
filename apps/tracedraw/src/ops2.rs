@@ -2023,6 +2023,33 @@ impl App {
             if shapes.is_empty() {
                 return;
             }
+            // A grayscale bitmap made RGB is stored with three channels
+            // again, so it reads as RGB (#2330).
+            if mode == crate::bitmap_fx::ColorMode::Rgb {
+                let cmds: Vec<Command> = self
+                    .selected_shapes()
+                    .iter()
+                    .filter(|s| !s.cmyk_bitmap)
+                    .filter_map(|s| {
+                        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                            return None;
+                        };
+                        if !crate::bitmap_fx::png_is_gray(png) {
+                            return None;
+                        }
+                        let img = crate::bitmap_fx::decode(png)?;
+                        bitmap_with_png(s, crate::bitmap_fx::encode(&img)?)
+                    })
+                    .collect();
+                if !cmds.is_empty() {
+                    if let Err(e) = self.engine.run_batch("RGB Color", &cmds) {
+                        self.status = e.to_string();
+                    }
+                }
+                if !self.selected_shapes().iter().any(|s| s.cmyk_bitmap) {
+                    return;
+                }
+            }
             self.convert_colors(&crate::ui::convert_colors::ConvertColorsState {
                 to,
                 whole: false,
@@ -2030,12 +2057,38 @@ impl App {
             });
             return;
         }
-        for (id, rect, _, _, png) in self.bitmap_shapes() {
-            let Some(img) = crate::bitmap_fx::decode(&png) else {
+        // Grayscale (8-bit) converts the bitmaps: their pixels stored as
+        // one grey channel (with alpha when they have it), no longer CMYK
+        // nor keeping ink channels, so the status bar and the Mode menu
+        // show them grayscale. The pixels only turned grey before, the
+        // picture staying RGB or CMYK (#2330).
+        let mut cmds = Vec::new();
+        for s in self.selected_shapes() {
+            let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                continue;
+            };
+            let Some(img) = crate::bitmap_fx::decode(png) else {
                 continue;
             };
             let out = crate::bitmap_fx::convert_mode(&img, mode);
-            self.replace_bitmap(id, rect, &out);
+            let Some(cmd) =
+                crate::bitmap_fx::encode_gray(&out).and_then(|g| bitmap_with_png(&s, g))
+            else {
+                continue;
+            };
+            cmds.push(cmd);
+            if s.cmyk_bitmap || s.picture_inks.is_some() {
+                cmds.push(Command::SetPictureInks {
+                    shape: s.id,
+                    cmyk: false,
+                    inks: None,
+                });
+            }
+        }
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.run_batch("Grayscale", &cmds) {
+                self.status = e.to_string();
+            }
         }
     }
 
@@ -2213,31 +2266,53 @@ impl App {
             300.0
         };
         // The whole of what the selection draws: a drop shadow reaches
-        // past the objects' box and was cut off at it (#2351).
+        // past the objects' box and was cut off at it (#2351), and so did
+        // a thick outline, its outer half or all of it (#2369).
         let Some(area) = self.selection_bounds().map(|b| {
             shapes
                 .iter()
                 .filter_map(|s| shadow_reach(s, Affine::IDENTITY))
+                .chain(
+                    shapes
+                        .iter()
+                        .filter_map(|s| outline_area(s, Affine::IDENTITY)),
+                )
                 .fold(b, |a, r| a.union(r))
         }) else {
             return;
         };
-        let Some((png, w, h, bounds)) =
-            self.render_selection_area_png(dpi, o.transparent, o.anti_alias, area)
-        else {
+        let Some(tmp) = self.selection_alone(area) else {
             return;
         };
+        let Some((png, w, h)) = render_alone_png(&tmp, dpi, o.transparent, o.anti_alias) else {
+            return;
+        };
+        let bounds = area;
         // The colour mode asked for (#1777): a grayscale picture is stored
         // as a grayscale PNG; a CMYK one shows its pixels as the inks
         // print them and is marked CMYK, as Image > Mode > CMYK does
         // (#1254).
         use crate::bitmap_modes::ConvertMode;
+        let mut inks = None;
         let png = match o.mode {
             ConvertMode::Rgb => png,
             mode => match crate::bitmap_fx::decode(&png).and_then(|img| match mode {
-                ConvertMode::Cmyk => {
-                    crate::bitmap_fx::encode(&crate::bitmap_fx::through_cmyk(&img))
-                }
+                // A CMYK bitmap keeps the inks the objects print with
+                // beside its screen pixels, and shows the pixels those
+                // inks print: taken back from the screen pixels, a red of
+                // C0 M100 Y100 came out C2 M99 Y96 (#2381).
+                ConvertMode::Cmyk => match ink_planes(&tmp, dpi, o.anti_alias, w, h)
+                    .and_then(|planes| cmyk_picture(&img, planes))
+                {
+                    Some((png, planes)) => {
+                        inks = Some(Box::new(tracedraw_core::picture_inks::PictureInks::cmyk(
+                            &png,
+                            planes.into(),
+                        )));
+                        Some(png)
+                    }
+                    None => crate::bitmap_fx::encode(&crate::bitmap_fx::through_cmyk(&img)),
+                },
                 ConvertMode::Grayscale => {
                     crate::bitmap_fx::encode_gray(&crate::bitmap_modes::convert_pixels(&img, o))
                 }
@@ -2262,6 +2337,7 @@ impl App {
         bitmap.stroke = None;
         bitmap.overprint_fill = o.overprint_black;
         bitmap.cmyk_bitmap = o.mode == ConvertMode::Cmyk;
+        bitmap.picture_inks = inks;
         let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
         let mut cmds = vec![
             Command::DeleteShapes {
@@ -3118,6 +3194,7 @@ impl App {
             return;
         }
         self.finish_text();
+        self.bar_to_new_text_style();
         let (path, closed) = path_for_text_at(&curve.page_path(), at);
         let (align, offset) = if begin && closed && at.is_some() {
             (tracedraw_core::TextAlign::Left, 0.0)
@@ -4231,6 +4308,110 @@ impl App {
     }
 }
 
+/// The CMYK inks of `tmp`'s page as [`render_alone_png`] draws it at
+/// `dpi` (`w` x `h` pixels): each process plate drawn as the coverage of
+/// its ink, so a colour given in CMYK keeps its values, as one grey PNG
+/// of the cyan, magenta, yellow and black planes one under the other
+/// (255 full ink, [`tracedraw_core::picture_inks::PictureInks`]), the
+/// coverage of the edges in them as on white paper.
+fn ink_planes(
+    tmp: &tracedraw_core::Document,
+    dpi: f64,
+    anti_alias: bool,
+    w: u32,
+    h: u32,
+) -> Option<image::GrayImage> {
+    let page = tmp.pages.first()?;
+    let mut planes = image::GrayImage::new(w, h.checked_mul(4)?);
+    for k in 0..4u32 {
+        let mut doc = tmp.clone();
+        *doc.pages.first_mut()? =
+            crate::export::plate_page(page, crate::export::Plate::Process(k as usize));
+        let (png, pw, ph) = render_alone_png(&doc, dpi, false, anti_alias)?;
+        if (pw, ph) != (w, h) {
+            return None;
+        }
+        let img = crate::bitmap_fx::decode(&png)?;
+        for (x, y, p) in img.enumerate_pixels() {
+            planes.put_pixel(x, y + k * h, image::Luma([255 - p[0]]));
+        }
+    }
+    Some(planes)
+}
+
+/// Most different inks a CMYK bitmap's pixels are worked out from one by
+/// one; past it the pixels go through the profiles and back as a whole.
+const CMYK_PIXEL_INKS: usize = 1 << 16;
+
+/// The pixels and the ink planes (PNGs) of a CMYK bitmap rendered as
+/// `img`, with `planes` from [`ink_planes`]: the inks of each pixel taken
+/// to its full opacity (the planes hold them as on white paper, an edge
+/// pixel half covered at half its ink), and the pixel the colour of its
+/// inks, so a CMYK colour shows as it does as a vector. A picture with
+/// more different inks than [`CMYK_PIXEL_INKS`] shows its pixels through
+/// the profiles and back (`bitmap_fx::through_cmyk`).
+fn cmyk_picture(
+    img: &image::RgbaImage,
+    mut planes: image::GrayImage,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (w, h) = img.dimensions();
+    if planes.dimensions() != (w, h.checked_mul(4)?) {
+        return None;
+    }
+    let mut colors: std::collections::HashMap<[u8; 4], [u8; 3]> = std::collections::HashMap::new();
+    let mut out = img.clone();
+    let mut many = false;
+    for y in 0..h {
+        for x in 0..w {
+            let a = u32::from(img.get_pixel(x, y)[3]);
+            let mut ink = [0u8; 4];
+            for (k, v) in ink.iter_mut().enumerate() {
+                let at = (x, y + k as u32 * h);
+                let on_paper = u32::from(planes.get_pixel(at.0, at.1)[0]);
+                *v = if a == 0 {
+                    0
+                } else {
+                    ((on_paper * 255 + a / 2) / a).min(255) as u8
+                };
+                planes.put_pixel(at.0, at.1, image::Luma([*v]));
+            }
+            if many || a == 0 {
+                continue;
+            }
+            let rgb = match colors.get(&ink) {
+                Some(c) => *c,
+                None if colors.len() >= CMYK_PIXEL_INKS => {
+                    many = true;
+                    continue;
+                }
+                None => {
+                    let f = |v: u8| f32::from(v) / 255.0;
+                    let c = Color::Cmyk {
+                        c: f(ink[0]),
+                        m: f(ink[1]),
+                        y: f(ink[2]),
+                        k: f(ink[3]),
+                    }
+                    .to_rgb8();
+                    colors.insert(ink, c);
+                    c
+                }
+            };
+            let p = out.get_pixel_mut(x, y);
+            p[0] = rgb[0];
+            p[1] = rgb[1];
+            p[2] = rgb[2];
+        }
+    }
+    if many {
+        out = crate::bitmap_fx::through_cmyk(img);
+    }
+    let png = crate::bitmap_fx::encode(&out)?;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    planes.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some((png, buf.into_inner()))
+}
+
 /// The first page of `tmp` ([`App::selection_alone`]) drawn into a PNG
 /// at `dpi`: its bytes and pixel size.
 pub fn render_alone_png(
@@ -4851,6 +5032,82 @@ pub use crate::fit_path::{
     FitAlign, FitCopies, FitMeasure, FitOrder, FitPathSettings, FitPlace, FitReference,
     FitRotation, FitSpacing, FitSpin,
 };
+
+/// The command that gives bitmap `s` the pixels `png` (same size), its
+/// place and live effects kept. `None` for another kind of object.
+fn bitmap_with_png(s: &Shape, png: Vec<u8>) -> Option<Command> {
+    let ShapeKind::Bitmap {
+        rect,
+        width_px,
+        height_px,
+        fx,
+        ..
+    } = &s.kind
+    else {
+        return None;
+    };
+    Some(Command::SetShapeKind {
+        shape: s.id,
+        kind: ShapeKind::Bitmap {
+            rect: *rect,
+            width_px: *width_px,
+            height_px: *height_px,
+            png: png.into(),
+            fx: fx.clone(),
+        },
+    })
+}
+
+/// The area the outlines of `s` (placed on the page by `parent`) cover,
+/// as the renderer draws them: out to their reach from the path (half
+/// the width, all of it outside or inside, the widest node of a
+/// variable width, scaled with the object when they scale with it),
+/// their mitred corners and their arrowheads; those of a group's objects
+/// and of a clip frame's frame too. `None` without an outline (#2369).
+fn outline_area(s: &Shape, parent: Affine) -> Option<Rect> {
+    if !s.visible {
+        return None;
+    }
+    let to_page = parent * s.transform;
+    match &s.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .filter_map(|c| outline_area(c, to_page))
+            .reduce(|a, b| a.union(b)),
+        ShapeKind::ClipFrame { frame, .. } => outline_area(frame, to_page),
+        _ => {
+            let st = s.stroke.as_ref()?;
+            let reach = crate::interaction::outline_reach(s, to_page);
+            let mut placed = s.clone();
+            placed.transform = to_page;
+            let path = placed.page_path();
+            let finite = |r: &Rect| {
+                r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite()
+            };
+            let mut area = placed.bounds().inflate(reach, reach);
+            if reach > 0.0 {
+                // The same reach on both sides of the path, with the
+                // outline's joins: a mitred corner reaches further.
+                let mut band = st.clone();
+                band.width = 2.0 * reach;
+                band.widths.clear();
+                band.dash.clear();
+                band.position = tracedraw_core::OutlinePosition::Center;
+                let b = tracedraw_core::shaping::stroke_area(&path, &band).bounding_box();
+                if finite(&b) && b.area() > 0.0 {
+                    area = area.union(b);
+                }
+            }
+            for head in tracedraw_core::style::arrowhead_paths(&path, st) {
+                let b = head.bounding_box();
+                if finite(&b) {
+                    area = area.union(b);
+                }
+            }
+            finite(&area).then_some(area)
+        }
+    }
+}
 
 /// The area the drop shadows of `s` (inside `parent`) and of the objects
 /// in it cover, in page space: the shadow's box grown by its feathering.
@@ -5660,6 +5917,11 @@ mod tests {
         });
         let object = app.doc().find_shape(circle).expect("circle").bounds();
         let reach = shadow.bounds(object);
+        // The circle's own outline reaches past its path too (#2369).
+        let line = crate::interaction::outline_reach(
+            app.doc().find_shape(circle).expect("circle"),
+            Affine::IDENTITY,
+        );
         app.select(vec![circle]);
         app.convert_to_bitmap(150.0, true);
         let pic = app.selection[0];
@@ -5674,7 +5936,7 @@ mod tests {
         else {
             panic!("a bitmap");
         };
-        let want = object.union(reach);
+        let want = object.inflate(line, line).union(reach);
         assert!(
             (rect.x0 - want.x0).abs() < 1e-6
                 && (rect.y0 - want.y0).abs() < 1e-6
@@ -5831,8 +6093,191 @@ mod tests {
         let (c, r) = (middle(&cmyk), middle(&rgb));
         assert_eq!(r, image::Rgba([0, 255, 0, 255]));
         assert_ne!(c, r, "the pixels go through the inks");
+        // The colour the green prints as (from the inks the bitmap keeps,
+        // in 8 bits each, #2381): the green through the inks and back.
         let expected = crate::bitmap_fx::through_cmyk(&image::RgbaImage::from_pixel(1, 1, r));
-        assert_eq!(c, *expected.get_pixel(0, 0));
+        let e = expected.get_pixel(0, 0);
+        for i in 0..4 {
+            assert!(
+                (i32::from(c[i]) - i32::from(e[i])).abs() <= 3,
+                "{c:?} {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_mode_grayscale_converts_the_bitmap() {
+        // #2330: Image > Mode > Grayscale (8-bit) only turned the pixels
+        // grey; the bitmap stayed RGB in the status bar and the Mode menu.
+        use crate::bitmap_fx::ColorMode;
+        let mut app = App::headless();
+        let img =
+            image::RgbaImage::from_fn(8, 4, |x, _| image::Rgba([(x * 30) as u8, 200, 40, 255]));
+        let png = crate::bitmap_fx::encode(&img).expect("png");
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 8.0, 4.0),
+                width_px: 8,
+                height_px: 4,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("bitmap");
+        app.select(vec![id]);
+        let mode = |app: &App| {
+            let s = app.doc().find_shape(id).expect("bitmap");
+            let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                panic!("a bitmap");
+            };
+            crate::bitmap_fx::mode_of(s.cmyk_bitmap, png)
+        };
+        assert_eq!(mode(&app), ColorMode::Rgb);
+        app.set_bitmap_mode(ColorMode::Grayscale);
+        assert_eq!(mode(&app), ColorMode::Grayscale);
+        let info = crate::ui::status::object_info(&app);
+        assert!(info.contains(&tr("convert_colors.gray")), "{info}");
+        let s = app.doc().find_shape(id).expect("bitmap");
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("a bitmap");
+        };
+        let p = *crate::bitmap_fx::decode(png)
+            .expect("pixels")
+            .get_pixel(3, 1);
+        assert!(p[0] == p[1] && p[1] == p[2], "{p:?}");
+        // One undo step back to RGB.
+        app.undo();
+        assert_eq!(mode(&app), ColorMode::Rgb);
+        // A CMYK bitmap turns grayscale too, no longer CMYK; RGB again
+        // stores three channels.
+        app.set_bitmap_mode(ColorMode::Cmyk);
+        assert_eq!(mode(&app), ColorMode::Cmyk);
+        app.set_bitmap_mode(ColorMode::Grayscale);
+        assert_eq!(mode(&app), ColorMode::Grayscale);
+        app.set_bitmap_mode(ColorMode::Rgb);
+        assert_eq!(mode(&app), ColorMode::Rgb);
+        let info = crate::ui::status::object_info(&app);
+        assert!(info.contains(&tr("convert_colors.rgb")), "{info}");
+    }
+
+    #[test]
+    fn convert_to_bitmap_keeps_the_whole_thick_outline() {
+        // #2369: a circle with a thick outline came out cut at the
+        // circle's own box, the outer half of the outline gone.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                arc: None,
+            })
+            .expect("circle");
+        let mut st = Stroke::new(Color::rgb8(0, 0, 0), 4.0);
+        st.scale_with_object = false;
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st.clone()),
+        });
+        app.select(vec![id]);
+        app.convert_to_bitmap(72.0, true);
+        let s = app.selected_shapes().into_iter().next().expect("bitmap");
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("not a bitmap");
+        };
+        let b = s.bounds();
+        // 2 mm of outline each way past the 20 mm circle.
+        assert!((b.width() - 24.0).abs() < 0.5, "{b:?}");
+        assert!((b.height() - 24.0).abs() < 0.5, "{b:?}");
+        assert!(
+            (b.x0 - 8.0).abs() < 0.5 && (b.y0 - 8.0).abs() < 0.5,
+            "{b:?}"
+        );
+        // The outline's outer edge is inside the picture: its edge pixels
+        // in the middle of each side are ink, not cut.
+        let img = crate::bitmap_fx::decode(png).expect("png");
+        let (w, h) = (img.width(), img.height());
+        for (x, y) in [(w / 2, 1), (w / 2, h - 2), (1, h / 2), (w - 2, h / 2)] {
+            assert!(img.get_pixel(x, y)[3] > 0, "ink at ({x}, {y})");
+        }
+        // An outline outside the path reaches its whole width out.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rectangle");
+        st.position = tracedraw_core::OutlinePosition::Outside;
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st),
+        });
+        app.select(vec![id]);
+        app.convert_to_bitmap(72.0, true);
+        let b = app.selected_shapes()[0].bounds();
+        assert!((b.width() - 28.0).abs() < 0.5, "{b:?}");
+        assert!((b.height() - 18.0).abs() < 0.5, "{b:?}");
+    }
+
+    #[test]
+    fn convert_to_cmyk_bitmap_keeps_the_cmyk_values() {
+        // #2381: a red of C0 M100 Y100 K0 converted to a CMYK bitmap read
+        // C2 M99 Y96, the inks taken back from the screen pixels.
+        use crate::bitmap_modes::{ConvertMode, ConvertOptions};
+        for (c, m, y, k) in [(0.0, 1.0, 1.0, 0.0), (0.2, 0.5, 0.0, 0.3)] {
+            let mut app = App::headless();
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rectangle");
+            app.run(Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Solid(Color::Cmyk { c, m, y, k }),
+            });
+            app.select(vec![id]);
+            app.convert_to_bitmap_with(&ConvertOptions {
+                dpi: 72.0,
+                mode: ConvertMode::Cmyk,
+                transparent: false,
+                ..Default::default()
+            });
+            let s = app.selected_shapes().into_iter().next().expect("bitmap");
+            assert!(s.cmyk_bitmap);
+            let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                panic!("not a bitmap");
+            };
+            let inks = s.picture_inks.as_deref().expect("the inks kept");
+            assert!(inks.fits(png.as_slice()));
+            // It shows as the vector did: the pixels the colour of the
+            // inks.
+            let img = crate::bitmap_fx::decode(png).expect("pixels");
+            let px = img.get_pixel(img.width() / 2, img.height() / 2);
+            let want = Color::Cmyk { c, m, y, k }.to_rgb8();
+            for i in 0..3 {
+                assert!(
+                    (i32::from(px[i]) - i32::from(want[i])).abs() <= 2,
+                    "{px:?} {want:?}"
+                );
+            }
+            let got = app.sample_color_at(Point::new(10.0, 10.0), false);
+            let Some(Color::Cmyk {
+                c: gc,
+                m: gm,
+                y: gy,
+                k: gk,
+            }) = got
+            else {
+                panic!("{got:?}");
+            };
+            for (a, b) in [(gc, c), (gm, m), (gy, y), (gk, k)] {
+                assert!(
+                    (a - b).abs() <= 1.0 / 255.0 + 1e-6,
+                    "{got:?} for {c} {m} {y} {k}"
+                );
+            }
+        }
     }
 
     #[test]

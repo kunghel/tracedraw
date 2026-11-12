@@ -498,7 +498,7 @@ pub(crate) fn edit_paragraphs(app: &mut App, f: impl Fn(&mut ParagraphStyle)) {
     }
 }
 
-/// Set the alignment of the selected text, and of new text.
+/// Set the alignment of the selected text.
 fn set_align(app: &mut App, a: TextAlign) {
     app.apply_text_align(a);
 }
@@ -538,20 +538,25 @@ pub(crate) fn apply_to_default(app: &mut App) {
     );
     if font {
         app.text_font = sp.font_family.clone();
+        app.text_default_font = sp.font_family.clone();
     }
     if style {
         app.text_bold = sp.bold;
         app.text_italic = sp.italic;
+        app.text_default_bold = sp.bold;
+        app.text_default_italic = sp.italic;
     }
     if size {
         // As seen: new text, not scaled, comes out the same size.
         app.text_size_pt = sp.size_pt * app.text_scale(t.id);
+        app.text_default_size = app.text_size_pt;
     }
     if underline {
         app.text_underline = sp.underline.is_on();
     }
     if alignment {
         app.text_align = align;
+        app.text_default_align = align;
     }
     app.status = tr("docker.text_defaults_applied");
     if fill {

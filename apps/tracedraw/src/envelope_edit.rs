@@ -628,11 +628,15 @@ impl App {
     /// The selected objects take `source`'s last envelope, its frame
     /// stretched from `source`'s box to each object's, one undo step. A
     /// source with no envelope gives the shape of its outline, so text
-    /// can be fitted into a drawn shape (#993).
+    /// can be fitted into a drawn shape (#993): as in CorelDRAW, each
+    /// object takes that shape at its size, centred where the object is
+    /// (#2178).
     pub fn copy_envelope_from(&mut self, source: ShapeId) {
         let Some(src) = self.doc().find_shape(source).cloned() else {
             return;
         };
+        // The outline's frame on the page, when the source has no envelope.
+        let mut on_page = false;
         let (frame, from, keep, mapping) = match last_envelope(&src.effects) {
             Some((src_at, frame)) => {
                 let (keep, mapping) = match src.effects.get(src_at) {
@@ -656,6 +660,7 @@ impl App {
                     return;
                 };
                 let from = frame.bounds();
+                on_page = true;
                 (frame, from, self.envelope_keep_lines, self.envelope_mapping)
             }
         };
@@ -679,9 +684,26 @@ impl App {
                 }
             };
             let to = box_at(s, at);
-            let m = Affine::translate(to.origin().to_vec2())
-                * Affine::scale_non_uniform(to.width() / from.width(), to.height() / from.height())
-                * Affine::translate(-from.origin().to_vec2());
+            // The frame of an outline keeps the outline's size and shape,
+            // centred where the object is: from the page into the
+            // object's own space. As in CorelDRAW (#2178, and the video
+            // of #2344, where the object was moved into the shape by
+            // hand afterwards), the object stays where it is; it was
+            // moved into the outline.
+            let to_page = self.doc().parent_transform(id).unwrap_or(Affine::IDENTITY) * s.transform;
+            let into_object = to_page.inverse();
+            let finite = into_object.as_coeffs().iter().all(|c| c.is_finite());
+            let m = if on_page && finite {
+                let shift = to_page * to.center() - from.center();
+                into_object * Affine::translate(shift)
+            } else {
+                Affine::translate(to.origin().to_vec2())
+                    * Affine::scale_non_uniform(
+                        to.width() / from.width(),
+                        to.height() / from.height(),
+                    )
+                    * Affine::translate(-from.origin().to_vec2())
+            };
             if let Some(e) = effects.get_mut(at) {
                 *e = Effect::from_envelope(&frame.transformed(m), keep, mapping);
             }
@@ -991,6 +1013,60 @@ mod tests {
         for p in Preset::ALL {
             let f = p.frame(Rect::new(0.0, 0.0, 10.0, 10.0));
             assert_eq!(f.len(), 8, "{p:?}");
+        }
+    }
+
+    /// Copy Envelope Properties from a band with no envelope: as in
+    /// CorelDRAW each object takes the band's shape at the band's size,
+    /// its corners at the band's four corners (#2344), centred where the
+    /// object was, a moved and turned one too. It was moved into the band
+    /// (#2178: text above an arched band went down onto it, where in
+    /// CorelDRAW it stays above it, arched like it).
+    #[test]
+    fn an_object_taking_a_shapes_outline_keeps_its_place() {
+        let mut app = App::headless();
+        let mut band = tracedraw_core::BezPath::new();
+        band.move_to((110.0, 100.0));
+        band.curve_to((116.0, 104.0), (124.0, 104.0), (130.0, 100.0));
+        band.line_to((140.0, 130.0));
+        band.curve_to((128.0, 136.0), (112.0, 136.0), (100.0, 130.0));
+        band.close_path();
+        let src = app
+            .new_shape(ShapeKind::Path {
+                path: band.clone(),
+                closed: true,
+            })
+            .expect("band");
+        let a = rect(&mut app, 0.0, 0.0, 40.0, 20.0);
+        let b = rect(&mut app, 0.0, 0.0, 30.0, 30.0);
+        app.engine
+            .run(&Command::TransformShapes {
+                shapes: vec![b],
+                transform: Affine::translate((50.0, 200.0)) * Affine::rotate(0.3),
+            })
+            .expect("moved");
+        let centres = [bounds(&app, a).center(), bounds(&app, b).center()];
+        app.select(vec![a, b]);
+        app.copy_envelope_from(src);
+        use tracedraw_core::geometry::Shape as _;
+        let bb = band.bounding_box();
+        for (id, c) in [a, b].into_iter().zip(centres) {
+            let want = bb + (c - bb.center());
+            let got = bounds(&app, id);
+            assert!(
+                (got.x0 - want.x0).abs() < 0.05
+                    && (got.x1 - want.x1).abs() < 0.05
+                    && (got.y0 - want.y0).abs() < 0.05
+                    && (got.y1 - want.y1).abs() < 0.05,
+                "{got:?} {want:?}"
+            );
+            let s = page_shape(&app, id);
+            let drawn = tracedraw_core::live::evaluate(&s).main.page_path();
+            let area = drawn.area().abs();
+            assert!(
+                (area - band.area().abs()).abs() < band.area().abs() * 0.02,
+                "{area}"
+            );
         }
     }
 

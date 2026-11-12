@@ -141,6 +141,8 @@ const ARG_PAGE_SIZE: u32 = 19130;
 const ARG_PAGE_BACKGROUND: u32 = 17000;
 /// Object argument 16016: 1 hides the object (version 21).
 const ARG_HIDDEN: u32 = 16016;
+/// Byte 0 of an object's `flgs`: the object is locked (#2347).
+pub(crate) const OBJECT_LOCKED: u8 = 0x10;
 
 /// Family and size used when neither the run nor its style names one.
 const DEFAULT_FAMILY: &str = "Arial";
@@ -920,6 +922,13 @@ impl<'a> Ctx<'a> {
         let d = self.data(f);
         let s = d.get(0..4)?;
         Some([s[0], s[1], s[2], s[3]])
+    }
+
+    /// An object locked in the program that saved the file: bit 0x10 of
+    /// byte 0 of its `flgs` ([0x10, 2, 0, 8] for a locked text of a
+    /// version 21 file, [0, 2, 0, 8] for the object beside it, #2347).
+    fn object_locked(&self, oc: &Chunk) -> bool {
+        matches!(self.flags(oc), Some(f) if f[3] & 0xf8 == 0x08 && f[0] & OBJECT_LOCKED != 0)
     }
 
     fn page_is_master(&self, pc: &Chunk) -> bool {
@@ -4301,6 +4310,10 @@ impl<'a> Ctx<'a> {
                         if let Some(clip) = self.pending_clip.take() {
                             shape = self.with_clip_contents(shape, clip, ids, page_size, depth);
                         }
+                        // Locked in the file: locked here (#2347).
+                        if self.object_locked(c) {
+                            shape.locked = true;
+                        }
                         self.note_static_id(c, shape.id);
                         out.push(shape);
                     }
@@ -6790,27 +6803,50 @@ fn shift_onto_page(layers: &mut [Layer], width: f64) {
 /// its resolved style, the values of `base` where it says nothing.
 fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> ParagraphStyle {
     let mut p = base.clone();
+    // The font's line height, which our leading counts in (taken as 1.15
+    // times the size, as common text faces have it).
+    let size_mm = style.size_pt.unwrap_or(12.0) * 25.4 / 72.0;
+    let line_mm = size_mm * 1.15;
+    // Version 16+ style strings give the line spacing and the space
+    // before and after a paragraph in the unit `spacingMethod` names:
+    // 0 the character height (factors, 1.0 = 100 %), 1 points (distances
+    // in tenths of a micron, read as millionths: 35277 is 3.5277 mm, 10
+    // points), 2 the point size (factors of the size). Read as factors
+    // of the character height, points made every line sit on the one
+    // before (#2370).
+    let method = style.spacing_method.unwrap_or(0);
+    // A factor read from a style string as the distance it stands for, mm.
+    let to_mm = |f: f64| match method {
+        1 => f * 100.0,
+        2 => f * size_mm,
+        _ => f * line_mm,
+    };
     if let Some(ls) = style.line_spacing {
-        p.leading_pct = (ls * 100.0).clamp(10.0, 1000.0);
+        let pct = match method {
+            1 | 2 if line_mm > 0.0 => to_mm(ls) / line_mm * 100.0,
+            _ => ls * 100.0,
+        };
+        p.leading_pct = pct.clamp(10.0, 1000.0);
     } else if let Some(mm) = style.line_spacing_mm {
-        // A distance between baselines, as a share of the font's line
-        // height, which our leading counts in (taken as 1.15 times the
-        // size, as common text faces have it).
-        let line_mm = style.size_pt.unwrap_or(12.0) * 25.4 / 72.0 * 1.15;
+        // A distance between baselines, as a share of the line height.
         if line_mm > 0.0 {
             p.leading_pct = (mm / line_mm * 100.0).clamp(10.0, 1000.0);
         }
     }
-    // Space before and after (version 16+ style strings), in character
-    // heights when the spacing unit is the character height: 1 before is
-    // the usual line spacing, so only what goes past it is extra room.
-    if matches!(style.spacing_method, None | Some(0)) {
-        let line_mm = style.size_pt.unwrap_or(12.0) * 25.4 / 72.0 * 1.15;
+    // Space before: the distance from the paragraph before, so only what
+    // goes past the line spacing is extra room (100 % of the character
+    // height, the default, is none). Space after: all extra room.
+    if method <= 2 {
+        let baseline_mm = line_mm * p.leading_pct / 100.0;
         if let Some(b) = style.para_before {
-            p.space_before = ((b - 1.0).max(0.0) * line_mm).min(1000.0);
+            let before = match method {
+                0 => (b - 1.0) * line_mm,
+                _ => to_mm(b) - baseline_mm,
+            };
+            p.space_before = before.clamp(0.0, 1000.0);
         }
         if let Some(a) = style.para_after {
-            p.space_after = (a.max(0.0) * line_mm).min(1000.0);
+            p.space_after = to_mm(a).clamp(0.0, 1000.0);
         }
     }
     if let Some((left, first, right)) = style.indent_pt {
@@ -6861,14 +6897,42 @@ pub(crate) mod tests {
         );
         let p = paragraph_spacing(&d, &ParagraphStyle::default());
         assert_eq!((p.space_before, p.space_after), (0.0, 0.0));
-        // Another unit is not read.
+        // An unknown unit is not read.
         let other = text::parse_style_string(
-            r#"{"paragraph":{"beforeParaSpacing":"2000000","spacingMethod":"1"}}"#,
+            r#"{"paragraph":{"beforeParaSpacing":"2000000","spacingMethod":"7"}}"#,
         );
         assert_eq!(
             paragraph_spacing(&other, &ParagraphStyle::default()).space_before,
             0.0
         );
+    }
+
+    /// #2370: a drink menu saved by CorelDRAW 27 with its spacing in
+    /// points (`spacingMethod` 1): 10.3 point text, lines 35277 apart
+    /// (3.5277 mm, 10 points), 62603 before a paragraph and 2118 after.
+    /// Read as factors of the character height, the lines were 0.035 of
+    /// a line apart (the 10 % floor) and every line of the menu was drawn
+    /// on the one before.
+    #[test]
+    fn spacing_given_in_points_is_a_distance() {
+        let st = text::parse_style_string(
+            r#"{"character":{"latin":{"size":"36334"}},"paragraph":{"afterParaSpacing":"2118","beforeParaSpacing":"62603","interLineSpacing":"35277","spacingMethod":"1"}}"#,
+        );
+        let p = paragraph_spacing(&st, &ParagraphStyle::default());
+        let size_mm = st.size_pt.expect("size") * 25.4 / 72.0;
+        let line_mm = size_mm * 1.15;
+        let baseline = line_mm * p.leading_pct / 100.0;
+        assert!((baseline - 3.5277).abs() < 1e-6, "{p:?}");
+        assert!((p.space_before - (6.2603 - 3.5277)).abs() < 1e-6, "{p:?}");
+        assert!((p.space_after - 0.2118).abs() < 1e-6, "{p:?}");
+        // In the point size: 1.2 times the size between baselines.
+        let pt = text::parse_style_string(
+            r#"{"character":{"latin":{"size":"304800"}},"paragraph":{"interLineSpacing":"1200000","spacingMethod":"2"}}"#,
+        );
+        let p = paragraph_spacing(&pt, &ParagraphStyle::default());
+        let size_mm = pt.size_pt.expect("size") * 25.4 / 72.0;
+        let baseline = size_mm * 1.15 * p.leading_pct / 100.0;
+        assert!((baseline - 1.2 * size_mm).abs() < 1e-6, "{p:?}");
     }
     use tracedraw_core::geometry::Shape as _;
 

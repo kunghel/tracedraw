@@ -892,6 +892,13 @@ the preferences, `text_sections_closed`).
   made by mistake changed the font of every new text without a word
   (`pick_drag_tests::a_size_picked_with_nothing_selected_asks_before_changing_the_default`).
   The Enter that applies a typed size does not answer the question.
+  Bold and Italic clicked with no text selected ask the same; an
+  alignment picked so becomes that of new text. Bold, italic or an
+  alignment given to a selected text stay that text's: a new text
+  starts with those of new text, and the bar shows them again once no
+  text is selected; every new text took the bold, italic or alignment
+  given last (#2346,
+  `pick_drag_tests::bold_italic_and_alignment_of_a_text_do_not_go_to_new_text`).
 - Labels show without a trailing colon.
 
 ## Glyphs docker

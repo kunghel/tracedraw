@@ -1644,7 +1644,7 @@ mod tests {
         let mut ids = Vec::new();
         for (x, size, bold, font) in [(10.0, 11.0, false, "Calibri"), (60.0, 9.0, true, "Arial")] {
             app.text_size_pt = size;
-            app.text_bold = bold;
+            app.text_default_bold = bold;
             app.text_font = font.into();
             app.start_text(Point::new(x, 10.0), None);
             app.text_insert("Text");

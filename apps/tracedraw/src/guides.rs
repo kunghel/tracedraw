@@ -375,6 +375,23 @@ impl App {
             .reduce(|a, b| a.union(b))
     }
 
+    /// The centre of rotation of the guideline in rotate mode, moved on
+    /// the canvas or where it was clicked, while guidelines and no objects
+    /// are selected: the Transformations docker's Rotate page turns the
+    /// selected guidelines about it with Relative centre on, as it turns
+    /// objects about their moved centre (#2335).
+    pub fn guide_rotation_center(&self) -> Option<Point> {
+        let index = self.guide_rotate?;
+        let unlocked = self.page_guides().get(index).is_some_and(|g| !g.locked);
+        let p = self.guide_pivot;
+        (self.selection.is_empty()
+            && !self.selected_guides.is_empty()
+            && unlocked
+            && p.x.is_finite()
+            && p.y.is_finite())
+        .then_some(p)
+    }
+
     /// The Transformations docker on guidelines (no objects selected): the
     /// selected ones moved, turned, scaled or skewed by `t` (page space),
     /// or with `copies` that many copies, each the one before transformed
@@ -1309,6 +1326,49 @@ mod tests {
         .lines(Size::new(100.0, 50.0));
         assert_eq!(grid.len(), 5 + 3);
         assert!(grid.contains(&GuideLine::Horizontal { y: 25.0 }));
+    }
+
+    /// The Transformations docker turns a guideline in rotate mode about
+    /// its centre moved on the canvas, not about a point of the guideline
+    /// at the page's middle height (#2335).
+    #[test]
+    fn the_docker_turns_a_guideline_about_its_moved_centre() {
+        let mut app = app();
+        app.add_guide(Guide::vertical(100.0));
+        app.select(Vec::new());
+        // Rotate mode, the centre dragged up the guideline (#2335).
+        let p = Point::new(100.0, 150.0);
+        assert!(app.click_guide(p, false));
+        assert!(app.click_guide(p, false));
+        assert_eq!(app.guide_rotate, Some(0));
+        assert!(app.press_guide(p, false));
+        app.drag_guide_to(Point::new(100.0, 40.0));
+        app.finish_guide_move(egui::pos2(100.0, 100.0));
+        let centre = app.guide_pivot;
+        assert!((centre.y - 40.0).abs() < 1.0, "{centre:?}");
+        assert!((app.page_rect().center().y - centre.y).abs() > 20.0);
+        // The docker: 45 degrees, one copy, Relative centre on.
+        app.transform = Default::default();
+        app.transform.tab = crate::app::TransformTab::Rotate;
+        app.transform.angle = 45.0;
+        app.transform.copies = 1;
+        assert!(app.transform.relative_center);
+        crate::ui::transform_docker::apply(&mut app);
+        let g = app.page_guides();
+        assert_eq!(g.len(), 2);
+        assert_eq!(g[0].line, GuideLine::Vertical { x: 100.0 });
+        // The copy crosses the original at the centre, turned 45 degrees.
+        assert!(g[1].line.distance(centre).abs() < 1e-6, "{:?}", g[1].line);
+        assert!(
+            (g[1].line.angle() - 45.0).abs() < 1e-6 || (g[1].line.angle() - 135.0).abs() < 1e-6,
+            "{:?}",
+            g[1].line
+        );
+        // Applied again, the next one turns about the same point.
+        crate::ui::transform_docker::apply(&mut app);
+        let g = app.page_guides();
+        assert_eq!(g.len(), 3);
+        assert!(g[2].line.distance(centre).abs() < 1e-6, "{:?}", g[2].line);
     }
 
     /// Several selected guidelines move together; a right click during

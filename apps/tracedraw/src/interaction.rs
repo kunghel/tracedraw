@@ -56,6 +56,9 @@ use tracedraw_core::{
 /// How far out of the selection box the rotate and skew arrows' centres
 /// stand (rotate mode), interface points.
 pub(crate) const ROTATE_HANDLE_OFFSET: f32 = 9.0;
+/// How many groups, clip frames and symbols deep a click looks for the
+/// object under it; deeper containers count anywhere in their box.
+const MAX_HIT_DEPTH: usize = 64;
 /// The rotate and skew arrows take a press this close to their centre.
 const ROTATE_HANDLE_PX: f32 = 9.0;
 
@@ -569,13 +572,23 @@ impl App {
     }
 
     /// `s` (in page space) is under `p` within `tol` page units: text,
-    /// groups, tables, bitmaps, clip frames and symbols anywhere in their
-    /// box; filled objects inside their shape (an open curve only when the
-    /// document fills open curves, unfilled ones too with "Treat all
-    /// objects as filled"); otherwise near the outline.
+    /// tables and bitmaps anywhere in their box; groups and symbols only
+    /// where one of their objects is (#885), clip frames on their frame
+    /// and where their contents show inside it; filled objects inside
+    /// their shape (an open curve only when the document fills open
+    /// curves, unfilled ones too with "Treat all objects as filled");
+    /// otherwise near the outline.
     pub(crate) fn shape_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64) -> bool {
+        self.shape_hit_in(s, p, tol, 0)
+    }
+
+    /// [`Self::shape_hit`] for an object `depth` groups, clip frames or
+    /// symbols deep. Past [`MAX_HIT_DEPTH`] a container counts anywhere in
+    /// its box, so a file nesting symbols in themselves cannot recurse
+    /// for ever.
+    fn shape_hit_in(&self, s: &tracedraw_core::Shape, p: Point, tol: f64, depth: usize) -> bool {
         if let Some(own) = self.without_edited_symmetry(s) {
-            return self.shape_hit(&own, p, tol);
+            return self.shape_hit_in(&own, p, tol, depth);
         }
         // A thick outline is picked anywhere it shows, out to the
         // tolerance beyond its visible edge, not only near its centre
@@ -597,7 +610,7 @@ impl App {
                 .chain(ev.above)
                 .any(|mut part| {
                     part.effects.clear();
-                    self.shape_hit(&part, p, tol)
+                    self.shape_hit_in(&part, p, tol, depth)
                 });
         }
         // A dimension is picked on its lines, arrowheads and label only,
@@ -609,14 +622,23 @@ impl App {
         }
         if matches!(
             s.kind,
-            ShapeKind::Text { .. }
-                | ShapeKind::Group { .. }
-                | ShapeKind::Table(_)
-                | ShapeKind::Bitmap { .. }
+            ShapeKind::Text { .. } | ShapeKind::Table(_) | ShapeKind::Bitmap { .. }
+        ) {
+            return true;
+        }
+        // A group, clip frame or symbol is picked where one of its
+        // objects is, not in the empty part of its box: a group lying on
+        // top let nothing inside or behind it be clicked (#885).
+        if matches!(
+            s.kind,
+            ShapeKind::Group { .. }
                 | ShapeKind::ClipFrame { .. }
                 | ShapeKind::SymbolInstance { .. }
         ) {
-            return true;
+            if depth >= MAX_HIT_DEPTH {
+                return true;
+            }
+            return self.container_hit(s, p, tol, depth + 1);
         }
         let path = s.page_path();
         // A curve left open, or an ellipse made an arc.
@@ -635,6 +657,45 @@ impl App {
             return true;
         }
         crate::canvas::distance_to_path(&path, p) <= (tol * 1.5).max(half + tol)
+    }
+
+    /// A part of the group, clip frame or symbol `s` (in page space) is
+    /// under `p`: one of a group's visible objects; a clip frame's frame,
+    /// or one of its contents where the frame shows it; the symbol's
+    /// object. The parts are tested in page space with the container's
+    /// transform; a group with none is tested without copying its parts.
+    fn container_hit(&self, s: &tracedraw_core::Shape, p: Point, tol: f64, depth: usize) -> bool {
+        let placed = |c: &tracedraw_core::Shape| {
+            if s.transform == Affine::IDENTITY {
+                self.shape_hit_in(c, p, tol, depth)
+            } else {
+                let mut c = c.clone();
+                c.transform_by(s.transform);
+                self.shape_hit_in(&c, p, tol, depth)
+            }
+        };
+        match &s.kind {
+            ShapeKind::Group { children } => {
+                children.iter().rev().filter(|c| c.visible).any(placed)
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                let mut f = (**frame).clone();
+                f.transform_by(s.transform);
+                if self.shape_hit_in(&f, p, tol, depth) {
+                    return true;
+                }
+                f.page_path().contains(p) && contents.iter().rev().filter(|c| c.visible).any(placed)
+            }
+            ShapeKind::SymbolInstance { index } => match self.doc().symbols.get(*index) {
+                Some(def) => {
+                    let mut c = def.shape.clone();
+                    c.transform_by(s.transform);
+                    self.shape_hit_in(&c, p, tol, depth)
+                }
+                None => true,
+            },
+            _ => true,
+        }
     }
 
     /// A part of dimension `s` (in page space) is under `p`: its label
@@ -1855,7 +1916,7 @@ impl App {
                     }
                 }
                 if response.dragged_by(PointerButton::Primary) {
-                    if self.fountain_drag_to(p, mods.ctrl || mods.command) {
+                    if self.fountain_drag_to(p, mods.ctrl || mods.command || mods.shift) {
                         return;
                     }
                     self.fill_gradient_drag_to(p, mods);
@@ -3270,7 +3331,7 @@ impl App {
             }
         }
         if response.dragged_by(PointerButton::Primary) {
-            if self.fountain_drag_to(p, mods.ctrl || mods.command) {
+            if self.fountain_drag_to(p, mods.ctrl || mods.command || mods.shift) {
                 return;
             }
             self.fill_gradient_drag_to(p, mods);
@@ -3311,13 +3372,14 @@ impl App {
     }
 
     /// The gradient line of an Interactive Fill or Transparency drag
-    /// follows the pointer to `p`; with Ctrl (Cmd) it turns in steps of
-    /// the constrain angle about where the drag began (#1661).
+    /// follows the pointer to `p`; with Ctrl (Cmd) or Shift it turns in
+    /// steps of the constrain angle about where the drag began (#1661,
+    /// #2373).
     fn fill_gradient_drag_to(&mut self, p: Point, mods: Modifiers) {
         let step = self.settings.constrain_angle;
         // The end of the new fill's line snaps as the pointer does
-        // (#2004); kept to the constrain angle with Ctrl, it does not.
-        let constrained = mods.ctrl || mods.command;
+        // (#2004); kept to the constrain angle, it does not.
+        let constrained = mods.ctrl || mods.command || mods.shift;
         let q = if constrained || !matches!(self.drag, Drag::FillGradient { .. }) {
             p
         } else {
@@ -3493,8 +3555,21 @@ impl App {
                 self.end_page_drag_group();
             }
             Drag::Move { total, .. } => {
+                // Let go over another page of the Multipage View: the
+                // objects become that page's, in the same undo step
+                // (#2055).
+                let to_page = (self.drop_frame.is_none() && self.page_drag_group.is_none())
+                    .then(|| self.multipage_drop_page(total))
+                    .flatten();
+                let mark = to_page.map(|_| self.engine.begin_group());
                 if total.hypot() > 1e-6 {
                     self.finish_transform(Affine::translate(total));
+                }
+                if let Some((idx, r)) = to_page {
+                    self.give_selection_to_shown_page(idx, r);
+                }
+                if let Some(mark) = mark {
+                    self.engine.end_group(mark, "Move to Page");
                 }
                 // Dropped on a clip frame with W: into it; with K: in
                 // place of its contents. Without a key the objects just

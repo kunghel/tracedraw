@@ -1587,7 +1587,28 @@ impl App {
     }
 
     pub fn break_selected_nodes(&mut self) {
-        self.for_each_selected_node("Break Curve", nodes::break_at);
+        // All of a curve's chosen nodes at once: opening a closed subpath
+        // turns it to start at the break, which moves the other nodes.
+        let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
+        for (id, i) in self.node_selection.clone() {
+            by_shape.entry(id).or_default().push(i);
+        }
+        let cmds: Vec<Command> = by_shape
+            .into_iter()
+            .filter_map(|(id, idxs)| {
+                let (path, closed, _) = self.path_of(id)?;
+                Some(Command::SetShapeKind {
+                    shape: id,
+                    kind: ShapeKind::Path {
+                        path: nodes::break_nodes(&path, &idxs),
+                        closed,
+                    },
+                })
+            })
+            .collect();
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Break Curve", &cmds);
+        }
         self.node_selection.clear();
     }
 

@@ -1460,8 +1460,25 @@ impl Command {
                 for id in contents {
                     doc.shape(*id)?;
                 }
-                let mut inner = Vec::new();
+                // The objects keep their stacking order inside the frame,
+                // the lowest first, whatever order they were picked in: a
+                // selection lists objects clicked one by one in the order
+                // of the clicks, and objects picked front first came out
+                // turned over (#2310).
+                let place = |id: &ShapeId| -> Result<(usize, usize)> {
+                    let (lid, i) = doc.locate(*id)?;
+                    let li = doc.all_layers().position(|l| l.id == lid).unwrap_or(0);
+                    Ok((li, i))
+                };
+                let mut ordered = Vec::with_capacity(contents.len());
                 for id in contents {
+                    if !ordered.iter().any(|(_, o)| o == id) {
+                        ordered.push((place(id)?, *id));
+                    }
+                }
+                ordered.sort_by_key(|(at, _)| *at);
+                let mut inner = Vec::new();
+                for (_, id) in &ordered {
                     let (lid, i) = doc.locate(*id)?;
                     inner.push(doc.layer_mut(lid)?.shapes.remove(i));
                 }
@@ -3732,6 +3749,31 @@ mod tests {
             .unwrap();
         assert_eq!(doc.layer(layer).unwrap().shapes.len(), 2);
         assert!(doc.shape(ia).is_ok());
+    }
+
+    /// Objects placed inside a frame keep their stacking order, the
+    /// lowest first, whatever order they were picked in (#2310).
+    #[test]
+    fn placing_inside_a_frame_keeps_the_stacking_order() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let shapes: Vec<Shape> = (0..4).map(|i| rect(&mut doc, i as f64 * 3.0)).collect();
+        let ids: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
+        for shape in shapes {
+            Command::AddShape { layer, shape }.apply(&mut doc).unwrap();
+        }
+        // Picked front first, one click after another.
+        Command::PlaceInside {
+            contents: vec![ids[2], ids[1], ids[0]],
+            frame: ids[3],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let ShapeKind::ClipFrame { contents, .. } = &doc.shape(ids[3]).unwrap().1.kind else {
+            panic!("a clip frame");
+        };
+        let inside: Vec<ShapeId> = contents.iter().map(|s| s.id).collect();
+        assert_eq!(inside, vec![ids[0], ids[1], ids[2]]);
     }
 
     /// A clip frame moved (turned, resized) after it was made carries

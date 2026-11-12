@@ -167,10 +167,19 @@ nothing selected, how to start.
   and Keep Lines. A right click cancels. An object with no envelope gives
   the shape of its outline instead (its largest closed part, as drawn on
   the page), so text or any object is fitted into a drawn shape: the
-  frame's nodes are the outline's, its corners the outline's points
-  nearest the corners of its box (a node goes in there), stretched from
-  that box to each object's, with the mapping and Keep Lines new
-  envelopes take (#993, `tracedraw_core::envelope::tests::frames_are_made_from_outlines`,
+  frame's nodes are the outline's, its corners the outline's own sharp
+  nodes nearest the corners of its box when there are four such (a band,
+  a trapezoid, a rectangle), else the outline's points nearest those
+  corners (a node goes in there). As in CorelDRAW, each object takes
+  that shape at the shape's size, upright as it lies on the page and
+  centred where the object is, with the mapping and Keep Lines new
+  envelopes take; it is not moved into the shape (#2178: text above an
+  arched band went down onto it, where CorelDRAW leaves it above the
+  band, arched like it; the video of #2344 shows the same, the object
+  moved into the shape by hand afterwards) (#993, #2344, #2178,
+  `tracedraw_core::envelope::tests::frames_are_made_from_outlines`,
+  `tracedraw_core::envelope::tests::a_band_keeps_its_own_corners_as_the_frame_corners`,
+  `envelope_edit::tests::an_object_taking_a_shapes_outline_keeps_its_place`,
   `text_effect_tests::text_takes_the_shape_of_an_object_as_its_envelope`).
   An open line, or an outline with more than 96 nodes, gives nothing and
   the status bar says so.

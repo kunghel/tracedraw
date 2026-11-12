@@ -22,7 +22,7 @@ use tracedraw_core::{
 /// two cannot come out different.
 pub(crate) fn selection_document(app: &App) -> (Document, Rect) {
     let doc = app.engine.document();
-    let bounds = app.selection_bounds().unwrap_or(app.page_rect());
+    let bounds = selection_export_bounds(app).unwrap_or(app.page_rect());
     let mut tmp = Document::new(
         doc.title.clone(),
         Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
@@ -44,6 +44,34 @@ pub(crate) fn selection_document(app: &App) -> (Document, Rect) {
         }
     }
     (tmp, bounds)
+}
+
+/// The box a selection exported alone is sized to: what each selected
+/// object draws, its outline included. The selection's own box leaves the
+/// outline out (an outline straddles the path), so a selected rectangle
+/// came out of an SVG, PDF or PNG export with half its outline cut off at
+/// every edge (#2290).
+fn selection_export_bounds(app: &App) -> Option<Rect> {
+    app.selected_shapes()
+        .iter()
+        .map(|s| {
+            let r = outline_reach_within(s, s.transform);
+            app.own_visual_bounds(s).inflate(r, r)
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// How far the outline of `s`, or of any object inside it (a group's),
+/// reaches past its path on the page ([`crate::interaction::outline_reach`]).
+fn outline_reach_within(s: &tracedraw_core::Shape, to_page: Affine) -> f64 {
+    let own = crate::interaction::outline_reach(s, to_page);
+    match &s.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .map(|c| outline_reach_within(c, to_page * c.transform))
+            .fold(own, f64::max),
+        _ => own,
+    }
 }
 
 /// Document limited to the selection or the current page, for exports.
@@ -4669,6 +4697,54 @@ mod tests {
         // from the start's centre (30, 110) to the end's (220, 140).
         let want = tracedraw_core::geometry::Point::new(172.5 - bounds.x0, 132.5 - bounds.y0);
         assert!((last - want).hypot() < 1e-6, "{last:?}, not {want:?}");
+    }
+
+    /// A rectangle with a 2 mm outline exported alone: the export takes
+    /// the whole outline, 1 mm past the path on every side, where the SVG's
+    /// box was the path's and cut half the outline off at each edge
+    /// (#2290). Also inside a group.
+    #[test]
+    fn a_selection_exported_alone_keeps_its_whole_outline() {
+        use tracedraw_core::{Color, Stroke};
+        let mut app = App::headless();
+        let layer = app.active_layer().expect("layer");
+        let id = app.engine.new_shape_id();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.stroke = Some(Stroke::new(Color::rgb8(0, 0, 255), 2.0));
+        app.run(Command::AddShape { layer, shape: s });
+        app.selection = vec![id];
+        let st = ExportState {
+            selection_only: true,
+            ..ExportState::default()
+        };
+        let (doc, bounds) = export_document(&app, &st);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(
+            near(bounds.x0, 9.0)
+                && near(bounds.y0, 9.0)
+                && near(bounds.x1, 41.0)
+                && near(bounds.y1, 31.0),
+            "{bounds:?}"
+        );
+        let svg = tracedraw_io::svg::page_to_svg(&doc, 0);
+        assert!(svg.contains("viewBox=\"0 0 32 22\""), "{svg}");
+
+        // Grouped: the group has no outline of its own, its rectangle has.
+        app.selection = vec![id];
+        app.group_selection();
+        assert_eq!(app.selection.len(), 1);
+        let (_, grouped) = export_document(&app, &st);
+        assert!(
+            near(grouped.x0, 9.0) && near(grouped.x1, 41.0),
+            "{grouped:?}"
+        );
     }
 
     /// Selected objects exported alone keep their spot inks: a PDF of the

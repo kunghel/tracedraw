@@ -32,10 +32,31 @@ pub fn tab_close_rect(bg: egui::Rect) -> egui::Rect {
 /// The width of a docker tab column.
 pub const STRIP_W: f32 = 27.0;
 
+/// The fill of a docker tab: the docker in front takes the theme's
+/// colour for the tab in front, the light blue of the document tab in
+/// front on the light themes (the High Contrast theme's highlight
+/// there). It was the frame colour of windows, a grey hardly apart from
+/// the other tabs (#2316).
+pub(crate) fn tab_fill(active: bool, hovered: bool) -> egui::Color32 {
+    use crate::theme::{Theme, Tokens};
+    if active {
+        if crate::theme::theme() == Theme::HighContrast {
+            Tokens::window_border()
+        } else {
+            Tokens::tab_active()
+        }
+    } else if hovered {
+        Tokens::icon_off()
+    } else {
+        Tokens::tab()
+    }
+}
+
 /// A docker tab column: the open dockers of the column at `place` as
 /// vertical tabs (an icon on top, the name running downwards), grey, the
-/// open one darker, then the button that adds a docker. A tab dragged
-/// moves its docker (see [`drag_overlay`]).
+/// open one in the colour of the tab in front ([`tab_fill`]), then the
+/// button that adds a docker. A tab dragged moves its docker (see
+/// [`drag_overlay`]).
 pub fn tab_strip(app: &mut App, ui: &mut Ui, place: DockerPlace) {
     let full = ui.max_rect();
     // The title bar's part and the line along the docker.
@@ -84,13 +105,7 @@ pub fn tab_strip(app: &mut App, ui: &mut Ui, place: DockerPlace) {
             } else {
                 egui::Rect::from_min_max(egui::pos2(r.min.x + 1.0, r.min.y), r.max)
             };
-            let fill = if active {
-                crate::theme::Tokens::window_border()
-            } else if resp.hovered() {
-                crate::theme::Tokens::icon_off()
-            } else {
-                crate::theme::Tokens::tab()
-            };
+            let fill = tab_fill(active, resp.hovered());
             ui.painter().rect_filled(bg, 0.0, fill);
             let close = tab_close_rect(bg);
             let over_close = resp.hover_pos().is_some_and(|p| close.contains(p));
@@ -4147,6 +4162,44 @@ pub(crate) mod tests {
         // On the cross: closed.
         click(&mut app, cross);
         assert!(!app.open_dockers.contains(&first), "{:?}", app.open_dockers);
+    }
+
+    /// The docker in front has its tab marked in the colour of the tab in
+    /// front, as the document tabs are, in every theme: light blue on the
+    /// light themes. It was a grey close to the other tabs' (#2316).
+    #[test]
+    fn the_tab_of_the_docker_in_front_is_marked() {
+        let ctx = crate::theme::ui_context();
+        for theme in crate::theme::Theme::ALL {
+            crate::theme::set_theme(theme);
+            let on = tab_fill(true, false);
+            assert_ne!(on, tab_fill(false, false), "{theme:?}");
+            assert_ne!(on, tab_fill(false, true), "{theme:?}");
+            if theme != crate::theme::Theme::HighContrast {
+                assert_eq!(on, Tokens::tab_active(), "{theme:?}");
+            }
+            let mut app = App::headless();
+            let tab = app.open_dockers[0];
+            let place = app.docker_place(tab).unwrap_or(DockerPlace::Right);
+            app.set_docker_column(place, true, Some(tab));
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(STRIP_W, 600.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| tab_strip(&mut app, ui, place),
+            );
+            out.textures_delta.clear();
+            let filled = out
+                .shapes
+                .iter()
+                .any(|c| matches!(&c.shape, egui::epaint::Shape::Rect(r) if r.fill == on));
+            assert!(filled, "{theme:?}: no tab in {on:?}");
+        }
+        crate::theme::set_theme(crate::theme::Theme::Light);
     }
 
     /// More docker tabs than the column's height: the mouse wheel over

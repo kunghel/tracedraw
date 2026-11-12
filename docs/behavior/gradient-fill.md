@@ -117,7 +117,11 @@ the dashed ellipse their frame makes, square fills the parallelogram.
   line gets shorter or longer and turns); radial, conical and square
   fills move whole, end and skew handle with the start.
 - End: sets the length and the angle; the skew handle turns with the
-  line and keeps its length.
+  line. A linear fill's keeps its length; a radial, conical or square
+  fill's grows and shrinks with the line, so a circle stays a circle and
+  an ellipse keeps its ratio (#2373). With Ctrl or Shift the line turns
+  in steps of the constrain angle about the start (a linear fill's start
+  node, dragged so, turns it about the end).
 - Skew handle: sets the second axis on its own, so a radial fill
   becomes an ellipse and a linear fill's bands slant.
 - The line: a drag that starts on the line from the start to the end

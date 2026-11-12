@@ -82,7 +82,10 @@ pub fn fountain_handles(f: &Fountain, b: Rect) -> Vec<(FountainHandle, Point)> {
 
 /// The nodes `h` (page points `s`, `e`, `k`) after `handle` is dragged to
 /// `p`: the start carries the skew handle (and, with a centre, the end
-/// too); the end turns the skew handle by as much as the axis turned.
+/// too); the end turns the skew handle by as much as the axis turned,
+/// and with a centre (radial, conical, square) also sizes it as the axis
+/// grew, so a circle stays a circle and an ellipse keeps its ratio; the
+/// skew handle alone sets the ratio (#2373).
 pub fn moved_nodes(
     kind: FountainKind,
     (s, e, k): (Point, Point, Point),
@@ -105,7 +108,12 @@ pub fn moved_nodes(
             } else {
                 0.0
             };
-            let kv = k - s;
+            let grow = if kind != FountainKind::Linear && old.hypot() > 1e-9 {
+                new.hypot() / old.hypot()
+            } else {
+                1.0
+            };
+            let kv = (k - s) * grow;
             let (c, sn) = (turn.cos(), turn.sin());
             let kv = Vec2::new(kv.x * c - kv.y * sn, kv.x * sn + kv.y * c);
             (s, p, s + kv)
@@ -500,15 +508,37 @@ impl App {
 
     /// The pointer of a drag [`App::begin_fountain_drag`] took is at `p`:
     /// the node it holds follows, or the whole fill moves by its line
-    /// (kept straight with `ctrl`). False when the drag holds neither.
+    /// (kept straight with `ctrl`). With `ctrl` the end node, and a linear
+    /// fill's start node, turn the line in steps of the constrain angle
+    /// about its other end (#2373). False when the drag holds neither.
     pub fn fountain_drag_to(&mut self, p: Point, ctrl: bool) -> bool {
         use crate::app::Drag;
         match self.drag {
             Drag::FountainHandle { handle, begun } => {
                 // A node snaps as the pointer does: onto the object's own
                 // corners and centre, other objects, guidelines and the
-                // grid (#2004).
-                let p = self.snap_point(p);
+                // grid (#2004); kept to the constrain angle, it does not.
+                let about = if ctrl {
+                    self.selected_fountain().and_then(|(_, f, b)| {
+                        let hs = fountain_handles(&f, b);
+                        let [(_, s), (_, e), _] = hs.as_slice() else {
+                            return None;
+                        };
+                        match handle {
+                            FountainHandle::End => Some(*s),
+                            FountainHandle::Start if f.kind == FountainKind::Linear => Some(*e),
+                            _ => None,
+                        }
+                    })
+                } else {
+                    None
+                };
+                let p = match about {
+                    Some(o) => {
+                        crate::interaction::constrain_from(o, p, self.settings.constrain_angle)
+                    }
+                    None => self.snap_point(p),
+                };
                 self.drag_fountain_handle(handle, p, begun);
                 self.drag = Drag::FountainHandle {
                     handle,
@@ -829,6 +859,82 @@ mod tests {
         assert!(app.add_fountain_stop(0.7).is_some());
         assert_eq!(app.selected_fountain().expect("mask").1.stops.len(), 3);
         assert_eq!(app.doc().find_shape(id).expect("square").fill, fill);
+    }
+
+    /// A transparency made radial on the bar is clear at its centre and
+    /// opaque at its edge, its centre node black (#2377); dragging its end
+    /// node sizes it as a circle still (the skew node keeps the ratio);
+    /// Ctrl or Shift on the end node turns the line in steps of the
+    /// constrain angle (#2373).
+    #[test]
+    fn a_radial_transparency_is_clear_at_the_centre_and_its_end_node_constrains() {
+        use crate::mixed::TransparencyField as F;
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.tool = crate::tools::Tool::Transparency;
+        app.transparency_from_drag_on(&[id], Point::new(10.0, 20.0), Point::new(30.0, 20.0));
+        let kind_to = |app: &mut App, k: FountainKind| {
+            let (mut set, ..) = crate::ui::toolbar::transparency_state(app);
+            let Fill::Fountain(f) = &mut set.mask else {
+                panic!("a gradient mask");
+            };
+            crate::mixed::set_mask_kind(f, k);
+            app.transparency_default = set.clone();
+            app.patch_transparency(&set, &[F::MaskKind]);
+            app.selected_fountain().expect("mask").1
+        };
+        let f = kind_to(&mut app, FountainKind::Radial);
+        assert_eq!(f.kind, FountainKind::Radial);
+        // The first stop is the centre: black, all clear; the edge white.
+        assert_eq!(
+            (f.stops[0].color, f.stops[1].color),
+            (Color::BLACK, Color::WHITE)
+        );
+        assert_eq!(
+            crate::ui::transparency_docker::gray_transparency(f.stops[0].color),
+            100.0
+        );
+        assert!(crate::ui::transparency_docker::gray_transparency(f.stops[1].color) < 1e-9);
+        // Back to linear: opaque at the start again; stops set by hand
+        // are kept.
+        let f = kind_to(&mut app, FountainKind::Linear);
+        assert_eq!(
+            (f.stops[0].color, f.stops[1].color),
+            (Color::WHITE, Color::BLACK)
+        );
+        let f = kind_to(&mut app, FountainKind::Radial);
+        assert_eq!(f.stops[0].color, Color::BLACK);
+
+        // The end node dragged out: a circle stays a circle.
+        let ratio = |app: &App| {
+            let (_, f, b) = app.selected_fountain().expect("mask");
+            let hs = fountain_handles(&f, b);
+            (hs[2].1 - hs[0].1).hypot() / (hs[1].1 - hs[0].1).hypot()
+        };
+        let before = ratio(&app);
+        let (_, f, b) = app.selected_fountain().expect("mask");
+        let hs = fountain_handles(&f, b);
+        let (centre, end) = (hs[0].1, hs[1].1);
+        app.drag_fountain_handle(FountainHandle::End, centre + (end - centre) * 1.5, false);
+        assert!(
+            (ratio(&app) - before).abs() < 1e-6,
+            "{} {before}",
+            ratio(&app)
+        );
+
+        // Held with the constrain key, 5 degrees off comes back level.
+        let (_, f, b) = app.selected_fountain().expect("mask");
+        let hs = fountain_handles(&f, b);
+        let (centre, end) = (hs[0].1, hs[1].1);
+        assert!(app.begin_fountain_drag(end, end));
+        let r = (end - centre).hypot();
+        let a = 5f64.to_radians();
+        assert!(app.fountain_drag_to(centre + Vec2::new(a.cos(), a.sin()) * r, true));
+        let (_, f, b) = app.selected_fountain().expect("mask");
+        let hs = fountain_handles(&f, b);
+        assert!((hs[1].1.y - centre.y).abs() < 1e-6, "{hs:?}");
+        assert!(hs[1].1.x > centre.x);
+        app.end_drag();
     }
 
     #[test]

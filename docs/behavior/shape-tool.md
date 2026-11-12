@@ -134,7 +134,7 @@ chosen it deletes the selected object, as the Delete key does (#1982).
 | Home, End (with nodes chosen) | the first or last node of the curve |
 | Arrow keys (with nodes chosen) | move the chosen nodes by the nudge distance (Shift: super nudge, Ctrl: micro nudge), one undo step per press |
 | To Line, To Curve (property bar, node menu) | the segment ending at each chosen node becomes a straight line or a curve with its handles at thirds; for the start node of a closed curve that is its closing segment, the last one back onto the start or the closing line the close itself draws, which becomes a curve of its own before the close (#1618, `nodes::tests::to_curve_and_to_line_take_the_closing_segment_through_the_start_node`, `shape_tool::bitmap_node_tests::to_curve_takes_the_closing_segment_through_the_start_node`) |
-| Break (property bar) | split the subpath at the node; at the start node of a closed curve (or its chosen closing segment) the curve opens there, a closing line the close drew staying as a line (#1618, `nodes::tests::breaking_at_the_start_of_a_closed_subpath_opens_it_there`) |
+| Break (property bar) | split the subpath at the node; a closed curve opens there instead, as one open curve that starts and ends at the node, its other nodes (its first node too) staying joined and a closing line the close drew staying as a line; with several nodes of a closed curve chosen it opens at one and splits at the others (#1618, #2314, `nodes::tests::breaking_at_the_start_of_a_closed_subpath_opens_it_there`, `nodes::tests::breaking_a_closed_curve_at_a_middle_node_opens_it_there`, `nodes::tests::breaking_a_closed_curve_at_two_nodes_gives_two_pieces`) |
 | Join (property bar) | join two selected end nodes of one curve into one node halfway between them, their handles moving along and no segment added: the two ends of one open subpath close it there, ends of two subpaths make one subpath; one undo step (Join Nodes). End nodes of two objects are not joined: the status bar says to combine them first (Object > Combine, Ctrl+L), after which they are two subpaths of one curve (#1007, `pick_drag_tests::join_takes_end_nodes_of_one_object_only`) |
 | Drop an end node on another | dragging one end node and letting go within the pick distance of another end node of the same curve joins the two as Join does; on an end node of another object it only snaps there (#1007) |
 | Extend Curve to Close | two selected end nodes are joined by a straight segment: the ends of one subpath close it, ends of two subpaths make one |
@@ -275,7 +275,7 @@ round their corners with their own handles either way.
   nodes' corners when it is one of them, or with Shift every corner of
   the curve (sharp or rounded) takes the new radius (a rounded corner is
   chosen by any node of its arc). Dragging back past the corner makes it sharp. Scallops
-  and chamfers are not found again.
+  and chamfers are found again only right after they were cut (below).
 - On a stretched or skewed curve corners round on the page, so a new
   rounding is round, also on a curve stretched after other corners were
   rounded. A corner rounded before the stretch keeps its stretched arc
@@ -306,9 +306,19 @@ round their corners with their own handles either way.
   the Corners docker does (`corner_cut::cut_corners`), the value being
   the distance along each side; a distance some corner cannot take is
   cut down by tenths until every one of them takes it. One undo step
-  ("Scallop", "Chamfer"); a cut corner is no longer a corner of its
-  own, so it leaves the chosen corners and shows no ring. Clear
-  Rounding takes back round corners only.
+  ("Scallop", "Chamfer"). The curve as it was before the cut is kept
+  while the curve stays as the cut made it (#2336,
+  `corner_widgets::tests::scalloped_and_chamfered_corners_stay_editable`):
+  the field then shows the distance, a new distance (typed or scrolled)
+  or the other kind cuts that curve again at the same corners, so the
+  nodes of one cut stay (before, each try cut the cuts and a rectangle
+  grew to 120 and more nodes), 0 or Clear Rounding gives that curve
+  back, and each corner cut keeps one ring in the middle of its cut
+  (the corners the cut made have none). Dragging a ring makes the
+  bar's kind of corner: round, or scalloped or chamfered with the cut's
+  middle under the pointer, cut down as the field cuts it. Any other
+  change of the curve ends this: its cut corners are then corners like
+  any other.
 - Checked by `pick_drag_tests::corner_widgets_round_every_corner_or_the_chosen_ones`,
   `pick_drag_tests::corner_widgets_follow_their_preference_off_by_default`,
   `pick_drag_tests::rounded_corners_keep_their_widgets_and_round_again`,

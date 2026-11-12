@@ -1575,9 +1575,9 @@ pub fn calligraphic_band(path: &BezPath, width: f64, stretch: f64, nib_angle_deg
         lines.push(cur);
     }
     let ellipse = |c: Point| -> Vec<[f64; 2]> {
-        (0..24)
+        (0..48)
             .map(|i| {
-                let t = i as f64 / 24.0 * std::f64::consts::TAU;
+                let t = i as f64 / 48.0 * std::f64::consts::TAU;
                 let (x, y) = (a * t.cos(), b * t.sin());
                 [c.x + x * e1[0] + y * e2[0], c.y + x * e1[1] + y * e2[1]]
             })
@@ -1597,17 +1597,26 @@ pub fn calligraphic_band(path: &BezPath, width: f64, stretch: f64, nib_angle_deg
             }
             let n = [-d.y / len, d.x / len];
             // Support half-width of the ellipse along n.
-            let h = ((a * (n[0] * e1[0] + n[1] * e1[1])).powi(2)
-                + (b * (n[0] * e2[0] + n[1] * e2[1])).powi(2))
-            .sqrt();
+            let (ne1, ne2) = (n[0] * e1[0] + n[1] * e1[1], n[0] * e2[0] + n[1] * e2[1]);
+            let h = ((a * ne1).powi(2) + (b * ne2).powi(2)).sqrt();
             if h < 1e-9 {
                 continue;
             }
+            // The point of the nib that touches its support line: the
+            // band's edge runs through it, not through `n * h`. The two
+            // differ along the segment for a slanted flat nib (by up to
+            // half its width), which set each segment's band off from its
+            // neighbours' and the nibs at the joints: a stroke edged with
+            // steps and teeth (#2334).
+            let o = [
+                (a * a * ne1 * e1[0] + b * b * ne2 * e2[0]) / h,
+                (a * a * ne1 * e1[1] + b * b * ne2 * e2[1]) / h,
+            ];
             polys.push(vec![
-                [p.x + n[0] * h, p.y + n[1] * h],
-                [q.x + n[0] * h, q.y + n[1] * h],
-                [q.x - n[0] * h, q.y - n[1] * h],
-                [p.x - n[0] * h, p.y - n[1] * h],
+                [p.x + o[0], p.y + o[1]],
+                [q.x + o[0], q.y + o[1]],
+                [q.x - o[0], q.y - o[1]],
+                [p.x - o[0], p.y - o[1]],
             ]);
         }
     }
@@ -3837,6 +3846,59 @@ mod tests {
         );
         let len: f64 = two.segments().map(|s| s.arclen(1e-6)).sum();
         assert!((len - 30.0).abs() < 1e-6, "{len}");
+    }
+
+    /// A slanted flat nib (45 degrees, 2 mm, stretch 0.1) along a
+    /// horizontal line: the band's top edge runs through the point of the
+    /// nib that touches it, 0.7 mm to the right of the line's start, so
+    /// near the start the band is only as high as the nib there. Each
+    /// segment's band stood straight above its own ends instead, a step
+    /// off the nibs at the joints, so a drawn stroke was edged with teeth
+    /// and blocks (#2334).
+    #[test]
+    fn a_slanted_nib_band_meets_the_nib_at_its_touching_point() {
+        use super::calligraphic_band;
+        use crate::geometry::{BezPath, Point, Shape as _};
+        let mut line = BezPath::new();
+        line.move_to(Point::new(0.0, 0.0));
+        line.line_to(Point::new(10.0, 0.0));
+        let band = calligraphic_band(&line, 2.0, 0.1, 45.0);
+        // Support of the nib straight up: h = sqrt((a sin45)^2 + (b cos45)^2),
+        // touching at x = (a^2 - b^2) sin45 cos45 / h.
+        let (a, b) = (1.0f64, 0.1f64);
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let h = ((a * s).powi(2) + (b * s).powi(2)).sqrt();
+        let x = (a * a - b * b) * s * s / h;
+        assert!(
+            (band.bounding_box().y1 - h).abs() < 0.01,
+            "{:?}",
+            band.bounding_box()
+        );
+        assert!(band.contains(Point::new(5.0, h - 0.02)));
+        assert!(band.contains(Point::new(x + 0.05, h - 0.02)));
+        // Above the start of the line, left of the touching point, the nib
+        // is low: nothing of the band is there.
+        assert!(!band.contains(Point::new(0.05, h - 0.02)));
+        assert!(!band.contains(Point::new(10.0 - 0.05, -(h - 0.02))));
+        // Along a bent line the edge has no notches: every point a little
+        // inside the swept nibs is in the band.
+        let mut bent = BezPath::new();
+        bent.move_to(Point::new(0.0, 0.0));
+        for i in 1..=60 {
+            let t = i as f64 / 60.0 * std::f64::consts::PI;
+            bent.line_to(Point::new(10.0 * t, 5.0 * t.sin()));
+        }
+        let band = calligraphic_band(&bent, 2.0, 0.1, 45.0);
+        for i in 0..=600 {
+            let t = i as f64 / 600.0 * std::f64::consts::PI;
+            let c = Point::new(10.0 * t, 5.0 * t.sin());
+            for k in 0..16 {
+                let u = k as f64 / 16.0 * std::f64::consts::TAU;
+                let (ex, ey) = (0.95 * a * u.cos(), 0.95 * b * u.sin());
+                let q = Point::new(c.x + (ex - ey) * s, c.y + (ex + ey) * s);
+                assert!(band.contains(q), "{q:?} of the nib at {c:?}");
+            }
+        }
     }
 
     #[test]

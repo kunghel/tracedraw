@@ -2,9 +2,12 @@
 
 Tools > Options is a submenu: TraceDraw
 (Ctrl+J), Customization, Tools, Global, Workspaces and AI each open the
-Options window on their pages. Page > Document Setup opens it on the
-document's pages (also a double-click on a ruler, the page border or its
-shadow). The window has a tab for each of them along the top, so every
+Options window on their pages, and Document Setup (greyed with no
+drawing open) on the document's pages, so every tab of the window has
+its entry there and in the standard bar's Options list (#2006,
+`ui::menus::options_items_tests::the_options_list_has_document_setup`).
+Page > Document Setup opens it on the document's pages too (also a
+double-click on a ruler, the page border or its shadow). The window has a tab for each of them along the top, so every
 option is a click away: TraceDraw, Customization, Tools, Global,
 Workspaces, AI and, while a drawing is open, Document Setup. A tab
 shows its set's page list and the page of that set shown last (else its

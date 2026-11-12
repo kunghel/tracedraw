@@ -4673,15 +4673,26 @@ fn bspline_clicks_place_control_points_of_a_smooth_curve() {
     app.finish_curve();
     let path = last_path(&app);
     let segs: Vec<_> = path.segments().collect();
-    // Four control points: one cubic from the first to the last point,
-    // the middle two as its handles (not four corners joined by lines).
-    assert_eq!(segs.len(), 1, "{segs:?}");
-    let tracedraw_core::geometry::PathSeg::Cubic(c) = segs[0] else {
-        panic!("a cubic: {segs:?}");
-    };
+    use tracedraw_core::geometry::ParamCurve;
+    // Four control points: a smooth run of cubics from the first to the
+    // last point, one a knot span with the ends counted three times
+    // (#2184), not four corners joined by lines.
+    assert_eq!(segs.len(), 5, "{segs:?}");
     let near = |a: Point, b: Point| (a - b).hypot() < 0.5;
-    assert!(near(c.p0, pts[0]) && near(c.p3, pts[3]), "{c:?}");
-    assert!(near(c.p1, pts[1]) && near(c.p2, pts[2]), "{c:?}");
+    assert!(near(segs[0].start(), pts[0]) && near(segs[4].end(), pts[3]));
+    for s in &segs {
+        assert!(
+            matches!(s, tracedraw_core::geometry::PathSeg::Cubic(_)),
+            "{segs:?}"
+        );
+    }
+    // The middle points pull the curve without being on it.
+    let on = |q: Point| {
+        segs.iter()
+            .flat_map(|s| (0..=100).map(move |k| s.eval(k as f64 / 100.0)))
+            .any(|p| near(p, q))
+    };
+    assert!(!on(pts[1]) && !on(pts[2]));
 }
 
 /// The curve the B-Spline tool previews, as the canvas draws it.
@@ -25835,4 +25846,310 @@ fn shift_marquee_adds_character_nodes() {
     kept.extend(one.iter().copied());
     kept.sort();
     assert_eq!(sorted(&app), kept);
+}
+
+#[test]
+fn a_group_on_top_is_picked_only_where_its_objects_are() {
+    // #885: a group lying on top was picked anywhere in its box, so the
+    // object behind its empty part, or inside it, could not be clicked.
+    let mut app = App::headless();
+    app.view.zoom = 1.0;
+    let solid = |app: &mut App, r: Rect| {
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            30, 30, 200,
+        )));
+        id
+    };
+    let behind = solid(&mut app, Rect::new(120.0, 100.0, 150.0, 120.0));
+    let a = solid(&mut app, Rect::new(100.0, 100.0, 115.0, 120.0));
+    let b = solid(&mut app, Rect::new(155.0, 100.0, 170.0, 120.0));
+    app.select(vec![a, b]);
+    app.group_selection();
+    let group = app.selection[0];
+    // Moved, so its objects' space is not the page's.
+    app.run(tracedraw_core::Command::TransformShapes {
+        shapes: vec![group],
+        transform: Affine::translate((2.0, 0.0)),
+    });
+    app.select(Vec::new());
+    // The empty middle of the group's box: the object behind.
+    assert_eq!(app.hit_test(Point::new(136.0, 110.0)), Some(behind));
+    assert_eq!(
+        app.press_target(Point::new(136.0, 110.0), false),
+        Some(behind)
+    );
+    // On the group's own objects: the group.
+    assert_eq!(app.hit_test(Point::new(108.0, 110.0)), Some(group));
+    assert_eq!(app.hit_test(Point::new(165.0, 110.0)), Some(group));
+    // Where nothing is, nothing.
+    assert_eq!(app.hit_test(Point::new(136.0, 130.0)), None);
+    // The group selected: a press in its empty part still takes what
+    // shows there.
+    app.select(vec![group]);
+    assert_eq!(
+        app.press_target(Point::new(136.0, 110.0), false),
+        Some(behind)
+    );
+    assert_eq!(app.over_selection(Point::new(108.0, 110.0)), Some(true));
+}
+
+#[test]
+fn the_gap_between_grouped_unfilled_circles_picks_nothing() {
+    // #2329: two unfilled circles side by side, grouped; a click in the
+    // gap between them took the group.
+    let mut app = App::headless();
+    app.view.zoom = 1.0;
+    let circle = |app: &mut App, x: f64| {
+        app.new_shape(ShapeKind::Ellipse {
+            rect: Rect::new(x, 100.0, x + 40.0, 140.0),
+            arc: None,
+        })
+        .expect("circle")
+    };
+    let a = circle(&mut app, 100.0);
+    let b = circle(&mut app, 160.0);
+    app.select(vec![a, b]);
+    app.group_selection();
+    let group = app.selection[0];
+    app.select(Vec::new());
+    let gap = Point::new(150.0, 120.0);
+    for filled in [false, true] {
+        app.settings.treat_all_filled = filled;
+        assert_eq!(app.hit_test(gap), None, "filled {filled}");
+        assert_eq!(app.press_target(gap, false), None, "filled {filled}");
+        // Either circle's outline still takes the whole group.
+        assert_eq!(app.hit_test(Point::new(140.0, 120.0)), Some(group));
+        assert_eq!(app.hit_test(Point::new(160.0, 120.0)), Some(group));
+    }
+    // An unfilled circle's inside counts only with Treat all objects as
+    // filled.
+    app.settings.treat_all_filled = false;
+    assert_eq!(app.hit_test(Point::new(120.0, 120.0)), None);
+    app.settings.treat_all_filled = true;
+    assert_eq!(app.hit_test(Point::new(120.0, 120.0)), Some(group));
+}
+
+#[test]
+fn a_clip_frame_is_picked_on_its_frame_and_its_contents_only() {
+    // #885: an unfilled clip frame lying on top let nothing inside it be
+    // clicked where its contents left it empty.
+    let mut app = App::headless();
+    app.view.zoom = 1.0;
+    app.settings.treat_all_filled = false;
+    let behind = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(50.0, 50.0, 60.0, 60.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![behind]);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        200, 30, 30,
+    )));
+    let frame = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 100.0, 100.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![frame]);
+    app.apply_fill(tracedraw_core::Fill::None);
+    let inside = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(15.0, 15.0, 30.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![inside]);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        30, 30, 200,
+    )));
+    app.place_inside(vec![inside], frame);
+    let clip = app.doc().top_level_of(inside).expect("clip frame");
+    app.select(Vec::new());
+    // The contents and the frame's outline take the click.
+    assert_eq!(app.hit_test(Point::new(20.0, 20.0)), Some(clip));
+    assert_eq!(app.hit_test(Point::new(10.0, 70.0)), Some(clip));
+    // The empty inside of the unfilled frame: the object behind.
+    assert_eq!(app.hit_test(Point::new(55.0, 55.0)), Some(behind));
+    // Treat all objects as filled: the frame's inside is the frame's.
+    app.settings.treat_all_filled = true;
+    assert_eq!(app.hit_test(Point::new(55.0, 55.0)), Some(clip));
+}
+
+#[test]
+fn an_object_dropped_on_another_page_of_the_multipage_view_becomes_that_page_s() {
+    // #2055: in the Multipage View an object moved onto another page's
+    // paper stayed the current page's, off its paper, and vanished from
+    // there once another page was current.
+    let (ctx, mut app, id) = setup();
+    app.add_page();
+    let first = app.doc().pages[0].id;
+    let second = app.doc().pages[1].id;
+    app.page = first;
+    app.select(vec![id]);
+    app.set_multipage(true);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let r2 = app.multipage_layout()[1].1;
+    let page_of = |app: &App, id: ShapeId| {
+        app.doc()
+            .pages
+            .iter()
+            .find(|p| p.layers.iter().any(|l| l.shapes.iter().any(|s| s.id == id)))
+            .map(|p| p.id)
+    };
+    // Dropped on the desktop between the pages: still the first page's.
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    let gap = (app.page_rect().x1 + r2.x0) / 2.0;
+    let to = app.view.to_screen(Point::new(gap, 25.0));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    assert_eq!(page_of(&app, id), Some(first));
+    assert_eq!(app.page, first);
+    // Dropped on the second page's paper: the second page's, where it
+    // shows, that page current with the object selected.
+    let from = to;
+    let to = app.view.to_screen(Point::new(r2.x0 + 35.0, r2.y0 + 25.0));
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    assert_eq!(page_of(&app, id), Some(second));
+    assert_eq!(app.page, second);
+    assert_eq!(app.selection, vec![id]);
+    let b = bounds(&app, id);
+    assert!(
+        (b.center().x - 35.0).abs() < 3.0 && (b.center().y - 25.0).abs() < 3.0,
+        "{b:?}"
+    );
+    let shown = app.view.to_screen(b.center());
+    assert!((shown - to).length() < 15.0, "{shown:?} {to:?}");
+    // One undo step puts it back on the first page.
+    app.undo();
+    assert_eq!(page_of(&app, id), Some(first));
+}
+
+#[test]
+fn break_curve_opens_a_closed_curve_at_the_chosen_nodes() {
+    // #2314: a rectangle as a curve with a node in the middle of its
+    // bottom side, broken there, came apart at that node and at its first
+    // corner too.
+    let mut app = App::headless();
+    let mut path = tracedraw_core::BezPath::new();
+    path.move_to((0.0, 0.0));
+    path.line_to((100.0, 0.0));
+    path.line_to((100.0, 50.0));
+    path.line_to((50.0, 50.0));
+    path.line_to((0.0, 50.0));
+    path.close_path();
+    let c = app
+        .new_shape(ShapeKind::Path { path, closed: true })
+        .expect("curve");
+    app.select(vec![c]);
+    app.set_tool(Tool::Shape);
+    let subpaths = |app: &App| {
+        last_path(app)
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+            .count()
+    };
+    app.node_selection = vec![(c, 3)];
+    app.break_selected_nodes();
+    assert_eq!(app.engine.undo_label(), Some("Break Curve"));
+    assert_eq!(subpaths(&app), 1, "{:?}", last_path(&app));
+    let ns = tracedraw_core::nodes::nodes(&last_path(&app));
+    assert_eq!(ns.len(), 6);
+    assert_eq!(ns[0].pos, Point::new(50.0, 50.0));
+    assert_eq!(ns[5].pos, Point::new(50.0, 50.0));
+    // Two nodes of the closed curve at once: two pieces, all of its sides.
+    app.undo();
+    app.node_selection = vec![(c, 1), (c, 3)];
+    app.break_selected_nodes();
+    assert_eq!(subpaths(&app), 2, "{:?}", last_path(&app));
+    assert_eq!(last_path(&app).segments().count(), 5);
+}
+
+/// Bold, italic and an alignment given to a text change that text only
+/// (#2346): the next text made with the Text tool is plain and left
+/// aligned, as new text was before. Making them the default of new text
+/// (OK to the question asked with nothing selected) still works.
+#[test]
+fn bold_italic_and_alignment_of_a_text_do_not_go_to_new_text() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.settings.autocorrect.enabled = false;
+    app.start_text(Point::new(30.0, 50.0), None);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("ab".into())],
+        Modifiers::NONE,
+    );
+    app.finish_text();
+    let first = app.selection[0];
+    app.select(vec![first]);
+    app.text_bold = true;
+    app.text_italic = true;
+    app.apply_text_style();
+    app.apply_text_align(tracedraw_core::TextAlign::Center);
+    let style = |app: &App, id| match &app.doc().find_shape(id).expect("text").kind {
+        ShapeKind::Text {
+            spans, align, para, ..
+        } => (
+            spans[0].bold,
+            spans[0].italic,
+            tracedraw_core::paragraphs::paragraph_format(spans, *align, para, 0).align,
+        ),
+        _ => panic!("not text"),
+    };
+    assert_eq!(
+        style(&app, first),
+        (true, true, tracedraw_core::TextAlign::Center)
+    );
+    // A new text, straight after, and after a frame with nothing selected.
+    app.start_text(Point::new(30.0, 150.0), None);
+    let second = app.selection[0];
+    assert_eq!(
+        style(&app, second),
+        (false, false, tracedraw_core::TextAlign::Left)
+    );
+    assert!(
+        !app.text_bold && !app.text_italic,
+        "the bar shows the new text"
+    );
+    app.finish_text();
+    app.select(vec![first]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    app.set_tool(Tool::Text);
+    app.select(Vec::new());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(!app.text_bold, "the bar shows the style of new text");
+    app.start_text(Point::new(30.0, 250.0), None);
+    let third = app.selection[0];
+    assert_eq!(
+        style(&app, third),
+        (false, false, tracedraw_core::TextAlign::Left)
+    );
+    app.finish_text();
+    // Made the default of new text: new text takes it.
+    app.select(Vec::new());
+    app.set_text_defaults(None, Some((true, false)), None);
+    app.text_default_align = tracedraw_core::TextAlign::Right;
+    app.start_text(Point::new(30.0, 350.0), None);
+    let fourth = app.selection[0];
+    assert_eq!(
+        style(&app, fourth),
+        (true, false, tracedraw_core::TextAlign::Right)
+    );
 }

@@ -3802,7 +3802,30 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.bitmaps.mode_bw", "", has_bitmap) {
             app.dialog = Dialog::BitmapBw(Default::default());
         }
-        if item(ui, "menu.bitmaps.mode_grayscale", "", has_bitmap) {
+        // Grayscale, RGB and CMYK are the bitmaps' colour mode: the mode
+        // of every selected bitmap is ticked (#1254); a grayscale PNG is
+        // a grayscale bitmap (#2330), as the status bar names it.
+        let modes: Vec<crate::bitmap_fx::ColorMode> = app
+            .selected_rc()
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Bitmap { png, .. } => {
+                    Some(crate::bitmap_fx::mode_of(s.cmyk_bitmap, png))
+                }
+                _ => None,
+            })
+            .collect();
+        let all = |m| has_bitmap && modes.iter().all(|x| *x == m);
+        let all_gray = all(crate::bitmap_fx::ColorMode::Grayscale);
+        let all_rgb = all(crate::bitmap_fx::ColorMode::Rgb);
+        let all_cmyk = all(crate::bitmap_fx::ColorMode::Cmyk);
+        if mark_item_if(
+            ui,
+            "menu.bitmaps.mode_grayscale",
+            "",
+            Mark::Check(all_gray),
+            has_bitmap,
+        ) {
             app.set_bitmap_mode(crate::bitmap_fx::ColorMode::Grayscale);
         }
         if item(ui, "menu.bitmaps.mode_duotone", "", has_bitmap) {
@@ -3811,16 +3834,6 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.bitmaps.mode_paletted", "", has_bitmap) {
             app.dialog = Dialog::BitmapPaletted(Default::default());
         }
-        // RGB and CMYK are the bitmaps' colour mode: the mode of every
-        // selected bitmap is ticked (#1254).
-        let modes: Vec<bool> = app
-            .selected_rc()
-            .iter()
-            .filter(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
-            .map(|s| s.cmyk_bitmap)
-            .collect();
-        let all_rgb = has_bitmap && modes.iter().all(|c| !c);
-        let all_cmyk = has_bitmap && modes.iter().all(|c| *c);
         if mark_item_if(
             ui,
             "menu.bitmaps.mode_rgb",
@@ -4664,5 +4677,50 @@ pub(crate) fn options_items(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.tools.options_ai", "", true) {
         app.dialog = Dialog::Options;
         app.options_page = crate::ui::dialogs::OptionsPage::AiGeneral;
+    }
+    // The dialog's last tab, the open drawing's own options: listed here
+    // as well as on the Layout menu, so every tab of the dialog has its
+    // entry (#2006).
+    if item(ui, "menu.layout.document_options", "", app.has_document()) {
+        app.dialog = Dialog::Options;
+        app.options_page = crate::ui::dialogs::OptionsPage::DocumentGeneral;
+    }
+}
+
+#[cfg(test)]
+mod options_items_tests {
+    use super::*;
+
+    /// Run `key` from the Options list alone (Tools > Options and the
+    /// standard bar's Options button): whether its item was there,
+    /// enabled, and fired.
+    fn run_in_options(app: &mut App, key: &str) -> bool {
+        let ctx = crate::theme::ui_context();
+        let _guard = invoke::Guard;
+        invoke::start_trigger(key);
+        let mut out = ctx.run_ui(Default::default(), |ui| options_items(app, ui));
+        out.textures_delta.clear();
+        invoke::finish().1
+    }
+
+    /// Tools > Options and the Options button list Document Setup, the
+    /// dialog's last tab, which only the Layout menu had (#2006).
+    #[test]
+    fn the_options_list_has_document_setup() {
+        let mut app = App::headless();
+        assert!(app.has_document());
+        assert!(run_in_options(&mut app, "menu.layout.document_options"));
+        assert!(matches!(app.dialog, Dialog::Options));
+        assert_eq!(
+            app.options_page,
+            crate::ui::dialogs::OptionsPage::DocumentGeneral
+        );
+        // With no drawing open there is no document to set up: greyed.
+        app.dialog = Dialog::None;
+        while app.has_document() {
+            app.docs.remove(0);
+        }
+        assert!(!run_in_options(&mut app, "menu.layout.document_options"));
+        assert!(matches!(app.dialog, Dialog::None));
     }
 }

@@ -1231,6 +1231,12 @@ pub struct App {
     /// fields above follow the text selected, these do not (#449).
     pub text_default_font: String,
     pub text_default_size: f64,
+    /// Bold, italic and the alignment of new text. Bold, italic or an
+    /// alignment given to a selected text change that text only; they
+    /// stayed on the bar and every new text took them (#2346).
+    pub text_default_bold: bool,
+    pub text_default_italic: bool,
+    pub text_default_align: tracedraw_core::TextAlign,
     pub text_bold: bool,
     pub text_italic: bool,
     pub text_underline: bool,
@@ -2769,6 +2775,9 @@ impl App {
             text_size_pt: 24.0,
             text_default_font: "Arial".into(),
             text_default_size: 24.0,
+            text_default_bold: false,
+            text_default_italic: false,
+            text_default_align: tracedraw_core::TextAlign::Left,
             text_bold: false,
             text_italic: false,
             text_underline: false,
@@ -5767,6 +5776,7 @@ impl App {
 
     pub fn start_text(&mut self, at: Point, frame: Option<Size>) {
         self.finish_text();
+        self.bar_to_new_text_style();
         let span = TextSpan {
             bold: self.text_bold,
             italic: self.text_italic,
@@ -5811,6 +5821,15 @@ impl App {
         } else {
             1.0
         }
+    }
+
+    /// The bar's bold, italic and alignment back to those of new text,
+    /// for text about to be made: the ones of the text edited or selected
+    /// last are not carried over (#2346).
+    pub fn bar_to_new_text_style(&mut self) {
+        self.text_bold = self.text_default_bold;
+        self.text_italic = self.text_default_italic;
+        self.text_align = self.text_default_align;
     }
 
     /// Property bar defaults follow the text object being edited.

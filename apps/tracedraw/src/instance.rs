@@ -18,7 +18,8 @@
 //! double-clicked file, not the window that has been running. So the
 //! start passes its right on to the window's process before it sends the
 //! files ([`allow_foreground`]), and the window comes up in the frame the
-//! files arrive, before it reads them ([`take_handed_over`]).
+//! files arrive, before it reads them, from the app's logic, which a
+//! minimized window runs without any ui ([`bring_up_for_handed_over`]).
 
 use crate::app::App;
 use serde::{Deserialize, Serialize};
@@ -377,6 +378,8 @@ fn with_files(args: &[String], files: &[PathBuf]) -> Vec<String> {
 pub struct Inbox {
     arriving: Receiver<Vec<PathBuf>>,
     waiting: (Sender<Vec<PathBuf>>, Receiver<Vec<PathBuf>>),
+    /// Files came in this frame: they are opened from the next one on.
+    fresh: bool,
 }
 
 impl Inbox {
@@ -384,29 +387,47 @@ impl Inbox {
         Inbox {
             arriving,
             waiting: std::sync::mpsc::channel(),
+            fresh: false,
         }
     }
 }
 
-/// Bring the window up for the files later starts handed over, then open
-/// them with [`open_handed_over`]. The window comes up in the frame the
-/// files arrive, restored when it was minimized, whatever it shows (a
-/// question too: it is what the files wait for), and before the files are
-/// read: a large drawing takes a while, and Windows takes the right to
-/// come to the front back at the user's next click or key (#2129). The
-/// files are opened from the next frame on. True when files arrived or
-/// were opened (another frame is wanted).
-pub fn take_handed_over(app: &mut App, ctx: &egui::Context, inbox: &mut Inbox) -> bool {
+/// Bring the window up for files later starts handed over: restored when
+/// it was minimized, focused and its taskbar button lit, before any of
+/// them is read. The files wait for [`take_handed_over`] to open them.
+///
+/// This runs from the app's logic, which the window runs while it is
+/// minimized too: a minimized window draws nothing, so it runs no ui at
+/// all, and when this ran with the ui the files waited, unread and the
+/// window down, until the user restored it from the taskbar (#2129). True
+/// when files arrived.
+pub fn bring_up_for_handed_over(ctx: &egui::Context, inbox: &mut Inbox) -> bool {
     let mut arrived = false;
     while let Ok(files) = inbox.arriving.try_recv() {
         arrived |= inbox.waiting.0.send(files).is_ok();
     }
     if arrived {
+        inbox.fresh = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
             egui::UserAttentionType::Informational,
         ));
+    }
+    arrived
+}
+
+/// Bring the window up for the files later starts handed over
+/// ([`bring_up_for_handed_over`]), then open them with
+/// [`open_handed_over`]. The window comes up in the frame the files
+/// arrive, whatever it shows (a question too: it is what the files wait
+/// for), and before the files are read: a large drawing takes a while, and
+/// Windows takes the right to come to the front back at the user's next
+/// click or key (#2129). The files are opened from the next frame on. True
+/// when files arrived or were opened (another frame is wanted).
+pub fn take_handed_over(app: &mut App, ctx: &egui::Context, inbox: &mut Inbox) -> bool {
+    bring_up_for_handed_over(ctx, inbox);
+    if std::mem::take(&mut inbox.fresh) {
         return true;
     }
     open_handed_over(app, ctx, &inbox.waiting.1)
@@ -733,6 +754,66 @@ mod tests {
             !take_handed_over(&mut app, &ctx, &mut inbox),
             "nothing more"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimized window runs the app's logic and no ui: the files that
+    /// arrive while it is down bring it up from there, and open once it
+    /// is drawn again (#2129, still down on 0.44.0).
+    #[test]
+    fn a_minimized_window_comes_up_for_the_files_from_its_logic() {
+        let dir = temp_dir("instance-minimized");
+        let path = dir.join("art.tdraw");
+        let doc =
+            tracedraw_core::Document::new("Art", tracedraw_core::geometry::Size::new(50.0, 50.0));
+        std::fs::write(&path, doc.to_json().expect("json")).expect("write");
+        let mut app = App::headless();
+        let ctx = egui::Context::default();
+        let _ = sent_commands(&ctx);
+        let tabs = app.docs.len();
+        let (tx, rx) = channel();
+        let mut inbox = Inbox::new(rx);
+        let down = egui::RawInput::default();
+        let logic = |ctx: &egui::Context, inbox: &mut Inbox| {
+            let mut arrived = false;
+            let out = ctx.run_logic(&down, |ctx| {
+                arrived = bring_up_for_handed_over(ctx, inbox);
+            });
+            let sent = out
+                .viewport_commands
+                .get(&egui::ViewportId::ROOT)
+                .cloned()
+                .unwrap_or_default();
+            (arrived, sent)
+        };
+        // Nothing came: the window is left down.
+        let (arrived, sent) = logic(&ctx, &mut inbox);
+        assert!(!arrived);
+        assert!(sent.is_empty(), "{sent:?}");
+        // The files arrive: the window is restored and brought forward
+        // with no ui pass.
+        tx.send(vec![path.clone()]).expect("send");
+        let (arrived, sent) = logic(&ctx, &mut inbox);
+        assert!(arrived);
+        let restore = sent
+            .iter()
+            .position(|c| *c == egui::ViewportCommand::Minimized(false))
+            .expect("restored");
+        let focus = sent
+            .iter()
+            .position(|c| *c == egui::ViewportCommand::Focus)
+            .expect("brought to the front");
+        assert!(restore < focus, "{sent:?}");
+        assert_eq!(app.docs.len(), tabs, "not read while down");
+        // Drawn again: the first frame shows the window, the next opens
+        // the file, and the window is not asked to come up twice for it.
+        assert!(take_handed_over(&mut app, &ctx, &mut inbox));
+        assert_eq!(app.docs.len(), tabs);
+        assert!(take_handed_over(&mut app, &ctx, &mut inbox));
+        assert_eq!(app.docs.len(), tabs + 1);
+        assert_eq!(app.file.as_deref(), Some(path.as_path()));
+        let (arrived, _) = logic(&ctx, &mut inbox);
+        assert!(!arrived);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1250,13 +1250,21 @@ pub fn pic_button(ui: &mut Ui, pic: Pic, tip: &str, enabled: bool, pressed: bool
         ui.painter(),
         Rect::from_center_size(rect.center(), Vec2::splat(Tokens::prop_icon())),
         pic,
-        if enabled {
-            Tokens::icon()
-        } else {
-            Tokens::border()
-        },
+        icon_color(enabled),
     );
     resp.rich_tip(tip)
+}
+
+/// The colour of a bar icon: the theme's icon colour, or its colour for
+/// commands that cannot run now. That was the panels' line colour, which
+/// on the Dark theme is darker than the bar, so the Shape tool's node
+/// buttons, greyed with no node chosen, could hardly be seen (#2065).
+pub fn icon_color(enabled: bool) -> egui::Color32 {
+    if enabled {
+        Tokens::icon()
+    } else {
+        Tokens::icon_off()
+    }
 }
 
 /// An icon button of the bar showing a tool's own icon (the toolbox's),
@@ -1281,7 +1289,7 @@ pub fn tool_button(
     let color = if enabled {
         crate::ui::icons::tool_color(tool, Tokens::icon())
     } else {
-        Tokens::border()
+        icon_color(false)
     };
     crate::ui::icons::draw(
         ui.painter(),
@@ -3363,6 +3371,68 @@ pub fn order_part(app: &mut App, ui: &mut Ui) {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect as R;
+
+    /// A bar button that cannot run now is drawn greyed but plain to see
+    /// in every theme: on the Dark theme the Shape tool's node buttons,
+    /// with no node chosen, were drawn in the panels' line colour, darker
+    /// than the bar (#2065).
+    #[test]
+    fn greyed_bar_icons_stand_out_from_the_bar_in_every_theme() {
+        fn luminance(c: egui::Color32) -> f32 {
+            let f = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        }
+        fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+            let (a, b) = (luminance(a), luminance(b));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        let ctx = crate::theme::ui_context();
+        for theme in crate::theme::Theme::ALL {
+            crate::theme::set_theme(theme);
+            let (off, on, bar) = (icon_color(false), icon_color(true), Tokens::panel());
+            assert_eq!(off, Tokens::icon_off(), "{theme:?}");
+            assert!(contrast(off, bar) >= 1.5, "{theme:?}: {off:?} on {bar:?}");
+            // Still apart from the buttons that can run.
+            assert_ne!(off, on, "{theme:?}");
+            // The button paints its picture in that colour.
+            let mut out = ctx.run_ui(Default::default(), |ui| {
+                pic_button(ui, Pic::BreakCurve, "Break", false, false);
+            });
+            out.textures_delta.clear();
+            fn collect(s: &epaint::Shape, out: &mut Vec<egui::Color32>) {
+                match s {
+                    epaint::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                    epaint::Shape::Path(p) => {
+                        out.push(p.fill);
+                        if let epaint::ColorMode::Solid(c) = p.stroke.color {
+                            out.push(c);
+                        }
+                    }
+                    epaint::Shape::LineSegment { stroke, .. } => out.push(stroke.color),
+                    epaint::Shape::Circle(c) => out.extend([c.fill, c.stroke.color]),
+                    epaint::Shape::Rect(r) => out.extend([r.fill, r.stroke.color]),
+                    _ => {}
+                }
+            }
+            let mut colours = Vec::new();
+            for c in &out.shapes {
+                collect(&c.shape, &mut colours);
+            }
+            assert!(colours.contains(&off), "{theme:?}: {colours:?}");
+            assert!(
+                !colours.contains(&Tokens::border()) || Tokens::border() == off,
+                "{theme:?}"
+            );
+        }
+        crate::theme::set_theme(crate::theme::Theme::Light);
+    }
 
     /// The size and position fields show the decimals a value needs, at
     /// least one and up to the drawing precision, with no trailing zeros:

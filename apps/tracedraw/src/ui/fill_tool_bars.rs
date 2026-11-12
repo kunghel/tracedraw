@@ -56,14 +56,7 @@ pub fn color_pick(
     painter.rect_stroke(
         swatch,
         0.0,
-        Stroke::new(
-            1.0,
-            if enabled {
-                Tokens::icon()
-            } else {
-                Tokens::border()
-            },
-        ),
+        Stroke::new(1.0, crate::ui::propbar::icon_color(enabled)),
         egui::StrokeKind::Inside,
     );
     let c = rect.right_center() - vec2(6.5, 0.0);
@@ -73,11 +66,7 @@ pub fn color_pick(
             c + vec2(3.0, -1.5),
             c + vec2(0.0, 2.0),
         ],
-        if enabled {
-            Tokens::icon()
-        } else {
-            Tokens::border()
-        },
+        crate::ui::propbar::icon_color(enabled),
         Stroke::NONE,
     ));
     let resp = resp.rich_tip(tip);

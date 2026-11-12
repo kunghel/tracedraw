@@ -781,7 +781,7 @@ pub(crate) fn faces(
     // taken there, with the outline's nodes (#2208). The near cap of a
     // bevelled body is the outline drawn in, kept as its flattened ring.
     let far_u = if dir < 0.0 { len } else { 0.0 };
-    let cap_curves = |u: f64| -> Option<BezPath> {
+    let cap_map = |u: f64| -> Option<Affine> {
         let at = |p: Point| ctx.project(ctx.turn(p, u), u);
         let (o, x, y) = (
             at(c),
@@ -790,12 +790,16 @@ pub(crate) fn faces(
         );
         let (ex, ey) = (x - o, y - o);
         let all = [o.x, o.y, ex.x, ex.y, ey.x, ey.y];
-        if !all.iter().all(|v| v.is_finite()) || outline.elements().is_empty() {
+        if !all.iter().all(|v| v.is_finite()) {
             return None;
         }
-        let to_cap =
-            Affine::new([ex.x, ex.y, ey.x, ey.y, o.x, o.y]) * Affine::translate(-c.to_vec2());
-        Some(to_cap * outline.clone())
+        Some(Affine::new([ex.x, ex.y, ey.x, ey.y, o.x, o.y]) * Affine::translate(-c.to_vec2()))
+    };
+    let cap_curves = |u: f64| -> Option<BezPath> {
+        if outline.elements().is_empty() {
+            return None;
+        }
+        cap_map(u).map(|to_cap| to_cap * outline.clone())
     };
     // The far cap, darkest; the near cap looks like the object.
     let far_shows = any_closed && (far_area > 1e-12 || !turned);
@@ -820,6 +824,12 @@ pub(crate) fn faces(
     near.effects.clear();
     near.shadow = None;
     near.transform = Affine::IDENTITY;
+    // The near cap is the outline taken to its depth: the object's mesh
+    // goes there with it (#2337).
+    crate::extrude::place_paint(
+        &mut near,
+        cap_map(near_u).unwrap_or(Affine::IDENTITY) * shape.transform,
+    );
     let near_curves = if bevel > 0.0 {
         None
     } else {

@@ -9215,3 +9215,59 @@ fn every_face_a_saved_file_names_is_described_and_embedded() {
         }
     }
 }
+
+/// A locked object is written with bit 0x10 of byte 0 of its `flgs`, as
+/// a version 21 file flags its locked text ([0x10, 2, 0, 8], the object
+/// beside it [0, 2, 0, 8]), and reads back locked; the others stay free
+/// (#2347).
+#[test]
+fn locked_objects_stay_locked() {
+    let mut doc = Document::new("w", Size::new(200.0, 100.0));
+    let mut ids = doc.ids().clone();
+    let rect = |ids: &mut tracedraw_core::id::IdSource, x: f64| {
+        Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(x, 20.0, x + 30.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            },
+        )
+    };
+    let mut locked = rect(&mut ids, 10.0);
+    locked.locked = true;
+    locked.name = Some("locked".into());
+    let mut free = rect(&mut ids, 60.0);
+    free.name = Some("free".into());
+    doc.set_ids(ids);
+    doc.pages[0].layers[0].shapes = vec![locked, free];
+    for v in [7u16, 9, 13, 15, 16, 19, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut flags = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.list_type_str().as_deref().map(str::trim) == Some("obj") {
+                if let Some(f) = c.find(b"flgs") {
+                    flags.push(tree.data(&riff, f).to_vec());
+                }
+            }
+        });
+        flags.sort();
+        assert_eq!(flags, [vec![0, 2, 0, 8], vec![0x10, 2, 0, 8]], "{v}");
+        let back = open_as_drawn(&bytes);
+        let shapes = &back.pages[0]
+            .layers
+            .iter()
+            .find(|l| !l.shapes.is_empty())
+            .expect("layer")
+            .shapes;
+        let by_name = |n: &str| {
+            shapes
+                .iter()
+                .find(|s| s.name.as_deref() == Some(n))
+                .unwrap_or_else(|| panic!("{v}: no {n}"))
+        };
+        assert!(by_name("locked").locked, "{v}");
+        assert!(!by_name("free").locked, "{v}");
+    }
+}

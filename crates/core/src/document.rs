@@ -5861,6 +5861,12 @@ impl Document {
     /// is written as 0, not as `null`, which no reader before 0.35 took
     /// for a number, so one such value made the whole file refuse to
     /// open in those versions and the drawing was lost.
+    ///
+    /// The JSON is compact, with no line breaks or indents (#2345): the
+    /// indented layout gave every coordinate its own line, indented
+    /// further at each group inside a group, so a curve node took 0.5 to
+    /// 1.3 KB and a drawing with many nodes in nested groups ran to
+    /// hundreds of megabytes. Every reader takes either layout.
     pub fn write_json_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
         use crate::finite::{Finite, FiniteSerializer};
         if (version as usize) >= DOWN_STEPS.len() {
@@ -5870,7 +5876,7 @@ impl Document {
                 doc: &'a Document,
                 format_version: u32,
             }
-            let mut ser = serde_json::Serializer::pretty(w);
+            let mut ser = serde_json::Serializer::new(w);
             Versioned {
                 doc: self,
                 format_version: TDRAW_FORMAT_VERSION,
@@ -5888,7 +5894,7 @@ impl Document {
         for step in DOWN_STEPS.iter().skip(version as usize).rev() {
             step(&mut v);
         }
-        serde_json::to_writer_pretty(w, &v)?;
+        serde_json::to_writer(w, &v)?;
         Ok(())
     }
 
@@ -6390,9 +6396,73 @@ mod tests {
         }
         // A null that is not a lost number is still refused.
         let json = Document::default().to_json().expect("json");
-        let broken = json.replacen("\"pages\": [", "\"pages\": null, \"x\": [", 1);
-        assert!(broken.contains("\"pages\": null"));
+        let broken = json.replacen("\"pages\":[", "\"pages\":null,\"x\":[", 1);
+        assert!(broken.contains("\"pages\":null"));
         assert!(Document::from_json(&broken).is_err());
+    }
+
+    /// A `.tdraw` file is compact JSON (#2345): its size follows the
+    /// drawing's nodes, not how deep they sit in groups inside groups,
+    /// and it opens as the same drawing. The indented layout wrote 5.3 MB
+    /// for these 10,000 curve nodes, and 13 MB inside eight groups.
+    #[test]
+    fn tdraw_size_does_not_grow_with_group_depth() {
+        use crate::geometry::BezPath;
+        let save = |depth: u64| {
+            let mut doc = Document::default();
+            let mut shapes: Vec<Shape> = (0..50u64)
+                .map(|k| {
+                    let mut p = BezPath::new();
+                    p.move_to((k as f64, k as f64 / 3.0));
+                    for i in 1..=200 {
+                        let f = i as f64 * 1.37 + k as f64 * 3.1;
+                        p.curve_to(
+                            (f / 7.0, f / 11.0),
+                            (f / 13.0, f / 17.0),
+                            (f / 19.0, f / 23.0),
+                        );
+                    }
+                    Shape::new(
+                        ShapeId(100 + k),
+                        ShapeKind::Path {
+                            path: p,
+                            closed: true,
+                        },
+                    )
+                })
+                .collect();
+            for d in 0..depth {
+                shapes = vec![Shape::new(
+                    ShapeId(10 + d),
+                    ShapeKind::Group { children: shapes },
+                )];
+            }
+            doc.pages[0].layers[0].shapes = shapes;
+            let json = doc.to_json().expect("json");
+            let back = Document::from_json(&json).expect("opens");
+            let nodes = |d: &Document| {
+                (100..150u64)
+                    .filter_map(|k| match &d.find_shape(ShapeId(k))?.kind {
+                        ShapeKind::Path { path, .. } => Some(path.elements().len()),
+                        _ => None,
+                    })
+                    .sum::<usize>()
+            };
+            assert_eq!((nodes(&back), nodes(&doc)), (50 * 201, 50 * 201));
+            json
+        };
+        let flat = save(0);
+        let deep = save(8);
+        assert!(!flat.contains('\n'), "no line breaks");
+        // About 155 bytes for each curve node (its three points in full);
+        // each group adds its own fields, some 500 bytes.
+        assert!(flat.len() < 1_700_000, "{} bytes", flat.len());
+        assert!(
+            deep.len() < flat.len() + 8_000,
+            "{} against {}",
+            deep.len(),
+            flat.len()
+        );
     }
 
     /// Variable font axis values (#870) are set, replaced and taken off

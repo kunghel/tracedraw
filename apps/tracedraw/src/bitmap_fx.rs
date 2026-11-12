@@ -130,6 +130,19 @@ pub fn encode_gray(img: &RgbaImage) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
+/// The colour mode a bitmap is in: CMYK when marked so, grayscale when
+/// its PNG holds one grey channel, else RGB (the status bar and the Mode
+/// menu, #1254, #2330).
+pub fn mode_of(cmyk: bool, png: &[u8]) -> ColorMode {
+    if cmyk {
+        ColorMode::Cmyk
+    } else if png_is_gray(png) {
+        ColorMode::Grayscale
+    } else {
+        ColorMode::Rgb
+    }
+}
+
 /// Whether `png` is a grayscale PNG (colour type 0 or 4 in its header):
 /// a bitmap in the Grayscale colour mode (#1777).
 pub fn png_is_gray(png: &[u8]) -> bool {

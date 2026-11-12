@@ -5235,6 +5235,11 @@ impl<'a> Writer<'a> {
         // keep it.
         let mut body = Vec::new();
         let mut flags = [0, 2, 0, 8];
+        // A locked object stays locked in the program that reads the
+        // file, as its own locked objects are flagged (#2347).
+        if s.locked {
+            flags[0] |= crate::parse::OBJECT_LOCKED;
+        }
         if container.is_some() {
             flags[2] = CLIP_CONTAINER_FLAG;
         }

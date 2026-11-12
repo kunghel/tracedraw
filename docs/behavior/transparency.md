@@ -63,11 +63,24 @@ What a drag that sets the line acts on (#1661,
 - With nothing selected: the object under the press is picked and gets
   it; a drag over no object does nothing.
 
-Ctrl (Cmd on macOS) keeps the line in steps of the constrain angle
-(set in Options, 15 degrees at first) about where the drag
+Ctrl (Cmd on macOS) or Shift keeps the line in steps of the constrain
+angle (set in Options, 15 degrees at first) about where the drag
 began, as for lines and the other angle drags; Interactive Fill's drag
 does the same
 (`pick_drag_tests::ctrl_keeps_an_interactive_fill_drag_to_the_constrain_angle`).
+Dragging the end node of a mask already there with Ctrl or Shift turns
+the line the same way about its start (a linear mask's start node about
+its end), without snapping (#2373).
+
+Choosing Radial, Conical or Square for a mask that still has its plain
+two stops (opaque at one end, clear at the other) makes it clear at the
+centre and opaque at the edge: the centre node black, the end node
+white. Linear (or Shaped) gives it back opaque at the start; a mask
+whose stops were changed keeps them (#2377, `mixed::set_mask_kind`).
+Dragging the end node of a radial, conical or square mask sizes it
+keeping the ratio its skew node sets, so a circle stays a circle; the
+skew node alone makes it an ellipse (#2373, `fill_tool::tests::
+a_radial_transparency_is_clear_at_the_centre_and_its_end_node_constrains`).
 
 Clear Transparency, a button at the end of the Transparency tool's bar
 and of the Properties docker's transparency part (greyed while no

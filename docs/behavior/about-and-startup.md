@@ -183,6 +183,12 @@ and `--reset-settings` starts open windows of their own.
   `instance::tests::the_window_comes_up_when_the_files_arrive_and_before_they_are_read`;
   the Windows call itself is not covered by a test). It is asked to
   come up once more when the files have been opened, as before.
+- A minimized window comes up for the files too: it draws nothing, so
+  it runs the app's logic and no ui, and the files are taken and the
+  window restored from the logic (`instance::bring_up_for_handed_over`).
+  When this ran with the ui, a minimized window took nothing until the
+  user restored it from the taskbar (#2129, still so on 0.44.0;
+  `instance::tests::a_minimized_window_comes_up_for_the_files_from_its_logic`).
 - A start with the next renderer after a failed one (see below) takes the
   place over. Portable copies and `TRACEDRAW_CONFIG_DIR` each have their
   own window.

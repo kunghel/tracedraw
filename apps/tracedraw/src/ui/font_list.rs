@@ -2048,6 +2048,8 @@ impl App {
             self.text_font = f;
         }
         if let Some((bold, italic)) = style {
+            self.text_default_bold = bold;
+            self.text_default_italic = italic;
             self.text_bold = bold;
             self.text_italic = italic;
         }

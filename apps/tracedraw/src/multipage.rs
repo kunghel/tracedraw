@@ -508,6 +508,53 @@ impl App {
             .map(|(page, _)| page.id)
     }
 
+    /// In the Multipage View, the page (its index and its place in the
+    /// grid) that a move of the selection by `total`, let go, gives the
+    /// selection to: another shown page whose paper holds the middle of
+    /// the moved selection's box (#2055). None off every paper, over the
+    /// current page, with facing pages (a spread is edited as one), and
+    /// when an object selected is inside a group or on a master layer.
+    pub fn multipage_drop_page(
+        &self,
+        total: tracedraw_core::geometry::Vec2,
+    ) -> Option<(usize, Rect)> {
+        if !self.multipage || self.doc().facing().is_some() || self.selection.is_empty() {
+            return None;
+        }
+        let middle = self.selection_bounds()?.center() + total;
+        let shown = self.shown_pages();
+        let id = page_at(&shown, middle).filter(|id| *id != self.page)?;
+        let (_, r) = shown.iter().find(|(p, _)| *p == id)?;
+        let doc = self.doc();
+        let own = doc.page(self.page).ok()?;
+        let on_layers = self.selection.iter().all(|sel| {
+            own.layers
+                .iter()
+                .any(|l| l.shapes.iter().any(|s| s.id == *sel))
+        });
+        if !on_layers {
+            return None;
+        }
+        let idx = doc.pages.iter().position(|p| p.id == id)?;
+        Some((idx, *r))
+    }
+
+    /// The selection given to page `idx`, which sits at `r` in the
+    /// Multipage View's grid: moved into that page's own coordinates, so
+    /// it stays where it shows, and onto its layer objects sent there go
+    /// to; that page becomes current, nothing moving on screen, with the
+    /// objects selected (#2055). False when nothing went.
+    pub fn give_selection_to_shown_page(&mut self, idx: usize, r: Rect) -> bool {
+        let Some(layer) = self.page_drop_layer(idx) else {
+            self.status = crate::i18n::tr("shelf.no_layer");
+            return false;
+        };
+        self.transform_selection(tracedraw_core::geometry::Affine::translate((-r.x0, -r.y0)));
+        let ids = self.selection.clone();
+        crate::ui::objects_docker::move_to_layer(self, &ids, layer);
+        true
+    }
+
     /// What the visible objects on the visible layers of `page` cover, in
     /// the page's own coordinates, with their outlines and effects; `None`
     /// for a page with nothing to show. The Multipage View draws another

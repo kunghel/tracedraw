@@ -270,8 +270,8 @@ pub(crate) struct RunStyle {
     /// Version 16+ style strings: the space before and after a paragraph
     /// as factors of the character height (`beforeParaSpacing` 1.0 is no
     /// extra space, `afterParaSpacing` 0.0 none), and the unit they and
-    /// the line spacing are given in (`spacingMethod`; only 0, the
-    /// character height, is read).
+    /// the line spacing are given in (`spacingMethod`: 0 the character
+    /// height, 1 points, 2 the point size; read in `paragraph_spacing`).
     pub para_before: Option<f64>,
     pub para_after: Option<f64>,
     pub spacing_method: Option<u32>,

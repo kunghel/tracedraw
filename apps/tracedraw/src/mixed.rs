@@ -82,6 +82,37 @@ fn uniform_amount(c: tracedraw_core::Color) -> f64 {
     (((1.0 - v) * 100.0).clamp(0.0, 100.0) * 1e4).round() / 1e4
 }
 
+/// Give the gradient mask `f` the kind `kind`. A mask that is still the
+/// plain one, opaque at one end and clear at the other, is made clear at
+/// the centre and opaque at the edge for a kind with a centre (radial,
+/// conical, square: their first stop is the centre) and opaque at the
+/// start for the others, so a radial transparency fades in towards its
+/// centre and its centre node is black (#2377). A mask with other stops
+/// keeps them as they are.
+pub fn set_mask_kind(f: &mut tracedraw_core::Fountain, kind: tracedraw_core::style::FountainKind) {
+    use tracedraw_core::style::FountainKind as K;
+    use tracedraw_core::Color;
+    let centred = |k: K| matches!(k, K::Radial | K::Conical | K::Square);
+    let plain = f.stops.len() == 2
+        && f.stops[0].pos == 0.0
+        && f.stops[1].pos == 1.0
+        && f.stops.iter().all(|s| s.opacity == 1.0)
+        && {
+            let (a, b) = (f.stops[0].color, f.stops[1].color);
+            (a == Color::WHITE && b == Color::BLACK) || (a == Color::BLACK && b == Color::WHITE)
+        };
+    if plain {
+        let (first, last) = if centred(kind) {
+            (Color::BLACK, Color::WHITE)
+        } else {
+            (Color::WHITE, Color::BLACK)
+        };
+        f.stops[0].color = first;
+        f.stops[1].color = last;
+    }
+    f.kind = kind;
+}
+
 /// The transparency effect and the opacity that stand for uniform
 /// transparency of `amount` % with `merge`.
 pub fn uniform_transparency(amount: f64, merge: MergeMode, target: u8) -> (Option<Effect>, f64) {
@@ -460,7 +491,7 @@ impl App {
                                 if *f == TransparencyField::MaskAngle {
                                     m.angle = from.angle;
                                 } else {
-                                    m.kind = from.kind;
+                                    set_mask_kind(m, from.kind);
                                 }
                             }
                             _ => {

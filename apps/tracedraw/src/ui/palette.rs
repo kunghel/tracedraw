@@ -417,6 +417,26 @@ pub fn name_of(app: &App, c: Color) -> String {
         .unwrap_or_default()
 }
 
+/// The mark of a spot colour's swatch: a small dot in its lower right
+/// corner, white on a dark colour and black on a light one, so a spot
+/// ink stands out from the process colours beside it (#2321).
+pub fn spot_mark(painter: &egui::Painter, cell: Rect, c: tracedraw_core::Color) {
+    let side = cell.width().min(cell.height());
+    if side < 6.0 {
+        return;
+    }
+    let r = (side * 0.14).clamp(1.5, 3.0);
+    let at = cell.right_bottom() - vec2(r + 2.0, r + 2.0);
+    let [red, green, blue] = c.to_rgb8();
+    let light = 0.299 * red as f32 + 0.587 * green as f32 + 0.114 * blue as f32 > 140.0;
+    let (dot, ring) = if light {
+        (Color32::BLACK, Color32::WHITE)
+    } else {
+        (Color32::WHITE, Color32::BLACK)
+    };
+    painter.circle(at, r, dot, Stroke::new(0.5, ring));
+}
+
 /// Tooltip of a swatch: the colour's name, then its values.
 pub fn swatch_tip(name: &str, c: Color) -> String {
     let values = color_values(c);
@@ -654,6 +674,8 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     if bg.double_clicked() {
         if let Some(i) = palette_index_of(app, which) {
             app.open_palette_editor(i);
+        } else if shows_document(app, which) {
+            app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
         }
     }
     // A right click on the row outside the swatches opens the same menu.
@@ -904,6 +926,9 @@ fn swatch(
         }
         Some((_, c)) => {
             painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
+            if matches!(c, tracedraw_core::Color::Spot { .. }) {
+                spot_mark(painter, cell, *c);
+            }
         }
     }
     let current = shows_document(app, which)
@@ -1305,6 +1330,11 @@ fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
         sep(ui);
     }
     if document {
+        // Edit Palette...: the Palette Editor on the document palette
+        // (#2321).
+        if item(ui, "palette.edit", "", app.has_document()) {
+            app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
+        }
         document_items(app, ui, swatch);
         sep(ui);
     }

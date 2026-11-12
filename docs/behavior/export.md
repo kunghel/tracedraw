@@ -278,6 +278,10 @@ dialog's choices, and Export for Web and Office keep their own (#617,
 - The Format list shows each format as "EXT - Description (*.ext)": JPG,
   PDF, AI and PNG first, a separator, then every format in the order of
   its extension, then installed script filters.
+- Selected only sizes the file to what the selected objects draw,
+  their outlines included (also those of objects inside a group), so an
+  outline is never cut at the file's edge (#2290,
+  `export::tests::a_selection_exported_alone_keeps_its_whole_outline`).
 - Under the format's settings: Selected only and the export range; at
   the bottom, above OK and Cancel, "Do not show this dialog again" (see
   "Skipping the options").

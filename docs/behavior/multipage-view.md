@@ -97,6 +97,15 @@ off too and is lit while it is on (#1019).
   selects it; else a press on another page's paper makes it current, so
   a click selects there and a drag draws there. Nothing moves on screen
   (`multipage::tests::a_press_picks_the_object_shown_whatever_page_holds_it`).
+- A move of the Pick tool let go with the middle of the moved objects'
+  box over another page's paper gives them to that page: they stay where
+  they show, now in that page's own place, on its topmost visible,
+  unlocked layer, and that page becomes current with them selected, as
+  one undo step with the move (Move to Page). Let go on the desktop or
+  on the current page, they stay the current page's. Not with facing
+  pages, nor for an object chosen inside a group or one on a master
+  layer (#2055,
+  `pick_drag_tests::an_object_dropped_on_another_page_of_the_multipage_view_becomes_that_page_s`).
 - The page tabs and the navigator change the current page the same way.
 - Zoom to Fit (F4) and turning the view on fit every page in the window.
 - Page Overview and Multipage View exclude each other.

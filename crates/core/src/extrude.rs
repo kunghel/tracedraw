@@ -370,6 +370,20 @@ fn scale(c: Color, k: f64) -> Color {
     )
 }
 
+/// A cap drawn in page space (its transform the identity) that looks like
+/// the object: a mesh fill's nodes and a mesh outline's are local to the
+/// object, so they go to the page through `t`, the object's transform and
+/// the move to the cap. Left local, the mesh stayed where the object was
+/// first drawn when it was moved, scaled or reshaped (#2337).
+pub(crate) fn place_paint(cap: &mut Shape, t: Affine) {
+    if let Fill::Mesh(m) = &mut cap.fill {
+        *m = m.transformed(t);
+    }
+    if let Some(Fill::Mesh(m)) = cap.stroke.as_mut().and_then(|s| s.fill.as_deref_mut()) {
+        *m = m.transformed(t);
+    }
+}
+
 impl Body {
     /// Where the copy of `p` goes.
     pub fn copy_of(&self, p: Point) -> Point {
@@ -823,6 +837,7 @@ impl Body {
             near.effects.clear();
             near.shadow = None;
             near.transform = Affine::IDENTITY;
+            place_paint(&mut near, to_copy * shape.transform);
             near.kind = ShapeKind::Path {
                 path: copy_path,
                 closed: any_closed,
@@ -1242,5 +1257,59 @@ mod tests {
             .faces(&empty)
             .below
             .is_empty());
+    }
+
+    /// The cap that looks like the object keeps the object's mesh on it
+    /// after the object is moved and scaled: the mesh's nodes are local
+    /// to the object and the cap is drawn in page space. They stayed
+    /// where the object was first drawn (#2337).
+    #[test]
+    fn a_mesh_fill_goes_with_the_cap() {
+        let mesh = crate::style::Mesh::new(Rect::new(0.0, 0.0, 20.0, 20.0), 1, 1, Color::BLACK);
+        let mut s = square(Fill::Mesh(mesh));
+        s.transform = Affine::translate((100.0, 40.0)) * Affine::scale(2.0);
+        let mesh_box = |f: &Fill| {
+            let Fill::Mesh(m) = f else {
+                panic!("a mesh: {f:?}");
+            };
+            m.nodes
+                .iter()
+                .map(|n| Rect::from_points(n.pos, n.pos))
+                .reduce(|a, b| a.union(b))
+                .expect("nodes")
+        };
+        let near_of = |f: &Faces| -> Shape {
+            f.above
+                .iter()
+                .rev()
+                .find(|c| matches!(c.fill, Fill::Mesh(_)))
+                .cloned()
+                .expect("a cap with the mesh")
+        };
+        // Front parallel: the near face is the copy, 10 by 10 off.
+        let near = near_of(&body(ExtrudeKind::FrontParallel).faces(&s));
+        let b = mesh_box(&near.fill);
+        assert!(
+            (b.x0 - 110.0).abs() < 1e-6
+                && (b.y0 - 50.0).abs() < 1e-6
+                && (b.x1 - 150.0).abs() < 1e-6,
+            "{b:?}"
+        );
+        let nb = near.bounds();
+        assert!(
+            (nb.x0 - b.x0).abs() < 1e-6 && (nb.y1 - b.y1).abs() < 1e-6,
+            "{nb:?} {b:?}"
+        );
+        // A bevelled body: its near cap is the object, the mesh on it.
+        let mut bevelled = body(ExtrudeKind::BackParallel);
+        bevelled.bevel = 1.0;
+        let near = near_of(&bevelled.faces(&s));
+        let b = mesh_box(&near.fill);
+        assert!(
+            (b.x0 - 100.0).abs() < 1e-6
+                && (b.y0 - 40.0).abs() < 1e-6
+                && (b.x1 - 140.0).abs() < 1e-6,
+            "{b:?}"
+        );
     }
 }
