@@ -348,10 +348,18 @@ class Outline {
   get EndArrow() { return null; }
   set EndArrow(v) { }
   SetNoOutline() { this._put(null); }
-  SetProperties(Width, Style, Color) {
+  SetProperties(Width, Style, Color, StartArrow, EndArrow, BehindFill, ScaleWithShape, LineCaps, LineJoin, NibAngle, NibStretch, DashDotLength, PenWidth, MiterLimit, Justification) {
     const s = this._s || __defaultStroke();
     if (Width !== undefined && Width !== null && Width >= 0) s.width = __mm(Width);
+    // A style from OutlineStyles (#1255).
+    if (Style && Array.isArray(Style._dash)) s.dash = Style._dash.slice();
     if (Color && Color.v) s.color = Color.v;
+    if (BehindFill !== undefined && BehindFill !== null) s.behind_fill = !!BehindFill;
+    if (ScaleWithShape !== undefined && ScaleWithShape !== null) s.scale_with_object = !!ScaleWithShape;
+    if (LineCaps !== undefined && LineCaps !== null) s.cap = ['butt', 'round', 'square'][LineCaps] || 'butt';
+    if (LineJoin !== undefined && LineJoin !== null) s.join = ['miter', 'round', 'bevel'][LineJoin] || 'miter';
+    if (NibAngle !== undefined && NibAngle !== null) s.nib_angle = Number(NibAngle);
+    if (NibStretch !== undefined && NibStretch !== null) s.stretch = Math.max(0.01, Math.min(1, Number(NibStretch) / 100));
     this._put(s);
   }
   CopyAssign(SourceOutline) { this._put(SourceOutline._s); }
@@ -1151,6 +1159,16 @@ class Page {
   set SizeHeight(v) { __call('set_page_size', { page: this.id, w: this._p.w, h: __mm(v) }); }
   SetSize(Width, Height) { __call('set_page_size', { page: this.id, w: __mm(Width), h: __mm(Height) }); }
   GetSize() { return [this.SizeWidth, this.SizeHeight]; }
+  // The paper by name ("A4", "Letter"), "" for a size of its own; set,
+  // the page takes that paper's size in its orientation (#1255).
+  get Paper() { return this._p.paper || ''; }
+  set Paper(name) {
+    const s = __call('vg_paper_size', { name: String(name) });
+    if (s.w === undefined) throw new Error('No paper is called ' + name);
+    const p = this._p;
+    const land = p.w > p.h;
+    __call('set_page_size', { page: this.id, w: land ? s.h : s.w, h: land ? s.w : s.h });
+  }
   get Orientation() { const p = this._p; return p.w > p.h ? cdrLandscape : cdrPortrait; }
   set Orientation(v) {
     const p = this._p;
@@ -1263,6 +1281,16 @@ class __Window {
   Refresh() { }
   Activate() { }
 }
+const __dashes = [[], [4, 2], [1, 1], [6, 2, 1, 2]];
+function __styleOf(i) {
+  const d = __dashes[Number(i) || 0];
+  if (d === undefined) throw new Error('The index is out of range: ' + i);
+  return { _dash: d, Index: Number(i) || 0, DashCount: d.length / 2, get Enhanced() { return false; } };
+}
+const __outlineStyles = Object.assign(function (Index) { return __styleOf(Index); },
+  { get Count() { return __dashes.length; }, Item: (Index) => __styleOf(Index) });
+const __arrowHeads = Object.assign(function (Index) { return null; },
+  { get Count() { return 1; }, Item: (Index) => null });
 const Application = {
   get ActiveDocument() { return new Document(); },
   get ActivePage() { return new Document().ActivePage; },
@@ -1288,6 +1316,11 @@ const Application = {
   CreateGrayColor(GrayValue) { const c = new Color(); c.GrayAssign(GrayValue); return c; },
   CreateHSBColor(Hue, Saturation, Brightness) { const c = new Color(); c.HSBAssign(Hue, Saturation, Brightness); return c; },
   CreateShapeRange() { return new ShapeRange([]); },
+  // The outline styles by number, 0 the solid line, then the dashes the
+  // Outline Pen dialog offers, in outline widths (#1255).
+  get OutlineStyles() { return __outlineStyles; },
+  // Arrowheads by number; 0 (the only one kept) is none.
+  get ArrowHeads() { return __arrowHeads; },
   CreateCurve(Document) { return new Curve(); },
   CreateDocument() { throw new Error('A macro works on the active drawing only'); },
   OpenDocument(FileName) { throw new Error('A macro works on the active drawing only'); },

@@ -6048,24 +6048,30 @@ impl<'a> Writer<'a> {
             // own look first, each counting the letters that wear it and
             // the first the paragraph's end too; every letter names its
             // record. The files of versions 7 to 13 saved by the program
-            // that reads them are so ("Runs: bold red and italic" as
-            // records of 17 and 8 letters, the red letters numbered 1), and
-            // its 14 and 15 saves too, but the files of 14 and 15 written
-            // with one record per run open there and stay as they were.
-            // Overrides of the font and the style flags are written in no
-            // version: no file of 7 to 15 shows them, so a run whose weight
-            // or slant differs from the paragraph's takes the paragraph's.
+            // that reads them are so, and its 14 and 15 saves too, but the
+            // files of 14 and 15 written with one record per run open
+            // there and stay as they were. A run whose weight or slant
+            // differs from the paragraph's carries its style flags (flag
+            // 0x02, the face code as the text styles hold it): "Runs: bold
+            // red and italic" saved by that program in version 7 is a
+            // record of 12 letters with no override, one of 6 with the
+            // italic code (0x80) and one of 8 with the bold code (0x1000)
+            // and the red fill (#1139). Overrides of the font are written
+            // in no version: no file of 7 to 15 shows them.
             let by_look = n < 14;
             let last_run = runs.len().saturating_sub(1);
-            // (size, fill, letters) of each record, and each run's record.
-            let mut records: Vec<(i32, u32, usize)> = Vec::new();
+            // (size, fill, style flags, letters) of each record, and each
+            // run's record.
+            let mut records: Vec<(i32, u32, u32, usize)> = Vec::new();
             let mut record_of_run: Vec<usize> = Vec::with_capacity(runs.len());
             if by_look {
-                records.push((base.size, base.fill, 1));
+                records.push((base.size, base.fill, base.flags, 1));
             }
             for (ri, sp) in runs.iter().enumerate() {
                 let look = format_of(self, sp);
-                let same = |r: &(i32, u32, usize)| (r.0, r.1) == (look.size, look.fill);
+                let same = |r: &(i32, u32, u32, usize)| {
+                    (r.0, r.1, r.2) == (look.size, look.fill, look.flags)
+                };
                 // The last run counts the paragraph's end too, as files
                 // count it.
                 let end = usize::from(!by_look && ri == last_run);
@@ -6075,18 +6081,21 @@ impl<'a> Writer<'a> {
                     // the 128th record take the first one's look.
                     None if records.len() > MAX_RUN_STYLES => 0,
                     None => {
-                        records.push((look.size, look.fill, 0));
+                        records.push((look.size, look.fill, look.flags, 0));
                         records.len() - 1
                     }
                 };
                 if let Some(r) = records.get_mut(index) {
-                    r.2 += sp.text.chars().count() + end;
+                    r.3 += sp.text.chars().count() + end;
                 }
                 record_of_run.push(index);
             }
             t.u32(records.len() as u32);
-            for (size, fill_id, letters) in &records {
+            for (size, fill_id, style, letters) in &records {
                 let mut flags = 0u8;
+                if *style != base.flags {
+                    flags |= 0x02;
+                }
                 if *size != base.size {
                     flags |= 0x04;
                 }
@@ -6096,6 +6105,15 @@ impl<'a> Writer<'a> {
                 t.u16((*letters).min(65535) as u16).u8(flags);
                 if n >= 8 {
                     t.u8(0);
+                }
+                if flags & 0x02 != 0 {
+                    t.u32(*style);
+                    // The face it names has its font record, as the file
+                    // above lists Arial's italic and bold faces.
+                    let face = (base.font, *style & 0x3_ffff);
+                    if !self.run_faces.contains(&face) {
+                        self.run_faces.push(face);
+                    }
                 }
                 if flags & 0x04 != 0 {
                     t.i32(*size);

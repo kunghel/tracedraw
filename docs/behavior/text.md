@@ -1029,7 +1029,9 @@ alternates (`salt`), Swash (`swsh`); then Superscript and Subscript.
   `text_nodes::tests::right_to_left_characters_have_their_nodes_under_their_glyphs`), on its (shifted)
   baseline; newlines have none. Click chooses one, Ctrl+click adds or
   removes, Shift+click adds, a marquee (rectangular or freehand) chooses
-  the nodes inside. Chosen nodes are filled. A second click on a node
+  the nodes inside; with Shift held it adds them to the chosen ones, so a
+  line at a time can be added (#2331,
+  `pick_drag_tests::shift_marquee_adds_character_nodes`). Chosen nodes are filled. A second click on a node
   within the double-click time and distance counts as a click: a quick
   Shift+click on the next character's node, a few pixels away, adds it
   too; it used to select the text again and let go of the chosen

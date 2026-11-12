@@ -1574,6 +1574,57 @@ mod tests {
         assert!(app.scripts_output.iter().any(|l| l == "closed"));
     }
 
+    /// What a published tiling macro reads and sets (#1255, #2165): the
+    /// page's paper by name, a paper set by name, and an outline set with
+    /// `OutlineStyles`, `ArrowHeads` and named arguments; it stopped with
+    /// error 438 on `Paper`, then with "Sub or Function not defined" on
+    /// `OutlineStyles`.
+    #[test]
+    fn a_tiling_macro_reads_the_paper_and_sets_outlines_by_style() {
+        let code = "Sub Go()\r\n\
+            ActiveDocument.Unit = cdrMillimeter\r\n\
+            Debug.Print \"paper \" & ActiveDocument.ActivePage.Paper\r\n\
+            Dim r As Shape\r\n\
+            Set r = ActiveLayer.CreateRectangle(0#, 30#, 40#, 0#)\r\n\
+            r.Outline.SetProperties 0.5, OutlineStyles(0), CreateCMYKColor(0, 0, 0, 100), ArrowHeads(0), ArrowHeads(0), cdrFalse, cdrFalse, cdrOutlineRoundLineCaps, cdrOutlineRoundLineJoin, 0#, 100, MiterLimit:=5#\r\n\
+            Dim d As Shape\r\n\
+            Set d = ActiveLayer.CreateLineSegment(0#, 0#, 50#, 0#)\r\n\
+            d.Outline.SetProperties 0.3, OutlineStyles(1)\r\n\
+            Debug.Print \"styles \" & OutlineStyles.Count\r\n\
+            ActivePage.Paper = \"A5\"\r\n\
+            Debug.Print \"now \" & ActivePage.Paper & \" \" & ActivePage.SizeWidth\r\n\
+            ActivePage.SizeWidth = 123\r\n\
+            Debug.Print \"custom [\" & ActivePage.Paper & \"]\"\r\n\
+            End Sub\r\n";
+        let mut app = app_with(project("Tiling", code, Vec::new()));
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        assert!(out.iter().any(|l| l == "paper A4"), "{out:?}");
+        assert!(out.iter().any(|l| l == "now A5 148"), "{out:?}");
+        assert!(out.iter().any(|l| l == "custom []"), "{out:?}");
+        assert!(out.iter().any(|l| l.starts_with("styles ")), "{out:?}");
+        let strokes: Vec<tracedraw_core::Stroke> = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .filter_map(|s| s.stroke.clone())
+            .collect();
+        let rect = strokes
+            .iter()
+            .find(|s| (s.width - 0.5).abs() < 1e-9)
+            .expect("the rectangle's outline");
+        assert!(rect.dash.is_empty());
+        assert_eq!(rect.cap, tracedraw_core::style::LineCap::Round);
+        assert_eq!(rect.join, tracedraw_core::style::LineJoin::Round);
+        let line = strokes
+            .iter()
+            .find(|s| (s.width - 0.3).abs() < 1e-9)
+            .expect("the line's outline");
+        assert!(!line.dash.is_empty(), "style 1 is dashed");
+    }
+
     #[test]
     fn errors_name_the_line_and_stop_ends_a_loop() {
         let code = "Sub Bad()\r\nDim a As Long\r\na = 1 / 0\r\nEnd Sub\r\nSub Forever()\r\nDim i As Long\r\nDo\r\ni = i + 1\r\nLoop\r\nEnd Sub\r\n";
@@ -1624,7 +1675,8 @@ mod tests {
     /// `.gms` in `TRACEDRAW_MACRO_FILES` (separated by ':') is compiled
     /// and listed; the macros named in `TRACEDRAW_MACRO_RUN`
     /// ("Module.Macro,...") run on a sample drawing, answering each box
-    /// with its first button or default text and closing each form.
+    /// with its first button or default text and closing each form
+    /// (after a click on the button `TRACEDRAW_MACRO_CLICK` names, once).
     #[test]
     #[ignore]
     fn projects_from_the_environment() {
@@ -1678,6 +1730,7 @@ mod tests {
                 app.select_all();
                 app.run_macro(i, &m, &n);
                 let mut shown = Vec::new();
+                let mut click = std::env::var("TRACEDRAW_MACRO_CLICK").ok();
                 drive(&mut app, |app| {
                     match app.macros.prompt.take() {
                         Some(Prompt::MsgBox {
@@ -1713,13 +1766,22 @@ mod tests {
                         .collect();
                     for (id, caption) in visible {
                         shown.push(format!("form {caption}"));
+                        // The button `TRACEDRAW_MACRO_CLICK` names is
+                        // clicked once before the form closes.
+                        if let Some(b) = click.take() {
+                            shown.push(format!("click {b}"));
+                            app.macro_form_event(id, &b, "Click", Vec::new());
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                            continue;
+                        }
                         app.macro_form_event(id, "", "QueryClose", vec![serde_json::json!(0)]);
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 });
                 let err = app.macros.error.take();
+                let objects: usize = app.doc().all_layers().map(|l| l.shapes.len()).sum();
                 println!(
-                    "   run {m}.{n}: {} {:?} out={:?}",
+                    "   run {m}.{n}: {} {:?} objects={objects} out={:?}",
                     match &err {
                         None => "ok".to_string(),
                         Some((e, _)) => format!(

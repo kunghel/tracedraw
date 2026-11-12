@@ -236,6 +236,8 @@ mod web;
 mod web_page;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
 mod x11_clipboard;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod x11_copy;
 // The pen pressure helper of the patched winit copy, with its tests
 // (vendor/README.md), so that the gate runs them.
 #[cfg(all(test, not(target_arch = "wasm32")))]

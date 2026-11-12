@@ -34,6 +34,9 @@ pub(super) struct AppView {
     pub palettes: Vec<(String, Vec<(String, Color)>)>,
     /// View > Simulate Overprints is on.
     pub simulate_overprints: bool,
+    /// The page sizes the user saved, which name a page's paper before
+    /// the built-in ones (`Page.Paper`).
+    pub page_sizes: Vec<crate::settings::PageSizePreset>,
 }
 
 impl AppView {
@@ -60,6 +63,7 @@ impl AppView {
                 .map(|p| (p.display_name(), p.colors.clone()))
                 .collect(),
             simulate_overprints: app.simulate_overprints,
+            page_sizes: app.settings.page_sizes.clone(),
         }
     }
 }
@@ -691,11 +695,37 @@ impl HostInner {
                     .enumerate()
                     .find(|(_, p)| p.id == pid)
                     .ok_or("no page")?;
+                // The paper the size is, by name ("A4"), or "" for a
+                // size of its own (#1255).
+                let paper = crate::ui::dialogs::paper_name(p.size, &self.view.page_sizes)
+                    .unwrap_or_default();
                 json!({
                     "name": p.name, "w": p.size.width, "h": p.size.height, "index": i + 1,
+                    "paper": paper,
                     "layers": p.layers.iter().map(|l| l.id.raw()).collect::<Vec<_>>(),
                     "master": self.doc.master.iter().map(|l| l.id.raw()).collect::<Vec<_>>(),
                 })
+            }
+            "vg_paper_size" => {
+                // The size of a paper by name, the user's saved sizes
+                // first, portrait.
+                let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let size = self
+                    .view
+                    .page_sizes
+                    .iter()
+                    .find(|p| p.name.eq_ignore_ascii_case(name))
+                    .map(|p| (p.width_mm, p.height_mm))
+                    .or_else(|| {
+                        crate::ui::dialogs::paper_presets()
+                            .into_iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                            .map(|(_, s)| (s.width, s.height))
+                    });
+                match size {
+                    Some((w, h)) => json!({"w": w.min(h), "h": w.max(h)}),
+                    None => json!({}),
+                }
             }
             "vg_rename_page" => {
                 let page = PageId(id_arg(a, "page")?);

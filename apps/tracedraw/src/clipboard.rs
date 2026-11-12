@@ -1,7 +1,8 @@
 //! System clipboard and external bitmap editing.
 //!
-//! Copy puts the selection on the system clipboard as SVG text next to the
-//! internal clipboard, so other applications can paste it. Paste Special
+//! Copy puts the selection on the system clipboard next to the internal
+//! clipboard, so other applications can paste it: as SVG text, and on an
+//! X11 desktop also as an SVG image and a PNG picture (#2288). Paste Special
 //! offers the system clipboard's content as text, as a bitmap or as vector
 //! objects (SVG). Image > Edit Bitmap hands a PNG to the system's image
 //! editor and Update from Link reads it back.
@@ -384,6 +385,22 @@ fn without_line_end(path: std::path::PathBuf) -> std::path::PathBuf {
     }
 }
 
+/// The resolution of the picture a copy offers (#2288): 150 dpi, less
+/// for a selection so large that its longer side would pass 4000 pixels.
+#[cfg_attr(
+    not(all(unix, not(any(target_os = "macos", target_os = "android")))),
+    allow(dead_code)
+)]
+fn copy_picture_dpi(width_mm: f64, height_mm: f64) -> f64 {
+    const DPI: f64 = 150.0;
+    const MOST_PX: f64 = 4000.0;
+    let side = width_mm.max(height_mm);
+    if !side.is_finite() || side <= 0.0 {
+        return DPI;
+    }
+    DPI.min(MOST_PX * 25.4 / side).max(1.0)
+}
+
 /// Put text on the system clipboard (best effort); whether it went there.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn write_text(text: &str) -> bool {
@@ -511,8 +528,35 @@ impl App {
             return;
         };
         self.copy();
-        let written = write_text(&svg);
+        let written = self.offer_copy(&svg) || write_text(&svg);
         self.mark_system_clipboard(written.then_some(svg.as_str()));
+    }
+
+    /// Offer the copy `svg` to other programs as SVG, as a picture and as
+    /// text, where TraceDraw owns the clipboard itself (an X11 clipboard,
+    /// #2288): a program that takes pictures pastes the drawing, not its
+    /// SVG source as text. The picture is drawn only when a program asks
+    /// for it. False elsewhere, where the text goes there alone.
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+    fn offer_copy(&self, svg: &str) -> bool {
+        let Some(bounds) = self.selection_bounds() else {
+            return false;
+        };
+        let Some(alone) = self.selection_alone(bounds) else {
+            return false;
+        };
+        let dpi = copy_picture_dpi(bounds.width(), bounds.height());
+        crate::x11_copy::offer(
+            svg.to_string(),
+            Box::new(move || {
+                crate::ops2::render_alone_png(&alone, dpi, true, true).map(|(png, _, _)| png)
+            }),
+        )
+    }
+
+    #[cfg(not(all(unix, not(any(target_os = "macos", target_os = "android")))))]
+    fn offer_copy(&self, _svg: &str) -> bool {
+        false
     }
 
     /// Remember what the system clipboard holds right after a copy here
@@ -1175,6 +1219,34 @@ mod eframe_paste_gate;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picture a copy offers (#2288) is 150 dpi, and smaller for a
+    /// selection whose longer side would pass 4000 pixels; the copied
+    /// objects drawn alone fill it.
+    #[test]
+    fn the_picture_a_copy_offers_is_the_selection_drawn() {
+        assert_eq!(copy_picture_dpi(100.0, 50.0), 150.0);
+        let big = copy_picture_dpi(2000.0, 100.0);
+        assert!((2000.0 * big / 25.4 - 4000.0).abs() < 1.0, "{big}");
+        assert_eq!(copy_picture_dpi(0.0, 0.0), 150.0);
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.8, 35.4),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let bounds = app.selection_bounds().expect("bounds");
+        let alone = app.selection_alone(bounds).expect("alone");
+        let (png, w, h) = crate::ops2::render_alone_png(&alone, 100.0, true, true).expect("png");
+        // 2 by 1 inches, and the outline's width round it.
+        assert!(w.abs_diff(200) <= 6 && h.abs_diff(100) <= 6, "{w} x {h}");
+        let img = image::load_from_memory(&png).expect("decodes").to_rgba8();
+        // A new rectangle has an outline and no fill: its edges are drawn.
+        assert!(img.pixels().any(|p| p[3] > 0), "the rectangle is drawn");
+    }
 
     fn shape_count(app: &App) -> usize {
         app.doc().all_layers().map(|l| l.shapes.len()).sum()

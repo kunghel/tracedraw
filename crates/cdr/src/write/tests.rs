@@ -6487,13 +6487,19 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// does (#98, #1139), and the interoperability drawing has named groups.
 /// Without the names the stream is what #1139 pinned (0x7e7f333076ad70a3
 /// for 14, 0x88ab5fb328ef43e3 for 15).
+///
+/// And again: the bold and the italic run of the drawing's text carry
+/// their style flags (flag 0x02 of their records), as the runs of a file
+/// that program saves do, and no longer lose their weight and slant
+/// there (#1139). Before: 0x6f15b56f9563faf2 for 14, 0x0128bfeccf21449c
+/// for 15.
 #[test]
 fn versions_14_and_15_are_written_as_before() {
     use std::io::Read as _;
     let doc = interop_document();
     for (v, want) in [
-        (14u16, 0x6f15_b56f_9563_faf2u64),
-        (15, 0x0128_bfec_cf21_449c),
+        (14u16, 0x4580_a816_71c9_8638u64),
+        (15, 0xad05_770f_3873_d5db),
     ] {
         let bytes = document_to_cdr_version(&doc, v);
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
@@ -6730,6 +6736,9 @@ fn txsm_first_paragraph(d: &[u8], v: u16) -> (Vec<(u16, u8)>, Vec<u8>) {
     for _ in 0..n {
         let (count, flags) = (u16_at(at), d[at + 2]);
         at += 3 + usize::from(v >= 8);
+        if flags & 0x02 != 0 {
+            at += 4;
+        }
         if flags & 0x04 != 0 {
             at += 4;
         }
@@ -6745,14 +6754,17 @@ fn txsm_first_paragraph(d: &[u8], v: u16) -> (Vec<(u16, u8)>, Vec<u8>) {
     (records, numbers)
 }
 
-/// Before version 14 a paragraph's records list its distinct looks (size
-/// and fill), the paragraph's own first with the paragraph end counted,
-/// and every letter numbers its record in its description (the 4-byte
-/// descriptions of versions 7 to 11 too), as the files of those versions
-/// saved by the program that reads them have it: "Runs: bold red and
-/// italic" is two records, 17 (18 here, with the end) and 8 letters, the
-/// red ones numbered 1. Versions 14 and 15 keep one record per run, which
-/// opens there.
+/// Before version 14 a paragraph's records list its distinct looks (size,
+/// fill and style flags), the paragraph's own first with the paragraph end
+/// counted, and every letter numbers its record in its description (the
+/// 4-byte descriptions of versions 7 to 11 too), as the files of those
+/// versions saved by the program that reads them have it: "Runs: bold red
+/// and italic" saved there in version 7 is three records, 12 letters with
+/// the end, 6 italic (flag 0x02, code 0x80) and 8 bold (0x02, code 0x1000)
+/// and red (0x40) (#1139; the bold and italic records were left out and
+/// the runs lost their weight and slant). Versions 14 and 15 keep one
+/// record per run, which opens there, the bold and italic runs with their
+/// style flags.
 #[test]
 fn text_records_before_14_list_the_looks_and_number_the_letters() {
     let mut ids = tracedraw_core::id::IdSource::default();
@@ -6783,14 +6795,15 @@ fn text_records_before_14_list_the_looks_and_number_the_letters() {
         let (records, numbers) = txsm_first_paragraph(&rec.expect("a text record"), v);
         let repeat = |n: u8, k: usize| std::iter::repeat_n(n, k);
         if v < 14 {
-            assert_eq!(records, [(18, 0x00), (8, 0x40)], "{v}");
+            assert_eq!(records, [(12, 0x00), (8, 0x42), (6, 0x02)], "{v}");
             let want: Vec<u8> = repeat(0, 6)
                 .chain(repeat(1, 8))
-                .chain(repeat(0, 11))
+                .chain(repeat(0, 5))
+                .chain(repeat(2, 6))
                 .collect();
             assert_eq!(numbers, want, "{v}");
         } else {
-            assert_eq!(records, [(6, 0x00), (8, 0x40), (5, 0x00), (7, 0x00)], "{v}");
+            assert_eq!(records, [(6, 0x00), (8, 0x42), (5, 0x00), (7, 0x02)], "{v}");
             let want: Vec<u8> = repeat(0, 6)
                 .chain(repeat(1, 8))
                 .chain(repeat(2, 5))
@@ -6810,6 +6823,18 @@ fn text_records_before_14_list_the_looks_and_number_the_letters() {
             .find(|s| s.fill == Some(Fill::Solid(Color::rgb8(204, 0, 0))))
             .unwrap_or_else(|| panic!("{v}: no red run in {spans:?}"));
         assert_eq!(red.text, "bold red", "{v}");
+        assert!(red.bold && !red.italic, "{v}: {spans:?}");
+        let italic = spans
+            .iter()
+            .find(|s| s.text == "italic")
+            .unwrap_or_else(|| panic!("{v}: no italic run in {spans:?}"));
+        assert!(italic.italic && !italic.bold, "{v}: {spans:?}");
+        for plain in spans
+            .iter()
+            .filter(|s| s.text.trim() == "Runs:" || s.text.trim() == "and")
+        {
+            assert!(!plain.bold && !plain.italic, "{v}: {spans:?}");
+        }
     }
 }
 
@@ -9059,4 +9084,134 @@ fn vertical_text_round_trips_through_the_at_face() {
         spans.iter().all(|s| s.font_family == "Verdana"),
         "{spans:?}"
     );
+}
+
+/// Every face a saved file names is a face it describes and embeds:
+/// each `font` record has a font table entry of the same number and
+/// flags, each run style's font, weight and slant is one of the records,
+/// and each embedded member's face block names its table entry's family
+/// and face. The five reports of embedded fonts asked for by the program
+/// that reads the files (#1009, #1055, #1455, #1467, #1484) were each a
+/// name of one of these kinds left without its match (a plain record for
+/// a face neither used nor embedded, an italic record for an upright
+/// file, a weight the font table did not list). Checked for each mix of
+/// bold, italic and underline, with the family's regular and bold files
+/// installed and with its bold file alone, as the reporter had Khand.
+#[test]
+fn every_face_a_saved_file_names_is_described_and_embedded() {
+    use std::io::Read;
+    const REGULAR: &[u8] =
+        include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+    const BOLD: &[u8] = include_bytes!("../../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("u32"));
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().expect("u16"));
+    for bold_only in [false, true] {
+        for (bold, italic, underline) in (0..8).map(|k| (k & 1 != 0, k & 2 != 0, k & 4 != 0)) {
+            let case = format!("bold only {bold_only}, b{bold} i{italic} u{underline}");
+            let mut ids = tracedraw_core::id::IdSource::default();
+            let mut span = TextSpan::new("Text", "Selawik", 20.0);
+            span.bold = bold;
+            span.italic = italic;
+            if underline {
+                span.underline = tracedraw_core::document::LineStyle::SingleThin;
+            }
+            let doc = doc_with(vec![text_shape(&mut ids, vec![span], TextAlign::Left)]);
+            // The file that draws the face, as the app finds it: the bold
+            // file for every style when it is the only one installed.
+            let file = if bold || bold_only { BOLD } else { REGULAR };
+            let previews = Previews {
+                fonts: vec![FontFace {
+                    family: "Selawik".into(),
+                    bold,
+                    italic,
+                    data: Some(std::sync::Arc::new(file.to_vec())),
+                }],
+                embed_fonts: true,
+                ..Default::default()
+            };
+            let bytes = document_to_cdr_version_with(&doc, NEWEST_VERSION, &previews);
+            let (_, tree, riff) = chunk_ids(&bytes);
+            let mut records = Vec::new();
+            tree.root.walk(&mut |ch, _| {
+                if ch.id_str() == "font" {
+                    let d = tree.data(&riff, ch);
+                    records.push((u16_at(d, 0), u32_at(d, 4)));
+                }
+            });
+            let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+            let mut read = |name: &str| {
+                let mut out = Vec::new();
+                z.by_name(name)
+                    .expect(name)
+                    .read_to_end(&mut out)
+                    .expect("read");
+                out
+            };
+            // The font table: number, flags, family and embedded flag.
+            let table = read("font/fontTable.dat");
+            let mut entries = Vec::new();
+            let mut at = 12;
+            for _ in 0..u32_at(&table, 8) {
+                let size = u32_at(&table, at + 4) as usize;
+                let e = &table[at + 8..at + 8 + size];
+                let len = u32_at(e, 18) as usize;
+                let family = String::from_utf16_lossy(
+                    &(0..len.saturating_sub(1))
+                        .map(|k| u16_at(e, 22 + 2 * k))
+                        .collect::<Vec<_>>(),
+                );
+                let mut q = 22 + 2 * len + 1;
+                q += 4 + 2 * u32_at(e, q) as usize;
+                entries.push((u16_at(e, 0), u32_at(e, 4), family, u32_at(e, q) == 1));
+                at += 8 + size;
+            }
+            for (id, flags) in &records {
+                assert!(
+                    entries.iter().any(|(n, f, _, _)| n == id && f == flags),
+                    "{case}: record {id} {flags:#x} has no table entry: {entries:?}"
+                );
+            }
+            // Each embedded member names its entry's family and face.
+            let embedded: Vec<_> = entries.iter().filter(|e| e.3).collect();
+            assert_eq!(embedded.len(), 1, "{case}: {entries:?}");
+            let member = read("embed/embedding0");
+            let family = String::from_utf16_lossy(
+                &(0..32)
+                    .map(|k| u16_at(&member, 2067 + 2 * k))
+                    .take_while(|&c| c != 0)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(family, embedded[0].2, "{case}");
+            assert_eq!(u32_at(&member, 2163), embedded[0].1 & 0x3ffff, "{case}");
+            // The face block is the face the file holds.
+            let own = if file == BOLD { 0x1000 } else { 0x40 };
+            assert_eq!(u32_at(&member, 2163), own, "{case}");
+            // Every run style names one of the records.
+            let page = String::from_utf8_lossy(&read("content/data/page1.dat")).into_owned();
+            let mut styles = 0;
+            for part in page.split("\"latin\":{").skip(1) {
+                let body = &part[..part.find('}').unwrap_or(part.len())];
+                let member = |key: &str| {
+                    let k = format!("\"{key}\":\"");
+                    body.find(&k).map(|i| {
+                        let rest = &body[i + k.len()..];
+                        rest[..rest.find('"').unwrap_or(0)].to_string()
+                    })
+                };
+                let weight: u32 = member("weight")
+                    .and_then(|w| w.parse().ok())
+                    .expect("weight");
+                let slant = member("italic").as_deref() == Some("1");
+                let lines = member("underline").as_deref().is_some_and(|u| u != "0");
+                let code =
+                    if slant { weight << 1 } else { weight } | if lines { 0x40000 } else { 0 };
+                assert!(
+                    records.iter().any(|(_, f)| *f == code),
+                    "{case}: a run names {code:#x}, records {records:x?}"
+                );
+                styles += 1;
+            }
+            assert!(styles > 0, "{case}: no run style in {page}");
+        }
+    }
 }

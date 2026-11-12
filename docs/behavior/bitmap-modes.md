@@ -104,6 +104,11 @@ selection into one bitmap in one undo step:
 - Anti-aliasing (on): smooth edges; off renders hard pixel edges.
 - Transparent background (on); off puts the selection on white.
 - The uncompressed size is shown: `ceil(width x bits / 8) x height`.
+- The bitmap covers all the selection draws: its box grown by the drop
+  shadows of its objects (and of the objects in its groups), feathering
+  included, so a shadow reaching past an object is kept whole rather
+  than cut at the object's box (#2351,
+  `ops2::tests::convert_to_bitmap_keeps_the_whole_drop_shadow`).
 
 ## Monochrome bitmaps
 

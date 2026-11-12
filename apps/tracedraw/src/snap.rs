@@ -806,43 +806,49 @@ impl App {
         }));
     }
 
-    /// Where the centre of rotation goes for the pointer at `p`: when
-    /// snapping is on, the nearest within the snap radius of the
-    /// selection's box (corners, middles of the sides, centre) and of the
-    /// points the pointer snaps to (nodes and points of every object, the
-    /// selection's own included, guidelines, the grid, the page).
+    /// Where the centre of rotation goes for the pointer at `p`. Unless
+    /// snapping is off, it takes the nearest point within the snap radius
+    /// of the selection's box (corners, middles of the sides, centre) and
+    /// of the objects of the page, the selection's own included (nodes,
+    /// midpoints, quadrants, centres), whether or not Snap to Objects is
+    /// on, so it can be put on the centre or an edge of an object
+    /// exactly (#2352); the point it takes is marked with its name. Else
+    /// it snaps as the pointer does (guidelines, the grid, the page).
     pub fn snap_pivot(&self, p: Point) -> Point {
+        if self.snap.off {
+            return p;
+        }
+        let tol = self.snap_tolerance();
+        let mut g = Vec::new();
+        if let Some(b) = self.selection_bounds() {
+            if b.inflate(tol, tol).contains(p) {
+                g.push(Geo::Outline {
+                    path: tracedraw_core::geometry::Shape::to_path(&b, 0.01),
+                    points: true,
+                });
+                g.push(Geo::Center(b.center()));
+            }
+        }
+        for sh in self
+            .page_layers()
+            .into_iter()
+            .filter(|l| l.visible)
+            .flat_map(|l| &l.shapes)
+        {
+            if !sh.visible || !self.snap_bounds(sh).inflate(tol, tol).contains(p) {
+                continue;
+            }
+            snap_points::object_geometry(&self.snap_shape(sh), &text_baselines, &mut g);
+        }
+        let found = snap_points::targets(&g, p, tol, None, &self.settings.snap.modes);
+        if let Some(t) = snap_points::best(&found, true, false) {
+            self.snap_mark.set(Some(t));
+            return t.point;
+        }
         if !self.snap_enabled() {
             return p;
         }
-        let snapped = self.snap_point(p);
-        let tol = self.snap_tolerance();
-        let boxed = self.selection_bounds().and_then(|b| {
-            let (x0, x1, y0, y1) = (b.x0, b.x1, b.y0, b.y1);
-            let c = b.center();
-            [
-                Point::new(x0, y0),
-                Point::new(x1, y0),
-                Point::new(x0, y1),
-                Point::new(x1, y1),
-                Point::new(c.x, y0),
-                Point::new(c.x, y1),
-                Point::new(x0, c.y),
-                Point::new(x1, c.y),
-                c,
-            ]
-            .into_iter()
-            .map(|q| (q, (q - p).hypot()))
-            .filter(|(_, d)| *d <= tol)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-        });
-        match boxed {
-            Some((q, d)) if snapped == p || d < (snapped - p).hypot() => {
-                self.snap_mark.set(None);
-                q
-            }
-            _ => snapped,
-        }
+        self.snap_point(p)
     }
 
     /// Where the point of the selection box that a scale handle stands for
@@ -1648,6 +1654,50 @@ mod tests {
         app.snap_mark.set(None);
         let q = app.snap_point(Point::new(103.0, 118.0));
         assert_ne!(q, Point::new(100.0, 120.0));
+    }
+
+    /// The centre of rotation snaps to the centre, the corners and the
+    /// middles of the sides of the selection and to the centre of another
+    /// object, even with Snap to Objects off as on a first start, and
+    /// names the point it took; with snapping off it goes where it is
+    /// put (#2352).
+    #[test]
+    fn the_centre_of_rotation_snaps_to_object_centres_and_edges() {
+        let mut app = app();
+        app.snap = SnapSettings::default();
+        app.settings.snap = crate::settings::SnapPrefs::default();
+        let page = app.page_rect();
+        let (x, y) = (page.x0 + 60.0, page.y0 + 60.0);
+        let square = rect(&mut app, x, y, x + 30.0, y + 30.0);
+        let circle = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(x, y + 60.0, x + 30.0, y + 90.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.select(vec![square]);
+        app.rotate_mode = true;
+        // The other object's centre.
+        let c = Point::new(x + 15.0, y + 75.0);
+        assert_eq!(app.snap_pivot(c + Vec2::new(3.0, -2.0)), c);
+        assert_eq!(app.snap_mark.get().map(|m| m.mode), Some(SnapMode::Center));
+        // The selection's own centre, a corner and the middle of a side.
+        app.snap_mark.set(None);
+        let mid = Point::new(x + 15.0, y + 15.0);
+        assert_eq!(app.snap_pivot(mid + Vec2::new(-2.0, 2.5)), mid);
+        assert!(app.snap_mark.get().is_some(), "the point is named");
+        let corner = Point::new(x + 30.0, y);
+        assert_eq!(app.snap_pivot(corner + Vec2::new(2.0, -1.0)), corner);
+        let side = Point::new(x + 15.0, y + 30.0);
+        assert_eq!(app.snap_pivot(side + Vec2::new(1.5, 2.0)), side);
+        // Far from every point it stays where it is put.
+        let free = Point::new(x + 7.0, y + 45.0);
+        assert_eq!(app.snap_pivot(free), free);
+        // Snapping off: no snap at all.
+        app.snap.off = true;
+        let near = c + Vec2::new(3.0, -2.0);
+        assert_eq!(app.snap_pivot(near), near);
+        let _ = circle;
     }
 
     #[test]

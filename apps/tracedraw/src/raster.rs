@@ -713,7 +713,8 @@ impl Raster {
     /// rendered: zoomed out, or panned, it is shown scaled or shifted into
     /// place until the new one is ready, and the rest of the page showed
     /// as blank paper meanwhile, a white flash on a dark design at every
-    /// zoom step. The backdrop is `area` (page mm, the page) fitted into
+    /// zoom step. The backdrop is `area` (page mm: the page and what is drawn
+    /// beside it, see `App::backdrop_area`) fitted into
     /// the canvas `rect`, at most [`BACKDROP_MAX`] pixels a side: one more
     /// texture no larger than the picture's own, whatever the zoom.
     ///

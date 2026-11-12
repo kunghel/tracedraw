@@ -685,7 +685,11 @@ impl App {
                     self.select(vec![id]);
                 }
             }
-            self.node_lasso_keeps = false;
+            // Shift keeps the nodes and characters chosen already and adds
+            // the ones inside, as Shift+click does; the marquee used to
+            // replace them, so the first line's characters let go when a
+            // Shift+marquee took the second line's (#2331).
+            self.node_lasso_keeps = mods.shift;
             self.drag = if self.node_lasso {
                 Drag::NodeLasso { points: vec![p] }
             } else {
@@ -1006,10 +1010,15 @@ impl App {
 
     /// Finish a node marquee: select the nodes inside the rectangle.
     pub fn finish_node_marquee(&mut self, start: Point, current: Point) {
+        let keeps = std::mem::take(&mut self.node_lasso_keeps);
         let r = Rect::from_points(start, current);
         if r.width() < 0.05 && r.height() < 0.05 {
             return;
         }
+        let before = (
+            self.node_selection.clone(),
+            self.rect_corners_selected.clone(),
+        );
         let mut sel = Vec::new();
         for id in &self.node_targets() {
             let Some((path, _, t)) = self.path_of(*id) else {
@@ -1030,6 +1039,31 @@ impl App {
         self.segment_spot = None;
         // Character nodes of selected texts too.
         self.choose_chars_in(|q| r.contains(q));
+        if keeps {
+            self.keep_earlier_choice(before);
+        }
+    }
+
+    /// Shift+marquee (rectangular or freehand): the nodes, corners and
+    /// characters chosen before the marquee (`before`) stay chosen, the
+    /// ones the marquee chose join them (#1341, #2331).
+    pub(crate) fn keep_earlier_choice(
+        &mut self,
+        before: (Vec<(ShapeId, usize)>, Vec<(ShapeId, usize)>),
+    ) {
+        let (mut nodes, mut corners) = before;
+        for k in std::mem::take(&mut self.node_selection) {
+            if !nodes.contains(&k) {
+                nodes.push(k);
+            }
+        }
+        for k in std::mem::take(&mut self.rect_corners_selected) {
+            if !corners.contains(&k) {
+                corners.push(k);
+            }
+        }
+        self.node_selection = nodes;
+        self.rect_corners_selected = corners;
     }
 
     /// The control points of the selected B-splines (page space) for which

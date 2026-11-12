@@ -25,6 +25,10 @@ To draw a straight line with this tool, click where the line starts and
 click again where it ends. Hold <kbd>Ctrl</kbd> to keep the line to steps of
 15 degrees. <kbd>Esc</kbd> drops the first click.
 
+To draw a line of several straight segments, click where it starts, then
+double-click at each corner, and click once where it ends. <kbd>Space</kbd>,
+<kbd>Enter</kbd> or <kbd>Esc</kbd> ends it at the last corner.
+
 With a graphics tablet, the pen's pressure sets the width of the line along
 it; see [Drawing with a graphics tablet](pen-pressure.md).
 

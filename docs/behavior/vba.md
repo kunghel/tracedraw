@@ -47,7 +47,10 @@ selection as one object, type `cdrSelectionShape`, with `Shapes`),
 `EventsEnabled`, `Refresh`, `CreateColor(ColorString)` ("#RRGGBB",
 "RGB255,USER,r,g,b", "CMYK100,USER,c,m,y,k", "GRAY255,USER,v"),
 `CreateRGBColor`, `CreateCMYKColor`, `CreateGrayColor`,
-`CreateHSBColor`, `CreateShapeRange`, `CreateCurve`. `CreateDocument`
+`CreateHSBColor`, `CreateShapeRange`, `CreateCurve`, `OutlineStyles`
+(`OutlineStyles(0)` the solid line, 1 to 3 the dashes the Outline Pen
+dialog offers, `Count`, `Item`), `ArrowHeads` (`ArrowHeads(0)`, no
+arrowhead; other numbers give none either). `CreateDocument`
 and `OpenDocument` raise an error: a macro works on the active drawing.
 `Status` (`BeginProgress`, `Progress`, `EndProgress`, `SetMainText`:
 the text and percentage go to the status line), `ColorManager`
@@ -78,7 +81,9 @@ file's extension; bitmaps at the resolution given, or scaled to
 master layers), `ActiveLayer`, `SelectableShapes` (on visible, unlocked
 layers), `Name` (read and write), `Index`, `SizeWidth`, `SizeHeight`,
 `SetSize`, `GetSize`, `Orientation` (`cdrPortrait`, `cdrLandscape`;
-setting it swaps the sides), `LeftX`, `RightX`, `TopY`, `BottomY`,
+setting it swaps the sides), `Paper` (the paper size by name, such as
+"A4", the user's saved sizes first, "" for a size of its own; set to a
+name, the page takes that size in its orientation), `LeftX`, `RightX`, `TopY`, `BottomY`,
 `CenterX`, `CenterY`, `Activate`, `Delete`, `CreateLayer`, `FindShapes`,
 `FindShape`.
 
@@ -206,7 +211,11 @@ Shared with ranges and the selection:
 - **`Outline`:** `Type` (`cdrNoOutline`, `cdrOutline`), `Width`, `Color`
   (tied to the object like the fill's), `Style` (`DashCount`,
   `SetDashes`), `LineCaps`, `LineJoin`, `SetNoOutline`,
-  `SetProperties(Width, Style, Color)`, and `CopyAssign`.
+  `SetProperties(Width, Style, Color, StartArrow, EndArrow, BehindFill,
+  ScaleWithShape, LineCaps, LineJoin, NibAngle, NibStretch, ...)` (the
+  style from `OutlineStyles`; arrowheads, `DashDotLength`, `PenWidth`,
+  `MiterLimit` and `Justification` are taken and left as they are), and
+  `CopyAssign`.
 - **`Transparency`:** `Uniform`, `ApplyUniformTransparency(Value)` (0 to
   100), `ApplyNoTransparency`.
 

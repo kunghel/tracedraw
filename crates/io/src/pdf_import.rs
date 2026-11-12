@@ -2765,18 +2765,24 @@ impl<'a> Importer<'a> {
                             return None;
                         }
                     };
-                    let is_cmyk_jpeg =
-                        img.color() == image::ColorType::Rgba8 && cs == ColorSpace::Cmyk;
-                    let _ = is_cmyk_jpeg;
-                    let rgb = img.to_rgba8();
-                    rgba = rgb.into_raw();
-                    if cs == ColorSpace::Cmyk && inverted {
-                        for px in rgba.chunks_exact_mut(4) {
-                            px[0] = 255 - px[0];
-                            px[1] = 255 - px[1];
-                            px[2] = 255 - px[2];
+                    // A CMYK JPEG's samples are its inks as the Decode
+                    // array reads them, as for any other picture. The
+                    // image decoder makes RGB of them as if they were
+                    // stored inverted, and the result was turned over
+                    // again for a picture with an inverting Decode array,
+                    // the usual way such pictures are written: they came
+                    // in as negatives (#2322).
+                    rgba = match (cs == ColorSpace::Cmyk)
+                        .then(|| cmyk_jpeg_rgba(&data, &decode_arr))
+                        .flatten()
+                    {
+                        Some(px)
+                            if px.len() == img.width() as usize * img.height() as usize * 4 =>
+                        {
+                            px
                         }
-                    }
+                        _ => img.to_rgba8().into_raw(),
+                    };
                     if let ColorSpace::Separation(_) = cs {
                         // Grey samples are tints: 255 is full ink.
                         let tints: Vec<[u8; 3]> = (0..=255u8)
@@ -5378,6 +5384,52 @@ impl Shrink {
     }
 }
 
+/// The RGBA pixels of a JPEG with four components (CMYK, or CMYK stored
+/// as YCCK) whose samples are the inks as `decode` reads them: a pair
+/// starting at 1 turns that ink over, as for any picture of a PDF. `None`
+/// when the JPEG has no four components or cannot be decoded.
+fn cmyk_jpeg_rgba(data: &[u8], decode: &[f64]) -> Option<Vec<u8>> {
+    use zune_jpeg::zune_core::{
+        bytestream::ZCursor, colorspace::ColorSpace as Zcs, options::DecoderOptions,
+    };
+    use zune_jpeg::JpegDecoder;
+    let mut probe = JpegDecoder::new(ZCursor::new(data));
+    probe.decode_headers().ok()?;
+    let input = probe.input_colorspace()?;
+    if !matches!(input, Zcs::CMYK | Zcs::YCCK) {
+        return None;
+    }
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(input)
+        .set_max_width(usize::MAX)
+        .set_max_height(usize::MAX);
+    let mut dec = JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let raw = dec.decode().ok()?;
+    let turn: [bool; 4] = std::array::from_fn(|i| decode.get(2 * i).is_some_and(|v| *v == 1.0));
+    let mut out = Vec::with_capacity(raw.len());
+    for px in raw.chunks_exact(4) {
+        let mut ink = [px[0], px[1], px[2], px[3]];
+        if input == Zcs::YCCK {
+            // The first three are a YCbCr colour whose components, turned
+            // over, are the cyan, magenta and yellow samples.
+            let (y, cb, cr) = (px[0] as f32, px[1] as f32 - 128.0, px[2] as f32 - 128.0);
+            let to8 = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+            ink[0] = 255 - to8(y + 1.402 * cr);
+            ink[1] = 255 - to8(y - 0.344_136 * cb - 0.714_136 * cr);
+            ink[2] = 255 - to8(y + 1.772 * cb);
+        }
+        for (v, t) in ink.iter_mut().zip(turn) {
+            if t {
+                *v = 255 - *v;
+            }
+        }
+        let k = 255 - ink[3] as u32;
+        let rgb = |c: u8| (((255 - c as u32) * k + 127) / 255) as u8;
+        out.extend_from_slice(&[rgb(ink[0]), rgb(ink[1]), rgb(ink[2]), 255]);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6355,6 +6407,51 @@ mod tests {
         }
         .to_rgb8();
         assert_eq!([px[1].red(), px[1].green(), px[1].blue()], gold);
+    }
+
+    /// A one-page PDF drawing the CMYK JPEG `jpeg` (8 x 8 pixels) with
+    /// `decode` in its dictionary, and the first and last pixels of the
+    /// picture it imports as.
+    fn cmyk_jpeg_pixels(jpeg: &[u8], decode: &str) -> ([u8; 3], [u8; 3]) {
+        let mut image = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /Filter /DCTDecode {decode} /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        image.extend_from_slice(jpeg);
+        image.extend_from_slice(b"\nendstream");
+        let bytes = pdf_bin(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>".to_vec(),
+            stream("", "q 80 0 0 80 10 10 cm /Im1 Do Q").into_bytes(),
+            image,
+        ]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let ShapeKind::Bitmap { png, .. } = &imp.pages[0].shapes[0].kind else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let px = pm.pixels();
+        let rgb = |p: &tiny_skia::PremultipliedColorU8| [p.red(), p.green(), p.blue()];
+        (rgb(&px[8 + 1]), rgb(&px[8 * 7 - 2]))
+    }
+
+    /// A CMYK JPEG stored with its inks turned over and drawn with an
+    /// inverting Decode array, the usual way such pictures are written,
+    /// comes in as it looks, not as a negative (#2322). Its left half is
+    /// full cyan, its right half half black.
+    #[test]
+    fn cmyk_jpeg_with_inverting_decode_is_not_a_negative() {
+        let jpeg = include_bytes!("../testdata/cmyk-inverted.jpg");
+        let (cyan, grey) = cmyk_jpeg_pixels(jpeg, "/Decode [1 0 1 0 1 0 1 0]");
+        assert!(cyan[0] < 30 && cyan[1] > 225 && cyan[2] > 225, "{cyan:?}");
+        assert!(grey.iter().all(|v| (110..=145).contains(v)), "{grey:?}");
+        // Without the Decode array the same samples are the inks as
+        // stored: no cyan and full black on the left, so near black.
+        let (left, _) = cmyk_jpeg_pixels(jpeg, "");
+        assert!(left.iter().all(|v| *v < 40), "{left:?}");
     }
 
     /// A one-page PDF whose objects may hold binary streams: each object

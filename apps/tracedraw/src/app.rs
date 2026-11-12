@@ -998,6 +998,9 @@ pub struct App {
     /// down (see `interaction::paste_without_text`).
     pub paste_seen: bool,
     pub curve: Option<CurveInProgress>,
+    /// Freehand by clicks: the input time at which the line ends unless
+    /// a double-click made the last click a corner first (#2339).
+    pub freehand_ends_at: Option<f64>,
     /// Undo and redo steps of `curve`, node by node.
     pub curve_steps: CurveSteps,
     /// The steps that made or changed a curve drawn with the Pen or
@@ -1506,6 +1509,9 @@ pub struct App {
     /// The drawing at a revision, shared by the other pages' renders on
     /// their threads (one copy a change, not one a page) (#903).
     pub page_snapshot: std::cell::RefCell<Option<(u64, std::sync::Arc<tracedraw_core::Document>)>>,
+    /// What the backdrop covers (see [`Self::backdrop_area`]), with the
+    /// revision, page and page box it was worked out for.
+    backdrop_area: std::cell::Cell<Option<(u64, PageId, Rect, Rect)>>,
     pub view_mode: ViewMode,
     pub proof_colors: bool,
     pub show_page_border: bool,
@@ -1962,8 +1968,9 @@ pub struct App {
     pub reflect_nodes: (bool, bool),
     /// Shape tool: the freehand marquee for nodes (else rectangular).
     pub node_lasso: bool,
-    /// The Shape tool's freehand marquee started with Alt+Shift adds to
-    /// the nodes chosen already (#1341).
+    /// The Shape tool's marquee (rectangular or freehand) with Shift
+    /// held adds to the nodes, corners and characters chosen already
+    /// (#1341, #2331).
     pub node_lasso_keeps: bool,
     /// Shape tool: the last run of nodes Shift+click selected.
     pub node_run: Option<crate::node_edit::NodeRun>,
@@ -2399,6 +2406,11 @@ pub struct RepeatEntry {
 /// Most actions one Repeat replays.
 const REPEAT_GROUP_MAX: usize = 16;
 
+/// How far beside the page, in page sizes, what is drawn there still
+/// shows in the backdrop (see [`App::backdrop_area`]): farther, the page
+/// would take too few of the backdrop's pixels.
+pub const BACKDROP_REACH: f64 = 2.0;
+
 /// Where a docker lies: the default column (the right side of the
 /// window; the left in a right-to-left language), the column at the
 /// other side, the second column on either side (between the column at
@@ -2654,6 +2666,7 @@ impl App {
             pen_editing: false,
             paste_seen: false,
             curve: None,
+            freehand_ends_at: None,
             text_edit: None,
             ime_preedit: String::new(),
             text_clip: None,
@@ -2876,6 +2889,7 @@ impl App {
             vo: Default::default(),
             page_rasters: Default::default(),
             page_snapshot: Default::default(),
+            backdrop_area: Default::default(),
             view_mode: ViewMode::Enhanced,
             proof_colors: false,
             show_page_border: true,
@@ -4620,11 +4634,18 @@ impl App {
             return;
         };
         let originals = self.selection.clone();
+        let pivot = self.moved_rotation_center();
         // One step: the copies and their move (#471).
         let mark = self.engine.begin_group();
         self.duplicate_in_place();
         self.transform_selection(t);
         self.engine.end_group(mark, "Duplicate");
+        // The copies turn about the centre of rotation the originals had,
+        // carried with them, so a turned copy and its Repeat go on round
+        // the same point (#2353).
+        if let Some(p) = pivot {
+            self.set_pivot(t * p);
+        }
         self.note_repeatable_from(
             Repeatable::Copy {
                 transform: t,
@@ -4670,21 +4691,25 @@ impl App {
         let cmd = match action {
             Repeatable::Command(cmd) => *cmd,
             Repeatable::Copy { transform, before } => {
-                let Some(now) = self.selection_bounds() else {
+                let Some(t) = self.repeat_transform_now(transform, before) else {
                     return;
                 };
-                self.copy_selection_by(repeated_transform(transform, before, now));
+                self.copy_selection_by(t);
                 return;
             }
             Repeatable::Transform { transform, before } => {
-                let Some(now) = self.selection_bounds() else {
+                let Some(t) = self.repeat_transform_now(transform, before) else {
                     return;
                 };
+                let pivot = self.moved_rotation_center();
                 let shapes = self.selection.clone();
                 self.run(Command::TransformShapes {
                     shapes,
-                    transform: repeated_transform(transform, before, now),
+                    transform: t,
                 });
+                if let Some(p) = pivot {
+                    self.set_pivot(t * p);
+                }
                 return;
             }
             Repeatable::Group(actions) => {
@@ -4715,6 +4740,23 @@ impl App {
             other => other,
         };
         self.run(cmd);
+    }
+
+    /// The move, turn or resize `t` of a box `before` as a Repeat does
+    /// it to the selection now: a turn goes about the centre of rotation
+    /// the selection has (moved in rotate mode, or carried to a turned
+    /// copy), so a copy turned about a point and repeated goes on round
+    /// that point (#2353); anything else, and a turn of a selection whose
+    /// centre was not moved, about the same place of the selection's box
+    /// (#1289).
+    fn repeat_transform_now(&self, t: Affine, before: Rect) -> Option<Affine> {
+        let now = self.selection_bounds()?;
+        if let Some(c) = self.moved_rotation_center() {
+            if let Some(turn) = rotation_about(t, c) {
+                return Some(turn);
+            }
+        }
+        Some(repeated_transform(t, before, now))
     }
 
     /// Edit > Paste in View: paste centred on the visible area.
@@ -4799,6 +4841,42 @@ impl App {
 
     pub fn page_rect(&self) -> Rect {
         Rect::from_origin_size((0.0, 0.0), self.page_size())
+    }
+
+    /// What the drawing drawn small behind the view covers while it
+    /// moves (#2048): the page and what is drawn beside it, up to
+    /// [`BACKDROP_REACH`] page sizes away. With the page alone, a
+    /// drawing laid out around a small page came back piece by piece at
+    /// every zoom out, the desktop bare around the page meanwhile
+    /// (#2354). Worked out once a change of the drawing, at `revision`.
+    pub fn backdrop_area(&self, revision: u64) -> Rect {
+        let page = self.page_rect();
+        if let Some((r, p, b, area)) = self.backdrop_area.get() {
+            if r == revision && p == self.page && b == page {
+                return area;
+            }
+        }
+        let reach = page.inflate(
+            page.width() * BACKDROP_REACH,
+            page.height() * BACKDROP_REACH,
+        );
+        let area = self
+            .drawing_bounds()
+            .map(|b| {
+                Rect::new(
+                    b.x0.max(reach.x0),
+                    b.y0.max(reach.y0),
+                    b.x1.min(reach.x1),
+                    b.y1.min(reach.y1),
+                )
+            })
+            .filter(|b| {
+                [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) && b.x1 > b.x0 && b.y1 > b.y0
+            })
+            .map_or(page, |b| page.union(b));
+        self.backdrop_area
+            .set(Some((revision, self.page, page, area)));
+        area
     }
 
     /// The layer new objects go to: the one made active in the Objects
@@ -6752,6 +6830,7 @@ impl App {
             return;
         }
         let shapes = self.selection.clone();
+        let pivot = self.moved_rotation_center();
         // Paragraph text takes a scale as a new frame (see text_frames.rs).
         if !self.transform_with_frames(&shapes, t) {
             self.run(Command::TransformShapes {
@@ -6762,6 +6841,13 @@ impl App {
         self.compensate_unlocked_clip_frames(&shapes, t);
         self.apply_hinting(&shapes);
         self.reflow_chains_of(&shapes);
+        // A centre of rotation that was moved goes where the transform
+        // takes it: several objects kept it as a place in their box, which
+        // a turn about it moved away from the point they turned round
+        // (#2353).
+        if let Some(p) = pivot {
+            self.set_pivot(t * p);
+        }
     }
 
     /// Move the selection by `d`; with no object selected, the selected
@@ -9662,6 +9748,23 @@ fn three_point_arc(a: Point, b: Point, c: Point) -> Option<tracedraw_core::BezPa
 /// `a` and `b` name the same objects, in any order (and some).
 fn same_objects(a: &[ShapeId], b: &[ShapeId]) -> bool {
     !a.is_empty() && a.len() == b.len() && a.iter().all(|id| b.contains(id))
+}
+
+/// The turn `t` makes (its linear part, a rotation with no resize, slant
+/// or mirror), about `c` instead of its own centre. `None` when `t` is not
+/// such a turn.
+pub(crate) fn rotation_about(t: Affine, c: Point) -> Option<Affine> {
+    let [a, b, cc, d, _, _] = t.as_coeffs();
+    let tol = 1e-9;
+    let is_turn = (a - d).abs() < tol
+        && (b + cc).abs() < tol
+        && (a * a + b * b - 1.0).abs() < tol
+        && (b.abs() > 1e-12 || a < 0.0);
+    if !is_turn || !(c.x.is_finite() && c.y.is_finite()) {
+        return None;
+    }
+    let linear = Affine::new([a, b, cc, d, 0.0, 0.0]);
+    Some(Affine::translate(c.to_vec2()) * linear * Affine::translate(-c.to_vec2()))
 }
 
 /// `t`, done to objects whose box was `before`, redone about the same

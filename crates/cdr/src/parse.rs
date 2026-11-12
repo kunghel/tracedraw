@@ -74,6 +74,9 @@ const MAX_PAGE_MM: f64 = 100_000.0;
 const UNIT_MM: f64 = 25.4 / 254000.0;
 /// Coordinate unit of versions before 6 (1/1000 inch) to millimetres.
 const UNIT16_MM: f64 = 25.4 / 1000.0;
+/// A version 15+ rectangle radius above this is a length in coordinate
+/// units, at most this a share of half the shorter side (#2333).
+const RADIUS_LENGTH_FROM: f64 = 100.0;
 /// Byte offset of the point count in an `arrx` record.
 const ARRX_COUNT_AT: usize = 268;
 
@@ -3932,6 +3935,7 @@ impl<'a> Ctx<'a> {
                 None => self.warn_v3_envelope(),
             }
         }
+        let mut live_envelope = None;
         // A version 16+ envelope bends the outline the same way: through
         // the matrices before it, each envelope and the matrices between
         // them; the matrices after the last stay the object's transform.
@@ -3945,13 +3949,22 @@ impl<'a> Ctx<'a> {
                     unbent = Some(local);
                     transform = self.outer_transform * chain.last_after();
                 }
-                None => {
-                    if !self.envelope_warned {
-                        self.envelope_warned = true;
-                        self.report
-                            .warn("an envelope of a text or picture is not applied");
+                // Artistic text keeps its letters and takes the envelope
+                // as a live one (#2368): one envelope after matrices that
+                // only move and scale, so the frame can be carried into
+                // the text's own space, its box mapped onto it there as
+                // the file maps the box of the letters. The matrices
+                // stay the text's transform.
+                None => match text_envelope(&kind, &chain) {
+                    Some(effect) => live_envelope = Some(effect),
+                    None => {
+                        if !self.envelope_warned {
+                            self.envelope_warned = true;
+                            self.report
+                                .warn("an envelope of a text or picture is not applied");
+                        }
                     }
-                }
+                },
             }
         }
         // A version 16+ distortion (#1715) becomes TraceDraw's live
@@ -4108,6 +4121,9 @@ impl<'a> Ctx<'a> {
         }
         if let Some(d) = distortion {
             shape.effects.push(tracedraw_core::live::Effect::Distort(d));
+        }
+        if let Some(e) = live_envelope {
+            shape.effects.push(e);
         }
         // A version 15 graded transparency runs between its record's two
         // points: they become the mask's nodes on the page.
@@ -4795,7 +4811,14 @@ impl<'a> Ctx<'a> {
                     // half of it): a version 22 file's preview shows a
                     // 0.0929 corner on a 369.8 x 499.0 mm frame drawn at
                     // 17.2 mm, and a version 17 file's 2.7604 on a 36.8 mm
-                    // side is exactly 2 inches.
+                    // side is exactly 2 inches. Or it is a length in
+                    // coordinate units, as the width: the version 15 form
+                    // of #2333 (its flag after the scale set) holds 20000
+                    // (2 mm) on boxes 7 to 70 mm high, drawn with 2 mm
+                    // corners in the program that saved it, and read as a
+                    // share it gave capsules. A share past 100 or a length
+                    // under 100 units (0.01 mm) means nothing, so the size
+                    // of the number tells which it is.
                     let w = r.f64_coord()?;
                     let h = r.f64_coord()?;
                     let _sx = r.f64();
@@ -4809,7 +4832,11 @@ impl<'a> Ctx<'a> {
                     for gap in [16usize, 16, 16, 0] {
                         let Some(raw) = r.f64() else { break };
                         if raw.is_finite() {
-                            radii.push(raw * half);
+                            radii.push(if raw > RADIUS_LENGTH_FROM {
+                                raw * UNIT_MM
+                            } else {
+                                raw * half
+                            });
                         }
                         r.skip(gap);
                     }
@@ -6166,6 +6193,38 @@ impl TransformChain {
         }
         p
     }
+}
+
+/// The live envelope an artistic text takes for the one envelope of
+/// `chain` (#2368): its frame carried back through the matrices before
+/// it into the text's own space. `None` for other objects, several
+/// envelopes, or matrices before it that turn or slant (the box the
+/// file maps would not be the text's own box there).
+fn text_envelope(kind: &ShapeKind, chain: &TransformChain) -> Option<tracedraw_core::live::Effect> {
+    if !matches!(kind, ShapeKind::Text { frame: None, .. }) || chain.warps.len() != 1 {
+        return None;
+    }
+    let [a, b, c, d, _, _] = chain.before.as_coeffs();
+    if b.abs() > 1e-9 || c.abs() > 1e-9 || a.abs() < 1e-12 || d.abs() < 1e-12 {
+        return None;
+    }
+    let back = chain.before.inverse();
+    let w = chain.warps.first()?;
+    let frame = tracedraw_core::envelope::Frame {
+        nodes: w.frame.nodes.iter().map(|p| back * *p).collect(),
+        handles: w
+            .frame
+            .handles
+            .iter()
+            .map(|[h1, h2]| [back * *h1, back * *h2])
+            .collect(),
+        corners: w.frame.corners,
+    };
+    Some(tracedraw_core::live::Effect::from_envelope(
+        &frame,
+        false,
+        tracedraw_core::envelope::Mapping::Putty,
+    ))
 }
 
 /// Whether an object can be bent by an envelope, and then whether its
@@ -8302,6 +8361,91 @@ pub(crate) mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// An artistic text under one envelope takes it as a live envelope,
+    /// its frame carried back into the text's own space through the
+    /// matrices before it (#2368); turned text, paragraph text and
+    /// other objects do not.
+    #[test]
+    fn an_envelope_on_artistic_text_becomes_a_live_one() {
+        use tracedraw_core::envelope::Frame;
+        let text = |frame: Option<tracedraw_core::geometry::Size>| ShapeKind::Text {
+            spans: vec![TextSpan::new("TEST", "Arial", 24.0)],
+            origin: Point::ZERO,
+            frame,
+            align: TextAlign::Left,
+            para: Default::default(),
+            on_path: None,
+        };
+        let mut frame = Frame::around(Rect::new(10.0, 20.0, 50.0, 40.0));
+        frame.nodes[1].y -= 5.0;
+        let chain = |before: Affine| TransformChain {
+            before,
+            warps: vec![Warp {
+                rect: Rect::new(10.0, 20.0, 50.0, 40.0),
+                frame: frame.clone(),
+                after: Affine::IDENTITY,
+            }],
+            distortions: Vec::new(),
+        };
+        let before = Affine::translate((10.0, 20.0)) * Affine::scale_non_uniform(2.0, 0.5);
+        let e = text_envelope(&text(None), &chain(before)).expect("a live envelope");
+        let got = e.envelope_frame().expect("a frame");
+        for (g, f) in got.nodes.iter().zip(&frame.nodes) {
+            assert!((before * *g - *f).hypot() < 1e-9, "{g:?} {f:?}");
+        }
+        assert_eq!(got.corners, frame.corners);
+        // Turned text, paragraph text, a rectangle: not this way.
+        assert!(text_envelope(&text(None), &chain(Affine::rotate(0.3))).is_none());
+        let para = Some(tracedraw_core::geometry::Size::new(30.0, 10.0));
+        assert!(text_envelope(&text(para), &chain(before)).is_none());
+        let rect = ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            radius: 0.0,
+            corners: None,
+        };
+        assert!(text_envelope(&rect, &chain(before)).is_none());
+    }
+
+    #[test]
+    fn rectangle_radii_are_shares_or_lengths_by_their_size() {
+        // 1 x 0.5 inch with corners of 0.4: a share of half the shorter
+        // side (6.35 mm), as version 17 and 22 files show, so 2.54 mm; a
+        // large number is the length itself in coordinate units, as the
+        // version 15 form of #2333 holds (20000 on its 2 mm corners).
+        let read = |v: u16, raw: f64| {
+            let mut c = f64s(&[254000.0, 127000.0]);
+            c.extend_from_slice(&f64s(&[1.0, 1.0]));
+            c.push(1);
+            c.extend_from_slice(&[0; 7]);
+            for gap in [16usize, 16, 16, 0] {
+                c.extend_from_slice(&f64s(&[raw]));
+                c.extend_from_slice(&vec![0u8; gap]);
+            }
+            let obj = list(
+                b"obj ",
+                &chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])),
+            );
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let tag = [b'C', b'D', b'R', b'A' + (v - 10) as u8];
+            let (doc, rep) = parse(&riff(&tag, &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            match &first_shape(&doc).kind {
+                ShapeKind::Rect { radius, .. } => *radius,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!((read(17, 0.4) - 2.54).abs() < 1e-9);
+        assert!((read(22, 0.4) - 2.54).abs() < 1e-9);
+        assert!((read(15, 0.4) - 2.54).abs() < 1e-9);
+        // 20000 units are 2 mm, not 20000 times half the side (a capsule).
+        assert!((read(15, 20000.0) - 2.0).abs() < 1e-9);
+        assert!((read(22, 20000.0) - 2.0).abs() < 1e-9);
     }
 
     #[test]

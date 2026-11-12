@@ -90,6 +90,11 @@ it, the usual way to build depth), they are drawn below the start, the
 step nearest the end lowest; with the end above, above the start. The
 blend follows when either object is reordered
 (`blend_link::tests::the_steps_lie_between_the_two_objects`).
+The order is read inside groups and clip frames too, so the steps stay
+behind the front object after the blend is grouped, recoloured as a
+group or placed inside a frame
+(`blend_link::tests::a_grouped_blend_keeps_its_steps_behind_the_front_object`,
+#2023, #2120).
 
 ## Start and end objects
 

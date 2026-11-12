@@ -1264,6 +1264,67 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// A text without an outline: the outline set up in the dialog shows
+    /// on it while the dialog is open, Behind fill and all, and Esc
+    /// takes it back to no outline (#819).
+    #[test]
+    fn an_outline_given_to_a_text_without_one_shows_live() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let a = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new("A", "Arial", 72.0)],
+                origin: tracedraw_core::Point::new(20.0, 100.0),
+                frame: None,
+                align: tracedraw_core::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.run(tracedraw_core::Command::SetStroke {
+            shapes: vec![a],
+            stroke: None,
+        });
+        app.select(vec![a]);
+        let stroke = |app: &App| app.doc().find_shape(a).and_then(|s| s.stroke.clone());
+        assert!(stroke(&app).is_none());
+        let steps = app.engine.history_labels();
+        // Dark pixels of the page: the black outline adds some.
+        let dark = |app: &App| {
+            let pm = tracedraw_render::render_page_image(app.doc(), app.page, 72.0).expect("img");
+            pm.pixels()
+                .iter()
+                .filter(|p| p.alpha() > 200 && p.red() < 60)
+                .count()
+        };
+        let dark_before = dark(&app);
+        app.open_outline_pen();
+        frame(&ctx, &mut app);
+        assert!(stroke(&app).is_none(), "nothing changed yet");
+        let renders = app.raster.borrow().render_count();
+        {
+            let crate::ui::dialogs::Dialog::OutlinePen(st) = &mut app.dialog else {
+                panic!("the dialog");
+            };
+            st.stroke.width = 12.0 * 25.4 / 72.0;
+            st.stroke.behind_fill = true;
+            touch(st, StrokeField::Width);
+            touch(st, StrokeField::BehindFill);
+        }
+        frame(&ctx, &mut app);
+        assert!(dark(&app) > dark_before + 500, "the outline is drawn");
+        // The canvas drew it in the same frame.
+        assert!(app.raster.borrow().render_count() > renders);
+        let s = stroke(&app).expect("the outline shows at once");
+        assert!((s.width - 12.0 * 25.4 / 72.0).abs() < 1e-9, "{}", s.width);
+        assert!(s.behind_fill);
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        frame(&ctx, &mut app);
+        assert!(stroke(&app).is_none(), "taken back");
+        assert_eq!(app.engine.history_labels(), steps);
+    }
+
     /// The dialog's outline shows on the selection while the dialog is
     /// open, made again only when a value changes (not every frame);
     /// Esc takes it back, history and all, and OK keeps it as one step

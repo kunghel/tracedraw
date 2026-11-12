@@ -209,6 +209,12 @@ impl Reader {
     /// The clipboard's content as `target`: `None` when its owner does
     /// not answer, refuses, or stops sending parts.
     fn convert(&self, target: Atom) -> Option<Vec<u8>> {
+        self.convert_in_parts(target).map(|(data, _)| data)
+    }
+
+    /// [`Reader::convert`], with the number of parts the answer came in
+    /// (1 when it came at once).
+    fn convert_in_parts(&self, target: Atom) -> Option<(Vec<u8>, usize)> {
         let c = &self.conn;
         c.delete_property(self.window, self.slot).ok()?;
         c.convert_selection(
@@ -238,9 +244,10 @@ impl Reader {
         c.delete_property(window, self.slot).ok()?;
         c.flush().ok()?;
         if answer.type_ != self.incr {
-            return Some(answer.value);
+            return Some((answer.value, 1));
         }
         let mut data = Vec::new();
+        let mut parts = 0;
         loop {
             let slot = self.slot;
             let part_came = self.wait(Instant::now() + PART_WAIT, |event| match event {
@@ -254,7 +261,7 @@ impl Reader {
             if part_came.is_none() {
                 // No closing empty part (the owner went away): what came
                 // is kept, and decoding tells whether it is whole.
-                return (!data.is_empty()).then_some(data);
+                return (!data.is_empty()).then_some((data, parts));
             }
             let part = c
                 .get_property(true, window, slot, AtomEnum::ANY, 0, u32::MAX / 4)
@@ -264,8 +271,9 @@ impl Reader {
             c.flush().ok()?;
             // An empty part ends the transfer.
             if part.value.is_empty() {
-                return Some(data);
+                return Some((data, parts));
             }
+            parts += 1;
             data.extend_from_slice(&part.value);
         }
     }
@@ -361,6 +369,61 @@ pub fn read_image() -> Option<image::RgbaImage> {
     Reader::open(None)?.image()
 }
 
+/// What the tests of other modules need: an X server of their own, a
+/// read of one type from its clipboard, and another program's copy.
+#[cfg(test)]
+pub mod tests_support {
+    use super::*;
+    pub use tests::x_server;
+    use x11rb::wrapper::ConnectionExt as _;
+
+    /// One type read from the clipboard: its bytes, the names they hold
+    /// when they are a TARGETS answer, and how many parts they came in.
+    pub struct Read {
+        pub bytes: Vec<u8>,
+        pub names: Vec<String>,
+        pub parts: usize,
+    }
+
+    /// The clipboard of `display` read as `target`; `None` when its owner
+    /// refuses or does not answer.
+    pub fn read_target(display: &str, target: &str) -> Option<Read> {
+        let r = Reader::open(Some(display))?;
+        let atom = r
+            .conn
+            .intern_atom(false, target.as_bytes())
+            .ok()?
+            .reply()
+            .ok()?
+            .atom;
+        let (bytes, parts) = r.convert_in_parts(atom)?;
+        let names = if atom == r.targets {
+            r.offered()
+        } else {
+            Vec::new()
+        };
+        Some(Read {
+            bytes,
+            names,
+            parts,
+        })
+    }
+
+    /// Another program takes the clipboard of `display` (and keeps it
+    /// until the connection ends, which the X server outlives here).
+    pub fn take_clipboard(display: &str) {
+        let Some(r) = Reader::open(Some(display)) else {
+            return;
+        };
+        let _ = r
+            .conn
+            .set_selection_owner(r.window, r.clipboard, x11rb::CURRENT_TIME);
+        let _ = r.conn.sync();
+        // Kept open, so the clipboard stays taken while the test checks.
+        std::mem::forget(r);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,8 +482,8 @@ mod tests {
 
     /// An X server for the tests: the one of `DISPLAY`, else an Xvfb
     /// started for them; `None` when neither is there.
-    struct Server {
-        display: String,
+    pub struct Server {
+        pub display: String,
         child: Option<std::process::Child>,
         /// One test at a time owns the clipboard: two tests in parallel
         /// would pick the same display and take each other's clipboard.
@@ -438,7 +501,7 @@ mod tests {
         }
     }
 
-    fn x_server() -> Option<Server> {
+    pub fn x_server() -> Option<Server> {
         let turn = X_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(d) = std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
             if x11rb::connect(Some(&d)).is_ok() {

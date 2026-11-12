@@ -182,7 +182,10 @@ window shows.
   page after a zoom out) shows the whole page drawn small, the backdrop,
   until the new render comes (#2048). It stayed blank paper before: a
   white flash round the old picture at every step out of a dark design.
-  The backdrop is the page fitted into the canvas (at most 2048 pixels a
+  The backdrop is the page, with whatever is drawn beside it up to two
+  page sizes away (`app::BACKDROP_REACH`; with the page alone a drawing
+  laid out around a small page came back piece by piece at every zoom
+  out, #2354), fitted into the canvas (at most 2048 pixels a
   side: one more picture no larger than the render's own, whatever the
   zoom), drawn on one thread of its own (not on every core, as a render
   somebody waits for is) once the picture has been the one asked for
