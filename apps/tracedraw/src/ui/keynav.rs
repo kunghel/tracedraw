@@ -1596,6 +1596,11 @@ mod tests {
             seen.iter().any(|s| s.starts_with(&tr("menu.edit.paste"))),
             "{seen:?}"
         );
+        // Paste in View is lit with nothing copied here: what another
+        // program copied pastes too.
+        assert!(app.clipboard.is_none());
+        let in_view = format!("{} Ctrl+Shift+V", tr("menu.edit.paste_in_view"));
+        assert!(seen.iter().any(|s| s.ends_with(&in_view)), "{seen:?}");
         // Up from the first lit row goes round to the last one.
         key(&ctx, &mut app, Key::ArrowUp);
         assert_eq!(lit(&ctx), *seen.last().expect("rows"));

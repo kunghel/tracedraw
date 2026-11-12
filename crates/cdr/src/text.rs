@@ -2307,6 +2307,24 @@ pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
         .is_some_and(|n| n == 1.0)
 }
 
+/// The merge mode code of an object's version 16+ style string
+/// transparency (`transparency` > `mode`), when it is not 0. Every
+/// file seen so far holds 0 there (#1666: 126 files attached to issues,
+/// versions 16 to 27, all with Normal merging), so the other codes are
+/// not known yet; the reader names the code in a warning and draws the
+/// object as Normal.
+pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Some(Json::Obj(items)) = parse_json(t) else {
+        return None;
+    };
+    let (_, Json::Obj(tr)) = items.iter().find(|(k, _)| k == "transparency")? else {
+        return None;
+    };
+    let n = tr.iter().find(|(k, _)| k == "mode")?.1.num()?;
+    (n.is_finite() && n != 0.0).then_some(n as i64)
+}
+
 /// A graded transparency from an object's version 16+ style string: its
 /// `transparency` section with a fountain `fill` (`type` 2) becomes a
 /// mask whose lightness is the opacity, with the target it applies to
@@ -2916,6 +2934,21 @@ mod tests {
         assert!((o.unwrap() - 0.5).abs() < 1e-9);
         assert_eq!(object_opacity(r#"{"transparency":{},"fill":{}}"#), None);
         assert_eq!(object_opacity(r#"{"fill":{}}"#), None);
+    }
+
+    #[test]
+    fn a_merge_mode_other_than_normal_is_named() {
+        // Normal (0), as every file seen holds it, or no mode: nothing.
+        for normal in [
+            r#"{"transparency":{"mode":"0","uniformTransparency":"0.3"}}"#,
+            r#"{"transparency":{}}"#,
+            r#"{"fill":{"mode":"3"}}"#,
+            "not json",
+        ] {
+            assert_eq!(object_transparency_merge_code(normal), None, "{normal}");
+        }
+        let s = r#"{"transparency":{"fill":{"type":"1"},"mode":"4","uniformTransparency":"0"}}"#;
+        assert_eq!(object_transparency_merge_code(s), Some(4));
     }
 
     #[test]

@@ -5320,7 +5320,7 @@ mod tests {
     /// the pages get nothing of their own.
     #[test]
     fn a_page_number_on_the_master_layer_numbers_every_page() {
-        let mut app = App::headless();
+        let mut app = crate::ui::objects_docker::tests::without_desktop();
         app.add_page();
         app.add_page();
         crate::ui::objects_docker::new_master_layer(&mut app, tracedraw_core::MasterScope::All);
@@ -5358,7 +5358,7 @@ mod tests {
     /// field; one undo takes both away (#1709).
     #[test]
     fn page_numbers_for_odd_pages_go_on_a_master_layer_of_their_own() {
-        let mut app = App::headless();
+        let mut app = crate::ui::objects_docker::tests::without_desktop();
         app.add_page();
         app.add_page();
         assert!(app.doc().master.is_empty());

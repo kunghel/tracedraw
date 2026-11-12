@@ -220,6 +220,15 @@ window shows.
   browser build, which draws on one thread, keeps the wait too.
   `frame_times_of_a_zoom_burst` (in `pick_drag_tests.rs`) measures the
   wait from the last step to the sharp picture.
+- Only what can show is drawn: an object (or, inside a group, each of
+  its objects) whose bounds, grown by what its outline may reach, lie
+  wholly off the canvas is skipped, while objects with effects or a
+  shadow are always drawn. Zoomed in on a design kept as one large
+  group, every object of the group was drawn at the zoom's detail, so a
+  zoom in drew far slower than the page fitted in the window
+  (discussion #2389,
+  `culling_tests::a_zoom_into_a_group_draws_only_the_members_that_show`
+  in the render crate).
 - The page is rendered in horizontal bands, one per processor core
   (up to 16), each on its own thread, when the canvas has a quarter of
   a million pixels or more; a band reaches past its edges by twice the

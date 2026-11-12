@@ -116,6 +116,38 @@ impl App {
         }
     }
 
+    /// Whether the guidelines being edited are shown: guidelines on, and
+    /// their own eye in the Objects docker open (#1775).
+    pub fn edited_guides_shown(&self) -> bool {
+        self.show_guides
+            && self
+                .doc()
+                .guides_shown((!self.edit_master_guides).then_some(self.page))
+    }
+
+    /// Whether the other set of guidelines on the page (see
+    /// [`App::other_guides_on_page`]) is shown.
+    pub fn other_guides_shown(&self) -> bool {
+        self.show_guides
+            && self
+                .doc()
+                .guides_shown(self.edit_master_guides.then_some(self.page))
+    }
+
+    /// Show or hide one set of guidelines by its eye: the master page's
+    /// (`page` `None`) or a page's own (#1775). One undo step. Showing a
+    /// set turns guidelines on when they were off.
+    pub fn set_guides_shown(&mut self, page: Option<tracedraw_core::PageId>, shown: bool) {
+        if self.doc().guides_shown(page) != shown {
+            self.run(tracedraw_core::Command::SetGuidesShown { page, shown });
+        }
+        if shown {
+            self.show_guides = true;
+        } else if page.is_none() == self.edit_master_guides {
+            self.selected_guides.clear();
+        }
+    }
+
     /// Choose which guidelines are edited: the master page's (every page
     /// shows them) or the active page's own (#1928). The selection of
     /// guidelines is dropped.
@@ -130,7 +162,7 @@ impl App {
     /// The topmost guideline under `p` (page coordinates), when guidelines
     /// are shown.
     pub fn guide_at(&self, p: Point) -> Option<usize> {
-        if !self.show_guides {
+        if !self.edited_guides_shown() {
             return None;
         }
         let tol = PICK_PX / self.view.zoom.max(1e-6) as f64;
@@ -148,7 +180,7 @@ impl App {
         if let Some(i) = self.guide_at(p) {
             return Some(i);
         }
-        if !self.show_guides {
+        if !self.other_guides_shown() {
             return None;
         }
         let tol = PICK_PX / self.view.zoom.max(1e-6) as f64;
@@ -1008,6 +1040,66 @@ mod tests {
         app
     }
 
+    /// #1775: in a new drawing a guideline goes to the master page's
+    /// guidelines, so every page has it; choosing a page's own Guides
+    /// row makes the next ones that page's. Each row's eye hides its own
+    /// guidelines only: hidden, they are neither picked nor snapped to,
+    /// the other set stays, and the drawing keeps the choice.
+    #[test]
+    fn guidelines_are_shared_at_first_and_each_set_has_its_own_eye() {
+        let mut app = app();
+        app.add_page();
+        let pages: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        app.goto_page(0);
+        app.add_guide(Guide::vertical(30.0));
+        assert_eq!(app.doc().master_guides.len(), 1, "shared by default");
+        assert!(app.doc().pages.iter().all(|p| p.guides.is_empty()));
+        app.choose_master_guides(false);
+        app.add_guide(Guide::horizontal(50.0));
+        assert_eq!(app.doc().page(pages[0]).unwrap().guides.len(), 1);
+        assert_eq!(app.doc().guides_on_page(pages[1]).unwrap().len(), 1);
+        assert_eq!(app.doc().guides_on_page(pages[0]).unwrap().len(), 2);
+
+        app.snap.guides = true;
+        app.snap.grid = false;
+        app.snap.objects = false;
+        // The master page's eye: page 1 keeps its own guideline.
+        app.set_guides_shown(None, false);
+        assert!(!app.doc().guides_shown(None));
+        assert!(app.show_guides, "the others still show");
+        let shown = app.doc().guides_on_page(pages[0]).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert!(matches!(shown[0].line, GuideLine::Horizontal { .. }));
+        assert!(!app.other_guides_shown());
+        assert!(app.edited_guides_shown());
+        let p = app.snap_point(Point::new(30.4, 10.0));
+        assert!(
+            (p.x - 30.4).abs() < 1e-9,
+            "not snapped to a hidden one: {p:?}"
+        );
+        assert_eq!(app.pick_guide_at(Point::new(30.0, 10.0)), None);
+        assert_eq!(app.guide_at(Point::new(10.0, 50.0)), Some(0));
+        // The page's own eye too: nothing left on page 1, page 2 not
+        // touched.
+        app.set_guides_shown(Some(pages[0]), false);
+        assert!(app.doc().guides_on_page(pages[0]).unwrap().is_empty());
+        assert_eq!(app.guide_at(Point::new(10.0, 50.0)), None);
+        assert!(app.doc().guides_shown(Some(pages[1])));
+        // Saved with the drawing, and undone one eye at a time.
+        let json = app.doc().to_json().expect("save");
+        let back = tracedraw_core::Document::from_json(&json).expect("open");
+        assert!(!back.guides_shown(None) && !back.guides_shown(Some(pages[0])));
+        app.undo();
+        assert!(app.doc().guides_shown(Some(pages[0])));
+        app.undo();
+        assert!(app.doc().guides_shown(None));
+        // With guidelines off, an eye opened turns them on again.
+        app.show_guides = false;
+        app.set_guides_shown(None, false);
+        app.set_guides_shown(None, true);
+        assert!(app.show_guides && app.doc().guides_shown(None));
+    }
+
     /// #1928: with the master page's guidelines chosen (the Objects
     /// docker's "Guides (all pages)" row), a new guideline goes there
     /// once and every page shows it and snaps to it; it is picked,
@@ -1020,6 +1112,7 @@ mod tests {
         let pages: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
         assert_eq!(pages.len(), 2);
         app.goto_page(0);
+        app.choose_master_guides(false);
         app.add_guide(Guide::horizontal(50.0));
         app.choose_master_guides(true);
         app.add_guide(Guide::vertical(30.0));

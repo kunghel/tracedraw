@@ -130,6 +130,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
     draw_shadow_handles(app, painter);
+    draw_shadow_edge_hint(app, painter);
     draw_contour_handles(app, painter);
     draw_blend_controls(app, painter);
 
@@ -516,6 +517,10 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             }
         }
     }
+    // Shadows blurred on the graphics card when Options asks (the same
+    // pixels as on the CPU, so nothing drawn needs drawing again).
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::gpu_fx::set_enabled(app.settings.gpu_effects);
     let main = app.raster.borrow_mut().texture(
         painter.ctx(),
         doc,
@@ -1296,8 +1301,10 @@ fn draw_fountain_handles(app: &App, painter: &Painter) {
 }
 
 /// Drop Shadow tool: the selected shadow's start handle (white), end
-/// handle (the shadow colour) and the dashed line between them with the
-/// opacity slider on it.
+/// handle (the shadow colour) and the dashed line between them, with the
+/// opacity slider beside it on one side and the feathering slider on the
+/// other. The slider under the pointer or held is filled in the
+/// selection colour and labelled with its value.
 fn draw_shadow_handles(app: &App, painter: &Painter) {
     use crate::shadow_tool::ShadowHandle;
     let Some((_, sh, _)) = app.selected_shadow() else {
@@ -1312,13 +1319,21 @@ fn draw_shadow_handles(app: &App, painter: &Painter) {
             .find(|(k, _)| *k == h)
             .map(|(_, p)| view.to_screen(*p))
     };
-    let (Some(a), Some(z), Some(o)) = (
+    let (Some(a), Some(z), Some(o), Some(f)) = (
         pos(ShadowHandle::Start),
         pos(ShadowHandle::End),
         pos(ShadowHandle::Opacity),
+        pos(ShadowHandle::Feather),
     ) else {
         return;
     };
+    // The slider being dragged, else the one under the pointer.
+    let lit = match &app.drag {
+        Drag::ShadowHandle { handle, .. } => Some(*handle),
+        Drag::None => app.pointer_page.and_then(|p| app.shadow_handle_at(p)),
+        _ => None,
+    }
+    .filter(|h| matches!(h, ShadowHandle::Opacity | ShadowHandle::Feather));
     let d = z - a;
     let len = d.length();
     if len > 1e-3 {
@@ -1332,11 +1347,85 @@ fn draw_shadow_handles(app: &App, painter: &Painter) {
             );
             t += step;
         }
-        // The opacity slider: a short bar across the line.
-        let n = egui::vec2(-d.y, d.x) / len * 5.0;
-        painter.line_segment([o - n, o + n], EStroke::new(3.0, Tokens::SELECTION));
     }
+    // The sliders: a tab on each side of the line, touching it, the
+    // opacity one with the shadow colour at the shadow's opacity, the
+    // feathering one with a soft stripe.
+    let along = if len > 1e-3 {
+        d / len
+    } else {
+        egui::vec2(1.0, 0.0)
+    };
     let [r, g, bl] = sh.color.to_rgb8();
+    for (h, c) in [(ShadowHandle::Opacity, o), (ShadowHandle::Feather, f)] {
+        let off = crate::shadow_tool::slider_offset(h, a, z);
+        let out = off.normalized();
+        // The tab runs from the line (its inner end) out to 2 * offset.
+        let inner = c - off;
+        let outer = c + off;
+        let half = along * 4.5;
+        let pts = vec![inner - half, inner + half, outer + half, outer - half];
+        let fill = if lit == Some(h) {
+            Tokens::SELECTION
+        } else {
+            Color32::WHITE
+        };
+        painter.add(egui::Shape::convex_polygon(
+            pts,
+            fill,
+            EStroke::new(1.0, Tokens::SELECTION),
+        ));
+        // What the slider sets, drawn inside the outer half of the tab.
+        let mark_a = c + out * 1.5;
+        let mark_b = outer - out * 1.5;
+        match h {
+            ShadowHandle::Opacity => {
+                let alpha = (sh.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                painter.line_segment(
+                    [mark_a, mark_b],
+                    EStroke::new(
+                        4.0,
+                        Color32::from_rgba_unmultiplied(r, g, bl, alpha.max(40)),
+                    ),
+                );
+            }
+            _ => {
+                for (w, alpha) in [(5.0, 50u8), (3.0, 110), (1.2, 220)] {
+                    painter.line_segment(
+                        [mark_a, mark_b],
+                        EStroke::new(w, Color32::from_rgba_unmultiplied(r, g, bl, alpha)),
+                    );
+                }
+            }
+        }
+        if lit == Some(h) {
+            let (key, value) = match h {
+                ShadowHandle::Opacity => (
+                    "toolbar.opacity",
+                    format!("{:.0} %", sh.opacity.clamp(0.0, 1.0) * 100.0),
+                ),
+                _ => ("toolbar.feathering", format!("{:.1} mm", sh.blur.max(0.0))),
+            };
+            let at = outer + out * 6.0;
+            let anchor = if out.x >= 0.0 {
+                egui::Align2::LEFT_CENTER
+            } else {
+                egui::Align2::RIGHT_CENTER
+            };
+            let text = format!("{}: {value}", crate::i18n::tr(key));
+            let font = egui::FontId::proportional(11.0);
+            let galley = painter.layout_no_wrap(text, font, Tokens::text());
+            let rect = anchor.anchor_size(at, galley.size()).expand(3.0);
+            painter.rect_filled(rect, 2.0, Tokens::panel());
+            painter.rect_stroke(
+                rect,
+                2.0,
+                EStroke::new(1.0, Tokens::SELECTION),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(rect.min + egui::vec2(3.0, 3.0), galley, Tokens::text());
+        }
+    }
     for (c, fill) in [(a, Color32::WHITE), (z, Color32::from_rgb(r, g, bl))] {
         let side = crate::shadow_tool::HANDLE_SIDE_PX;
         let rect = ERect::from_center_size(c, egui::vec2(side, side));
@@ -1348,6 +1437,33 @@ fn draw_shadow_handles(app: &App, painter: &Painter) {
             egui::StrokeKind::Outside,
         );
     }
+}
+
+/// Drop Shadow tool, nothing held: the edge of the object under the
+/// pointer (or just outside it) that a drag from there stands a
+/// perspective shadow on, marked with a thick bar along that edge, so a
+/// shadow from the bottom, top, left or right is easy to find. Nothing
+/// shows in the middle of an object, where a drag lies the shadow flat.
+fn draw_shadow_edge_hint(app: &App, painter: &Painter) {
+    use tracedraw_core::shadow::ShadowEdge;
+    if app.tool != Tool::DropShadow || !matches!(app.drag, Drag::None) {
+        return;
+    }
+    let Some(p) = app.pointer_page else {
+        return;
+    };
+    let Some((b, edge)) = app.shadow_edge_hint(p) else {
+        return;
+    };
+    let (u, v) = match edge {
+        ShadowEdge::Bottom => (Point::new(b.x0, b.y0), Point::new(b.x1, b.y0)),
+        ShadowEdge::Top => (Point::new(b.x0, b.y1), Point::new(b.x1, b.y1)),
+        ShadowEdge::Left => (Point::new(b.x0, b.y0), Point::new(b.x0, b.y1)),
+        ShadowEdge::Right => (Point::new(b.x1, b.y0), Point::new(b.x1, b.y1)),
+    };
+    let (u, v) = (app.view.to_screen(u), app.view.to_screen(v));
+    painter.line_segment([u, v], EStroke::new(5.0, Color32::WHITE));
+    painter.line_segment([u, v], EStroke::new(3.0, Tokens::SELECTION));
 }
 
 /// Contour tool: the selected contour's line from the object's edge, the
@@ -2839,12 +2955,23 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
     }
     // The guidelines not being edited (the master page's, which every
     // page shows, or the page's own, #1928), as they are.
-    for g in app.other_guides_on_page() {
+    let others = if app.other_guides_shown() {
+        app.other_guides_on_page()
+    } else {
+        Vec::new()
+    };
+    for g in others {
         let color = to_color32(app.guide_color(&g));
         draw_guide_line(app, painter, rect, g.line, color, g.style.pattern());
     }
     let moving = app.guide_drag_moves();
-    for (i, g) in app.page_guides().iter().enumerate() {
+    // Each set of guidelines has its own eye in the Objects docker (#1775).
+    let edited = if app.edited_guides_shown() {
+        app.page_guides()
+    } else {
+        Vec::new()
+    };
+    for (i, g) in edited.iter().enumerate() {
         let moved = moving.iter().find(|(k, _)| *k == i).map(|(_, g)| g);
         let g = match &app.drag {
             Drag::RotateGuide { index, guide, .. } if *index == i => guide,

@@ -337,7 +337,9 @@ impl App {
             }
         }
         let before = self.engine.revision();
+        self.palette_hold = true;
         let color = self.patch_selection_stroke_as(old, new, touched).or(kept);
+        self.palette_hold = false;
         let after = self.engine.revision();
         self.live_stroke = (after != before).then_some((after, color));
     }

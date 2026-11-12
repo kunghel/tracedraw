@@ -12,6 +12,19 @@ guidelines) reads it: the count on Windows, else its text and files, and
 a sample of its picture (the size and about 4096 bytes) only when there
 is neither. Ctrl+C with nothing selected changes nothing.
 
+On a Linux desktop the copy is offered as an SVG image (`image/svg+xml`),
+as a PNG picture with a transparent background (150 dpi, at most 4000
+pixels on the longer side) and as the SVG text, so a presentation or a
+word processor pastes a picture, not the SVG source (#2288). On X11
+TraceDraw owns the clipboard itself and draws the picture only when a
+program asks for it (`x11_copy.rs`). On Wayland the SVG and the text are
+offered at once through the compositor's data control protocol and the
+picture joins them when it has been drawn, on a thread of its own, unless
+another copy was made meanwhile (`wayland_copy.rs`); a compositor without
+that protocol (GNOME) gets the copy through the X11 programs' clipboard,
+which it shares with Wayland programs. Elsewhere the text alone goes
+there.
+
 ## Paste (Ctrl+V, Edit > Paste)
 
 - The system clipboard still holds what the last copy here left there

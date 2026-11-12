@@ -137,6 +137,9 @@ const ARG_POLYGON: u32 = 11000;
 /// u32 (1, 0, 1).
 pub(crate) const ARG_CLIP_CONTENTS: u32 = 8005;
 const ARG_PAGE_SIZE: u32 = 19130;
+/// A symbol definition's record in its `sytr` group's `loda`: an
+/// identifier and the symbol's name (#2177, a version 15 file).
+const ARG_SYMBOL: u32 = 19201;
 /// Master page `loda` argument holding the document's page background.
 const ARG_PAGE_BACKGROUND: u32 = 17000;
 /// Object argument 16016: 1 hides the object (version 21).
@@ -465,6 +468,24 @@ struct Ctx<'a> {
     clip_groups: HashMap<u32, &'a Chunk>,
     /// The `clpt` group the object being read holds clipped inside it.
     pending_clip: Option<u32>,
+    /// The symbol table (`sblk`, #2177): each symbol's number, as its
+    /// instances (`LIST symb`) give it in their `spnd`, to the `spnd`
+    /// number of the `LIST sytr` group that defines it.
+    symbol_defs: HashMap<u32, u32>,
+    /// The groups of `LIST sytr`, the symbols' definitions, by their
+    /// `spnd` number.
+    symbol_groups: HashMap<u32, &'a Chunk>,
+    /// The symbols read so far, for the document.
+    symbols: Vec<tracedraw_core::document::Symbol>,
+    /// Each symbol read, by the `spnd` number of its `sytr` group: its
+    /// index in `symbols` and the inverse of the page placement its
+    /// definition was read with.
+    symbol_index: HashMap<u32, (usize, Affine)>,
+    /// The `spnd` numbers of the `sytr` groups in file order.
+    symbol_order: Vec<u32>,
+    /// The symbols whose definitions are being read (one that draws
+    /// itself ends there).
+    symbols_reading: std::collections::HashSet<u32>,
     /// Colours of spot colour libraries met: (library, number).
     library_inks: std::collections::BTreeSet<(u16, u16)>,
     /// The font names of a version 3 `ftbl`, in file order.
@@ -553,6 +574,12 @@ impl<'a> Ctx<'a> {
             pending_inks: None,
             clip_groups: HashMap::new(),
             pending_clip: None,
+            symbol_defs: HashMap::new(),
+            symbol_groups: HashMap::new(),
+            symbols: Vec::new(),
+            symbol_index: HashMap::new(),
+            symbol_order: Vec::new(),
+            symbols_reading: std::collections::HashSet::new(),
             guides: Vec::new(),
             last_was_guide: false,
             last_drew_nothing: false,
@@ -659,6 +686,8 @@ pub(crate) fn parse_document_kept(
             ctx.read_arrowhead_x(c);
         } else if c.is(b"font") {
             ctx.read_font(c);
+        } else if c.is(b"sblk") {
+            ctx.read_symbol_table(c);
         } else if c.is(b"ftbl") {
             // Version 3 font table: the font file names, NUL-terminated
             // runs of lowercase letters among other fields (assumed).
@@ -704,6 +733,16 @@ pub(crate) fn parse_document_kept(
 
     let mut doc = Document::new("Untitled", page_size);
     doc.pages.clear();
+
+    // The symbols the file defines (#2177), in its order, used or not, as
+    // its program lists them; instances on the pages name them.
+    {
+        let mut ids = std::mem::take(doc.ids_mut());
+        for def in ctx.symbol_order.clone() {
+            ctx.symbol_def(def, &mut ids, page_size, 0);
+        }
+        doc.set_ids(ids);
+    }
 
     // Pass 2: pages. Files store a master page (desktop, guides and grid
     // layers) followed by the real pages. We keep every page that has
@@ -886,6 +925,7 @@ pub(crate) fn parse_document_kept(
             "{n} spot colour(s) from colour libraries: the file names them by number only"
         ));
     }
+    doc.symbols.extend(std::mem::take(&mut ctx.symbols));
     ctx.report.pages = doc.pages.len();
     ctx.report.layers = doc.pages.iter().map(|p| p.layers.len()).sum();
     ctx.report.shapes = doc
@@ -983,6 +1023,27 @@ impl<'a> Ctx<'a> {
         let arg = l.args.iter().find(|a| a.ty == ARG_NAME)?;
         let name = self.read_name(d.get(arg.off..arg.end)?);
         (!name.is_empty()).then_some(name)
+    }
+
+    /// A symbol's name (#2177): in argument 19201 of its `sytr` group's
+    /// `loda`, a UTF-16 string ending in a zero at byte 548 of the
+    /// argument, after an identifier (one version 15 file seen; its
+    /// thirteen names match its `syms` records).
+    fn symbol_name(&mut self, gc: &Chunk) -> Option<String> {
+        let lgob = gc.children.iter().find(|k| k.is(b"lgob"))?;
+        let loda = lgob.children.iter().find(|k| k.is(b"loda"))?;
+        let d = self.data(loda);
+        let l = self.read_loda(d)?;
+        let arg = l.args.iter().find(|a| a.ty == ARG_SYMBOL)?;
+        let b = d.get(arg.off + 548..arg.end)?;
+        let units: Vec<u16> = b
+            .chunks_exact(2)
+            .map(|u| u16::from_le_bytes([u[0], u[1]]))
+            .take_while(|&u| u != 0)
+            .take(256)
+            .collect();
+        let name = String::from_utf16(&units).ok()?;
+        (!name.trim().is_empty() && !name.chars().any(char::is_control)).then_some(name)
     }
 
     fn page_own_size(&mut self, pc: &Chunk) -> Option<Size> {
@@ -4042,6 +4103,16 @@ impl<'a> Ctx<'a> {
             s.miter_limit = a;
         }
 
+        // A merge mode the reader does not know yet (#1666) is named, so
+        // a report can say which code the file uses.
+        if let Some(code) = style_string
+            .as_deref()
+            .and_then(text::object_transparency_merge_code)
+        {
+            self.report.warn(format!(
+                "transparency merge mode {code} not read; object merged as Normal"
+            ));
+        }
         // Version 16+: a graded transparency in the object's style string
         // becomes a mask; otherwise its uniform transparency an opacity.
         let mut mask = v11_mask.or_else(|| {
@@ -4178,7 +4249,96 @@ impl<'a> Ctx<'a> {
         Some(shape)
     }
 
-    /// Index the groups of `LIST clpt` by the number in their `spnd`.
+    /// The symbol table `sblk` (#2177): 12-byte entries of a u32 (0 in
+    /// the file seen), the symbol's number and the `spnd` number of the
+    /// `LIST sytr` group that defines it.
+    fn read_symbol_table(&mut self, c: &Chunk) {
+        let d = self.data(c);
+        for e in d.chunks_exact(12) {
+            let id = u32::from_le_bytes([e[4], e[5], e[6], e[7]]);
+            let def = u32::from_le_bytes([e[8], e[9], e[10], e[11]]);
+            self.symbol_defs.insert(id, def);
+        }
+    }
+
+    /// The document symbol of symbol number `sym` (#2177), read from its
+    /// `sytr` group the first time an instance names it: its index and
+    /// the inverse of the page placement its definition was read with.
+    /// `None` (with a warning) when the file lacks the definition, it is
+    /// empty or it draws itself.
+    fn symbol(
+        &mut self,
+        sym: u32,
+        ids: &mut tracedraw_core::id::IdSource,
+        page_size: Size,
+        depth: usize,
+    ) -> Option<(usize, Affine)> {
+        // The table names the definition; a number it lacks is taken as
+        // the definition's own (assumed).
+        let def = self.symbol_defs.get(&sym).copied().unwrap_or(sym);
+        self.symbol_def(def, ids, page_size, depth)
+    }
+
+    /// [`Self::symbol`] by the `spnd` number of its `sytr` group.
+    fn symbol_def(
+        &mut self,
+        def: u32,
+        ids: &mut tracedraw_core::id::IdSource,
+        page_size: Size,
+        depth: usize,
+    ) -> Option<(usize, Affine)> {
+        let sym = def;
+        if let Some(found) = self.symbol_index.get(&def) {
+            return Some(*found);
+        }
+        let Some(group) = self.symbol_groups.get(&def).copied() else {
+            self.report
+                .warn(format!("symbol {sym:#x} has no definition in the file"));
+            return None;
+        };
+        if !self.symbols_reading.insert(sym) {
+            self.report
+                .warn(format!("symbol {sym:#x} draws itself; left out there"));
+            return None;
+        }
+        // The definition stands in the file at its own place: read it
+        // without the matrices of the instance that named it.
+        let saved = self.outer_transform;
+        self.outer_transform = Affine::IDENTITY;
+        let mut children = self.read_objects(group, ids, page_size, depth + 1);
+        self.outer_transform = saved;
+        self.symbols_reading.remove(&sym);
+        let mut shape = match children.len() {
+            0 => {
+                self.report
+                    .warn(format!("symbol {sym:#x} draws nothing; left out"));
+                return None;
+            }
+            1 => children.remove(0),
+            _ => {
+                let mut g = Shape::new(ids.shape(), ShapeKind::Group { children });
+                g.fill = Fill::None;
+                g.stroke = None;
+                g
+            }
+        };
+        shape.id = tracedraw_core::id::ShapeId(0);
+        let index = self.symbols.len();
+        let name = self
+            .symbol_name(group)
+            .or_else(|| self.group_name(group))
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("Symbol {}", index + 1));
+        self.symbols
+            .push(tracedraw_core::document::Symbol { name, shape });
+        let placed = Affine::translate((page_size.width / 2.0, page_size.height / 2.0));
+        let found = (index, placed.inverse());
+        self.symbol_index.insert(def, found);
+        Some(found)
+    }
+
+    /// Index the groups of `LIST clpt` and of `LIST sytr` by the number
+    /// in their `spnd`.
     fn index_clip_groups(&mut self) {
         let tree = self.tree;
         let mut found = Vec::new();
@@ -4193,6 +4353,22 @@ impl<'a> Ctx<'a> {
             };
             if let Some(n) = self.reader(self.data(sp)).u32() {
                 self.clip_groups.insert(n, g);
+            }
+        }
+        // The symbols' definitions (#2177), kept the same way.
+        let mut found = Vec::new();
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"sytr") {
+                found.extend(c.children.iter().filter(|g| g.is(b"grp ")));
+            }
+        });
+        for g in found {
+            let Some(sp) = g.children.iter().find(|c| c.is(b"spnd")) else {
+                continue;
+            };
+            if let Some(n) = self.reader(self.data(sp)).u32() {
+                self.symbol_groups.insert(n, g);
+                self.symbol_order.push(n);
             }
         }
     }
@@ -4372,6 +4548,43 @@ impl<'a> Ctx<'a> {
                         self.note_static_id(c, g.id);
                         out.push(g);
                     }
+                }
+            } else if c.is(b"symb") {
+                // An instance of a symbol (#2177): its `spnd` names the
+                // symbol, its `trfd` places the definition.
+                let sym = c
+                    .children
+                    .iter()
+                    .find(|k| k.is(b"spnd"))
+                    .and_then(|k| self.reader(self.data(k)).u32());
+                let Some(sym) = sym else {
+                    self.report.warn("a symbol instance without its symbol");
+                    continue;
+                };
+                let own = c
+                    .children
+                    .iter()
+                    .find(|k| k.is(b"lgob"))
+                    .and_then(|lgob| {
+                        let mut t = None;
+                        lgob.walk(&mut |k, _| {
+                            if k.is(b"trfd") && t.is_none() {
+                                t = Some(k);
+                            }
+                        });
+                        t
+                    })
+                    .map(|t| self.read_transform(t))
+                    .unwrap_or(Affine::IDENTITY);
+                if let Some((index, unplace)) = self.symbol(sym, ids, page_size, depth) {
+                    let placed = Affine::translate((page_size.width / 2.0, page_size.height / 2.0));
+                    let mut inst = Shape::new(ids.shape(), ShapeKind::SymbolInstance { index });
+                    inst.transform = placed * self.outer_transform * own * unplace;
+                    inst.fill = Fill::None;
+                    inst.stroke = None;
+                    inst.name = self.group_name(c);
+                    self.note_static_id(c, inst.id);
+                    out.push(inst);
                 }
             } else if c.is(b"lnkg") {
                 // A linked group (the strokes an artistic brush makes from
@@ -5546,6 +5759,7 @@ fn text_on(
     path: BezPath,
     fitted: &OnPathText,
     per_mm: f64,
+    from_start: bool,
 ) -> (tracedraw_core::TextOnPath, TextAlign, f64) {
     let Some(s) = fitted.settings else {
         let tp = tracedraw_core::TextOnPath {
@@ -5574,13 +5788,58 @@ fn text_on(
     if mirror {
         at = total - at;
     }
-    if s.placement == 4 {
+    if s.placement == 4 && !from_start {
         tp.offset = at - total / 2.0;
         (tp, TextAlign::Center, at)
     } else {
         tp.offset = at;
         (tp, TextAlign::Left, at)
     }
+}
+
+/// Whether the fitted text of placement 4 starts at the point its offset
+/// names rather than having its middle there, told by the text's box
+/// (the box of the fitted letters): the stretch of the baseline that
+/// stays inside the box runs on from that point but hardly back from it.
+/// A version 18 text (#2431) starts at its offset, its letters' angles
+/// (the 24 bytes per letter) giving the same places; the two texts of
+/// the version 21 file of 2026-10-11 have their middles there.
+fn text_starts_at_offset(page_path: BezPath, fitted: &OnPathText) -> bool {
+    let (Some(s), Some(pb)) = (fitted.settings, fitted.page_box) else {
+        return false;
+    };
+    if s.placement != 4 {
+        return false;
+    }
+    let (tp, _, at) = text_on(page_path, fitted, 1.0, false);
+    let base = tp.baseline();
+    let total = base.length();
+    if total <= 0.0 {
+        return false;
+    }
+    let grow = 1.0 + 0.02 * pb.width().max(pb.height());
+    let b = pb.inflate(grow, grow);
+    let step = total / 1000.0;
+    // How far the baseline stays in the box from `at` going `sign`-wards.
+    let run = |sign: f64| {
+        let mut d = 0.0;
+        while d < total {
+            let s = at + sign * (d + step);
+            if !base.is_closed() && !(0.0..=total).contains(&s) {
+                break;
+            }
+            match base.at(s) {
+                Some((p, _)) if b.contains(p) => d += step,
+                _ => break,
+            }
+        }
+        d
+    };
+    let (back, on) = (run(-1.0), run(1.0));
+    if back + on >= 0.99 * total && base.is_closed() {
+        return false;
+    }
+    back < 0.25 * (back + on)
 }
 
 /// The curve among `curves` that a fitted text follows: the one whose
@@ -5599,7 +5858,7 @@ fn path_for_text(shapes: &[Shape], curves: &[usize], fitted: &OnPathText) -> Opt
         let Some(curve) = shapes.get(ci) else {
             continue;
         };
-        let (tp, _, at) = text_on(text_path_of(curve), fitted, 1.0);
+        let (tp, _, at) = text_on(text_path_of(curve), fitted, 1.0, false);
         let Some((p, _)) = tp.baseline().at(at) else {
             continue;
         };
@@ -5821,8 +6080,10 @@ fn fit_text(t: &mut Shape, curve: &Shape, fitted: &OnPathText) -> bool {
         return false;
     }
     let to_local = Affine::translate(-origin.to_vec2()) * t.transform.inverse();
-    let path = to_local * text_path_of(curve);
-    let (tp, fitted_align, _) = text_on(path, fitted, 1.0 / det.abs().sqrt());
+    let on_page = text_path_of(curve);
+    let from_start = text_starts_at_offset(on_page.clone(), fitted);
+    let path = to_local * on_page;
+    let (tp, fitted_align, _) = text_on(path, fitted, 1.0 / det.abs().sqrt(), from_start);
     t.kind = ShapeKind::Text {
         spans,
         origin,
@@ -10622,6 +10883,71 @@ pub(crate) mod tests {
         );
     }
 
+    /// #2431: a text whose box runs on from the point its offset names
+    /// starts there (the version 18 file of the issue: "this is test"
+    /// starting 12.84 mm along a 130 mm curve, its letters' angles and
+    /// the preview agree); a text whose box lies about that point has
+    /// its middle there, as before.
+    #[test]
+    fn a_fitted_text_starts_at_its_offset_when_its_box_runs_on_from_there() {
+        let v = 21u16;
+        let text_obj = |t: Vec<u8>, bbox: [i32; 4]| {
+            list(
+                b"obj ",
+                &[
+                    chunk(b"bbox", &i32s(&bbox)),
+                    chunk(
+                        b"loda",
+                        &loda(OBJ_ARTISTIC_TEXT, &[(ARG_COORDS, i32s(&[0, 0]))]),
+                    ),
+                    chunk(b"trfd", &trfd(v, [1.0, 0.0, -3_000_000.0, 0.0, 1.0, 0.0])),
+                    chunk(b"txsm", &t),
+                ]
+                .concat(),
+            )
+        };
+        // A straight curve 130 mm long, across the page centre.
+        let mut coords = u32s(&[2]);
+        coords.extend_from_slice(&i32s(&[-650_000, 0, 650_000, 0]));
+        coords.extend_from_slice(&[0x08, 0x40]);
+        let curve = list(
+            b"obj ",
+            &chunk(b"loda", &loda(OBJ_CURVE, &[(ARG_COORDS, coords)])),
+        );
+        // Its box from 11.5 to 125 mm along the curve.
+        let starts = text_obj(
+            txsm21_on_path("Starts", 128_400, 0, false),
+            [-535_000, 120_000, 600_000, 0],
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+            chunk(b"font", &font_chunk(5, "Georgia")),
+            list(b"page", &list(b"layr", &[starts, curve].concat())),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRL", &body), v);
+        let sh = doc.pages[0].layers[0]
+            .shapes
+            .iter()
+            .find(|sh| matches!(sh.kind, ShapeKind::Text { .. }))
+            .expect("text");
+        let ShapeKind::Text {
+            on_path: Some(tp),
+            origin,
+            align,
+            ..
+        } = &sh.kind
+        else {
+            panic!("not on a path: {:?} {:?}", sh.kind, rep.warnings);
+        };
+        assert_eq!(*align, TextAlign::Left);
+        let (p, _) = tp.baseline().at(tp.offset).expect("point");
+        let page = sh.transform * Affine::translate(origin.to_vec2());
+        // Page centre (127, 127): the curve starts at x 62.
+        let p = page * p;
+        assert!((p - Point::new(62.0 + 12.84, 127.0)).hypot() < 0.1, "{p:?}");
+    }
+
     /// Lists nested in a layer keep the file's front-to-back order.
     #[test]
     fn objects_of_nested_lists_keep_their_stacking_order() {
@@ -12815,6 +13141,29 @@ pub(crate) mod tests {
             .concat(),
         );
         assert!(got[0] == 1.0 && (got[1] - 0.8).abs() < 1e-9, "{got:?}");
+        // A merge mode the reader does not know is named in a warning
+        // (#1666); the object is still read, merged as Normal.
+        let merged = style_of(r#"{"transparency":{"fill":{"type":"1"},"mode":"4"}}"#);
+        let grp = list(
+            b"grp ",
+            &[
+                chunk(b"loda", &group_loda),
+                square_styled(&merged, 1, Some(0.0)),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+            list(b"page", &list(b"layr", &grp)),
+        ]
+        .concat();
+        let (_, rep) = parse(&riff(b"CDRO", &body), v);
+        assert_eq!(rep.shapes, 1);
+        assert!(
+            rep.warnings.iter().any(|w| w.contains("merge mode 4")),
+            "{:?}",
+            rep.warnings
+        );
     }
 
     // Arrowheads.
@@ -13135,6 +13484,151 @@ pub(crate) mod tests {
             page_box: Some(Rect::new(400.0, 400.0, 420.0, 410.0)),
         };
         assert!(anchored_path_for_text(&shapes, &curves, &far, cap).is_none());
+    }
+
+    /// Symbols (#2177), as a version 15 file holds them (the test writes
+    /// version 14, whose rectangles are simpler): the definition a
+    /// group of `LIST sytr` (named in argument 19201), the symbol table
+    /// `sblk` naming it for symbol 0x55, and instances on the page
+    /// (`LIST symb`) naming the symbol in their `spnd` and placing the
+    /// definition with their matrix. They open as one document symbol and
+    /// its instances, where the same square drawn through the same
+    /// matrix lies.
+    #[test]
+    fn symbols_open_as_symbols_and_their_instances() {
+        // Version 14: its rectangle record is the simpler one.
+        let v = 14;
+        let square = |m: [f64; 6]| {
+            list(
+                b"obj ",
+                &list(
+                    b"lgob",
+                    &[
+                        chunk(
+                            b"loda",
+                            &loda(OBJ_RECT, &[(ARG_COORDS, i32s(&[100_000, 100_000, 0]))]),
+                        ),
+                        list(b"trfl", &chunk(b"trfd", &trfd(v, m))),
+                    ]
+                    .concat(),
+                ),
+            )
+        };
+        let mut record = vec![0u8; 548];
+        for u in "Logo".encode_utf16().chain([0]) {
+            record.extend_from_slice(&u.to_le_bytes());
+        }
+        let definition = list(
+            b"grp ",
+            &[
+                chunk(b"spnd", &u32s(&[0x77])),
+                list(b"lgob", &chunk(b"loda", &loda(0, &[(ARG_SYMBOL, record)]))),
+                square([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            ]
+            .concat(),
+        );
+        let instance = |m: [f64; 6]| {
+            list(
+                b"symb",
+                &[
+                    chunk(b"spnd", &u32s(&[0x55])),
+                    list(
+                        b"lgob",
+                        &[
+                            chunk(b"loda", &loda(0, &[])),
+                            list(b"trfl", &chunk(b"trfd", &trfd(v, m))),
+                        ]
+                        .concat(),
+                    ),
+                ]
+                .concat(),
+            )
+        };
+        let moved = [2.0, 0.0, 300_000.0, 0.0, 1.0, -200_000.0];
+        let body = [
+            chunk(b"mcfg", &mcfg(v, 2_100_000, 2_970_000)),
+            chunk(b"sblk", &u32s(&[0, 0x55, 0x77])),
+            list(b"sytr", &definition),
+            list(
+                b"page",
+                &list(
+                    b"layr",
+                    &[
+                        instance([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+                        instance(moved),
+                        square(moved),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRF", &body), v);
+        assert_eq!(doc.symbols.len(), 1, "{:?}", rep.warnings);
+        assert_eq!(doc.symbols[0].name, "Logo");
+        let shapes: Vec<&Shape> = doc
+            .pages
+            .iter()
+            .flat_map(|p| &p.layers)
+            .flat_map(|l| &l.shapes)
+            .collect();
+        assert_eq!(shapes.len(), 3, "{:?}", rep.warnings);
+        let placed = |s: &Shape| {
+            let r = doc.symbols[0].shape.bounds();
+            let t = s.transform;
+            let p0 = t * Point::new(r.x0, r.y0);
+            let p1 = t * Point::new(r.x1, r.y1);
+            Rect::from_points(p0, p1)
+        };
+        let close = |a: Rect, b: Rect| {
+            (a.x0 - b.x0).abs() < 1e-6
+                && (a.y0 - b.y0).abs() < 1e-6
+                && (a.x1 - b.x1).abs() < 1e-6
+                && (a.y1 - b.y1).abs() < 1e-6
+        };
+        let plain = shapes
+            .iter()
+            .find(|s| !matches!(s.kind, ShapeKind::SymbolInstance { .. }))
+            .expect("the plain square");
+        let instances: Vec<Rect> = shapes
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::SymbolInstance { index: 0 }))
+            .map(|s| placed(s))
+            .collect();
+        assert_eq!(instances.len(), 2);
+        // The unmoved instance draws the definition where it stands.
+        assert!(
+            close(
+                instances
+                    .iter()
+                    .copied()
+                    .fold(Rect::ZERO, |a, b| if b.width() < 15.0 { b } else { a }),
+                doc.symbols[0].shape.bounds()
+            ),
+            "{instances:?}"
+        );
+        // The moved one where the square drawn through its matrix lies.
+        assert!(
+            instances.iter().any(|&r| close(r, plain.bounds())),
+            "{instances:?} {:?}",
+            plain.bounds()
+        );
+        // A symbol the file lacks: left out with a warning.
+        let lacking = [
+            chunk(b"mcfg", &mcfg(v, 2_100_000, 2_970_000)),
+            list(
+                b"page",
+                &list(b"layr", &instance([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+            ),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRF", &lacking), v);
+        assert!(doc.symbols.is_empty());
+        assert!(
+            rep.warnings.iter().any(|w| w.contains("no definition")),
+            "{:?}",
+            rep.warnings
+        );
     }
 
     #[test]

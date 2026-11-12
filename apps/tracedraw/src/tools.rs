@@ -507,6 +507,20 @@ impl Tool {
         )
     }
 
+    /// Drawing tools whose drag from a handle of the selection resizes it
+    /// instead of starting a new shape (the handles show right after a
+    /// shape is drawn).
+    pub fn resizes_by_handles(self) -> bool {
+        self.is_box_tool()
+            || matches!(
+                self,
+                Tool::ThreePointRectangle
+                    | Tool::ThreePointEllipse
+                    | Tool::Spiral
+                    | Tool::CommonShapes
+            )
+    }
+
     /// Tools that are listed but not implemented yet (shown greyed).
     pub fn implemented(self) -> bool {
         true

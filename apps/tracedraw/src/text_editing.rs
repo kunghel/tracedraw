@@ -1090,6 +1090,12 @@ impl App {
         let te = self.text_edit.as_ref()?;
         let (layout, to_page) = self.text_layout_of(te.shape)?;
         let local = to_page.inverse() * p;
+        // On a path: the place along the line nearest the point (#2423).
+        let local = layout
+            .on_path
+            .as_ref()
+            .and_then(|pp| pp.unplace(local))
+            .unwrap_or(local);
         layout.hit_char(local)
     }
 
@@ -1338,10 +1344,26 @@ fn caret_geometry_sized(
         let size_mm = size_pt * 25.4 / 72.0;
         (0.0, 0.0, size_mm * 0.8, size_mm * 0.2)
     });
-    let top = *to_page * Point::new(x, base + asc);
-    let bottom = *to_page * Point::new(x, base - desc);
+    // On a path the caret stands where the letters are laid (#2423); it
+    // stayed where the straight line would have been.
+    let top = *to_page * layout.placed(Point::new(x, base + asc));
+    let bottom = *to_page * layout.placed(Point::new(x, base - desc));
     let mut quads = Vec::new();
-    if a != b {
+    if a != b && layout.on_path.is_some() {
+        // One quad per selected letter, each standing on the path.
+        for line in &layout.lines {
+            for i in a.max(line.start_char)..b.min(line.end_char) {
+                let k = i - line.start_char;
+                if let (Some(&x0), Some(&x1)) = (line.starts.get(k), line.ends.get(k)) {
+                    let (y0, y1) = (line.baseline - line.descent, line.baseline + line.ascent);
+                    quads.push(
+                        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                            .map(|(x, y)| *to_page * layout.placed(Point::new(x, y))),
+                    );
+                }
+            }
+        }
+    } else if a != b {
         // The stretches the selected characters cover on a line: one for
         // plain text, from the right for right-to-left text (#629),
         // several where the directions mix.

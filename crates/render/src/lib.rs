@@ -4,6 +4,7 @@
 //! must match this one.
 
 #![allow(clippy::field_reassign_with_default)]
+pub mod accel;
 mod image_cache;
 
 use tiny_skia::{
@@ -81,8 +82,9 @@ pub struct RenderOptions {
     /// pixel edges.
     pub anti_alias: bool,
     /// On screen: large procedural fills (textures, conical and square
-    /// gradients) may be worked out on a coarser grid. Exports keep every
-    /// pixel.
+    /// gradients) may be worked out on a coarser grid, and drop shadows
+    /// may be blurred on the graphics card ([`accel`], same pixels).
+    /// Exports keep every pixel and draw everything on the CPU.
     pub draft: bool,
     /// Focus mode: these objects drawn as they are and everything else
     /// faded to the given visibility (0 to 1).
@@ -573,6 +575,12 @@ fn visible_page_rect(opts: &RenderOptions) -> Rect {
 /// nodes of a variable width are counted on their own).
 const OUTLINE_REACH: f64 = 12.0;
 
+/// Paths drawn on this thread, for tests.
+#[cfg(test)]
+thread_local! {
+    static PATHS_DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Renderer<'a> {
     pixmap: &'a mut Pixmap,
     screen: Affine,
@@ -651,6 +659,27 @@ impl Renderer<'_> {
             return false;
         };
         b.x1 < visible.x0 || b.x0 > visible.x1 || b.y1 < visible.y0 || b.y0 > visible.y1
+    }
+
+    /// The part of the page (mm) this renderer's pixmap shows, `None`
+    /// when its transform cannot be undone (nothing is left out then).
+    fn sight(&self) -> Option<Rect> {
+        let c = self.screen.as_coeffs();
+        let det = c[0] * c[3] - c[1] * c[2];
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        let px = Rect::new(
+            0.0,
+            0.0,
+            self.pixmap.width() as f64,
+            self.pixmap.height() as f64,
+        );
+        let r = self.screen.inverse().transform_rect_bbox(px);
+        [r.x0, r.y0, r.x1, r.y1]
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(r)
     }
 
     /// Where a plain object (no group or clip frame) inside `parent` can
@@ -872,7 +901,11 @@ impl Renderer<'_> {
                 if shape.opacity <= 0.0 {
                     return;
                 }
+                let sight = self.sight();
                 for c in children {
+                    if sight.is_some_and(|v| self.out_of_sight_in(c, transform, &v)) {
+                        continue;
+                    }
                     let mut c = c.clone();
                     c.absorb_opacity(shape.opacity);
                     let t = self.child_transform(&c, transform);
@@ -880,7 +913,16 @@ impl Renderer<'_> {
                 }
                 return;
             }
+            // Only the members that can show in this picture: zoomed in on
+            // a large group (a whole design grouped, as files often keep
+            // it), every member off screen was drawn all the same, at the
+            // zoom's detail, so each zoom in took far longer to draw than
+            // the page fitted in the window (discussion #2389).
+            let sight = self.sight();
             for c in children {
+                if sight.is_some_and(|v| self.out_of_sight_in(c, transform, &v)) {
+                    continue;
+                }
                 let t = self.child_transform(c, transform);
                 self.draw_shape(c, t);
             }
@@ -995,6 +1037,8 @@ impl Renderer<'_> {
         if local.elements().is_empty() {
             return;
         }
+        #[cfg(test)]
+        PATHS_DRAWN.with(|n| n.set(n.get() + 1));
         let page_path = transform * local;
         let Some(sk) = to_sk_path(&(self.screen * page_path.clone())) else {
             return;
@@ -1343,7 +1387,7 @@ impl Renderer<'_> {
         };
         if !drawn {
             let rule = shape_fill_rule(shape, self.flags.text_outline);
-            self.draw_drop_shadow(sh, page_path, rule);
+            self.draw_drop_shadow(sh, shape, parent, page_path, rule);
         }
     }
 
@@ -1500,21 +1544,33 @@ impl Renderer<'_> {
     /// filled with the shadow colour, feathered, faded along a
     /// perspective shadow and merged with what is beneath. `rule` is the
     /// rule the object is filled by, so its holes are the shadow's.
+    /// `shape` is the object, drawn inside `parent`: the shadow is of
+    /// what it shows, its fill and its outline, and its layer reaches
+    /// round all its outline may cover.
     fn draw_drop_shadow(
         &mut self,
         sh: &tracedraw_core::Shadow,
+        shape: &Shape,
+        parent: Affine,
         page_path: &BezPath,
         rule: FillRule,
     ) {
         let b = page_path.bounding_box();
-        let Some((layer_at, mut layer, screen)) = self.shadow_target(sh, b) else {
+        let extent = Self::reach(shape, parent).map_or(b, |r| r.union(b));
+        let object = parent * shape.transform;
+        let Some((layer_at, mut layer, screen)) = self.shadow_target_over(sh, b, extent) else {
             return;
         };
+        let _screen = accel::on_screen(self.flags.draft);
         if !shadow_layer(
             &mut layer,
             sh,
-            page_path,
-            rule,
+            Shown {
+                shape,
+                path: page_path,
+                object,
+                rule,
+            },
             screen,
             self.zoom,
             self.flags.anti_alias,
@@ -1573,6 +1629,7 @@ impl Renderer<'_> {
             let a = px.alpha();
             *px = tiny_skia::ColorU8::from_rgba(255, 255, 255, a).premultiply();
         }
+        let _screen = accel::on_screen(self.flags.draft);
         shade_shadow(&mut layer, sh, b, screen, self.zoom);
         self.merge_shadow(sh, &layer, layer_at);
         true
@@ -1616,6 +1673,7 @@ impl Renderer<'_> {
         let Some((layer_at, mut layer, screen)) = self.shadow_target_over(sh, b, extent) else {
             return;
         };
+        let _screen = accel::on_screen(self.flags.draft);
         group_shadow_layer(
             &mut layer,
             sh,
@@ -2801,29 +2859,127 @@ impl Renderer<'_> {
 /// Paint the drop shadow `sh` of an object with page path `page_path` into
 /// the empty `layer` (pixels = `screen` times page millimetres, `zoom`
 /// pixels per millimetre), with its opacity and fade but not its merge
-/// mode. The silhouette is filled by `rule`, the rule the object is
-/// filled by, so a hole of the object is a hole of its shadow (#2216).
-/// False when nothing was painted.
+/// mode. The silhouette is what the object shows ([`paint_shown`]): its
+/// fill by the rule the object is filled by, so a hole of the object is a
+/// hole of its shadow (#2216), and its outline as drawn, so an object
+/// with no fill casts the shadow of its outline alone and a wide or
+/// variable outline casts its own shape. It was the filled path always:
+/// a ring drawn with a variable outline cast a whole disc. False when
+/// nothing was painted.
 fn shadow_layer(
     layer: &mut Pixmap,
     sh: &tracedraw_core::Shadow,
-    page_path: &BezPath,
-    rule: FillRule,
+    shown: Shown,
     screen: Affine,
     zoom: f64,
     anti_alias: bool,
 ) -> bool {
-    let b = page_path.bounding_box();
-    let shifted = sh.silhouette_transform(b) * page_path.clone();
-    let Some(sk_sh) = to_sk_path(&(screen * shifted)) else {
+    let b = shown.path.bounding_box();
+    if to_sk_path(shown.path).is_none() {
         return false;
+    }
+    paint_shown(
+        layer,
+        &shown,
+        screen * sh.silhouette_transform(b),
+        None,
+        anti_alias,
+    );
+    shade_shadow(layer, sh, b, screen, zoom);
+    true
+}
+
+/// An object as its shadow sees it: `shape`, its outline `path` on the
+/// page (its parent's space), `object` its transform there and `rule`
+/// the rule its fill is drawn by.
+struct Shown<'a> {
+    shape: &'a Shape,
+    path: &'a BezPath,
+    object: Affine,
+    rule: FillRule,
+}
+
+/// Paint in white, through `to_screen` (page to layer), what `shown`
+/// shows: its fill unless it has none, and its outline as drawn (a band
+/// for a variable, calligraphic or placed outline, the stroked line
+/// otherwise, dashes and arrowheads with it; a hairline one pixel wide).
+/// An object with neither fill nor outline is painted filled, as before.
+fn paint_shown(
+    layer: &mut Pixmap,
+    shown: &Shown,
+    to_screen: Affine,
+    clip: Option<&tiny_skia::Mask>,
+    anti_alias: bool,
+) {
+    let Some(sk) = to_sk_path(&(to_screen * shown.path.clone())) else {
+        return;
     };
     let mut paint = Paint::default();
     paint.anti_alias = anti_alias;
     paint.set_color_rgba8(255, 255, 255, 255);
-    layer.fill_path(&sk_sh, &paint, rule, Transform::identity(), None);
-    shade_shadow(layer, sh, b, screen, zoom);
-    true
+    let stroke = shown.shape.stroke.as_ref();
+    let filled = !matches!(shown.shape.fill, Fill::None);
+    if filled || stroke.is_none() {
+        layer.fill_path(&sk, &paint, shown.rule, Transform::identity(), clip);
+    }
+    let Some(stroke) = stroke else {
+        return;
+    };
+    let object_scale = if stroke.scale_with_object {
+        let c = shown.object.as_coeffs();
+        ((c[0] * c[3] - c[1] * c[2]).abs()).sqrt().max(1e-6)
+    } else {
+        1.0
+    };
+    if let Some(band) = tracedraw_core::shaping::outline_band(shown.path, stroke, object_scale) {
+        if let Some(bp) = to_sk_path(&(to_screen * band)) {
+            layer.fill_path(&bp, &paint, FillRule::Winding, Transform::identity(), clip);
+        }
+    } else {
+        let c = to_screen.as_coeffs();
+        let px_per_mm = ((c[0] * c[3] - c[1] * c[2]).abs()).sqrt();
+        let hair = stroke.width <= Stroke::HAIRLINE + 1e-9 || !stroke.width.is_finite();
+        let true_px = if hair {
+            0.0
+        } else {
+            (stroke.width * object_scale * px_per_mm) as f32
+        };
+        let dash = if stroke.dash.is_empty() || hair {
+            None
+        } else {
+            let unit = true_px.max(1.0);
+            let mut arr: Vec<f32> = stroke
+                .dash
+                .iter()
+                .map(|d| (*d as f32 * unit).max(0.01))
+                .collect();
+            if arr.len() % 2 == 1 {
+                arr = [arr.clone(), arr].concat();
+            }
+            StrokeDash::new(arr, 0.0)
+        };
+        let line = SkStroke {
+            width: true_px.max(1.0),
+            miter_limit: stroke.miter_ratio() as f32,
+            line_cap: match stroke.cap {
+                LCap::Butt => LineCap::Butt,
+                LCap::Round => LineCap::Round,
+                LCap::Square => LineCap::Square,
+            },
+            line_join: match stroke.join {
+                LJoin::Miter => LineJoin::Miter,
+                LJoin::Round => LineJoin::Round,
+                LJoin::Bevel => LineJoin::Bevel,
+            },
+            dash,
+        };
+        layer.stroke_path(&sk, &paint, &line, Transform::identity(), clip);
+    }
+    for head in tracedraw_core::style::arrowhead_paths(shown.path, stroke) {
+        if let Some(hp) = to_sk_path(&(to_screen * head)) {
+            layer.fill_path(&hp, &paint, FillRule::Winding, Transform::identity(), clip);
+        }
+    }
 }
 
 /// [`shadow_layer`] for a group or a clip frame drawn inside `parent`:
@@ -2879,6 +3035,12 @@ fn cast_boxes(shape: &Shape, parent: Affine) -> Option<(Rect, Rect)> {
     } else {
         let b = plain();
         (b, b)
+    };
+    // What its outline covers casts the shadow too.
+    let extent = match shape.kind {
+        ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. } => extent,
+        _ if shape.stroke.is_none() => extent,
+        _ => Renderer::reach(shape, parent).map_or(extent, |r| r.union(extent)),
     };
     (b.width().is_finite() && b.height().is_finite()).then_some((b, extent))
 }
@@ -3051,14 +3213,14 @@ fn silhouette(
             }
         }
         _ => {
-            let Some(sk) = to_sk_path(&(to_screen * shape.page_path())) else {
-                return;
+            let path = shape.page_path();
+            let shown = Shown {
+                shape,
+                path: &path,
+                object: shape.transform,
+                rule: shape_fill_rule(shape, text),
             };
-            let mut paint = Paint::default();
-            paint.anti_alias = anti_alias;
-            paint.set_color_rgba8(255, 255, 255, 255);
-            let rule = shape_fill_rule(shape, text);
-            layer.fill_path(&sk, &paint, rule, Transform::identity(), clip);
+            paint_shown(layer, &shown, to_screen, clip, anti_alias);
         }
     }
 }
@@ -3081,9 +3243,9 @@ fn shade_shadow(
         match sh.feather_direction {
             // One even pass about as wide as the three passes together.
             FeatherDirection::Average => {
-                box_blur_passes(layer, ((radius as f64) * 1.7).round().min(110.0) as i32, 1)
+                accel::box_blur(layer, ((radius as f64) * 1.7).round().min(110.0) as i32, 1)
             }
-            _ => box_blur(layer, radius.min(64)),
+            _ => accel::box_blur(layer, radius.min(64), 3),
         }
     }
     // The fade of a perspective shadow, in pixels.
@@ -3162,8 +3324,13 @@ pub fn render_shadow_image(shape: &Shape, dpi: f64) -> Option<(Rect, Pixmap)> {
             None => false,
         }
     } else {
-        let rule = shape_fill_rule(shape, false);
-        shadow_layer(&mut pm, sh, &path, rule, screen, zoom, true)
+        let shown = Shown {
+            shape,
+            path: &path,
+            object: shape.transform,
+            rule: shape_fill_rule(shape, false),
+        };
+        shadow_layer(&mut pm, sh, shown, screen, zoom, true)
     };
     if !drawn {
         return None;
@@ -7387,8 +7554,12 @@ mod tests {
                     assert!(shadow_layer(
                         &mut full,
                         &sh,
-                        &path,
-                        shape_fill_rule(&shadowed, false),
+                        Shown {
+                            shape: &shadowed,
+                            path: &path,
+                            object: shadowed.transform,
+                            rule: shape_fill_rule(&shadowed, false),
+                        },
                         screen,
                         zoom,
                         true
@@ -7640,6 +7811,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The shadow is of what the object shows: an ellipse with no fill and
+    /// a wide variable outline casts the ring its outline draws, its hole
+    /// clear and its outer edge whole past the ellipse's own box, the same
+    /// as after Convert to Curves. It cast the whole filled ellipse; only
+    /// the shadow of its outline converted to an object was right.
+    #[test]
+    fn an_unfilled_object_casts_the_shadow_of_its_outline() {
+        use tracedraw_core::style::WidthNode;
+        let sh = tracedraw_core::Shadow {
+            offset: tracedraw_core::geometry::Vec2::new(100.0, 0.0),
+            opacity: 1.0,
+            blur: 0.0,
+            color: Color::BLACK,
+            merge: tracedraw_core::live::MergeMode::Normal,
+            ..Default::default()
+        };
+        let scene = |curves: bool, fill: Fill| {
+            let mut s = Shape::new(
+                tracedraw_core::ShapeId(1),
+                ShapeKind::Ellipse {
+                    rect: Rect::new(30.0, 30.0, 70.0, 70.0),
+                    arc: None,
+                },
+            );
+            if curves {
+                s.kind = ShapeKind::Path {
+                    path: s.local_path(),
+                    closed: true,
+                };
+            }
+            s.fill = fill;
+            let mut st = tracedraw_core::Stroke::new(Color::BLACK, 1.0);
+            // 8 mm each way at the bottom, tapering to 0.5 mm at the top.
+            st.widths = vec![WidthNode::symmetric(0.75, 16.0)];
+            s.stroke = Some(st);
+            s.shadow = Some(sh);
+            let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(200.0, 100.0));
+            let layer = doc.pages[0].layers[0].id;
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+            let page = doc.pages[0].id;
+            render_page_image(&doc, page, 25.4).unwrap()
+        };
+        // One pixel a millimetre, y down from the page's top.
+        let dark = |pm: &Pixmap, x: f64, y: f64| {
+            let px = pm.pixel(x as u32, (100.0 - y) as u32).unwrap();
+            px.red() < 128
+        };
+        for curves in [false, true] {
+            let pm = scene(curves, Fill::None);
+            // The shadow's middle (the hole) is clear, its ring dark.
+            assert!(!dark(&pm, 150.5, 50.5), "curves {curves}: hole");
+            assert!(dark(&pm, 150.5, 25.5), "curves {curves}: wide bottom");
+            // Past the ellipse's box (30 to 70, moved 100): the outline's
+            // reach at the bottom, 4 mm out, is not cut off.
+            assert!(dark(&pm, 150.5, 27.5), "curves {curves}: outer edge");
+            // A filled one stays whole.
+            let pm = scene(curves, Fill::Solid(Color::WHITE));
+            assert!(dark(&pm, 150.5, 50.5), "curves {curves}: filled");
+        }
+        let (a, b) = (scene(false, Fill::None), scene(true, Fill::None));
+        let differ = a
+            .pixels()
+            .iter()
+            .zip(b.pixels())
+            .filter(|(p, q)| (i32::from(p.red()) - i32::from(q.red())).abs() > 8)
+            .count();
+        assert!(differ < 8, "{differ} pixels differ");
     }
 
     /// A blue square at 20 to 40 mm with a body running 10 mm up and to
@@ -8055,6 +8295,85 @@ mod culling_tests {
         );
         s.fill = tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(10, 20, 30));
         s
+    }
+
+    /// Zoomed in on a large group, only its members that show are drawn
+    /// (discussion #2389): every member was drawn at the zoom's detail,
+    /// so a zoom in on a grouped design drew far slower than the page
+    /// fitted in the window. The picture is the same as with every
+    /// member drawn, and a semi-transparent group leaves them out too.
+    #[test]
+    fn a_zoom_into_a_group_draws_only_the_members_that_show() {
+        let members: Vec<Shape> = (0..400u64)
+            .map(|i| {
+                let (x, y) = ((i % 20) as f64 * 5.0, (i / 20) as f64 * 5.0);
+                let mut r = rect_shape(10 + i, Rect::new(x, y, x + 4.0, y + 4.0));
+                r.stroke = Some(tracedraw_core::Stroke::new(
+                    tracedraw_core::Color::BLACK,
+                    0.2,
+                ));
+                r
+            })
+            .collect();
+        let group = |opacity: f64| {
+            let mut g = Shape::new(
+                tracedraw_core::ShapeId(1),
+                ShapeKind::Group {
+                    children: members.clone(),
+                },
+            );
+            g.opacity = opacity;
+            g
+        };
+        // 40 px per mm on a 200 x 200 window: page x 0..5, y 95..100,
+        // about four members of the 400.
+        let opts = RenderOptions {
+            width: 200,
+            height: 200,
+            view: ViewTransform {
+                zoom: 40.0,
+                origin_x: 0.0,
+                origin_y: 100.0 * 40.0,
+            },
+            ..RenderOptions::default()
+        };
+        let doc_of = |shapes: Vec<Shape>| {
+            let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+            let page = doc.pages[0].id;
+            doc.pages[0].layers[0].shapes = shapes;
+            (doc, page)
+        };
+        let drawn = |doc: &Document, page| {
+            PATHS_DRAWN.with(|n| n.set(0));
+            let pm = render_page_whole(doc, page, &opts).expect("render");
+            (pm, PATHS_DRAWN.with(|n| n.get()))
+        };
+        let (doc, page) = doc_of(vec![group(1.0)]);
+        let (grouped, n) = drawn(&doc, page);
+        assert!(n > 0 && n <= 16, "{n} members drawn of 400");
+        // The same members loose on the layer: the same picture.
+        let (loose_doc, page) = doc_of(members.clone());
+        let (loose, _) = drawn(&loose_doc, page);
+        assert!(grouped.data() == loose.data(), "the picture changed");
+        let (doc, page) = doc_of(vec![group(0.5)]);
+        let (_, n) = drawn(&doc, page);
+        assert!(
+            n > 0 && n <= 16,
+            "{n} members drawn of 400, half transparent"
+        );
+        // The whole group in sight: every member drawn.
+        let whole = RenderOptions {
+            view: ViewTransform {
+                zoom: 2.0,
+                origin_x: 0.0,
+                origin_y: 200.0,
+            },
+            ..opts.clone()
+        };
+        PATHS_DRAWN.with(|n| n.set(0));
+        let (doc, page) = doc_of(vec![group(1.0)]);
+        render_page_whole(&doc, page, &whole).expect("render");
+        assert_eq!(PATHS_DRAWN.with(|n| n.get()), 400);
     }
 
     /// Objects wholly outside the part of the page on screen are not

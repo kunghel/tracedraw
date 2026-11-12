@@ -9271,3 +9271,109 @@ fn locked_objects_stay_locked() {
         assert!(!by_name("free").locked, "{v}");
     }
 }
+
+/// Artistic text under an envelope stays text in the files of version 16
+/// and later (#2432): the text record is written as it is, its `trfd`
+/// holds the envelope after the matrix that places it and an `envd`
+/// after the `trfd` holds the frame, as files keep an envelope. It was
+/// written as the curves the envelope draws, which other programs show
+/// as one curve. Other readers bend the text by the frame; TraceDraw
+/// opens the text with its envelope as it was, from the package's own
+/// member; before version 16 it is still written as curves.
+#[test]
+fn enveloped_artistic_text_is_written_as_enveloped_text() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut t = text_shape(
+        &mut ids,
+        vec![TextSpan::new("Envelope", "Arial", 24.0)],
+        TextAlign::Left,
+    );
+    t.transform = Affine::new([1.5, 0.0, 0.0, 1.5, 30.0, 120.0]);
+    let local = t.local_path().bounding_box();
+    let mut frame = tracedraw_core::envelope::Frame::around(local);
+    // The middle of the bottom side pulled down, the top's pushed up.
+    frame.nodes[1].y -= 6.0;
+    frame.nodes[5].y += 6.0;
+    let envelope = tracedraw_core::live::Effect::from_envelope(
+        &frame,
+        false,
+        tracedraw_core::envelope::Mapping::Putty,
+    );
+    t.effects = vec![envelope.clone()];
+    doc.pages[0].layers[0].shapes = vec![t.clone()];
+    doc.set_ids(ids);
+    let bent = t.bounds();
+    let page_frame = frame.transformed(t.transform);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 1, "{v}: {read:?}");
+        let (ids, _, _) = chunk_ids(&bytes);
+        let envds = ids.iter().filter(|i| i.trim() == "envd").count();
+        if v < 16 {
+            assert_eq!(envds, 0, "{v}");
+            continue;
+        }
+        assert_eq!(envds, 1, "{v}");
+        // TraceDraw: the text with its envelope, as it was.
+        assert!(
+            matches!(read[0].kind, ShapeKind::Text { .. }),
+            "{v}: {:?}",
+            read[0].kind
+        );
+        // (The member's numbers come back to within a rounding.)
+        let [e] = read[0].effects.as_slice() else {
+            panic!("{v}: {:?}", read[0].effects);
+        };
+        let kept = e.envelope_frame().expect("a frame");
+        assert_eq!(kept.corners, frame.corners, "{v}");
+        for (g, w) in kept
+            .nodes
+            .iter()
+            .chain(kept.handles.iter().flatten())
+            .zip(frame.nodes.iter().chain(frame.handles.iter().flatten()))
+        {
+            assert!((*g - *w).hypot() < 1e-9, "{v}: {g:?} {w:?}");
+        }
+        assert_eq!(read[0].transform, t.transform, "{v}");
+        assert!(
+            near(read[0].bounds(), bent, 0.05),
+            "{v}: {:?} {bent:?}",
+            read[0].bounds()
+        );
+        // Another reader: still text, bent by the file's envelope into
+        // the same frame on the page.
+        let plain = open_as_drawn(&bytes);
+        let shown = &plain.pages[0].layers[0].shapes;
+        assert_eq!(shown.len(), 1, "{v}");
+        assert!(
+            matches!(shown[0].kind, ShapeKind::Text { .. }),
+            "{v}: {:?}",
+            shown[0].kind
+        );
+        let [e] = shown[0].effects.as_slice() else {
+            panic!("{v}: {:?}", shown[0].effects);
+        };
+        let got = e
+            .envelope_frame()
+            .expect("a frame")
+            .transformed(shown[0].transform);
+        assert_eq!(got.nodes.len(), page_frame.nodes.len(), "{v}");
+        let mut got_nodes = got.nodes.clone();
+        let mut want_nodes = page_frame.nodes.clone();
+        let key = |p: &Point| ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64);
+        got_nodes.sort_by_key(key);
+        want_nodes.sort_by_key(key);
+        for (g, w) in got_nodes.iter().zip(&want_nodes) {
+            assert!((*g - *w).hypot() < 0.01, "{v}: {g:?} {w:?}");
+        }
+        assert!(
+            near(shown[0].bounds(), bent, 0.1),
+            "{v}: {:?} {bent:?}",
+            shown[0].bounds()
+        );
+    }
+}

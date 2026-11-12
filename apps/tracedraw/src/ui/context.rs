@@ -719,13 +719,9 @@ fn page_menu(app: &mut App, ui: &mut Ui, p: tracedraw_core::Point, close: &mut b
         finish_clip_edit_row(app, ui, close);
         sep(ui);
     }
-    if ci(
-        ui,
-        close,
-        "menu.edit.paste",
-        "Ctrl+V",
-        app.clipboard.is_some() || app.text_clip.is_some(),
-    ) {
+    // Offered like Edit > Paste: a copy made in another program pastes
+    // too, not only one made here.
+    if ci(ui, close, "menu.edit.paste", "Ctrl+V", true) {
         app.paste_any_at(Some(p));
     }
     if ci(ui, close, "menu.edit.select_all_objects", "Ctrl+A", true) {

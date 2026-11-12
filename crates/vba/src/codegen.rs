@@ -150,7 +150,9 @@ enum Res {
     Enum(String),
     EnumType(usize, usize),
     Module(usize),
-    Declared(String),
+    /// A declared Windows API procedure: its name and, lowercase, the
+    /// library's name for it (its alias, or its name).
+    Declared(String, String),
     BuiltinFn(String),
     BuiltinConst(String),
     Err,
@@ -696,12 +698,12 @@ impl<'a> Gen<'a> {
                     Res::StdProp(m, key.to_string())
                 });
             }
-            if let Some((n, _)) = a
+            if let Some((n, _, alias)) = a
                 .declares
                 .iter()
-                .find(|(n, p)| low(n) == key && (own || *p))
+                .find(|(n, p, _)| low(n) == key && (own || *p))
             {
-                return Some(Res::Declared(n.clone()));
+                return Some(Res::Declared(n.clone(), low(alias.as_deref().unwrap_or(n))));
             }
         }
         for e in &a.enums {
@@ -1611,6 +1613,24 @@ impl<'a> Gen<'a> {
         Ok(out.join(","))
     }
 
+    /// Arguments to a declared function that writes into a string it is
+    /// given (as Windows does with a buffer passed by value): variables
+    /// go by reference, so it can.
+    fn declared_args(&mut self, cx: &mut Ctx, args: &[Arg]) -> R<String> {
+        let mut out = Vec::new();
+        for a in args {
+            out.push(match &a.value {
+                Some(Expr::Ident(n)) => match self.resolve(cx, n) {
+                    Res::Var { js, .. } => format!("__v.ref(()=>{js},(__x)=>{{{js}=__x;}})"),
+                    _ => self.expr(cx, a.value.as_ref().unwrap())?,
+                },
+                Some(v) => self.expr(cx, v)?,
+                None => "__v.Missing".into(),
+            });
+        }
+        Ok(out.join(","))
+    }
+
     /// Positional arguments and named ones (`{name:value}`) for a call
     /// resolved at run time.
     fn dyn_args(&mut self, cx: &mut Ctx, args: &[Arg]) -> R<(String, String)> {
@@ -1820,10 +1840,7 @@ impl<'a> Gen<'a> {
                     return self.err(cx, format!("Expected a value, not the module {n}"));
                 }
             }
-            Res::Declared(name) => format!(
-                "__v.unsupported({})",
-                js_string(&format!("Windows API function {name}"))
-            ),
+            Res::Declared(name, api) => declared_call(&name, &api, ""),
             Res::BuiltinFn(f) => format!("__b.{f}()"),
             Res::BuiltinConst(c) => format!("__b.{c}"),
             Res::Err => "__v.Err".into(),
@@ -1922,10 +1939,14 @@ impl<'a> Gen<'a> {
                             Ok(format!("__v.callf(__b.{f},[{pos}],{named})"))
                         }
                     }
-                    Res::Declared(name) => Ok(format!(
-                        "__v.unsupported({})",
-                        js_string(&format!("Windows API function {name}"))
-                    )),
+                    Res::Declared(name, api) => {
+                        let a = if writes_back(&api) {
+                            self.declared_args(cx, args)?
+                        } else {
+                            self.plain_args(cx, args)?
+                        };
+                        Ok(declared_call(&name, &api, &a))
+                    }
                     Res::Unknown => {
                         let h = self.host(cx, n);
                         let (pos, named) = self.dyn_args(cx, args)?;
@@ -2180,4 +2201,31 @@ fn check_jumps(
     }
     inner.pop();
     Ok(())
+}
+
+/// Whether declared function `api` writes into a string argument.
+fn writes_back(api: &str) -> bool {
+    api.starts_with("urldownloadtocachefile")
+}
+
+/// A call of a declared Windows API procedure (`api` the library's name
+/// for it, lowercase) with the arguments `args`: ShellExecute opens a web
+/// address with the system (`__v.shellexecute`, #2165), as macros do to
+/// show their makers' pages; the others are not supported here.
+fn declared_call(name: &str, api: &str, args: &str) -> String {
+    match api {
+        "shellexecute" | "shellexecutea" | "shellexecutew" => {
+            format!("__v.shellexecute([{args}])")
+        }
+        "urldownloadtofile" | "urldownloadtofilea" | "urldownloadtofilew" => {
+            format!("__v.urldownload([{args}],false)")
+        }
+        "urldownloadtocachefile" | "urldownloadtocachefilea" | "urldownloadtocachefilew" => {
+            format!("__v.urldownload([{args}],true)")
+        }
+        _ => format!(
+            "__v.unsupported({})",
+            js_string(&format!("Windows API function {name}"))
+        ),
+    }
 }

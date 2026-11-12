@@ -201,15 +201,23 @@ curve and the range the `.cdr` files' blends use, #1192;
   start; Counterclockwise: falling), `t'` of the colour acceleration of
   the way.
 - Rotation: each step turns about its own centre by `rotation * t'`.
-  With Loop its centre also leaves the straight way: the start's centre
-  `A` turned by `rotation * t'` about the middle `M` of the two centres
-  and the end's `B` turned by `rotation * (t' - 1)` about it, mixed `t'`
-  of the way (`(1 - t') R(rotation t') (A - M) + t' R(rotation (t' - 1))
-  (B - M) + M`), so the steps leave the start and reach the end along a
-  curve to the right of the way for a positive rotation: a half circle
-  at 180 degrees, a curl through the middle at 360 (#1192, the pictures
-  of the `.cdr` files; turned about the middle alone, the last steps
-  landed far from the end; `live::tests::a_looped_blend_curves_from_one_end_to_the_other`).
+  With Loop the whole blend turns instead about the middle `M` of the
+  two objects' centres: step `k` is the step of the straight blend from
+  the start to the end turned back by the whole rotation about `M`
+  (morphed `t` of the way, or `t'` with Apply to sizing), moved to `t'`
+  of that straight way and turned by `rotation * t'` about `M`. Its
+  centre runs on the curve `(1 - t') R(rotation t') (A - M) +
+  t' R(rotation (t' - 1)) (B - M) + M` from the start's centre `A` to the
+  end's `B`, to the right of the way for a positive rotation (a half
+  circle at 180 degrees, a curl through the middle at 360; #1192), and
+  the outlines between two different shapes twist and fold into the end
+  as the previews of the `.cdr` files do, the fan inside the start for a
+  positive object acceleration too. Each step turned about its own
+  centre and put on that curve gave smooth bands, and with an object
+  acceleration the steps packed by the start hardly turned (#1576,
+  `live::tests::a_looped_blend_turns_the_straight_blend_about_the_middle`).
+  Two copies of one outline stay copies: each step turns by
+  `rotation * (t' - t)`.
 - Along a path: step `k` is placed at arc length `t' * L` on the path,
   oriented to the tangent when "rotate all objects" is on.
 

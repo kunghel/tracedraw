@@ -42,6 +42,15 @@ the right.
   again, one undo step; #1132), and can be clicked,
   marquee-selected, snapped to and selected with Select All or Tab from
   any of those pages while the layer is visible and unlocked.
+- Every new drawing has a master layer "Desktop" (#1161, #1775): objects
+  moved onto it (Move to Layer, or drag in the docker), beside the pages
+  or on them, show and are picked from every page, as the reference
+  program's desktop layer does. New objects still go to the page's own
+  layer. It is always behind the pages (the in-front choice for all
+  pages leaves it), is not counted when master layers are numbered
+  (`Layer::desktop`), and in `.cdr` files goes on the master page's
+  desktop layer
+  (`ui::objects_docker::tests::a_new_drawing_has_a_desktop_shared_by_every_page`).
 - Double-click a layer to rename it; double-click an object to name it
   (Rename Object; an empty name goes back to the description).
 - Double-click the page node, or pick Rename in its context menu, to

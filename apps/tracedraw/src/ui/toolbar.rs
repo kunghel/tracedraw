@@ -493,8 +493,8 @@ pub(crate) fn draw_item(app: &mut App, ui: &mut Ui, bar: &str, id: &str) {
             }
         }
         "paste" => {
-            let can_paste =
-                doc && (app.clipboard.is_some() || app.text_clip.is_some() || app.editing_text());
+            // A copy made in another program pastes too.
+            let can_paste = doc;
             if std_button(
                 ui,
                 icons::Action::Paste,

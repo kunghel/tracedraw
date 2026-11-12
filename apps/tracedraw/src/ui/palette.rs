@@ -2097,6 +2097,63 @@ mod tests {
         assert_eq!(app.doc().palette, vec![green]);
     }
 
+    /// A colour applied any other way than from a palette or the colour
+    /// panel joins the document palette too, in the step that applied it:
+    /// the Color Eyedropper, the Object Properties outline and fill
+    /// commands, an outline colour copied over. A colour being dragged in
+    /// a picker joins only when it is let go (#2378).
+    #[test]
+    fn every_colour_applied_joins_the_document_palette() {
+        use tracedraw_core::{geometry::Point, geometry::Rect as R, Command, ShapeKind, Stroke};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        assert!(app.doc().palette.is_empty());
+        let steps = app.engine.history_labels().0.len();
+        // The Color Eyedropper's colour put on the object.
+        let picked = Color::rgb8(12, 34, 56);
+        assert!(app.apply_color_at(Point::new(5.0, 5.0), picked, false));
+        assert_eq!(app.doc().palette, vec![picked]);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1, "one step");
+        app.undo();
+        assert!(app.doc().palette.is_empty(), "undone with the fill");
+        app.redo();
+        // An outline given by a command, as the dockers give it.
+        let pen = Color::rgb8(200, 100, 0);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(Stroke::new(pen, 0.5)),
+        });
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        // Only the width copied over: no colour joins.
+        let other = Color::rgb8(1, 2, 3);
+        app.run(Command::PatchStroke {
+            shapes: vec![id],
+            stroke: Stroke::new(other, 2.0),
+            fields: vec![tracedraw_core::patch::StrokeField::Width],
+        });
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        // A drag in a colour picker: only the colour let go on joins.
+        app.apply_fill_live(Fill::Solid(Color::rgb8(0, 255, 0)));
+        app.apply_fill_live(Fill::Solid(Color::rgb8(0, 0, 255)));
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        app.end_live_fill();
+        assert_eq!(app.doc().palette, vec![picked, pen, Color::rgb8(0, 0, 255)]);
+        // Off in the options: nothing joins.
+        app.settings.palette.auto_update_document = false;
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(other),
+        });
+        assert_eq!(app.doc().palette.len(), 3);
+    }
+
     /// On the Welcome Screen the palette takes no clicks: a click on a
     /// swatch fills the selection of the drawing behind only while the
     /// drawing shows (#482).

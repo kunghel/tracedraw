@@ -298,6 +298,8 @@ pub struct MacroState {
     pub other_source: String,
     /// A warning dialog before a run: (project, module, macro).
     pub confirm: Option<(usize, String, String)>,
+    /// The web addresses macros opened, in tests (see [`Request::Open`]).
+    pub opened: Vec<String>,
 }
 
 /// A message or input box on screen.
@@ -785,6 +787,15 @@ impl App {
                         title,
                         text: default,
                     })
+                }
+                // A page the macro opens (ShellExecute, #2165); tests
+                // keep the address instead of starting a browser.
+                Request::Open(url) => {
+                    if cfg!(test) {
+                        self.macros.opened.push(url);
+                    } else {
+                        self.open_url(&url);
+                    }
                 }
             }
         }
@@ -1623,6 +1634,206 @@ mod tests {
             .find(|s| (s.width - 0.3).abs() < 1e-9)
             .expect("the line's outline");
         assert!(!line.dash.is_empty(), "style 1 is dashed");
+    }
+
+    /// What the macros of a published collection use that stopped them
+    /// (#2165): `FontList` (For Each over the installed families),
+    /// `ActiveVirtualLayer`, `InsertPagesEx` (its argument named `Page`
+    /// hid the page class: "not a constructor"), `LogCreateShapeRange`,
+    /// and `ShellExecute` declared from the Windows library, which they
+    /// call to open their maker's page when a form closes: a web address
+    /// is opened, anything else is not and returns 2.
+    #[test]
+    fn collection_macros_find_fonts_pages_and_open_their_pages() {
+        let code = "Private Declare PtrSafe Function OpenIt Lib \"shell32.dll\" Alias \"ShellExecuteA\" (ByVal hwnd As Long, ByVal op As String, ByVal file As String, ByVal params As String, ByVal dir As String, ByVal show As Long) As Long\r\n\
+            Sub Go()\r\n\
+            Dim v As Variant, n As Long\r\n\
+            For Each v In FontList\r\n\
+            n = n + 1\r\n\
+            Next v\r\n\
+            Debug.Print \"fonts \" & (n = FontList.Count)\r\n\
+            ActiveDocument.Unit = cdrMillimeter\r\n\
+            Dim s As Shape, sr As New ShapeRange\r\n\
+            Set s = ActiveVirtualLayer.CreateRectangle(0#, 10#, 10#, 0#)\r\n\
+            sr.Add s\r\n\
+            Set sr = ActiveDocument.LogCreateShapeRange(sr)\r\n\
+            Debug.Print \"made \" & sr.Count\r\n\
+            Dim p As Page\r\n\
+            Set p = ActiveDocument.InsertPagesEx(1, False, ActivePage.Index, 100#, 50#)\r\n\
+            Debug.Print \"pages \" & ActiveDocument.Pages.Count & \" \" & p.SizeWidth & \"x\" & p.SizeHeight\r\n\
+            Debug.Print \"web \" & (OpenIt(0, vbNullString, \"http://example.com/page\", \"\", \"\", 1) > 32)\r\n\
+            Debug.Print \"file \" & OpenIt(0, \"open\", \"C:\\Windows\\notepad.exe\", \"\", \"\", 1)\r\n\
+            End Sub\r\n";
+        let mut app = app_with(project("Collection", code, Vec::new()));
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        for want in [
+            "fonts True",
+            "made 1",
+            "pages 2 100x50",
+            "web True",
+            "file 2",
+        ] {
+            assert!(out.iter().any(|l| l == want), "{want}: {out:?}");
+        }
+        assert_eq!(
+            app.macros.opened,
+            vec!["http://example.com/page".to_string()]
+        );
+    }
+
+    /// Forms of the same collection (#2165): one whose Initialize sets its
+    /// controls through the form's own name (`Crop.ctlLength = 5`, its
+    /// default property; making the form there made it again, without
+    /// end) and sets the drop-down's `ListWidth`, and one that unloads
+    /// itself in Activate and then goes on setting a control (error 5
+    /// "the form was unloaded").
+    #[test]
+    fn a_form_names_itself_in_initialize_and_unloads_itself_in_activate() {
+        let mut crop = vp::Form {
+            name: "Crop".into(),
+            caption: "Crop".into(),
+            width: 200.0,
+            height: 100.0,
+            enabled: true,
+            ..Default::default()
+        };
+        crop.controls = vec![
+            vp::Control::new(vp::ControlKind::TextBox, "ctlLength"),
+            vp::Control::new(vp::ControlKind::ComboBox, "ctlUnits"),
+        ];
+        let mut gone = vp::Form {
+            name: "Gone".into(),
+            caption: "Gone".into(),
+            width: 200.0,
+            height: 100.0,
+            enabled: true,
+            ..Default::default()
+        };
+        gone.controls = vec![vp::Control::new(vp::ControlKind::TextBox, "tbPages")];
+        let mut p = project(
+            "Forms",
+            "Sub Go()\r\nCrop.Show\r\nGone.Show\r\nDebug.Print \"done\"\r\nEnd Sub\r\n",
+            vec![crop, gone],
+        );
+        p.modules[1].source = "Private Sub UserForm_Initialize()\r\n\
+            Crop.ctlUnits.AddItem \"mm\"\r\n\
+            Crop.ctlUnits.ListWidth = 34\r\n\
+            Crop.ctlLength = 5\r\n\
+            Debug.Print \"length \" & ctlLength.Text & \" \" & ctlUnits.ListCount\r\n\
+            End Sub\r\n"
+            .into();
+        p.modules[2].source = "Private Sub UserForm_Activate()\r\n\
+            Unload Me\r\n\
+            tbPages.Value = 1\r\n\
+            Debug.Print \"after \" & tbPages.Value\r\n\
+            End Sub\r\n"
+            .into();
+        let mut app = app_with(p);
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |app| {
+            let Some(run) = &app.macros.run else { return };
+            let open: Vec<u32> = run
+                .forms
+                .lock()
+                .unwrap()
+                .list
+                .iter()
+                .filter(|f| f.visible)
+                .map(|f| f.id)
+                .collect();
+            for id in open {
+                app.macro_form_event(id, "", "QueryClose", vec![serde_json::json!(0)]);
+            }
+        });
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        for want in ["length 5 1", "after 1", "done"] {
+            assert!(out.iter().any(|l| l == want), "{want}: {out:?}");
+        }
+    }
+
+    /// A form that downloads its picture with URLDownloadToCacheFile and
+    /// shows it with LoadPicture (QRCodeInserter of #2165 stopped with
+    /// error 445 on the Windows function): the file comes into a file of
+    /// the app's own, its path back into the macro's buffer, and the
+    /// image control shows it.
+    #[test]
+    fn a_form_downloads_its_picture_and_shows_it() {
+        let dir = std::env::temp_dir().join(format!("td-download-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("qr code.png");
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            3,
+            3,
+            image::Rgba([0, 0, 0, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+        std::fs::write(&src, &png).unwrap();
+        let url = format!(
+            "file://{}",
+            src.to_string_lossy().replace('\\', "/").replace(' ', "%20")
+        );
+        let mut qr = vp::Form {
+            name: "QR".into(),
+            caption: "QR".into(),
+            width: 200.0,
+            height: 100.0,
+            enabled: true,
+            ..Default::default()
+        };
+        qr.controls = vec![vp::Control::new(vp::ControlKind::Image, "imgQR")];
+        let code = "Private Declare PtrSafe Function URLDownloadToCacheFile Lib \"urlmon\" Alias \"URLDownloadToCacheFileA\" (ByVal lpUnkcaller As Long, ByVal szURL As String, ByVal szFileName As String, ByVal dwBufLength As Long, ByVal dwReserved As Long, ByVal IBindStatusCallback As Long) As Long\r\n\
+             Public Function DownloadFile(URL As String) As String\r\n\
+             Dim szFileName As String\r\n\
+             szFileName = Space$(300)\r\n\
+             If URLDownloadToCacheFile(0, URL, szFileName, Len(szFileName), 0, 0) = 0 Then\r\n\
+             DownloadFile = Trim(szFileName)\r\n\
+             End If\r\n\
+             End Function\r\n\
+             Sub Go()\r\n\
+             Debug.Print \"missing [\" & DownloadFile(\"file:///no/such/file.png\") & \"]\"\r\n\
+             QR.Show\r\n\
+             End Sub\r\n";
+        let mut p = project("Forms", code, vec![qr]);
+        p.modules[1].source = format!(
+            "Private Sub UserForm_Initialize()\r\n\
+             Dim f As String\r\n\
+             f = Main.DownloadFile(\"{url}\")\r\n\
+             Debug.Print \"got \" & (Dir(f) <> \"\")\r\n\
+             imgQR.Picture = LoadPicture(f)\r\n\
+             End Sub\r\n"
+        );
+        let mut app = app_with(p);
+        app.run_macro(0, "Main", "Go");
+        let mut shown = None;
+        drive(&mut app, |app| {
+            let Some(run) = &app.macros.run else { return };
+            let open: Vec<(u32, Option<Vec<u8>>)> = run
+                .forms
+                .lock()
+                .unwrap()
+                .list
+                .iter()
+                .filter(|f| f.visible)
+                .map(|f| (f.id, f.control("imgQR").and_then(|c| c.picture.clone())))
+                .collect();
+            for (id, pic) in open {
+                shown = pic;
+                app.macro_form_event(id, "", "QueryClose", vec![serde_json::json!(0)]);
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        for want in ["missing []", "got True"] {
+            assert!(out.iter().any(|l| l == want), "{want}: {out:?}");
+        }
+        assert_eq!(shown.as_deref(), Some(&png[..]));
     }
 
     #[test]

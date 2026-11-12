@@ -4058,6 +4058,12 @@ pub struct Layer {
     /// instead of behind them (#1132).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_front: bool,
+    /// For master layers: the master page's desktop layer, which every
+    /// new drawing has: objects on it, beside the pages or on them, show
+    /// and are picked from every page (#1161, #1775). Always behind the
+    /// pages, not counted among the numbered master layers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop: bool,
 }
 
 /// Which pages a master layer appears on.
@@ -4717,6 +4723,7 @@ impl Layer {
             shapes: Vec::new(),
             scope: MasterScope::All,
             in_front: false,
+            desktop: false,
         }
     }
 }
@@ -5045,6 +5052,13 @@ pub struct Document {
     /// once for all of them, beside each page's own guidelines.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub master_guides: Vec<Guide>,
+    /// The master page's guidelines are hidden by their own eye in the
+    /// Objects docker, the pages' own still shown (#1775).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub master_guides_hidden: bool,
+    /// The pages whose own guidelines are hidden by their eye (#1775).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_guides_hidden: Vec<PageId>,
     #[serde(default)]
     pub object_styles: Vec<ObjectStyle>,
     /// The fill and outline new objects get.
@@ -5348,6 +5362,8 @@ impl Document {
             ids,
             master: Vec::new(),
             master_guides: Vec::new(),
+            master_guides_hidden: false,
+            page_guides_hidden: Vec::new(),
             object_styles: Vec::new(),
             defaults: ObjectDefaults::default(),
             color_styles: Vec::new(),
@@ -5503,15 +5519,30 @@ impl Document {
     /// applicable master layers in front of the page (#1132); what clicks
     /// and selections take objects from.
     /// The guidelines shown on `page`: the master page's (every page
-    /// has them, #1928), then the page's own.
+    /// has them, #1928), then the page's own, each set only while its eye
+    /// shows it (#1775).
     pub fn guides_on_page(&self, page: PageId) -> Result<Vec<Guide>> {
         let p = self.page(page)?;
-        Ok(self
-            .master_guides
-            .iter()
-            .chain(p.guides.iter())
-            .copied()
-            .collect())
+        let master: &[Guide] = if self.guides_shown(None) {
+            &self.master_guides
+        } else {
+            &[]
+        };
+        let own: &[Guide] = if self.guides_shown(Some(page)) {
+            &p.guides
+        } else {
+            &[]
+        };
+        Ok(master.iter().chain(own.iter()).copied().collect())
+    }
+
+    /// Whether the guidelines of the master page (`page` `None`) or of
+    /// `page` are shown, as their eye in the Objects docker says (#1775).
+    pub fn guides_shown(&self, page: Option<PageId>) -> bool {
+        match page {
+            None => !self.master_guides_hidden,
+            Some(p) => !self.page_guides_hidden.contains(&p),
+        }
     }
 
     pub fn layers_for_page(&self, page: PageId) -> Result<Vec<&Layer>> {

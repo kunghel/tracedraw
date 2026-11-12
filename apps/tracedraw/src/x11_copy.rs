@@ -408,6 +408,17 @@ pub fn offer(svg: String, png: DrawPng) -> bool {
     offer_on(None, svg, png)
 }
 
+/// Offer a copy on the clipboard of the X server a Wayland desktop runs
+/// for X11 programs (`DISPLAY`), whose clipboard the desktop shares with
+/// Wayland programs: for a compositor that does not let TraceDraw set the
+/// Wayland clipboard with several types (#2288, `wayland_copy.rs`).
+pub fn offer_through_xwayland(svg: String, png: DrawPng) -> bool {
+    if std::env::var_os("DISPLAY").is_none() {
+        return false;
+    }
+    offer_on(None, svg, png)
+}
+
 fn offer_on(display: Option<&str>, svg: String, png: DrawPng) -> bool {
     let Ok(mut owner) = OWNER.lock() else {
         return false;

@@ -3955,6 +3955,70 @@ fn drawing_a_new_shape_lets_the_selection_go_at_once() {
     assert_ne!(app.selection[0], id);
 }
 
+/// With a drawing tool still chosen after a shape is drawn, the pointer
+/// over a handle of the selection shows the resize arrows and a drag
+/// from it resizes the shape, as with the Pick tool, instead of drawing
+/// a new one; a click on a handle keeps the selection.
+#[test]
+fn a_drawing_tool_resizes_by_the_handles() {
+    for tool in [
+        Tool::Rectangle,
+        Tool::Ellipse,
+        Tool::Polygon,
+        Tool::Star,
+        Tool::Spiral,
+        Tool::CommonShapes,
+        Tool::ThreePointRectangle,
+        Tool::ThreePointEllipse,
+    ] {
+        let (ctx, mut app, id) = setup();
+        app.set_tool(tool);
+        let count = shape_count(&app);
+        let none = Modifiers::NONE;
+        for h in [Handle::E, Handle::SE, Handle::N] {
+            assert_eq!(
+                for_tool(&app, false, false, false, Some(handle(&app, h))),
+                ToolCursor::System(resize_icon(h)),
+                "{tool:?} {h:?}"
+            );
+        }
+        // Away from the handles the tool's own pointer.
+        let empty = app.view.to_screen(Point::new(150.0, 250.0));
+        assert_ne!(
+            for_tool(&app, false, false, false, Some(empty)),
+            ToolCursor::System(resize_icon(Handle::E)),
+            "{tool:?}"
+        );
+        // The right side goes 20 mm further right.
+        let from = handle(&app, Handle::E);
+        let to = from
+            + (app.view.to_screen(Point::new(80.0, 25.0))
+                - app.view.to_screen(Point::new(60.0, 25.0)));
+        drag(&ctx, &mut app, from, to, none, Vec::new());
+        assert_eq!(shape_count(&app), count, "{tool:?}: a new shape was drawn");
+        assert_eq!(app.selection, vec![id], "{tool:?}");
+        assert_eq!(app.tool, tool);
+        let b = bounds(&app, id);
+        assert!(
+            close(b.x0, 10.0) && (b.x1 - 80.0).abs() < 0.5,
+            "{tool:?} {b:?}"
+        );
+        assert!(close(b.y0, 10.0) && close(b.y1, 40.0), "{tool:?} {b:?}");
+        // A click on a handle neither picks nor lets the selection go.
+        let nw = handle(&app, Handle::NW);
+        click_at(&ctx, &mut app, nw, none);
+        assert_eq!(app.selection, vec![id], "{tool:?}");
+        assert_eq!(shape_count(&app), count, "{tool:?}");
+        // Away from the handles a drag still draws (the box tools).
+        if tool.is_box_tool() {
+            let a = app.view.to_screen(Point::new(100.0, 150.0));
+            let z = app.view.to_screen(Point::new(140.0, 120.0));
+            drag(&ctx, &mut app, a, z, none, Vec::new());
+            assert_eq!(shape_count(&app), count + 1, "{tool:?}");
+        }
+    }
+}
+
 /// The middle button pans while a new rectangle is dragged: the shape
 /// follows the pointer on, and letting the left button go makes it
 /// (#1923).
@@ -16188,6 +16252,7 @@ fn shadow_handles_are_grabbed_and_dragged_in_every_mode() {
         for which in [
             ShadowHandle::Start,
             ShadowHandle::Opacity,
+            ShadowHandle::Feather,
             ShadowHandle::End,
         ] {
             let (ctx, mut app, id) = setup();
@@ -16224,8 +16289,9 @@ fn shadow_handles_are_grabbed_and_dragged_in_every_mode() {
             let to_page = match which {
                 ShadowHandle::Start if edge.is_none() => Point::new(35.0, 11.0),
                 ShadowHandle::Start => b.center(),
-                // The slider towards the end, past it: full opacity.
-                ShadowHandle::Opacity => {
+                // A slider towards the end, past it: full opacity, or
+                // the most feathering.
+                ShadowHandle::Opacity | ShadowHandle::Feather => {
                     let (a, e) = (at(ShadowHandle::Start), at(ShadowHandle::End));
                     e + (e - a) / (e - a).hypot() * 5.0
                 }
@@ -16274,6 +16340,10 @@ fn shadow_handles_are_grabbed_and_dragged_in_every_mode() {
                 }
                 ShadowHandle::Opacity => {
                     assert_eq!(after.opacity, 1.0, "{edge:?}")
+                }
+                ShadowHandle::Feather => {
+                    assert_eq!(after.blur, crate::shadow_tool::FEATHER_MAX_MM, "{edge:?}");
+                    assert_eq!(after.opacity, 0.3, "{edge:?}: the opacity stays");
                 }
                 ShadowHandle::End => {
                     let e = after.end_point(b);
@@ -23636,7 +23706,9 @@ fn the_objects_docker_chooses_master_or_page_guidelines() {
         );
         frame(ctx, app, Vec::new(), Modifiers::NONE);
     };
-    assert!(!app.edit_master_guides);
+    // Shared guidelines at first (#1775); the page's own row chosen first.
+    assert!(app.edit_master_guides);
+    app.choose_master_guides(false);
     click(&ctx, &mut app, &crate::i18n::tr("docker.guides_all_pages"));
     assert!(app.edit_master_guides);
     app.add_guide(Guide::vertical(30.0));
@@ -26152,4 +26224,46 @@ fn bold_italic_and_alignment_of_a_text_do_not_go_to_new_text() {
         style(&app, fourth),
         (true, false, tracedraw_core::TextAlign::Right)
     );
+}
+
+/// A click with the Text tool on a table's cell edits the cell's text, as
+/// the Table tool does, and makes no new text over it; a click off the
+/// table lets the cell go (#2438).
+#[test]
+fn the_text_tool_types_into_the_table_cell_clicked() {
+    let (ctx, mut app, _) = setup();
+    app.settings.autocorrect.enabled = false;
+    let t = tracedraw_core::Table::new(
+        Rect::new(20.0, 100.0, 140.0, 130.0),
+        3,
+        4,
+        Some(tracedraw_core::Stroke::hairline(
+            tracedraw_core::Color::BLACK,
+        )),
+    );
+    let id = app.new_shape(ShapeKind::Table(t)).expect("table");
+    app.select(Vec::new());
+    app.set_tool(Tool::Text);
+    let shapes = shape_count(&app);
+    // Cell (1, 2): x 80..110, y 110..120.
+    let at = app.view.to_screen(Point::new(95.0, 115.0));
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(app.tool, Tool::Text);
+    assert!(app.text_edit.is_none(), "no new text");
+    let e = app.table_edit.as_ref().expect("a cell is edited");
+    assert_eq!((e.shape, e.cells.clone()), (id, vec![(1, 2)]));
+    assert_eq!(app.selection, vec![id]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::Text("cell".into())],
+        Modifiers::NONE,
+    );
+    assert_eq!(app.cell_text(), "cell");
+    assert_eq!(shape_count(&app), shapes, "nothing new on the page");
+    // Elsewhere the cell lets go and a click starts a text as before.
+    let away = app.view.to_screen(Point::new(100.0, 200.0));
+    click_at(&ctx, &mut app, away, Modifiers::NONE);
+    assert!(app.table_edit.is_none());
+    assert!(app.text_edit.is_some());
 }

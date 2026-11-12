@@ -2508,11 +2508,7 @@ pub fn ellipse_part(app: &mut App, ui: &mut Ui) {
         Some(a) if a.pie => 1,
         Some(_) => 2,
     };
-    let mut arc = current.unwrap_or(tracedraw_core::EllipseArc {
-        start_deg: 90.0,
-        end_deg: 90.0,
-        pie: true,
-    });
+    let mut arc = current.unwrap_or(crate::app::DEFAULT_ELLIPSE_ARC);
     let mut new = current;
     for (i, pic, key) in [
         (0, Pic::Ellipse, "toolbar.ellipse_tip"),

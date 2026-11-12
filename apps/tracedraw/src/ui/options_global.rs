@@ -396,6 +396,16 @@ pub fn warnings_page(app: &mut App, ui: &mut Ui) {
             "options.warn_shelf_remove",
             "options.warn_shelf_remove_tip",
         ));
+    if crate::ui::options::DesktopOnly::HardwareAcceleration.shown() {
+        ui.checkbox(
+            &mut w.hardware_acceleration,
+            tr("options.warn_hardware_acceleration"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.warn_hardware_acceleration",
+            "options.warn_hardware_acceleration_tip",
+        ));
+    }
     ui.add_space(6.0);
     hint(ui, "options.warnings_hint");
 }

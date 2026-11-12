@@ -567,6 +567,11 @@ pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
     crate::startup_log::quiet_panics(false);
     let what = match cc.wgpu_render_state.as_ref() {
         Some(rs) => {
+            // Shadows may be blurred on the card (Options > General), not
+            // on the software adapter, which is the CPU itself.
+            if mode == Mode::Hardware {
+                crate::gpu_fx::install(&rs.device, &rs.queue);
+            }
             let i = rs.adapter.get_info();
             format!("{} ({:?})", i.name, i.backend)
         }
@@ -588,11 +593,13 @@ pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
     let _ = IN_USE.set(what);
 }
 
-/// The graphics adapters of this computer by name, software ones last;
-/// looked for once.
-pub fn adapters() -> &'static [String] {
-    static LIST: OnceLock<Vec<String>> = OnceLock::new();
-    LIST.get_or_init(|| {
+/// The graphics adapters of this computer with their rank (`rank`),
+/// best first; looked for once (it takes a moment: Options asks for it,
+/// and the hardware acceleration hint looks on a thread of its own).
+static FOUND: OnceLock<Vec<(u8, String)>> = OnceLock::new();
+
+fn found() -> &'static [(u8, String)] {
+    FOUND.get_or_init(|| {
         if cfg!(test) {
             return Vec::new();
         }
@@ -609,14 +616,52 @@ pub fn adapters() -> &'static [String] {
             })
             .collect();
         list.sort();
+        list
+    })
+}
+
+/// The graphics adapters of this computer by name, software ones last;
+/// looked for once.
+pub fn adapters() -> &'static [String] {
+    static LIST: OnceLock<Vec<String>> = OnceLock::new();
+    LIST.get_or_init(|| {
         let mut names: Vec<String> = Vec::new();
-        for (_, n) in list {
-            if !names.contains(&n) {
-                names.push(n);
+        for (_, n) in found() {
+            if !names.contains(n) {
+                names.push(n.clone());
             }
         }
         names
     })
+}
+
+/// The best graphics card among `list` (rank and name, best first): a
+/// separate or built-in card, never a virtual or software adapter.
+pub fn best_card(list: &[(u8, String)]) -> Option<&str> {
+    list.iter()
+        .find(|(r, n)| *r <= 1 && !is_software_name(n))
+        .map(|(_, n)| n.as_str())
+}
+
+/// The graphics card this computer has, without waiting: the first call
+/// starts looking on a thread of its own, and until it is done (or when
+/// there is none) the answer is None.
+pub fn card_found() -> Option<&'static str> {
+    static LOOKING: AtomicBool = AtomicBool::new(false);
+    if let Some(list) = FOUND.get() {
+        return best_card(list);
+    }
+    if !cfg!(test) && !LOOKING.swap(true, Ordering::SeqCst) {
+        let started = std::thread::Builder::new()
+            .name("gpu-adapters".into())
+            .spawn(|| {
+                let _ = found();
+            });
+        if let Err(e) = started {
+            log::warn!("the graphics cards are not looked for: {e}");
+        }
+    }
+    None
 }
 
 /// The one graphics API the Android app draws its window with: OpenGL
@@ -925,6 +970,27 @@ mod eframe_fixed_function_geometry;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_names_a_real_card_only() {
+        let list = |l: &[(u8, &str)]| -> Vec<(u8, String)> {
+            l.iter().map(|(r, n)| (*r, n.to_string())).collect()
+        };
+        let found = list(&[
+            (0, "NVIDIA GeForce RTX 3050"),
+            (1, "Intel(R) UHD Graphics"),
+            (4, "Microsoft Basic Render Driver"),
+        ]);
+        assert_eq!(best_card(&found), Some("NVIDIA GeForce RTX 3050"));
+        let built_in = list(&[(1, "Intel(R) UHD Graphics"), (4, "llvmpipe")]);
+        assert_eq!(best_card(&built_in), Some("Intel(R) UHD Graphics"));
+        // A virtual machine's adapter or a software one is no card.
+        let none = list(&[(2, "VMware SVGA 3D"), (4, "Microsoft Basic Render Driver")]);
+        assert_eq!(best_card(&none), None);
+        let named = list(&[(1, "llvmpipe (LLVM 15.0.7, 256 bits)")]);
+        assert_eq!(best_card(&named), None);
+        assert_eq!(card_found(), None);
+    }
 
     /// The Android window is drawn with one graphics API, OpenGL ES, and
     /// the Android entry asks for that one only.

@@ -1200,6 +1200,13 @@ pub enum Dialog {
     /// After a drawing opens: objects that could not be read, fonts that
     /// are not installed (Options > Global > Warnings).
     OpenNotes(OpenNotes),
+    /// Frames slow on the CPU with hardware acceleration off and a
+    /// graphics card idle: turn it on? (`ui::gpu_hint`, Options > Global
+    /// > Warnings.)
+    HardwareAccelerationHint {
+        card: String,
+        dont_show: bool,
+    },
     /// Take an item off the Shelf? (Options > Global > Warnings.)
     ConfirmShelfRemove {
         uid: u64,
@@ -2470,6 +2477,29 @@ pub fn show(app: &mut App, ctx: &Context) {
                 if i == 1 && notes.unread > 0 {
                     app.open_url(crate::ui::dialogs::CDR_ISSUE);
                 }
+                close = true;
+            }
+        }
+        Dialog::HardwareAccelerationHint { card, dont_show } => {
+            let (on, options, later) = (
+                tr("gpu_hint.turn_on"),
+                tr("menu.tools.options"),
+                tr("gpu_hint.not_now"),
+            );
+            if let Some(i) = crate::ui::chrome::message_box_check(
+                ctx,
+                crate::ui::chrome::MessageIcon::Info,
+                &trf("gpu_hint.text", &[("card", card)]),
+                &[&on, &options, &later],
+                &tr("notes.dont_show"),
+                dont_show,
+            ) {
+                let dont_show = *dont_show;
+                crate::ui::gpu_hint::answer(
+                    app,
+                    crate::ui::gpu_hint::Answer::from_button(i),
+                    dont_show,
+                );
                 close = true;
             }
         }

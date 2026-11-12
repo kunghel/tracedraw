@@ -625,6 +625,13 @@ fn rich(c: &LiveControl, text: &str) -> RichText {
     t
 }
 
+fn picture_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 fn picture(ui: &Ui, key: String, bytes: &[u8]) -> Option<egui::TextureHandle> {
     let id = egui::Id::new(("macro_picture", &key));
     if let Some(t) = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)) {
@@ -947,7 +954,9 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                             );
                         }
                         if let Some(bytes) = &c.picture {
-                            if let Some(t) = picture(ui, format!("ctl{id}{name}"), bytes) {
+                            // A picture the macro changes gets a new key.
+                            let key = format!("ctl{id}{name}{:x}", picture_hash(bytes));
+                            if let Some(t) = picture(ui, key, bytes) {
                                 let s = t.size_vec2();
                                 let fit = (rect.width() / s.x).min(rect.height() / s.y).min(1.0);
                                 let r = Rect::from_center_size(rect.center(), s * fit);

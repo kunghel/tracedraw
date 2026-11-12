@@ -266,8 +266,11 @@ objects, a picture with others) does what it did before.
 ## Document palette
 
 - Every colour applied to an object (fill or outline, from a palette, the
-  colour panel or a dialog) joins the document palette, in the same undo
-  step as the change. The palette menu's Automatically Update turns that
+  colour panel, a dialog, the Object Properties docker, the property bar,
+  the Color Eyedropper or any other command that gives a uniform fill or
+  an outline colour) joins the document palette, in the same undo step
+  as the change; before, only the palettes and the colour panel added
+  theirs (#2378, `ui::palette::tests::every_colour_applied_joins_the_document_palette`). The palette menu's Automatically Update turns that
   off (also in Options > Customization > Color Palette).
 - A colour dragged in a colour picker (Properties > Fill > Uniform, and
   Properties > Outline > Colour): the object shows each colour the

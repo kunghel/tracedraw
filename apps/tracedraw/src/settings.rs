@@ -292,6 +292,10 @@ pub struct Settings {
     /// The graphics card chosen by name; empty, the fastest one.
     #[serde(default)]
     pub gpu_adapter: String,
+    /// Options > General: blur large drop shadows shown on screen on the
+    /// graphics card (gpu_fx.rs); exports and printing stay on the CPU.
+    #[serde(default)]
+    pub gpu_effects: bool,
     /// The renderer that opened the window when the first choice could
     /// not ("software" or "gl"); cleared when the choice changes.
     #[serde(default)]
@@ -1982,6 +1986,7 @@ impl Default for Settings {
             show_splash: true,
             hardware_acceleration: true,
             gpu_adapter: String::new(),
+            gpu_effects: false,
             working_renderer: String::new(),
             system_title_bar: false,
             center_dialogs: true,

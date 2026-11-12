@@ -846,6 +846,10 @@ pub struct WarningPrefs {
     pub ask_missing_fonts: bool,
     /// Before an item is taken off the Shelf.
     pub shelf_remove: bool,
+    /// The hint to turn on hardware acceleration when the window is
+    /// drawn on the CPU and slow while a graphics card is idle
+    /// (`ui::gpu_hint`); desktop only.
+    pub hardware_acceleration: bool,
 }
 
 impl Default for WarningPrefs {
@@ -855,6 +859,7 @@ impl Default for WarningPrefs {
             missing_fonts: true,
             ask_missing_fonts: true,
             shelf_remove: true,
+            hardware_acceleration: true,
         }
     }
 }

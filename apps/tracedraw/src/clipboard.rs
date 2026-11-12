@@ -1,8 +1,8 @@
 //! System clipboard and external bitmap editing.
 //!
 //! Copy puts the selection on the system clipboard next to the internal
-//! clipboard, so other applications can paste it: as SVG text, and on an
-//! X11 desktop also as an SVG image and a PNG picture (#2288). Paste Special
+//! clipboard, so other applications can paste it: as SVG text, and on X11
+//! and Wayland desktops also as an SVG image and a PNG picture (#2288). Paste Special
 //! offers the system clipboard's content as text, as a bitmap or as vector
 //! objects (SVG). Image > Edit Bitmap hands a PNG to the system's image
 //! editor and Update from Link reads it back.
@@ -534,9 +534,11 @@ impl App {
 
     /// Offer the copy `svg` to other programs as SVG, as a picture and as
     /// text, where TraceDraw owns the clipboard itself (an X11 clipboard,
-    /// #2288): a program that takes pictures pastes the drawing, not its
-    /// SVG source as text. The picture is drawn only when a program asks
-    /// for it. False elsewhere, where the text goes there alone.
+    /// #2288; a Wayland one, `wayland_copy.rs`): a program that takes
+    /// pictures pastes the drawing, not its SVG source as text. On X11 the
+    /// picture is drawn only when a program asks for it; on Wayland on a
+    /// thread of its own, right after the copy. False elsewhere, where the
+    /// text goes there alone.
     #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
     fn offer_copy(&self, svg: &str) -> bool {
         let Some(bounds) = self.selection_bounds() else {
@@ -546,12 +548,18 @@ impl App {
             return false;
         };
         let dpi = copy_picture_dpi(bounds.width(), bounds.height());
-        crate::x11_copy::offer(
-            svg.to_string(),
-            Box::new(move || {
-                crate::ops2::render_alone_png(&alone, dpi, true, true).map(|(png, _, _)| png)
-            }),
-        )
+        let draw: crate::x11_copy::DrawPng = Box::new(move || {
+            crate::ops2::render_alone_png(&alone, dpi, true, true).map(|(png, _, _)| png)
+        });
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return crate::x11_copy::offer(svg.to_string(), draw);
+        }
+        // A Wayland desktop: its clipboard, else the X11 programs' one,
+        // which the desktop shares.
+        match crate::wayland_copy::offer(svg.to_string(), draw) {
+            Ok(()) => true,
+            Err(draw) => crate::x11_copy::offer_through_xwayland(svg.to_string(), draw),
+        }
     }
 
     #[cfg(not(all(unix, not(any(target_os = "macos", target_os = "android")))))]
@@ -861,6 +869,16 @@ impl App {
             },
             || image,
         );
+    }
+
+    /// [`App::paste_in_view`] with `content` on the system clipboard (the
+    /// tests' clipboard).
+    #[cfg(test)]
+    pub fn paste_in_view_from(&mut self, content: ClipboardContent) {
+        let before = self.selection.clone();
+        let at = self.view_center();
+        self.paste_from(content);
+        self.move_pasted_to(&before, Some(at));
     }
 
     /// What the system clipboard offers, or the copy here when it offers
@@ -1324,6 +1342,22 @@ mod tests {
             app.selected_shapes().first().map(|s| &s.kind),
             Some(ShapeKind::Text { .. })
         ));
+    }
+
+    /// Paste in View with nothing copied here pastes what another program
+    /// copied (a picture), centred on the visible area, as Edit > Paste
+    /// does; before, it pasted only a copy made here.
+    #[test]
+    fn paste_in_view_pastes_what_another_program_copied() {
+        let mut app = App::headless();
+        app.canvas_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        assert!(app.clipboard.is_none());
+        app.paste_in_view_from(picture());
+        assert_eq!(shape_count(&app), 1);
+        assert!(is_bitmap(&app), "the picture from the other program");
+        let b = app.selection_bounds().expect("pasted");
+        let c = app.view_center();
+        assert!((b.center() - c).hypot() < 1e-6, "{:?} at {c:?}", b.center());
     }
 
     fn png_file(name: &str) -> PastedFile {

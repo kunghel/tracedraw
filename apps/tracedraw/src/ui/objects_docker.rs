@@ -89,7 +89,7 @@ struct Actions {
     /// none for the master page, layer id and name).
     row_page: Option<PageId>,
     targets: Vec<(Option<String>, LayerId, String)>,
-    toggle_guides: bool,
+    toggle_guides: Option<(Option<PageId>, bool)>,
     /// A Guides row was clicked: the master page's guidelines (true) or
     /// the page's own (false) are the ones edited from now (#1928).
     guides_master: Option<bool>,
@@ -952,7 +952,8 @@ fn scope_key(scope: MasterScope) -> &'static str {
 /// A Guides row: under the Master Page the guidelines every page shows
 /// ("Guides (all pages)"), under a page (`page`) that page's own
 /// (#1928). A click on the row makes them the guidelines edited (new
-/// ones go there too); the eye shows or hides all guidelines, the
+/// ones go there too); the eye shows or hides the row's guidelines
+/// (#1775; with guidelines off, showing them turns them on), the
 /// padlock locks or unlocks all of the row's; guidelines never print.
 fn guides_row(
     app: &App,
@@ -986,10 +987,12 @@ fn guides_row(
         None => egui::Id::new("objects_guides"),
     };
     let mut x = rect.left() + 3.0 + INDENT + 16.0;
+    // Each guidelines row has its own eye (#1775).
+    let shown = app.show_guides && app.doc().guides_shown(page);
     let (er, e) = hot(ui, rect, x, 18.0, base.with("eye"));
-    paint_eye(ui, er, app.show_guides);
+    paint_eye(ui, er, shown);
     if e.rich_tip(tr("docker.show_hide")).clicked() {
-        act.toggle_guides = true;
+        act.toggle_guides = Some((page, !shown));
     }
     x += 20.0;
     paint_printer(ui, square(rect, x, 18.0), false);
@@ -1402,7 +1405,14 @@ pub fn new_layer(app: &mut App) {
 /// Add a master layer showing on the pages `scope` names and make it
 /// active.
 pub fn new_master_layer(app: &mut App, scope: MasterScope) {
-    let names: Vec<String> = app.doc().master.iter().map(|l| l.name.clone()).collect();
+    // The desktop layer is not one of the numbered master layers.
+    let names: Vec<String> = app
+        .doc()
+        .master
+        .iter()
+        .filter(|l| !l.desktop)
+        .map(|l| l.name.clone())
+        .collect();
     let name = free_name(&names, "docker.master_layer_n", names.len() + 1);
     app.run(Command::AddMasterLayer { name, scope });
     app.picked_layer = app.doc().master.last().map(|l| l.id);
@@ -1446,7 +1456,7 @@ pub fn set_master_front(app: &mut App, scope: MasterScope, front: bool) {
         .doc()
         .master
         .iter()
-        .filter(|l| l.scope == scope && l.in_front != front)
+        .filter(|l| l.scope == scope && l.in_front != front && !l.desktop)
         .map(|l| Command::SetLayerInFront {
             layer: l.id,
             in_front: front,
@@ -1924,8 +1934,8 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     if act.toggle_master {
         app.objects_master_closed = !app.objects_master_closed;
     }
-    if act.toggle_guides {
-        app.show_guides = !app.show_guides;
+    if let Some((page, shown)) = act.toggle_guides {
+        app.set_guides_shown(page, shown);
     }
     if act.toggle_grid {
         app.show_grid = !app.show_grid;
@@ -1997,7 +2007,8 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     }
     if let Some(id) = act.select {
         if ui.input(|i| i.modifiers.shift) {
-            if !app.selection.contains(&id) {
+            // A locked object stays out of the selection (#2347).
+            if !app.selection.contains(&id) && !app.locked_ids().contains(&id) {
                 app.selection.push(id);
             }
         } else {
@@ -2010,8 +2021,25 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A new drawing without its desktop layer, for the tests of the
+    /// numbered master layers.
+    pub(crate) fn without_desktop() -> App {
+        let mut app = App::headless();
+        let desktop: Vec<LayerId> = app
+            .doc()
+            .master
+            .iter()
+            .filter(|l| l.desktop)
+            .map(|l| l.id)
+            .collect();
+        for layer in desktop {
+            app.run(Command::DeleteLayer { layer });
+        }
+        app
+    }
 
     fn rect_kind() -> ShapeKind {
         ShapeKind::Rect {
@@ -2423,7 +2451,7 @@ mod tests {
     #[test]
     fn new_layers_get_free_names_and_become_active() {
         crate::i18n::set_language("en");
-        let mut app = App::headless();
+        let mut app = without_desktop();
         let first = app.doc().pages[0].layers[0].id;
         new_layer(&mut app);
         new_layer(&mut app);
@@ -2471,7 +2499,7 @@ mod tests {
     /// page's layer, a page layer into the master page and back.
     #[test]
     fn master_layers_in_front_by_choice_and_objects_move_between_layers() {
-        let mut app = App::headless();
+        let mut app = without_desktop();
         app.settings.master_in_front = [false; 3];
         new_master_layer(&mut app, MasterScope::All);
         new_master_layer(&mut app, MasterScope::Odd);
@@ -2532,9 +2560,65 @@ mod tests {
         draw(&mut app);
     }
 
+    /// #1161, #1775: a new drawing has the master page's desktop layer,
+    /// behind the pages; new objects still go to the page's own layer,
+    /// and an object moved onto the desktop shows and is picked from
+    /// every page, beside the page or on it. It is not one of the
+    /// numbered master layers, and the in-front choice leaves it behind.
+    #[test]
+    fn a_new_drawing_has_a_desktop_shared_by_every_page() {
+        let mut app = App::headless();
+        let desktop: Vec<&tracedraw_core::Layer> =
+            app.doc().master.iter().filter(|l| l.desktop).collect();
+        assert_eq!(desktop.len(), 1);
+        assert_eq!(desktop[0].name, "Desktop");
+        assert_eq!(desktop[0].scope, MasterScope::All);
+        assert!(!desktop[0].in_front);
+        let desktop = desktop[0].id;
+        let page_layer = app.doc().pages[0].layers[0].id;
+        assert_eq!(app.active_layer(), Some(page_layer));
+        // An object off the page, moved onto the desktop.
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(-60.0, 10.0, -20.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        assert_eq!(layer_holding(&app, id), Some(page_layer));
+        move_to_layer(&mut app, &[id], desktop);
+        assert_eq!(layer_holding(&app, id), Some(desktop));
+        // From a new page it is there and picked.
+        app.add_page();
+        assert_ne!(app.page, app.doc().pages[0].id);
+        let edge = tracedraw_core::Point::new(-60.0, 25.0);
+        assert_eq!(app.hit_test(edge), Some(id));
+        assert!(app
+            .page_layers()
+            .iter()
+            .any(|l| l.id == desktop && l.shapes.iter().any(|s| s.id == id)));
+        // Numbered master layers start at 1; the in-front choice for
+        // all pages leaves the desktop behind.
+        app.settings.master_in_front = [false; 3];
+        new_master_layer(&mut app, MasterScope::All);
+        assert_eq!(
+            app.doc().master.last().expect("master").name,
+            "Master Layer 1"
+        );
+        set_master_front(&mut app, MasterScope::All, true);
+        let d = app
+            .doc()
+            .master
+            .iter()
+            .find(|l| l.id == desktop)
+            .expect("desktop");
+        assert!(!d.in_front);
+        assert!(app.doc().master.last().expect("master").in_front);
+    }
+
     #[test]
     fn master_layer_objects_are_picked_where_their_layer_shows() {
-        let mut app = App::headless();
+        let mut app = without_desktop();
         new_master_layer(&mut app, MasterScope::Odd);
         let master = app.doc().master[0].id;
         assert_eq!(app.active_layer(), Some(master));
@@ -2561,7 +2645,7 @@ mod tests {
 
     #[test]
     fn delete_takes_the_selection_else_the_active_layer() {
-        let mut app = App::headless();
+        let mut app = without_desktop();
         let only = app.doc().pages[0].layers[0].id;
         let id = app.new_shape(rect_kind()).expect("shape");
         app.select(vec![id]);

@@ -354,8 +354,9 @@ pub fn for_tool_with_ctrl(
     // A frame's flow tab takes a press with any tool (#1986); the Pick
     // tool's handles come first, as they do for the press.
     if let Some(at) = pos.filter(|_| !primary_down && matches!(app.drag, Drag::None)) {
-        let handle =
-            matches!(app.tool, Tool::Pick | Tool::FreeformPick) && app.handle_at(at).is_some();
+        let handle = (matches!(app.tool, Tool::Pick | Tool::FreeformPick)
+            || app.tool.resizes_by_handles())
+            && app.handle_at(at).is_some();
         if !handle && app.any_flow_tab_at(at).is_some() {
             return ToolCursor::FlowText;
         }
@@ -363,6 +364,18 @@ pub fn for_tool_with_ctrl(
     if matches!(app.tool, Tool::Pick | Tool::FreeformPick) {
         if let Some(c) = pick_cursor(app, pos) {
             return c;
+        }
+    }
+    // A drawing tool over a handle of the selection resizes it.
+    if app.tool.resizes_by_handles() && !app.rotate_mode {
+        if let Drag::Scale { handle, .. } = &app.drag {
+            return ToolCursor::System(resize_icon(*handle));
+        }
+        if let Some(h) = pos
+            .filter(|_| matches!(app.drag, Drag::None) && app.three_point_base.is_none())
+            .and_then(|at| app.handle_at(at))
+        {
+            return ToolCursor::System(resize_icon(h));
         }
     }
     match app.tool {
@@ -1462,6 +1475,42 @@ pub fn paint_color_readout(ctx: &egui::Context, p: Pos2, r: &crate::eyedropper::
         painter.galley(Pos2::new(x, y), g, text);
         y += h;
     }
+}
+
+/// A short note beside the pointer at `p`, as the colour readout sits
+/// (below and right of it, on the other side where the window ends),
+/// wrapped to a narrow box: the Variable Outline tool's word on why the
+/// outline comes to a point.
+pub fn paint_pointer_note(ctx: &egui::Context, p: Pos2, note: &str) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("pointer_note"),
+    ));
+    let text = crate::theme::Tokens::text();
+    let galley = painter.layout(
+        note.to_owned(),
+        egui::FontId::proportional(11.0),
+        text,
+        260.0,
+    );
+    const PAD: f32 = 6.0;
+    let size = galley.size() + Vec2::splat(PAD * 2.0);
+    let screen = ctx.content_rect();
+    let mut at = p + Vec2::new(18.0, 20.0);
+    if at.x + size.x > screen.right() {
+        at.x = p.x - 8.0 - size.x;
+    }
+    if at.y + size.y > screen.bottom() {
+        at.y = p.y - 8.0 - size.y;
+    }
+    painter.rect(
+        Rect::from_min_size(at, size),
+        CornerRadius::same(3),
+        crate::theme::Tokens::panel(),
+        Stroke::new(1.0, crate::theme::Tokens::control_border()),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(at + Vec2::splat(PAD), galley, text);
 }
 
 /// A 9-point square with a plus, its top left at `at`.

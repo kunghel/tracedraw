@@ -61,6 +61,7 @@ pub mod fountain_place;
 pub mod fx_icons;
 pub mod github_dialogs;
 pub mod glyphs_docker;
+pub mod gpu_hint;
 pub mod hint_pics;
 pub mod hints;
 pub mod icon_paint;
@@ -379,6 +380,10 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if let Some(name) = crate::gpu::take_software_note() {
         note_software_renderer(app, &name);
     }
+    // Slow frames on the CPU with a graphics card idle: a hint once a run
+    // to turn hardware acceleration on.
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu_hint::update(app, &ctx);
     // Said once: the last start showed no window, so this one draws with
     // the next renderer; a click opens Options to choose again (#1999).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1213,6 +1218,17 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
         ) {
             if let Some(r) = app.hover_reading(p, shift, picker) {
                 cursors::paint_color_readout(ui.ctx(), at, r);
+            }
+        }
+        // Variable Outline: an inner side reaching past the centre of a
+        // bend comes to a point; the tool says it is the shape, not a fault.
+        if let (crate::tools::Tool::VariableOutline, Some(at)) = (app.tool, pos) {
+            if app.variable_outline_folds() {
+                cursors::paint_pointer_note(
+                    ui.ctx(),
+                    at,
+                    &crate::i18n::tr("status_hint.variable_outline_fold"),
+                );
             }
         }
         // A scale, turn or slant that leaves the original (after a right

@@ -1277,6 +1277,7 @@ impl App {
                 | Drag::Skew { .. }
                 | Drag::MoveGuide { .. }
         ) && matches!(self.tool, Tool::Pick | Tool::FreeformPick)
+            || (matches!(self.drag, Drag::Scale { .. }) && self.tool.resizes_by_handles())
     }
 
     /// The end of a move, scale, rotation or skew: on the selection, or on
@@ -1465,6 +1466,33 @@ impl App {
             self.view.pan(step);
             response.ctx.request_repaint();
         }
+    }
+
+    /// A scale of the selection by handle `h` of its box `b`, pressed at
+    /// `p`: the opposite side or corner stays put.
+    fn start_handle_scale(&mut self, h: Handle, b: Rect, p: Point, mods: Modifiers) {
+        // The point of the box the handle stands for, and how far the
+        // pointer is from it.
+        let grab = p - handle_point(b, h);
+        let anchor = match h {
+            Handle::N => Point::new(b.center().x, b.y0),
+            Handle::S => Point::new(b.center().x, b.y1),
+            Handle::E => Point::new(b.x0, b.center().y),
+            Handle::W => Point::new(b.x1, b.center().y),
+            Handle::NE => Point::new(b.x0, b.y0),
+            Handle::NW => Point::new(b.x1, b.y0),
+            Handle::SE => Point::new(b.x0, b.y1),
+            Handle::SW => Point::new(b.x1, b.y1),
+        };
+        self.drag = Drag::Scale {
+            handle: h,
+            anchor,
+            start_bounds: b,
+            current: p - grab,
+            grab,
+            mods: crate::app::HandleMods::of(mods),
+            snapped: (false, false),
+        };
     }
 
     pub(crate) fn handle_at(&self, screen: egui::Pos2) -> Option<Handle> {
@@ -1702,6 +1730,30 @@ impl App {
             }
             return;
         }
+        // Right after a shape is drawn its handles show with the drawing
+        // tool still chosen: a drag from one resizes the selection, as
+        // with the Pick tool, and a click on one leaves it as it is,
+        // instead of starting a new shape or picking.
+        if self.tool.resizes_by_handles()
+            && matches!(self.drag, Drag::None)
+            && self.three_point_base.is_none()
+            && !self.rotate_mode
+        {
+            if let Some(h) = self.handle_at(screen) {
+                if response.drag_started_by(PointerButton::Primary) {
+                    let b = self.selection_bounds().unwrap_or(Rect::ZERO);
+                    self.drag_copy = false;
+                    self.start_handle_scale(h, b, p, mods);
+                    if let Some(now) = self.pointer_page {
+                        self.pick_drag_to(now, mods);
+                    }
+                    return;
+                }
+                if response.clicked_by(PointerButton::Primary) {
+                    return;
+                }
+            }
+        }
         // A frame's flow tab takes a press with any tool, as with the Pick
         // and Text tools (which look for it themselves, after their
         // handles): its text flows where the next click says (#1986).
@@ -1821,9 +1873,10 @@ impl App {
                             grab,
                             begun: false,
                         };
-                    } else if let Some(id) = self.shadow_drag_target(press) {
-                        // A press on one of several selected objects
-                        // keeps them all: each takes the shadow (#2218).
+                    } else if let Some((id, _)) = self.shadow_drag_start(press) {
+                        // On an object or just outside its edge. A press
+                        // on one of several selected objects keeps them
+                        // all: each takes the shadow (#2218).
                         if !self.selection.contains(&id) {
                             self.select(vec![id]);
                         }
@@ -2050,28 +2103,7 @@ impl App {
                         };
                     }
                 } else {
-                    // The point of the box the handle stands for, and how
-                    // far the pointer is from it.
-                    let grab = p - handle_point(b, h);
-                    let anchor = match h {
-                        Handle::N => Point::new(b.center().x, b.y0),
-                        Handle::S => Point::new(b.center().x, b.y1),
-                        Handle::E => Point::new(b.x0, b.center().y),
-                        Handle::W => Point::new(b.x1, b.center().y),
-                        Handle::NE => Point::new(b.x0, b.y0),
-                        Handle::NW => Point::new(b.x1, b.y0),
-                        Handle::SE => Point::new(b.x0, b.y1),
-                        Handle::SW => Point::new(b.x1, b.y1),
-                    };
-                    self.drag = Drag::Scale {
-                        handle: h,
-                        anchor,
-                        start_bounds: b,
-                        current: p - grab,
-                        grab,
-                        mods: crate::app::HandleMods::of(mods),
-                        snapped: (false, false),
-                    };
+                    self.start_handle_scale(h, b, p, mods);
                 }
                 // The drag starts once the pointer has gone a few pixels
                 // from the press: the handle catches up with it now, not
@@ -2523,6 +2555,13 @@ impl App {
         self.shape_tool_input(response, p, mods);
     }
 
+    /// The table under page point `p`, if any.
+    fn table_at(&self, p: Point) -> Option<ShapeId> {
+        let id = self.hit_test(p)?;
+        let (_, s) = self.doc().shape(id).ok()?;
+        matches!(s.kind, ShapeKind::Table(_)).then_some(id)
+    }
+
     fn text_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         // A frame's flow tabs link frames with the Text tool as with the
         // Pick tool: a click on one, then a click where the text flows,
@@ -2544,6 +2583,32 @@ impl App {
         let acts = response.drag_started_by(PointerButton::Primary)
             || response.clicked_by(PointerButton::Primary)
             || response.double_clicked_by(PointerButton::Primary);
+        // On a table the Text tool edits the text of the cell under the
+        // pointer, as the Table tool does (#2438).
+        if acts && !response.double_clicked_by(PointerButton::Primary) {
+            if let Some(id) = self.table_at(p) {
+                if self.text_edit.is_some() {
+                    self.finish_text();
+                }
+                let tf = self
+                    .doc()
+                    .shape(id)
+                    .map(|(_, s)| s.transform)
+                    .unwrap_or(Affine::IDENTITY);
+                let local = tf.inverse() * p;
+                let extend = mods.shift && self.table_edit.as_ref().is_some_and(|e| e.shape == id);
+                if extend {
+                    self.table_range_to(id, local);
+                } else {
+                    self.table_click(id, local, false);
+                }
+                self.select(vec![id]);
+                self.drag = Drag::None;
+                return;
+            }
+            // Anywhere else the cell being edited lets go.
+            self.table_edit = None;
+        }
         let on_edited = acts
             && self
                 .text_edit
@@ -3962,7 +4027,7 @@ impl App {
         if !dialog_open
             && !ctx.egui_wants_keyboard_input()
             && self.table_edit.is_some()
-            && self.tool == Tool::Table
+            && matches!(self.tool, Tool::Table | Tool::Text)
             && self.table_keyboard(ctx)
         {
             return;

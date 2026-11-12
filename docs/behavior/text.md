@@ -17,7 +17,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Chinese and Japanese line breaks | text written without spaces breaks between any two characters when one of them is Chinese or Japanese (ideographs, kana, full-width forms and their punctuation), except before a character that may not start a line (，。、；：？！ and their half-width forms, closing brackets and quotes such as ）」』】”’, iteration marks, ー and small kana) and after one that may not end a line (opening brackets and quotes such as （「『【“‘, and ￥ ＄ £ before a sum); the character before goes down to the next line with it. Latin text keeps breaking at spaces and hyphenation points (#847, `tests::cjk_punctuation_never_starts_a_line`) |
 | Columns | 1, gutter 5 mm |
 | Bullets | off; indent 5 mm, bullet "*" from the paragraph font |
-| Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column |
+| Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column. A paragraph shorter than its drop cap leaves the letter beside the next paragraph's first lines, which are narrowed the same way; a next paragraph with a drop cap of its own starts below the letter |
 | Tabs | none of the paragraph's own: a left stop every 12.7 mm (half an inch) from the frame's left edge, Options > Text > Paragraph Text > Default tab spacing (see Tab stops below) |
 | Text on path | distance 0, offset 0, orientation "rotate letters" |
 
@@ -1348,6 +1348,12 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   the path, upside down; mirror horizontally reads the text from the
   path's end, letters mirrored; both together turn the text half round
   onto the other side, reading the other way (the older single mirror).
+- Text on path, editing it: with the Text tool the caret stands on the
+  path, at the place of the letter it is before, as tall as the line and
+  turned to the path's direction there; the selection is one band per
+  selected letter, each turned with its letter; and a click or drag picks
+  the letter nearest along the path to the point clicked (#2423,
+  `text_path::tests::the_caret_of_a_text_on_a_path_stands_on_the_path`).
 - Fit text to frame: scale size so the paragraph fills the frame height.
 - Underline and strike lines: thin `= size / 14`, thick `= size / 7`;
   a double line is two thin lines a thin line apart; the underline hangs

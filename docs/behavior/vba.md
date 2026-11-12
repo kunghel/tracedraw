@@ -41,6 +41,8 @@ Rules that hold everywhere:
 `ActiveDocument`, `ActivePage`, `ActiveLayer`, `ActiveSelection` (the
 selection as one object, type `cdrSelectionShape`, with `Shapes`),
 `ActiveSelectionRange`, `ActiveShape` (the first selected object),
+`ActiveVirtualLayer` (the active layer), `FontList` (the installed
+font families by name, from 1: `Count`, `Item`, For Each),
 `ActiveWindow` (`Refresh`, `ActiveView`, accepted without effect),
 `Documents` (the active drawing only), `Version` "27.0", `VersionMajor`
 27, `VersionMinor`, `Name` "TraceDraw", `Visible`, `Optimization`,
@@ -63,7 +65,10 @@ the text and percentage go to the status line), `ColorManager`
 `ActiveLayer`, `ActiveShape`, `Selection()`, `SelectionRange()`,
 `SelectableShapes`, `ClearSelection`, `SelectAll`, `BeginCommandGroup`,
 `EndCommandGroup`, `AddPages(n)`, `AddPagesEx(n, Width, Height)`,
-`InsertPages(n, BeforePage, Page)`, `CreateCurve`, `Save` (to its file),
+`InsertPages(n, BeforePage, Page)`, `InsertPagesEx(n, BeforePage, Page,
+Width, Height)`, `LogCreateShapeRange` and `LogCreateShape` (they return
+what they are given: a macro's changes are one undo step already),
+`CreateCurve`, `Save` (to its file),
 `SaveAs(FileName)` (`.cdr`, else the native format), `Export(FileName,
 Filter)`, `ExportEx` and `ExportBitmap(FileName, Filter, Range,
 ImageType, Width, Height, ResolutionX)` (both return a filter whose
@@ -478,6 +483,8 @@ model is documented with scripting.
 | `__host_form_create/show/hide/unload(form)` | forms; the host fills `form.__controls` |
 | `form.__event(control, event, args)` | the host fires `Control_Event` handlers |
 | `__host_setting(op, app, section, key, value)` | GetSetting, SaveSetting, DeleteSetting, GetAllSettings; without it settings last for the run |
+| `__host_open(url)` | ShellExecute of a web or mail address; true when it was opened (without it, ShellExecute returns 2) |
+| `__host_download(url, path)` | URLDownloadToFile (into `path`) and URLDownloadToCacheFile (`path` empty): the file written, or "" (without it, they fail) |
 
 ### Supported
 
@@ -516,7 +523,19 @@ and the vb constants.
 These compile and fail at run time with error 445
 `Not supported in TraceDraw: ...` (or 429 for objects):
 
-- `Declare` and any Windows API call.
+- `Declare` and any Windows API call, except ShellExecute (declared
+  under any name, `Alias "ShellExecuteA"` or `"ShellExecuteW"`): a web
+  or mail address (`http://`, `https://`, `mailto:`) opens with the
+  system, as macros do to show their maker's page, and it returns 42;
+  anything else (a program, a file) is not opened and it returns 2,
+  without an error (#2165). URLDownloadToFile and URLDownloadToCacheFile
+  (`Alias "URLDownloadToFileA"`, `"URLDownloadToCacheFileA"` and the W
+  forms) are also there: the app fetches the `http://`, `https://` or
+  `file:` address (up to 64 MB, one minute), into the file the macro
+  names or into a file of its own in the system's temporary folder
+  whose path goes back into the buffer the macro passed, and they
+  return 0; when nothing comes they return INET_E_DOWNLOAD_FAILURE
+  (-2146697200), without an error (#2165).
 - File statements: Open, Close, Print #, Write #, Input #, Line Input,
   Get, Put, Kill, Name, MkDir, RmDir, ChDir, FileCopy, Dir.
 - COM objects other than `Scripting.Dictionary` (FileSystemObject,
@@ -777,7 +796,11 @@ the desktop version, with OK and a button to the desktop downloads.
 - Enter clicks the form's Default button and Esc its Cancel button
   (outside a text box of several lines).
 - `Me.Hide` hides the form and returns from a modal `Show`; `Unload Me`
-  removes it. The close box asks the macro through
+  removes it, and the code after it still reads and sets the form's
+  controls, as in VBA (#2165). Code in `UserForm_Initialize` that names
+  its own form (`CropForm.ctrlUnits.AddItem`, `CropForm.ctrlLength = 5`
+  for its default property) reaches the instance being made. Drop-down
+  lists take `ListWidth`, `ListRows` and `DropButtonStyle` (not drawn). An image control's `Picture` takes `LoadPicture(path)` and shows that file (PNG, JPEG, GIF, BMP); `LoadPicture("")` clears it. The close box asks the macro through
   `UserForm_QueryClose` (CloseMode vbFormControlMenu); setting Cancel
   keeps the form, otherwise it unloads.
 - Forms still open when a run ends or is stopped are closed.
@@ -789,7 +812,10 @@ the desktop version, with OK and a button to the desktop downloads.
   with their kind (module, class, form, document), and each module's
   macros (public Subs without arguments).
 - A padlock marks a password-protected project (its code is still
-  read) and modules saved without their code, which cannot run.
+  read) and modules saved without their code, which cannot run. A
+  `.gms` whose code is stored packed or encrypted by its maker (no
+  project after its header) is not loaded, and the message says it is a
+  protected macro file (#2165).
 - Load... (Tools > Macros > Load Macro Project...) takes a `.gms`
   project, or `.bas`, `.cls` and `.frm` modules (the `.frx` beside a
   `.frm` comes along) that become one project. A copy is kept in the

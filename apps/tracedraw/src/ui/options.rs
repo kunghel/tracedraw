@@ -1142,6 +1142,22 @@ fn hardware_acceleration(app: &mut App, ui: &mut Ui) {
         dim(ui, trf("options.gpu_in_use", &[("name", name)]));
     }
     dim(ui, tr("options.restart_to_apply"));
+    // What the card does and what the processor does, and why.
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        ui.set_max_width(520.0);
+        dim(ui, tr("options.gpu_explain"));
+    });
+    // Shadows blurred on the card: from this frame on, the same pixels
+    // as on the processor; exports and printing stay on the processor.
+    let available = crate::gpu_fx::available();
+    ui.add_enabled_ui(app.settings.hardware_acceleration, |ui| {
+        ui.checkbox(&mut app.settings.gpu_effects, tr("options.gpu_effects"))
+            .rich_tip(crate::ui::tips::keyed("options.gpu_effects"));
+    });
+    if app.settings.gpu_effects && app.settings.hardware_acceleration && !available {
+        dim(ui, tr("options.gpu_effects_unavailable"));
+    }
     // A new choice is tried afresh at the next start.
     if (
         app.settings.hardware_acceleration,
@@ -4361,11 +4377,7 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::pair("options.pie", "options.pie_tip"));
     ui.radio_value(&mut kind, 2, tr("options.arc"))
         .rich_tip(crate::ui::tips::pair("options.arc", "options.arc_tip"));
-    let mut arc = app.ellipse_arc.unwrap_or(tracedraw_core::EllipseArc {
-        start_deg: 0.0,
-        end_deg: 270.0,
-        pie: true,
-    });
+    let mut arc = app.ellipse_arc.unwrap_or(crate::app::DEFAULT_ELLIPSE_ARC);
     if kind != before {
         app.ellipse_arc = match kind {
             0 => None,

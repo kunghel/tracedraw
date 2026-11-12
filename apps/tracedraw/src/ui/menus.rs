@@ -2697,12 +2697,9 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.edit.paste", "Ctrl+V", true) {
         app.paste_any();
     }
-    if item(
-        ui,
-        "menu.edit.paste_in_view",
-        "Ctrl+Shift+V",
-        app.clipboard.is_some(),
-    ) {
+    // Offered like Paste: what another program copied pastes too, and
+    // the system clipboard is not read every frame to tell.
+    if item(ui, "menu.edit.paste_in_view", "Ctrl+Shift+V", true) {
         app.paste_in_view();
     }
     if item(ui, "menu.edit.paste_special", "", true) {

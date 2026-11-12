@@ -121,3 +121,11 @@ length with width nodes.
   curves, its butt ends straight lines (#627,
   `tools2::tests::a_variable_outline_becomes_a_band_of_few_curves`). SVG and PDF exports write the band as a filled path; `.cdr`
   files are written with the plain width.
+- A reach on the inner side of a bend that comes near the bend's radius
+  (90 % of it or more) brings the two sides of the inner edge to a point:
+  the hole of a ring turns heart-shaped. That is the shape, as in any
+  offset, but it is taken for a fault, so while a drag changes a node's
+  reach a note beside the pointer says why it happens and that dragging
+  back rounds it off (`status_hint.variable_outline_fold`;
+  `variable_outline::tests::the_tool_knows_when_the_inside_comes_to_a_point`,
+  `variable_outline::tests::a_drag_past_the_centre_of_a_circle_brings_the_note`).

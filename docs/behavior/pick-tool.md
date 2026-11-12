@@ -36,7 +36,12 @@ Hidden and locked objects, and the objects on hidden or locked layers,
 are never hit (a right click on a locked object that is topmost under
 the pointer opens a menu of its own, Unlock Object, which unlocks and
 selects it, and Unlock All Objects; the object is not selected while
-locked); of the others the topmost under the pointer is (the last
+locked). A locked object, or one inside a locked group, is never
+selected in any way: its row in the Objects docker does not select it,
+and objects imported from a file come in selected except those locked
+in it (#2347,
+`app::tests::locked_objects_imported_or_picked_in_the_list_are_never_selected`).
+Of the others the topmost under the pointer is hit (the last
 in the stacking order, which `.cdr` files keep: a text over a
 rectangle is hit before it). Treat all objects as filled (Options >
 Tools > Pick, and the property bar) is on by default, so an empty

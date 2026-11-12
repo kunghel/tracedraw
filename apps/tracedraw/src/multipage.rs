@@ -623,8 +623,9 @@ impl App {
             let Some(page) = doc.pages.iter().find(|p| p.id == id) else {
                 continue;
             };
-            // The page's own guidelines and the master page's (#1928).
-            for g in doc.master_guides.iter().chain(page.guides.iter()) {
+            // The page's own guidelines and the master page's (#1928),
+            // those their eye shows (#1775).
+            for g in doc.guides_on_page(page.id).unwrap_or_default().iter() {
                 let mut g = *g;
                 g.line = shifted(g.line, r.x0, r.y0);
                 out.push((g, r));
@@ -1025,6 +1026,8 @@ mod tests {
         let first = app.doc().pages[0].id;
         let second = app.doc().pages[1].id;
         app.page = second;
+        // Each page's own guidelines (shared ones are the default, #1775).
+        app.choose_master_guides(false);
         app.add_guide(Guide::horizontal(10.0));
         app.add_guide(Guide::vertical(20.0));
         app.add_guide(

@@ -24,6 +24,16 @@ Crop keeps a plain rectangle. After the release the new
 object is selected and shows the eight handles and the centre marker
 whatever tool is active.
 
+With the Rectangle, Ellipse, Polygon, Star (and Complex star), Graph
+paper, Action Lines, 3-point rectangle, 3-point ellipse, Spiral and
+Common shapes tools still chosen, the pointer over one of those handles
+shows the resize arrows and a drag from it resizes the selection as the
+Pick tool's handles do (Shift from the centre, Ctrl in steps, Alt
+freely, a right click for a copy), the tool staying chosen. A click on
+a handle leaves the selection as it is; a press anywhere else draws a
+new object as before
+(`pick_drag_tests::a_drawing_tool_resizes_by_the_handles`).
+
 ## Drag modifiers (every box tool)
 
 - Ctrl constrains the box to a square (circle, regular polygon).
@@ -126,6 +136,12 @@ whatever tool is active.
 
 - Property bar: ellipse, pie or arc, with start and end angles (degrees,
   counter-clockwise from +x) and a direction toggle. Default: ellipse.
+  Pie or Arc first picked starts at 0 to 270 degrees, on the property bar
+  as in the Options dialog. The bar started from 90 to 90 degrees, a
+  whole turn: a "pie" that looked like an ellipse with a line from its
+  centre to the top, kept for every new ellipse after. A saved tool
+  setting whose angles meet is read back as a plain ellipse
+  (`app::tests::a_whole_turn_pie_saved_by_the_old_bar_draws_an_ellipse`).
 
 ## Polygon (Y) and Star
 

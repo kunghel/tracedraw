@@ -818,6 +818,8 @@ impl HostInner {
                 let len: f64 = path.segments().map(|seg| seg.arclen(1e-4)).sum();
                 json!({"length": len})
             }
+            // Application.FontList: the families the font lists offer.
+            "vg_fonts" => json!({"families": tracedraw_text::fonts().families()}),
             "vg_palettes" => json!({
                 "palettes": self
                     .view

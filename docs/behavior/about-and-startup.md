@@ -450,6 +450,21 @@ and `--reset-settings` starts open windows of their own.
   never paced (`gpu::tests::frames_are_paced_to_the_cap`,
   `gpu::tests::software_renderers_are_recognised`,
   `ui::cursors::tests::a_software_adapter_shows_the_system_pointers`).
+- With Use hardware acceleration off, when working on the drawing turns
+  out slow on the software adapter and this computer has a graphics
+  card, TraceDraw says so once a run (`ui::gpu_hint`): of the last 60
+  frames of a drag, a scroll or a zoom (a frame following another one of
+  work, gaps over a second left out as pauses), 30 or more came over
+  0.1 s apart (under ten a second). The card is the first separate or
+  built-in one the system lists, never a virtual or software adapter,
+  looked for on a thread of its own (`gpu::card_found`). The message
+  shows once the work stops and no other dialog is open; it names the
+  card and offers Turn On (ticks the option, from the next start), Options
+  (Options > General) and Not Now, with "Do not show this message again",
+  which clears "When drawing is slow and hardware acceleration is off" in
+  Options > Global > Warnings (on by default, desktop only). With the
+  option on and the window still on the CPU, the card's driver failed, so
+  no hint shows (`ui::gpu_hint::tests`).
 
 ## Back to the defaults
 

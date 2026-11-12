@@ -1603,6 +1603,23 @@ fn blend(
             }
         })
         .collect();
+    // A loop turns the whole blend about the middle of the two objects:
+    // each step is a step of the straight blend from the start to the end
+    // object turned back about that middle by the whole rotation, then
+    // turned forward by its share, so the last steps reach the end
+    // object as it is (#1576).
+    let mid = a
+        .bounding_box()
+        .center()
+        .midpoint(b.bounding_box().center());
+    let back = Affine::rotate_about(-rotation.to_radians(), mid);
+    let cb_end = b.bounding_box().center();
+    let b = if looped { back * b } else { b };
+    let nodes = if looped {
+        nodes.map(|[s0, s1, e0, e1]| [s0, s1, back * e0, back * e1])
+    } else {
+        nodes
+    };
     let paths = crate::effects::blend_from_nodes_at(&a, &b, &morph_at, 120, nodes);
     // The same outline at both ends, only turned, scaled or moved (a copy
     // rotated): the steps take the transformation part way, so each turns
@@ -1633,30 +1650,53 @@ fn blend(
         s.shadow = None;
         s.transform = Affine::IDENTITY;
         let mut geo = match turned {
-            Some(pivot) => lerp_transform(start.transform, end.transform, pivot, m) * local.clone(),
+            Some(pivot) => {
+                let g = lerp_transform(start.transform, end.transform, pivot, m) * local.clone();
+                if looped {
+                    // The copy turned back by its share of the whole
+                    // rotation and moved onto the straight way to the end
+                    // turned back. Mixing toward the end turned back took
+                    // the shortest turn, wrong past half a turn.
+                    let c = g.bounding_box().center();
+                    Affine::translate((cb_center - cb_end) * m)
+                        * Affine::rotate_about(-rotation.to_radians() * m, c)
+                        * g
+                } else {
+                    g
+                }
+            }
             None => p,
         };
         let center = geo.bounding_box().center();
         let mut extra = Affine::IDENTITY;
-        // Each step turns about its own centre by its share of the
-        // rotation; in a loop its centre also leaves the straight way
-        // (see `loop_place`). Turned about the middle of the two objects
-        // instead, the last steps of a loop landed far from the end
-        // (#1192).
-        if rotation != 0.0 {
-            extra = Affine::rotate_about(rotation.to_radians() * to, center) * extra;
-        }
         if looped {
-            let at = loop_place(ca_center, cb_center, rotation, to);
-            extra = Affine::translate(at - center) * extra;
-        } else if path_samples.is_none() && to != m {
-            // Off a path the object acceleration moves the steps toward
-            // one end: each goes where its accelerated place lies between
-            // the two objects' centres (the steps stay evenly morphed and
-            // sized unless Apply to sizing is on, which morphed them there
-            // already). It moved only sizes and turns, so the slider
-            // seemed to do nothing (#910).
-            extra = Affine::translate((cb_center - ca_center) * (to - m)) * extra;
+            // A loop: the step of the straight blend to the end turned
+            // back, moved to its accelerated place on that straight way
+            // and turned by its share about the middle of the two objects
+            // (see above). The steps leave the start and reach the end on
+            // the curve of `loop_place`, and the outlines between a
+            // square and a circle twist the way the files show (#1576).
+            // Turning each step about its own centre and moving it onto
+            // that curve gave smooth bands where the files show the steps
+            // folding into the end object, and with an object
+            // acceleration the steps packed at the start hardly turned.
+            extra = Affine::rotate_about(rotation.to_radians() * to, mid)
+                * Affine::translate((cb_center - ca_center) * (to - m));
+        } else {
+            // Each step turns about its own centre by its share of the
+            // rotation.
+            if rotation != 0.0 {
+                extra = Affine::rotate_about(rotation.to_radians() * to, center);
+            }
+            if path_samples.is_none() && to != m {
+                // Off a path the object acceleration moves the steps toward
+                // one end: each goes where its accelerated place lies between
+                // the two objects' centres (the steps stay evenly morphed and
+                // sized unless Apply to sizing is on, which morphed them there
+                // already). It moved only sizes and turns, so the slider
+                // seemed to do nothing (#910).
+                extra = Affine::translate((cb_center - ca_center) * (to - m)) * extra;
+            }
         }
         if let Some((pts, cum)) = &path_samples {
             if pts.len() >= 2 {
@@ -1710,6 +1750,7 @@ fn blend(
 /// the middle at 360 (#1192: the pictures of the reporter's files at
 /// -360 to 360 degrees show these curves; turning about the middle alone
 /// left the last steps far from `b`).
+#[cfg(test)]
 fn loop_place(a: Point, b: Point, rotation: f64, t: f64) -> Point {
     let m = a.midpoint(b);
     let turn = rotation.to_radians();
@@ -3302,6 +3343,67 @@ mod tests {
         assert!(loop_place(a, b, 90.0, 0.5).y < -1.0);
         assert!(loop_place(a, b, -90.0, 0.5).y > 1.0);
         assert!((loop_place(a, b, 360.0, 0.5) - Point::new(50.0, 0.0)).hypot() < 1e-9);
+    }
+
+    /// A looped blend turns the whole straight blend about the middle of
+    /// the two objects (#1576): each step is the step of the blend to the
+    /// end object turned back by the whole rotation, moved to its
+    /// accelerated place and turned by its share about that middle. Two
+    /// copies of a square: every step is the square turned by its share
+    /// of the rotation, its centre on the loop's curve at its accelerated
+    /// place, and with an object acceleration the steps packed at the
+    /// start turn by their accelerated share, not their even one.
+    #[test]
+    fn a_looped_blend_turns_the_straight_blend_about_the_middle() {
+        let a = rect_shape();
+        let mut b = rect_shape();
+        b.transform = Affine::translate((100.0, 0.0));
+        let (ca, cb) = (a.bounds().center(), b.bounds().center());
+        for (rotation, accel) in [(90.0, 0.0), (90.0, 0.8), (-45.0, -0.6), (240.0, 0.4)] {
+            let mut s = a.clone();
+            s.effects.push(Effect::Blend {
+                end: Box::new(b.clone()),
+                steps: 5,
+                accel_objects: accel,
+                accel_colors: 0.0,
+                rotation,
+                path: None,
+                rotate_on_path: false,
+                end_id: Some(b.id),
+                options: BlendOptions {
+                    loop_rotation: true,
+                    ..Default::default()
+                },
+            });
+            let steps = evaluate(&s).above;
+            assert_eq!(steps.len(), 5);
+            for (i, st) in steps.iter().enumerate() {
+                let to = blend_place((i + 1) as f64 / 6.0, accel);
+                let ShapeKind::Path { path, .. } = &st.kind else {
+                    panic!("{:?}", st.kind);
+                };
+                let c = path.bounding_box().center();
+                let want = loop_place(ca, cb, rotation, to);
+                assert!(
+                    (c - want).hypot() < 1e-6,
+                    "{rotation} {accel} {i}: {c:?} {want:?}"
+                );
+                // The copy turned back by its share of the even way and
+                // forward by its share of the accelerated one.
+                let m = (i + 1) as f64 / 6.0;
+                let pts: Vec<Point> = path
+                    .elements()
+                    .iter()
+                    .filter_map(|e| match e {
+                        PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(*p),
+                        _ => None,
+                    })
+                    .collect();
+                let d = pts[1] - pts[0];
+                let off = (d.y.atan2(d.x).to_degrees() - rotation * (to - m)).rem_euclid(90.0);
+                assert!(off.min(90.0 - off) < 1e-6, "{rotation} {accel} {i}: {d:?}");
+            }
+        }
     }
 
     /// The steps of an accelerated blend lie where the `.cdr` files'

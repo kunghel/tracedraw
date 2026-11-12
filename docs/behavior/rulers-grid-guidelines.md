@@ -137,9 +137,17 @@ stand for a distance in the world (`drawing_scale.rs`):
   guidelines edited (the row is highlighted): new guidelines, from the
   rulers, the Guidelines panel or presets, go there; only those are
   picked, moved, locked and deleted, the others are drawn as they are
-  and still snapped to. The padlock of a row locks or unlocks all of its
-  guidelines, its eye shows or hides all guidelines. Each change is one
-  undo step (`Command::SetMasterGuides`). In `.tdraw` files they are
+  and still snapped to. When TraceDraw starts the master guidelines
+  are the ones chosen, so guidelines
+  dragged from the rulers are on every page; a click on a page's own
+  "Guides" row makes new ones that page's only (#1775). The padlock of
+  a row locks or unlocks all of its guidelines; its eye shows or hides
+  that row's guidelines only, the others staying (hidden ones are not
+  picked or snapped to; with guidelines off, opening an eye turns them
+  on), and the drawing keeps it (`master_guides_hidden`,
+  `page_guides_hidden` in `.tdraw`; `Command::SetGuidesShown`; #1775,
+  `guides::tests::guidelines_are_shared_at_first_and_each_set_has_its_own_eye`).
+  Each change is one undo step (`Command::SetMasterGuides`). In `.tdraw` files they are
   `master_guides`; in `.cdr` files they go on the master page's guides
   layer with the guidelines every page has (on each page's own layer
   when the pages differ in size).

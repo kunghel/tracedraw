@@ -98,6 +98,53 @@ pub(crate) fn slide_target(nodes: &[WidthNode], index: usize, t: f64, closed: bo
     (prev + d).rem_euclid(1.0)
 }
 
+/// How far a variable outline reaches into the bends of `path`, as a
+/// share of each bend's radius, at its deepest: past 1 the inner edge
+/// crosses the centre of the bend and its two sides meet in a point (the
+/// hole of a ring turns heart-shaped). That is the shape, not a fault,
+/// but it is taken for one, so the tool says why near the pointer.
+/// `base` and `nodes` are the stroke's width and width nodes, `scale` the
+/// factor they are drawn at.
+pub(crate) fn inner_fold(path: &BezPath, base: f64, nodes: &[WidthNode], scale: f64) -> f64 {
+    use kurbo::{ParamCurveArclen, ParamCurveCurvature, PathSeg};
+    let closed = tracedraw_core::shaping::is_single_loop(path);
+    let segs: Vec<PathSeg> = path.segments().collect();
+    let lens: Vec<f64> = segs.iter().map(|s| s.arclen(1e-3)).collect();
+    let total: f64 = lens.iter().sum();
+    if total.is_nan() || total <= 1e-9 {
+        return 0.0;
+    }
+    const STEPS: usize = 24;
+    let mut run = 0.0;
+    let mut worst: f64 = 0.0;
+    for (seg, len) in segs.iter().zip(&lens) {
+        for i in 0..=STEPS {
+            let u = i as f64 / STEPS as f64;
+            // kurbo's curvature is negative turning to the left
+            // (counter-clockwise, y up): the bend's centre then lies on
+            // the left, the side a node's `left` reaches to.
+            let k = match seg {
+                PathSeg::Line(_) => 0.0,
+                PathSeg::Quad(q) => q.curvature(u),
+                PathSeg::Cubic(c) => c.curvature(u),
+            };
+            if !k.is_finite() || k == 0.0 {
+                continue;
+            }
+            let (l, r) =
+                tracedraw_core::style::width_around(base, nodes, (run + len * u) / total, closed);
+            let inner = if k < 0.0 { l } else { r } * scale;
+            worst = worst.max(inner * k.abs());
+        }
+        run += len;
+    }
+    worst
+}
+
+/// From this share of a bend's radius on (see [`inner_fold`]) the tool
+/// says why the outline is coming to a point.
+pub(crate) const FOLD_NOTE_AT: f64 = 0.9;
+
 impl App {
     /// The object the tool works on: the first selected one with a path.
     pub fn variable_outline_target(&self) -> Option<ShapeId> {
@@ -448,6 +495,20 @@ impl App {
         }
     }
 
+    /// While a drag changes the reach of a width node: whether the
+    /// outline comes to a point inside a bend, its inner side reaching
+    /// past the bend's centre or nearly (see [`inner_fold`]).
+    pub fn variable_outline_folds(&self) -> bool {
+        let Some(drag) = self.vo.drag.as_ref().filter(|d| d.slide != Some(true)) else {
+            return false;
+        };
+        let Some((path, stroke, scale)) = self.variable_outline_geometry(drag.shape) else {
+            return false;
+        };
+        !stroke.widths.is_empty()
+            && inner_fold(&path, stroke.width, &stroke.widths, scale) >= FOLD_NOTE_AT
+    }
+
     /// The picked node's left and right reach (mm).
     pub fn variable_outline_node(&self) -> Option<WidthNode> {
         let id = self.variable_outline_target()?;
@@ -577,6 +638,79 @@ mod tests {
     use super::*;
     use tracedraw_core::geometry::Shape as _;
     use tracedraw_core::{Shape, ShapeKind};
+
+    /// A width node reaching inside a circle of radius 20 mm: the outline
+    /// comes to a point once its inner side nears the centre, whichever
+    /// way round the path runs; the outer side never does.
+    #[test]
+    fn the_tool_knows_when_the_inside_comes_to_a_point() {
+        let circle = |ccw: bool| {
+            let p = tracedraw_core::geometry::ellipse_path(tracedraw_core::geometry::Rect::new(
+                0.0, 0.0, 40.0, 40.0,
+            ));
+            if ccw {
+                p
+            } else {
+                p.reverse_subpaths()
+            }
+        };
+        let node = |left: f64, right: f64| {
+            [WidthNode {
+                at: 0.25,
+                left,
+                right,
+            }]
+        };
+        let ccw = circle(true);
+        let cw = circle(false);
+        let (a, b) = (ccw.area() > 0.0, cw.area() > 0.0);
+        assert!(a != b);
+        // Both sides: the inside reaches 19 mm, nearly to the centre.
+        for p in [&ccw, &cw] {
+            assert!(inner_fold(p, 0.5, &node(19.0, 19.0), 1.0) >= FOLD_NOTE_AT);
+            assert!(inner_fold(p, 0.5, &node(8.0, 8.0), 1.0) < FOLD_NOTE_AT);
+            assert!(inner_fold(p, 0.5, &node(8.0, 8.0), 3.0) >= FOLD_NOTE_AT);
+        }
+        // One side: inside on the left of a counter-clockwise loop (y up),
+        // on the right of a clockwise one.
+        let (inside_l, inside_r) = if a { (&ccw, &cw) } else { (&cw, &ccw) };
+        assert!(inner_fold(inside_l, 0.5, &node(25.0, 0.0), 1.0) > 1.0);
+        assert!(inner_fold(inside_l, 0.5, &node(0.0, 25.0), 1.0) < 0.1);
+        assert!(inner_fold(inside_r, 0.5, &node(0.0, 25.0), 1.0) > 1.0);
+        // A straight line has no bend to fold in.
+        let mut line = BezPath::new();
+        line.move_to(Point::new(0.0, 0.0));
+        line.line_to(Point::new(100.0, 0.0));
+        assert_eq!(inner_fold(&line, 0.5, &node(50.0, 50.0), 1.0), 0.0);
+    }
+
+    /// Dragging a node of a circle's outline inwards: the note shows once
+    /// the inside nears the centre, not before, and not while the node
+    /// only slides.
+    #[test]
+    fn a_drag_past_the_centre_of_a_circle_brings_the_note() {
+        let mut app = App::headless();
+        let layer = app.active_layer().expect("a layer");
+        let id = app.engine.new_shape_id();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Ellipse {
+                rect: tracedraw_core::geometry::Rect::new(30.0, 30.0, 70.0, 70.0),
+                arc: None,
+            },
+        );
+        s.stroke = Some(Stroke::new(tracedraw_core::Color::BLACK, 0.5));
+        app.run(Command::AddShape { layer, shape: s });
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::VariableOutline;
+        assert!(!app.variable_outline_folds());
+        // Press on the bottom of the outline, drag up inside.
+        app.variable_outline_press(Point::new(50.0, 30.0), false);
+        app.variable_outline_drag(Point::new(50.0, 38.0));
+        assert!(!app.variable_outline_folds(), "8 mm in of a 20 mm radius");
+        app.variable_outline_drag(Point::new(50.0, 49.0));
+        assert!(app.variable_outline_folds(), "19 mm in");
+    }
 
     fn line_app() -> (App, ShapeId) {
         let mut app = App::headless();

@@ -454,6 +454,12 @@ pub enum Command {
     SetMasterGuides {
         guides: Vec<Guide>,
     },
+    /// Show or hide the master page's guidelines (`page` `None`) or a
+    /// page's own, each with its own eye (#1775).
+    SetGuidesShown {
+        page: Option<PageId>,
+        shown: bool,
+    },
 }
 
 /// One object's change in [`Command::SetEffectsAndOpacity`].
@@ -589,6 +595,7 @@ impl Command {
             Command::DeleteGuide { .. } => "Delete Guideline",
             Command::SetGuides { .. } => "Guidelines",
             Command::SetMasterGuides { .. } => "Guidelines",
+            Command::SetGuidesShown { .. } => "Show Guidelines",
         }
     }
 
@@ -1610,6 +1617,16 @@ impl Command {
             }
             Command::SetGuides { page, guides } => doc.page_mut(*page)?.guides = guides.clone(),
             Command::SetMasterGuides { guides } => doc.master_guides = guides.clone(),
+            Command::SetGuidesShown { page, shown } => match page {
+                None => doc.master_guides_hidden = !*shown,
+                Some(p) => {
+                    doc.page(*p)?;
+                    doc.page_guides_hidden.retain(|q| q != p);
+                    if !*shown {
+                        doc.page_guides_hidden.push(*p);
+                    }
+                }
+            },
             Command::Ungroup { group } => {
                 let (layer_id, idx) = doc.locate(*group)?;
                 let g = doc.layer_mut(layer_id)?.shapes.remove(idx);

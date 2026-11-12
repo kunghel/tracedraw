@@ -1038,6 +1038,9 @@ pub struct App {
     /// step it made and its new colour (see
     /// `App::patch_selection_stroke_live`).
     pub live_stroke: Option<(u64, Option<Color>)>,
+    /// A colour is being dragged in a picker: the colours it passes over
+    /// do not join the document palette (see `App::remember_colors_of`).
+    pub palette_hold: bool,
     pub file: Option<PathBuf>,
     /// The open drawings' files, kept from being deleted or renamed by
     /// another program while they are open (Windows, see `file_hold.rs`).
@@ -1456,7 +1459,10 @@ pub struct App {
     pub selected_guides: Vec<usize>,
     /// The guidelines being edited are the master page's, which every
     /// page shows (#1928), not the active page's own: chosen in the
-    /// Objects docker. New guidelines go there too.
+    /// Objects docker. New guidelines go there too. True at first, so
+    /// guidelines dragged from the rulers are shared by every page; a
+    /// page's own Guides row in the Objects docker makes them its own
+    /// (#1775).
     pub edit_master_guides: bool,
     /// The guideline showing rotation handles (second click on it).
     pub guide_rotate: Option<usize>,
@@ -2682,6 +2688,7 @@ impl App {
             alt_composed: None,
             current_colors: (Color::BLACK, Color::WHITE),
             live_fill: None,
+            palette_hold: false,
             live_stroke: None,
             file: None,
             file_holds: Default::default(),
@@ -2870,7 +2877,7 @@ impl App {
             symmetry_doc: Default::default(),
             show_guides: true,
             selected_guides: Vec::new(),
-            edit_master_guides: false,
+            edit_master_guides: true,
             guide_rotate: None,
             guide_pivot: Point::ZERO,
             guide_form: Default::default(),
@@ -3722,7 +3729,7 @@ impl App {
             .clamp(1, complex_star_max_sharpness(self.complex_points));
         self.rect_corners = t.rect_corners;
         self.corners_together = t.corners_together;
-        self.ellipse_arc = t.ellipse_arc;
+        self.ellipse_arc = t.ellipse_arc.filter(|a| !is_whole_turn(a));
         self.spiral_revolutions = t.spiral_revolutions.clamp(1, 100);
         self.spiral_logarithmic = t.spiral_logarithmic;
         self.table_rows = t.table_rows.clamp(1, 1000);
@@ -4768,22 +4775,11 @@ impl App {
         Some(repeated_transform(t, before, now))
     }
 
-    /// Edit > Paste in View: paste centred on the visible area.
+    /// Edit > Paste in View: what Edit > Paste pastes (the copy here or
+    /// what another program copied), centred on the visible area.
     pub fn paste_in_view(&mut self) {
-        let before: Vec<_> = self.selection.clone();
-        self.paste();
-        if self.selection == before {
-            return;
-        }
-        if let Some(b) = self.selection_bounds() {
-            let view_rect = self.view.visible_page_rect(self.canvas_rect);
-            let d = view_rect.center() - b.center();
-            let shapes = self.selection.clone();
-            self.run(Command::TransformShapes {
-                shapes,
-                transform: Affine::translate(d),
-            });
-        }
+        let at = self.view_center();
+        self.paste_any_at(Some(at));
     }
 
     pub fn select_all_of(&mut self, pred: impl Fn(&Shape) -> bool) {
@@ -5214,6 +5210,7 @@ impl App {
                 self.status = e.to_string();
             }
         }
+        self.remember_colors_of(std::slice::from_ref(&cmd));
         // Default page names follow the pages' order (#2374).
         if crate::page_names::changes_page_order(&cmd) {
             self.renumber_default_pages();
@@ -5299,13 +5296,56 @@ impl App {
         }
     }
 
-    pub fn select(&mut self, ids: Vec<ShapeId>) {
+    pub fn select(&mut self, mut ids: Vec<ShapeId>) {
+        // A locked object (or one inside a locked group) is never
+        // selected: neither by a click nor by the Objects docker nor when
+        // a file is imported. Imported objects locked in a .cdr came in
+        // selected and could then be moved and edited (#2347).
+        if !ids.is_empty() {
+            let locked = self.locked_ids();
+            if !locked.is_empty() {
+                ids.retain(|id| !locked.contains(id));
+            }
+        }
         self.selection = ids;
         self.marquee_selection = None;
         self.rotate_mode = false;
         self.node_selection.clear();
         self.segment_spot = None;
         self.rect_corners_selected.clear();
+    }
+
+    /// The locked objects of the drawing and every object inside them.
+    pub fn locked_ids(&self) -> std::collections::HashSet<ShapeId> {
+        fn all(s: &Shape, out: &mut std::collections::HashSet<ShapeId>) {
+            out.insert(s.id);
+            match &s.kind {
+                ShapeKind::Group { children } => children.iter().for_each(|c| all(c, out)),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    all(frame, out);
+                    contents.iter().for_each(|c| all(c, out));
+                }
+                _ => {}
+            }
+        }
+        fn walk(s: &Shape, out: &mut std::collections::HashSet<ShapeId>) {
+            if s.locked {
+                return all(s, out);
+            }
+            match &s.kind {
+                ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, out)),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, out);
+                    contents.iter().for_each(|c| walk(c, out));
+                }
+                _ => {}
+            }
+        }
+        let mut out = std::collections::HashSet::new();
+        for s in self.doc().all_layers().flat_map(|l| &l.shapes) {
+            walk(s, &mut out);
+        }
+        out
     }
 
     // ----- object creation ---------------------------------------------------
@@ -6539,7 +6579,9 @@ impl App {
             }
         }
         let before = self.engine.revision();
+        self.palette_hold = true;
         self.apply_fill_as(fill, false);
+        self.palette_hold = false;
         let after = self.engine.revision();
         self.live_fill = (after != before).then_some((after, color));
     }
@@ -6674,6 +6716,62 @@ impl App {
         colors.push(c);
         self.run(Command::SetDocumentPalette { colors });
         self.doc_palette_current = self.doc().palette.iter().position(|x| *x == c);
+    }
+
+    /// The uniform colours that `cmds` give fills and outlines join the
+    /// document palette (see [`App::remember_color`]), in the step that
+    /// gave them: whatever applied them, the Object Properties docker, the
+    /// property bar, the Interactive Fill tool or an eyedropper. Only the
+    /// palette and the colour panel added theirs, so the palette missed
+    /// most of the colours used (#2378).
+    pub fn remember_colors_of(&mut self, cmds: &[Command]) {
+        use tracedraw_core::patch::{FillField, StrokeField};
+        let mut colors = Vec::new();
+        for cmd in cmds {
+            match cmd {
+                Command::SetFill {
+                    fill: Fill::Solid(c),
+                    ..
+                } => colors.push(*c),
+                Command::PatchFill {
+                    fill: Fill::Solid(c),
+                    fields,
+                    ..
+                } if fields.iter().any(|f| {
+                    matches!(
+                        f,
+                        FillField::All | FillField::StartColor | FillField::EndColor
+                    )
+                }) =>
+                {
+                    colors.push(*c)
+                }
+                Command::SetStroke {
+                    stroke: Some(st), ..
+                } => colors.push(st.color),
+                Command::PatchStroke { stroke, fields, .. }
+                    if fields.contains(&StrokeField::Paint) =>
+                {
+                    colors.push(stroke.color)
+                }
+                _ => {}
+            }
+        }
+        if colors.is_empty() || self.palette_hold {
+            return;
+        }
+        // The swatch framed as the last used stays the one the caller
+        // chose when every colour was there already.
+        let current = self.doc_palette_current;
+        let mut added = false;
+        for c in colors {
+            let len = self.doc().palette.len();
+            self.remember_color(c);
+            added |= self.doc().palette.len() > len;
+        }
+        if !added {
+            self.doc_palette_current = current;
+        }
     }
 
     /// The document palette collects the colours applied to objects; the addition joins the step that applied it.
@@ -6828,6 +6926,7 @@ impl App {
         if let Some(k) = keep {
             self.engine.amend(&k)?;
         }
+        self.remember_colors_of(cmds);
         Ok(())
     }
 
@@ -9849,9 +9948,97 @@ pub(crate) fn repeated_transform(t: Affine, before: Rect, now: Rect) -> Affine {
     Affine::translate(p.to_vec2()) * linear * Affine::translate(-p.to_vec2())
 }
 
+/// The pie the Pie and Arc buttons of the Ellipse tool start from, as in
+/// the Options dialog: 0 to 270 degrees. The property bar started from 90
+/// to 90 degrees, a whole turn, so a pie looked like a plain ellipse with
+/// a line from its centre to the top, and the setting was kept from then
+/// on.
+pub const DEFAULT_ELLIPSE_ARC: tracedraw_core::EllipseArc = tracedraw_core::EllipseArc {
+    start_deg: 0.0,
+    end_deg: 270.0,
+    pie: true,
+};
+
+/// A pie or arc whose ends meet: a whole turn, the plain ellipse with a
+/// line to its centre. Saved by the property bar's old default; the
+/// Ellipse tool reads it back as a plain ellipse.
+pub(crate) fn is_whole_turn(a: &tracedraw_core::EllipseArc) -> bool {
+    let sweep = (a.end_deg - a.start_deg).rem_euclid(360.0);
+    sweep.min(360.0 - sweep) < 1e-9
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Objects locked in a file stay out of the selection (#2347): the
+    /// objects imported from a .cdr came in selected, the locked ones
+    /// too, and a drag or a nudge then moved them as if they were free.
+    /// The Objects docker's rows select them no more than a click on the
+    /// page does, and an object inside a locked group neither.
+    #[test]
+    fn locked_objects_imported_or_picked_in_the_list_are_never_selected() {
+        let rect = |ids: &mut tracedraw_core::id::IdSource, x: f64, locked: bool| {
+            let mut s = Shape::new(
+                ids.shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.locked = locked;
+            s
+        };
+        let mut src = tracedraw_core::Document::new("locked", Size::new(200.0, 100.0));
+        let mut ids = src.ids().clone();
+        let free = rect(&mut ids, 10.0, false);
+        let locked = rect(&mut ids, 40.0, true);
+        let inner = rect(&mut ids, 70.0, false);
+        let mut group = Shape::new(
+            ids.shape(),
+            ShapeKind::Group {
+                children: vec![inner],
+            },
+        );
+        group.locked = true;
+        src.pages[0].layers[0].shapes = vec![free, locked, group];
+        src.set_ids(ids);
+
+        let mut app = App::headless();
+        app.import_document(Ok(src));
+        let layer = &app.doc().pages[0].layers[0].shapes;
+        let (free, locked, group) = (layer[0].id, layer[1].id, layer[2].id);
+        let ShapeKind::Group { children } = &layer[2].kind else {
+            panic!("group");
+        };
+        let inner = children[0].id;
+        assert!(app.doc().find_shape(locked).expect("locked").locked);
+        assert_eq!(
+            app.selection,
+            vec![free],
+            "only the free object is selected"
+        );
+        // A move moves the free object alone.
+        let before = app.doc().find_shape(locked).expect("locked").bounds();
+        app.transform_selection(Affine::translate((5.0, 0.0)));
+        assert_eq!(
+            app.doc().find_shape(locked).expect("locked").bounds(),
+            before
+        );
+        // Picked in the Objects docker or by id: nothing selected.
+        for id in [locked, group, inner] {
+            app.select(vec![id]);
+            assert!(app.selection.is_empty(), "{id:?} selected");
+        }
+        // Unlocked, it is picked as before.
+        app.run(Command::SetLocked {
+            shapes: vec![locked],
+            locked: false,
+        });
+        app.select(vec![locked]);
+        assert_eq!(app.selection, vec![locked]);
+    }
 
     /// A PDF's spot inks come with it: opened, the drawing has them;
     /// imported, an ink of a name the drawing has is that ink and the
@@ -10911,6 +11098,38 @@ mod tests {
         assert_eq!(app.hit_test(Point::new(10.5, 35.0)), Some(id));
         app.settings.treat_all_filled = true;
         assert_eq!(app.hit_test(inside), Some(id));
+    }
+
+    /// The property bar's Pie started from 90 to 90 degrees, a whole turn:
+    /// every new ellipse came out with a line from its centre to the top,
+    /// and the setting was saved. Saved so, it is read back as a plain
+    /// ellipse; a real pie is kept; Pie now starts from 0 to 270 degrees.
+    #[test]
+    fn a_whole_turn_pie_saved_by_the_old_bar_draws_an_ellipse() {
+        let mut app = App::headless();
+        let old = tracedraw_core::EllipseArc {
+            start_deg: 90.0,
+            end_deg: 90.0,
+            pie: true,
+        };
+        app.ellipse_arc = Some(old);
+        let prefs = app.tool_prefs();
+        let mut back = App::headless();
+        back.apply_tool_prefs(&prefs);
+        assert_eq!(back.ellipse_arc, None);
+        for whole in [(0.0, 360.0), (-90.0, 270.0), (45.0, 405.0)] {
+            assert!(is_whole_turn(&tracedraw_core::EllipseArc {
+                start_deg: whole.0,
+                end_deg: whole.1,
+                pie: false,
+            }));
+        }
+        app.ellipse_arc = Some(DEFAULT_ELLIPSE_ARC);
+        let prefs = app.tool_prefs();
+        back.apply_tool_prefs(&prefs);
+        assert_eq!(back.ellipse_arc, Some(DEFAULT_ELLIPSE_ARC));
+        let sweep = (DEFAULT_ELLIPSE_ARC.end_deg - DEFAULT_ELLIPSE_ARC.start_deg).rem_euclid(360.0);
+        assert!(sweep > 1.0 && sweep < 359.0, "a pie that shows as one");
     }
 
     #[test]

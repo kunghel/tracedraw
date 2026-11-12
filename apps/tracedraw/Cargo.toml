@@ -89,6 +89,10 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 # clipboard library already uses.
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
 x11rb = "0.13"
+# A copy offered on a Wayland clipboard as SVG, picture and text (#2288,
+# wayland_copy.rs): the Wayland clipboard library the clipboard library
+# already uses.
+wl-clipboard-rs = "0.9"
 
 # The Android app (docs/behavior/android.md): the system loads the library
 # into the app's activity, eframe drives egui through winit's Android

@@ -1458,9 +1458,58 @@ pub struct TextLayout {
     /// up (`baselines` and `lines` grow from 0) and the columns run right
     /// from the frame's left edge, the letters keeping their orientation.
     pub columns_left_to_right: bool,
+    /// Text on a path: how the straight line of `lines` is laid along the
+    /// path, so carets, selections and clicks follow the letters (#2423).
+    pub on_path: Option<PathPlacement>,
+}
+
+/// How the one line of a text on a path is laid along its baseline: a
+/// point of the straight line (x along it, y up from its baseline) goes
+/// where [`place_on_path`] puts the letters standing there.
+#[derive(Debug, Clone)]
+pub struct PathPlacement {
+    baseline: tracedraw_core::document::Baseline,
+    /// Arc length where the line's left end lands.
+    start: f64,
+    /// The line's left end, x, and its baseline, y, in the straight layout.
+    line_x0: f64,
+    line_y: f64,
+    lift: f64,
+    flip: bool,
+    orientation: PathTextOrientation,
+}
+
+impl PathPlacement {
+    /// The point of the straight layout `p` as placed along the path.
+    pub fn place(&self, p: Point) -> Option<Point> {
+        let (at, dir) = self.baseline.at(self.start + p.x - self.line_x0)?;
+        let flip = if self.flip { -1.0 } else { 1.0 };
+        let local = Point::new(0.0, flip * (p.y - self.line_y + self.lift));
+        Some(Affine::translate(at.to_vec2()) * letter_frame(self.orientation, dir) * local)
+    }
+
+    /// The point of the straight layout placed nearest the point `p`
+    /// beside the path: along it for x, away from it for y.
+    pub fn unplace(&self, p: Point) -> Option<Point> {
+        let (s, d) = self.baseline.nearest(p)?;
+        let d = if self.flip { -d } else { d };
+        Some(Point::new(
+            self.line_x0 + s - self.start,
+            self.line_y + d - self.lift,
+        ))
+    }
 }
 
 impl TextLayout {
+    /// A point of the space of `lines` and `baselines` where it is drawn:
+    /// along the path for text on a path, else where it is.
+    pub fn placed(&self, p: Point) -> Point {
+        self.on_path
+            .as_ref()
+            .and_then(|pp| pp.place(p))
+            .unwrap_or(p)
+    }
+
     /// From the space of `lines` and `baselines` to the space of `path`:
     /// the identity, or the quarter turn of vertical text.
     pub fn line_frame(&self) -> Affine {
@@ -3946,6 +3995,7 @@ impl FontSystem {
                 glyph_layout: GlyphLayout::default(),
                 vertical: false,
                 columns_left_to_right: false,
+                on_path: None,
             };
         }
         let para = req.para;
@@ -4033,6 +4083,12 @@ impl FontSystem {
         let mut col = 0usize;
         let mut y = 0.0f64; // top of the frame or baseline of artistic text
         let mut prev_para: Option<usize> = None;
+        // A drop cap taller than its paragraph (#1995): the right edge of
+        // its letter (from the column's left), the baseline of the last
+        // line it spans and its column. The next paragraphs' lines beside
+        // it are narrowed as its own are, and a paragraph with a drop cap
+        // of its own starts below it, so the letters do not overlap.
+        let mut cap_below: Option<(f64, f64, usize)> = None;
         'paragraphs: for (pi, glyphs) in paragraphs.iter().enumerate() {
             let (_, ps) = style_of(pi);
             let m_para = glyphs
@@ -4090,6 +4146,14 @@ impl FontSystem {
                 pi,
                 para_start,
             );
+            if cap_below.is_some_and(|(_, _, c)| c != col) {
+                cap_below = None;
+            }
+            if let (Some(_), Some((_, last, _))) = (cap, cap_below) {
+                // Its first line goes on the line after the cap above.
+                y = y.min(last);
+                cap_below = None;
+            }
             let mut row = 0usize;
             // How far a line moves down from the one before it.
             let advance_of = |m: &Metrics, first: bool, prev: Option<usize>| -> f64 {
@@ -4108,8 +4172,18 @@ impl FontSystem {
             loop {
                 let first = br.first;
                 let indent = if first { indent_first } else { indent_rest };
-                let cap_w = match cap {
-                    Some(c) if row < c.lines => c.width,
+                let cap_w = match (cap, cap_below) {
+                    (Some(c), _) if row < c.lines => c.width,
+                    (None, Some((right, last, c))) if c == col => {
+                        let m_est = br.peek().map(|g| metrics[g.span]).unwrap_or(m_para);
+                        let next = y - advance_of(&m_est, first, prev_para);
+                        if next >= last - 1e-6 {
+                            (right - indent).max(0.0)
+                        } else {
+                            cap_below = None;
+                            0.0
+                        }
+                    }
                     _ => 0.0,
                 };
                 // The first line gives the letter it drops back.
@@ -4256,6 +4330,12 @@ impl FontSystem {
                         }
                     }
                     lines.push(line);
+                }
+                if let (Some(c), 0, Some(l)) = (cap, row, lines.last()) {
+                    // The baseline of the cap's last line, in case the
+                    // paragraph ends before it.
+                    let step = ps.line_step(m_para.line_height, m_para.size);
+                    cap_below = Some((indent + c.width, l.y - (c.lines as f64 - 1.0) * step, col));
                 }
                 row += 1;
                 // The rest does not show: no need to break it into lines.
@@ -4700,7 +4780,15 @@ impl FontSystem {
         // 4. Text on a path: re-place the glyphs of artistic text along the curve.
         if let (Some(tp), true) = (req.on_path, artistic) {
             let mut on_path = GlyphLayout::default();
-            let placed = place_on_path(&lines, tp, style_of(0).0, spans, collect, &mut on_path);
+            let (placed, placement) =
+                place_on_path(&lines, tp, style_of(0).0, spans, collect, &mut on_path);
+            let placement = placement.map(|mut pp| {
+                if let Some(l) = line_boxes.first() {
+                    pp.line_x0 = l.x_range().0;
+                    pp.line_y = l.baseline;
+                }
+                pp
+            });
             return TextLayout {
                 path: placed,
                 bounds,
@@ -4712,6 +4800,7 @@ impl FontSystem {
                 glyph_layout: on_path,
                 vertical: false,
                 columns_left_to_right: false,
+                on_path: placement,
             };
         }
 
@@ -4726,6 +4815,7 @@ impl FontSystem {
             glyph_layout: glyphs_out,
             vertical,
             columns_left_to_right: mirror,
+            on_path: None,
         }
     }
 }
@@ -5251,15 +5341,15 @@ fn place_on_path(
     spans: &[TextSpan],
     collect: bool,
     glyphs: &mut GlyphLayout,
-) -> BezPath {
+) -> (BezPath, Option<PathPlacement>) {
     let mut out = BezPath::new();
     let Some(line) = lines.first() else {
-        return out;
+        return (out, None);
     };
     let baseline = tp.baseline();
     let total = baseline.length();
     if total <= 0.0 {
-        return out;
+        return (out, None);
     }
     let text_w: f64 = line.glyphs.iter().map(|g| g.advance).sum();
     let start = tp.offset
@@ -5306,7 +5396,16 @@ fn place_on_path(
         let gp = place * g.path.as_ref().clone();
         out.extend(gp.elements().iter().copied());
     }
-    out
+    let placement = PathPlacement {
+        baseline,
+        start,
+        line_x0: 0.0,
+        line_y: 0.0,
+        lift,
+        flip: tp.flipped(),
+        orientation: tp.orientation,
+    };
+    (out, Some(placement))
 }
 
 /// Add glyph `g`, placed by `a`, to the glyph layout when glyphs are
@@ -6024,6 +6123,59 @@ mod tests {
             let right = l.edges.last().copied().unwrap_or(0.0);
             assert!(right <= 40.0 + 0.01, "line ends at {right}");
         }
+    }
+
+    /// A drop cap taller than its paragraph (#1995): the next paragraph
+    /// with a drop cap of its own starts below the letter instead of
+    /// putting its letter over it, and one without a drop cap has its
+    /// lines beside the letter narrowed as the paragraph's own are.
+    #[test]
+    fn a_drop_cap_taller_than_its_paragraph_keeps_the_next_one_clear() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let long = "Words in a paragraph long enough to wrap over several lines, \
+                    so the drop cap has room to span three of them.";
+        let text = format!("Short one.\n{long}");
+        let para = ParagraphStyle {
+            drop_cap_lines: 3,
+            ..Default::default()
+        };
+        let lay = |spans: &[TextSpan]| {
+            f.layout(&TextRequest {
+                spans,
+                frame: Some(Size::new(40.0, 100.0)),
+                align: TextAlign::Left,
+                para: &para,
+                on_path: None,
+            })
+        };
+        // Both with a drop cap: the second's first line comes after the
+        // three lines the first letter spans.
+        let both = lay(&[span(&text)]);
+        let first_of_second = both
+            .lines
+            .iter()
+            .position(|l| l.start_char >= 11)
+            .expect("second paragraph");
+        assert_eq!(first_of_second, 1);
+        let step = both.lines[1].baseline - both.lines[2].baseline;
+        let gap = both.lines[0].baseline - both.lines[1].baseline;
+        assert!(gap > 2.5 * step, "{gap} {step}");
+        // The second without one: its lines beside the letter start where
+        // the first paragraph's text does, the next ones at the margin.
+        let mut plain = span(long);
+        plain.paragraph = Some(Box::new(tracedraw_core::paragraphs::ParagraphFormat::of(
+            TextAlign::Left,
+            &ParagraphStyle::default(),
+        )));
+        let mixed = lay(&[span("Short one.\n"), plain]);
+        let left = |i: usize| mixed.lines[i].edges[0];
+        assert!(left(0) > 3.0, "{}", left(0));
+        assert!((left(1) - left(0)).abs() < 0.01, "{} {}", left(1), left(0));
+        assert!((left(2) - left(0)).abs() < 0.01, "{} {}", left(2), left(0));
+        assert!(left(3) < 0.5, "{}", left(3));
     }
 
     #[test]

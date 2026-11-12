@@ -1203,6 +1203,9 @@ class ExportFilter {
   ShowDialog() { return true; }
   Reset() { }
 }
+// The page class under a second name, for methods whose argument is
+// named Page as the macros' named arguments need (#2165).
+const __PageClass = Page;
 class Document {
   get _d() { return __call('vg_doc', {}); }
   get Name() { const d = this._d; return d.file ? d.file.split(/[\\/]/).pop() : d.title; }
@@ -1240,8 +1243,19 @@ class Document {
   InsertPages(NumberOfPages, BeforePage, Page) {
     const at = (Page || 1) - (BeforePage ? 1 : 0);
     const ids = __call('vg_insert_pages', { count: NumberOfPages || 1, at: Math.max(0, at) }).ids;
-    return new Page(ids[0]);
+    return new __PageClass(ids[0]);
   }
+  // InsertPages with the new pages' size (#2165).
+  InsertPagesEx(NumberOfPages, BeforePage, Page, Width, Height) {
+    const at = (Page || 1) - (BeforePage ? 1 : 0);
+    const ids = __call('vg_insert_pages', { count: NumberOfPages || 1, at: Math.max(0, at) }).ids;
+    for (const id of ids) __call('set_page_size', { page: id, w: __mm(Width), h: __mm(Height) });
+    return new __PageClass(ids[0]);
+  }
+  // Undo logging of shapes a macro made itself: they are already part
+  // of the macro's one undo step (#2165).
+  LogCreateShapeRange(Range) { return Range; }
+  LogCreateShape(Shape) { return Shape; }
   CreateCurve() { return new Curve(); }
   CreateShapeRangeFromArray(...shapes) { return new ShapeRange(shapes.flatMap(__ids)); }
   Save() { const f = this._d.file; if (!f) throw new Error('The drawing has no file yet: use SaveAs'); __call('vg_save', { path: f }); }
@@ -1291,6 +1305,20 @@ const __outlineStyles = Object.assign(function (Index) { return __styleOf(Index)
   { get Count() { return __dashes.length; }, Item: (Index) => __styleOf(Index) });
 const __arrowHeads = Object.assign(function (Index) { return null; },
   { get Count() { return 1; }, Item: (Index) => null });
+// Application.FontList: a collection of family names, from 1, that
+// For Each walks.
+function __fontList() {
+  const names = __call('vg_fonts', {}).families;
+  const list = function (Index) { return list.Item(Index); };
+  list.Count = names.length;
+  list.Item = function (Index) {
+    const i = Number(Index);
+    if (!(i >= 1 && i <= names.length)) throw new Error('The index is out of range: ' + Index);
+    return names[i - 1];
+  };
+  list[Symbol.iterator] = function () { return names[Symbol.iterator](); };
+  return list;
+}
 const Application = {
   get ActiveDocument() { return new Document(); },
   get ActivePage() { return new Document().ActivePage; },
@@ -1298,7 +1326,11 @@ const Application = {
   get ActiveSelection() { return new SelectionShape(); },
   get ActiveSelectionRange() { return new ShapeRange(__call('selection', {}).ids); },
   get ActiveShape() { return new Document().ActiveShape; },
+  // The layer new objects go on; there is no virtual layer apart (#2165).
+  get ActiveVirtualLayer() { return new Document().ActiveLayer; },
   get ActiveWindow() { return new __Window(); },
+  // The installed font families, by name (#2165).
+  get FontList() { return __fontList(); },
   get Documents() { return new __Documents(); },
   get Version() { return '27.0'; },
   get VersionMajor() { return 27; },

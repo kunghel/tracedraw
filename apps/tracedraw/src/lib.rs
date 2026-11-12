@@ -93,6 +93,8 @@ mod fx;
 mod github;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_fx;
 mod gradient_presets;
 mod grammar;
 mod guides;
@@ -230,6 +232,8 @@ mod variable_outline;
 mod vector_mosaic;
 mod view;
 mod view_motion;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod wayland_copy;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(any(target_arch = "wasm32", test))]

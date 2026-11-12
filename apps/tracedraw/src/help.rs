@@ -80,6 +80,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::UpdatePolicy => "welcome/about-and-updates#automatic-check",
         Dialog::OpenNotes(_) | Dialog::MissingFonts(_) => "get-started/open-and-save#open-notes",
         Dialog::ConfirmShelfRemove { .. } => "objects/shelf#remove",
+        Dialog::HardwareAccelerationHint { .. } => "customize/options-app#general",
         Dialog::Export(_) => "file-formats/export",
         Dialog::Print(_) => "printing/print",
         Dialog::PrintMerge(_) => "printing/print-merge",
