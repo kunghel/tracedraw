@@ -213,7 +213,7 @@ The `.tdraw` name of a mode is its name in lower case without spaces
 |---|---|---|---|
 | Normal | `s` | | |
 | Add | `b + s`, clipped | | |
-| Subtract | `abs(b - s)` (drawn as Difference) | difference | Difference |
+| Subtract | `b + s - 1`, clipped at 0: white leaves the backdrop as it is, darker colours darken it (#2512; it was drawn as Difference) | multiply (nearest) | Multiply (nearest) |
 | Difference | `abs(b - s)` | difference | Difference |
 | Multiply | `b * s` | multiply | Multiply |
 | Divide | drawn as Screen | screen | Screen |

@@ -111,6 +111,9 @@ pub struct ShownFrame {
     pub editing: bool,
     /// The text does not fit (drawn red, with a tab below).
     pub overflow: bool,
+    /// The frame holds no text, none flows into it and it is not being
+    /// edited: the screen shows a hint in it (#2524).
+    pub empty_hint: bool,
 }
 
 /// The factors of an axis-aligned scale by positive amounts (with any
@@ -501,10 +504,14 @@ impl App {
             } else if let Some(t) = preview.filter(|_| selected) {
                 c = c.map(|p| t * p);
             }
+            let receives = self.prev_frame(s.id).is_some();
+            let empty = matches!(&s.kind, ShapeKind::Text { spans, .. }
+                if spans.iter().all(|sp| sp.text.is_empty()));
             out.push(ShownFrame {
                 id: s.id,
                 linked: self.next_frame(s.id).is_some(),
-                receives: self.prev_frame(s.id).is_some(),
+                receives,
+                empty_hint: empty && !receives && editing != Some(s.id),
                 corners: c,
                 chosen,
                 editing: editing == Some(s.id),
@@ -530,6 +537,43 @@ mod tests {
         app.finish_text();
         app.select(vec![id]);
         id
+    }
+
+    /// An empty paragraph text frame shows a hint on screen, until it
+    /// holds text or is being edited; a frame with text shows none
+    /// (#2524).
+    #[test]
+    fn an_empty_frame_shows_a_hint_until_it_has_text() {
+        let mut app = App::headless();
+        let shape = app
+            .new_shape(ShapeKind::Rect {
+                rect: kurbo::Rect::new(10.0, 10.0, 90.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![shape]);
+        app.object_to_text_frame();
+        let empty = app.selection[0];
+        let hint = |app: &App, id: ShapeId| {
+            app.shown_text_frames(None)
+                .into_iter()
+                .find(|f| f.id == id)
+                .expect("frame shown")
+                .empty_hint
+        };
+        assert!(hint(&app, empty), "an empty frame");
+        // Not picked either: Show Text Frames is on at first.
+        app.select(Vec::new());
+        assert!(hint(&app, empty), "an empty frame not selected");
+        let full = paragraph(&mut app);
+        assert!(!hint(&app, full), "a frame with text");
+        assert!(hint(&app, empty));
+        // The hint has words in every language.
+        assert_ne!(
+            crate::i18n::tr("canvas.empty_text_frame_hint"),
+            "canvas.empty_text_frame_hint"
+        );
     }
 
     fn frame_of(app: &App, id: ShapeId) -> (Point, Size) {

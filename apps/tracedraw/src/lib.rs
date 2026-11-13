@@ -238,6 +238,8 @@ mod wayland_copy;
 mod web;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_page;
+#[cfg(windows)]
+mod win_clipboard;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
 mod x11_clipboard;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
@@ -247,6 +249,11 @@ mod x11_copy;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../../../vendor/winit/src/pen_pressure.rs"]
 mod winit_pen_pressure;
+// The size bounds of the patched winit copy on Windows, with their tests
+// (vendor/README.md, #2487).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/size_bounds.rs"]
+mod winit_size_bounds;
 // The pen pressure of the patched eframe's web layer, with its tests
 // (vendor/README.md, #1410), so that the gate runs them.
 #[cfg(test)]
@@ -887,8 +894,11 @@ impl eframe::App for Shell {
         if let Some(app) = self.app.as_ref() {
             ui::screen_margins::apply(ctx, &app.settings, raw_input);
         }
-        // Shift, Ctrl and Alt held from the toolbar by a finger (#1499).
-        if let Some(app) = self.app.as_ref() {
+        // Shift, Ctrl and Alt held from the keys on the drawing by a
+        // finger, tapped (#1499) or held down while another finger draws
+        // (#2362).
+        if let Some(app) = self.app.as_mut() {
+            touch_modifiers::fingers_on_keys(app, raw_input);
             app.touch_mods.apply(ctx, raw_input);
         }
     }

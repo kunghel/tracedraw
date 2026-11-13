@@ -26,7 +26,11 @@ the right.
 - The active layer is where new objects go (drawn, pasted, duplicated,
   imported). Click a layer to make it active (the selection is cleared).
   Click an object to select it and make its layer active; Shift+click
-  adds it to the selection.
+  selects every object row from the row clicked before to this one,
+  Ctrl+Shift+click adds that range, and Ctrl+click (Cmd on a Mac) adds
+  one object or takes it out, as in a file list; locked objects stay out
+  (#2483,
+  `ui::objects_docker::tests::shift_click_selects_a_range_of_rows_and_ctrl_click_one_more`).
 - When the selection changes (picked on the page, Select All, an undo),
   the list scrolls just enough to show the first selected object's row,
   if its layer and groups are open; a selection that stays the same

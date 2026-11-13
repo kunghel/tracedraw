@@ -9377,3 +9377,101 @@ fn enveloped_artistic_text_is_written_as_enveloped_text() {
         );
     }
 }
+
+/// A picture in a frame given a transparency keeps it when saved: the
+/// clip frame's opacity, and its graded transparency from version 16,
+/// go to the container, whose transparency covers the picture. The
+/// frame shape's own was written, so the picture was saved opaque
+/// (#2513).
+#[test]
+fn a_picture_in_a_frame_keeps_its_transparency() {
+    let png = {
+        let mut pm = tiny_skia::Pixmap::new(4, 4).expect("pixmap");
+        pm.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        pm.encode_png().expect("png")
+    };
+    let framed = |graded: bool| {
+        let mut doc = doc_with(Vec::new());
+        let mut ids = doc.ids().clone();
+        let mut bm = Shape::new(
+            ids.shape(),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 100.0, 50.0),
+                width_px: 4,
+                height_px: 4,
+                png: png.clone().into(),
+                fx: None,
+            },
+        );
+        bm.fill = Fill::None;
+        bm.stroke = None;
+        let mut frame = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 90.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        frame.fill = Fill::None;
+        frame.stroke = None;
+        let mut pc = Shape::new(
+            ids.shape(),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![bm],
+            },
+        );
+        pc.fill = Fill::None;
+        pc.stroke = None;
+        if graded {
+            let mask = Fill::linear(
+                tracedraw_core::Color::rgb8(255, 255, 255),
+                tracedraw_core::Color::rgb8(0, 0, 0),
+                0.0,
+            );
+            pc.effects.push(tracedraw_core::live::Effect::Transparency {
+                mask,
+                merge: tracedraw_core::live::MergeMode::Normal,
+                target: 2,
+            });
+        } else {
+            pc.opacity = 0.3;
+        }
+        doc.pages[0].layers[0].shapes = vec![pc];
+        doc.set_ids(ids);
+        doc
+    };
+    let uniform = framed(false);
+    // Versions 13 to 15 write no transparency for any object (their
+    // tagged record is not known).
+    for v in versions().into_iter().filter(|v| !(13..=15).contains(v)) {
+        let bytes = document_to_cdr_version(&uniform, v);
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        // On the clip frame, or on its frame where the reader leaves a
+        // container's transparency.
+        let got = match &s.kind {
+            ShapeKind::ClipFrame { frame, .. } if s.opacity > 0.999 => frame.opacity,
+            _ => s.opacity,
+        };
+        assert!((got - 0.3).abs() < 0.01, "{v}: {got} {:?}", rep.warnings);
+    }
+    // Graded (version 16+): the frame's style string holds it (version
+    // 16 packs its data, so the later ones are looked at).
+    let graded = framed(true);
+    for v in [20u16, 24, 26] {
+        use std::io::Read as _;
+        let bytes = document_to_cdr_version(&graded, v);
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut found = false;
+        for i in 0..z.len() {
+            let mut f = z.by_index(i).expect("entry");
+            let mut d = Vec::new();
+            f.read_to_end(&mut d).expect("member");
+            let t = String::from_utf8_lossy(&d);
+            found |= t.contains(r#""transparency":{"mode":"0","fill":{"type":"2""#);
+        }
+        assert!(found, "{v}");
+    }
+}

@@ -273,6 +273,37 @@ impl App {
         None
     }
 
+    /// Whether the painted objects of the selection overprint their fill
+    /// (`fill`) or their outline: `Some(true)` all of them, `Some(false)`
+    /// none, `None` mixed or nothing selected. Read by reference, as the
+    /// status bar asks it every frame.
+    pub fn selection_overprint(&self, fill: bool) -> Option<bool> {
+        let selected = self.selected_rc();
+        let mut leaves = Vec::new();
+        for s in selected.iter() {
+            leaf_refs(s, &mut leaves);
+        }
+        let count = leaves
+            .iter()
+            .filter(|s| {
+                if fill {
+                    s.overprint_fill
+                } else {
+                    s.overprint_outline
+                }
+            })
+            .count();
+        if leaves.is_empty() {
+            None
+        } else if count == leaves.len() {
+            Some(true)
+        } else if count == 0 {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     pub fn paint_targets(&self) -> Vec<Shape> {
         let mut out = Vec::new();
         for s in self.selected_rc().iter() {

@@ -124,6 +124,30 @@ pub fn drawing_scale() -> f64 {
     DRAWING_SCALE.with(|c| c.get())
 }
 
+/// The inner shadow the Inner Shadow tool gives the next object dragged
+/// on (#2473), as CorelDRAW's Inner Shadow tool starts: black, half
+/// opaque, feathered and multiplied with the object.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InnerShadowStyle {
+    pub color: Color,
+    /// 0..1
+    pub opacity: f64,
+    /// Feathering, millimetres.
+    pub blur: f64,
+    pub merge: tracedraw_core::live::MergeMode,
+}
+
+impl Default for InnerShadowStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::BLACK,
+            opacity: 0.5,
+            blur: 2.0,
+            merge: tracedraw_core::live::MergeMode::Multiply,
+        }
+    }
+}
+
 /// Units of measure, in the order the Units list shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Units {
@@ -469,6 +493,10 @@ pub enum Drag {
         from: Point,
         begun: bool,
     },
+    /// A press on an edge of a polygon or star (Shape tool): the first
+    /// move turns it into a curve and bends the edge grabbed (page point
+    /// the press began at); a plain click converts nothing.
+    PolygonEdge { shape: ShapeId, from: Point },
     /// Dragging a node transform handle (Shape tool).
     NodeTransform {
         handle: Handle,
@@ -1104,6 +1132,9 @@ pub struct App {
     /// The keys on the drawing as drawn this frame: each one's id and
     /// place (empty when they are not shown).
     pub touch_keys_shown: Vec<(&'static str, egui::Rect)>,
+    /// A finger held down on one of those keys, and the finger drawing
+    /// meanwhile (#2362, touch_modifiers.rs).
+    pub key_fingers: crate::touch_modifiers::KeyFingers,
     /// The fingers on the drawing, for the taps of two and three fingers
     /// that undo and redo (touch_taps.rs).
     pub touch_tap: crate::touch_taps::TapGesture,
@@ -1192,6 +1223,9 @@ pub struct App {
     /// Block shadow colour and gap for the next drag.
     pub block_shadow_color: Color,
     pub block_shadow_gap: f64,
+    /// Inner shadow colour, opacity (0..1), feathering (mm) and merge
+    /// mode for the next drag (#2473).
+    pub inner_shadow: InnerShadowStyle,
     pub table_border: Option<Stroke>,
     pub graph_rows: u32,
     pub graph_cols: u32,
@@ -1199,6 +1233,10 @@ pub struct App {
     pub action_lines_radial: bool,
     /// 3-point tools: the base segment already dragged, waiting for the third click.
     pub three_point_base: Option<(Point, Point)>,
+    /// The first line of the 3-Point Ellipse is being dragged with Ctrl
+    /// held: it is the radius of a circle round the press point, drawn
+    /// when the button is let go (#2550).
+    pub three_point_circle: bool,
     pub media_width: f64,
     pub media_angle: f64,
     pub dimension_points: Vec<Point>,
@@ -1308,6 +1346,8 @@ pub struct App {
     /// The Outline Pen dialog's outline is shown on the selection as an
     /// engine preview (#741).
     pub outline_preview: bool,
+    /// The Recolor dialog shows its change on the drawing.
+    pub recolor_preview: bool,
     /// A bitmap effect dialog's effect shown on the selection while it is
     /// open, made off the interface thread (see `fx::preview`).
     pub fx_preview: crate::fx::preview::FxPreview,
@@ -1625,6 +1665,12 @@ pub struct App {
     pub pending_copy_effect: Option<crate::copy_effect::CopyKind>,
     /// Copy Envelope Properties waits for the object to copy from.
     pub pending_copy_envelope: bool,
+    /// Copy Fill on the Interactive Fill bar: the next click picks the
+    /// object whose fill the selection takes (#2471).
+    pub pending_copy_fill: bool,
+    /// The object whose fill is being dragged from the Interactive Fill
+    /// bar's swatch onto another object (#2523).
+    pub fill_swatch_drag: Option<tracedraw_core::document::Shape>,
     pub pending_clone_effect: Option<EffectKind>,
     /// Document Setup > Page Size state.
     pub options_labels: bool,
@@ -1695,6 +1741,9 @@ pub struct App {
     /// in effect (an undone action is never repeated, #366), with the
     /// actions done right before it to the same selection (#1566).
     pub repeatables: Vec<(u64, RepeatEntry)>,
+    /// The objects the command being run changes, as they were before it,
+    /// taken by the next repeatable action noted ([`RepeatEntry::refs`]).
+    pub repeat_refs: Vec<Shape>,
     pub show_non_printing: bool,
     pub text_hyphenation: bool,
     /// Macro recording in progress: the commands run since Record started.
@@ -1803,6 +1852,8 @@ pub struct App {
     pub export_assets: crate::export_assets::ExportAssets,
     /// A colour dragged from a palette (`Some(None)`: No Color).
     pub palette_drag: Option<Option<Color>>,
+    /// The fill being dragged from the status bar onto an object.
+    pub fill_drag: Option<Fill>,
     /// Where the document palette is this frame (a drop target).
     pub doc_palette_rect: Option<egui::Rect>,
     /// Where the bars of the user's own palettes were last drawn, by
@@ -2006,6 +2057,18 @@ pub struct App {
     pub smoothing_mark: Option<crate::node_edit::SmoothingMark>,
     /// Last clicked effect/mesh node (palette clicks colour a mesh node).
     pub selected_effect_node: Option<(ShapeId, usize)>,
+    /// The object whose drop shadow was clicked with the Pick tool: the
+    /// shadow is chosen on its own (#2545). It counts only while that
+    /// object alone is selected; see [`App::picked_shadow`].
+    pub shadow_picked: Option<ShapeId>,
+    /// More mesh nodes chosen with the one in `selected_effect_node`
+    /// (Shift+click, a marquee; discussion #2387): the node they go with
+    /// and their numbers in its mesh. They count only while that node is
+    /// still the one chosen.
+    pub mesh_more_nodes: Option<((ShapeId, usize), Vec<usize>)>,
+    /// The Mesh Fill bar's eyedropper is on: the next click samples a
+    /// colour for the chosen mesh nodes (discussion #2387).
+    pub mesh_eyedropper: bool,
     /// Open drawings, one tab each (see `documents.rs`); the active one's
     /// state lives in the fields above.
     pub docs: Vec<crate::documents::DocSlot>,
@@ -2413,6 +2476,11 @@ pub struct RepeatEntry {
     pub action: Repeatable,
     pub before: Vec<ShapeId>,
     pub after: Vec<ShapeId>,
+    /// The objects it was done to as they were before it (their fill,
+    /// outline, text and kind), for Edit > Repeat on Similar to find the
+    /// objects like them; empty when the action did not change them (a
+    /// copy), and the objects as they are now stand for themselves.
+    pub refs: Vec<Shape>,
 }
 
 /// Most actions one Repeat replays.
@@ -2714,6 +2782,7 @@ impl App {
             show_dockers: true,
             touch_mods: Default::default(),
             touch_keys_shown: Vec::new(),
+            key_fingers: Default::default(),
             touch_tap: Default::default(),
             docker_tab: DockerTab::Hints,
             flyout_open: None,
@@ -2756,12 +2825,14 @@ impl App {
             table_fill: Fill::None,
             block_shadow_color: Color::cmyk_pct(0.0, 0.0, 0.0, 60.0),
             block_shadow_gap: 0.0,
+            inner_shadow: InnerShadowStyle::default(),
             table_border: Some(Stroke::hairline(Color::BLACK)),
             graph_rows: 4,
             graph_cols: 3,
             action_lines_count: 12,
             action_lines_radial: false,
             three_point_base: None,
+            three_point_circle: false,
             media_width: 3.0,
             media_angle: 45.0,
             dimension_points: Vec::new(),
@@ -2817,6 +2888,7 @@ impl App {
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
             fill_preview: false,
             outline_preview: false,
+            recolor_preview: false,
             fx_preview: Default::default(),
             selected_cache: std::cell::RefCell::new(None),
             outline_cache: std::cell::RefCell::new(None),
@@ -2941,6 +3013,7 @@ impl App {
             shelf: Default::default(),
             export_assets: crate::export_assets::ExportAssets::new(),
             palette_drag: None,
+            fill_drag: None,
             doc_palette_rect: None,
             palette_drop_rects: Vec::new(),
             palette_strip_rects: Vec::new(),
@@ -2961,6 +3034,8 @@ impl App {
             export_by_format: Vec::new(),
             pending_copy_effect: None,
             pending_copy_envelope: false,
+            pending_copy_fill: false,
+            fill_swatch_drag: None,
             pending_clone_effect: None,
             options_labels: false,
             navigator_open: false,
@@ -2992,6 +3067,7 @@ impl App {
             anchor_sel: None,
             pending_order: None,
             repeatables: Vec::new(),
+            repeat_refs: Vec::new(),
             show_non_printing: false,
             text_hyphenation: false,
             recording: None,
@@ -3138,6 +3214,9 @@ impl App {
             smoothing: None,
             smoothing_mark: None,
             selected_effect_node: None,
+            shadow_picked: None,
+            mesh_more_nodes: None,
+            mesh_eyedropper: false,
             docs: Vec::new(),
             active_doc: 0,
             untitled_counter: 0,
@@ -4575,6 +4654,15 @@ impl App {
     /// no change of selection in between (a move and a fill change of
     /// the same objects, #1566).
     pub fn repeat_group(&self) -> Vec<Repeatable> {
+        self.repeat_group_entries()
+            .into_iter()
+            .map(|e| e.action.clone())
+            .collect()
+    }
+
+    /// [`repeat_group`](Self::repeat_group) as the entries noted, oldest
+    /// first.
+    pub fn repeat_group_entries(&self) -> Vec<&RepeatEntry> {
         let find = |id: u64| self.repeatables.iter().rev().find(|(i, _)| *i == id);
         let Some((mut id, mut entry)) = self
             .repeatables
@@ -4585,7 +4673,7 @@ impl App {
         else {
             return Vec::new();
         };
-        let mut group = vec![entry.action.clone()];
+        let mut group = vec![entry];
         // A Repeat of a group holds the actions before it already.
         while group.len() < REPEAT_GROUP_MAX && !matches!(entry.action, Repeatable::Group(_)) {
             let Some((below, prev)) = self.engine.step_below(id).and_then(find) else {
@@ -4604,7 +4692,7 @@ impl App {
             {
                 break;
             }
-            group.push(prev.action.clone());
+            group.push(prev);
             (id, entry) = (*below, prev);
         }
         group.reverse();
@@ -4627,6 +4715,7 @@ impl App {
             action: r,
             before,
             after: self.selection.clone(),
+            refs: std::mem::take(&mut self.repeat_refs),
         };
         self.repeatables.retain(|(i, _)| *i != id);
         self.repeatables.push((id, entry));
@@ -4702,6 +4791,12 @@ impl App {
         }
     }
 
+    /// One repeatable action again, on the current selection (Repeat on
+    /// Similar).
+    pub(crate) fn replay(&mut self, action: Repeatable) {
+        self.repeat_action(action);
+    }
+
     /// One repeatable action again, on the current selection.
     fn repeat_action(&mut self, action: Repeatable) {
         let cmd = match action {
@@ -4753,6 +4848,7 @@ impl App {
                 fields,
             },
             Command::SetOpacity { opacity, .. } => Command::SetOpacity { shapes, opacity },
+            Command::Recolor { recolor, .. } => Command::Recolor { shapes, recolor },
             other => other,
         };
         self.run(cmd);
@@ -5199,10 +5295,25 @@ impl App {
                 .reduce(|a, b| a.union(b)),
             _ => None,
         };
+        // The objects as they were, for Repeat on Similar.
+        self.repeat_refs = match &cmd {
+            Command::TransformShapes { shapes, .. }
+            | Command::SetFill { shapes, .. }
+            | Command::SetStroke { shapes, .. }
+            | Command::PatchStroke { shapes, .. }
+            | Command::PatchFill { shapes, .. }
+            | Command::SetOpacity { shapes, .. }
+            | Command::Recolor { shapes, .. } => shapes
+                .iter()
+                .filter_map(|id| self.doc().find_shape(*id).cloned())
+                .collect(),
+            _ => Vec::new(),
+        };
         self.break_clone_links_for(&cmd);
         let keep = self.edited_lines_kept(std::slice::from_ref(&cmd));
         if let Err(e) = self.engine.run(&cmd) {
             self.status = format!("{}: {e}", cmd.label());
+            self.repeat_refs.clear();
             return;
         }
         if let Some(k) = keep {
@@ -5230,9 +5341,11 @@ impl App {
                 | Command::PatchStroke { .. }
                 | Command::PatchFill { .. }
                 | Command::SetOpacity { .. }
+                | Command::Recolor { .. }
         ) {
             self.note_repeatable(Repeatable::Command(Box::new(cmd.clone())));
         }
+        self.repeat_refs.clear();
         if let Some(rec) = &mut self.recording {
             rec.push(cmd);
         }
@@ -5279,6 +5392,10 @@ impl App {
             self.dimension_points.clear();
             self.previous_tool = self.tool;
             self.tool = tool;
+            // Another tool ends a pick of Image > Color Mask (#2479).
+            if tool != Tool::ColorEyedropper {
+                self.mask.picking = false;
+            }
             self.rotate_mode = false;
             self.flyout_open = None;
             if let Some(gi) = crate::tools::GROUPS
@@ -5308,6 +5425,7 @@ impl App {
             }
         }
         self.selection = ids;
+        self.shadow_picked = None;
         self.marquee_selection = None;
         self.rotate_mode = false;
         self.node_selection.clear();
@@ -5523,6 +5641,22 @@ impl App {
             });
             self.select(vec![id]);
         }
+    }
+
+    /// [`Self::finish_three_point`] for a circle round `center` through
+    /// `edge`: the first line of the 3-Point Ellipse dragged with Ctrl
+    /// held is the circle's radius, and the circle is drawn at once,
+    /// with no third click (#2550).
+    pub fn finish_three_point_circle(&mut self, center: Point, edge: Point) {
+        let radius = edge - center;
+        let r = radius.hypot();
+        if r < 0.05 {
+            return;
+        }
+        // The circle as a 3-point ellipse: its centre line a diameter
+        // through the edge point, and as high as it is long.
+        let normal = Vec2::new(-radius.y, radius.x);
+        self.finish_three_point(center - radius, edge, center + normal, false);
     }
 
     /// 3-point tools: the base segment `a -> b` was dragged, `c` is the third
@@ -6297,11 +6431,32 @@ impl App {
         if let Err(e) = self.engine.run_batch("Duplicate", &cmds) {
             self.status = e.to_string();
         }
+        self.carry_pivots(&pairs);
         self.select(ids.clone());
         self.last_duplicate = pairs;
         self.forgotten_duplicate = None;
         if self.symmetry_edit.is_some() {
             self.join_symmetry(&ids);
+        }
+    }
+
+    /// Copies take the centre of rotation moved for their originals, at
+    /// the same place of each copy (or of the copies' box): a copy made
+    /// with Duplicate and turned, then repeated, goes on round the point
+    /// the original was turned about, as in CorelDRAW. The copies turned
+    /// about the middle of their box (#2375, #2376).
+    fn carry_pivots(&mut self, pairs: &[(ShapeId, ShapeId)]) {
+        for (orig, copy) in pairs {
+            if let Some(local) = self.pivots.single.get(orig).copied() {
+                self.pivots.single.insert(*copy, local);
+            }
+        }
+        let mut originals: Vec<ShapeId> = pairs.iter().map(|(o, _)| *o).collect();
+        originals.sort();
+        if let Some(uv) = self.pivots.several.get(&originals).copied() {
+            let mut copies: Vec<ShapeId> = pairs.iter().map(|(_, c)| *c).collect();
+            copies.sort();
+            self.pivots.several.insert(copies, uv);
         }
     }
 
@@ -6635,10 +6790,14 @@ impl App {
             }
             return;
         }
-        // With the Mesh Fill or Shape tool, a colour goes to the selected
-        // mesh node.
+        // With the Mesh Fill, Shape or Interactive Fill tool, a colour goes
+        // to the chosen mesh nodes (#2506).
         if let Fill::Solid(c) = &fill {
-            if matches!(self.tool, Tool::MeshFill | Tool::Shape) && self.color_mesh_node(*c) {
+            if matches!(
+                self.tool,
+                Tool::MeshFill | Tool::Shape | Tool::InteractiveFill
+            ) && self.color_mesh_node(*c)
+            {
                 return;
             }
         }
@@ -6661,7 +6820,17 @@ impl App {
                 _ => None,
             };
             let before = self.engine.revision();
-            self.run(Command::SetFill { shapes, fill });
+            // A new mesh fill lies over each object's own box, where its
+            // grid and nodes are drawn and edited (#2506).
+            let fitted = match &fill {
+                Fill::Mesh(m) => crate::copy_props::new_mesh_commands(m, &self.selected_shapes()),
+                _ => Vec::new(),
+            };
+            if fitted.is_empty() {
+                self.run(Command::SetFill { shapes, fill });
+            } else if let Err(e) = self.run_batch_keeping_lines("Fill", &fitted) {
+                self.status = e.to_string();
+            }
             if let Some(c) = used.filter(|_| remember && self.engine.revision() != before) {
                 self.add_ink_for(c);
                 self.remember_color(c);
@@ -7470,6 +7639,22 @@ impl App {
                     });
                 }
                 doc2.set_ids(ids);
+                // The paragraph frames the file's text continues in are
+                // linked (#2323).
+                let links = {
+                    let shapes: Vec<&Shape> = doc2
+                        .pages
+                        .iter()
+                        .flat_map(|p| &p.layers)
+                        .flat_map(|l| &l.shapes)
+                        .collect();
+                    crate::textflow::imported_flow_links(&shapes)
+                };
+                for (id, data) in links {
+                    if let Some(s) = doc2.find_shape_mut(id) {
+                        s.data = data;
+                    }
+                }
                 (
                     doc2,
                     crate::i18n::trf(
@@ -9586,7 +9771,10 @@ pub fn fill_description(fill: &Fill) -> String {
             tracedraw_core::FountainKind::Shaped => tr("fill.shaped_fountain"),
         },
         Fill::Pattern(tracedraw_core::Pattern::TwoColor { tile, .. }) => {
-            trf("fill.two_color_pattern", &[("t", tile.name())])
+            trf(
+                "fill.two_color_pattern",
+                &[("t", &crate::ui::dockers::pattern_tile_name(*tile))],
+            )
         }
         Fill::Pattern(tracedraw_core::Pattern::Bitmap { .. }) => tr("fill.bitmap_pattern"),
         Fill::Pattern(tracedraw_core::Pattern::Vector { .. }) => tr("fill.vector_pattern"),

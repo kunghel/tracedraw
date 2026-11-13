@@ -4853,6 +4853,15 @@ impl<'a> Writer<'a> {
         // The frame's effects would make it several objects; the first
         // would take the container's arguments.
         f.effects.clear();
+        // The clip frame's transparency is the container's: a frame is
+        // drawn at the clip frame's opacity, its own ignored, so the
+        // container takes that (and a graded transparency kept for it).
+        // The frame's own was written, so a transparent picture in a
+        // frame was saved opaque (#2513).
+        f.opacity = s.opacity;
+        if let Some(g) = self.graded.get(&s.id).cloned() {
+            self.graded.insert(f.id, g);
+        }
         if f.name.is_none() {
             f.name = s.name.clone();
         }
@@ -5770,6 +5779,8 @@ impl<'a> Writer<'a> {
                 let clip = bm.transform.inverse() * frame.page_path();
                 let mut b = bm.clone();
                 b.transform = s.transform * bm.transform;
+                // The clip frame's transparency covers the picture (#2513).
+                b.absorb_opacity(s.opacity);
                 return self.bitmap_object(&b, centre, Some(&clip));
             }
             ShapeKind::ClipFrame { frame, contents } => {
@@ -5778,6 +5789,10 @@ impl<'a> Writer<'a> {
                 // unclipped.
                 let mut f = (**frame).clone();
                 f.absorb(s.transform);
+                // The clip frame's transparency is on each of them, as a
+                // group's is (#2513); the frame's own is not drawn.
+                f.opacity = 1.0;
+                f.absorb_opacity(s.opacity);
                 let mut kids = Vec::new();
                 if !matches!(f.fill, Fill::None) {
                     let mut under = f.clone();
@@ -5787,6 +5802,7 @@ impl<'a> Writer<'a> {
                 for c in contents {
                     let mut c = c.clone();
                     c.absorb(s.transform);
+                    c.absorb_opacity(s.opacity);
                     kids.push(c);
                 }
                 if f.stroke.is_some() {

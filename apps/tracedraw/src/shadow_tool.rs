@@ -182,6 +182,53 @@ fn outline_goes_round(s: &Shape, p: Point) -> bool {
 }
 
 impl App {
+    /// The object whose drop shadow is chosen on its own (#2545): its
+    /// shadow was clicked with the Pick tool, it alone is selected and it
+    /// still casts a shadow.
+    pub fn picked_shadow(&self) -> Option<ShapeId> {
+        let id = self.shadow_picked?;
+        if self.selection.as_slice() != [id] {
+            return None;
+        }
+        let s = self.doc().find_shape(id)?;
+        s.shadow.is_some_and(|sh| sh.opacity > 0.0).then_some(id)
+    }
+
+    /// The box the chosen drop shadow covers on the page, its feathered
+    /// edge included (#2545).
+    pub fn picked_shadow_bounds(&self) -> Option<Rect> {
+        let id = self.picked_shadow()?;
+        let s = self.doc().shape_on_page(id)?;
+        let sh = s.shadow?;
+        let b = shadow_box(&s);
+        let r = sh.bounds(b);
+        (r.width().is_finite() && r.height().is_finite()).then_some(r)
+    }
+
+    /// A click with the Pick tool on the drop shadow of `id` (not on the
+    /// object itself) chooses the shadow alone: it shows its own box, and
+    /// Delete takes the shadow away and leaves the object (#2545).
+    pub fn pick_shadow(&mut self, id: ShapeId) {
+        self.select(vec![id]);
+        if self.selection.as_slice() == [id] {
+            self.shadow_picked = Some(id);
+        }
+    }
+
+    /// Delete with a shadow chosen on its own: the shadow goes, its
+    /// object stays selected. False when no shadow is chosen.
+    pub fn delete_picked_shadow(&mut self) -> bool {
+        let Some(id) = self.picked_shadow() else {
+            return false;
+        };
+        self.run(Command::SetShadow {
+            shapes: vec![id],
+            shadow: None,
+        });
+        self.shadow_picked = None;
+        true
+    }
+
     /// The object a drag with the Drop Shadow or the Block Shadow tool
     /// starts on at `p`: the one picked there, else the topmost one whose
     /// outline goes round `p`. A press in the hole of a ring, or in the

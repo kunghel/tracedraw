@@ -82,6 +82,10 @@ offers to move it there, copy it there, copy its fill, outline or all its
 properties to the object under the pointer, or place it inside that object
 as a [clip frame](clip-frames.md).
 
+Hold a key as you release over another object to skip the menu: `Shift`
+copies the outline to that object, `Alt` the fill, and `Ctrl` (`Cmd` on a
+Mac) both.
+
 ### The property bar {#pick-property-bar}
 
 With nothing selected, the property bar shows the page size and orientation,

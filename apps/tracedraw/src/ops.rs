@@ -973,6 +973,47 @@ fn shaping_area(s: &Shape) -> tracedraw_core::BezPath {
     overlay_with(&all, &empty, Op::Weld, FillRule::NonZero)
 }
 
+/// The area an object gives Create Boundary, and whether open curves
+/// were part of it: an open curve covers no area of its own, so it gives
+/// the band its outline draws (with the outline's width; a hairline or
+/// no outline as a thin line), and a group gives what its objects give.
+/// Open curves read as areas came out as a broken object that would not
+/// fill (#2548).
+fn boundary_area(s: &Shape) -> (tracedraw_core::BezPath, bool) {
+    use tracedraw_core::shaping::{overlay, Op};
+    let open = |s: &Shape| matches!(s.kind, ShapeKind::Path { closed: false, .. });
+    let mut leaves = group_leaves(s);
+    if leaves.is_empty() {
+        leaves.push(s.clone());
+    }
+    if !leaves.iter().any(open) {
+        return (shaping_area(s), false);
+    }
+    let empty = tracedraw_core::BezPath::new();
+    let mut all = tracedraw_core::BezPath::new();
+    for leaf in &leaves {
+        let area = if open(leaf) {
+            let mut lined = leaf.clone();
+            if lined.stroke.is_none() {
+                lined.stroke = Some(tracedraw_core::Stroke::default());
+            }
+            crate::tools2::outline_object_path(&lined).unwrap_or_default()
+        } else {
+            shaping_area(leaf)
+        };
+        if area.elements().is_empty() {
+            continue;
+        }
+        let clean = overlay(&area, &empty, Op::Weld);
+        all = if all.elements().is_empty() {
+            clean
+        } else {
+            overlay(&all, &clean, Op::Weld)
+        };
+    }
+    (all, true)
+}
+
 /// What a picture target shows, for a shaping result to hold: the picture
 /// itself, or what a cropped picture (a clip frame holding one) holds,
 /// placed on the page. `None` for other objects.
@@ -1020,7 +1061,67 @@ impl App {
     /// `Shaping::default_leave`).
     pub fn shaping(&mut self, op: Shaping) {
         let (source, target) = op.default_leave();
+        if self.shaping_on_group_members(op, source, target) {
+            return;
+        }
         self.begin_shaping(op, source, target);
+    }
+
+    /// The one selected object is a group of two or more objects that an
+    /// operation needing two acts on, as in CorelDRAW: Weld, Trim,
+    /// Intersect and the others from the menus or the property bar take
+    /// the group's objects, as if they were selected with a marquee (the
+    /// bottom one the target), instead of waiting for a target (#2306).
+    fn shaping_group(&self, op: Shaping) -> Option<tracedraw_core::ShapeId> {
+        if self.selection.len() != 1 || op.needs() < 2 {
+            return None;
+        }
+        let s = self.selected_shapes().into_iter().next()?;
+        let ShapeKind::Group { children } = &s.kind else {
+            return None;
+        };
+        (children.len() >= 2 && !s.locked && !crate::dimensions::is_dimension(&s)).then_some(s.id)
+    }
+
+    /// Whether the menus and the property bar offer `op` for the
+    /// selection: enough objects, or one group of them (#2306).
+    pub fn shaping_ready(&self, op: Shaping) -> bool {
+        op.ready(self.selection.len()) || self.shaping_group(op).is_some()
+    }
+
+    /// [`Self::shaping_group`]: ungroup and run `op` on the group's
+    /// objects, one undo step. Nothing made (no overlap) leaves the group
+    /// as it was. Whether the selection was such a group.
+    fn shaping_on_group_members(
+        &mut self,
+        op: Shaping,
+        leave_source: bool,
+        leave_target: bool,
+    ) -> bool {
+        let Some(group) = self.shaping_group(op) else {
+            return false;
+        };
+        let mark = self.engine.begin_group();
+        let before = self.engine.revision();
+        self.ungroup_selection();
+        if self.engine.revision() == before || self.selection.len() < 2 {
+            self.engine.end_group(mark, "Ungroup");
+            return true;
+        }
+        let ungrouped = self.engine.revision();
+        self.marquee_selection = Some(self.selection.clone());
+        self.shaping_with(op, leave_source, leave_target);
+        if self.engine.revision() == ungrouped {
+            let status = std::mem::take(&mut self.status);
+            let _ = self.engine.undo();
+            self.engine.end_group(mark, "Ungroup");
+            self.select(vec![group]);
+            self.status = status;
+            return true;
+        }
+        let label = self.engine.undo_label().unwrap_or("Weld");
+        self.engine.end_group(mark, label);
+        true
     }
 
     /// Start an operation: with two or more objects selected it runs at
@@ -1163,10 +1264,34 @@ impl App {
             r
         } else {
             match op {
-                Shaping::Weld | Shaping::Boundary => paths
+                Shaping::Weld => paths
                     .iter()
                     .skip(1)
                     .fold(paths[0].clone(), |acc, p| overlay(&acc, p, Op::Weld)),
+                // The outer edge of everything selected, open curves by
+                // the band their outline draws; where open curves close
+                // round an area, it is filled: one solid object (#2548).
+                Shaping::Boundary => {
+                    let areas: Vec<(tracedraw_core::BezPath, bool)> =
+                        ordered.iter().map(boundary_area).collect();
+                    let any_open = areas.iter().any(|(_, o)| *o);
+                    let welded = areas
+                        .iter()
+                        .map(|(p, _)| p)
+                        .filter(|p| !p.elements().is_empty())
+                        .fold(tracedraw_core::BezPath::new(), |acc, p| {
+                            if acc.elements().is_empty() {
+                                overlay(p, &tracedraw_core::BezPath::new(), Op::Weld)
+                            } else {
+                                overlay(&acc, p, Op::Weld)
+                            }
+                        });
+                    if any_open && !welded.elements().is_empty() {
+                        tracedraw_core::shaping::outer_cover(&welded, 0.0)
+                    } else {
+                        welded
+                    }
+                }
                 Shaping::Intersect => paths
                     .iter()
                     .skip(1)
@@ -2760,5 +2885,99 @@ mod curves_and_target_tests {
         let (path, closed) = result(&app);
         assert_eq!(moves(&path), 2);
         assert!(!closed, "combined open curves stay open");
+    }
+
+    /// #1324, discussion #2415: Convert to Curves on a group (menu, right
+    /// click or Ctrl+Q) turns everything inside into curves, nested groups
+    /// too, and the group stays a group with the same objects, as in
+    /// CorelDRAW. Before it was greyed and did nothing.
+    #[test]
+    fn a_group_converts_whole_and_stays_a_group() {
+        let mut app = App::headless();
+        let text = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("AB", "Arial", 24.0)],
+                origin: tracedraw_core::geometry::Point::new(20.0, 100.0),
+                frame: None,
+                align: tracedraw_core::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("a text");
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(20.0, 20.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let ellipse = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(50.0, 20.0, 60.0, 30.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.select(vec![rect, ellipse]);
+        app.group_selection();
+        let inner = app.selection[0];
+        app.select(vec![text, inner]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert_eq!(app.selection, vec![group]);
+        assert!(app.can_convert_to_curves(), "the command is not greyed");
+        app.convert_to_curves();
+        let s = app.doc().find_shape(group).expect("still there").clone();
+        assert!(matches!(s.kind, ShapeKind::Group { .. }), "{:?}", s.kind);
+        let mut all = Vec::new();
+        ids(&s, &mut all);
+        for id in [text, inner, rect, ellipse] {
+            assert!(all.contains(&id), "{id:?} kept its id");
+        }
+        assert!(matches!(
+            app.doc().find_shape(inner).map(|s| &s.kind),
+            Some(ShapeKind::Group { .. })
+        ));
+        let mut pieces = Vec::new();
+        leaves(&s, &mut pieces);
+        assert_eq!(pieces.len(), 3, "{pieces:?}");
+        assert!(pieces
+            .iter()
+            .all(|p| matches!(p.kind, ShapeKind::Path { .. })));
+        // One undo step brings the group back as it was.
+        assert!(!app.can_convert_to_curves());
+        app.engine.undo().expect("undo");
+        assert!(matches!(
+            app.doc().find_shape(text).map(|s| &s.kind),
+            Some(ShapeKind::Text { .. })
+        ));
+        assert!(app.can_convert_to_curves());
+    }
+
+    /// A group of curves only has nothing to convert: the command stays
+    /// greyed and running it changes nothing.
+    #[test]
+    fn a_group_of_curves_has_nothing_to_convert() {
+        let mut app = App::headless();
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(20.0, 20.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let b = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(50.0, 20.0, 60.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a, b]);
+        app.convert_to_curves();
+        app.group_selection();
+        assert!(!app.can_convert_to_curves());
+        let rev = app.engine.revision();
+        app.convert_to_curves();
+        assert_eq!(app.engine.revision(), rev);
     }
 }

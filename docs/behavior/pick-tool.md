@@ -10,7 +10,7 @@
 | Drag on empty | marquee (a dashed blue frame); objects wholly inside are selected; with Alt held when the drag ends, every object the frame touches: its outline crosses or lies in the frame, or the frame lies in its fill (text, bitmaps, tables and clip frames anywhere in their box; a group when one of its objects counts), but an object the frame merely lies in is left out when the frame crosses or holds the outline of another, so a frame drawn round a small object over, or hidden behind, a larger filled one takes the small object alone (#1503, `select_region::tests::a_touching_drag_leaves_out_the_object_it_merely_lies_in`); with Alt held at the press the frame starts also over an object, selected or not (the object in front of a hidden one, a background under the objects; without Alt a press on an object moves it; #1341, #1350, `pick_drag_tests::alt_drag_selects_also_when_it_starts_over_an_object`, `pick_drag_tests::alt_drag_over_the_selected_front_object_selects_the_one_behind`); Shift keeps the selection and turns over the objects the frame takes (selected ones are deselected, the others added; the Freehand Pick lasso too, #401); Ctrl keeps the marquee square; with Options > Tools > Pick, Marquee selects touched objects, Alt works the other way round |
 | Drag the centre mark (the "x") | moves the selection, also where the mark lies on nothing (an outline-only ring) |
 | Space | from another tool, picks the Pick tool; on the Pick tool, goes back to the tool used before it (the Pick tool's key, whatever it is bound to in Options, works the same way); ignored during a drag (it drops a copy there) and while text is edited. A tool key held down counts once: the presses the keyboard repeats while it is held pick nothing (#1502, `pick_drag_tests::holding_space_drops_one_copy_and_picks_once`) |
-| Drag object | move with the pointer (snapped); Ctrl keeps the move horizontal or vertical, whichever is longer; Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached), one copy a press, however long Space is held; let go over the document palette to add the objects' colours to it instead of moving them |
+| Drag object | move with the pointer (snapped); Ctrl (Cmd on macOS) or Shift keeps the move horizontal or vertical, whichever is longer (Shift since #2480; not with Alt, as Alt+Shift copies the outline on the drop); Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached), one copy a press, however long Space is held; let go over the document palette to add the objects' colours to it instead of moving them |
 | Corner handle | scale proportionally from the opposite corner, by where the pointer falls along the box's diagonal: `s = (|sx| w² + |sy| h²) / (w² + h²)` with `sx`, `sy` the two sides' own ratios (each keeps its sign, for mirroring), so the corner follows the pointer and a wide, low box such as a line of text does not grow at the short side's pace (#383); the handle follows the pointer from the frame the drag starts, not in a jump of the few pixels before a press becomes a drag; Shift from the centre; Ctrl in whole steps of 100 % (crossing the other side gives the mirror image at the same size); Alt scales freely |
 | Side handle | stretch one axis from the opposite side (across it: mirrored); Shift from the centre; Ctrl in steps of 100 % |
 | Snapping while scaling | with snapping on, the dragged corner or side handle snaps to other objects' points and edges, guidelines, the grid and the page (never to the selection's own points), and the snap mark shows where |
@@ -77,6 +77,13 @@ The text flow tabs hang 3.5 points past the handles, whatever their
 size. A corner or side handle scales from where it was
 grabbed, so the box follows the pointer without a jump. Objects chosen
 inside a group show round handles. The centre mark is a small cross.
+The first node of each subpath of a selected object shows too, a
+small hollow square (5 points, white with a dark edge): both rings of a
+letter O, an ellipse's start, a rectangle's first corner; groups, texts
+and pictures show none, nor does a selection of more than 1000
+subpaths. So a selected object is told from the others at a glance and
+where its outline starts shows, as in the reference program (#1145,
+`canvas::tests::the_pick_tool_marks_where_the_selected_outlines_start`).
 
 In rotate mode the handles are black arrows 2 points thick with solid
 heads, their centres 9 points out from the box: a curved double arrow
@@ -104,7 +111,12 @@ the number alone selects those objects again (the ones the current page
 shows), and pressed again while they are selected zooms to them. Alt and
 the number add the selection to the group. Groups are saved with the
 drawing; objects deleted since drop out. With text selected, Ctrl+8 and
-Ctrl+2 keep changing the text size.
+Ctrl+2 keep changing the text size, and Ctrl+Shift+> and Ctrl+Shift+<
+move its letters further apart or closer, 5 % of a space's width a
+press (the Text docker's Character spacing), for a text fitted to a
+path too and while a text is edited
+(`text_nodes::tests::the_spacing_keys_step_the_character_spacing_of_selected_texts`,
+#193).
 
 ## Invert Selection and Select Similar
 
@@ -259,6 +271,16 @@ Alt+click or a marquee behind a larger one): the menu and the move are
 for what is selected, not for the object in front; with no selected
 object under the pointer, the topmost object there is selected first
 (#1684, `pick_drag_tests::a_right_click_on_a_covered_selected_object_keeps_the_selection`).
+
+Keys held as the right button is let go over another object skip the
+menu, as in CorelDRAW: Shift gives that object the outline of the first
+selected object (Copy Outline Here), Alt its fill (Copy Fill Here) and
+Ctrl (Cmd on macOS) its fill, outline and transparency (Copy All
+Properties). While the keys are held the object that would take them is
+outlined in the selection colour and the pointer's note names the copy;
+the selection stays where it was. Not over an object, the menu opens as
+without keys, and Ctrl keeps the drag horizontal or vertical (discussion
+#2066, `drop_menu::tests::right_drop_with_shift_alt_or_ctrl_copies_without_the_menu`).
 
 The same copies without the menu, with the left button: start moving
 the selection without a key (Alt as the drag starts makes a selection

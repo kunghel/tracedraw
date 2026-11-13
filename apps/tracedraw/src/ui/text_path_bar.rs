@@ -239,6 +239,37 @@ mod tests {
         texts
     }
 
+    /// With the Shape tool on a text, the bar has the text fields (bold,
+    /// italic and underline among them) before the character offsets;
+    /// it had the offsets alone, so the font of a text or of its chosen
+    /// characters could not be set there (#2365). A rectangle shows none.
+    #[test]
+    fn the_shape_tool_shows_the_text_fields_on_a_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        app.start_text(Point::new(10.0, 20.0), None);
+        app.text_insert("Words");
+        app.finish_text();
+        let t = app.selection[0];
+        app.tool = crate::tools::Tool::Shape;
+        app.selection = vec![t];
+        let texts = bar_texts(&mut app);
+        for b in ["B", "I", "U"] {
+            assert!(texts.iter().any(|s| s == b), "{b}: {texts:?}");
+        }
+        let r = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.tool = crate::tools::Tool::Shape;
+        app.selection = vec![r];
+        let texts = bar_texts(&mut app);
+        assert!(!texts.iter().any(|s| s == "B"), "{texts:?}");
+    }
+
     /// With the Pick tool, a selected text fitted to a path shows how it
     /// follows the path (the placement list with Top and Bottom, Straighten
     /// Text) as well as the text fields; a plain text shows no path fields.

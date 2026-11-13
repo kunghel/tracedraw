@@ -213,6 +213,10 @@ pub mod monitor;
 // TraceDraw: a pen's pressure on X11 and macOS (vendor/README.md).
 #[allow(dead_code)]
 mod pen_pressure;
+// TraceDraw: a window's size bounds follow the monitor's scaling on
+// Windows (vendor/README.md, #2487).
+#[cfg(windows_platform)]
+pub(crate) mod size_bounds;
 // TraceDraw: files the system asks to open on macOS (vendor/README.md).
 #[cfg(macos_platform)]
 pub(crate) mod opened_files;

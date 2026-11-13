@@ -578,6 +578,12 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             pen.line("M15 9l6-6", acc);
             pen.solid(&rrect(3.0, 9.0, 12.0, 12.0, 1.0));
         }
+        Tool::InnerShadow => {
+            // A square box with its shadow inside, along its top and
+            // left edges, in the accent.
+            pen.solid(&rrect(4.0, 4.0, 16.0, 16.0, 0.0));
+            pen.fill("M4 4h16v4h-12v12h-4z", Pen::alpha(acc, 0.6), false);
+        }
         Tool::BlockShadow => {
             // A circle with a solid accent block cast behind it.
             pen.stroke("M9.5 9.5L15 15", 12.0, acc);
@@ -772,8 +778,10 @@ pub fn draw_action(painter: &Painter, r: Rect, a: Action, color: Color32) {
             );
         }
         Action::Open => {
-            // Back of the folder, then its open front flap, filled dark.
-            painter.add(epaint::PathShape::closed_line(
+            // Back of the folder, then its open front flap. The back is an
+            // open line: closed, it drew a stroke from its right edge
+            // back up to the tab, across the folder's top corner (#2340).
+            painter.add(epaint::PathShape::line(
                 vec![
                     p(r, 1.5, 3.0),
                     p(r, 6.0, 3.0),
@@ -1226,6 +1234,45 @@ mod tests {
             tool_color(Tool::OutlinePen, plain)
         );
         set_colored(false);
+    }
+
+    /// The Open icon's folder has no stray stroke across its top corner:
+    /// the back of the folder was a closed outline, whose closing side ran
+    /// from the back's right edge up to the tab (#2340).
+    #[test]
+    fn the_open_icon_has_no_stray_stroke() {
+        let ctx = egui::Context::default();
+        let r = Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0));
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            draw_action(ui.painter(), r, Action::Open, Tokens::icon());
+        });
+        out.textures_delta.clear();
+        // Every stroked side of the icon, the closing side of a closed
+        // path too.
+        let mut sides = Vec::new();
+        for c in &out.shapes {
+            match &c.shape {
+                egui::Shape::Path(path) if path.stroke.width > 0.0 => {
+                    let pts = &path.points;
+                    sides.extend(pts.windows(2).map(|w| (w[0], w[1])));
+                    if path.closed && pts.len() > 2 {
+                        sides.push((pts[pts.len() - 1], pts[0]));
+                    }
+                }
+                egui::Shape::LineSegment { points, .. } => sides.push((points[0], points[1])),
+                _ => {}
+            }
+        }
+        assert!(!sides.is_empty());
+        // Between the tab and the flap, above the flap's top edge, the
+        // folder is empty.
+        let empty = Pos2::new(7.25, 5.0);
+        for (a, b) in sides {
+            let ab = b - a;
+            let t = ((empty - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+            let d = (a + ab * t - empty).length();
+            assert!(d > 0.4, "a stroke from {a:?} to {b:?} crosses the folder");
+        }
     }
 
     /// The shapes `draw` adds for `tool` in a 22 px box.

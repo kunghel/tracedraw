@@ -41,9 +41,15 @@ new object as before
   while dragging, so it can be pressed or released mid-drag.
 - Snapping applies to the start and current points (see `snapping.md`).
 - A drag shorter than 0.05 mm in either direction creates nothing.
-- 3-point rectangle and 3-point ellipse: Ctrl while dragging the base
-  keeps it to steps of the constrain angle from its start (#934,
+- 3-point rectangle: Ctrl while dragging the base keeps it to steps of
+  the constrain angle from its start (#934,
   `pick_drag_tests::ctrl_keeps_the_three_point_base_to_the_constrain_angle`).
+  3-point ellipse: Ctrl while dragging the first line draws a circle
+  round the press point, the line its radius (turned in steps of the
+  constrain angle, as long as the drag), and the circle is made when the
+  button is let go, with no third click; the preview shows the circle
+  with the radius (#2550,
+  `pick_drag_tests::ctrl_draws_a_three_point_circle_round_the_press_point`).
   The rectangle takes the dragged base as one of its sides and the third
   click as its height. The ellipse takes the base as its centre line (an
   axis, from end to end) and grows from it to the third click on both

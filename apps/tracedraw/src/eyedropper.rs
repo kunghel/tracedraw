@@ -287,6 +287,21 @@ pub fn rotation_of(t: Affine) -> f64 {
     c[1].atan2(c[0])
 }
 
+/// The colour a lens lays over what lies beneath, for the lenses that
+/// have one; `None` for the others (Invert, Magnify and the like show
+/// what is beneath in their own way).
+fn lens_color(l: &tracedraw_core::live::Lens) -> Option<Color> {
+    use tracedraw_core::live::Lens;
+    match l {
+        Lens::Transparency { color, .. }
+        | Lens::ColorAdd { color, .. }
+        | Lens::ColorLimit { color, .. }
+        | Lens::TintedGrayscale { color } => Some(*color),
+        Lens::Wireframe { fill, .. } => Some(*fill),
+        _ => None,
+    }
+}
+
 impl App {
     /// The usual hit test, else the topmost unfilled closed object whose
     /// interior contains `p`: what the paint bucket fills, and what a
@@ -436,6 +451,15 @@ impl App {
                     return Some(c);
                 }
             }
+        }
+        // A lens draws its own colour over what lies beneath, not its fill
+        // (an unfilled closed shape with a Transparency lens shows only
+        // there): the colour read is the lens's (#2549).
+        if let Some(c) = s.effects.iter().find_map(|e| match e {
+            tracedraw_core::live::Effect::Lens(l) => lens_color(l),
+            _ => None,
+        }) {
+            return Some(c);
         }
         match &s.fill {
             Fill::Solid(c) => Some(*c),
@@ -632,16 +656,26 @@ impl App {
                     let g = self.eyedropper_groups;
                     self.apply_attrs_at(p, &a, g);
                 }
+                // Back to sampling by itself, where the bar asks for it:
+                // no key has to be held (#2380).
+                if self.settings.eyedropper_sample_after_apply {
+                    self.eyedropper_apply = false;
+                }
             } else if let Some(a) = self.sample_attrs_at(p) {
                 self.eyedropper_attrs = Some(a);
                 self.eyedropper_apply = true;
                 self.status = crate::i18n::tr("status.sampled_attrs");
             }
+        } else if self.mask.picking {
+            self.pick_mask_color_at(p);
         } else {
             let apply = self.eyedropper_apply && self.eyedropper_color.is_some() && !resample;
             if apply {
                 if let Some(c) = self.eyedropper_color {
                     self.apply_color_at(p, c, shift);
+                }
+                if self.settings.eyedropper_sample_after_apply {
+                    self.eyedropper_apply = false;
                 }
             } else if let Some(c) = self.sample_color_at(p, shift) {
                 self.eyedropper_color = Some(c);
@@ -650,6 +684,16 @@ impl App {
                     "status.sampled_color",
                     &[("c", &crate::app::color_description(c))],
                 );
+                // With objects selected the colour goes straight onto them,
+                // as a palette swatch would: the fill, or the outline with
+                // Shift, in one undo step (#2551).
+                if !self.selection.is_empty() {
+                    if shift {
+                        self.apply_outline_color(Some(c));
+                    } else {
+                        self.apply_fill(Fill::Solid(c));
+                    }
+                }
             }
         }
     }
@@ -659,6 +703,43 @@ impl App {
         self.eyedropper_color = None;
         self.eyedropper_attrs = None;
         self.eyedropper_apply = false;
+        self.mask.picking = false;
+    }
+
+    /// The eyedropper of Image > Color Mask: the next click on the
+    /// drawing picks the colour for the slot chosen in the docker.
+    pub fn start_mask_color_pick(&mut self) {
+        self.mask.picking = true;
+        self.set_tool(crate::tools::Tool::ColorEyedropper);
+    }
+
+    /// A click of the Color Mask's eyedropper (#2479): the colour under
+    /// `p` (a picture's pixel) goes into the chosen slot, which is turned
+    /// on, and the tool used before comes back, the picture still
+    /// selected for Apply, as CorelDRAW's Bitmap Color Mask does. Each
+    /// pick samples: the second one applied the first colour to the
+    /// picture as a fill instead, the Colour Eyedropper being in its
+    /// Apply mode, so only one colour of an imported picture could be
+    /// picked. A click on nothing keeps the eyedropper waiting.
+    fn pick_mask_color_at(&mut self, p: Point) {
+        use crate::bitmap_fx::MASK_SLOTS;
+        let Some(c) = self.sample_color_at(p, false) else {
+            return;
+        };
+        let i = self.mask.picked.min(MASK_SLOTS - 1);
+        self.mask.slots[i].color = c;
+        self.mask.slots[i].on = true;
+        self.mask.seen = Some(c);
+        self.mask.picking = false;
+        self.status = crate::i18n::trf(
+            "status.sampled_color",
+            &[("c", &crate::app::color_description(c))],
+        );
+        let back = match self.previous_tool {
+            crate::tools::Tool::ColorEyedropper => crate::tools::Tool::Pick,
+            t => t,
+        };
+        self.set_tool(back);
     }
 }
 
@@ -731,6 +812,52 @@ mod tests {
         );
     }
 
+    /// With "Sample again after applying" on, each eyedropper goes back
+    /// to sampling after the object it was applied to, so the next click
+    /// picks up a colour without a key held; off, it stays in Apply mode
+    /// as before (#2380).
+    #[test]
+    fn the_eyedropper_samples_again_after_applying_when_asked() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let target = rect(&mut app, Rect::new(40.0, 0.0, 50.0, 10.0));
+        let (red, green) = (Color::rgb8(200, 10, 10), Color::rgb8(10, 200, 10));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(red),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![b],
+            fill: Fill::Solid(green),
+        });
+        app.select(Vec::new());
+        let fill = |app: &App, id| app.doc().find_shape(id).expect("shape").fill.clone();
+        // Off: sample, apply, and the next click applies again.
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
+        app.eyedropper_click(Point::new(45.0, 5.0), false, false, false);
+        assert_eq!(fill(&app, target), Fill::Solid(red));
+        assert!(app.eyedropper_apply, "stays in Apply mode");
+        // On: after applying, the next click samples.
+        app.eyedropper_reset();
+        app.settings.eyedropper_sample_after_apply = true;
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false, false);
+        assert!(app.eyedropper_apply);
+        app.eyedropper_click(Point::new(45.0, 5.0), false, false, false);
+        assert_eq!(fill(&app, target), Fill::Solid(green));
+        assert!(!app.eyedropper_apply, "back to sampling");
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
+        assert_eq!(app.eyedropper_color, Some(red));
+        assert_eq!(fill(&app, a), Fill::Solid(red), "sampling changes nothing");
+        // The attributes eyedropper too.
+        app.eyedropper_reset();
+        app.eyedropper_click(Point::new(5.0, 5.0), true, false, false);
+        assert!(app.eyedropper_apply);
+        app.eyedropper_click(Point::new(25.0, 5.0), true, false, false);
+        assert_eq!(fill(&app, b), Fill::Solid(red));
+        assert!(!app.eyedropper_apply);
+    }
+
     /// Ctrl+click in Apply mode samples again, with either eyedropper,
     /// and changes nothing on the drawing; the colour eyedropper's
     /// Ctrl+Shift+click reads the outline first (#1302).
@@ -783,6 +910,56 @@ mod tests {
             Some(Fill::Solid(Color::rgb8(10, 200, 10)))
         );
         assert!(app.eyedropper_apply);
+    }
+
+    /// Image > Color Mask's eyedropper picks a colour of an imported
+    /// picture for each slot, one click each, and never paints the
+    /// picture: the second pick applied the first colour to it as a fill
+    /// (#2479). After a pick the tool used before comes back with the
+    /// picture still selected; another tool or Esc ends a pick.
+    #[test]
+    fn color_mask_eyedropper_picks_each_colour_of_a_picture() {
+        let mut app = App::headless();
+        let img = image::RgbaImage::from_fn(40, 20, |x, _| {
+            if x < 20 {
+                image::Rgba([30, 160, 40, 255])
+            } else {
+                image::Rgba([200, 20, 30, 255])
+            }
+        });
+        app.paste_as_bitmap(img);
+        let pic = app.selection[0];
+        let before = app.doc().find_shape(pic).expect("picture").clone();
+        let b = before.bounds();
+        let left = Point::new(b.x0 + b.width() * 0.25, b.center().y);
+        let right = Point::new(b.x0 + b.width() * 0.75, b.center().y);
+        for (slot, at, want) in [(0, left, [30, 160, 40]), (1, right, [200, 20, 30])] {
+            app.mask.picked = slot;
+            app.start_mask_color_pick();
+            assert_eq!(app.tool, crate::tools::Tool::ColorEyedropper);
+            app.eyedropper_click(at, false, false, false);
+            assert!(app.mask.slots[slot].on, "slot {slot} on");
+            assert_eq!(app.mask.slots[slot].color.to_rgb8(), want, "slot {slot}");
+            assert_eq!(app.tool, crate::tools::Tool::Pick, "back to Pick");
+            assert_eq!(app.selection, vec![pic], "the picture stays selected");
+        }
+        let after = app.doc().find_shape(pic).expect("picture");
+        assert_eq!(after.fill, before.fill, "the picture was not painted");
+        // The Colour Eyedropper chosen later samples and applies as usual.
+        app.set_tool(crate::tools::Tool::ColorEyedropper);
+        app.eyedropper_click(right, false, false, false);
+        assert_eq!(
+            app.eyedropper_color.map(|c| c.to_rgb8()),
+            Some([200, 20, 30])
+        );
+        assert!(!app.mask.slots[2].on, "no slot taken");
+        // Another tool, or Esc, ends a pick not made.
+        app.start_mask_color_pick();
+        app.set_tool(crate::tools::Tool::Rectangle);
+        assert!(!app.mask.picking);
+        app.start_mask_color_pick();
+        app.eyedropper_reset();
+        assert!(!app.mask.picking);
     }
 
     /// Both eyedroppers read from a locked object (and from an object on
@@ -1137,5 +1314,113 @@ mod tests {
     fn rotation_of_reads_the_transform_angle() {
         let t = Affine::rotate(0.3);
         assert!((rotation_of(t) - 0.3).abs() < 1e-9);
+    }
+
+    /// A closed shape with a Transparency lens over other objects gives
+    /// the lens's colour, filled or not, and is picked inside (#2549): an
+    /// unfilled one gave the colour of the object beneath, a filled one
+    /// its fill, which the lens does not draw.
+    #[test]
+    fn a_shape_with_a_transparency_lens_over_others_gives_its_colour() {
+        use tracedraw_core::live::{Effect, Lens};
+        let mut app = App::headless();
+        let under = rect(&mut app, Rect::new(0.0, 0.0, 100.0, 100.0));
+        app.run(Command::SetFill {
+            shapes: vec![under],
+            fill: Fill::Solid(Color::rgb8(200, 0, 0)),
+        });
+        let blue = Color::rgb8(0, 0, 200);
+        let lens = Effect::Lens(Lens::Transparency {
+            rate: 50.0,
+            color: blue,
+        });
+        let unfilled = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 10.0, 40.0, 40.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.run(Command::SetFill {
+            shapes: vec![unfilled],
+            fill: Fill::None,
+        });
+        app.run(Command::SetEffects {
+            shape: unfilled,
+            effects: vec![lens.clone()],
+        });
+        let filled = rect(&mut app, Rect::new(60.0, 10.0, 90.0, 40.0));
+        app.run(Command::SetFill {
+            shapes: vec![filled],
+            fill: Fill::Solid(Color::rgb8(0, 200, 0)),
+        });
+        app.run(Command::SetEffects {
+            shape: filled,
+            effects: vec![lens],
+        });
+        app.select(Vec::new());
+        for (at, id) in [
+            (Point::new(25.0, 25.0), unfilled),
+            (Point::new(75.0, 25.0), filled),
+        ] {
+            assert_eq!(app.hit_test_to_read(at), Some(id));
+            assert_eq!(app.sample_color_at(at, false), Some(blue));
+        }
+        // Outside the lens the object beneath is read as before.
+        assert_eq!(
+            app.sample_color_at(Point::new(50.0, 70.0), false),
+            Some(Color::rgb8(200, 0, 0))
+        );
+    }
+
+    /// With objects selected, the colour sampled goes straight onto them
+    /// (#2551): the fill, or the outline with Shift, in one undo step.
+    #[test]
+    fn a_sampled_colour_is_applied_to_the_selection() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let c = rect(&mut app, Rect::new(40.0, 0.0, 50.0, 10.0));
+        let red = Color::rgb8(200, 10, 10);
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(red),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![b, c],
+            fill: Fill::Solid(Color::rgb8(0, 0, 200)),
+        });
+        app.select(vec![b, c]);
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
+        assert_eq!(app.eyedropper_color, Some(red));
+        for id in [b, c] {
+            assert_eq!(
+                app.doc().find_shape(id).expect("shape").fill,
+                Fill::Solid(red)
+            );
+        }
+        assert_eq!(app.doc().find_shape(a).expect("a").fill, Fill::Solid(red));
+        // One undo puts both back.
+        app.engine.undo().expect("undo");
+        for id in [b, c] {
+            assert_eq!(
+                app.doc().find_shape(id).expect("shape").fill,
+                Fill::Solid(Color::rgb8(0, 0, 200))
+            );
+        }
+        // Shift samples the outline colour and puts it on the outlines.
+        let green = Color::rgb8(0, 150, 0);
+        app.run(Command::SetStroke {
+            shapes: vec![a],
+            stroke: Some(tracedraw_core::Stroke {
+                color: green,
+                ..Default::default()
+            }),
+        });
+        app.select(vec![b]);
+        app.eyedropper_reset();
+        app.eyedropper_click(Point::new(5.0, 5.0), false, true, false);
+        let sb = app.doc().find_shape(b).expect("b");
+        assert_eq!(sb.stroke.as_ref().map(|s| s.color), Some(green));
+        assert_eq!(sb.fill, Fill::Solid(Color::rgb8(0, 0, 200)));
     }
 }

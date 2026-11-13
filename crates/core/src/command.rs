@@ -372,6 +372,13 @@ pub enum Command {
         #[serde(default)]
         spots: bool,
     },
+    /// Recolour every colour of `shapes` (any depth) by `recolor`: hue,
+    /// saturation, lightness or a tint, each colour keeping its lightness
+    /// next to the others (see `recolor.rs`).
+    Recolor {
+        shapes: Vec<ShapeId>,
+        recolor: crate::recolor::Recolor,
+    },
     /// Move `shapes` directly in front of (or behind) `reference` in its layer.
     OrderRelative {
         shapes: Vec<ShapeId>,
@@ -574,6 +581,7 @@ impl Command {
             Command::SetObjectData { .. } => "Object Data",
             Command::SetPictureInks { .. } => "Edit Object",
             Command::ConvertColors { .. } => "Convert Colors",
+            Command::Recolor { .. } => "Recolor",
             Command::ReplaceFontFamily { .. } => "Replace Font",
             Command::OrderRelative { in_front: true, .. } => "In Front Of",
             Command::OrderRelative { .. } => "Behind",
@@ -1239,6 +1247,12 @@ impl Command {
                     any(doc, *id)?;
                 }
                 crate::color_convert::convert_document(doc, shapes, *to, *spots);
+            }
+            Command::Recolor { shapes, recolor } => {
+                for id in shapes {
+                    any(doc, *id)?;
+                }
+                crate::recolor::recolor_document(doc, shapes, recolor);
             }
             Command::ReplaceFontFamily { from, to } => {
                 doc.replace_font_family(from, to);

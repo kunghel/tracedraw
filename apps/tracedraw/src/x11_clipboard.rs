@@ -50,6 +50,26 @@ fn holds(offered: &[String], wanted: &str) -> bool {
         .any(|o| o.trim().eq_ignore_ascii_case(wanted))
 }
 
+/// The vector types a drawing program copies beside a picture of its
+/// copy, in the order a paste prefers them (#2514).
+pub const VECTOR_TYPES: [&str; 6] = [
+    "image/svg+xml",
+    "image/svg",
+    "application/pdf",
+    "image/x-emf",
+    "image/emf",
+    "application/x-emf",
+];
+
+/// The vector types of `offered`, in the order of [`VECTOR_TYPES`].
+pub fn vector_types(offered: &[String]) -> Vec<&'static str> {
+    VECTOR_TYPES
+        .iter()
+        .copied()
+        .filter(|t| holds(offered, t))
+        .collect()
+}
+
 /// What the X11 clipboard offers, read from its list of types before
 /// anything else is asked for (#1488).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +380,31 @@ impl Drop for Reader {
 pub fn offer() -> Option<Offer> {
     std::env::var_os("DISPLAY")?;
     Some(Reader::open(None)?.offer())
+}
+
+/// The vector data on the clipboard of the X server of `DISPLAY` (SVG,
+/// PDF or EMF, the first of [`VECTOR_TYPES`] offered); `None` when there
+/// is no X server or the clipboard offers none (#2514). Only a type the
+/// owner lists is asked for (#1488).
+pub fn read_vector() -> Option<Vec<u8>> {
+    std::env::var_os("DISPLAY")?;
+    let r = Reader::open(None)?;
+    let offered = r.offered();
+    for mime in vector_types(&offered) {
+        let Some(atom) = r
+            .conn
+            .intern_atom(false, mime.as_bytes())
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|a| a.atom)
+        else {
+            continue;
+        };
+        if let Some(bytes) = r.convert(atom).filter(|b| !b.is_empty()) {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// The picture on the clipboard of the X server of `DISPLAY`; `None`

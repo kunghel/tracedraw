@@ -275,6 +275,8 @@ impl App {
         self.pending_merge_frame = false;
         self.pending_copy_effect = None;
         self.pending_copy_envelope = false;
+        self.pending_copy_fill = false;
+        self.fill_swatch_drag = None;
         self.envelope_drag = None;
         self.pending_clone_effect = None;
         self.pending_blend_path = false;
@@ -282,6 +284,8 @@ impl App {
         self.anchor_sel = None;
         self.effect_node_drag = None;
         self.selected_effect_node = None;
+        self.mesh_more_nodes = None;
+        self.mesh_eyedropper = false;
         self.lens_synced_to = None;
         self.bevel_synced_to = None;
         self.extrude_drag = None;
@@ -651,6 +655,28 @@ impl App {
             "doc.untitled_n",
             &[("n", &self.untitled_counter.to_string())],
         )
+    }
+
+    /// The page tab menu's Duplicate Page to New Document (#2510): a new,
+    /// untitled drawing in its own tab holding a copy of the current page
+    /// with all its layers and objects, its size and settings, and the
+    /// drawing's master layers, styles, symbols, palette and colours. The
+    /// other pages, their comments and the work time stay behind.
+    pub fn duplicate_page_to_new_document(&mut self) {
+        let page = self.page;
+        let mut doc = self.doc().clone();
+        if !doc.pages.iter().any(|p| p.id == page) {
+            return;
+        }
+        doc.pages.retain(|p| p.id == page);
+        doc.comments.retain(|c| c.page == page);
+        doc.page_guides_hidden.retain(|p| *p == page);
+        doc.selection_groups.clear();
+        doc.saved_view = None;
+        doc.time_tracker = Default::default();
+        doc.title = self.next_untitled_name();
+        self.open_document(doc, None);
+        self.status.clear();
     }
 }
 

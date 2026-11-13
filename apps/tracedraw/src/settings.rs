@@ -524,6 +524,10 @@ pub struct Settings {
     /// The font lists' fonts used last, newest first.
     #[serde(default)]
     pub recent_fonts: Vec<String>,
+    /// The font lists' filter choices show beside the list: left open,
+    /// they show again the next time a font list opens (#867).
+    #[serde(default)]
+    pub font_filter_open: bool,
     /// Options > Text > Fonts: the fonts used last shown at the top of
     /// the font lists, and how many (1 to 20).
     #[serde(default = "default_true")]
@@ -643,6 +647,10 @@ pub struct Settings {
     /// lines (else only the selected ones).
     #[serde(default = "default_true")]
     pub show_text_frames: bool,
+    /// The eyedroppers go back to sampling after each object they are
+    /// applied to ("Sample again after applying" on their bars, #2380).
+    #[serde(default)]
+    pub eyedropper_sample_after_apply: bool,
     /// Text fitted to a path: a drag off the path moves the text away
     /// from it in steps of `path_tick_mm` (tick snapping).
     #[serde(default)]
@@ -2004,6 +2012,7 @@ impl Default for Settings {
             shown_bars: None,
             dockers: None,
             recent_fonts: Vec::new(),
+            font_filter_open: false,
             show_recent_fonts: true,
             recent_font_count: default_recent_font_count(),
             properties_closed: Vec::new(),
@@ -2037,6 +2046,7 @@ impl Default for Settings {
             warnings: Default::default(),
             curves: Default::default(),
             show_text_frames: true,
+            eyedropper_sample_after_apply: false,
             path_tick_snap: false,
             path_tick_mm: default_path_tick(),
             screen_margins: crate::ui::screen_margins::ScreenMargins::default(),

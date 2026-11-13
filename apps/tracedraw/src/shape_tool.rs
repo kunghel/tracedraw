@@ -475,6 +475,9 @@ impl App {
                 }
                 return;
             }
+            // A polygon or star turns into a curve at the edge clicked, so
+            // the node goes in there (#2451).
+            self.polygon_edge_to_curve(p);
             // Double-click a segment of a selected curve adds a node; on a
             // non-curve object, convert it to curves.
             if let Some((id, index, t)) = self.segment_at(p) {
@@ -674,6 +677,12 @@ impl App {
                     return;
                 }
             }
+            // An edge of a selected polygon or star bends once dragged: it
+            // becomes a curve then (#2451).
+            if let Some(shape) = self.polygon_edge_at(p) {
+                self.drag = Drag::PolygonEdge { shape, from: p };
+                return;
+            }
             // A marquee over the selected objects' nodes. It keeps the
             // selection, also when it starts over another object (the one
             // behind the curve, or the group holding it), so the curve
@@ -741,6 +750,27 @@ impl App {
                     };
                 }
                 Drag::NodeMove { .. } => self.node_move_to(p, mods),
+                Drag::PolygonEdge { from, .. } => {
+                    // The first move: curve first, then the edge bends.
+                    if (p - from).hypot() * self.view.zoom as f64 >= 2.0 {
+                        self.drag = Drag::None;
+                        if self.polygon_edge_to_curve(from) {
+                            if let Some((shape, index, t)) = self.segment_at(from) {
+                                if let Some((path, closed, _)) = self.path_of(shape) {
+                                    self.drag = Drag::SegmentBend {
+                                        shape,
+                                        path,
+                                        closed,
+                                        index,
+                                        t,
+                                        from,
+                                        begun: false,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
                 Drag::CornerWidget(d) => self.corner_drag_to(*d, p),
                 Drag::NodeTransform {
                     handle,
@@ -1015,6 +1045,15 @@ impl App {
         if r.width() < 0.05 && r.height() < 0.05 {
             return;
         }
+        // The Mesh Fill tool's box chooses mesh nodes (discussion #2387);
+        // the Shape tool's chooses those of a selected mesh too (#2506).
+        if self.tool == crate::tools::Tool::MeshFill {
+            self.choose_mesh_nodes_in(r, keeps);
+            return;
+        }
+        if self.selected_mesh().is_some() {
+            self.choose_mesh_nodes_in(r, keeps);
+        }
         let before = (
             self.node_selection.clone(),
             self.rect_corners_selected.clone(),
@@ -1111,6 +1150,54 @@ impl App {
             }
         }
         best.map(|(id, i, t, _)| (id, i, t))
+    }
+
+    /// The selected polygon or star whose outline lies within the pick
+    /// distance of `p` (an edge, as a curve's segment is found). Nodes
+    /// are looked for first by the callers.
+    fn polygon_edge_at(&self, p: Point) -> Option<ShapeId> {
+        let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
+        let mut ids = self.selection.clone();
+        ids.dedup();
+        let mut symbols_free_id = || ShapeId(0);
+        for id in ids {
+            let Some(s) = self.doc().find_shape(id) else {
+                continue;
+            };
+            if frame_only(s) || !matches!(s.kind, ShapeKind::Polygon { .. }) {
+                continue;
+            }
+            let Some(parent) = self.doc().parent_transform(id) else {
+                continue;
+            };
+            let Some(ShapeKind::Path { path, .. }) = s.curves_kind(&[], &mut symbols_free_id)
+            else {
+                continue;
+            };
+            let reach = crate::interaction::outline_reach(s, parent * s.transform);
+            if let Some((_, _, d)) = nodes::nearest_segment(&((parent * s.transform) * path), p) {
+                if d <= tol + reach {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Turns the polygon or star whose edge lies at `p` into a curve (one
+    /// undo step, outline warps staying live), so its edge can take a
+    /// node or bend like a curve's segment (#2451). `true` when it did.
+    fn polygon_edge_to_curve(&mut self, p: Point) -> bool {
+        let Some(id) = self.polygon_edge_at(p) else {
+            return false;
+        };
+        let Some(s) = self.doc().find_shape(id).cloned() else {
+            return false;
+        };
+        self.convert_shapes_to_curves(vec![s], false);
+        self.doc()
+            .find_shape(id)
+            .is_some_and(|s| matches!(s.kind, ShapeKind::Path { .. }))
     }
 
     // ----- property bar actions ---------------------------------------------

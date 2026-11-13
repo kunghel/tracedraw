@@ -282,4 +282,46 @@ mod tests {
         let sel = app.selection_bounds().expect("selected");
         assert_eq!(preview_bounds(&app), sel);
     }
+
+    /// One frame of the whole window with `events`.
+    fn window(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn f9() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::F9,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn f9_opens_the_full_screen_preview_and_closes_it() {
+        // #2195: F9 worked only from the View menu.
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        window(&ctx, &mut app, Vec::new());
+        assert!(!app.fullscreen_preview);
+        window(&ctx, &mut app, vec![f9()]);
+        assert!(app.fullscreen_preview, "F9 opens the preview");
+        window(&ctx, &mut app, Vec::new());
+        assert!(app.fullscreen_preview, "it stays open");
+        window(&ctx, &mut app, vec![f9()]);
+        assert!(!app.fullscreen_preview, "F9 again closes it");
+        window(&ctx, &mut app, Vec::new());
+        assert!(!app.fullscreen_preview);
+    }
 }

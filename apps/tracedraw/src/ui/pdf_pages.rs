@@ -145,7 +145,10 @@ impl App {
             }
             self.engine.end_group(mark, "Import");
         } else {
+            // The paragraph frames linked after they came in undo with them.
+            let mark = self.engine.begin_group();
             self.import_pdf_pages_as_read(path, pdf, chosen, new_pages);
+            self.engine.end_group(mark, "Import");
         }
     }
 
@@ -252,6 +255,7 @@ impl App {
                 .flat_map(|l| &l.shapes)
                 .map(|s| s.id)
                 .collect();
+            self.link_imported_flows(&ids);
             self.hyphenate_imported(&ids);
             // The objects stay where the file has them on their pages: a
             // place given with the import cursor is not for them.
@@ -301,6 +305,7 @@ impl App {
                 self.status = e.to_string();
                 return;
             }
+            self.link_imported_flows(&ids);
             self.hyphenate_imported(&ids);
             self.select(ids);
         }

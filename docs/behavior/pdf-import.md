@@ -162,6 +162,39 @@ the dialog keeps what was read until OK or Cancel.
   text's, clipping as for text. Text whose font is not embedded (or a
   Type 3 font) stays text, and the app turns it into curves with the
   installed font that stands in (`remaining_text_to_curves`).
+- Paragraph text (#2323, `ImportOptions::text_as_paragraphs`, the Join
+  lines into paragraph text box under Text in the Import PDF dialog and
+  Options > File Formats, `pdf_text_paragraphs`, on at first): a PDF
+  keeps no paragraphs, only lines. After the pages are read
+  (`pdf_paragraphs.rs`), the texts of a line (pieces in other fonts, a
+  bold word) join into one, and lines that follow one another in the
+  page's objects become one paragraph text frame when they are in the
+  same font, size, turn and opacity, each 0.8 to 2.5 em under the last
+  at the same spacing, and lined up on the left (the first line may be
+  indented, and so may the first line of each paragraph after it),
+  centred or on the right. A line with room left for the next line's
+  first word (letters of 0.65 em) ends its paragraph (a line break);
+  the others run on with a space (none after a hyphen). Lines lined up
+  on the left whose full lines all end within 0.3 mm of one another are
+  justified. The frame keeps the spacing in points (Leading in points),
+  and is laid out with the text engine before it replaces its lines:
+  only if the engine breaks the text where the file broke it, with the
+  baselines where the file has them, in a frame 0.3 mm, 1.5 % or 4 %
+  wider than the lines, else each line ended by a line break in a frame
+  10 % wider, else the lines stay artistic texts. The frame's top is
+  where the engine puts the first baseline that far down. A frame whose
+  last line is full goes on in the next block in the same font, about as
+  wide and as spaced, when that block starts the next column of the page
+  (higher up, to the right) or the next page: its text ends with the
+  space between them and both carry the object data `pdf.flow`
+  (`chain:place`), which the app turns into the links of linked frames
+  (`text.next`, `text.prev`) once they have their ids
+  (`textflow::imported_flow_links`), on Open and on Import, in the same
+  undo step. Text typed in the first frame then flows on into the next
+  (`textflow::tests::a_pdf_with_text_running_over_a_page_opens_as_linked_frames`,
+  `crates/io/tests/pdf_paragraphs.rs`). A family a PDF names without its
+  spaces ("DejaVuSans") draws in that family, not in a stand-in with
+  other widths (`family_spelling::a_family_spelt_without_spaces_is_found`).
 - The app asks how to read the text when a PDF or AI file is opened or
   imported (the Import PDF dialog: Text or Curves, Do not ask again);
   Options > File Formats keeps the choice (`pdf_text_as_curves`,

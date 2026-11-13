@@ -43,5 +43,11 @@ takes effect at once (no restart).
 - The processor is the fallback: a layer larger than the card's storage
   buffers, a radius past 128, a lost device or a driver error. After one
   failure the processor blurs until the next start, and the log says so.
+- A card that cannot run the shader is never asked to: the device's
+  limits are read first (two storage buffers in a compute shader,
+  workgroups of 256, the shader's shared memory), and when they fall
+  short, as on an older card drawn through OpenGL, no shader is made,
+  the processor blurs and Options says the blur is not available
+  (`gpu_fx::tests::a_card_without_compute_shaders_is_not_asked`, #2568).
 - When the option is on but the window is not drawn on a graphics card,
   Options says it is not available now (`options.gpu_effects_unavailable`).

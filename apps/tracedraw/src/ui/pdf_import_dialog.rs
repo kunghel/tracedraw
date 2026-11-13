@@ -18,6 +18,8 @@ pub struct PdfTextState {
     /// Import into the drawing (File > Import) rather than open.
     pub import: bool,
     pub curves: bool,
+    /// Lines joined into paragraph text (#2323).
+    pub paragraphs: bool,
     /// Each page as one picture at `dpi` (File > Import only, #1916).
     pub picture: bool,
     pub dpi: f64,
@@ -39,6 +41,7 @@ impl App {
             path: path.to_path_buf(),
             import,
             curves: self.settings.formats.pdf_text_as_curves,
+            paragraphs: self.settings.formats.pdf_text_paragraphs,
             picture: self.settings.formats.pdf_as_picture,
             dpi: self.settings.formats.pdf_picture_dpi,
             reduce_pictures: self.settings.formats.pdf_reduce_pictures,
@@ -64,6 +67,7 @@ impl App {
             } else {
                 FULL_PICTURE_PIXELS
             },
+            text_as_paragraphs: self.settings.formats.pdf_text_paragraphs,
         }
     }
 }
@@ -94,6 +98,19 @@ pub fn reduce_pictures_checkbox(ui: &mut egui::Ui, reduce: &mut bool) {
                 "pdf_import.reduce_pictures_tip",
             ));
     }
+}
+
+/// The Join lines into paragraph text check box (#2323), for text read
+/// as text only (`text`).
+pub fn paragraphs_checkbox(ui: &mut egui::Ui, paragraphs: &mut bool, text: bool) {
+    ui.add_enabled(
+        text,
+        egui::Checkbox::new(paragraphs, tr("pdf_import.paragraphs")),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "pdf_import.paragraphs",
+        "pdf_import.paragraphs_tip",
+    ));
 }
 
 /// The Text, Curves and Picture choices of the dialog and of Options >
@@ -201,12 +218,18 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PdfTextState, close: &mut b
         // is a drawing of its own to edit.
         let picture = st.import.then_some((&mut st.picture, &mut st.dpi));
         read_as_choices(ui, &mut st.curves, picture);
+        let text = !st.curves && !(st.import && st.picture);
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            paragraphs_checkbox(ui, &mut st.paragraphs, text);
+        });
         ui.add_space(4.0);
         reduce_pictures_checkbox(ui, &mut st.reduce_pictures);
         ui.add_space(4.0);
         ui.checkbox(&mut st.dont_ask, tr("pdf_import.dont_ask"));
         if ok_cancel(ui, close) {
             app.settings.formats.pdf_text_as_curves = st.curves;
+            app.settings.formats.pdf_text_paragraphs = st.paragraphs;
             app.settings.formats.pdf_reduce_pictures = st.reduce_pictures;
             if st.import {
                 app.settings.formats.pdf_as_picture = st.picture;
@@ -250,6 +273,16 @@ mod tests {
         assert!(!app.ask_pdf_text(p, true));
         app.settings.formats.pdf_text_as_curves = true;
         assert!(app.pdf_options().text_as_curves);
+    }
+
+    /// Text read as text joins its lines into paragraph text unless the
+    /// choice is turned off (#2323).
+    #[test]
+    fn pdf_text_comes_in_as_paragraphs_by_default() {
+        let mut app = App::headless();
+        assert!(app.pdf_options().text_as_paragraphs);
+        app.settings.formats.pdf_text_paragraphs = false;
+        assert!(!app.pdf_options().text_as_paragraphs);
     }
 
     /// Pictures come in at their own size on the desktop unless Reduce

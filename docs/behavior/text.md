@@ -139,9 +139,35 @@ Text and Glyphs dockers and Options (default font):
   in the same popup (only one menu is open at a time, so a menu opened
   from the list closed it): a click there filters at once and leaves the
   list open (`ui::font_list::live_tests::the_filter_opens_inside_the_font_list`).
+  Left open, the choices show again the next time any font list opens,
+  also after a restart (`font_filter_open` in the settings). They scroll
+  beside the list in the height the list takes, so the popup has no
+  empty space under the list (until 0.45.0 they made it taller, #867).
   The choices, Clear filter at the top, in sections that fold:
   - Fonts shown: all fonts, installed fonts, the fonts in this drawing,
     or, in the browser, the fonts to download.
+  - Folders, right after Fonts shown: the folders added to the Font
+    Manager's libraries, once each, whatever subfolder a file lies in;
+    not the operating system's font folders, which Installed fonts
+    already stands for (`font_folders::the_filter_folders_leave_out_the_systems`,
+    a system folder added to the libraries is listed; until 0.45.0 they
+    were listed and came last, #867). Each shows the folder's
+    name, its path as the tip (`FontSystem::folder_of`, the deepest
+    library or system folder a file lies under, else its own folder;
+    `font_folders::fonts_count_as_in_their_library_folder`). Until
+    0.27.0 every subfolder was listed on its own (#867). The system's
+    folders left out (`system_font_roots`) are the ones the font database reads
+    at startup: on Windows `Fonts` under `SYSTEMROOT` and the user's
+    local and roaming `Microsoft\Windows\Fonts`; on macOS
+    `/Library/Fonts`, `/System/Library/Fonts`, each
+    `com_apple_MobileAsset_Font*` folder of the fonts downloaded on
+    demand under `/System/Library/AssetsV2` (one subfolder per font
+    inside), `/Network/Library/Fonts` and `~/Library/Fonts`; on Linux
+    the folders fontconfig lists (`FONTCONFIG_FILE`, else the user's
+    `fontconfig/fonts.conf`, else `/etc/fonts/local.conf`, and
+    `/etc/fonts/fonts.conf`), else `/usr/share/fonts`,
+    `/usr/local/share/fonts`, `~/.fonts` and `~/.local/share/fonts`
+    (`font_folders::system_folders_are_the_ones_the_database_reads`).
   - Style: Serif, Sans serif, Script, Decorative, Monospaced, Symbol.
   - Weight: Light (below 350), Regular (350 to 599), Bold (600 and up),
     from each face's OS/2 `usWeightClass`; a variable font counts for
@@ -164,25 +190,6 @@ Text and Glyphs dockers and Options (default font):
   - Embedding rights: Installable, Editable, Preview and print,
     Restricted, Bitmap only, from OS/2 `fsType`; a family counts by its
     most restrictive face.
-  - Folders: the folders the fonts are in, as the Font Manager has them:
-    each folder added to the libraries, and the operating system's font
-    folders, once each, whatever subfolder a file lies in (the folder's
-    name, its path as the tip; `FontSystem::folder_of`, the deepest
-    library or system folder a file lies under, else its own folder;
-    `font_folders::fonts_count_as_in_their_library_folder`). Until
-    0.27.0 every subfolder was listed on its own (#867). The system's
-    folders (`system_font_roots`) are the ones the font database reads
-    at startup: on Windows `Fonts` under `SYSTEMROOT` and the user's
-    local and roaming `Microsoft\Windows\Fonts`; on macOS
-    `/Library/Fonts`, `/System/Library/Fonts`, each
-    `com_apple_MobileAsset_Font*` folder of the fonts downloaded on
-    demand under `/System/Library/AssetsV2` (one subfolder per font
-    inside), `/Network/Library/Fonts` and `~/Library/Fonts`; on Linux
-    the folders fontconfig lists (`FONTCONFIG_FILE`, else the user's
-    `fontconfig/fonts.conf`, else `/etc/fonts/local.conf`, and
-    `/etc/fonts/fonts.conf`), else `/usr/share/fonts`,
-    `/usr/local/share/fonts`, `~/.fonts` and `~/.local/share/fonts`
-    (`font_folders::system_folders_are_the_ones_the_database_reads`).
 
   In each section a family needs one of the choices ticked; of the
   OpenType features it needs every one ticked; it needs what every
@@ -285,6 +292,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Home / End, Ctrl+Home / End | line start / end, text start / end |
 | Ctrl+A | select all |
 | Mixed directions (an Arabic or Hebrew word in English text, or the other way round) | the Unicode bidirectional algorithm gives each character its level, the first strong letter setting the direction; it is worked out for each run of one formatting between tabs and line ends, so a direction change across differently formatted characters keeps them in text order. Each run of one level is shaped its own way; lines break in text order and each line shows its runs in display order: Arabic typed after "Asasa " reads right to left, joined, to the right of it, and a paragraph too narrow for "Hi مرحبا بك" keeps "Hi مرحبا" on the first line; digits inside right-to-left text read left to right (#628, `tracedraw_text::tests::mixed_text_is_cut_into_runs_of_one_direction`, `tracedraw_text::tests::lines_are_seen_in_bidi_order`, `tracedraw_text::tests::mixed_directions_lay_each_run_its_own_way`, `tracedraw_text::tests::mixed_paragraph_text_breaks_in_text_order`, `pick_drag_tests::right_to_left_typed_after_english_runs_right_to_left`) |
+| A text begun in Hebrew or Arabic | its first letters typed (or pasted) into an empty text that is left aligned or not aligned, the default, align it to the right: artistic text grows to the left of the click and paragraph text starts at the frame's right edge, as right-to-left text is read. A text whose first letter is Latin (digits and spaces do not count) keeps its alignment, and an alignment chosen later stays (discussion #2122, `text_editing::tests::a_text_begun_in_hebrew_runs_from_the_right`) |
 | Right-to-left text (Arabic, Hebrew) | the caret before a letter is at its right end and the end of the text at its left; a selection shades the letters it holds, all of them after Ctrl+A, where it used to shade only the first letter (#629, `tracedraw_text::tests::right_to_left_carets_run_from_the_right`, `pick_drag_tests::select_all_in_right_to_left_text_highlights_all_of_it`); character backgrounds and a callout's box cover such text too, mixed directions included (`callouts::tests::text_boxes_and_backgrounds_cover_mixed_direction_text`) |
 | Ctrl+B / I / U | toggle bold, italic, underline on the selection, or on the whole text without one |
 | Ctrl+C / X / V, Edit > Cut / Copy / Paste / Delete, the toolbar's buttons, the right-click menu | act on the characters of the text being edited, never on the object (#1377): Copy keeps the selected characters with their formatting (font, size, colours, outline, every character setting) for a paste into a text here and puts their plain text on the system clipboard for other programs (line breaks as the system's line end); Paste puts them back with their formatting while the clipboard still holds that text, also into another text (characters showing their text's own fill or outline get it as theirs where the texts differ), and pastes text copied elsewhere as it is, in the style at the caret. Objects copied with Edit > Copy (SVG on the system clipboard) paste their text with its formatting, never the SVG markup; Cut and Paste are one undo step each. Copied characters are the last copy (they replace objects copied before) and, pasted with the Pick tool, make an artistic text of them with their formatting and their text's fill and outline (`text_editing::tests::copied_characters_pasted_outside_a_text_keep_their_colours`). The right-click menu while editing has Undo, Cut, Copy, Paste, Delete, Select All (and Insert Placeholder Text in a paragraph frame) and Properties. On the desktop the clipboard is read when Paste is chosen from a menu; in the browser a menu's Paste has only the characters copied here, Ctrl+V the clipboard's text; on Android the system clipboard is read first (#1378, `text_editing::tests::copied_characters_keep_their_colours_when_pasted`, `text_editing::tests::copied_objects_paste_their_text_not_their_markup`) |
@@ -490,6 +498,13 @@ rings as curves).
   into the next frame of a linked chain. Options > Text > Show Text Frames (on by default, kept between
   sessions) shows every frame; off, only the selected and edited ones
   show.
+- An empty frame that is shown, with no text flowing into it and not
+  being edited, has a grey hint in its middle ("Click here with the Text
+  tool to add paragraph text", `canvas.empty_text_frame_hint`). It is
+  on screen only, like the frame line, and is left out where the frame
+  is too small on screen to hold it
+  (`text_frames::tests::an_empty_frame_shows_a_hint_until_it_has_text`,
+  #2524).
 - Scaling a paragraph text with the Pick tool's handles, or with the
   property bar's size and scale fields, changes its frame and the text
   flows anew in it; the letters keep their size and the text's transform
@@ -1032,6 +1047,12 @@ alternates (`salt`), Swash (`swsh`); then Superscript and Subscript.
 
 ## Shape tool on text
 
+- The property bar has the text fields the Text tool's bar has (font,
+  size, bold, italic, underline, strikethrough, alignment and the
+  rest), then the character offsets and angle. They act on the
+  characters whose nodes are chosen, else on the whole text
+  (`text_path_bar::tests::the_shape_tool_shows_the_text_fields_on_a_text`,
+  #2365).
 - A node at the lower left of every character (of its own glyph, in right-to-left text too, each under its letter in reading order, #474,
   `text_nodes::tests::right_to_left_characters_have_their_nodes_under_their_glyphs`), on its (shifted)
   baseline; newlines have none. Click chooses one, Ctrl+click adds or

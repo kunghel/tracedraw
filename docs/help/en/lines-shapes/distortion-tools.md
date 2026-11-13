@@ -66,4 +66,6 @@ The [[tool.roughen]] tool (<kbd>E</kbd>) adds jagged spikes along the outline.
 **Frequency** (1 to 10 spikes per 10 mm, 5 at first) sets how many, and
 **Spike size** (2 mm at first) how tall. The spikes are straight, so they stay
 sharp. A stroke roughens each part of the outline once: going back over the
-same place, or holding the button, adds no more spikes.
+same place, or holding the button, adds no more spikes. Going over an outline
+again in a new stroke makes it rougher; spikes that cross the outline stay
+filled, with no white gaps between them.

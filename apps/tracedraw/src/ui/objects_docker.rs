@@ -43,6 +43,39 @@ const MASTER_TOP: Color32 = Color32::from_rgb(0xE0, 0x9A, 0x2E);
 const GUIDE_BLUE: Color32 = Color32::from_rgb(0x1E, 0x6F, 0xD9);
 const PLUS_GREEN: Color32 = Color32::from_rgb(0x1E, 0x9E, 0x3C);
 
+/// A command of an object row's right-click menu: what the page's own
+/// menu and the Object menu do, for the selected rows (#2189).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectDo {
+    Cut,
+    Copy,
+    Paste,
+    Group,
+    Combine,
+    ToCurves,
+    Hide,
+    Lock,
+    OverprintFill,
+    OverprintOutline,
+}
+
+/// Do `what` to the objects `ids` (they become the selection first).
+pub(crate) fn object_do(app: &mut App, ids: Vec<ShapeId>, what: ObjectDo) {
+    app.select(ids);
+    match what {
+        ObjectDo::Cut => app.cut(),
+        ObjectDo::Copy => app.copy(),
+        ObjectDo::Paste => app.paste(),
+        ObjectDo::Group => app.group_selection(),
+        ObjectDo::Combine => app.combine(),
+        ObjectDo::ToCurves => app.convert_to_curves(),
+        ObjectDo::Hide => app.set_visible(false),
+        ObjectDo::Lock => app.set_locked(true),
+        ObjectDo::OverprintFill => app.toggle_overprint(true),
+        ObjectDo::OverprintOutline => app.toggle_overprint(false),
+    }
+}
+
 /// What the docker asks for after drawing.
 #[derive(Default)]
 struct Actions {
@@ -65,6 +98,9 @@ struct Actions {
     /// that takes objects, for a row dragged along the list (live test
     /// of 0.41).
     object_rows: Vec<(ShapeId, Rect)>,
+    /// Every object row of the list, top to bottom (laid out or not), for
+    /// Shift+click's range (#2483).
+    row_order: Vec<ShapeId>,
     layer_drop_rows: Vec<(LayerId, Rect)>,
     collapse: Option<LayerId>,
     expand_group: Option<ShapeId>,
@@ -82,6 +118,8 @@ struct Actions {
     new_layer: bool,
     new_master: Option<MasterScope>,
     delete_object: Option<Vec<ShapeId>>,
+    /// A command of an object row's menu for the objects it is for (#2189).
+    object_do: Option<(Vec<ShapeId>, ObjectDo)>,
     layer_to_master: Option<LayerId>,
     master_to_page: Option<LayerId>,
     /// Not an action: the page whose rows are being drawn (None for the
@@ -934,6 +972,65 @@ fn object_menu(app: &App, ui: &mut Ui, s: &Shape, label: &str, act: &mut Actions
         }
     });
     act.targets = targets;
+    // What the page's own menu has for the objects: the clipboard, then
+    // grouping and shape, hiding and locking, overprint (#2189).
+    let shapes: Vec<&Shape> = ids
+        .iter()
+        .filter_map(|id| app.doc().find_shape(*id))
+        .collect();
+    let many = ids.len() > 1;
+    let mut picked = None;
+    ui.separator();
+    for (what, key, on) in [
+        (ObjectDo::Cut, "menu.edit.cut", true),
+        (ObjectDo::Copy, "menu.edit.copy", true),
+        (ObjectDo::Paste, "menu.edit.paste", true),
+    ] {
+        if ui.add_enabled(on, egui::Button::new(tr(key))).clicked() {
+            picked = Some(what);
+        }
+    }
+    ui.separator();
+    for (what, key, on) in [
+        (ObjectDo::Group, "menu.object.group", many),
+        (ObjectDo::Combine, "menu.object.combine", many),
+        (ObjectDo::ToCurves, "menu.object.convert_to_curves", true),
+    ] {
+        if ui.add_enabled(on, egui::Button::new(tr(key))).clicked() {
+            picked = Some(what);
+        }
+    }
+    ui.separator();
+    for (what, key) in [
+        (ObjectDo::Hide, "menu.object.hide_object"),
+        (ObjectDo::Lock, "menu.object.lock_object"),
+    ] {
+        if ui.button(tr(key)).clicked() {
+            picked = Some(what);
+        }
+    }
+    ui.separator();
+    for (what, key, mut on) in [
+        (
+            ObjectDo::OverprintFill,
+            "menu.object.overprint_fill",
+            shapes.iter().any(|s| s.overprint_fill),
+        ),
+        (
+            ObjectDo::OverprintOutline,
+            "menu.object.overprint_outline",
+            shapes.iter().any(|s| s.overprint_outline),
+        ),
+    ] {
+        if ui.checkbox(&mut on, tr(key)).clicked() {
+            picked = Some(what);
+        }
+    }
+    if let Some(what) = picked {
+        act.object_do = Some((ids.clone(), what));
+        ui.close();
+    }
+    ui.separator();
     if ui.button(tr("menu.edit.delete")).clicked() {
         act.delete_object = Some(ids);
         ui.close();
@@ -1055,6 +1152,7 @@ fn grid_row(app: &App, ui: &mut Ui, act: &mut Actions) {
 /// open group.
 fn object_rows(app: &App, ui: &mut Ui, s: &Shape, depth: usize, act: &mut Actions) {
     let selected = app.selection.contains(&s.id);
+    act.row_order.push(s.id);
     let height = (act.thumb_size + 6.0).max(ROW_H);
     let (rect, resp) = row_of(ui, Look::Object { selected }, height);
     if act.scroll_to == Some(s.id) {
@@ -1173,7 +1271,7 @@ fn object_row(
     resp.context_menu(|ui| {
         act.row_page = row_page;
         object_menu(app, ui, s, &label, act);
-        if act.move_to_layer.is_some() || act.delete_object.is_some() {
+        if act.move_to_layer.is_some() || act.delete_object.is_some() || act.object_do.is_some() {
             act.goto = act.goto.or(row_page.filter(|p| *p != app.page));
         }
     });
@@ -1995,6 +2093,9 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
     if let Some((ids, layer)) = act.move_to_layer {
         move_to_layer(app, &ids, layer);
     }
+    if let Some((ids, what)) = act.object_do {
+        object_do(app, ids, what);
+    }
     if let Some(ids) = act.delete_object {
         app.select(ids);
         app.delete_selection();
@@ -2006,23 +2107,110 @@ fn apply(app: &mut App, ui: &Ui, act: Actions) {
         master_to_page(app, layer);
     }
     if let Some(id) = act.select {
-        if ui.input(|i| i.modifiers.shift) {
-            // A locked object stays out of the selection (#2347).
-            if !app.selection.contains(&id) && !app.locked_ids().contains(&id) {
-                app.selection.push(id);
-            }
-        } else {
-            app.select(vec![id]);
-        }
+        let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+        let key = egui::Id::new("objects_docker_anchor");
+        let anchor: Option<ShapeId> = ui.data(|d| d.get_temp(key));
+        let anchor = select_row(app, id, &act.row_order, anchor, shift, ctrl);
+        ui.data_mut(|d| d.insert_temp(key, anchor));
         if let Some(layer) = layer_holding(app, id) {
             app.picked_layer = Some(layer);
         }
     }
 }
 
+/// A click on the row of `id` in the list whose rows are `rows` (top to
+/// bottom), as in a file list (#2483): alone it selects that object;
+/// Shift selects every row from the row last clicked (`anchor`) to this
+/// one, Ctrl+Shift adds that range; Ctrl adds the object or takes it out.
+/// A locked object stays out of the selection (#2347). Gives the row a
+/// next Shift+click counts from.
+fn select_row(
+    app: &mut App,
+    id: ShapeId,
+    rows: &[ShapeId],
+    anchor: Option<ShapeId>,
+    shift: bool,
+    ctrl: bool,
+) -> ShapeId {
+    let locked = app.locked_ids();
+    let free = |i: &ShapeId| !locked.contains(i);
+    if shift {
+        let from = anchor.and_then(|a| rows.iter().position(|r| *r == a));
+        let to = rows.iter().position(|r| *r == id);
+        let range: Vec<ShapeId> = match (from, to) {
+            (Some(a), Some(b)) => rows[a.min(b)..=a.max(b)].to_vec(),
+            _ => vec![id],
+        };
+        let mut picked = if ctrl {
+            app.selection.clone()
+        } else {
+            Vec::new()
+        };
+        for r in range.into_iter().filter(free) {
+            if !picked.contains(&r) {
+                picked.push(r);
+            }
+        }
+        app.select(picked);
+        // The range keeps counting from where it started.
+        return anchor.filter(|a| rows.contains(a)).unwrap_or(id);
+    }
+    if ctrl {
+        let mut picked = app.selection.clone();
+        if let Some(i) = picked.iter().position(|r| *r == id) {
+            picked.remove(i);
+        } else if free(&id) {
+            picked.push(id);
+        }
+        app.select(picked);
+    } else {
+        app.select(vec![id]);
+    }
+    id
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// #2483: in the Objects docker Shift+click selects every row from the
+    /// row clicked before to this one, as in a file list, and Ctrl+click
+    /// adds or takes out one object. Shift+click added the one object
+    /// only, leaving the rows between unselected.
+    #[test]
+    fn shift_click_selects_a_range_of_rows_and_ctrl_click_one_more() {
+        let mut app = App::headless();
+        let ids: Vec<ShapeId> = (0..5)
+            .map(|_| app.new_shape(rect_kind()).expect("shape"))
+            .collect();
+        // The list shows the top object first.
+        let rows: Vec<ShapeId> = ids.iter().rev().copied().collect();
+        let a = select_row(&mut app, rows[1], &rows, None, false, false);
+        assert_eq!(app.selection, vec![rows[1]]);
+        // Shift on the fourth row: the second to the fourth.
+        let a = select_row(&mut app, rows[3], &rows, Some(a), true, false);
+        assert_eq!(app.selection, rows[1..=3].to_vec());
+        assert_eq!(a, rows[1], "the range counts from its first row");
+        // Shift upwards from the same start: the first two.
+        select_row(&mut app, rows[0], &rows, Some(a), true, false);
+        assert_eq!(app.selection, rows[0..=1].to_vec());
+        // Ctrl adds the last row alone, and takes it out again.
+        let a = select_row(&mut app, rows[4], &rows, Some(a), false, true);
+        assert_eq!(app.selection, vec![rows[0], rows[1], rows[4]]);
+        select_row(&mut app, rows[4], &rows, Some(a), false, true);
+        assert_eq!(app.selection, vec![rows[0], rows[1]]);
+        // A locked object in the range stays out of it (#2347).
+        app.run(Command::SetLocked {
+            shapes: vec![rows[2]],
+            locked: true,
+        });
+        let a = select_row(&mut app, rows[1], &rows, None, false, false);
+        select_row(&mut app, rows[3], &rows, Some(a), true, false);
+        assert_eq!(app.selection, vec![rows[1], rows[3]]);
+        // No row clicked before: Shift selects the one row.
+        select_row(&mut app, rows[4], &rows, None, true, false);
+        assert_eq!(app.selection, vec![rows[4]]);
+    }
 
     /// A new drawing without its desktop layer, for the tests of the
     /// numbered master layers.
@@ -2911,5 +3099,38 @@ mod drag_tests {
         assert!(drop_commands(&app, &ids, on(a)).is_empty());
         assert!(drop_commands(&app, &ids, on(d)).is_empty());
         assert_eq!(drop_commands(&app, &ids, on(c)).len(), 1);
+    }
+
+    /// An object row's menu does what the page's menu does for the rows
+    /// it is for: overprint of fill and outline on and off, grouping,
+    /// hiding and locking, each one undo step (#2189).
+    #[test]
+    fn an_object_rows_menu_sets_overprint_groups_hides_and_locks() {
+        let mut app = App::headless();
+        let a = app.new_shape(rect_kind()).expect("a");
+        let b = app.new_shape(rect_kind()).expect("b");
+        let get = |app: &App, id: ShapeId| app.doc().find_shape(id).cloned().expect("shape");
+        object_do(&mut app, vec![a, b], ObjectDo::OverprintFill);
+        assert!(get(&app, a).overprint_fill && get(&app, b).overprint_fill);
+        assert!(!get(&app, a).overprint_outline);
+        object_do(&mut app, vec![a], ObjectDo::OverprintOutline);
+        assert!(get(&app, a).overprint_outline && !get(&app, b).overprint_outline);
+        object_do(&mut app, vec![a, b], ObjectDo::OverprintFill);
+        assert!(!get(&app, a).overprint_fill && !get(&app, b).overprint_fill);
+        app.undo();
+        assert!(get(&app, a).overprint_fill);
+        object_do(&mut app, vec![b], ObjectDo::Hide);
+        assert!(!get(&app, b).visible && get(&app, a).visible);
+        app.undo();
+        object_do(&mut app, vec![b], ObjectDo::Lock);
+        assert!(get(&app, b).locked && !get(&app, a).locked);
+        app.undo();
+        object_do(&mut app, vec![a, b], ObjectDo::Group);
+        assert_eq!(app.selection.len(), 1);
+        let g = app.selection[0];
+        assert!(matches!(
+            get(&app, g).kind,
+            tracedraw_core::ShapeKind::Group { ref children } if children.len() == 2
+        ));
     }
 }

@@ -529,6 +529,189 @@ fn legacy_families(db: &fontdb::Database, id: fontdb::ID) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// The faces of a font file the font database leaves out because it reads
+/// no family name in them: older Chinese, Japanese and Korean fonts
+/// ("方正黑体_GBK") give every name only in their code page (Windows
+/// encodings 2 to 5, see [`code_page_name`]), with no Unicode or
+/// Macintosh English record, and the database drops such a face as
+/// unnamed, so the font was reported missing although installed
+/// (#1238). Each face that names a family that way (the typographic
+/// family, else the family) is described here as the database would
+/// describe it; faces with no such name are left out.
+fn code_page_face_infos(data: &[u8], source: &fontdb::Source) -> Vec<fontdb::FaceInfo> {
+    let count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
+    let mut out = Vec::new();
+    for index in 0..count {
+        let Ok(face) = ttf_parser::Face::parse(data, index) else {
+            continue;
+        };
+        let named = |id: u16| -> Vec<(String, fontdb::Language)> {
+            let mut names: Vec<(String, fontdb::Language)> = Vec::new();
+            for name in face.names() {
+                if name.name_id != id {
+                    continue;
+                }
+                let text = if name.is_unicode() {
+                    name.to_string()
+                } else {
+                    code_page_name(&name)
+                };
+                if let Some(text) = text.map(|t| t.trim().to_string()) {
+                    if !text.is_empty() && !names.iter().any(|(n, _)| *n == text) {
+                        // The language stays unknown: fontdb's own table
+                        // is not public, and nothing here reads it.
+                        names.push((text, fontdb::Language::Unknown));
+                    }
+                }
+            }
+            names
+        };
+        let mut families = named(ttf_parser::name_id::TYPOGRAPHIC_FAMILY);
+        if families.is_empty() {
+            families = named(ttf_parser::name_id::FAMILY);
+        }
+        let Some((first, _)) = families.first().cloned() else {
+            continue;
+        };
+        let post_script_name = named(ttf_parser::name_id::POST_SCRIPT_NAME)
+            .into_iter()
+            .next()
+            .map_or(first, |(n, _)| n);
+        let style = if face.is_italic() {
+            fontdb::Style::Italic
+        } else if face.is_oblique() {
+            fontdb::Style::Oblique
+        } else {
+            fontdb::Style::Normal
+        };
+        out.push(fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: source.clone(),
+            index,
+            families,
+            post_script_name,
+            style,
+            weight: fontdb::Weight(face.weight().to_number()),
+            stretch: match face.width().to_number() {
+                1 => fontdb::Stretch::UltraCondensed,
+                2 => fontdb::Stretch::ExtraCondensed,
+                3 => fontdb::Stretch::Condensed,
+                4 => fontdb::Stretch::SemiCondensed,
+                6 => fontdb::Stretch::SemiExpanded,
+                7 => fontdb::Stretch::Expanded,
+                8 => fontdb::Stretch::ExtraExpanded,
+                9 => fontdb::Stretch::UltraExpanded,
+                _ => fontdb::Stretch::Normal,
+            },
+            monospaced: face.is_monospaced(),
+        });
+    }
+    out
+}
+
+/// Load a font into `db`: as the font database loads it, else, when it
+/// takes no face from it, the faces named only in a code page (see
+/// [`code_page_face_infos`]). The faces added.
+fn load_source(db: &mut fontdb::Database, source: fontdb::Source) -> Vec<fontdb::ID> {
+    let ids: Vec<fontdb::ID> = db.load_font_source(source.clone()).into_iter().collect();
+    if !ids.is_empty() {
+        return ids;
+    }
+    let infos = match &source {
+        fontdb::Source::Binary(data) => code_page_face_infos((**data).as_ref(), &source),
+        #[cfg(not(target_arch = "wasm32"))]
+        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => std::fs::read(path)
+            .map(|data| code_page_face_infos(&data, &source))
+            .unwrap_or_default(),
+    };
+    infos
+        .into_iter()
+        .map(|info| db.push_face_info(info))
+        .collect()
+}
+
+/// Add the font files under `roots` (and their subfolders) that the font
+/// database read no face from and whose faces name their family only in
+/// a code page (see [`code_page_face_infos`]). Only files no loaded face
+/// comes from are opened, so the fonts the database took cost nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_code_page_named_in(db: &mut fontdb::Database, roots: &[std::path::PathBuf]) {
+    use std::path::PathBuf;
+    // By file name, any case: the same folder can be spelt two ways
+    // (C:\WINDOWS\Fonts and C:\Windows\Fonts, a link's target), and opening every font
+    // again at startup would be slow.
+    let key = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    let loaded: std::collections::HashSet<String> = db
+        .faces()
+        .filter_map(|f| match &f.source {
+            fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => key(p),
+            fontdb::Source::Binary(_) => None,
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut seen_files = std::collections::HashSet::new();
+    let mut stack: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    let mut added = 0;
+    while let Some((dir, depth)) = stack.pop() {
+        if !seen.insert(dir.clone()) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if depth < 8 {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            let font = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                ["ttf", "ttc", "otf", "otc"]
+                    .iter()
+                    .any(|x| e.eq_ignore_ascii_case(x))
+            });
+            if !font {
+                continue;
+            }
+            // The database keeps a link's target ("fonts-japanese-gothic.ttf"
+            // is a link to a font it already read).
+            let path = if kind.is_symlink() {
+                std::fs::canonicalize(&path).unwrap_or(path)
+            } else {
+                path
+            };
+            let Some(name) = key(&path) else {
+                continue;
+            };
+            if loaded.contains(&name) || !seen_files.insert(path.clone()) {
+                continue;
+            }
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            // A file the database names was left out for its own reasons
+            // (a duplicate, say): not ours to add.
+            let mut probe = fontdb::Database::new();
+            probe.load_font_data(data.clone());
+            if !probe.is_empty() {
+                continue;
+            }
+            for info in code_page_face_infos(&data, &fontdb::Source::File(path.clone())) {
+                db.push_face_info(info);
+                added += 1;
+            }
+        }
+    }
+    if added > 0 {
+        log::info!("{added} font faces named only in a code page added");
+    }
+}
+
 /// How a family's fonts are built, for the icons of font lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum FontKind {
@@ -1637,6 +1820,20 @@ pub fn system_font_roots() -> Vec<std::path::PathBuf> {
     ROOTS.get_or_init(read_system_font_roots).clone()
 }
 
+/// The folders of `found` that are not the system's font folders (or
+/// inside them), except those added to the font libraries (`library`):
+/// the filter's Folders offer the Font Manager's folders, Installed fonts
+/// already standing for the system's (#867).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn without_system_folders(
+    mut found: Vec<std::path::PathBuf>,
+    library: &[std::path::PathBuf],
+    system: &[std::path::PathBuf],
+) -> Vec<std::path::PathBuf> {
+    found.retain(|p| library.contains(p) || !system.iter().any(|s| p.starts_with(s)));
+    found
+}
+
 /// [`system_font_roots`] read from the system now.
 fn read_system_font_roots() -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
@@ -1798,12 +1995,15 @@ impl FontSystem {
         for dir in ANDROID_FONT_DIRS {
             db.load_fonts_dir(dir);
         }
+        // Fonts the database leaves out as unnamed (#1238).
+        #[cfg(not(target_arch = "wasm32"))]
+        load_code_page_named_in(&mut db, &system_font_roots());
         #[cfg(windows)]
         installed::drop_unregistered(&mut db);
         if let Ok(extra) = EXTRA_FONTS.lock() {
             for data in extra.iter() {
                 let source: Arc<dyn AsRef<[u8]> + Sync + Send> = data.clone();
-                db.load_font_source(fontdb::Source::Binary(source));
+                load_source(&mut db, fontdb::Source::Binary(source));
             }
         }
         Self::from_db(db)
@@ -2042,6 +2242,23 @@ impl FontSystem {
         }
     }
 
+    /// The loaded family whose name is `family` with other spaces,
+    /// hyphens or case: "DejaVuSans" or "dejavu-sans" for DejaVu Sans.
+    fn family_spelt_otherwise(&self, family: &str) -> Option<String> {
+        fn key(s: &str) -> impl Iterator<Item = char> + '_ {
+            s.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+        }
+        key(family).next()?;
+        self.families
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|f| f.as_str() != family && key(f).eq(key(family)))
+            .cloned()
+    }
+
     /// Whether a family of exactly this name (or legacy name) is loaded.
     fn has_exact_family(&self, family: &str) -> bool {
         self.families
@@ -2061,7 +2278,7 @@ impl FontSystem {
         let mut db = self.db.write().unwrap_or_else(|e| e.into_inner());
         for data in files {
             let source = fontdb::Source::Binary(Arc::new(data));
-            let ids = db.load_font_source(source);
+            let ids = load_source(&mut db, source);
             for id in ids {
                 if let Some(face) = db.face(id) {
                     added.extend(face.families.iter().map(|(n, _)| n.clone()));
@@ -2670,8 +2887,8 @@ impl FontSystem {
 
     /// The folders the installed font files are in, sorted, each once
     /// (a font list's filter offers them, #867): the font libraries'
-    /// folders and the system's, not every subfolder (see
-    /// [`FontSystem::folder_of`]).
+    /// folders, not every subfolder (see [`FontSystem::folder_of`]), and
+    /// not the system's, which Installed fonts already shows.
     pub fn font_folders(&self) -> Vec<std::path::PathBuf> {
         #[cfg(not(target_arch = "wasm32"))]
         let roots = self.folder_roots();
@@ -2688,6 +2905,11 @@ impl FontSystem {
             .collect();
         out.sort();
         out.dedup();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let library = self.roots.read().map(|r| r.clone()).unwrap_or_default();
+            out = without_system_folders(out, &library, &system_font_roots());
+        }
         out
     }
 
@@ -2905,6 +3127,19 @@ impl FontSystem {
                 id
             };
             return Some((id, plain));
+        }
+        // The family under its name spelt without its spaces, as a PDF
+        // names it ("DejaVuSans" for DejaVu Sans, #2323).
+        if let Some(name) = self.family_spelt_otherwise(family) {
+            let q = fontdb::Query {
+                families: &[fontdb::Family::Name(&name)],
+                weight,
+                stretch: fontdb::Stretch::Normal,
+                style,
+            };
+            if let Some(id) = db.query(&q) {
+                return Some((id, plain));
+            }
         }
         let target = target_weight(family, bold);
         let weight = fontdb::Weight(target);
@@ -7849,6 +8084,76 @@ mod tests {
         assert!(f.family_info("方正黑体_GBK").is_some());
     }
 
+    /// A font that names itself only in the GBK code page (every record
+    /// Windows encoding 3, no Unicode and no Macintosh English name), as
+    /// the older "_GBK" Chinese fonts do, is not left out: the font
+    /// database drops a face it finds no family name for, so such a font
+    /// was reported missing although installed (#1238). Loaded from a
+    /// file in a folder, from data and through `add_fonts` alike.
+    #[test]
+    fn fonts_named_only_in_a_code_page_are_installed() {
+        let gbk = |s: &str| -> Vec<u8> {
+            // Kept as 16-bit values: one-byte characters get a zero high byte.
+            let mut out = Vec::new();
+            for c in s.chars() {
+                let b = encoding_rs::GBK.encode(&c.to_string()).0.into_owned();
+                if b.len() == 1 {
+                    out.push(0);
+                }
+                out.extend_from_slice(&b);
+            }
+            out
+        };
+        let font = with_names(
+            SELAWIK,
+            &[
+                (3, 3, 0x804, 1, gbk("方正黑体_GBK")),
+                (3, 3, 0x804, 2, gbk("Regular")),
+                (3, 3, 0x804, 4, gbk("方正黑体_GBK")),
+                (3, 3, 0x804, 6, gbk("FZHTK--GBK1-0")),
+            ],
+        );
+        // The font database alone does not take it.
+        let mut plain = fontdb::Database::new();
+        plain.load_font_data(font.clone());
+        assert_eq!(plain.len(), 0);
+
+        let mut db = fontdb::Database::new();
+        let ids = load_source(&mut db, fontdb::Source::Binary(Arc::new(font.clone())));
+        assert_eq!(ids.len(), 1);
+        let face = db.face(ids[0]).expect("face");
+        assert_eq!(face.families[0].0, "方正黑体_GBK");
+        assert_eq!(face.post_script_name, "FZHTK--GBK1-0");
+        assert_eq!(face.weight, fontdb::Weight::NORMAL);
+        let f = FontSystem::from_db(db);
+        assert!(f.has_family("方正黑体_GBK"));
+        assert_eq!(f.substitute("方正黑体_GBK"), None);
+        assert!(f.face_for("方正黑体_GBK", false, false).is_some());
+        assert!(f.family_info("方正黑体_GBK").is_some());
+
+        // In a font folder.
+        let dir = std::env::temp_dir().join(format!("td_gbk_names_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(dir.join("sub"));
+        std::fs::write(dir.join("sub").join("FZHTK.TTF"), &font).expect("write");
+        std::fs::write(dir.join("Selawik.ttf"), SELAWIK).expect("write");
+        let mut db = fontdb::Database::new();
+        db.load_fonts_dir(&dir);
+        assert_eq!(db.len(), 1, "only the font the database names");
+        load_code_page_named_in(&mut db, std::slice::from_ref(&dir));
+        assert_eq!(db.len(), 2);
+        // Twice adds nothing.
+        load_code_page_named_in(&mut db, std::slice::from_ref(&dir));
+        assert_eq!(db.len(), 2);
+        assert!(FontSystem::from_db(db).has_family("方正黑体_GBK"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Supplied by the application.
+        let f = FontSystem::empty();
+        let added = f.add_fonts(vec![font]);
+        assert_eq!(added, vec!["方正黑体_GBK".to_string()]);
+        assert!(f.has_family("方正黑体_GBK"));
+    }
+
     /// `font` named `names` (name id, text; Windows English records)
     /// with the OS/2 weight class `weight`.
     fn named_face(font: &[u8], names: &[(u16, &str)], weight: u16) -> Vec<u8> {
@@ -9524,6 +9829,29 @@ mod font_folders {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The system's font folders are left out of the filter's Folders,
+    /// unless one was added to the font libraries (#867).
+    #[test]
+    fn the_filter_folders_leave_out_the_systems() {
+        use std::path::PathBuf;
+        let p = |s: &str| PathBuf::from(s);
+        let found = vec![
+            p("/home/u/My Fonts"),
+            p("/usr/share/fonts"),
+            p("/usr/share/fonts/truetype/dejavu"),
+            p("/usr/local/share/fonts"),
+        ];
+        let system = [p("/usr/share/fonts"), p("/usr/local/share/fonts")];
+        assert_eq!(
+            without_system_folders(found.clone(), &[p("/home/u/My Fonts")], &system),
+            vec![p("/home/u/My Fonts")]
+        );
+        assert_eq!(
+            without_system_folders(found, &[p("/usr/local/share/fonts")], &system),
+            vec![p("/home/u/My Fonts"), p("/usr/local/share/fonts")]
+        );
+    }
+
     /// The system's font folders are read once: the font list asks for
     /// them with every family it looks at, and reading them parses the
     /// whole fontconfig configuration on Linux (1.4 ms on a small one,
@@ -9649,5 +9977,28 @@ mod font_folders {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod family_spelling {
+    use super::*;
+
+    /// A family named without its spaces, as PDF files name fonts
+    /// ("RobotoFlex" for Roboto Flex), draws in that family, not in a
+    /// stand-in with other widths (#2323).
+    #[test]
+    fn a_family_spelt_without_spaces_is_found() {
+        const ROBOTO_FLEX: &[u8] = include_bytes!("../testdata/RobotoFlex-subset.ttf");
+        const QUICKSAND: &[u8] = include_bytes!("../testdata/Quicksand-VF.ttf");
+        let mut db = fontdb::Database::new();
+        db.load_font_data(QUICKSAND.to_vec());
+        db.load_font_data(ROBOTO_FLEX.to_vec());
+        let f = FontSystem::from_db(db);
+        let own = f.face_for("Roboto Flex", false, false);
+        assert!(own.is_some());
+        assert_eq!(f.face_for("RobotoFlex", false, false), own);
+        assert_eq!(f.face_for("roboto-flex", false, false), own);
+        assert_ne!(f.face_for("Quicksand", false, false), own);
     }
 }

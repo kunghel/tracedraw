@@ -69,7 +69,7 @@ object". The settings are kept in the preferences (`tools.brush_radius`,
 | Twirl | Speed 1 to 100 % (50); Counterclockwise or Clockwise (Alt or Shift while dragging turns the other way) | points turn about the pointer by `speed / 1000` rad per mm the pointer moved, times `w`; held still, it goes on as if the pointer moved 10 mm a second |
 | Attract and Repel | Speed 1 to 100 % (50); Attract or Repel (Alt or Shift while dragging swaps them) | the points of the stretch move straight towards (away from) the pointer, the same in every direction, by a dose `f` (0 to 1) that grows by `2 x speed x 0.006 / radius` per mm the pointer moved: a point `d` from the centre goes to `d (1 - f s)` (Attract, never past the centre) or `d + f s (radius - d) / 2` (Repel, never past the nib's edge); both keep the points' order along each ray, so the outline never folds. Each move works on the outline as it is; held still, it works from the outline the hold found, the dose growing as if the pointer moved 10 mm a second, so it pulls or pushes at a steady pace and comes to rest at `f = 1` (a 10 mm nib at 50 % after 1.7 s) |
 | Smudge | Pressure 1 to 100 % (100) | the nib carries the outline under it along: the points within half the nib's radius of its centre go all the way with the pointer (times the pressure), and from there to the nib's edge the carried share eases to nothing (`u^2 (3 - 2 u)`), so a stroke draws the outline out into a tongue as wide as that core, the piece of outline it took at its end and its sides running smoothly into the outline that stayed. Each move of the pointer is made in small moves of an eighth of the radius, each from the outline the one before left, so a quick stroke (a few long moves) and a slow one give the same outline, and no small move shifts neighbouring points past each other (`effects::smudge`, see below) |
-| Roughen | Frequency 1 to 10 spikes per 10 mm (5); Spike size (2 mm) | the whole stroke is worked out from the outline it began with and the places the nib went (a new place each half spacing the pointer moves): points `10 / frequency` mm apart along each subpath, counted from its start, are pushed off the curve along its normal by up to the spike size times `w` from the nearest place, the push from the point's place, and joined by straight lines so the spikes stay sharp; the nodes and the segments out of reach stay exactly. Going back over the same place or holding the button gives the same spikes, so a stroke adds at most one node per spacing of the stretch it covered (`effects::roughen_stroke`) |
+| Roughen | Frequency 1 to 10 spikes per 10 mm (5); Spike size (2 mm) | the whole stroke is worked out from the outline it began with and the places the nib went (a new place each half spacing the pointer moves): points `10 / frequency` mm apart along each subpath, counted from its start, are pushed off the curve along its normal by up to the spike size times `w` from the nearest place (the normal of the way the outline runs from the last place before the point to the first place after it that lie twice the larger of spacing and spike size away in a straight line, so on an outline an earlier stroke made jagged the spikes still stand out from the object rather than along the old spikes), the push from the point's place, and joined by straight lines so the spikes stay sharp; the nodes and the segments out of reach stay exactly. Going back over the same place or holding the button gives the same spikes, so a stroke adds at most one node per spacing of the stretch it covered. If the jagged outline then crosses itself or another closed subpath its box meets, each subpath that crosses itself becomes everything inside its outer edge (bits smaller than a spacing squared left out) and they are put together by the even-odd rule: every spike stays filled and a hole made of another subpath stays a hole (#2229: the even-odd fill showed the overlaps as white slivers over the object). Closed subpaths no bigger than the spike size are left as they are (`effects::roughen_stroke`) |
 
 ## Smudge
 
@@ -86,6 +86,18 @@ moves or in one (#2228,
 `tracedraw_core::effects::tests::smudge_draws_a_tongue_whatever_the_speed`).
 Dragging along a thin part (a ring's wall narrower than the nib's core)
 carries both of its edges, as a finger through wet paint does.
+
+The nib pushes what lies before it: the outline behind its centre (the
+pushing front goes as far as the pressure lets the outline follow)
+stays where it is, easing in over a tenth of the radius. A stroke from
+inside a shape draws its edge out, one from outside dents it, and a nib
+wide enough to cover the far edge where the stroke starts no longer
+drags that edge along behind it. Only the stretch of points the nib
+moved is fitted back into curves; the outline before and after it
+keeps its segments exactly. Refitting the whole stretch in reach at
+every pointer event let the edge beside the nib creep and wobble, the
+more the slower the stroke (#2546,
+`tracedraw_core::effects::tests::smudge_leaves_the_outline_away_from_the_nib`).
 
 A step measures the stretch in reach into points an eighth of the
 radius apart and fits it back, as a Smear step does. On a stroke that
@@ -107,6 +119,7 @@ left 19 elements, having smoothed the stroke away.
 - `tracedraw_core::effects::tests::attract_and_repel_are_the_same_in_every_direction`
 - `tracedraw_core::effects::tests::attract_and_repel_stay_within_the_nib`
 - `tracedraw_core::effects::tests::a_roughen_stroke_adds_spikes_once`
+- `tracedraw_core::effects::tests::roughen_leaves_no_white_slivers`
 - `pick_drag_tests::attract_works_from_the_press_and_settles_while_held`
 - `pick_drag_tests::roughen_adds_detail_up_to_a_cap_per_stroke`
 - `brushes::page_space_tests::the_nib_is_measured_on_the_page_whatever_the_object_scale`

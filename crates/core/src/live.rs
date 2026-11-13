@@ -139,6 +139,20 @@ pub enum Effect {
         /// Keep a gap between the object and the shadow (overprint trick).
         gap: f64,
     },
+    /// Inner shadow: a soft shadow cast inside the object, as if the
+    /// object were a hole in the page lit from the other side of
+    /// `offset` (a shadow falls inside along the edges facing away from
+    /// it). Drawn by the renderer over the object, cut to its shape
+    /// (#2473).
+    InnerShadow {
+        offset: Vec2,
+        color: Color,
+        /// 0..1
+        opacity: f64,
+        /// Feathering, millimetres.
+        blur: f64,
+        merge: MergeMode,
+    },
     /// Symmetry: mirrored copies of the object across `lines` mirror lines
     /// through `center` (page space), the first at `angle` degrees and the
     /// others spread evenly; the object itself stays where it is.
@@ -447,7 +461,11 @@ impl Effect {
     /// extrusion's body is built from the outline as the warps after it
     /// leave it, #2214; a bake still leaves those warps live.)
     fn draws_from_outline(&self) -> bool {
-        !self.warps_outline() && !matches!(self, Effect::Lens(_) | Effect::Transparency { .. })
+        !self.warps_outline()
+            && !matches!(
+                self,
+                Effect::Lens(_) | Effect::Transparency { .. } | Effect::InnerShadow { .. }
+            )
     }
 }
 
@@ -1143,7 +1161,7 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             // Mirrored last, whatever its place in the list: the copies
             // carry every other effect of the object (#2121).
             Effect::Symmetry { .. } => {}
-            Effect::Lens(_) | Effect::Transparency { .. } => {}
+            Effect::Lens(_) | Effect::Transparency { .. } | Effect::InnerShadow { .. } => {}
         }
     }
     for effect in &shape.effects {

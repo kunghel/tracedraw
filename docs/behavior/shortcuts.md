@@ -48,6 +48,27 @@ it was mirrored over the original's side again and landed on the
 original (#1909,
 `pick_drag_tests::repeat_after_a_mirror_copy_continues_from_the_selected_copy`).
 
+A Recolor (Tools > Recolor) repeats too, with the same values.
+
+### Repeat on Similar
+
+Edit > Repeat on Similar does what Edit > Repeat would repeat again to
+every object of the page that is like the objects it was done to, as
+they were before it, in the way the submenu item asks: Fill, Outline,
+Text Formatting (font and size) or Object Type, compared as Edit >
+Select Similar compares them (the objects inside groups each on their
+own; Object Type takes groups too). Filling one red object green and
+choosing Repeat on Similar > Fill fills every other red object green,
+though none of them is green yet. The objects it was done to already,
+and the objects inside them, are left out. A move, scale, rotation or
+skew, and a copy made with a right click, is repeated on each object
+on its own, so a turn turns each one about its own centre; a fill,
+outline, transparency or Recolor goes to all of them at once. It is one
+undo step, the objects it reached become the selection (Edit > Repeat
+right after it does the same to the selection of the time), and the
+status line says how many there were; with none, nothing changes and
+the status line says so (`select_similar::tests::repeat_on_similar_*`).
+
 Repeat replays the last group of actions, not only the newest: the
 newest action still in effect together with the actions done right
 before it to the same objects, with no other undo step and no change of

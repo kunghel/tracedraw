@@ -78,16 +78,19 @@ From the left, after the ruler's width:
    showed, so in a long drawing (a merged document) their pages could be
    reached only with Go To Page (#794,
    `pick_drag_tests::page_tabs_slide_to_the_current_page_of_a_long_drawing`). A right click makes the
-   page current and opens its menu, six rows with a picture each and no
+   page current and opens its menu, seven rows with a picture each and no
    separators: Rename Page... (a page with a text cursor), Insert Page
    After and Insert Page Before (two pages side by side, the new one with
    a green plus, on the right or on the left, under an arrow toward it),
    Duplicate Page... (two pages with a green plus; opens the Duplicate
-   Page dialog, see [pages.md](pages.md)), Delete Page (a page with a red
+   Page dialog, see [pages.md](pages.md)), Duplicate Page to New Document
+   (the same picture; a new untitled drawing in its own tab with a copy
+   of the page, its size and settings, layers and objects, #2510,
+   `duplicate_page_to_new_document_opens_a_copy_of_the_page`), Delete Page (a page with a red
    cross; greyed when it is the only page) and Switch Page Orientation.
    Only the rows that open a dialog end in an ellipsis. Page size and
    background are in the Page menu
-   (`ui::window_bars::tests::the_page_tab_menu_has_six_rows_in_order_each_with_a_picture`,
+   (`ui::window_bars::tests::the_page_tab_menu_has_seven_rows_in_order_each_with_a_picture`,
    `the_page_tab_menu_has_no_separators`,
    `the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages`).
    A page nobody named is called after its place: when pages are

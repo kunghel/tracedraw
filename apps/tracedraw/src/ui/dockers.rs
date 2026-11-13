@@ -955,26 +955,7 @@ fn fill_winding_row(app: &mut App, ui: &mut Ui) {
 /// outline: `Some(true)` all of them, `Some(false)` none, `None` mixed or
 /// nothing selected.
 pub fn overprint_state(app: &App, fill: bool) -> Option<bool> {
-    let targets = app.paint_targets();
-    let on = targets
-        .iter()
-        .filter(|s| {
-            if fill {
-                s.overprint_fill
-            } else {
-                s.overprint_outline
-            }
-        })
-        .count();
-    if targets.is_empty() {
-        None
-    } else if on == targets.len() {
-        Some(true)
-    } else if on == 0 {
-        Some(false)
-    } else {
-        None
-    }
+    app.selection_overprint(fill)
 }
 
 /// The Overprint fill or Overprint outline checkbox of the docker (#1200),
@@ -2825,10 +2806,10 @@ pub(crate) fn pattern_editor(
             tile, front, back, ..
         } => {
             crate::ui::keynav::ComboBox::from_label(tr("docker.tile"))
-                .selected_text(tile.name())
+                .selected_text(pattern_tile_name(*tile))
                 .show_ui(ui, |ui| {
                     for t in PatternTile::ALL {
-                        if ui.selectable_label(*tile == t, t.name()).clicked() {
+                        if ui.selectable_label(*tile == t, pattern_tile_name(t)).clicked() {
                             *tile = t;
                             changed = true;
                         }
@@ -3135,6 +3116,25 @@ pub(crate) fn texture_editor(ui: &mut Ui, t: &mut Texture) -> bool {
         }
     });
     changed
+}
+
+/// The i18n key of a built-in two-colour pattern tile's name.
+pub fn pattern_tile_key(t: PatternTile) -> &'static str {
+    match t {
+        PatternTile::Checker => "pattern_tile.checker",
+        PatternTile::Dots => "pattern_tile.dots",
+        PatternTile::Stripes => "pattern_tile.stripes",
+        PatternTile::DiagonalStripes => "pattern_tile.diagonal_stripes",
+        PatternTile::Grid => "pattern_tile.grid",
+        PatternTile::Bricks => "pattern_tile.bricks",
+        PatternTile::Crosshatch => "pattern_tile.crosshatch",
+        PatternTile::Waves => "pattern_tile.waves",
+    }
+}
+
+/// A built-in two-colour pattern tile's name in the interface language.
+pub fn pattern_tile_name(t: PatternTile) -> String {
+    tr(pattern_tile_key(t))
 }
 
 /// The i18n key of a procedural pattern's name.
@@ -3952,6 +3952,28 @@ fn undo_docker(app: &mut App, ui: &mut Ui) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The built-in two-colour pattern names follow the interface
+    /// language (#2509): every language has each of them, and in
+    /// Portuguese none stays in English.
+    #[test]
+    fn the_two_colour_pattern_names_are_translated() {
+        for code in ["en", "pt-BR", "de", "ja", "ar"] {
+            crate::i18n::with_thread_language(code, || {
+                for t in PatternTile::ALL {
+                    let name = pattern_tile_name(t);
+                    assert_ne!(name, pattern_tile_key(t), "{code}: {t:?}");
+                    assert!(!name.is_empty(), "{code}: {t:?}");
+                }
+            });
+        }
+        crate::i18n::with_thread_language("pt-BR", || {
+            for t in PatternTile::ALL {
+                assert_ne!(pattern_tile_name(t), t.name(), "{t:?}");
+            }
+            assert_eq!(pattern_tile_name(PatternTile::Bricks), "Tijolos");
+        });
+    }
 
     /// A docker dropped over a column joins it; just inside a side's only
     /// column (on the drawing's side) it makes a second column there;

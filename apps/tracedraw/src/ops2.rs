@@ -254,6 +254,60 @@ impl App {
         self.fit_pages_to(&fits, "Fit Page to Drawing");
     }
 
+    /// The commands that give `page` the size `size` about its centre:
+    /// the new size, and the page's objects moved by half of what the
+    /// page grew or shrank, so what sat in the middle of the page stays
+    /// in the middle (#2356). Nothing when the page already has the size.
+    pub fn resize_page_cmds(
+        &self,
+        page: tracedraw_core::PageId,
+        size: tracedraw_core::geometry::Size,
+    ) -> Vec<Command> {
+        use tracedraw_core::geometry::{Affine, Vec2};
+        let Ok(p) = self.doc().page(page) else {
+            return Vec::new();
+        };
+        let shift = Vec2::new(
+            (size.width - p.size.width) / 2.0,
+            (size.height - p.size.height) / 2.0,
+        );
+        if !shift.x.is_finite() || !shift.y.is_finite() || shift.hypot() < 1e-9 {
+            return Vec::new();
+        }
+        let shapes: Vec<ShapeId> = p
+            .layers
+            .iter()
+            .flat_map(|l| l.shapes.iter().map(|s| s.id))
+            .collect();
+        let mut cmds = vec![Command::ResizePage { page, size }];
+        if !shapes.is_empty() {
+            cmds.push(Command::TransformShapes {
+                shapes,
+                transform: Affine::translate(shift),
+            });
+        }
+        cmds
+    }
+
+    /// Resize `pages` to `size`, each about its centre, as one undo step.
+    pub fn resize_pages_about_centre(
+        &mut self,
+        pages: &[tracedraw_core::PageId],
+        size: tracedraw_core::geometry::Size,
+        label: &'static str,
+    ) {
+        let cmds: Vec<Command> = pages
+            .iter()
+            .flat_map(|&page| self.resize_page_cmds(page, size))
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+        }
+    }
+
     /// Size each page to its rectangle and move the page's objects so the
     /// rectangle's bottom-left corner is the page's; one undo step for
     /// all of them. A page whose rectangle is empty or not a number keeps
@@ -602,6 +656,38 @@ impl App {
             return;
         }
         self.effect_edit_step = Some((self.engine.revision(), key.1, key.2));
+    }
+
+    /// The first selected object's inner shadow: its offset and its
+    /// style (#2473).
+    pub fn selected_inner_shadow_at(
+        &self,
+    ) -> Option<(tracedraw_core::geometry::Vec2, crate::app::InnerShadowStyle)> {
+        self.selected_shapes().first().and_then(|s| {
+            s.effects.iter().find_map(|e| match e {
+                Effect::InnerShadow {
+                    offset,
+                    color,
+                    opacity,
+                    blur,
+                    merge,
+                } => Some((
+                    *offset,
+                    crate::app::InnerShadowStyle {
+                        color: *color,
+                        opacity: *opacity,
+                        blur: *blur,
+                        merge: *merge,
+                    },
+                )),
+                _ => None,
+            })
+        })
+    }
+
+    /// The style of the first selected object's inner shadow.
+    pub fn selected_inner_shadow(&self) -> Option<crate::app::InnerShadowStyle> {
+        self.selected_inner_shadow_at().map(|(_, s)| s)
     }
 
     pub fn remove_effects_of_kind(&mut self, like: &Effect) {
@@ -1615,6 +1701,71 @@ impl App {
             self.pending_copy_properties = true;
             self.status = tr("status.click_source_object");
         }
+    }
+
+    /// Copy Fill on the Interactive Fill bar (#2471): the next click
+    /// picks the object whose fill the selected objects take.
+    pub fn start_copy_fill(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        self.pending_copy_fill = true;
+        self.status = tr("status.click_fill_source");
+    }
+
+    /// The selected objects, other than `source` and `src`, take the fill
+    /// `src` shows (a colour, a gradient with its stops and angle, a
+    /// pattern, a texture, a mesh fitted to each object), one undo step
+    /// (#2471). `src` is the object clicked, inside the group or clip
+    /// frame `source` or `source` itself.
+    pub fn copy_fill_from_shape(&mut self, source: ShapeId, src: &Shape) {
+        let targets: Vec<Shape> = self
+            .selected_shapes()
+            .into_iter()
+            .filter(|s| s.id != source && s.id != src.id)
+            .collect();
+        self.give_fill(src, &targets);
+    }
+
+    /// `targets` take the fill `src` shows, one undo step "Copy Fill".
+    fn give_fill(&mut self, src: &Shape, targets: &[Shape]) {
+        if targets.is_empty() {
+            return;
+        }
+        let fill = crate::copy_props::shown_fill(src);
+        let cmds = crate::copy_props::fill_commands(&fill, src, targets);
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Copy Fill", &cmds) {
+            self.status = e.to_string();
+        }
+    }
+
+    /// The object a fill dragged from the Interactive Fill bar's swatch
+    /// would go to at `at` (screen): the one under the pointer, inside it
+    /// or on its outline, other than the object it came from (#2523).
+    pub fn fill_swatch_target(&self, at: egui::Pos2, from: ShapeId) -> Option<ShapeId> {
+        use crate::color_drop::ColorTarget;
+        match self.color_target(at) {
+            ColorTarget::Fill(id) | ColorTarget::Outline(id) if id != from => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Drop the fill of `src`, dragged from the Interactive Fill bar's
+    /// swatch, on the object at `at` (screen): it takes the whole fill,
+    /// one undo step, and the selection stays as it was (#2523). False
+    /// when nothing took it.
+    pub fn drop_swatch_fill(&mut self, src: &Shape, at: egui::Pos2) -> bool {
+        let Some(id) = self.fill_swatch_target(at, src.id) else {
+            return false;
+        };
+        let Some(target) = self.doc().find_shape(id).cloned() else {
+            return false;
+        };
+        self.give_fill(src, &[target]);
+        true
     }
 
     /// Copy Properties From: the properties ticked in its dialog
@@ -5159,6 +5310,43 @@ mod tests {
             ShapeKind::SymbolInstance { index } => index,
             ref k => panic!("{k:?}"),
         }
+    }
+
+    /// A page is resized about its centre: an object in the middle of
+    /// the page stays in the middle, on every page resized, and one undo
+    /// brings back both the size and the place (#2356).
+    #[test]
+    fn a_page_is_resized_about_its_centre() {
+        use tracedraw_core::geometry::Size;
+        let mut app = App::headless();
+        let first = app.page;
+        let old = app.page_size();
+        let (cx, cy) = (old.width / 2.0, old.height / 2.0);
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: kurbo::Rect::new(cx - 10.0, cy - 5.0, cx + 10.0, cy + 5.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.insert_page(true);
+        let second = app.page;
+        let size = Size::new(old.width + 100.0, old.height - 40.0);
+        app.resize_pages_about_centre(&[first, second], size, "Page Size");
+        assert_eq!(app.doc().page(first).expect("page").size, size);
+        assert_eq!(app.doc().page(second).expect("page").size, size);
+        app.select(vec![id]);
+        let c = app.selection_bounds().expect("bounds").center();
+        assert!((c.x - size.width / 2.0).abs() < 1e-6, "{c:?}");
+        assert!((c.y - size.height / 2.0).abs() < 1e-6, "{c:?}");
+        // One step back: the size and the object as they were.
+        app.undo();
+        assert_eq!(app.doc().page(first).expect("page").size, old);
+        app.select(vec![id]);
+        let c = app.selection_bounds().expect("bounds").center();
+        assert!((c.x - cx).abs() < 1e-6 && (c.y - cy).abs() < 1e-6, "{c:?}");
+        // The same size again changes nothing and makes no undo step.
+        assert!(app.resize_page_cmds(first, old).is_empty());
     }
 
     /// The Repeat Copies values stay as typed: after an Apply (its copies

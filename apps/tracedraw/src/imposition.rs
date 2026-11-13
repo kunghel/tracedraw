@@ -312,6 +312,9 @@ pub struct Options {
     /// marks: Print Preview's artwork position and Transform (#536, #595).
     pub page_offset: (f64, f64),
     pub page_stretch: (f64, f64),
+    /// Every page turned about its middle on the sheet, degrees
+    /// counter-clockwise (0 for none): Print Preview's Rotation.
+    pub page_rotation: f64,
     /// On a fixed sheet the pages stretch to fill the room inside the
     /// margins, width and height each on its own (#591).
     pub stretch_fit: bool,
@@ -339,6 +342,7 @@ impl Default for Options {
             paper_margins: [0.0; 4],
             page_offset: (0.0, 0.0),
             page_stretch: (1.0, 1.0),
+            page_rotation: 0.0,
             stretch_fit: false,
             booklet: Booklet::default(),
             marks: Marks::default(),
@@ -503,6 +507,8 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             let ok = |v: f64, d: f64| if v.is_finite() { v } else { d };
             let (ox, oy) = (ok(ox, 0.0), ok(oy, 0.0));
             let (kx, ky) = (ok(kx, 1.0).max(0.01), ok(ky, 1.0).max(0.01));
+            let turn = ok(o.page_rotation, 0.0).to_radians();
+            let (sin, cos) = turn.sin_cos();
             let cells = cells
                 .iter()
                 .enumerate()
@@ -519,9 +525,19 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                         + ox;
                     let cy = y_top - (row * step_y + inner_bleed + cell.height / 2.0) * sy + oy;
                     let (w, h) = (ps.width * sx * kx, ps.height * sy * ky);
-                    let trim = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-                    let transform = Affine::translate((trim.x0, trim.y0))
-                        * Affine::scale_non_uniform(sx * kx, sy * ky);
+                    // The page turned about its middle; its trim is the
+                    // box round the turned page.
+                    let (bw, bh) = (w * cos.abs() + h * sin.abs(), w * sin.abs() + h * cos.abs());
+                    let trim = Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
+                    let transform = if turn == 0.0 {
+                        Affine::translate((cx - w / 2.0, cy - h / 2.0))
+                            * Affine::scale_non_uniform(sx * kx, sy * ky)
+                    } else {
+                        Affine::translate((cx, cy))
+                            * Affine::rotate(turn)
+                            * Affine::translate((-w / 2.0, -h / 2.0))
+                            * Affine::scale_non_uniform(sx * kx, sy * ky)
+                    };
                     Cell {
                         page: *page,
                         transform,
@@ -806,6 +822,7 @@ pub fn page_marks(sizes: &[Size], names: &[String], o: &Options) -> Vec<Vec<Shap
         scale: 1.0,
         page_offset: (0.0, 0.0),
         page_stretch: (1.0, 1.0),
+        page_rotation: 0.0,
         paper_margins: [0.0; 4],
         ..o.clone()
     };
@@ -987,6 +1004,45 @@ mod tests {
             },
         );
         assert_eq!(fitted[0].size, Size::new(110.0, 110.0));
+    }
+
+    /// A turn of 90 degrees swaps the trim's width and height about the
+    /// same middle, and the page's corner lands where the turn puts it.
+    #[test]
+    fn pages_turn_about_their_middle() {
+        let page = Size::new(100.0, 50.0);
+        let base = Options {
+            sheet: Some(Size::new(210.0, 297.0)),
+            keep_size: true,
+            ..Default::default()
+        };
+        let before = plan(&[page], &base)[0].cells[0].clone();
+        let turned = plan(
+            &[page],
+            &Options {
+                page_rotation: 90.0,
+                ..base.clone()
+            },
+        )[0]
+        .cells[0]
+            .clone();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let (b, t) = (before.trim, turned.trim);
+        assert!(near(t.center().x, b.center().x) && near(t.center().y, b.center().y));
+        assert!(near(t.width(), b.height()) && near(t.height(), b.width()), "{t:?}");
+        // The page's lower right corner goes to the upper right.
+        let c = turned.transform * Point::new(page.width, 0.0);
+        assert!(near(c.x, t.x1) && near(c.y, t.y1), "{c:?} {t:?}");
+        let bad = plan(
+            &[page],
+            &Options {
+                page_rotation: f64::NAN,
+                ..base.clone()
+            },
+        )[0]
+        .cells[0]
+            .clone();
+        assert_eq!(bad.trim, before.trim);
     }
 
     /// Stretched to fill, the page takes the whole room inside the

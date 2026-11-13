@@ -972,8 +972,30 @@ fn find_properties(app: &mut App, ui: &mut Ui, st: &mut crate::ui::dialogs::Find
 
             ui.checkbox(&mut pf.use_font, tr("find.font"))
                 .rich_tip(crate::ui::tips::keyed("find.font"));
+            // Every font the drawing's text uses, not only the clicked
+            // word's (#2485).
             ui.add_enabled_ui(pf.use_font, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut pf.font).desired_width(120.0))
+                let used = app.doc().font_families_used();
+                let shown = if pf.font.trim().is_empty() {
+                    tr("find.pick_font")
+                } else {
+                    pf.font.clone()
+                };
+                crate::ui::keynav::ComboBox::from_id_salt("find_props_font")
+                    .selected_text(shown)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        if used.is_empty() {
+                            ui.weak(tr("find.no_fonts_used"));
+                        }
+                        for f in &used {
+                            if ui.selectable_label(pf.font == *f, f).clicked() {
+                                pf.font = f.clone();
+                            }
+                        }
+                    })
+                    .response
+                    .rich_tip(crate::ui::tips::pair("find.font", "find.font_used_desc"));
             });
             ui.end_row();
         });
@@ -1034,8 +1056,18 @@ fn find_properties(app: &mut App, ui: &mut Ui, st: &mut crate::ui::dialogs::Find
             ui.end_row();
             ui.checkbox(&mut pf.set_font, tr("find.font"))
                 .rich_tip(crate::ui::tips::pair("find.font", "find.set_font_desc"));
+            // The font list, to browse for the new font (#2485).
             ui.add_enabled_ui(pf.set_font, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut pf.new_font).desired_width(120.0))
+                let (pick, _) = crate::ui::font_list::font_list_live(
+                    app,
+                    ui,
+                    "find_replace_font",
+                    &pf.new_font,
+                    160.0,
+                );
+                if let Some(p) = pick {
+                    pf.new_font = p.family;
+                }
             });
             ui.end_row();
         });
@@ -2312,26 +2344,14 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         .selected_shapes()
         .iter()
         .any(|s| matches!(s.kind, ShapeKind::Bitmap { .. }));
-    // A colour sampled with the eyedropper goes into the picked slot.
-    if app.mask.picking {
-        if let Some(c) = app.eyedropper_color {
-            if app.mask.seen != Some(c) {
-                let i = app.mask.picked.min(MASK_SLOTS - 1);
-                app.mask.slots[i].color = c;
-                app.mask.slots[i].on = true;
-                app.mask.seen = Some(c);
-            }
-        }
-    }
     ui.horizontal(|ui| {
         if icon_btn(ui, true, &tr("docker.mask_eyedropper"), |p, r, c| {
             crate::ui::icons::draw(p, r, crate::tools::Tool::ColorEyedropper, c)
         })
         .clicked()
         {
-            app.mask.picking = true;
-            app.mask.seen = app.eyedropper_color;
-            app.set_tool(crate::tools::Tool::ColorEyedropper);
+            // The next click on the drawing picks the slot's colour.
+            app.start_mask_color_pick();
         }
         if icon_btn(ui, has_bitmap, &tr("docker.mask_from_bitmap"), |p, r, c| {
             // A bitmap with a grid of samples.

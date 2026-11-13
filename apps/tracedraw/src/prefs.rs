@@ -252,6 +252,10 @@ pub struct FormatPrefs {
     /// PDF and AI files: text read in as curves from the fonts the file
     /// embeds (else as editable text, #386).
     pub pdf_text_as_curves: bool,
+    /// PDF and AI files read as text: lines one under another in the same
+    /// font come in as paragraph text frames, linked where the text goes
+    /// on in the next column or page (#2323).
+    pub pdf_text_paragraphs: bool,
     /// Ask how to read a PDF's text each time one is opened or imported.
     pub pdf_ask_text: bool,
     /// PDF and AI files: pictures larger than 80 megapixels come in
@@ -288,6 +292,7 @@ impl Default for FormatPrefs {
             save_new_as_cdr: false,
             skip_export_dialog: false,
             pdf_text_as_curves: false,
+            pdf_text_paragraphs: true,
             pdf_ask_text: true,
             pdf_reduce_pictures: false,
             pdf_as_picture: false,

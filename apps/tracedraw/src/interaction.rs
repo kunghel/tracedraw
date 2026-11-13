@@ -50,7 +50,7 @@ use egui::{Key, Modifiers, PointerButton, Response};
 use tracedraw_core::{
     document::ShapeKind,
     geometry::{Affine, Point, Rect, Shape as _, Vec2},
-    Color, Command, Fill, ShapeId,
+    Command, Fill, ShapeId,
 };
 
 /// How far out of the selection box the rotate and skew arrows' centres
@@ -605,6 +605,17 @@ impl App {
             // What the object draws: its warped outline and the objects
             // its effects add.
             let ev = tracedraw_core::live::evaluate(s);
+            // A lens shows over its whole inside, filled or not: a closed
+            // shape with a Transparency lens lying over other objects is
+            // picked (and its colour read) there, not the objects beneath
+            // (#2549).
+            if s.effects
+                .iter()
+                .any(|e| matches!(e, tracedraw_core::live::Effect::Lens(_)))
+                && tracedraw_core::command::close_subpaths(&ev.main.page_path()).contains(p)
+            {
+                return true;
+            }
             return std::iter::once(ev.main)
                 .chain(ev.below)
                 .chain(ev.above)
@@ -1438,6 +1449,7 @@ impl App {
                 | Drag::KindNode { .. }
                 | Drag::NodeMove { .. }
                 | Drag::SegmentBend { .. }
+                | Drag::PolygonEdge { .. }
                 | Drag::NodeLasso { .. }
                 | Drag::NodeMarquee { .. }
                 | Drag::Connector { .. }
@@ -1496,6 +1508,11 @@ impl App {
     }
 
     pub(crate) fn handle_at(&self, screen: egui::Pos2) -> Option<Handle> {
+        // A drop shadow chosen on its own shows its box, not the object's
+        // handles (#2545).
+        if self.picked_shadow().is_some() {
+            return None;
+        }
         let b = self.selection_bounds()?;
         let reach = if self.rotate_mode {
             ROTATE_HANDLE_PX
@@ -1798,6 +1815,7 @@ impl App {
             | Tool::RoundedConnector
             | Tool::AnchorEditing
             | Tool::BlockShadow
+            | Tool::InnerShadow
             | Tool::Envelope
             | Tool::Extrude
             | Tool::Distort
@@ -2034,6 +2052,24 @@ impl App {
     }
 
     fn pick_input(&mut self, response: &Response, p: Point, screen: egui::Pos2, mods: Modifiers) {
+        // Ctrl+click on a table chooses the cell under the pointer, and
+        // with a cell chosen Shift+click adds another; any other click
+        // lets the cells go (#2434).
+        if response.clicked_by(PointerButton::Primary) {
+            use crate::table_tool::CellPick;
+            let chosen = self.table_edit.is_some();
+            let how = if mods.command || mods.ctrl {
+                Some(CellPick::One)
+            } else if mods.shift && chosen {
+                Some(CellPick::Toggle)
+            } else {
+                None
+            };
+            if how.is_some_and(|h| self.handle_at(screen).is_none() && self.pick_table_cell(p, h)) {
+                return;
+            }
+            self.table_edit = None;
+        }
         // A press on a frame's flow tab: where its text flows on is the
         // next click (#371).
         if response.clicked_by(PointerButton::Primary)
@@ -2254,8 +2290,16 @@ impl App {
                         self.select_add(id);
                     }
                 }
+                Some(id) if !mods.ctrl && self.hit_test(p) != Some(id) => {
+                    // On the drop shadow, away from the object: the shadow
+                    // alone (#2545).
+                    self.pick_shadow(id);
+                }
                 Some(id) => {
-                    if self.selection.contains(&id) {
+                    if self.picked_shadow() == Some(id) {
+                        // The object of the chosen shadow: the object.
+                        self.select(vec![id]);
+                    } else if self.selection.contains(&id) {
                         // A click on what is selected: toggle the rotate and
                         // skew handles.
                         self.toggle_rotate_mode();
@@ -2411,10 +2455,14 @@ impl App {
                 start_geometry,
                 ..
             } => {
-                // The pointer's way since the press, snapped; Ctrl
-                // keeps it horizontal or vertical, whichever is longer.
+                // The pointer's way since the press, snapped; Ctrl (Cmd
+                // on macOS) or Shift keeps it horizontal or vertical,
+                // whichever is longer (#2480: Shift snapped it to objects
+                // instead). Alt+Shift copies an outline on the drop, so
+                // Shift with Alt does not.
                 let mut d = p - *start;
-                let axis = mods.ctrl.then_some(d.x.abs() >= d.y.abs());
+                let straight = mods.ctrl || mods.command || (mods.shift && !mods.alt);
+                let axis = straight.then_some(d.x.abs() >= d.y.abs());
                 match axis {
                     Some(true) => d.y = 0.0,
                     Some(false) => d.x = 0.0,
@@ -2552,6 +2600,25 @@ impl App {
     }
 
     fn shape_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
+        // On a table a click chooses the cell under the pointer, with
+        // Ctrl one more or less and with Shift the block from the active
+        // cell, as the Table tool chooses them (which edits the text on
+        // a plain click); a click anywhere else lets the cells go
+        // (#2436).
+        if response.clicked_by(PointerButton::Primary) {
+            use crate::table_tool::CellPick;
+            let how = if mods.command || mods.ctrl {
+                CellPick::Toggle
+            } else if mods.shift {
+                CellPick::Range
+            } else {
+                CellPick::One
+            };
+            if self.pick_table_cell(p, how) {
+                return;
+            }
+            self.table_edit = None;
+        }
         self.shape_tool_input(response, p, mods);
     }
 
@@ -2821,14 +2888,28 @@ impl App {
                 start: p,
                 current: p,
             };
+            self.three_point_circle = false;
         }
         if response.dragged_by(PointerButton::Primary) {
+            // With Ctrl the 3-Point Ellipse draws a circle round the
+            // press point, the line dragged its radius, and its turn in
+            // steps of the constrain angle (#2550).
+            let circle = self.tool == Tool::ThreePointEllipse && constrain;
             if let Drag::ThreePointBase { start, current } = &mut self.drag {
-                *current = if constrain {
+                *current = if circle {
+                    let dir = constrain_from(*start, p, step) - *start;
+                    let len = dir.hypot();
+                    if len > 1e-9 {
+                        *start + dir * ((p - *start).hypot() / len)
+                    } else {
+                        p
+                    }
+                } else if constrain {
                     constrain_from(*start, p, step)
                 } else {
                     p
                 };
+                self.three_point_circle = circle;
             }
         }
     }
@@ -3357,6 +3438,12 @@ impl App {
     }
 
     fn fill_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
+        // A mesh fill's nodes are picked and dragged here too, as with the
+        // Mesh Fill and Shape tools; a palette colour then goes to the
+        // chosen nodes, the fill staying a mesh (#2506).
+        if self.selected_mesh().is_some() && self.effect_node_input(response, p) {
+            return;
+        }
         // A double click on a colour node removes it; on the line, it adds
         // one there.
         if response.double_clicked_by(PointerButton::Primary) {
@@ -3410,28 +3497,15 @@ impl App {
                 return;
             }
             self.fill_node = None;
-            if self.fountain_line_at(p).is_some() {
+            let under = self.hit_test_inside(p);
+            // A click on the selected fill's line keeps it, unless another
+            // object lies on top there: that one is picked (#2508).
+            let other = under.is_some_and(|id| !self.selection.contains(&id));
+            if self.fountain_line_at(p).is_some() && !other {
                 return;
             }
-            if let Some(id) = self.hit_test_inside(p) {
-                // An object with a gradient already is only picked, its
-                // nodes shown.
-                let has_fountain = self
-                    .doc()
-                    .find_shape(id)
-                    .is_some_and(|s| matches!(s.fill, Fill::Fountain(_)));
-                self.select(vec![id]);
-                if has_fountain {
-                    return;
-                }
-                let fill = match self.default_fill() {
-                    Fill::None => Fill::Solid(Color::cmyk_pct(0.0, 0.0, 0.0, 20.0)),
-                    f => f,
-                };
-                self.run(Command::SetFill {
-                    shapes: vec![id],
-                    fill,
-                });
+            if let Some(id) = under {
+                self.fill_tool_click(id);
             }
         }
     }
@@ -3561,7 +3635,11 @@ impl App {
             }
             Drag::Freehand { points } if self.tool == Tool::Sketch => self.finish_sketch(points),
             Drag::ThreePointBase { start, current } => {
-                if (current - start).hypot() > 0.05 {
+                if std::mem::take(&mut self.three_point_circle)
+                    && self.tool == Tool::ThreePointEllipse
+                {
+                    self.finish_three_point_circle(start, current);
+                } else if (current - start).hypot() > 0.05 {
                     self.three_point_base = Some((start, current));
                 }
             }
@@ -3765,6 +3843,7 @@ impl App {
             Drag::NodeMove { .. }
             | Drag::NodeTransform { .. }
             | Drag::SegmentBend { .. }
+            | Drag::PolygonEdge { .. }
             | Drag::TextChars { .. }
             | Drag::TextSpacing { .. } => {}
             Drag::NewGuide { .. } => self.finish_guide_drag(),
@@ -4553,6 +4632,13 @@ impl App {
         if pressed(Key::F12, Modifiers::ALT) {
             self.align_chars_to_baseline();
         }
+        // F9: View > Full-Screen Preview (#2195). The press is taken so
+        // that the preview, drawn later this frame, does not see it as
+        // its own F9 and close at once; while it shows, its F9 closes it.
+        if !self.fullscreen_preview && first_pressed(Key::F9, Modifiers::NONE) {
+            ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9));
+            self.fullscreen_preview = true;
+        }
         // F11: the Edit Fill dialog. F3: zoom out.
         if pressed(Key::F11, Modifiers::NONE) {
             self.open_edit_fill();
@@ -4618,6 +4704,14 @@ impl App {
             if pressed(Key::Num2, cmd) {
                 self.step_text_size(false);
             }
+            // Ctrl+Shift+> and Ctrl+Shift+<: the letters further apart
+            // or closer (#193).
+            if pressed(Key::Period, cmd | Modifiers::SHIFT) {
+                self.step_char_spacing(true);
+            }
+            if pressed(Key::Comma, cmd | Modifiers::SHIFT) {
+                self.step_char_spacing(false);
+            }
         }
         if pressed(Key::Plus, cmd) || pressed(Key::Equals, cmd) {
             self.zoom_step(true);
@@ -4647,6 +4741,8 @@ impl App {
                 // The width node went, the object stays.
             } else if self.tool == Tool::AnchorEditing && self.delete_selected_anchor() {
                 // The anchor went, the object stays.
+            } else if self.delete_picked_shadow() {
+                // The chosen drop shadow went, its object stays (#2545).
             } else if !self.selected_guides.is_empty() {
                 if !self.delete_selected_guides() {
                     self.status = crate::i18n::tr("status.guideline_locked");

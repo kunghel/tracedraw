@@ -1797,6 +1797,7 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         // clip, clear of the printer's margins (#536, #595).
         page_offset: st.art_offset,
         page_stretch: st.art_stretch,
+        page_rotation: st.art_rotation,
         stretch_fit: st.stretch_fit,
         booklet: st.booklet(),
         marks: crate::imposition::Marks {

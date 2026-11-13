@@ -796,6 +796,51 @@ fn the_blend_tool_picks_a_text_blend_and_its_sliders_tune_it() {
 }
 
 /// The squares at the ends of a text blend's line, with the Blend tool
+/// A colour dropped on a square of the blend in hand becomes the fill
+/// of that end's object, the start or the end, in one undo step, and
+/// the selection stays; off the squares the drop goes on as before
+/// (#965, the reporter's third request).
+#[test]
+fn a_colour_dropped_on_a_blend_s_square_fills_that_end() {
+    use tracedraw_core::{Color, Fill};
+    let ctx = crate::theme::ui_context();
+    let mut app = App::headless();
+    app.show_welcome = false;
+    let a = text(&mut app, Point::new(30.0, 150.0), "A");
+    let b = text(&mut app, Point::new(150.0, 150.0), "A");
+    app.selection = vec![a, b];
+    app.blend_selection(20, 0.0, 0.0, 0.0);
+    app.set_tool(crate::tools::Tool::Blend);
+    app.select(Vec::new());
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    app.zoom_to_page();
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    let on_a = app.view.to_screen(center(&app, a));
+    click(&ctx, &mut app, on_a);
+    let ctl = app.blend_controls().expect("the blend's controls");
+    assert_eq!(app.blend_end_object_at(ctl.start), Some(a));
+    assert_eq!(app.blend_end_object_at(ctl.end), Some(b));
+    let fill = |app: &App, id| app.doc().find_shape(id).expect("shape").fill.clone();
+    let (red, green) = (Color::rgb8(220, 20, 20), Color::rgb8(20, 180, 20));
+    let selection = app.selection.clone();
+    let steps = app.engine.history_labels().0.len();
+    assert!(app.drop_color(Some(red), app.view.to_screen(ctl.end)));
+    assert_eq!(fill(&app, b), Fill::Solid(red));
+    assert_ne!(fill(&app, a), Fill::Solid(red));
+    assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+    assert!(app.drop_color(Some(green), app.view.to_screen(ctl.start)));
+    assert_eq!(fill(&app, a), Fill::Solid(green));
+    assert_eq!(fill(&app, b), Fill::Solid(red));
+    assert_eq!(app.selection, selection);
+    // With another tool the squares are not there to take a colour.
+    app.set_tool(crate::tools::Tool::Pick);
+    assert_eq!(app.blend_end_object_at(ctl.end), None);
+}
+
 /// in the window (#965, the reporter's second request): dragging the end
 /// square to empty space moves the end text, so the blend changes its
 /// direction, in one undo step; dropped on another text it makes that

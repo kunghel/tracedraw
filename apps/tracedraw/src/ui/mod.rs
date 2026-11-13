@@ -98,6 +98,7 @@ pub mod print_merge_docker;
 pub mod print_preview;
 pub mod propbar;
 pub mod publish_pdf;
+pub mod recolor;
 pub mod rulers;
 pub mod save_as;
 pub mod screen_margins;
@@ -272,6 +273,24 @@ impl egui::Widget for Rail<'_> {
     }
 }
 
+/// The drawing's name for the window title: the tab's title with the
+/// file's whole path in place of its bare name, so where the drawing is
+/// kept can be read there and the status bar need not say it (#1126).
+/// What the tab adds to the name stays (the star of unsaved changes, the
+/// number of a second window). A drawing not saved yet keeps its name.
+pub(crate) fn titled_with_path(tab_title: &str, file: Option<&std::path::Path>) -> String {
+    let Some(path) = file else {
+        return tab_title.to_string();
+    };
+    let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+        return tab_title.to_string();
+    };
+    match tab_title.strip_prefix(stem.as_str()) {
+        Some(rest) if !stem.is_empty() => format!("{}{rest}", path.display()),
+        _ => tab_title.to_string(),
+    }
+}
+
 /// Set the window title (the page title in a browser) when it changes.
 fn set_window_title(ctx: &egui::Context, title: String) {
     let id = egui::Id::new("tracedraw_window_title");
@@ -413,7 +432,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     }
 
     let doc_name = if app.has_document() && !app.show_welcome {
-        app.document_tab_title(app.active_doc)
+        titled_with_path(&app.document_tab_title(app.active_doc), app.file.as_deref())
     } else {
         tr("welcome.title")
     };
@@ -771,6 +790,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| welcome::welcome_screen(app, ui));
+        update_card::show(app, &ctx);
         command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
@@ -780,6 +800,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |_| {});
+        update_card::show(app, &ctx);
         command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
@@ -788,6 +809,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| preview::page_sorter(app, ui));
+        update_card::show(app, &ctx);
         command_search::show(app, &ctx);
         dialogs::show(app, &ctx);
         return;
@@ -1901,6 +1923,7 @@ mod tests {
                 time: Some(clock.get()),
                 ..Default::default()
             };
+            crate::touch_modifiers::fingers_on_keys(app, &mut input);
             app.touch_mods.apply(&ctx, &mut input);
             let mut out = ctx.run_ui(input, |ui| root(app, ui));
             out.textures_delta.clear();
@@ -2061,6 +2084,204 @@ mod tests {
         app.settings.touch_keys = false;
         timed(&mut app, Vec::new());
         assert!(app.touch_keys_shown.is_empty());
+    }
+
+    /// Ctrl held from the keys on the drawing keeps the Pen tool's lines
+    /// and handles to the constrain angle, as the keyboard's Ctrl held
+    /// down does (#2362).
+    #[test]
+    fn ctrl_from_the_keys_on_the_drawing_keeps_the_pen_to_the_constrain_angle() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.show_welcome = false;
+        app.set_workspace(crate::app::Workspace::Touch);
+        let clock = std::cell::Cell::new(0.0);
+        let timed = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.05);
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            crate::touch_modifiers::fingers_on_keys(app, &mut input);
+            app.touch_mods.apply(&ctx, &mut input);
+            let mut out = ctx.run_ui(input, |ui| root(app, ui));
+            out.textures_delta.clear();
+        };
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(3),
+            phase,
+            pos,
+            force: None,
+        };
+        let tap = |app: &mut App, at: egui::Pos2| {
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start, at),
+                    egui::Event::PointerMoved(at),
+                    button(at, true, egui::PointerButton::Primary),
+                ],
+            );
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End, at),
+                    button(at, false, egui::PointerButton::Primary),
+                    egui::Event::PointerGone,
+                ],
+            );
+            timed(app, Vec::new());
+        };
+        // A finger's drag, a frame for each step.
+        let pull = |app: &mut App, from: egui::Pos2, to: egui::Pos2| {
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start, from),
+                    egui::Event::PointerMoved(from),
+                    button(from, true, egui::PointerButton::Primary),
+                ],
+            );
+            for k in 1..=8 {
+                let at = from + (to - from) * (k as f32 / 8.0);
+                timed(
+                    app,
+                    vec![
+                        touch(egui::TouchPhase::Move, at),
+                        egui::Event::PointerMoved(at),
+                    ],
+                );
+            }
+            timed(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End, to),
+                    button(to, false, egui::PointerButton::Primary),
+                    egui::Event::PointerGone,
+                ],
+            );
+            timed(app, Vec::new());
+        };
+        for _ in 0..5 {
+            timed(&mut app, Vec::new());
+        }
+        app.zoom_to_page();
+        timed(&mut app, Vec::new());
+        // A first tap off the page makes the touch screen known.
+        {
+            let at = app.view.to_screen(Point::new(150.0, 200.0));
+            tap(&mut app, at);
+        }
+        app.set_tool(crate::tools::Tool::Pen);
+        timed(&mut app, Vec::new());
+        let ctrl = app
+            .touch_keys_shown
+            .iter()
+            .find(|(k, _)| *k == "ctrl")
+            .map(|(_, r)| r.center())
+            .expect("the Ctrl key is on the drawing");
+        tap(&mut app, ctrl);
+        assert!(app.touch_mods.ctrl);
+        assert!(ctx.input(|i| app.constrain_held(&i.modifiers)));
+        // Two taps a little off the level: a level line.
+        {
+            let at = app.view.to_screen(Point::new(50.0, 50.0));
+            tap(&mut app, at);
+        }
+        {
+            let at = app.view.to_screen(Point::new(110.0, 53.0));
+            tap(&mut app, at);
+        }
+        let nodes: Vec<Point> = app
+            .curve
+            .as_ref()
+            .expect("a line being drawn")
+            .nodes
+            .iter()
+            .map(|n| n.0)
+            .collect();
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+        assert!((nodes[0].y - nodes[1].y).abs() < 1e-6, "level: {nodes:?}");
+        // A handle pulled a little off the level: level too.
+        let from = app.view.to_screen(Point::new(160.0, 50.0));
+        let to = app.view.to_screen(Point::new(190.0, 53.0));
+        pull(&mut app, from, to);
+        let c = app.curve.as_ref().expect("a curve being drawn");
+        let (node, handle) = c.nodes.last().copied().expect("the node pulled");
+        let handle = handle.expect("a handle pulled from the node");
+        assert!(
+            (handle.y - node.y).abs() < 1e-6,
+            "level handle: {node:?} {handle:?}"
+        );
+        // Let go.
+        tap(&mut app, ctrl);
+        assert!(!app.touch_mods.any());
+        app.finish_curve();
+        assert!(app.curve.is_none());
+        // Ctrl held down by one finger while another taps: held as a key
+        // is, not a pan of two fingers, and let go with the finger.
+        let finger = |id: u64, phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(id),
+            phase,
+            pos,
+            force: None,
+        };
+        let view = app.view;
+        timed(
+            &mut app,
+            vec![
+                finger(7, egui::TouchPhase::Start, ctrl),
+                egui::Event::PointerMoved(ctrl),
+                button(ctrl, true, egui::PointerButton::Primary),
+            ],
+        );
+        assert!(app.touch_mods.held(crate::touch_modifiers::ModKey::Ctrl));
+        assert!(!app.touch_mods.ctrl, "held, not tapped on");
+        // The second finger: touch events only, the pointer follows the
+        // first one.
+        for at in [Point::new(50.0, 150.0), Point::new(110.0, 154.0)] {
+            let at = app.view.to_screen(at);
+            timed(&mut app, vec![finger(8, egui::TouchPhase::Start, at)]);
+            timed(&mut app, vec![finger(8, egui::TouchPhase::End, at)]);
+            timed(&mut app, Vec::new());
+        }
+        assert_eq!(app.view.zoom, view.zoom, "no pinch");
+        assert_eq!(app.view.origin, view.origin, "no pan");
+        let nodes: Vec<Point> = app
+            .curve
+            .as_ref()
+            .expect("a line drawn by the second finger")
+            .nodes
+            .iter()
+            .map(|n| n.0)
+            .collect();
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+        assert!((nodes[0].y - nodes[1].y).abs() < 1e-6, "level: {nodes:?}");
+        // The first finger lifts: Ctrl is let go, not left on.
+        timed(
+            &mut app,
+            vec![
+                finger(7, egui::TouchPhase::End, ctrl),
+                button(ctrl, false, egui::PointerButton::Primary),
+                egui::Event::PointerGone,
+            ],
+        );
+        timed(&mut app, Vec::new());
+        assert!(!app.touch_mods.any(), "{:?}", app.touch_mods);
+        assert!(!ctx.input(|i| i.modifiers.ctrl));
+        // A plain tap on the key still holds it until the next tap.
+        tap(&mut app, ctrl);
+        assert!(app.touch_mods.ctrl);
+        tap(&mut app, ctrl);
+        assert!(!app.touch_mods.any());
     }
 
     /// Without a touch screen the keys on the drawing are not drawn: the
@@ -2526,6 +2747,102 @@ mod tests {
         );
     }
 
+    /// #2507: the node bar of Interactive Fill is compact, and its
+    /// transparency is the object's uniform transparency (the value of
+    /// the Properties docker): dragging it makes the object see-through.
+    /// It was as wide as the window allowed and changed the node only.
+    #[test]
+    fn the_node_bar_is_compact_and_sets_the_objects_transparency() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::linear(
+            tracedraw_core::Color::BLACK,
+            tracedraw_core::Color::WHITE,
+            0.0,
+        ));
+        app.tool = crate::tools::Tool::InteractiveFill;
+        app.fill_node = Some(0);
+        frame(&ctx, &mut app);
+        frame(&ctx, &mut app);
+        let bar = egui::Id::new("fill_node_bar");
+        let r = ctx.memory(|m| m.area_rect(bar)).expect("node bar");
+        assert!(r.width() < 320.0, "compact: {r:?}");
+        // Along the slider's groove, left of its number box.
+        let groove_end = r.right() - 4.0 - crate::ui::field::DEFAULT_WIDTH - 6.0;
+        let y = r.top() + 9.0;
+        drag(
+            &ctx,
+            &mut app,
+            egui::pos2(groove_end - 66.0, y),
+            egui::pos2(groove_end - 20.0, y),
+        );
+        let s = app.doc().find_shape(id).expect("rect");
+        let t = crate::mixed::ShapeTransparency::of(s);
+        assert_eq!(t.kind, 1, "uniform transparency: {t:?}");
+        assert!(t.amount > 30.0, "{}", t.amount);
+        // The node itself and the fill stay as they were.
+        let (_, f, _) = app.selected_fountain().expect("fountain");
+        assert_eq!(f.stops[0].opacity, 1.0);
+        assert_eq!(app.engine.undo_label(), Some("Transparency"));
+    }
+
+    /// #2508: with Interactive Fill a click on an object picks it and
+    /// shows its fill at once, also where the line of the fill selected
+    /// before runs over it (the click was taken by that line and nothing
+    /// happened).
+    #[test]
+    fn interactive_fill_click_picks_the_object_over_the_selected_fill_line() {
+        use tracedraw_core::{Color, Command, Fill};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let mk = |app: &mut App, r: Rect, fill: Fill| {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.run(Command::SetFill {
+                shapes: vec![id],
+                fill,
+            });
+            id
+        };
+        let a = mk(
+            &mut app,
+            Rect::new(10.0, 10.0, 110.0, 40.0),
+            Fill::linear(Color::BLACK, Color::WHITE, 0.0),
+        );
+        // On top of the middle of the first, across its fill's line.
+        let b = mk(
+            &mut app,
+            Rect::new(75.0, 15.0, 95.0, 35.0),
+            Fill::radial(Color::rgb8(255, 0, 0), Color::WHITE),
+        );
+        app.set_tool(crate::tools::Tool::InteractiveFill);
+        app.select(vec![a]);
+        frame(&ctx, &mut app);
+        // On the line, away from its nodes and its midpoint slider.
+        let on_line = tracedraw_core::geometry::Point::new(85.0, 25.0);
+        assert!(app.fountain_line_at(on_line).is_some());
+        assert!(app.fountain_handle_at(on_line).is_none());
+        let at = app.view.to_screen(on_line);
+        click(&ctx, &mut app, at, egui::PointerButton::Primary);
+        assert_eq!(app.selection, vec![b]);
+        assert_eq!(app.selected_fountain().map(|f| f.0), Some(b));
+    }
+
     /// The window draws with the toolbox at every button size and with
     /// captions, docked on a side, along the top and floating; the
     /// measured captions widen the toolbox column.
@@ -2712,5 +3029,33 @@ mod tests {
             font_axes_button_rect(&ctx, "docker").is_some(),
             "in the Text docker"
         );
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::titled_with_path;
+    use std::path::Path;
+
+    /// The window title names the drawing by its file's whole path and
+    /// keeps what the tab adds to the name; a drawing with no file, or a
+    /// tab title that is not the file's name, stays as it is (#1126).
+    #[test]
+    fn the_window_title_shows_the_files_whole_path() {
+        let file = Path::new("/home/ana/work/poster.tdraw");
+        assert_eq!(
+            titled_with_path("poster", Some(file)),
+            "/home/ana/work/poster.tdraw"
+        );
+        assert_eq!(
+            titled_with_path("poster*", Some(file)),
+            "/home/ana/work/poster.tdraw*"
+        );
+        assert_eq!(
+            titled_with_path("poster:2*", Some(file)),
+            "/home/ana/work/poster.tdraw:2*"
+        );
+        assert_eq!(titled_with_path("Untitled-1", None), "Untitled-1");
+        assert_eq!(titled_with_path("Other", Some(file)), "Other");
     }
 }

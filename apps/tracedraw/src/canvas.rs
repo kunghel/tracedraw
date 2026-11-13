@@ -214,6 +214,15 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
                 false,
                 Color32::BLACK,
             );
+            // With Ctrl, the circle the line is the radius of (#2550).
+            if app.three_point_circle && app.tool == Tool::ThreePointEllipse {
+                let r = (*current - *start).hypot() * view.zoom as f64;
+                painter.circle_stroke(
+                    view.to_screen(*start),
+                    r as f32,
+                    EStroke::new(1.0, Color32::BLACK),
+                );
+            }
         }
         Drag::Connector {
             from,
@@ -1119,6 +1128,18 @@ fn draw_drop_colour(app: &App, painter: &Painter) {
     if action == DropAction::CopyFill && app.drop_frame.is_some() {
         return;
     }
+    draw_drop_style(app, painter, action, target);
+}
+
+/// Object `target` outlined in the selection colour and, under the
+/// pointer, what a drop there copies onto it (a left-button move with
+/// Alt, a right-button drag with Shift, Alt or Ctrl; discussion #2066).
+pub(crate) fn draw_drop_style(
+    app: &App,
+    painter: &Painter,
+    action: crate::drop_menu::DropAction,
+    target: tracedraw_core::ShapeId,
+) {
     let Some(s) = app.doc().find_shape(target) else {
         return;
     };
@@ -1956,6 +1977,28 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
         app.tool,
         Tool::Pick | Tool::FreeformPick | Tool::InteractiveFill | Tool::Text
     );
+    // A drop shadow chosen on its own: its box, to its feathered edge,
+    // with hollow handles, and not the object's (#2545).
+    if let Some(shadow) = app.picked_shadow_bounds().filter(|_| pick) {
+        let r = view.rect_to_screen(shadow);
+        painter.rect_stroke(
+            r,
+            0.0,
+            EStroke::new(1.0, Color32::from_rgb(0, 120, 215)),
+            epaint::StrokeKind::Middle,
+        );
+        let size = app.handle_size();
+        for (_, p) in app.handle_positions(shadow) {
+            painter.rect(
+                ERect::from_center_size(p, egui::vec2(size, size)),
+                0.0,
+                Color32::WHITE,
+                EStroke::new(1.0, Color32::BLACK),
+                epaint::StrokeKind::Outside,
+            );
+        }
+        return;
+    }
     if app.rotate_mode && pick {
         // Rotation arrows at corners, skew arrows at edges, the centre of
         // rotation (it can be moved).
@@ -1994,6 +2037,25 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
             }
         }
     }
+    // The first node of each selected object's subpaths, a small hollow
+    // square, as the reference program marks a selection with the Pick
+    // tool: it shows where each outline starts and that the object is
+    // picked (#1145).
+    if matches!(app.tool, Tool::Pick | Tool::FreeformPick) {
+        for p in pick_node_marks(&shapes) {
+            let p = view.to_screen(match preview {
+                Some(t) => t * p,
+                None => p,
+            });
+            painter.rect(
+                ERect::from_center_size(p, egui::vec2(5.0, 5.0)),
+                0.0,
+                Color32::WHITE,
+                EStroke::new(1.0, Tokens::HANDLE),
+                epaint::StrokeKind::Inside,
+            );
+        }
+    }
     // Hint "x" in the centre: the move marker (rotate mode shows the
     // centre of rotation instead).
     if app.rotate_mode && pick {
@@ -2008,6 +2070,36 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
         [c - egui::vec2(4.0, -4.0), c + egui::vec2(4.0, -4.0)],
         EStroke::new(1.0, Tokens::HANDLE),
     );
+}
+
+/// The most marks the Pick tool shows on a selection: past that they
+/// would cover the drawing (and take long to draw), so none show.
+const PICK_NODE_MARKS_MAX: usize = 1000;
+
+/// Where the Pick tool marks the selected `shapes` (#1145), in page
+/// space: the first node of each subpath of a curve, and the first node
+/// of a rectangle (its first corner), an ellipse (its start), a polygon
+/// or a B-spline. Groups, texts, pictures and other objects show none;
+/// nor does a selection of more than [`PICK_NODE_MARKS_MAX`] subpaths.
+pub(crate) fn pick_node_marks(shapes: &[tracedraw_core::Shape]) -> Vec<Point> {
+    let mut out = Vec::new();
+    for s in shapes {
+        match &s.kind {
+            ShapeKind::Path { path, .. } if s.spline.is_none() => {
+                out.extend(
+                    tracedraw_core::nodes::nodes(path)
+                        .into_iter()
+                        .filter(|n| n.is_start)
+                        .map(|n| s.transform * n.pos),
+                );
+            }
+            _ => out.extend(crate::kind_nodes::nodes(s).first().map(|(_, p)| *p)),
+        }
+        if out.len() > PICK_NODE_MARKS_MAX {
+            return Vec::new();
+        }
+    }
+    out
 }
 
 /// A rotate mode handle at `p`: a curved double arrow around each
@@ -2175,6 +2267,30 @@ fn draw_pending_text_link(app: &App, painter: &Painter, pointer: Option<Pos2>) {
     painter.circle_filled(from, 2.5, Tokens::SELECTION);
 }
 
+/// The hint an empty paragraph text frame shows on screen, in grey in
+/// the middle of the frame: what to do with it. Only where the frame is
+/// large enough on screen to hold it; never printed or exported, as the
+/// frame's dashed line is not (#2524).
+fn draw_empty_frame_hint(painter: &Painter, pts: &[Pos2]) {
+    let rect = ERect::from_points(pts).shrink(4.0);
+    if !rect.is_finite() || rect.width() < 60.0 || rect.height() < 14.0 {
+        return;
+    }
+    let galley = painter.layout(
+        crate::i18n::tr("canvas.empty_text_frame_hint"),
+        egui::FontId::proportional(12.0),
+        Color32::from_gray(140),
+        rect.width(),
+    );
+    if galley.size().y > rect.height() {
+        return;
+    }
+    let at = rect.center() - galley.size() / 2.0;
+    painter
+        .with_clip_rect(rect.intersect(painter.clip_rect()))
+        .galley(at, galley, Color32::from_gray(140));
+}
+
 /// Paragraph text frames: dashed lines in the colour `text_frame_color`
 /// gives.
 fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
@@ -2191,6 +2307,9 @@ fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
             4.0,
             3.0,
         ));
+        if f.empty_hint {
+            draw_empty_frame_hint(painter, &pts);
+        }
         // The flow tab under the bottom edge's middle: a down arrow when
         // the text does not fit, two links when it flows on, empty on a
         // picked frame; a click on it says where the text flows on.
@@ -2536,6 +2655,24 @@ fn draw_spacing_arrow(painter: &Painter, c: Pos2, horizontal: bool, color: Color
     ));
 }
 
+/// The outline of a rectangle, ellipse or polygon the Shape tool edits,
+/// on screen: one line of points for each of its outlines, a closed one
+/// ending where it starts. Drawn dashed in the node colour (#670).
+pub(crate) fn kind_outline(s: &tracedraw_core::Shape, view: &View) -> Vec<Vec<Pos2>> {
+    flatten(&s.page_path(), view)
+        .into_iter()
+        .map(|(mut pts, closed)| {
+            if closed {
+                if let Some(first) = pts.first().copied() {
+                    pts.push(first);
+                }
+            }
+            pts
+        })
+        .filter(|pts| pts.len() >= 2)
+        .collect()
+}
+
 /// Shape tool overlay, as Options > Nodes and Handles sets it: nodes
 /// shaped by type (cusp, smooth, symmetrical), the selected ones filled
 /// with the main colour, the others white or hollow, the first node of a
@@ -2679,6 +2816,18 @@ fn draw_nodes(app: &App, painter: &Painter) {
                     EStroke::new(1.0, Tokens::SELECTION),
                     epaint::StrokeKind::Outside,
                 );
+            }
+            // Its outline dashed in the node colour, under the nodes, so
+            // the shape being edited reads on any fill (#670).
+            if !own.is_empty() {
+                for pts in kind_outline(&s, view) {
+                    painter.extend(egui::Shape::dashed_line(
+                        &pts,
+                        EStroke::new(1.0, outline_of(s.id)),
+                        4.0,
+                        3.0,
+                    ));
+                }
             }
             for (node, p) in own {
                 let chosen = matches!(
@@ -3414,7 +3563,9 @@ fn draw_snap_glyph_halo(painter: &Painter, c: Pos2, mode: crate::snap_points::Sn
 pub fn draw_effect_nodes(app: &App, painter: &Painter) {
     if !matches!(
         app.tool,
-        crate::tools::Tool::Shape | crate::tools::Tool::MeshFill
+        crate::tools::Tool::Shape
+            | crate::tools::Tool::MeshFill
+            | crate::tools::Tool::InteractiveFill
     ) {
         return;
     }
@@ -3482,6 +3633,12 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
                 }
             }
         }
+        // Every chosen mesh node shows filled (discussion #2387).
+        let chosen: Vec<usize> = app
+            .selected_mesh_nodes()
+            .filter(|(id, _)| *id == s.id)
+            .map(|(_, v)| v)
+            .unwrap_or_default();
         for (i, p) in nodes {
             let sp = app.view.to_screen(p);
             let r = egui::Rect::from_center_size(sp, egui::vec2(7.0, 7.0));
@@ -3489,7 +3646,8 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
                 .effect_node_drag
                 .map(|(id, k)| id == s.id && k == i)
                 .unwrap_or(false)
-                || app.selected_effect_node == Some((s.id, i));
+                || app.selected_effect_node == Some((s.id, i))
+                || crate::mesh_tool::mesh_node_of(i).is_some_and(|k| chosen.contains(&k));
             painter.rect_filled(r, 0.0, if selected { blue } else { egui::Color32::WHITE });
             painter.rect_stroke(
                 r,
@@ -3504,6 +3662,55 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1145: with the Pick tool a selected object marks the first node
+    /// of each of its subpaths (the outer and inner ring of a letter O
+    /// each), as the reference program does; an ellipse its start, a
+    /// rectangle its first corner; a group nothing.
+    #[test]
+    fn the_pick_tool_marks_where_the_selected_outlines_start() {
+        use tracedraw_core::ShapeKind;
+        let mut app = App::headless();
+        let mut path = BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(50.0, 0.0));
+        path.line_to(Point::new(50.0, 30.0));
+        path.close_path();
+        path.move_to(Point::new(10.0, 5.0));
+        path.line_to(Point::new(40.0, 5.0));
+        path.line_to(Point::new(40.0, 20.0));
+        path.close_path();
+        let curve = app
+            .new_shape(ShapeKind::Path { path, closed: true })
+            .expect("curve");
+        let ring = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(100.0, 0.0, 140.0, 40.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(200.0, 0.0, 240.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let marks = |app: &App, id| {
+            let s = app.doc().find_shape(id).expect("shape").clone();
+            pick_node_marks(&[s])
+        };
+        assert_eq!(
+            marks(&app, curve),
+            vec![Point::new(0.0, 0.0), Point::new(10.0, 5.0)]
+        );
+        assert_eq!(marks(&app, ring).len(), 1);
+        assert_eq!(marks(&app, rect).len(), 1);
+        app.select(vec![curve, ring]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert!(marks(&app, group).is_empty());
+    }
 
     /// #1906: View > Page > Page Border and Page Shadow are two options:
     /// each draws its part of the page's edge alone, and both are kept
@@ -3630,5 +3837,46 @@ mod tests {
         m.grid.baseline_start = 0.0;
         app.run(tracedraw_core::Command::SetMetadata { metadata: m });
         assert!((app.baseline_ys()[0] - page.y1).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod kind_outline_tests {
+    use super::*;
+
+    /// The Shape tool's dashed outline of a rectangle goes round its four
+    /// corners and closes; an ellipse gives one closed line too; an open
+    /// curve is not closed (#670).
+    #[test]
+    fn the_outline_of_a_rectangle_goes_round_and_closes() {
+        use tracedraw_core::geometry::{Point, Rect};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let s = app.doc().find_shape(id).cloned().expect("shape");
+        let lines = kind_outline(&s, &app.view);
+        assert_eq!(lines.len(), 1);
+        let pts = &lines[0];
+        assert_eq!(pts.first(), pts.last());
+        for corner in [(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)] {
+            let c = app.view.to_screen(Point::new(corner.0, corner.1));
+            assert!(pts.iter().any(|p| p.distance(c) < 0.01), "{corner:?}");
+        }
+        let e = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(60.0, 10.0, 100.0, 30.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let s = app.doc().find_shape(e).cloned().expect("shape");
+        let lines = kind_outline(&s, &app.view);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].first(), lines[0].last());
+        assert!(lines[0].len() > 8, "a curve in many steps");
     }
 }

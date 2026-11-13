@@ -427,14 +427,52 @@ pub fn spot_mark(painter: &egui::Painter, cell: Rect, c: tracedraw_core::Color) 
     }
     let r = (side * 0.14).clamp(1.5, 3.0);
     let at = cell.right_bottom() - vec2(r + 2.0, r + 2.0);
+    let (dot, ring) = mark_colors(c);
+    painter.circle(at, r, dot, Stroke::new(0.5, ring));
+}
+
+/// The colours of a mark on a swatch of `c`: the mark itself and its thin
+/// edge, black on a light colour and white on a dark one.
+fn mark_colors(c: tracedraw_core::Color) -> (Color32, Color32) {
     let [red, green, blue] = c.to_rgb8();
     let light = 0.299 * red as f32 + 0.587 * green as f32 + 0.114 * blue as f32 > 140.0;
-    let (dot, ring) = if light {
+    if light {
         (Color32::BLACK, Color32::WHITE)
     } else {
         (Color32::WHITE, Color32::BLACK)
-    };
-    painter.circle(at, r, dot, Stroke::new(0.5, ring));
+    }
+}
+
+/// The mark of an overprinting fill or outline on a swatch: a small ring
+/// in its lower left corner (the spot colour's dot sits in the lower
+/// right), so a colour that prints over the inks beneath it is told from
+/// one that knocks them out (#2455).
+pub fn overprint_mark(painter: &egui::Painter, cell: Rect, c: tracedraw_core::Color) {
+    let side = cell.width().min(cell.height());
+    if side < 6.0 {
+        return;
+    }
+    let r = (side * 0.14).clamp(1.5, 3.0);
+    let at = cell.left_bottom() + vec2(r + 2.0, -(r + 2.0));
+    let (ring, edge) = mark_colors(c);
+    painter.circle_stroke(at, r + 0.5, Stroke::new(0.5, edge));
+    painter.circle_stroke(at, r, Stroke::new(1.0, ring));
+}
+
+/// The marks a fill or outline swatch of `c` carries: the spot colour's
+/// dot, and the ring when the colour overprints.
+pub fn swatch_marks(
+    painter: &egui::Painter,
+    cell: Rect,
+    c: tracedraw_core::Color,
+    overprint: bool,
+) {
+    if matches!(c, tracedraw_core::Color::Spot { .. }) {
+        spot_mark(painter, cell, c);
+    }
+    if overprint {
+        overprint_mark(painter, cell, c);
+    }
 }
 
 /// Tooltip of a swatch: the colour's name, then its values.
@@ -1761,6 +1799,73 @@ pub fn mix(a: Color, b: Color, share: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How many circles `paint` draws: each mark of a swatch is made of them.
+    fn circles_painted(paint: impl Fn(&egui::Painter)) -> usize {
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0))),
+                ..Default::default()
+            },
+            |ui| paint(ui.painter()),
+        );
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter(|s| matches!(s.shape, egui::Shape::Circle(_)))
+            .count()
+    }
+
+    /// A spot colour's swatch carries its dot and an overprinting one its
+    /// ring; a process colour carries neither unless it overprints, and a
+    /// swatch too small to hold a mark carries none (#2455).
+    #[test]
+    fn swatches_carry_the_spot_and_overprint_marks() {
+        let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(24.0, 24.0));
+        let spot = crate::palette::spot_color("Gold 871", Color::cmyk_pct(0.0, 20.0, 80.0, 10.0));
+        let plain = Color::cmyk_pct(0.0, 100.0, 100.0, 0.0);
+        let marks = |c, over| circles_painted(|p| swatch_marks(p, cell, c, over));
+        assert_eq!(marks(plain, false), 0);
+        assert_eq!(marks(spot, false), 1, "the dot");
+        assert_eq!(marks(plain, true), 2, "the ring");
+        assert_eq!(marks(spot, true), 3, "the dot and the ring");
+        let tiny = Rect::from_min_size(pos2(10.0, 10.0), vec2(4.0, 4.0));
+        assert_eq!(circles_painted(|p| swatch_marks(p, tiny, spot, true)), 0);
+    }
+
+    /// The ring sits in the lower left corner and the dot in the lower
+    /// right, so the two never cover each other; both stay in the swatch.
+    #[test]
+    fn the_overprint_ring_and_the_spot_dot_keep_apart() {
+        let cell = Rect::from_min_size(pos2(0.0, 0.0), vec2(24.0, 24.0));
+        let spot = crate::palette::spot_color("Gold 871", Color::BLACK);
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0))),
+                ..Default::default()
+            },
+            |ui| swatch_marks(ui.painter(), cell, spot, true),
+        );
+        out.textures_delta.clear();
+        let circles: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        let dot = circles.first().expect("dot");
+        let ring = circles.last().expect("ring");
+        assert!(dot.center.x > cell.center().x, "{dot:?}");
+        assert!(ring.center.x < cell.center().x, "{ring:?}");
+        for c in [dot, ring] {
+            assert!(cell.contains(c.center), "{c:?}");
+            assert!(c.center.y > cell.center().y, "{c:?}");
+        }
+    }
 
     /// A drawing with a picture of four colours (red, green, blue and
     /// white quarters), selected when `select`.

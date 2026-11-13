@@ -5174,10 +5174,8 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
     {
         let s = app.page_size();
         let page = app.page;
-        app.run(Command::ResizePage {
-            page,
-            size: Size::new(s.height, s.width),
-        });
+        let size = Size::new(s.height, s.width);
+        app.resize_pages_about_centre(&[page], size, "Switch Page Orientation");
         app.fit_pending = true;
     }
     page_spacing_row(app, ui);

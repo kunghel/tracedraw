@@ -268,7 +268,8 @@ for sliders stepped with the wheel (`step_merge::tests`).
   selection's box, counted from the ruler origin), X and Y; width and
   height (scaled about the origin point); scale percentages and the lock
   that keeps proportions; the rotation angle of a single object (read
-  from its transform, changed about the origin point); mirror
+  from its transform, changed about the centre of rotation when it was
+  moved, else about the origin point, #2478); mirror
   horizontally and vertically.
 - Then, by the kind of the selected objects: rectangle corners (Round,
   Scalloped and Chamfered Corner buttons; the four corner sizes in two

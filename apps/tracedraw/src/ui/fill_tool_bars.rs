@@ -180,6 +180,23 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
     if r.changed() {
         app.set_mesh_node_alpha(1.0 - transparency as f32 / 100.0);
     }
+    // The mesh eyedropper: the next click takes a colour from the page
+    // (an object, a picture or the mesh itself) for every chosen node
+    // (discussion #2387).
+    if node.is_none() {
+        app.mesh_eyedropper = false;
+    }
+    if crate::ui::propbar::tool_button(
+        ui,
+        crate::tools::Tool::ColorEyedropper,
+        &crate::ui::tips::pair("toolbar.mesh_eyedropper", "toolbar.mesh_eyedropper_desc"),
+        node.is_some(),
+        app.mesh_eyedropper,
+    )
+    .clicked()
+    {
+        app.mesh_eyedropper = !app.mesh_eyedropper;
+    }
     crate::ui::propbar::sep(ui);
     if ui
         .add_enabled(mesh.is_some(), egui::Button::new(tr("toolbar.clear_mesh")))

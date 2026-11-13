@@ -16,7 +16,8 @@
 //! double click on the line adds one, on a node removes it, and a drag
 //! moves it between its neighbours. A bar across the line between two
 //! nodes is the midpoint slider of their blend. A click picks a node; the
-//! node bar under it edits its colour and transparency (see `node_bar`).
+//! node bar under it edits its colour and the object's transparency (see
+//! `node_bar`).
 
 use crate::app::App;
 use tracedraw_core::{
@@ -612,7 +613,8 @@ impl App {
     /// A drag across the object with the Interactive Fill tool: the fill
     /// runs from where the drag began to where it ended (its kind and
     /// colours kept when it is a fountain already; else a linear one from
-    /// the default colour to white), the skew handle square to the axis.
+    /// the object's colour, or the default one when it has none, to
+    /// white, #2498), the skew handle square to the axis.
     pub fn fill_from_drag(&mut self, id: ShapeId, from: Point, to: Point) {
         use tracedraw_core::geometry::Shape as _;
         let Some(s) = self.doc().shape_on_page(id) else {
@@ -621,9 +623,9 @@ impl App {
         let b = s.page_path().bounding_box();
         let mut f = match &s.fill {
             Fill::Fountain(f) if f.kind != FountainKind::Shaped => f.clone(),
-            _ => {
-                let first = match &self.default_fill() {
-                    Fill::Solid(c) => *c,
+            other => {
+                let first = match (other, &self.default_fill()) {
+                    (Fill::Solid(c), _) | (_, Fill::Solid(c)) => *c,
                     _ => tracedraw_core::Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
                 };
                 Fountain::two(
@@ -648,6 +650,41 @@ impl App {
         self.run(Command::SetFill {
             shapes: vec![id],
             fill: Fill::Fountain(f),
+        });
+    }
+
+    /// The node bar's transparency: uniform transparency of `amount` %
+    /// on the selection, as the Properties docker's Transparency amount
+    /// sets it (a run of changes is one undo step, #2507).
+    pub fn set_object_transparency(&mut self, amount: f64) {
+        let settings = crate::effects_ui::TransparencySettings {
+            amount: amount.clamp(0.0, 100.0),
+            ..Default::default()
+        };
+        self.patch_transparency(&settings, &[crate::mixed::TransparencyField::Amount]);
+    }
+
+    /// A click on object `id` with the Interactive Fill tool: it is
+    /// picked. An object with a fill keeps it, its nodes shown for a
+    /// gradient, a solid colour kept for the gradient a drag makes
+    /// (#2498); only an object without a fill takes the default one (a
+    /// light grey when that is none too).
+    pub fn fill_tool_click(&mut self, id: ShapeId) {
+        let filled = self
+            .doc()
+            .find_shape(id)
+            .is_some_and(|s| !matches!(s.fill, Fill::None));
+        self.select(vec![id]);
+        if filled {
+            return;
+        }
+        let fill = match self.default_fill() {
+            Fill::None => Fill::Solid(tracedraw_core::Color::cmyk_pct(0.0, 0.0, 0.0, 20.0)),
+            f => f,
+        };
+        self.run(Command::SetFill {
+            shapes: vec![id],
+            fill,
         });
     }
 
@@ -699,9 +736,14 @@ impl App {
     }
 }
 
+/// The groove of the node bar's transparency slider, points.
+const NODE_BAR_RAIL: f32 = 70.0;
+
 /// The node bar: under the picked colour node of the selected fill, as
 /// the reference program shows it, the node's colour (a swatch that opens
-/// the colour picker) and its transparency (0 % opaque, 100 % clear).
+/// the colour picker) and the object's uniform transparency (0 % opaque,
+/// 100 % clear; the same value as the Properties docker's, #2507), in a
+/// compact bar. A node's own transparency is on the property bar.
 /// Hidden while a node is dragged. An edit made while the pointer stays
 /// down (a picker or slider drag) is one undo step. The dotted grip at its
 /// left drags it off the object; it keeps that offset from its node.
@@ -710,7 +752,7 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     if app.tool != Tool::InteractiveFill || !matches!(app.drag, crate::app::Drag::None) {
         return;
     }
-    let Some((_, f, b)) = app.selected_fountain() else {
+    let Some((shape, f, b)) = app.selected_fountain() else {
         return;
     };
     let Some(i) = app.fill_node.filter(|i| *i < f.stops.len()) else {
@@ -725,7 +767,15 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     let down = ui.input(|inp| inp.pointer.any_down());
     let begun = down && ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
     let mut color = f.stops[i].color;
-    let mut transparency = ((1.0 - f.stops[i].opacity) * 100.0).round();
+    // The object's uniform transparency, as the Properties docker shows
+    // it (#2507); a mask transparency reads 0 here.
+    let mut transparency = app
+        .doc()
+        .find_shape(shape)
+        .map(crate::mixed::ShapeTransparency::of)
+        .filter(|t| t.kind <= 1)
+        .map(|t| t.amount.round())
+        .unwrap_or(0.0);
     let mut changed_color = false;
     let mut changed_opacity = false;
     let offset_id = id.with("offset");
@@ -748,21 +798,22 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
                             .add(
                                 crate::ui::Slider::new(&mut transparency, 0.0..=100.0)
                                     .suffix(" %")
-                                    .fixed_decimals(0),
+                                    .fixed_decimals(0)
+                                    // Compact, as the other handles on
+                                    // the drawing: in a floating area it
+                                    // took the whole 600 points (#2507).
+                                    .width(NODE_BAR_RAIL),
                             )
                             .changed();
                     });
                 });
         });
     ui.data_mut(|d| d.insert_temp(offset_id, offset));
-    if changed_color || changed_opacity {
-        app.set_fountain_node(
-            i,
-            changed_color.then_some(color),
-            changed_opacity.then_some(1.0 - transparency / 100.0),
-            None,
-            begun,
-        );
+    if changed_color {
+        app.set_fountain_node(i, Some(color), None, None, begun);
+        ui.data_mut(|d| d.insert_temp(id, down));
+    } else if changed_opacity {
+        app.set_object_transparency(transparency);
         ui.data_mut(|d| d.insert_temp(id, down));
     } else if !down {
         ui.data_mut(|d| d.insert_temp(id, false));
@@ -976,6 +1027,27 @@ mod tests {
         let hs = fountain_handles(&f, b);
         assert!(near(hs[0].1, Point::new(5.0, 5.0)) && near(hs[1].1, Point::new(15.0, 5.0)));
         assert!(near(hs[2].1, Point::new(5.0, 15.0)), "{hs:?}");
+    }
+
+    /// #2498: Interactive Fill on an object filled red keeps the red: a
+    /// click leaves the fill as it is (it turned to the default black),
+    /// and a drag starts the gradient at red, not at the default colour.
+    #[test]
+    fn interactive_fill_starts_from_the_objects_colour() {
+        let red = Color::rgb8(255, 0, 0);
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.apply_fill(Fill::Solid(red));
+        app.fill_tool_click(id);
+        let fill = |app: &App| app.doc().find_shape(id).map(|s| s.fill.clone());
+        assert_eq!(fill(&app), Some(Fill::Solid(red)));
+        app.fill_from_drag(id, Point::new(5.0, 5.0), Point::new(35.0, 5.0));
+        let (_, f, _) = app.selected_fountain().expect("fountain");
+        assert_eq!(f.first_color(), red);
+        // An object without a fill takes the default one on a click.
+        app.apply_fill(Fill::None);
+        app.fill_tool_click(id);
+        assert!(!matches!(fill(&app), Some(Fill::None)));
     }
 
     #[test]

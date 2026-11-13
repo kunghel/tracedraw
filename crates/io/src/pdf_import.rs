@@ -109,6 +109,11 @@ pub struct ImportOptions {
     /// own size (#1835). [`REDUCED_PICTURE_PIXELS`] for devices with
     /// less memory, or when the user asks for smaller pictures.
     pub max_picture_pixels: u64,
+    /// Lines of text one under the other in the same font become
+    /// paragraph text frames, linked where the text goes on in the next
+    /// column or page (#2323); off, every line is a text of its own.
+    /// Not with `text_as_curves`.
+    pub text_as_paragraphs: bool,
 }
 
 impl Default for ImportOptions {
@@ -116,6 +121,7 @@ impl Default for ImportOptions {
         ImportOptions {
             text_as_curves: false,
             max_picture_pixels: FULL_PICTURE_PIXELS,
+            text_as_paragraphs: false,
         }
     }
 }
@@ -169,6 +175,7 @@ pub fn parse_with_options(
         return Err(ImportError::Failed("PDF has no pages".into()));
     }
     let mut tounicode_fixes = HashMap::new();
+    let mut line_widths = HashMap::new();
     for (index, page_id) in pages.iter().enumerate() {
         let mut imp = Importer {
             doc: &doc,
@@ -185,8 +192,10 @@ pub fn parse_with_options(
             max_pixels: options.max_picture_pixels.max(1),
             shrunk: Vec::new(),
             in_mask: false,
+            line_widths: std::mem::take(&mut line_widths),
         };
         let page = imp.import_page(*page_id, index);
+        line_widths = std::mem::take(&mut imp.line_widths);
         out.inks = std::mem::take(&mut imp.inks);
         out.shrunk_pictures.extend(
             imp.shrunk
@@ -197,6 +206,9 @@ pub fn parse_with_options(
         out.pages.push(page);
     }
     out.warnings.dedup();
+    if options.text_as_paragraphs && !options.text_as_curves {
+        crate::pdf_paragraphs::make_paragraphs(&mut out.pages, &line_widths);
+    }
     Ok(out)
 }
 
@@ -840,6 +852,9 @@ struct Importer<'a> {
     /// A picture's soft mask is being read (its shrinking is the
     /// picture's own).
     in_mask: bool,
+    /// How long each text made of a run is along its baseline, mm, as
+    /// the file draws it: for [`crate::pdf_paragraphs`].
+    line_widths: HashMap<ShapeId, f64>,
 }
 
 /// The text marked content gives its glyphs, shown in place of their own
@@ -4222,6 +4237,7 @@ impl<'a> Importer<'a> {
         shape.stroke = None;
         shape.opacity = r.alpha;
         let _ = r.font.type3_matrix;
+        self.line_widths.insert(shape.id, r.reach * scale);
         self.push(shape, &r.clip);
     }
 }

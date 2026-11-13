@@ -349,7 +349,40 @@ impl App {
                         t,
                         closed,
                     );
-                    if d <= (l.max(r) * scale) + grab {
+                    // A press by an end of an open line, within its reach
+                    // there (on its cap), widens the end itself: a node a
+                    // little short of the end left the reach to fall back
+                    // to the base width past it, and the widened end came
+                    // out as a bulb with a small cap on a neck (#2547).
+                    let end = (!closed)
+                        .then(|| end_pressed(&path, p, (l.max(r) * scale) + grab))
+                        .flatten();
+                    if let Some(at) = end {
+                        if let Some(i) =
+                            stroke.widths.iter().position(|n| (n.at - at).abs() <= 1e-9)
+                        {
+                            // A node already sits there: it is the one
+                            // dragged.
+                            self.vo.more.clear();
+                            self.vo.node = Some(i);
+                            self.vo.drag = Some(NodeDrag {
+                                shape: id,
+                                index: i,
+                                one_side,
+                                recorded: false,
+                                slide: Some(false),
+                                from: p,
+                            });
+                            return;
+                        }
+                    }
+                    let t = end.unwrap_or(t);
+                    let (l, r) = if end.is_some() {
+                        tracedraw_core::style::width_around(stroke.width, &stroke.widths, t, false)
+                    } else {
+                        (l, r)
+                    };
+                    if d <= (l.max(r) * scale) + grab || end.is_some() {
                         let mut nodes = stroke.widths.clone();
                         let new = nodes.len();
                         nodes.push(WidthNode {
@@ -769,6 +802,44 @@ mod tests {
         assert_eq!(app.engine.undo_label().map(str::to_string), undo_before);
     }
 
+    /// A press on the round cap at an end of the line widens the end
+    /// itself: the node sits at the end, so the reach does not fall back
+    /// to the base width past it and the cap stays a half circle as wide
+    /// as the end, not a small cap on a neck after a bulb (#2547). A
+    /// second press there takes the same node.
+    #[test]
+    fn a_press_on_the_end_cap_widens_the_end_itself() {
+        let (mut app, id) = line_app();
+        let mut round = Stroke::new(tracedraw_core::Color::BLACK, 2.0);
+        round.cap = tracedraw_core::style::LineCap::Round;
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(round),
+        });
+        // Just past the end, on the cap (the line ends at x 110).
+        app.variable_outline_press(Point::new(110.6, 50.4), false);
+        let w = widths(&app, id);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].at, 1.0, "{w:?}");
+        app.variable_outline_drag(Point::new(110.0, 56.0));
+        app.vo.drag = None;
+        let w = widths(&app, id);
+        assert!((w[0].left - 6.0).abs() < 1e-6, "{w:?}");
+        let shape = app.doc().find_shape(id).cloned().expect("shape");
+        let st = shape.stroke.clone().expect("stroke");
+        let band =
+            tracedraw_core::shaping::outline_band(&shape.page_path(), &st, 1.0).expect("band");
+        // The cap reaches 6 mm past the end, and the band is as wide as
+        // the end just before it: no neck.
+        let b = band.bounding_box();
+        assert!((b.x1 - 116.0).abs() < 0.05, "{b:?}");
+        assert!(band.winding(Point::new(108.0, 55.5)) != 0, "a neck");
+        // A press on the cap again: the node there, not another.
+        app.variable_outline_press(Point::new(113.0, 51.0), false);
+        assert_eq!(widths(&app, id).len(), 1);
+        assert_eq!(app.vo.node, Some(0));
+    }
+
     #[test]
     fn alt_changes_one_side_and_the_bar_edits_and_removes_nodes() {
         let (mut app, id) = line_app();
@@ -1040,4 +1111,19 @@ pub fn variable_outline_bar(app: &mut App, ui: &mut egui::Ui) {
     {
         app.clear_variable_outline();
     }
+}
+
+/// The end of the open `path` (0 for its start, 1 for its end) that `p`
+/// lies within `reach` of, the nearer one when both do; `None` when
+/// neither.
+fn end_pressed(path: &BezPath, p: Point, reach: f64) -> Option<f64> {
+    [0.0, 1.0]
+        .into_iter()
+        .filter_map(|at| {
+            let (q, _) = tracedraw_core::shaping::point_on_path(path, at)?;
+            let d = (q - p).hypot();
+            (d <= reach).then_some((at, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(at, _)| at)
 }

@@ -82,7 +82,12 @@ move horizontal or vertical. One undo step for the drag, and the pointer
 is the move cursor over the line. A blend whose end lives only in the
 effect (no end object) has no line to drag
 (`effect_line_tests::the_blend_line_moves_the_whole_blend`).
-Not yet on the canvas: dropping colours on the squares.
+A colour dragged from a palette and dropped on the start or end square
+becomes the fill of that end's object, one undo step, the selection
+staying; the squares take it wherever they lie on the object, as the
+middle of a letter may be outside its outline (#965,
+`text_effect_tests::a_colour_dropped_on_a_blend_s_square_fills_that_end`).
+An end that lives only in the effect has no object to fill.
 
 The steps lie between the two objects in the stacking order: with the
 end object below the start one (a front object blended to one behind

@@ -15,6 +15,7 @@ pub mod pdf_crypt;
 pub(crate) mod pdf_glyphs;
 pub mod pdf_import;
 mod pdf_indic;
+pub mod pdf_paragraphs;
 pub mod picture_crop;
 pub mod plt;
 pub mod psd;

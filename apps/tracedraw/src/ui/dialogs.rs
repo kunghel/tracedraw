@@ -443,6 +443,9 @@ pub struct PrintState {
     /// Every page stretched on the sheet about its middle (x, y; 1 for
     /// none) by Print Preview's Transform (#595).
     pub art_stretch: (f64, f64),
+    /// Every page turned on the sheet about its middle, degrees
+    /// counter-clockwise (0 for none), by Print Preview's Rotation.
+    pub art_rotation: f64,
     /// The pages stretch to fill the sheet inside the margins (#591).
     pub stretch_fit: bool,
     /// The Custom sheet's size, mm (#591).
@@ -768,6 +771,7 @@ impl Default for PrintState {
             art_offset: (0.0, 0.0),
             margins: [0.0; 4],
             art_stretch: (1.0, 1.0),
+            art_rotation: 0.0,
             stretch_fit: false,
             custom_sheet: Size::new(210.0, 297.0),
             sheet_name_typed: String::new(),
@@ -1254,6 +1258,8 @@ pub enum Dialog {
     ColorManagement(Box<crate::ui::color_management::ColorManagementState>),
     /// Tools > Convert Colors (#972).
     ConvertColors(crate::ui::convert_colors::ConvertColorsState),
+    /// Tools > Recolor.
+    Recolor(crate::ui::recolor::RecolorState),
     FontManager(FontManagerState),
     /// Launch > TraceCut, Tools > TraceCut.
     TraceCut(Box<crate::tracecut::TraceCutState>),
@@ -1738,6 +1744,10 @@ pub fn show(app: &mut App, ctx: &Context) {
     if app.outline_preview && !matches!(app.dialog, Dialog::OutlinePen(_)) {
         app.end_outline_pen_preview();
     }
+    // And for the Recolor dialog's.
+    if app.recolor_preview && !matches!(app.dialog, Dialog::Recolor(_)) {
+        app.end_recolor_preview();
+    }
     // The Trace dialog's live preview goes with the dialog.
     if !matches!(app.dialog, Dialog::Trace(_)) && app.trace_live.is_active() {
         app.trace_live.clear();
@@ -2072,11 +2082,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                     } else {
                         vec![app.page]
                     };
-                    let cmds: Vec<Command> = pages
-                        .into_iter()
-                        .map(|page| Command::ResizePage { page, size })
-                        .collect();
-                    let _ = app.engine.run_batch("Page Size", &cmds);
+                    app.resize_pages_about_centre(&pages, size, "Page Size");
                     app.fit_pending = true;
                 }
             });
@@ -3016,6 +3022,7 @@ pub fn show(app: &mut App, ctx: &Context) {
         Dialog::Encode(st) => encode_dialog(app, ctx, st, &mut close),
         Dialog::BorderGrommet(st) => border_grommet_dialog(app, ctx, st, &mut close),
         Dialog::ConvertColors(st) => crate::ui::convert_colors::dialog(app, ctx, st, &mut close),
+        Dialog::Recolor(st) => crate::ui::recolor::dialog(app, ctx, st, &mut close),
         Dialog::ColorManagement(st) => {
             crate::ui::color_management::dialog(app, ctx, st, &mut close)
         }
@@ -3166,6 +3173,7 @@ pub fn show(app: &mut App, ctx: &Context) {
     if close {
         app.end_edit_fill_preview();
         app.end_outline_pen_preview();
+        app.end_recolor_preview();
     }
     // A closing dialog may have opened the next one (the next unsaved
     // drawing's question); keep that.
@@ -3872,11 +3880,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
         } else {
             app.doc().pages.iter().map(|p| p.id).collect()
         };
-        let cmds: Vec<Command> = pages
-            .into_iter()
-            .map(|page| Command::ResizePage { page, size })
-            .collect();
-        let _ = app.engine.run_batch("Page Size", &cmds);
+        app.resize_pages_about_centre(&pages, size, "Page Size");
         app.fit_pending = true;
     }
     ui.add_space(10.0);
@@ -6045,6 +6049,7 @@ pub(crate) fn print_tab_layout(app: &App, ui: &mut Ui, st: &mut PrintState) {
                 if !st.fit_to_page {
                     st.art_offset = (0.0, 0.0);
                     st.art_stretch = (1.0, 1.0);
+                    st.art_rotation = 0.0;
                 }
                 st.fit_to_page = true;
             }

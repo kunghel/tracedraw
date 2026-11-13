@@ -193,6 +193,32 @@ fn ctrl_keeps_a_move_straight() {
     assert!(bounds(&app, id).y0 > b.y0 + 5.0);
 }
 
+/// Shift keeps a move horizontal or vertical as Ctrl does, and so does
+/// Cmd on macOS (#2480: a Shift drag went its own way, snapping to
+/// objects).
+#[test]
+fn shift_and_cmd_keep_a_move_straight() {
+    for mods in [Modifiers::SHIFT, Modifiers::MAC_CMD | Modifiers::COMMAND] {
+        let (ctx, mut app, id) = setup();
+        let from = app.view.to_screen(Point::new(35.0, 25.0));
+        drag(
+            &ctx,
+            &mut app,
+            from,
+            from + egui::vec2(35.0, 120.0),
+            mods,
+            Vec::new(),
+        );
+        let b = bounds(&app, id);
+        assert!(
+            b.y0 > 15.0 || b.y0 < 5.0,
+            "moved up or down: {b:?} {mods:?}"
+        );
+        assert!(close(b.x0, 10.0), "kept its place across: {b:?} {mods:?}");
+        assert_eq!(app.selection, vec![id], "{mods:?}");
+    }
+}
+
 #[test]
 fn a_right_click_while_dragging_leaves_the_original() {
     let (ctx, mut app, id) = setup();
@@ -5434,8 +5460,9 @@ fn a_three_point_curve_continues_and_closes_the_selected_curve() {
 }
 
 /// Ctrl keeps the chord of a 3-point curve (and the base of a 3-point
-/// rectangle or ellipse) to steps of the constrain angle, so a bow drawn
-/// with Ctrl stands level; Ctrl did nothing there (#934).
+/// rectangle) to steps of the constrain angle, so a bow drawn with Ctrl
+/// stands level; Ctrl did nothing there (#934). (With the 3-point
+/// ellipse Ctrl draws a circle round the press point, #2550.)
 #[test]
 fn ctrl_keeps_the_three_point_base_to_the_constrain_angle() {
     let (ctx, mut app, first) = setup();
@@ -5518,6 +5545,49 @@ fn a_three_point_ellipse_grows_from_its_centre_line_to_both_sides() {
     let id = *app.selection.first().expect("the rectangle");
     let r = bounds(&app, id);
     assert!(close(r.y0, 220.0) && close(r.y1, 240.0), "{r:?}");
+}
+
+/// With Ctrl held while the first line of the 3-Point Ellipse is
+/// dragged, the press point is the centre of a circle and the line its
+/// radius: the circle is drawn when the button is let go, with no third
+/// click; Ctrl did nothing there (#2550). Without Ctrl the line still
+/// waits for the third click.
+#[test]
+fn ctrl_draws_a_three_point_circle_round_the_press_point() {
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    app.set_tool(Tool::ThreePointEllipse);
+    let before = shape_count(&app);
+    // Off the page's centre lines, which the points would snap to; the
+    // line 4 degrees off the level.
+    let (c, e) = (Point::new(100.0, 150.0), Point::new(130.0, 152.0));
+    let r = (e - c).hypot();
+    let (sc, se) = (app.view.to_screen(c), app.view.to_screen(e));
+    drag(&ctx, &mut app, sc, se, Modifiers::CTRL, Vec::new());
+    assert!(app.three_point_base.is_none(), "no third click waited for");
+    assert!(!app.three_point_circle);
+    assert_eq!(shape_count(&app), before + 1);
+    let id = *app.selection.first().expect("the circle");
+    assert!(matches!(
+        app.doc().find_shape(id).map(|s| &s.kind),
+        Some(ShapeKind::Ellipse { .. })
+    ));
+    let b = bounds(&app, id);
+    for (got, want) in [
+        (b.x0, c.x - r),
+        (b.x1, c.x + r),
+        (b.y0, c.y - r),
+        (b.y1, c.y + r),
+    ] {
+        assert!((got - want).abs() < 0.05, "round {c:?}, radius {r}: {b:?}");
+    }
+    // Without Ctrl: the line waits for the third click, as before.
+    let (d, f) = (Point::new(100.0, 230.0), Point::new(140.0, 230.0));
+    let (sd, sf) = (app.view.to_screen(d), app.view.to_screen(f));
+    drag(&ctx, &mut app, sd, sf, Modifiers::NONE, Vec::new());
+    assert!(app.three_point_base.is_some());
+    assert_eq!(shape_count(&app), before + 1);
 }
 
 /// Ctrl held at the third click of a 3-point curve draws a bow: the arc
@@ -14878,6 +14948,244 @@ fn mesh_nodes_land_where_they_are_clicked_and_dragged() {
     assert!((mesh(&app).nodes[i].pos - at).hypot() <= tol);
 }
 
+/// Discussion #2387, Mesh Fill as in CorelDRAW: Shift+click adds mesh
+/// nodes to the chosen ones (and takes a chosen one out), a marquee
+/// chooses the nodes inside it, a palette colour, the transparency and
+/// the mesh eyedropper act on every chosen node, and a drag moves them
+/// all together.
+#[test]
+fn several_mesh_nodes_take_a_colour_and_move_together() {
+    use crate::mesh_tool::MESH_NODE_BASE;
+    use tracedraw_core::{Color, Fill};
+    let (ctx, mut app, id) = setup();
+    // A blue square beside the rectangle, for the eyedropper.
+    let blue = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(80.0, 10.0, 100.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![blue]);
+    app.apply_fill(Fill::Solid(Color::rgb8(0, 0, 255)));
+    app.select(vec![id]);
+    app.mesh_rows = 2;
+    app.mesh_cols = 2;
+    app.set_tool(Tool::MeshFill);
+    click_page(&ctx, &mut app, Point::new(30.0, 20.0));
+    let mesh = |app: &App| match &app.doc().find_shape(id).expect("shape").fill {
+        Fill::Mesh(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(mesh(&app).nodes.len(), 9);
+    let node = |app: &App, i: usize| {
+        let s = app.doc().find_shape(id).expect("shape");
+        app.view
+            .to_screen(crate::interaction2::effect_point(s, MESH_NODE_BASE + i).expect("node"))
+    };
+    let chosen = |app: &App| {
+        app.selected_mesh_nodes()
+            .map(|(_, v)| v)
+            .unwrap_or_default()
+    };
+    // A click takes one node; Shift+click adds two more, and takes one out.
+    let at = node(&app, 4);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(chosen(&app), vec![4]);
+    let at = node(&app, 5);
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    let at = node(&app, 1);
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    assert_eq!(chosen(&app), vec![4, 5, 1]);
+    let at = node(&app, 1);
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    assert_eq!(chosen(&app), vec![4, 5]);
+    // A palette colour and the transparency go to both.
+    let red = Color::rgb8(255, 0, 0);
+    app.apply_fill(Fill::Solid(red));
+    app.set_mesh_node_alpha(0.5);
+    let m = mesh(&app);
+    for i in [4, 5] {
+        assert_eq!((m.nodes[i].color, m.nodes[i].alpha), (red, 0.5), "node {i}");
+    }
+    assert_ne!(m.nodes[3].color, red);
+    // The mesh eyedropper: a click on the blue square colours both blue.
+    app.mesh_eyedropper = true;
+    click_page(&ctx, &mut app, Point::new(90.0, 20.0));
+    let m = mesh(&app);
+    for i in [4, 5] {
+        assert_eq!(m.nodes[i].color, Color::rgb8(0, 0, 255), "node {i}");
+    }
+    assert_ne!(m.nodes[3].color, Color::rgb8(0, 0, 255));
+    assert!(!app.mesh_eyedropper);
+    assert_eq!(app.selection, vec![id]);
+    // A drag on one chosen node moves both by the same distance.
+    let before = mesh(&app);
+    let from = node(&app, 4);
+    let to = from + egui::vec2(30.0, 0.0);
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, Vec::new());
+    let m = mesh(&app);
+    let d4 = m.nodes[4].pos - before.nodes[4].pos;
+    let d5 = m.nodes[5].pos - before.nodes[5].pos;
+    assert!(d4.x > 1.0 && (d4 - d5).hypot() < 1e-6, "{d4:?} {d5:?}");
+    assert_eq!(m.nodes[3].pos, before.nodes[3].pos);
+    assert_eq!(chosen(&app), vec![4, 5]);
+    // A plain click on another node takes it alone.
+    let at = node(&app, 0);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(chosen(&app), vec![0]);
+    // A marquee round the top row's nodes chooses those three.
+    let (a, b) = (node(&app, 0), node(&app, 2));
+    drag(
+        &ctx,
+        &mut app,
+        Pos2::new(a.x - 25.0, a.y - 25.0),
+        Pos2::new(b.x + 25.0, b.y + 25.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let mut top = chosen(&app);
+    top.sort();
+    assert_eq!(top, vec![0, 1, 2]);
+    assert_eq!(app.selection, vec![id]);
+    // With Shift, a box round the centre node adds it.
+    let c = node(&app, 4);
+    drag(
+        &ctx,
+        &mut app,
+        Pos2::new(c.x - 25.0, c.y - 25.0),
+        Pos2::new(c.x + 25.0, c.y + 25.0),
+        Modifiers::SHIFT,
+        Vec::new(),
+    );
+    let mut more = chosen(&app);
+    more.sort();
+    assert_eq!(more, vec![0, 1, 2, 4]);
+}
+
+/// #2506: a mesh fill made with the Interactive Fill tool's bar (over
+/// the object's box on the page) or with the Properties docker (over a
+/// box of its own) lies over the object, also a moved one, its nodes
+/// drawn and picked there; with the Interactive Fill and Shape tools a
+/// node is picked, several with Shift+click or a marquee, and a palette
+/// colour goes to those nodes, the fill staying a mesh.
+#[test]
+fn a_new_mesh_fill_lies_over_its_object_and_keeps_its_node_colours() {
+    use crate::mesh_tool::MESH_NODE_BASE;
+    use tracedraw_core::patch::FillField;
+    use tracedraw_core::{Color, Fill, Mesh};
+    let (ctx, mut app, id) = setup();
+    // Moved after it was drawn: its own space is no longer the page's.
+    app.run(tracedraw_core::Command::TransformShapes {
+        shapes: vec![id],
+        transform: Affine::translate(Vec2::new(30.0, 25.0)),
+    });
+    let page_box = bounds(&app, id);
+    let mesh_of = |app: &App| match &app.doc().find_shape(id).expect("shape").fill {
+        Fill::Mesh(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    // Every node on the page lies on the object's box, the corners on
+    // its corners.
+    let on_object = |app: &App| {
+        let s = app.doc().find_shape(id).expect("shape");
+        let m = mesh_of(app);
+        let pts: Vec<Point> = m.nodes.iter().map(|n| s.transform * n.pos).collect();
+        let b = s.bounds();
+        for p in &pts {
+            assert!(
+                p.x >= b.x0 - 1e-6
+                    && p.x <= b.x1 + 1e-6
+                    && p.y >= b.y0 - 1e-6
+                    && p.y <= b.y1 + 1e-6,
+                "node {p:?} off the object {b:?}"
+            );
+        }
+        let has = |c: Point| pts.iter().any(|p| (*p - c).hypot() < 1e-6);
+        assert!(
+            has(Point::new(b.x0, b.y0)) && has(Point::new(b.x1, b.y1)),
+            "{pts:?} {b:?}"
+        );
+    };
+    let old = app.doc().find_shape(id).expect("shape").fill.clone();
+    let red = Color::rgb8(200, 30, 30);
+    // As the Interactive Fill bar builds it: over the box on the page.
+    app.set_tool(Tool::InteractiveFill);
+    app.patch_selection_fill(
+        &old,
+        &Fill::Mesh(Mesh::new(page_box, 2, 2, red)),
+        &[FillField::All],
+    );
+    on_object(&app);
+    assert_eq!(mesh_of(&app).nodes.len(), 9);
+    // As the Properties docker builds it: over a box of its own.
+    app.apply_fill(Fill::Solid(red));
+    app.apply_fill(Fill::Mesh(Mesh::new(
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        2,
+        2,
+        red,
+    )));
+    on_object(&app);
+    // One undo step puts the plain fill back.
+    app.undo();
+    assert_eq!(
+        app.doc().find_shape(id).expect("shape").fill,
+        Fill::Solid(red)
+    );
+    app.redo();
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let node = |app: &App, i: usize| {
+        let s = app.doc().find_shape(id).expect("shape");
+        app.view
+            .to_screen(crate::interaction2::effect_point(s, MESH_NODE_BASE + i).expect("node"))
+    };
+    let chosen = |app: &App| {
+        let mut v = app
+            .selected_mesh_nodes()
+            .map(|(_, v)| v)
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    // Interactive Fill tool: a click picks the centre node, Shift+click
+    // the one right of it; a palette colour goes to both, still a mesh.
+    let at = node(&app, 4);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    assert_eq!(chosen(&app), vec![4]);
+    let at = node(&app, 5);
+    click_at(&ctx, &mut app, at, Modifiers::SHIFT);
+    assert_eq!(chosen(&app), vec![4, 5]);
+    let blue = Color::rgb8(0, 0, 255);
+    app.apply_fill(Fill::Solid(blue));
+    let m = mesh_of(&app);
+    assert_eq!((m.nodes[4].color, m.nodes[5].color), (blue, blue));
+    assert_eq!(m.nodes[3].color, red);
+    // Shape tool: a marquee round the top row picks its three nodes, and
+    // a colour goes to them.
+    app.set_tool(Tool::Shape);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let (a, b) = (node(&app, 0), node(&app, 2));
+    drag(
+        &ctx,
+        &mut app,
+        Pos2::new(a.x - 25.0, a.y - 25.0),
+        Pos2::new(b.x + 25.0, b.y + 25.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    assert_eq!(chosen(&app), vec![0, 1, 2]);
+    let green = Color::rgb8(0, 160, 0);
+    app.apply_fill(Fill::Solid(green));
+    let m = mesh_of(&app);
+    for i in [0, 1, 2] {
+        assert_eq!(m.nodes[i].color, green, "node {i}");
+    }
+    assert_eq!(m.nodes[4].color, blue);
+}
+
 /// The property bar's grip dragged onto the standard toolbar's row puts
 /// the two side by side in one row, the drawing window taking the band
 /// the property bar left; dragged to the line under that row it gets a
@@ -20605,6 +20913,55 @@ fn repeat_turns_copies_about_the_moved_centre_of_rotation() {
     }
 }
 
+/// A copy made with Duplicate (Ctrl+D) keeps the centre of rotation
+/// moved for its original, carried with it; turned about it and
+/// repeated with Ctrl+R, the copy goes on round that point, as in
+/// CorelDRAW. The copy's centre went back to its middle, so the turn
+/// and its Repeat went round the copy itself (#2375, #2376).
+#[test]
+fn duplicate_keeps_the_moved_centre_of_rotation() {
+    let (_ctx, mut app, id) = setup();
+    let pivot = Point::new(35.0, -40.0);
+    app.set_pivot(pivot);
+    app.duplicate();
+    let copy = app.selection[0];
+    assert_ne!(copy, id);
+    let moved = Affine::translate(app.duplicate_offset) * pivot;
+    let got = app.rotation_center().expect("centre");
+    assert!(
+        (got - moved).hypot() < 1e-6,
+        "the copy's centre {got:?}, wanted {moved:?}"
+    );
+    let turn = Affine::translate(moved.to_vec2())
+        * Affine::rotate(30f64.to_radians())
+        * Affine::translate(-moved.to_vec2());
+    let c0 = bounds(&app, copy).center();
+    app.transform_selection(turn);
+    app.repeat_last();
+    let want = turn * (turn * c0);
+    let now = bounds(&app, copy).center();
+    assert!(
+        (now - want).hypot() < 0.05,
+        "turned twice about the point: {now:?} {want:?}"
+    );
+    // Several objects: the copies keep the place of the centre in their box.
+    let other = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(100.0, 100.0, 130.0, 110.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.select(vec![id, other]);
+    let p2 = Point::new(-20.0, 0.0);
+    app.set_pivot(p2);
+    app.duplicate();
+    assert_eq!(app.selection.len(), 2);
+    let want2 = Affine::translate(app.duplicate_offset) * p2;
+    let got2 = app.rotation_center().expect("centre");
+    assert!((got2 - want2).hypot() < 1e-6, "{got2:?} {want2:?}");
+}
+
 /// #1258: Tab in a dialog puts the focus on its first input box, not on
 /// the File menu; tabbing on, the focus stays in the dialog and comes
 /// round to that box again; Shift+Tab from it goes to the last box.
@@ -26266,4 +26623,369 @@ fn the_text_tool_types_into_the_table_cell_clicked() {
     click_at(&ctx, &mut app, away, Modifiers::NONE);
     assert!(app.table_edit.is_none());
     assert!(app.text_edit.is_some());
+}
+
+/// A number typed into the outline width and the zoom boxes takes the
+/// place of the value shown, as in every other box of the bars (#1329):
+/// a click put the caret where it landed, so "2" typed into "0.57 pt"
+/// made it "0.572 pt", Enter seemed to apply nothing, and "64" typed into
+/// "58%" zoomed to 5864%.
+#[test]
+fn outline_width_and_zoom_boxes_take_the_typed_value() {
+    for leave in [Leave::Enter, Leave::Tab, Leave::ClickCanvas] {
+        let (ctx, mut app, id) = setup();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        let held = app
+            .doc()
+            .find_shape(id)
+            .and_then(|s| s.stroke.as_ref())
+            .map(|s| s.width);
+        let shown = crate::ui::propbar::outline_text(&app, held);
+        assert_eq!(shown, "0.57 pt");
+        type_in_bar(&ctx, &mut app, &shown, "2", leave);
+        let w = app
+            .doc()
+            .find_shape(id)
+            .and_then(|s| s.stroke.as_ref())
+            .map(|s| s.width);
+        let want = 2.0 * 25.4 / 72.0;
+        assert!(
+            w.is_some_and(|w| (w - want).abs() < 1e-6),
+            "{leave:?}: outline {w:?}, want {want}"
+        );
+    }
+    let (ctx, mut app, _) = setup();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let shown = format!("{:.0}%", app.zoom_percent());
+    type_in_bar(&ctx, &mut app, &shown, "200", Leave::Enter);
+    assert!(
+        (app.zoom_percent() - 200.0).abs() < 0.5,
+        "zoom {}% after 200 typed over {shown}",
+        app.zoom_percent()
+    );
+}
+
+/// Draws a regular pentagon with the Polygon tool, selects it with the
+/// Shape tool and returns the screen point of the point on its first edge, clear of the nodes.
+fn pentagon_edge_point(ctx: &egui::Context, app: &mut App) -> Pos2 {
+    app.select(Vec::new());
+    app.set_tool(Tool::Polygon);
+    app.polygon_points = 5;
+    let from = app.view.to_screen(Point::new(100.0, 150.0));
+    drag(
+        ctx,
+        app,
+        from,
+        from + egui::vec2(80.0, 80.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    app.set_tool(Tool::Shape);
+    let s = app.selected_shapes()[0].clone();
+    let pts: Vec<Point> = tracedraw_core::nodes::nodes(&s.page_path())
+        .into_iter()
+        .map(|n| n.pos)
+        .collect();
+    app.view.to_screen(pts[0].lerp(pts[1], 0.2))
+}
+
+/// #2451: a double-click on an edge of a polygon or star with the Shape
+/// tool puts a node there, turning it into a curve, instead of needing
+/// Convert to Curves first.
+#[test]
+fn double_click_on_a_polygon_edge_adds_a_node() {
+    let (ctx, mut app, _id) = setup();
+    let at = pentagon_edge_point(&ctx, &mut app);
+    double_click_at(&ctx, &mut app, at);
+    let s = app.selected_shapes()[0].clone();
+    assert!(matches!(s.kind, ShapeKind::Path { .. }), "{:?}", s.kind);
+    assert_eq!(tracedraw_core::nodes::nodes(&s.page_path()).len(), 6);
+}
+
+/// #2451: dragging an edge of a polygon bends it into a curve; a plain
+/// click on the edge leaves the polygon as it is.
+#[test]
+fn dragging_a_polygon_edge_bends_it() {
+    let (ctx, mut app, _id) = setup();
+    let at = pentagon_edge_point(&ctx, &mut app);
+    drag(&ctx, &mut app, at, at, Modifiers::NONE, Vec::new());
+    assert!(
+        matches!(app.selected_shapes()[0].kind, ShapeKind::Polygon { .. }),
+        "a click converts nothing"
+    );
+    drag_between(&ctx, &mut app, at, at + egui::vec2(0.0, -40.0));
+    let s = app.selected_shapes()[0].clone();
+    let ShapeKind::Path { path, .. } = &s.kind else {
+        panic!("{:?}", s.kind);
+    };
+    assert!(
+        path.elements()
+            .iter()
+            .any(|e| matches!(e, kurbo::PathEl::CurveTo(..))),
+        "the edge is a curve now"
+    );
+}
+
+/// #2471: Copy Fill on the Interactive Fill bar waits for a click; the
+/// object clicked gives its whole fill (a gradient with its stops and
+/// angle) to the selected objects, its outline untouched, one undo step.
+/// A right click cancels.
+#[test]
+fn copy_fill_gives_the_selection_the_fill_of_the_object_clicked() {
+    use tracedraw_core::{Color, Fill, Stroke};
+    let (ctx, mut app, id) = setup();
+    let source = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(100.0, 10.0, 150.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    let gradient = Fill::linear(Color::rgb8(255, 200, 0), Color::rgb8(0, 0, 160), 30.0);
+    let pen = Stroke {
+        color: Color::rgb8(0, 160, 0),
+        width: 2.0,
+        ..Stroke::default()
+    };
+    app.run(tracedraw_core::Command::SetFill {
+        shapes: vec![source],
+        fill: gradient.clone(),
+    });
+    app.run(tracedraw_core::Command::SetStroke {
+        shapes: vec![source],
+        stroke: Some(pen),
+    });
+    let own_stroke = app.doc().find_shape(id).expect("target").stroke.clone();
+    app.select(vec![id]);
+    app.start_copy_fill();
+    assert!(app.pending_copy_fill);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let on_source = app.view.to_screen(Point::new(125.0, 25.0));
+    click_at(&ctx, &mut app, on_source, Modifiers::NONE);
+    assert!(!app.pending_copy_fill);
+    let target = app.doc().find_shape(id).expect("target").clone();
+    assert_eq!(target.fill, gradient);
+    assert_eq!(target.stroke, own_stroke, "the outline stays");
+    assert_eq!(app.selection, vec![id]);
+    app.undo();
+    assert_ne!(app.doc().find_shape(id).expect("target").fill, gradient);
+    // Nothing selected: nothing waits.
+    app.select(vec![]);
+    app.start_copy_fill();
+    assert!(!app.pending_copy_fill);
+}
+
+/// #2523: the fill of the selected object, dragged from the Interactive
+/// Fill bar's swatch and let go over another object, goes to that object
+/// whole, one undo step, the selection as it was; let go over the object
+/// it came from or over nothing, it changes nothing.
+#[test]
+fn a_fill_dragged_from_the_bar_swatch_goes_to_the_object_under_it() {
+    use tracedraw_core::{Color, Fill};
+    let (ctx, mut app, id) = setup();
+    let other = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(100.0, 10.0, 150.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    let gradient = Fill::linear(Color::rgb8(255, 0, 0), Color::rgb8(0, 0, 255), 45.0);
+    app.run(tracedraw_core::Command::SetFill {
+        shapes: vec![id],
+        fill: gradient.clone(),
+    });
+    app.select(vec![id]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let src = app.doc().find_shape(id).expect("source").clone();
+    let before = app.doc().find_shape(other).expect("other").fill.clone();
+    let on_other = app.view.to_screen(Point::new(125.0, 25.0));
+    assert_eq!(app.fill_swatch_target(on_other, id), Some(other));
+    assert!(app.drop_swatch_fill(&src, on_other));
+    assert_eq!(app.doc().find_shape(other).expect("other").fill, gradient);
+    assert_eq!(app.selection, vec![id]);
+    app.undo();
+    assert_eq!(app.doc().find_shape(other).expect("other").fill, before);
+    let b = src.bounds();
+    let on_itself = app
+        .view
+        .to_screen(Point::new((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0));
+    assert!(!app.drop_swatch_fill(&src, on_itself));
+    let nowhere = app.view.to_screen(Point::new(400.0, 400.0));
+    assert!(!app.drop_swatch_fill(&src, nowhere));
+}
+
+/// #2545: a click with the Pick tool on an object's drop shadow, away
+/// from the object, chooses the shadow alone: it has a box of its own
+/// out to its feathered edge and no object handles, Delete takes the
+/// shadow away and leaves the object, and a click on the object chooses
+/// the object again.
+#[test]
+fn a_drop_shadow_is_chosen_apart_from_its_object() {
+    let (ctx, mut app, id) = setup();
+    app.set_shadow(
+        Some(tracedraw_core::Shadow {
+            offset: tracedraw_core::geometry::Vec2::new(30.0, -30.0),
+            ..tracedraw_core::Shadow::default()
+        }),
+        false,
+    );
+    app.select(Vec::new());
+    for _ in 0..2 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    // The rectangle is 10..60 by 10..40; its shadow 40..90 by -20..10.
+    let on_shadow = app.view.to_screen(Point::new(80.0, 0.0));
+    click_at(&ctx, &mut app, on_shadow, Modifiers::NONE);
+    assert_eq!(app.selection, vec![id]);
+    assert_eq!(app.picked_shadow(), Some(id));
+    let b = app.picked_shadow_bounds().expect("the shadow's box");
+    assert!(b.x1 > 89.0 && b.y0 < -19.0, "{b:?}");
+    assert!(b.contains(Point::new(80.0, 0.0)));
+    // No object handle answers while the shadow is chosen.
+    let object = app.selection_bounds().expect("selection");
+    for (_, p) in app.handle_positions(object) {
+        assert!(app.handle_at(p).is_none());
+    }
+    // Delete: the shadow goes, the object stays, selected.
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::Delete, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let s = app.doc().find_shape(id).expect("the object stays");
+    assert!(s.shadow.is_none());
+    assert_eq!(app.selection, vec![id]);
+    assert_eq!(app.picked_shadow(), None);
+    // Undo brings the shadow back; a click on the object chooses it.
+    app.undo();
+    assert!(app.doc().find_shape(id).is_some_and(|s| s.shadow.is_some()));
+    click_at(&ctx, &mut app, on_shadow, Modifiers::NONE);
+    assert_eq!(app.picked_shadow(), Some(id));
+    let on_object = app.view.to_screen(Point::new(20.0, 30.0));
+    click_at(&ctx, &mut app, on_object, Modifiers::NONE);
+    assert_eq!(app.selection, vec![id]);
+    assert_eq!(app.picked_shadow(), None);
+    assert!(!app.rotate_mode);
+}
+
+/// The Inner Shadow tool, in the Shadow tool's group: a drag from an
+/// object gives it an inner shadow cast as far as the drag, in the
+/// tool's style (#2473); a second drag moves it, one shadow still.
+#[test]
+fn a_drag_with_the_inner_shadow_tool_casts_a_shadow_inside_the_object() {
+    use tracedraw_core::live::Effect;
+    let (ctx, mut app, id) = setup();
+    assert!(crate::tools::GROUPS
+        .iter()
+        .any(|g| g.tools.contains(&Tool::DropShadow) && g.tools.contains(&Tool::InnerShadow)));
+    let inner = |app: &App| {
+        let s = app.doc().find_shape(id).expect("shape");
+        let all: Vec<_> = s
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::InnerShadow {
+                    offset,
+                    opacity,
+                    merge,
+                    ..
+                } => Some((*offset, *opacity, *merge)),
+                _ => None,
+            })
+            .collect();
+        all
+    };
+    app.set_tool(Tool::InnerShadow);
+    app.select(Vec::new());
+    let from = app.view.to_screen(Point::new(35.0, 25.0));
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(30.0, 20.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let got = inner(&app);
+    assert_eq!(got.len(), 1, "{got:?}");
+    let (offset, opacity, merge) = got[0];
+    assert!(offset.x > 1.0 && offset.y < -1.0, "{offset:?}");
+    assert_eq!(opacity, app.inner_shadow.opacity);
+    assert_eq!(merge, tracedraw_core::live::MergeMode::Multiply);
+    assert_eq!(app.selection, vec![id]);
+    drag(
+        &ctx,
+        &mut app,
+        from,
+        from + egui::vec2(-30.0, 0.0),
+        Modifiers::NONE,
+        Vec::new(),
+    );
+    let got = inner(&app);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].0.x < -1.0, "{:?}", got[0].0);
+    app.remove_effects_of_kind(&Effect::InnerShadow {
+        offset: tracedraw_core::geometry::Vec2::ZERO,
+        color: tracedraw_core::Color::BLACK,
+        opacity: 0.0,
+        blur: 0.0,
+        merge: tracedraw_core::live::MergeMode::Normal,
+    });
+    assert!(inner(&app).is_empty());
+}
+
+/// A right-click on a menu row, greyed or not, opens Options >
+/// Customization > Commands at that command, on its Shortcut Keys tab,
+/// to give it a key, as CorelDRAW's Customize > Menu Item Properties
+/// (#2504).
+#[test]
+fn a_right_click_on_a_menu_row_opens_its_shortcut_keys() {
+    use crate::ui::dialogs::Dialog;
+    use crate::ui::options::OptionsPage;
+    let (ctx, mut app, _) = setup();
+    for (menu, row) in [("File", "menu.file.new"), ("Edit", "menu.edit.redo")] {
+        app.dialog = Dialog::None;
+        let texts = texts_drawn(&ctx, &mut app, Vec::new());
+        let title = text_at(&texts, menu).expect("the menu's title");
+        click_at(&ctx, &mut app, title, Modifiers::NONE);
+        crate::ui::menus::ROWS.with(|r| r.borrow_mut().clear());
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        let rect = crate::ui::menus::ROWS
+            .with(|r| r.borrow().iter().find(|(id, _)| id == row).map(|(_, r)| *r))
+            .expect("the row drawn");
+        let at = rect.center();
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(at)],
+            Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(at, true, PointerButton::Secondary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            vec![button(at, false, PointerButton::Secondary, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        assert_eq!(app.dialog, Dialog::Options, "{row}");
+        assert_eq!(app.options_page, OptionsPage::Commands);
+        // The command stays picked once the page lists the commands.
+        assert_eq!(app.shortcut_editor.selected.as_deref(), Some(row));
+        assert!(app.shortcut_editor.keys_tab);
+        assert!(app.shortcut_editor.capture.is_none());
+    }
 }

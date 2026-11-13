@@ -19,9 +19,9 @@
 use crate::view::View;
 use egui::{ColorImage, Context, Rect, TextureHandle, TextureId, TextureOptions};
 use tracedraw_core::{geometry::Affine, Document, PageId, ShapeId};
-#[cfg(not(target_arch = "wasm32"))]
-use tracedraw_render::render_page_on_one_thread;
 use tracedraw_render::{render_page, Preview, RenderOptions, ViewTransform};
+#[cfg(not(target_arch = "wasm32"))]
+use tracedraw_render::{render_page_cancellable, render_page_on_one_thread};
 
 /// How long the view must rest, seconds, before a moved view is
 /// rendered anew instead of showing the last render moved into place.
@@ -84,6 +84,9 @@ struct Job {
     key: Key,
     page_rect: Option<tracedraw_core::geometry::Rect>,
     rx: std::sync::mpsc::Receiver<Option<(ColorImage, f64)>>,
+    /// Set to make the render give up: the view zoomed on before it
+    /// was ready (#2522).
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Turns to render on a thread: one page job runs at a time in the whole
@@ -549,6 +552,19 @@ impl Raster {
         // last picture shows, moved into place.
         #[cfg(not(target_arch = "wasm32"))]
         if self.poll_job(ctx) {
+            // A render for a zoom the view has already left: nobody will
+            // see its picture, and the one for this zoom would wait for
+            // all of it, so a large drawing stayed blurry for two whole
+            // renders after each zoom step (#2522). It gives up at its
+            // next object; the scaled picture shows meanwhile.
+            if let Some(job) = &self.job {
+                if job.key != key
+                    && job.key.same_but_view(&key, self.follows_zoom)
+                    && self.zooms_at_once(&job.key, &key)
+                {
+                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             let running_for_this = self.job.as_ref().is_some_and(|j| j.key == key);
             if running_for_this || window.is_none() {
                 return self.shown_meanwhile(view, screen);
@@ -666,17 +682,20 @@ impl Raster {
             };
             let (doc, stale) = match self.snapshot.take() {
                 Some(shared) => (shared, None),
-                None => self.copy_of(doc, key.revision, zoom_now),
+                None => self.copy_of(doc, key.revision),
             };
             let (tx, rx) = std::sync::mpsc::channel();
             let wake = ctx.clone();
             #[cfg(test)]
             let hold = self.hold.clone();
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gives_up = cancel.clone();
             std::thread::spawn(move || {
                 #[cfg(test)]
                 let _held = hold.as_ref().map(|m| m.lock());
                 let t = web_time::Instant::now();
-                let image = render_page(&doc, page, &opts).map(|pm| to_image(&pm, lut.as_deref()));
+                let image = render_page_cancellable(&doc, page, &opts, &gives_up)
+                    .map(|pm| to_image(&pm, lut.as_deref()));
                 let _ = tx.send(image.map(|i| (i, t.elapsed().as_secs_f64())));
                 drop(doc);
                 drop(stale);
@@ -684,7 +703,12 @@ impl Raster {
                 wake.request_repaint();
             });
             self.renders += 1;
-            self.job = Some(Job { key, page_rect, rx });
+            self.job = Some(Job {
+                key,
+                page_rect,
+                rx,
+                cancel,
+            });
             return self.shown_meanwhile(view, screen);
         }
         let t = web_time::Instant::now();
@@ -846,7 +870,7 @@ impl Raster {
                     });
                     // The copy a zoom's renders share: made here, at rest,
                     // it is there for the first step of the next zoom.
-                    let (doc, stale) = self.copy_of(doc, revision, true);
+                    let (doc, stale) = self.copy_of(doc, revision);
                     let (tx, rx) = std::sync::mpsc::channel();
                     let wake = ctx.clone();
                     std::thread::spawn(move || {
@@ -893,22 +917,25 @@ impl Raster {
     }
 
     /// The drawing at `revision` for a render on a thread: the copy kept
-    /// from the last zoom render when it is of the same revision, or a new
-    /// copy, kept for the next steps of a zoom (`zoom`). Also the copy no
-    /// longer kept, for the render's thread to free (freeing a large
-    /// drawing takes time the window's thread does not have).
+    /// from the last render on a thread when it is of the same revision,
+    /// or a new copy, kept for the next renders of the same drawing (the
+    /// steps of a zoom, every picture of a drag). Also the copy no longer
+    /// kept, for the render's thread to free (freeing a large drawing
+    /// takes time the window's thread does not have). A drag on a large
+    /// drawing copied all of it again for every picture of the drag, on
+    /// the window's thread, so the object stalled before it followed the
+    /// pointer (#2522).
     #[cfg(not(target_arch = "wasm32"))]
     fn copy_of(
         &mut self,
         doc: &Document,
         revision: u64,
-        zoom: bool,
     ) -> (std::sync::Arc<Document>, Option<std::sync::Arc<Document>>) {
         match &self.kept {
             Some((r, d)) if *r == revision => (d.clone(), None),
             _ => {
                 let d = std::sync::Arc::new(doc.clone());
-                let keep = zoom.then(|| (revision, d.clone()));
+                let keep = Some((revision, d.clone()));
                 let stale = std::mem::replace(&mut self.kept, keep);
                 (d, stale.map(|(_, d)| d))
             }
@@ -1549,11 +1576,12 @@ mod tests {
         assert!(!raster.has_backdrop(2));
     }
 
-    /// A burst of zoom steps while a render runs: the render is not
-    /// restarted for each step; once it ends its picture is taken (the
-    /// nearest to the zoom shown so far) and the next render starts in the
-    /// same frame for the latest zoom only, covering only the canvas, the
-    /// part of the page on screen.
+    /// A burst of zoom steps while a render runs: no render is started
+    /// for each step. The running one, for a zoom the view has left, gives
+    /// up (its picture would only be shown scaled again, and the latest
+    /// zoom's render waited for all of it, #2522), and the next render
+    /// starts as soon as it has for the latest zoom only, covering only
+    /// the canvas, the part of the page on screen.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_latest_zoom_wins_without_restarting_renders() {
@@ -1592,9 +1620,17 @@ mod tests {
             );
             assert_eq!(raster.render_count(), renders + 1, "restarted");
             assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(first_step));
+            assert!(
+                raster
+                    .job
+                    .as_ref()
+                    .is_some_and(|j| j.cancel.load(std::sync::atomic::Ordering::Relaxed)),
+                "the first step's render told to give up"
+            );
         }
+        let before = raster.picture_zoom();
         drop(held);
-        // Its picture taken, and the latest zoom's render started at once.
+        // It gave up, and the latest zoom's render started at once.
         let mut next = None;
         for i in 0..400 {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1607,8 +1643,8 @@ mod tests {
         assert!(next.is_some(), "the latest zoom was never rendered");
         assert_eq!(
             raster.picture_zoom(),
-            Some(first_step),
-            "the first step's picture taken"
+            before,
+            "no picture of the first step"
         );
         assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(view.zoom));
         assert_eq!(raster.render_count(), renders + 2);

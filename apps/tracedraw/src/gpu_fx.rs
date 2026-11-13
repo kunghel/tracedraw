@@ -17,6 +17,9 @@ use eframe::wgpu;
 const TILE: u32 = 256;
 /// The widest radius the shader takes (the renderer asks at most 110).
 const MAX_RADIUS: u32 = 128;
+/// Pixels a workgroup keeps in shared memory (`cache` in the shader): a
+/// tile and the widest radius either side.
+const CACHE: u32 = TILE + 2 * MAX_RADIUS;
 
 /// One pass of the box blur: each pixel of row (or column) `o` the
 /// average, rounded down, of the `2r + 1` pixels about it, the edge
@@ -82,9 +85,26 @@ pub struct GpuBlur {
     turn: Mutex<()>,
 }
 
+/// Whether a device with `limits` can run the blur's compute shader: two
+/// storage buffers in the compute stage, workgroups of a whole tile and
+/// the shared memory a tile reads into. An adapter without compute
+/// shaders (an older card on OpenGL) reports these as zero, and making
+/// the shader's layout on it is an error that stops the program (#2568).
+fn limits_allow(limits: &wgpu::Limits) -> bool {
+    limits.max_storage_buffers_per_shader_stage >= 2
+        && limits.max_compute_workgroup_size_x >= TILE
+        && limits.max_compute_invocations_per_workgroup >= TILE
+        && limits.max_compute_workgroup_storage_size >= CACHE * 16
+        && limits.max_compute_workgroups_per_dimension >= 1
+}
+
 impl GpuBlur {
-    /// The blur on `device`, `None` when its shader cannot be made.
+    /// The blur on `device`, `None` when the device cannot run its
+    /// shader or the shader cannot be made.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Option<GpuBlur> {
+        if !limits_allow(&device.limits()) {
+            return None;
+        }
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("shadow blur"),
@@ -285,7 +305,7 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
         return;
     }
     let Some(blur) = GpuBlur::new(device.clone(), queue.clone()) else {
-        log::warn!("the shadow blur shader could not be made; shadows are blurred on the CPU");
+        log::info!("the graphics card cannot blur shadows; they are blurred on the CPU");
         return;
     };
     let blur = Arc::new(blur);
@@ -327,6 +347,61 @@ mod tests {
         };
         let adapter = pollster::block_on(instance.request_adapter(&options)).ok()?;
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    /// A device that takes no storage buffers in a compute shader, as an
+    /// older card on OpenGL, is left alone: no layout is asked of it, so
+    /// the program starts and the CPU blurs (#2568).
+    #[test]
+    fn a_card_without_compute_shaders_is_not_asked() {
+        assert!(limits_allow(&wgpu::Limits::default()));
+        assert!(!limits_allow(&wgpu::Limits::downlevel_webgl2_defaults()));
+        let none = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 0,
+            ..wgpu::Limits::default()
+        };
+        assert!(!limits_allow(&none));
+        let small = wgpu::Limits {
+            max_compute_workgroup_size_x: 128,
+            ..wgpu::Limits::default()
+        };
+        assert!(!limits_allow(&small));
+        // The shader's shared memory is the size checked.
+        assert!(SHADER.contains(&format!("array<vec4<u32>, {CACHE}>")));
+    }
+
+    /// The same on a real device opened with such limits: no blur is
+    /// made, and nothing is asked of the device that it refuses.
+    #[test]
+    fn a_device_opened_without_storage_buffers_gives_no_blur() {
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        desc.backends = wgpu::Backends::PRIMARY;
+        let instance = wgpu::Instance::new(desc);
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("no wgpu adapter; skipped");
+            return;
+        };
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_storage_buffers_per_shader_stage = 0;
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_limits: limits,
+                ..Default::default()
+            }))
+        else {
+            eprintln!("no device with these limits; skipped");
+            return;
+        };
+        let failed = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = failed.clone();
+        device.on_uncaptured_error(std::sync::Arc::new(move |_| {
+            seen.store(true, Ordering::Relaxed);
+        }));
+        assert!(GpuBlur::new(device.clone(), queue).is_none());
+        let _ = device.poll(wgpu::PollType::Poll);
+        assert!(!failed.load(Ordering::Relaxed), "the device was asked");
     }
 
     /// A layer like a shadow's: a soft-edged silhouette in white.

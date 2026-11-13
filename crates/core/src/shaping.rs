@@ -1762,17 +1762,21 @@ pub fn is_single_loop(path: &BezPath) -> bool {
 /// path widened by the reach `width_at` gives at its ends (left and right
 /// separately), joined with wedges at the corners; butt ends.
 pub fn variable_band(path: &BezPath, base: f64, nodes: &[crate::style::WidthNode]) -> BezPath {
-    variable_band_within(path, base, nodes, 0.05)
+    variable_band_within(path, base, nodes, 0.05, crate::style::LineCap::Butt)
 }
 
 /// [`variable_band`] with the path flattened to `tol` (mm): finer for a
 /// band that is kept as an object and fitted to curves, so the corners
-/// at the joins of the short lines stay small (#627).
+/// at the joins of the short lines stay small (#627). The ends of an
+/// open subpath take the outline's `cap`: a round cap is a half circle
+/// across the reach there, a square one a box half as deep as it is
+/// wide; a variable width kept them square before (#2390).
 pub fn variable_band_within(
     path: &BezPath,
     base: f64,
     nodes: &[crate::style::WidthNode],
     tol: f64,
+    cap: crate::style::LineCap,
 ) -> BezPath {
     let lines = polylines(path, tol.max(1e-4));
     let total: f64 = lines
@@ -1808,10 +1812,12 @@ pub fn variable_band_within(
         // `EASE_TOL` of the eased edge however far the reach changes: a
         // smoothstep from `0` to `dw` over a span bends at most
         // `6 dw / span^2`, and a piece `h` long strays `h^2 / 8` of that
-        // (#776).
+        // (#776). The monotone cubic through a run of nodes may leave a
+        // node at up to three times the span's mean slope, bending at
+        // most four times as much (#2547).
         const EASE_TOL: f64 = 0.005;
         let dw = (la - lb).abs().max((ra - rb).abs());
-        let steps = ((6.0 * dw / (8.0 * EASE_TOL)).sqrt().ceil() as usize).clamp(48, 512);
+        let steps = ((24.0 * dw / (8.0 * EASE_TOL)).sqrt().ceil() as usize).clamp(48, 512);
         eased.extend((1..steps).map(|i| a + (b - a) * i as f64 / steps as f64));
     }
     marks.extend(eased);
@@ -1839,6 +1845,7 @@ pub fn variable_band_within(
     let mut polys: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut run = 0.0;
     for (line, closed) in &lines {
+        let run_start = run;
         // The segments of the polyline (empty ones left out, the next one
         // starting where the last one ended) with their unit normal, to
         // the left.
@@ -2077,6 +2084,58 @@ pub fn variable_band_within(
             }
             polys.push(fan);
         }
+        // The caps at the two ends of an open subpath, across the reach
+        // there, sharing the end edge of the first or last piece.
+        if !*closed && cap != crate::style::LineCap::Butt {
+            let start = segs.first().map(|&(a, b, _)| {
+                let n = ends.first().map_or([0.0, 0.0], |e| e.0);
+                (a, n, [a.x - b.x, a.y - b.y], run_start)
+            });
+            let end = segs.last().map(|&(a, b, _)| {
+                let n = ends.last().map_or([0.0, 0.0], |e| e.1);
+                (b, n, [b.x - a.x, b.y - a.y], run)
+            });
+            for (p, n, d, s) in start.into_iter().chain(end) {
+                let dl = d[0].hypot(d[1]);
+                if dl <= 1e-12 {
+                    continue;
+                }
+                let o = [d[0] / dl, d[1] / dl];
+                let (l, r) = reach(s);
+                let rad = (l + r) / 2.0;
+                if rad <= 1e-9 {
+                    continue;
+                }
+                let edge_l = [p.x + n[0] * l, p.y + n[1] * l];
+                let edge_r = [p.x - n[0] * r, p.y - n[1] * r];
+                let mut poly = vec![[p.x, p.y], edge_r];
+                match cap {
+                    crate::style::LineCap::Square => {
+                        poly.push([edge_r[0] + o[0] * rad, edge_r[1] + o[1] * rad]);
+                        poly.push([edge_l[0] + o[0] * rad, edge_l[1] + o[1] * rad]);
+                    }
+                    _ => {
+                        // From the right edge round the outside to the
+                        // left one.
+                        let c = [p.x + n[0] * (l - r) / 2.0, p.y + n[1] * (l - r) / 2.0];
+                        let steps = ((std::f64::consts::PI / per_turn(rad).max(1e-3)).ceil()
+                            as usize)
+                            .clamp(4, 512);
+                        for k in 1..steps {
+                            let t = std::f64::consts::PI * k as f64 / steps as f64;
+                            let (cos, sin) = (t.cos(), t.sin());
+                            poly.push([
+                                c[0] + rad * (-n[0] * cos + o[0] * sin),
+                                c[1] + rad * (-n[1] * cos + o[1] * sin),
+                            ]);
+                        }
+                    }
+                }
+                poly.push(edge_l);
+                poly.dedup();
+                polys.push(poly);
+            }
+        }
     }
     for poly in polys.iter_mut() {
         let area: f64 = poly
@@ -2300,7 +2359,13 @@ fn outline_band_uncached(
                 right: n.right * scale,
             })
             .collect();
-        return Some(variable_band(path, stroke.width * scale, &nodes));
+        return Some(variable_band_within(
+            path,
+            stroke.width * scale,
+            &nodes,
+            0.05,
+            stroke.cap,
+        ));
     }
     let hair = stroke.width <= Stroke::HAIRLINE + 1e-9;
     if stroke.stretch < 0.999 && !hair {
@@ -2662,6 +2727,40 @@ pub fn simplify(path: &BezPath) -> BezPath {
     let empty: Vec<Vec<[f64; 2]>> = Vec::new();
     let result = subj.overlay(&empty, OverlayRule::Subject, IFill::NonZero);
     recover_curves(&from_shapes(result), &[path])
+}
+
+/// The area inside the outer edge of one path read with the nonzero rule:
+/// like [`simplify`], but gaps the outline closes round (loops of it that
+/// enclose nothing) are filled too. For an outline that has crossed over
+/// itself (Roughen, #2229), where such gaps showed as white slivers.
+/// Separate bits smaller than `min_area` (specks pinched off where the
+/// outline touches itself) are left out.
+pub fn outer_cover(path: &BezPath, min_area: f64) -> BezPath {
+    let subj = contours(path);
+    let empty: Vec<Vec<[f64; 2]>> = Vec::new();
+    let result = subj.overlay(&empty, OverlayRule::Subject, IFill::NonZero);
+    let area = |c: &[[f64; 2]]| -> f64 {
+        let n = c.len();
+        (0..n)
+            .map(|i| {
+                let (a, b) = (c[i], c[(i + 1) % n]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.0
+    };
+    let mut outers: Vec<Vec<Vec<[f64; 2]>>> = result
+        .into_iter()
+        .filter_map(|shape| shape.into_iter().next().map(|outer| vec![outer]))
+        .collect();
+    // Never everything: the biggest bit stays whatever its size.
+    let biggest = outers.iter().map(|s| area(&s[0])).fold(0.0, f64::max);
+    outers.retain(|s| {
+        let a = area(&s[0]);
+        a >= min_area || a >= biggest
+    });
+    recover_curves(&from_shapes(outers), &[path])
 }
 
 /// The area a path covers under the nonzero rule (how text is filled), as
@@ -3296,6 +3395,91 @@ mod tests {
 
     /// Along a curve the pieces of the band meet without cracks: one
     /// outline, no slivers or spikes into it (#627).
+    /// A variable outline keeps the line's round or square caps: the
+    /// band ended square whatever the cap (#2390).
+    #[test]
+    fn a_variable_outline_keeps_the_line_caps() {
+        use super::outline_band;
+        use crate::style::{LineCap, Stroke, WidthNode};
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((50.0, 0.0));
+        let mut st = Stroke::new(crate::Color::BLACK, 4.0);
+        st.widths = vec![WidthNode::symmetric(0.5, 3.0)];
+        let width = |st: &Stroke| outline_band(&line, st, 1.0).expect("band").bounding_box();
+        // Butt: the band stops at the ends.
+        let b = width(&st);
+        assert!(
+            (b.x0 - 0.0).abs() < 0.01 && (b.x1 - 50.0).abs() < 0.01,
+            "{b:?}"
+        );
+        // Round: half the width past each end, and round, so a point
+        // past an end off the axis is outside.
+        st.cap = LineCap::Round;
+        let band = outline_band(&line, &st, 1.0).expect("band");
+        let b = band.bounding_box();
+        assert!(
+            (b.x0 + 2.0).abs() < 0.02 && (b.x1 - 52.0).abs() < 0.02,
+            "{b:?}"
+        );
+        assert!(band.winding(Point::new(51.5, 0.0)) != 0);
+        assert!(band.winding(Point::new(-1.5, 0.5)) != 0);
+        assert!(
+            band.winding(Point::new(51.8, 1.8)) == 0,
+            "round, not square"
+        );
+        // The area: the band plus a whole circle of the end width.
+        let want = band_area_without_caps(&line, &st) + std::f64::consts::PI * 4.0;
+        assert!(
+            (band.area().abs() - want).abs() < 0.1,
+            "{} {want}",
+            band.area()
+        );
+        // Square: a box half the width deep at each end.
+        st.cap = LineCap::Square;
+        let band = outline_band(&line, &st, 1.0).expect("band");
+        let b = band.bounding_box();
+        assert!(
+            (b.x0 + 2.0).abs() < 0.02 && (b.x1 - 52.0).abs() < 0.02,
+            "{b:?}"
+        );
+        assert!(band.winding(Point::new(51.8, 1.8)) != 0);
+        // An asymmetric reach at the end: the round cap spans it.
+        st.cap = LineCap::Round;
+        st.widths = vec![WidthNode {
+            at: 1.0,
+            left: 3.0,
+            right: 1.0,
+        }];
+        let b = outline_band(&line, &st, 1.0).expect("band").bounding_box();
+        assert!((b.x1 - 52.0).abs() < 0.02, "{b:?}");
+        assert!(
+            (b.y1 - 3.0).abs() < 0.02 && (b.y0 + 2.0).abs() < 0.02,
+            "{b:?}"
+        );
+        // A closed path has no ends, and no caps.
+        let sq = BezPath::from_vec(vec![
+            PathEl::MoveTo((0.0, 0.0).into()),
+            PathEl::LineTo((10.0, 0.0).into()),
+            PathEl::LineTo((10.0, 10.0).into()),
+            PathEl::LineTo((0.0, 10.0).into()),
+            PathEl::ClosePath,
+        ]);
+        let round = outline_band(&sq, &st, 1.0).expect("band").area();
+        st.cap = LineCap::Butt;
+        let butt = outline_band(&sq, &st, 1.0).expect("band").area();
+        assert!((round - butt).abs() < 1e-6);
+    }
+
+    fn band_area_without_caps(line: &BezPath, st: &crate::style::Stroke) -> f64 {
+        let mut butt = st.clone();
+        butt.cap = crate::style::LineCap::Butt;
+        super::outline_band(line, &butt, 1.0)
+            .expect("band")
+            .area()
+            .abs()
+    }
+
     #[test]
     fn a_variable_band_along_a_curve_has_no_cracks() {
         use super::variable_band;

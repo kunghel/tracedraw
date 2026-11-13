@@ -41,9 +41,20 @@ there.
   1. files copied in a file manager: each is imported like File >
      Import (one undo step each); a line of the list that ends in CR LF
      loses the CR;
-  2. SVG text: its objects;
-  3. an image: a bitmap object;
-  4. other text: artistic text in the middle of the page.
+  2. vector data another drawing program copied beside a picture of
+     its copy (#2514): its objects with their fills and outlines, one
+     undo step, selected. Read on Windows from the registered formats
+     `image/svg+xml`, `Portable Document Format` (also `PDF`,
+     `application/pdf`) and the enhanced metafile, and on an X11 desktop
+     (also through a Wayland one's X server) from `image/svg+xml`,
+     `application/pdf` and `image/x-emf`, the first offered in that
+     order; the SVG, PDF and EMF readers of File > Import read them
+     (the first page of a PDF). Data they cannot read leaves the
+     picture to be pasted
+     (`clipboard::tests::vectors_another_program_copied_paste_as_objects`);
+  3. SVG text: its objects;
+  4. an image: a bitmap object;
+  5. other text: artistic text in the middle of the page.
 
 Ctrl+Shift+V pastes the objects copied here in the middle of the view.
 Paste on the page's context menu centres what it pastes where the menu

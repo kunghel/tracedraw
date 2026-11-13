@@ -19,6 +19,17 @@ its row does not show as well. Window > Toolbars > Color Palette hides or shows 
 default palette. The rows described below are the same along a column,
 turned downwards.
 
+## Dragging the fill from the status bar
+
+The fill part of the status bar (its swatch and description) can be
+dragged onto an object in the drawing: the object, inside it or on its
+outline, takes that whole fill, whether it is a solid colour, a fountain,
+a pattern or no fill (#2448). The object need not be selected and the
+selection stays as it was; it is one undo step. A small chip of the fill
+follows the pointer, with a copy cursor over an object and a no-drop
+cursor elsewhere. Esc cancels, and letting go back on the status bar does
+nothing. A click still selects and a double click still opens Edit Fill.
+
 ## Palette bars
 
 Each further palette is a bar of its own (#1164 gave each a strip next
@@ -345,7 +356,9 @@ a spot colour, an ink of the drawing, keeps its value and its ink; Save
 as writes the colours to a palette file without changing the drawing.
 Spot colours have a small dot in the corner of their swatch, in the
 editor and on the palette bars, black on a light ink and white on a dark
-one.
+one. The fill and outline swatches of the status bar and the Colour panel carry
+the dot too, and a ring in the other corner while the selection overprints
+(see `spot-colors.md`, Swatch marks, #2455).
 
 - Selection as in a list: a click selects one swatch, Ctrl+click adds or
   removes one, Shift+click selects the run from the last swatch clicked

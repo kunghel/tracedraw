@@ -776,12 +776,14 @@ pub(crate) fn sliders(ui: &mut Ui, c: &mut Color) -> bool {
 }
 
 /// A swatch of `c` in `r`; a white square crossed by a red diagonal for
-/// no colour.
-fn swatch(p: &Painter, r: Rect, c: Option<Color>) {
+/// no colour. A spot colour carries its dot, and the ring when it
+/// `overprint`s (#2455).
+fn swatch(p: &Painter, r: Rect, c: Option<Color>, overprint: bool) {
     match c {
         Some(c) => {
             let [cr, cg, cb] = c.to_rgb8();
             p.rect_filled(r, 0.0, Color32::from_rgb(cr, cg, cb));
+            crate::ui::palette::swatch_marks(p, r, c, overprint);
         }
         None => {
             p.rect_filled(r, 0.0, Color32::WHITE);
@@ -800,8 +802,14 @@ fn swatch(p: &Painter, r: Rect, c: Option<Color>) {
 }
 
 /// The fill-over-outline swatch: the new colour as the fill in front of
-/// the selection's outline colour behind it.
-fn fill_outline_swatch(ui: &mut Ui, fill: Color, outline: Option<Color>) -> Response {
+/// the selection's outline colour behind it; `overprint` says whether the
+/// selection's fill and its outline overprint.
+fn fill_outline_swatch(
+    ui: &mut Ui,
+    fill: Color,
+    outline: Option<Color>,
+    overprint: (bool, bool),
+) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(38.0, 34.0), Sense::hover());
     let side = 24.0;
     let p = ui.painter();
@@ -809,11 +817,13 @@ fn fill_outline_swatch(ui: &mut Ui, fill: Color, outline: Option<Color>) -> Resp
         p,
         Rect::from_min_size(rect.min + Vec2::new(12.0, 8.0), Vec2::splat(side)),
         outline,
+        overprint.1,
     );
     swatch(
         p,
         Rect::from_min_size(rect.min + Vec2::new(1.0, 1.0), Vec2::splat(side)),
         Some(fill),
+        overprint.0,
     );
     resp
 }
@@ -1033,6 +1043,10 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
     let has = !app.selection.is_empty();
     let lock = app.color_docker.lock;
     let outline = selected_outline(app);
+    let overprint = (
+        app.selection_overprint(true) == Some(true),
+        app.selection_overprint(false) == Some(true),
+    );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if crate::ui::propbar::pic_button(
@@ -1046,7 +1060,7 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
         {
             app.color_docker.lock = !lock;
         }
-        fill_outline_swatch(ui, c, outline).rich_tip_with(|| {
+        fill_outline_swatch(ui, c, outline, overprint).rich_tip_with(|| {
             format!(
                 "{}\n{}",
                 trf("docker.swatch_fill", &[("c", &c.to_hex())]),

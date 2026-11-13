@@ -404,3 +404,45 @@ fn text_and_text_converted_to_curves() {
         assert!(parts >= 2, "{name}: {parts} parts");
     }
 }
+
+/// Create Boundary of open lines that cross and close round an area: one
+/// closed object, the area they enclose filled, with no holes (#2548).
+#[test]
+fn boundary_of_open_lines_is_one_solid_object() {
+    let line = |app: &mut App, a: (f64, f64), b: (f64, f64)| {
+        let mut p = BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        app.new_shape(ShapeKind::Path {
+            path: p,
+            closed: false,
+        })
+        .expect("line")
+    };
+    let build = |app: &mut App| {
+        vec![
+            line(app, (-10.0, 0.0), (110.0, 0.0)),
+            line(app, (-10.0, 100.0), (110.0, 100.0)),
+            line(app, (0.0, -10.0), (0.0, 110.0)),
+            line(app, (100.0, -10.0), (100.0, 110.0)),
+        ]
+    };
+    let (area, made, _) = run(&build, Shaping::Boundary, &as_built).expect("a boundary");
+    assert_eq!(made.len(), 1);
+    let s = &made[0];
+    assert!(
+        matches!(s.kind, ShapeKind::Path { closed: true, .. }),
+        "{:?}",
+        s.kind
+    );
+    // The square the lines close round, filled, with the ends that stick
+    // out: no hole in the middle, nothing scattered.
+    assert!(area > 9_900.0 && area < 10_600.0, "{area}");
+    let contours = s
+        .page_path()
+        .elements()
+        .iter()
+        .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+        .count();
+    assert_eq!(contours, 1, "one outer edge");
+}

@@ -2094,8 +2094,8 @@ const SHADOW_DPI: f64 = 300.0;
 fn pdf_blend_mode(merge: tracedraw_core::live::MergeMode) -> &'static str {
     use tracedraw_core::live::MergeMode as M;
     match merge {
-        M::Multiply | M::Texturize => "Multiply",
-        M::Subtract | M::Difference => "Difference",
+        M::Multiply | M::Texturize | M::Subtract => "Multiply",
+        M::Difference => "Difference",
         M::Divide | M::Screen => "Screen",
         M::IfLighter => "Lighten",
         M::IfDarker => "Darken",

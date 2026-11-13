@@ -341,6 +341,22 @@ change marked `TraceDraw:` in a comment.
   leave tracking anew. Both decisions are in `src/alt_shortcuts.rs`,
   which depends on nothing in the crate; TraceDraw's tests include and
   run it (`winit_alt_shortcuts::tests`).
+- Change: on Windows a window's minimum and maximum size follow the
+  monitor's scaling (#2487). egui-winit gives every size bound in
+  physical pixels, worked out with the scaling of the monitor the window
+  is on at the time, and winit kept it in pixels: moved to a monitor of a
+  smaller scaling, the window could not take the size `WM_DPICHANGED`
+  worked out for it there, came out larger than asked, and, still being
+  dragged across the edge, went back and forth between the two monitors,
+  growing. `platform_impl/windows/window.rs` (`set_min_inner_size`,
+  `set_max_inner_size`, through `scaled_bound`) now keeps a bound given
+  in pixels in logical units at the window's scaling of the moment, so
+  `WM_GETMINMAXINFO` and `WM_DPICHANGED` read it at each monitor's own
+  scaling; a bound given in logical units is kept as it was. The
+  arithmetic is in `src/size_bounds.rs`, which depends on nothing in the
+  crate; TraceDraw's tests include and run it
+  (`winit_size_bounds::tests`). Not run on Windows here: the copy is
+  checked to build for `x86_64-pc-windows-gnu`.
 - Change: Android reports a mouse as a mouse (#2152, #2161). winit's
   Android backend turned every pointer of a `MotionEvent` into a `Touch`
   and dropped hover, scroll and button actions ("TODO mouse events"), so a

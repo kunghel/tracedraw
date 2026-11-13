@@ -397,6 +397,8 @@ pub fn for_tool_with_ctrl(
             ToolCursor::Bucket
         }
         Tool::ColorEyedropper | Tool::AttributesEyedropper => ToolCursor::Pipette,
+        // The Mesh Fill bar's eyedropper waits for its click (#2387).
+        Tool::MeshFill if app.mesh_eyedropper => ToolCursor::Pipette,
         Tool::AreaFill => ToolCursor::Bucket,
         // The I-beam where a click edits text, else the cross hair with the
         // tool's sign (a click starts a new text, a drag a frame).
@@ -918,8 +920,9 @@ pub fn paint(painter: &Painter, cursor: ToolCursor, p: Pos2) {
         ToolCursor::TargetArrow => target_arrow(painter, p),
         ToolCursor::PenNib(mark) => {
             pen_nib(painter, p);
+            // The sign above and to the right, clear of the nib's body.
             if let Some(m) = mark {
-                curve_mark_at(painter, p + Vec2::new(4.0, 14.0), m);
+                curve_mark_at(painter, p + PEN_MARK_AT, m);
             }
         }
         ToolCursor::Nib { radius, square } => {
@@ -1149,11 +1152,23 @@ fn target_arrow(painter: &Painter, tip: Pos2) {
     painter.add(Shape::convex_polygon(shaft, INK, Stroke::NONE));
 }
 
+/// The way the Pen tool's nib runs from its tip: down and to the right,
+/// as an arrow pointer's body does, so the tip is its upper left point
+/// (#362).
+fn nib_along() -> Vec2 {
+    Vec2::new(1.0, 1.0).normalized()
+}
+
+/// Where the Pen tool's sign (close, join, add, delete) sits from the
+/// tip: above and to the right, where the nib's body does not reach.
+const PEN_MARK_AT: Vec2 = Vec2::new(15.0, -6.0);
+
 /// The outline of the Pen tool's nib with its tip at `tip`: the nib
-/// leans up and to the right, so the tip is its lowest, leftmost point.
+/// runs down and to the right, so the tip is its highest, leftmost
+/// point.
 pub fn nib_outline(tip: Pos2) -> Vec<Pos2> {
     // Along the nib (u, from the tip) and across it (v).
-    let u = Vec2::new(1.0, -1.0).normalized();
+    let u = nib_along();
     let v = Vec2::new(u.y, -u.x);
     [
         (0.0, 0.0),
@@ -1175,7 +1190,7 @@ fn pen_nib(painter: &Painter, tip: Pos2) {
     let outline = nib_outline(tip);
     painter.add(Shape::closed_line(outline.clone(), Stroke::new(2.5, HALO)));
     painter.add(Shape::convex_polygon(outline, INK, Stroke::NONE));
-    let u = Vec2::new(1.0, -1.0).normalized();
+    let u = nib_along();
     painter.line_segment([tip + u * 2.5, tip + u * 8.0], Stroke::new(1.0, HALO));
     painter.circle_filled(tip + u * 9.5, 1.6, HALO);
     // The tip: a dot ringed in white, exactly on the hot spot.
@@ -2294,16 +2309,20 @@ mod tests {
             for_tool(&app, false, false, false, Some(away)),
             ToolCursor::PenNib(None)
         );
-        // Its tip is the hot spot: the outline starts there and leans up
-        // and to the right of it.
+        // Its tip is the hot spot: the outline starts there and runs down
+        // and to the right of it, as an arrow pointer's body does, so the
+        // tip is the upper left point (#362).
         let tip = egui::pos2(50.0, 50.0);
         let o = nib_outline(tip);
         assert_eq!(o[0], tip);
         assert!(
-            o.iter().all(|q| q.x >= tip.x - 4.0 && q.y <= tip.y + 4.0),
+            o.iter().all(|q| q.x >= tip.x - 4.0 && q.y >= tip.y - 4.0),
             "{o:?}"
         );
-        assert!(o.iter().any(|q| q.x > tip.x + 8.0 && q.y < tip.y - 8.0));
+        assert!(o.iter().any(|q| q.x > tip.x + 8.0 && q.y > tip.y + 8.0));
+        // The sign sits clear of the nib: no outline point is near it.
+        let sign = tip + PEN_MARK_AT;
+        assert!(o.iter().all(|q| q.distance(sign) > 9.0), "{o:?}");
         // Picking the frame for Place Inside Frame: the target arrow.
         app.pending_clip_frame = true;
         assert_eq!(

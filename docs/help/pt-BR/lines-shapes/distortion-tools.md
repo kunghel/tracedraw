@@ -62,4 +62,6 @@ suavemente ao resto do contorno, seja o traço rápido ou lento. **Pressão**
 A ferramenta [[tool.roughen]] (<kbd>E</kbd>) acrescenta pontas serrilhadas ao
 longo do contorno. **Frequência** (1 a 10 pontas a cada 10 mm, 5 de início)
 define quantas, e **Tamanho da ponta** (2 mm de início) a altura. As pontas são
-retas, então ficam afiadas.
+retas, então ficam afiadas. Passar de novo sobre o contorno num novo traço o
+deixa mais áspero; pontas que cruzam o contorno continuam preenchidas, sem
+frestas brancas entre elas.

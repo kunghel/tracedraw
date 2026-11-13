@@ -1803,13 +1803,7 @@ pub fn resize_pages(app: &mut App, size: Size) {
     } else {
         vec![app.page]
     };
-    let cmds: Vec<Command> = pages
-        .into_iter()
-        .map(|page| Command::ResizePage { page, size })
-        .collect();
-    if let Err(e) = app.engine.run_batch("Page Size", &cmds) {
-        app.status = e.to_string();
-    }
+    app.resize_pages_about_centre(&pages, size, "Page Size");
 }
 
 // ----- the object bar ---------------------------------------------------
@@ -1888,9 +1882,12 @@ fn selection_angle(app: &App) -> f64 {
 }
 
 /// Position, size, scale, rotation and mirroring of the selection.
-/// The rotation angle: the selection's own, turned about `refp` by what
-/// is typed or stepped, each arrow click or wheel turn on its own.
+/// The rotation angle: the selection's own, turned by what is typed or
+/// stepped, each arrow click or wheel turn on its own, about the centre of
+/// rotation the user moved, else about `refp` (#2478: a typed angle
+/// turned about the box's centre even with the centre of rotation moved).
 fn rotation_field(app: &mut App, ui: &mut Ui, refp: Point) -> egui::Response {
+    let refp = app.moved_rotation_center().unwrap_or(refp);
     let angle = selection_angle(app);
     let mut a = angle;
     let r = ui.add_sized(
@@ -2195,6 +2192,7 @@ fn outline_width_box(
                     .desired_width(72.0),
             )
             .rich_tip(tr("toolbar.outline_width"));
+        crate::ui::field::select_all_when_focused(ui, &resp, stored.is_none(), &buf);
         if resp.has_focus() {
             ui.data_mut(|d| d.insert_temp(id, buf.clone()));
         } else if stored.is_some() || resp.lost_focus() {
@@ -3204,7 +3202,7 @@ pub fn arrange_part(app: &mut App, ui: &mut Ui) -> bool {
         ),
     ] {
         let on = if need_many {
-            op.ready(shapes.len())
+            app.shaping_ready(op)
         } else {
             !shapes.is_empty()
         };
@@ -3614,6 +3612,21 @@ mod tests {
         // One undo step a click.
         app.undo();
         assert!((selection_angle(&app) - 3.0).abs() < 1e-6);
+        // With the centre of rotation moved to a corner, the arrow turns
+        // the object about that corner, which stays put (#2478).
+        let corner = |app: &App| {
+            app.doc().shape_on_page(id).expect("rect").transform * Point::new(10.0, 10.0)
+        };
+        let before = corner(&app);
+        app.set_pivot(before);
+        click(&mut app, up);
+        assert!(
+            (selection_angle(&app) - 4.0).abs() < 1e-6,
+            "{}",
+            selection_angle(&app)
+        );
+        let after = corner(&app);
+        assert!((after - before).hypot() < 1e-6, "{before:?} -> {after:?}");
     }
 
     /// #1331: the sharpness box takes a negative value, which inverts the

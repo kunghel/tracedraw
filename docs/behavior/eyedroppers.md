@@ -25,6 +25,16 @@ object under the pointer, a locked one or one on a locked layer too
 (reading leaves it as it is; `App::hit_test_to_read`, #365). Applying a
 sampled colour or attributes never changes a locked object.
 
+## Sample again after applying
+
+Both tools' property bars have "Sample again after applying"
+(`settings.eyedropper_sample_after_apply`, off at first, kept between
+sessions). With it on, a click that applies puts the tool back in
+Select mode, so the next click samples: pick, apply, pick, apply with
+no key held and no press of Select Color, for a pen or a touch screen
+(`eyedropper::tests::the_eyedropper_samples_again_after_applying_when_asked`,
+#2380). Off, the tool stays in Apply mode as described above.
+
 ## Colour Eyedropper
 
 - Property bar: Select Color, Apply Color, sample size (1x1, 2x2, 5x5
@@ -41,9 +51,21 @@ sampled colour or attributes never changes a locked object.
     over the sample box, its painted pixels only; it gave the fill the
     effects change (#2380,
     `eyedropper::tests::the_colour_of_an_object_with_a_bitmap_effect_is_read_as_shown`);
+  - a closed object with a lens that lays a colour over what lies
+    beneath (Transparency, Color Add, Color Limit, Tinted Grayscale,
+    Wireframe) gives the lens colour, filled or not, anywhere inside it:
+    an unfilled one lying over other objects gave the colour of the
+    object beneath, a filled one its fill, which the lens does not draw
+    (#2549, `eyedropper::tests::a_shape_with_a_transparency_lens_over_others_gives_its_colour`).
+    A lens is picked anywhere inside it, as it shows there;
   - a solid fill gives its colour; a gradient fill gives its first
     stop; otherwise the outline colour;
   - Shift+click reads the outline colour first.
+  - With objects selected, the colour sampled also goes straight onto
+    them, as a palette swatch would: the fill, or with Shift+click the
+    outline colour (each keeps its own width and dash), one undo step;
+    locked objects keep theirs. Apply mode follows as usual (#2551,
+    `eyedropper::tests::a_sampled_colour_is_applied_to_the_selection`).
 - Apply mode, click on an object: a solid fill with the sampled colour
   (`SetFill`); Ctrl+click samples again (Ctrl+Shift+click: the outline
   first); Shift+click sets the outline colour instead, creating a

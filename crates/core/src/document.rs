@@ -3245,7 +3245,7 @@ impl Shape {
                     right: n.right * scale,
                 })
                 .collect();
-            crate::shaping::variable_band_within(&page, st.width * scale, &nodes, 0.005)
+            crate::shaping::variable_band_within(&page, st.width * scale, &nodes, 0.005, st.cap)
         };
         let band = crate::fit::fit_path(&band, 0.01);
         // The contours come outer first, then its holes, which wind the
@@ -3569,14 +3569,20 @@ impl Shape {
         }
     }
 
-    /// Whether Convert to Curves changes this object: curves and groups
-    /// already are curves, and a bitmap has no outline to become one.
+    /// Whether Convert to Curves changes this object: curves already are
+    /// curves, a bitmap has no outline to become one, and a group changes
+    /// when something it holds does (as in CorelDRAW, a group converts
+    /// whole and stays a group, #1324).
     pub fn converts_to_curves(&self) -> bool {
         match &self.kind {
             // A B-spline becomes an ordinary curve: its nodes instead of
             // its control points.
             ShapeKind::Path { .. } => self.spline.is_some(),
-            ShapeKind::Group { .. } | ShapeKind::Bitmap { .. } => false,
+            ShapeKind::Bitmap { .. } => false,
+            ShapeKind::Group { children } => {
+                let warps = !self.outline_stays_live();
+                children.iter().any(|c| c.converts_to_curves_deep(1, warps))
+            }
             // A clip frame changes only when its frame or something it
             // holds (inside groups too) is not a curve yet, or something it
             // holds has a warp to bake. The frame's own warp stays: the
@@ -3601,6 +3607,7 @@ impl Shape {
                     .iter()
                     .any(|c| c.converts_to_curves_deep(depth + 1, inner))
             }
+            ShapeKind::Group { .. } => warp,
             _ => warp || self.converts_to_curves(),
         }
     }
@@ -3696,6 +3703,17 @@ impl Shape {
                     c.curves_in_place(symbols, next_id, depth + 1, inner);
                 }
                 let kind = ShapeKind::ClipFrame { frame, contents };
+                (kind != self.kind).then_some(kind)
+            }
+            // A group stays a group: what it holds becomes curves,
+            // keeping the ids (#1324).
+            ShapeKind::Group { children } => {
+                let mut children = children.clone();
+                let inner = bake && !self.outline_stays_live();
+                for c in &mut children {
+                    c.curves_in_place(symbols, next_id, depth + 1, inner);
+                }
+                let kind = ShapeKind::Group { children };
                 (kind != self.kind).then_some(kind)
             }
             // A B-spline keeps its outline; the control points go.
